@@ -8,7 +8,6 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "setuptools"])
     import pkg_resources
 
-
 def install(package):
     subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
