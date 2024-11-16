@@ -66,7 +66,9 @@ fi
 # Convert paths to WSL paths if the feature is enabled
 if [[ "$CONVERT_TO_WSL_PATH" == "true" ]]; then
     DEST_FOLDER=$(convert_to_wsl_path "$DEST_FOLDER")
-    SOURCE_FOLDER=$(convert_to_wsl_path "$SOURCE_FOLDER")
+    echo "DestPath: $DEST_FOLDER"
+    #SOURCE_FOLDER=$(convert_to_wsl_path "$SOURCE_FOLDER")
+    echo "SourcePath: $SOURCE_FOLDER"
 fi
 
 # Construct the full destination IP address
@@ -78,10 +80,13 @@ echo "Destination IP: $DEST_IP"
 # Rsync command with options
 RSYNC_CMD="rsync -av --progress --info=progress2 -e \"ssh -p $SSH_PORT\""
 
+
 # If delete-source option is enabled, add the remove-source-files flag
 if [[ "$DELETE_SOURCE" == "true" ]]; then
     RSYNC_CMD="${RSYNC_CMD} --remove-source-files"
 fi
+
+echo "RsycCMD: $RSYNC_CMD ${SSH_USER}@${DEST_IP}:${DEST_FOLDER}"
 
 # Execute the rsync command
 eval $RSYNC_CMD "$SOURCE_FOLDER" "${SSH_USER}@${DEST_IP}:${DEST_FOLDER}"
