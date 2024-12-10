@@ -3,7 +3,11 @@ from tqdm import tqdm
 import argparse
 import os
 import signal
+import subprocess
 import time
+import concurrent.futures
+from urllib.parse import urlparse
+from collections import defaultdict
 
 # Global flag for stopping the script
 stop_flag = False
@@ -13,104 +17,128 @@ def handle_sigint(signum, frame):
     global stop_flag
     stop_flag = True
     print("\nInterrupt received. Exiting...")
-    raise KeyboardInterrupt
 
 # Register signal handler
 signal.signal(signal.SIGINT, handle_sigint)
 
-def download_video(url, base_opts, master_progress):
-    """Download a single video with progress bars."""
-    last_update = time.time()  # Throttle updates
-    file_progress = None
-
-    def progress_hook(d):
-        nonlocal file_progress, last_update
-        if stop_flag:
-            raise KeyboardInterrupt("Download interrupted by user.")
-
-        if d['status'] == 'downloading':
-            downloaded = d.get('downloaded_bytes', 0)
-            total = d.get('total_bytes', 0)
-            speed = d.get('speed', 0)
-
-            if not file_progress:
-                file_progress = tqdm(
-                    total=total or 1,
-                    desc="Current Video",
-                    unit='B',
-                    unit_scale=True,
-                    dynamic_ncols=True,
-                    leave=False,
-                    position=1,
-                    bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}, speed={postfix}]"
-                )
-
-            # Throttle updates to prevent excessive output
-            if time.time() - last_update > 0.5:  # Update every 0.5 seconds
-                last_update = time.time()
-                file_progress.n = downloaded
-                file_progress.refresh()
-
-                # Add size and speed as a postfix
-                size_display = f"{downloaded / 1_000_000:.2f}MB/{(total / 1_000_000):.2f}MB" if total else "Unknown"
-                speed_mbit = round(speed * 8 / 1_000_000, 2) if speed else 0
-                file_progress.set_postfix(size=size_display, speed=f"{speed_mbit} Mb/s")
-
-    ydl_opts = {**base_opts, 'progress_hooks': [progress_hook]}
-
+def get_filename(url, base_opts, debug=False):
+    """Use yt-dlp's --get-filename to determine the resolved filename."""
     try:
+        outtmpl = base_opts.get('outtmpl', '%(title)s.%(ext)s')
+        ydl_opts = ['yt-dlp', '--get-filename', '-o', outtmpl, url]
+        if debug:
+            print(f"\nResolving filename with: {' '.join(ydl_opts)}")
+        result = subprocess.run(ydl_opts, capture_output=True, text=True, check=True)
+        resolved_filename = result.stdout.strip()
+        return os.path.abspath(resolved_filename)
+    except subprocess.CalledProcessError:
+        return None
+
+def file_exists(url, base_opts, debug=False):
+    """Check if the resolved filename for a URL already exists."""
+    resolved_filename = get_filename(url, base_opts, debug)
+    if resolved_filename and os.path.exists(resolved_filename):
+        return True
+    return False
+
+def download_video(url, base_opts, domain_progress, overall_progress, debug=False):
+    """Download a single video."""
+    try:
+        ydl_opts = {**base_opts, 'quiet': True, 'progress_hooks': []}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
+            domain_progress.update(1)
+            overall_progress.update(1)
     except KeyboardInterrupt:
+        print(f"Download of {url} interrupted.")
         raise
     except Exception as e:
-        print(f"Failed to download {url}: {e}")
-    finally:
-        if file_progress:
-            file_progress.close()
+        if debug:
+            print(f"Error downloading {url}: {e}")
 
-def download_videos_sequentially(url_file, base_opts):
-    """Download videos sequentially with a master progress bar."""
+def group_urls_by_domain(urls):
+    """Group URLs by their base domain."""
+    domains = defaultdict(list)
+    for url in urls:
+        domain = urlparse(url).netloc
+        domains[domain].append(url)
+    return domains
+
+def download_from_domains(domain, urls, base_opts, domain_progress, overall_progress, debug=False):
+    """Download videos sequentially from a specific domain."""
+    for url in urls:
+        if stop_flag:
+            print(f"Stopping download from {domain}.")
+            break
+        if file_exists(url, base_opts, debug):
+            if debug:
+                print(f"Skipping {url}, file already exists.")
+            domain_progress.update(1)
+            overall_progress.update(1)
+            continue
+        download_video(url, base_opts, domain_progress, overall_progress, debug)
+
+def download_videos_in_parallel(url_file, base_opts, max_threads, debug=False):
+    """Download videos in parallel grouped by domain."""
+    # Read URLs and group by domain
     with open(url_file, 'r') as f:
         urls = [line.strip() for line in f if line.strip()]
+    domain_groups = group_urls_by_domain(urls)
 
-    print("Starting downloads...")
-    with tqdm(total=len(urls), desc="Overall Progress", unit='file', position=0) as master_progress:
-        for url in urls:
-            if stop_flag:
-                break  # Exit on interruption
-            try:
-                download_video(url, base_opts, master_progress)
-                master_progress.update(1)
-            except KeyboardInterrupt:
-                print("\nDownload interrupted. Exiting...")
-                break
-            except Exception as e:
-                print(f"Skipping URL due to error: {url}. Error: {e}")
+    # Progress bars
+    overall_progress = tqdm(total=len(urls), desc="Overall Progress", unit="file", position=0)
+    domain_progresses = {}
+    for i, domain in enumerate(domain_groups):
+        domain_progresses[domain] = tqdm(total=len(domain_groups[domain]), desc=f"{domain}", position=i+1)
+
+    # Thread pool for parallel downloads
+    with concurrent.futures.ThreadPoolExecutor(max_threads) as executor:
+        futures = [
+            executor.submit(
+                download_from_domains,
+                domain,
+                urls,
+                base_opts,
+                domain_progresses[domain],
+                overall_progress,
+                debug,
+            )
+            for domain, urls in domain_groups.items()
+        ]
+        try:
+            for future in concurrent.futures.as_completed(futures):
+                if debug and future.exception():
+                    print(f"Error in thread: {future.exception()}")
+        except KeyboardInterrupt:
+            print("Main process interrupted, shutting down.")
+            stop_flag = True
+            # Cancel all running tasks
+            for future in futures:
+                future.cancel()
+
+    overall_progress.close()
+    for progress in domain_progresses.values():
+        progress.close()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Download videos with yt-dlp.")
-    parser.add_argument("url_file", help="File containing URLs, one per line.")
+    parser.add_argument("--url_file", required=True, help="File containing URLs, one per line.")
+    parser.add_argument("--threads", "-t", type=int, default=4, help="Maximum number of parallel threads.")
     parser.add_argument("--archive", help="Path to archive file to avoid re-downloading.")
-    parser.add_argument("yt_dlp_args", nargs=argparse.REMAINDER, help="Additional arguments for yt-dlp.")
+    parser.add_argument("--debug", "-d", action="store_true", default=False, help="Enable debug messages.")
 
     args = parser.parse_args()
 
-    base_opts = {'quiet': True, 'noprogress': True}
+    # Setup options
+    base_opts = {'outtmpl': '%(title)s.%(ext)s'}
     if args.archive:
         base_opts['download_archive'] = args.archive
 
-    for arg in args.yt_dlp_args:
-        if '=' in arg:
-            key, value = arg.split('=', 1)
-            base_opts[key.lstrip('-')] = value
-        else:
-            base_opts[arg.lstrip('-')] = True
-
-    outtmpl = base_opts.get('outtmpl', "downloads/%(title)s.%(ext)s")
-    os.makedirs(os.path.dirname(outtmpl), exist_ok=True)
+    # Set the signal handler for Ctrl+C
+    signal.signal(signal.SIGINT, handle_sigint)
 
     try:
-        download_videos_sequentially(args.url_file, base_opts)
+        download_videos_in_parallel(args.url_file, base_opts, args.threads, args.debug)
     except KeyboardInterrupt:
         print("\nProcess terminated by user.")
+
