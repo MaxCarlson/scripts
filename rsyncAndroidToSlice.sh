@@ -3,8 +3,7 @@
 # Default values
 SOURCE_FOLDER="./"
 SSH_USER="mcarls"
-BASE_IP="192.168.50"
-LAST_OCTET="100"
+DEST_IP="192.168.50.100"
 DELETE_SOURCE="false"
 DEST_FOLDER="~/"
 CONVERT_TO_WSL_PATH="true"
@@ -42,12 +41,6 @@ while [[ "$#" -gt 0 ]]; do
             if [ -z "$SOURCE_FOLDER_PROVIDED" ]; then
                 SOURCE_FOLDER="$1"
                 SOURCE_FOLDER_PROVIDED="true"
-            elif [ -z "$BASE_IP_PROVIDED" ]; then
-                BASE_IP="$1"
-                BASE_IP_PROVIDED="true"
-            elif [ -z "$LAST_OCTET_PROVIDED" ]; then
-                LAST_OCTET="$1"
-                LAST_OCTET_PROVIDED="true"
             else
                 echo "Unknown option or too many arguments."
                 usage
@@ -72,14 +65,11 @@ if [[ "$CONVERT_TO_WSL_PATH" == "true" ]]; then
 fi
 
 # Construct the full destination IP address
-DEST_IP="${BASE_IP}.${LAST_OCTET}"
-
 # Print the destination IP for debugging
 echo "Destination IP: $DEST_IP"
 
 # Rsync command with options
-RSYNC_CMD="rsync -av --progress --info=progress2 -e \"ssh -p $SSH_PORT\""
-
+RSYNC_CMD="rsync -av --progress --partial --checksum --info=progress2 -e \"ssh -p $SSH_PORT\""
 
 # If delete-source option is enabled, add the remove-source-files flag
 if [[ "$DELETE_SOURCE" == "true" ]]; then
