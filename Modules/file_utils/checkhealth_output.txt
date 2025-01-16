@@ -1,0 +1,189 @@
+
+==============================================================================
+lazy: require("lazy.health").check()
+
+lazy.nvim ~
+- {lazy.nvim} version `11.16.2`
+- OK {git} `version 2.47.1.windows.1`
+- OK no existing packages found by other package managers
+- OK packer_compiled.lua not found
+
+luarocks ~
+- checking `hererocks` installation
+- OK no plugins require `luarocks`, so you can ignore any warnings below
+- OK {python} `Python 3.12.3`
+- ERROR {C:/Users/mcarls/AppData/Local/nvim-data/lazy-rocks/hererocks/bin/luarocks} not installed
+- WARNING {C:/Users/mcarls/AppData/Local/nvim-data/lazy-rocks/hererocks/bin/lua} version `5.1` not installed
+- WARNING Lazy won't be able to install plugins that require `luarocks`.
+  Here's what you can do:
+   - fix your `luarocks` installation
+   - disable *hererocks* with `opts.rocks.hererocks = false`
+   - disable `luarocks` support completely with `opts.rocks.enabled = false`
+
+==============================================================================
+lspconfig: require("lspconfig.health").check()
+
+LSP configs active in this session (globally) ~
+- Configured servers: lua_ls, cssls, html
+- OK Deprecated servers: (none)
+
+LSP configs active in this buffer (bufnr: 1) ~
+- Language client log: ~\AppData\Local\nvim-data\lsp.log
+- Detected filetype: `python`
+- 0 client(s) attached to this buffer
+
+Docs for active configs: ~
+
+==============================================================================
+nvim: require("nvim.health").check()
+
+Configuration ~
+- OK no issues found
+
+Runtime ~
+- OK $VIMRUNTIME: C:\Program Files\Neovim\share/nvim/runtime
+
+Performance ~
+- OK Build type: Release
+
+Remote Plugins ~
+- OK Up to date
+
+External Tools ~
+- OK ripgrep 14.1.1 (rev 4649aa9700) (C:\Users\mcarls\AppData\Local\Microsoft\WinGet\Links\rg.EXE)
+
+==============================================================================
+nvim-treesitter: require("nvim-treesitter.health").check()
+
+Installation ~
+- WARNING `tree-sitter` executable not found (parser generator, only needed for :TSInstallFromGrammar, not required for :TSInstall)
+- WARNING `node` executable not found (only needed for :TSInstallFromGrammar, not required for :TSInstall)
+- OK `git` executable found.
+- ERROR `cc` executable not found.
+  - ADVICE:
+    - Check that any of { vim.NIL, "cc", "gcc", "clang", "cl", "zig" } is in your $PATH or set the environment variable CC or `require"nvim-treesitter.install".compilers` explicitly!
+- OK Neovim was compiled with tree-sitter runtime ABI version 14 (required >=13). Parsers must be compatible with runtime ABI.
+
+OS Info:
+{
+  machine = "x86_64",
+  release = "10.0.26100",
+  sysname = "Windows_NT",
+  version = "Windows 11 Pro"
+} ~
+
+Parser/Features         H L F I J
+  - lua                 ✓ ✓ ✓ ✓ ✓
+  - luadoc              ✓ . . . .
+  - printf              ✓ . . . .
+  - vim                 ✓ ✓ ✓ . ✓
+  - vimdoc              ✓ . . . ✓
+
+  Legend: H[ighlight], L[ocals], F[olds], I[ndents], In[j]ections
+         +) multiple parsers found, only one will be used
+         x) errors found in the query, try to run :TSUpdate {lang} ~
+
+==============================================================================
+provider.clipboard: require("provider.clipboard.health").check()
+
+Clipboard (optional) ~
+- OK Clipboard tool found: win32yank
+
+==============================================================================
+provider.node: require("provider.node.health").check()
+
+Node.js provider (optional) ~
+- Disabled (loaded_node_provider=0).
+
+==============================================================================
+provider.perl: require("provider.perl.health").check()
+
+Perl provider (optional) ~
+- Disabled (loaded_perl_provider=0).
+
+==============================================================================
+provider.python: require("provider.python.health").check()
+
+Python 3 provider (optional) ~
+- Disabled (loaded_python3_provider=0).
+
+==============================================================================
+provider.ruby: require("provider.ruby.health").check()
+
+Ruby provider (optional) ~
+- Disabled (loaded_ruby_provider=0).
+
+==============================================================================
+vim.lsp: require("vim.lsp.health").check()
+
+- LSP log level : WARN
+- Log path: C:\Users\mcarls\AppData\Local\nvim-data/lsp.log
+- Log size: 0 KB
+
+vim.lsp: Active Clients ~
+- No active clients
+
+vim.lsp: File Watcher ~
+- file watching "(workspace/didChangeWatchedFiles)" disabled on all clients
+
+vim.lsp: Position Encodings ~
+- No active clients
+
+==============================================================================
+vim.treesitter: require("vim.treesitter.health").check()
+
+- Nvim runtime ABI version: 14
+- OK Parser: lua                  ABI: 14, path: C:\Users\mcarls\AppData\Local\nvim-data\lazy\nvim-treesitter\parser\lua.so
+- OK Parser: luadoc               ABI: 14, path: C:\Users\mcarls\AppData\Local\nvim-data\lazy\nvim-treesitter\parser\luadoc.so
+- OK Parser: printf               ABI: 14, path: C:\Users\mcarls\AppData\Local\nvim-data\lazy\nvim-treesitter\parser\printf.so
+- OK Parser: vim                  ABI: 14, path: C:\Users\mcarls\AppData\Local\nvim-data\lazy\nvim-treesitter\parser\vim.so
+- OK Parser: vimdoc               ABI: 14, path: C:\Users\mcarls\AppData\Local\nvim-data\lazy\nvim-treesitter\parser\vimdoc.so
+- OK Parser: c                    ABI: 14, path: C:\Program Files\Neovim\lib\nvim\parser\c.dll
+- OK Parser: lua                  ABI: 14, path: C:\Program Files\Neovim\lib\nvim\parser\lua.dll
+- OK Parser: markdown             ABI: 14, path: C:\Program Files\Neovim\lib\nvim\parser\markdown.dll
+- OK Parser: markdown_inline      ABI: 14, path: C:\Program Files\Neovim\lib\nvim\parser\markdown_inline.dll
+- OK Parser: query                ABI: 14, path: C:\Program Files\Neovim\lib\nvim\parser\query.dll
+- OK Parser: vim                  ABI: 14, path: C:\Program Files\Neovim\lib\nvim\parser\vim.dll
+- OK Parser: vimdoc               ABI: 14, path: C:\Program Files\Neovim\lib\nvim\parser\vimdoc.dll
+
+==============================================================================
+which-key: require("which-key.health").check()
+
+- OK Most of these checks are for informational purposes only.
+  WARNINGS should be treated as a warning, and don't necessarily indicate a problem with your config.
+  Please |DON'T| report these warnings as an issue.
+
+Checking your config ~
+- WARNING |mini.icons| is not installed
+- OK |nvim-web-devicons| is installed
+
+Checking for issues with your mappings ~
+- WARNING You're using an old version of the which-key spec.
+  Your mappings will work, but it's recommended to update them to the new version.
+  Please check the docs and suggested spec below for more info.
+  Mappings: >
+  {
+    c = {
+      j = { "<cmd>e ~/AppData/Local/nvim/lua/custom/my_cheatsheet.md<cr>", "My Custom Cheatsheet" },
+      name = "Cheatsheets"
+    },
+    mode = "n",
+    prefix = "<leader>"
+  }
+  
+  -- Suggested Spec:
+  {
+    { "<leader>c", group = "Cheatsheets" },
+    { "<leader>cj", "<cmd>e ~/AppData/Local/nvim/lua/custom/my_cheatsheet.md<cr>", desc = "My Custom Cheatsheet" },
+  }
+
+checking for overlapping keymaps ~
+- WARNING In mode `n`, <gc> overlaps with <gcc>:
+  - <gc>: Toggle comment
+  - <gcc>: Toggle comment line
+- OK Overlapping keymaps are only reported for informational purposes.
+  This doesn't necessarily mean there is a problem with your config.
+
+Checking for duplicate mappings ~
+- OK No duplicate mappings found
+
