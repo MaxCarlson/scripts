@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="clipboars_utils",
+    name="clipboard_utils",
     version="1.0.0",
     description="Cross-platform clipboard utility for Python. Supports Android termux, pwsh, and Linux",                  author="Maxwell Carlson",
     author_email="carlsonamax@gmail.com",

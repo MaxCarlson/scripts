@@ -1,0 +1,8 @@
+# File of aliases for these scriots once theyve been syml8nked to bin
+# syntax
+# name_of_script.py : alias_name
+
+append_clipboard.py : apc
+clipboard_replace.py : crx
+copy_to_clipboard.py : c2c
+replace_with_clipboard.py : rwc

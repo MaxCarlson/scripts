@@ -1,0 +1,61 @@
+import re
+import sys
+import argparse
+import subprocess
+from pathlib import Path
+from scripts_setup.setup_utils import install_dependencies  # ✅ New import path
+
+def is_module_installed(module_path):
+    """Check if a module is already installed."""
+    module_name = module_path.name
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "show", module_name],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+def install_python_modules(modules_dir, skip_reinstall, production):
+    """Install all modules in 'modules/'."""
+    if not modules_dir.exists():
+        print(f"⚠️ No 'modules' directory found at {modules_dir}. Skipping installation.")
+        return
+
+    for module in modules_dir.iterdir():
+        if not module.is_dir() or not (module / "setup.py").exists():
+            continue
+
+        install_cmd = [sys.executable, "-m", "pip", "install"]
+        if not production:
+            install_cmd.append("-e")  # Editable mode for development
+        install_cmd.append(str(module))
+
+        # ✅ Skip reinstall if already installed
+        if skip_reinstall and is_module_installed(module):
+            print(f"🔹 Module already installed: {module.name}. Skipping.")
+            continue
+
+        print(f"🚀 Installing: {module.name} {'(production mode)' if production else '(development mode)'}")
+        subprocess.run(install_cmd, check=True)
+
+def main(scripts_dir, dotfiles_dir, bin_dir, skip_reinstall, production):
+    """Main function to set up Python modules."""
+    print("\n🔄 Running modules/setup.py ...")
+
+    modules_dir = scripts_dir / "modules"
+    install_python_modules(modules_dir, skip_reinstall, production)
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Setup Python modules.")
+    parser.add_argument("--scripts-dir", type=Path, required=True, help="Path to the scripts/ directory")
+    parser.add_argument("--dotfiles-dir", type=Path, required=True, help="Path to the dotfiles/ directory")
+    parser.add_argument("--bin-dir", type=Path, required=True, help="Path to the bin/ directory")
+    parser.add_argument("--skip-reinstall", action="store_true", help="Skip reinstallation of already installed modules")
+    parser.add_argument("--production", action="store_true", help="Install modules in production mode (without -e)")
+
+    args = parser.parse_args()
+    main(args.scripts_dir, args.dotfiles_dir, args.bin_dir, args.skip_reinstall, args.production)
