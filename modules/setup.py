@@ -1,9 +1,9 @@
-import re
+import os
 import sys
 import argparse
 import subprocess
 from pathlib import Path
-from scripts_setup.setup_utils import install_dependencies  # ✅ New import path
+from scripts_setup import setup_utils  # Import shared utility functions
 
 def is_module_installed(module_path):
     """Check if a module is already installed."""
@@ -40,17 +40,40 @@ def install_python_modules(modules_dir, skip_reinstall, production):
         print(f"🚀 Installing: {module.name} {'(production mode)' if production else '(development mode)'}")
         subprocess.run(install_cmd, check=True)
 
+def ensure_pythonpath(modules_dir, dotfiles_dir):
+    """Ensure PYTHONPATH includes the modules directory and persist it dynamically."""
+    pythonpath_dynamic = dotfiles_dir / "dynamic/setup_modules.zsh"
+    pythonpath_dynamic.parent.mkdir(parents=True, exist_ok=True)
+
+    pythonpath_entry = f'export PYTHONPATH="{modules_dir}:$PYTHONPATH"\n'
+
+    # ✅ Overwrite the file to prevent duplicates
+    with open(pythonpath_dynamic, "w") as f:
+        f.write(pythonpath_entry)
+
+    print(f"✅ Updated PYTHONPATH in {pythonpath_dynamic}")
+
+    # ✅ Source the new dynamic file to apply immediately
+    try:
+        subprocess.run(["zsh", "-c", f"source {pythonpath_dynamic}"], check=True)
+        print(f"✅ Sourced {pythonpath_dynamic}. Changes applied immediately.")
+    except Exception as e:
+        print(f"❌ Failed to source {pythonpath_dynamic}: {e}")
+
 def main(scripts_dir, dotfiles_dir, bin_dir, skip_reinstall, production):
-    """Main function to set up Python modules."""
+    """Main function to set up Python modules and PYTHONPATH."""
     print("\n🔄 Running modules/setup.py ...")
 
     modules_dir = scripts_dir / "modules"
+
+    # ✅ Install modules
     install_python_modules(modules_dir, skip_reinstall, production)
 
-if __name__ == "__main__":
-    import argparse
+    # ✅ Ensure PYTHONPATH includes the modules directory
+    ensure_pythonpath(modules_dir, dotfiles_dir)
 
-    parser = argparse.ArgumentParser(description="Setup Python modules.")
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Setup Python modules and PYTHONPATH.")
     parser.add_argument("--scripts-dir", type=Path, required=True, help="Path to the scripts/ directory")
     parser.add_argument("--dotfiles-dir", type=Path, required=True, help="Path to the dotfiles/ directory")
     parser.add_argument("--bin-dir", type=Path, required=True, help="Path to the bin/ directory")
