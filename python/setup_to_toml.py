@@ -5,6 +5,24 @@ import shutil
 import argparse
 from pathlib import Path
 
+# Persistent cache for user-provided values
+USER_FIELDS = {}
+
+# Default field order for `--fields`
+FIELD_ORDER = ["author", "author_email", "version", "description"]
+
+def prompt_for_value(field_name, default=None):
+    """Prompt once for missing values and store them for future use."""
+    if field_name in USER_FIELDS:
+        return USER_FIELDS[field_name]
+
+    value = input(f"❓ Missing `{field_name}`. Enter value [{default}]: ").strip()
+    if not value:
+        value = default
+    USER_FIELDS[field_name] = value  # Store for next missing case
+    return value
+
+
 def is_valid_setup_py(setup_path):
     """Checks if the file is a real package setup.py or just a random script."""
     try:
@@ -22,14 +40,14 @@ def is_valid_setup_py(setup_path):
 
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    if alias.name.startswith("setuptools"):  # More robust detection
+                    if alias.name.startswith("setuptools"):
                         imports_setuptools = True
 
             elif isinstance(node, ast.ImportFrom):
-                if node.module and node.module.startswith("setuptools"):  # Fixes ImportFrom case
+                if node.module and node.module.startswith("setuptools"):
                     imports_setuptools = True
 
-        return setup_found and imports_setuptools  # Now correctly detects valid setup.py
+        return setup_found and imports_setuptools
 
     except Exception as e:
         print(f"⚠️ Error checking {setup_path}: {e}")
@@ -60,9 +78,8 @@ def parse_setup_py(setup_path):
                     key = keyword.arg
                     value = keyword.value
 
-                    if key in ["name", "version", "description", "author", "author_email"]:
-                        if isinstance(value, ast.Str):
-                            setup_data[key] = value.s
+                    if key in setup_data and isinstance(value, ast.Str):
+                        setup_data[key] = value.s
                     elif key == "install_requires" and isinstance(value, ast.List):
                         setup_data["dependencies"] = [el.s for el in value.elts if isinstance(el, ast.Str)]
                     elif key == "packages" and isinstance(value, ast.Call) and getattr(value.func, "id", "") == "find_packages":
@@ -112,7 +129,7 @@ def backup_file(file_path):
     print(f"🗂️ Backed up {file_path} → {backup_path}")
 
 
-def convert_all_setup_files(base_dir, dry_run=False):
+def convert_all_setup_files(base_dir, dry_run=False, overwrite=False):
     """Finds all setup.py files, converts valid ones, and warns about non-module scripts."""
     found_packages = []
     non_packages = []
@@ -132,6 +149,13 @@ def convert_all_setup_files(base_dir, dry_run=False):
 
         # Extract setup.py metadata
         setup_data = parse_setup_py(setup_path)
+
+        # Fill missing fields
+        for field in ["author", "author_email", "version", "description"]:
+            if overwrite or not setup_data[field]:
+                setup_data[field] = USER_FIELDS.get(field, setup_data[field]) or prompt_for_value(field)
+
+        # Generate TOML
         pyproject_content = generate_pyproject_toml(setup_data)
 
         if dry_run:
@@ -143,8 +167,6 @@ def convert_all_setup_files(base_dir, dry_run=False):
                 toml.dump(pyproject_content, f)
 
             print(f"✅ Converted `setup.py` → `{toml_path}`")
-
-            # Backup original setup.py
             backup_file(setup_path)
 
     print("\n📌 Summary:")
@@ -160,7 +182,23 @@ def convert_all_setup_files(base_dir, dry_run=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert setup.py to pyproject.toml.")
     parser.add_argument("-d", "--dry-run", action="store_true", help="Print the converted TOML without making changes.")
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite all fields with user-specified values.")
+    parser.add_argument("--author", help="Specify author name.")
+    parser.add_argument("--email", help="Specify author email.")
+    parser.add_argument("--version", help="Specify package version.")
+    parser.add_argument("--description", help="Specify package description.")
+    parser.add_argument("--fields", help="Specify all fields in order: 'author,email,version,description'.")
+
     args = parser.parse_args()
 
-    project_root = os.getcwd()
-    convert_all_setup_files(project_root, dry_run=args.dry_run)
+    # Load fields from arguments
+    if args.fields:
+        values = args.fields.split(",")
+        for i, field in enumerate(FIELD_ORDER):
+            USER_FIELDS[field] = values[i] if i < len(values) else None
+
+    for field in FIELD_ORDER:
+        if getattr(args, field, None):
+            USER_FIELDS[field] = getattr(args, field)
+
+    convert_all_setup_files(os.getcwd(), dry_run=args.dry_run, overwrite=args.overwrite)
