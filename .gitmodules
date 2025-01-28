@@ -3,4 +3,4 @@
 	url = git@github.com:MaxCarlson/W11-powershell.git
 [submodule "pscripts"]
 	path = pscripts
-	url = ./pscripts
+	url = git@github.com:MaxCarlson/pscripts.git
