@@ -34,7 +34,7 @@ def run_setup(script_path, *args):
         print(f"⚠️ Setup script {script_path} not found. Skipping.")
 def main():
     parser = argparse.ArgumentParser(description="Master setup script.")
-    parser.add_argument("--skip-reinstall", action="store_true", help="Skip reinstallation of already installed modules")
+    parser.add_argument("--skip-reinstall", default=False, action="store_true", help="Skip reinstallation of already installed modules")
     parser.add_argument("--production", action="store_true", help="Install modules in production mode (without -e)")
     args = parser.parse_args()
 

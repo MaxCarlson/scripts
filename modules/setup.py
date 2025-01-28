@@ -6,16 +6,16 @@ from pathlib import Path
 from scripts_setup import setup_utils  # Import shared utility functions
 
 def is_module_installed(module_path):
-    """Check if a module is already installed."""
+    """Check if a module is installed (production or editable)."""
     module_name = module_path.name
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "show", module_name],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
+
+    # Use `pip list --format=freeze` to check if the module is actually installed
+    result = subprocess.run([sys.executable, "-m", "pip", "list", "--format=freeze"], capture_output=True, text=True)
+
+    installed_modules = {line.split("==")[0] for line in result.stdout.splitlines() if "==" in line}  # Only normal installs
+    installed_editables = {line.split(" @ ")[0] for line in result.stdout.splitlines() if " @" in line}  # Editable installs
+
+    return module_name in installed_modules or module_name in installed_editables
 
 def install_python_modules(modules_dir, skip_reinstall, production):
     """Install all modules in 'modules/'."""
@@ -23,9 +23,23 @@ def install_python_modules(modules_dir, skip_reinstall, production):
         print(f"⚠️ No 'modules' directory found at {modules_dir}. Skipping installation.")
         return
 
+    print(f"🔍 Scanning for modules inside: {modules_dir}")
+
+    found_any = False  # Track if we find modules at all
+
     for module in modules_dir.iterdir():
-        if not module.is_dir() or not (module / "setup.py").exists():
+        if not module.is_dir():
+            print(f"⚠️ Skipping {module}, not a directory.")
             continue
+
+        setup_py = module / "setup.py"
+        pyproject_toml = module / "pyproject.toml"
+
+        if not setup_py.exists() and not pyproject_toml.exists():
+            print(f"⚠️ Skipping {module.name}, no setup.py or pyproject.toml found.")
+            continue
+
+        found_any = True  # We found a valid module!
 
         install_cmd = [sys.executable, "-m", "pip", "install"]
         if not production:
@@ -42,6 +56,9 @@ def install_python_modules(modules_dir, skip_reinstall, production):
             subprocess.run(install_cmd, check=True)
         except subprocess.CalledProcessError as e:
             print(f"❌ Failed to install {module.name}: {e}")
+
+    if not found_any:
+        print(f"❌ No valid modules found in {modules_dir}. Check if they have setup.py or pyproject.toml.")
 
 def ensure_pythonpath(modules_dir, dotfiles_dir):
     """Ensure PYTHONPATH includes the modules directory and persist it dynamically."""
