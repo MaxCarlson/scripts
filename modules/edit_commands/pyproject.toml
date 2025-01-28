@@ -1,0 +1,12 @@
+[build-system]
+requires = [ "setuptools>=64",]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "edit_commands"
+version = "0.1"
+requires-python = ">=3.6"
+dependencies = []
+[[project.authors]]
+
+[tool.setuptools.packages.find]

@@ -1,0 +1,15 @@
+[build-system]
+requires = [ "setuptools>=64",]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "file_utils"
+version = "1.0.0"
+description = "A Python library for advanced file manipulation and management."
+requires-python = ">=3.6"
+dependencies = []
+[[project.authors]]
+name = "Your Name"
+email = "carlsonamax@gmail.com"
+
+[tool.setuptools.packages.find]
