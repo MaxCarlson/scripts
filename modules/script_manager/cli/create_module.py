@@ -17,6 +17,8 @@ def main():
     parser.add_argument("--no_requirements", action="store_true", help="Skip generating requirements.txt.")
     parser.add_argument("--no_test", action="store_true", help="Skip creating test setup.")
     parser.add_argument("-t", "--test", type=str, nargs="?", const="", help="Specify test source or create a blank test.")
+    parser.add_argument("--exclude_files", type=str, nargs="*", help="List of files to exclude from __init__.py generation.")
+    parser.add_argument("--exclude_functions", type=str, nargs="*", help="List of function names to exclude from __init__.py.")
     parser.add_argument("--debug", action="store_true", help="Enable detailed debug output.")
 
     args = parser.parse_args()
@@ -25,7 +27,6 @@ def main():
 
     print(f"📂 Resolving module path: {module_path}")
 
-    # Infer module name if inside specified modules path
     if module_path.resolve().parent == DEFAULT_MODULES_PATH.resolve():
         if args.name:
             sys.exit("❌ Error: Module name should not be specified when using a predefined module path.")
@@ -40,12 +41,11 @@ def main():
     validate_python_name(module_name)
     print("✅ Module name validation passed.")
 
-    # Call module structure creation
     print("🔨 Creating module structure...")
-    create_module_structure(module_path, module_name, args.force, args.no_requirements, args.no_test, args.test)
+    create_module_structure(module_path, module_name, args.force, args.no_requirements, args.no_test, args.test,
+                            args.exclude_files, args.exclude_functions)
     print("✅ Module structure created.")
 
-    # Setup environment if requested
     if args.venv or args.conda:
         print("⚙️ Setting up virtual environment...")
         create_virtual_environment(module_path, module_name, args.conda, args.force)
@@ -53,7 +53,6 @@ def main():
 
     print("🎉 Module creation complete.")
 
-    # Debug mode: Show skipped actions and detailed steps
     if args.debug:
         print("\n🔍 Debug Info:")
         print(f"  - Source path: {module_path}")
@@ -64,7 +63,8 @@ def main():
         print(f"  - Force overwrite: {'Yes' if args.force else 'No'}")
         print(f"  - Skip requirements.txt: {'Yes' if args.no_requirements else 'No'}")
         print(f"  - Skip tests: {'Yes' if args.no_test else 'No'}")
-        print(f"  - Test source: {args.test if args.test else 'None'}")
+        print(f"  - Excluded files: {args.exclude_files if args.exclude_files else 'None'}")
+        print(f"  - Excluded functions: {args.exclude_functions if args.exclude_functions else 'None'}")
 
 if __name__ == "__main__":
     main()
