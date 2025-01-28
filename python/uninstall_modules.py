@@ -1,12 +1,13 @@
 import os
 import subprocess
 import argparse
+import shutil
 from pathlib import Path
 import toml
 import logging
 
-# 📜 Setup logging
-LOG_DIR = Path.home() / "logs"
+# 📜 Setup logging (works on both Termux & WSL2)
+LOG_DIR = Path(os.getenv("HOME", "/data/data/com.termux/files/home")) / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / "uninstall_modules.log"
 
@@ -22,15 +23,15 @@ def log(message):
     logging.info(message)
 
 def get_installed_packages():
-    """Retrieve installed packages from `pip list` (handles both editable & normal installs)."""
+    """Retrieve installed packages from `pip list`."""
     result = subprocess.run(["pip", "list", "--format=freeze"], capture_output=True, text=True)
     installed_packages = {}
-    
+
     for line in result.stdout.splitlines():
-        if " @ " in line:  # Editable installs
+        if " @ " in line:
             package, _ = line.split(" @ ", 1)
             installed_packages[package] = "editable"
-        elif "==" in line:  # Production installs
+        elif "==" in line:
             package = line.split("==")[0]
             installed_packages[package] = "production"
 
@@ -42,7 +43,6 @@ def get_package_name(module_dir):
     setup_path = module_dir / "setup.py"
     reqs_path = module_dir / "requirements.txt"
 
-    # 🔍 Check `pyproject.toml`
     if toml_path.exists():
         try:
             data = toml.load(toml_path)
@@ -51,28 +51,27 @@ def get_package_name(module_dir):
             log(f"⚠️ Warning: Invalid `pyproject.toml` in {module_dir}")
             return None
 
-    # 🔍 Check `setup.py`
     if setup_path.exists():
         try:
             result = subprocess.run(["python", str(setup_path), "--name"], capture_output=True, text=True)
-            package_name = result.stdout.strip()
-            if package_name:
-                return package_name
+            return result.stdout.strip()
         except Exception as e:
             log(f"⚠️ Error extracting package name from {setup_path}: {e}")
 
-    # 🔍 Check `requirements.txt`
     if reqs_path.exists():
         with open(reqs_path, "r") as f:
             for line in f:
                 if line.strip() and not line.startswith("#"):
-                    return line.split()[0]  # Return first package found
+                    return line.split()[0]
 
-    return None  # ❌ No package name found
+    return None
 
 def auto_remove_orphans():
-    """Automatically remove orphaned dependencies."""
+    """Remove orphaned dependencies if `pip-autoremove` is available."""
     log("\n🧹 Removing orphaned dependencies...")
+    if shutil.which("pip-autoremove") is None:
+        log("⚠️ `pip-autoremove` not found. Skipping orphan removal.")
+        return
     subprocess.run(["pip-autoremove", "-y"], check=False)
 
 def uninstall_modules(base_dir, uninstall_editables=True, uninstall_production=True, dry_run=False, remove_orphans=False, keep_list=None, interactive=False):
@@ -86,7 +85,7 @@ def uninstall_modules(base_dir, uninstall_editables=True, uninstall_production=T
         return
 
     log(f"\n🔍 Scanning {base_dir} for installed modules...\n")
-    
+
     for module_dir in base_dir.iterdir():
         if module_dir.is_dir():
             package_name = get_package_name(module_dir)
@@ -104,15 +103,15 @@ def uninstall_modules(base_dir, uninstall_editables=True, uninstall_production=T
                 log(f"⚠️ Warning: {package_name} is not installed according to `pip list`")
 
             if (uninstall_editables and install_type == "editable") or (uninstall_production and install_type == "production"):
-                to_uninstall.append((package_name, install_type))
+                to_uninstall.append(package_name)  # ✅ Ensure strings only
 
     if not to_uninstall:
         log("✅ No matching modules found for uninstallation.")
         return
 
     log("\n📌 **Modules Marked for Uninstallation:**")
-    for package, install_type in to_uninstall:
-        log(f"   - {package} ({install_type})")
+    for package in to_uninstall:
+        log(f"   - {package}")
 
     if dry_run:
         log("\n🛠️ **Dry Run Mode: No packages will be uninstalled.**")
@@ -120,12 +119,12 @@ def uninstall_modules(base_dir, uninstall_editables=True, uninstall_production=T
 
     if interactive:
         final_uninstall_list = []
-        for package, install_type in to_uninstall:
-            response = input(f"❓ Uninstall {package} ({install_type})? [y/n/A/s] ").strip().lower()
+        for package in to_uninstall:
+            response = input(f"❓ Uninstall {package}? [y/n/A/s] ").strip().lower()
             if response == "y":
                 final_uninstall_list.append(package)
             elif response == "a":
-                final_uninstall_list.extend([p[0] for p in to_uninstall])
+                final_uninstall_list.extend(to_uninstall)
                 break
             elif response == "s":
                 log("⏭️ Skipping rest...")
