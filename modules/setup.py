@@ -38,7 +38,10 @@ def install_python_modules(modules_dir, skip_reinstall, production):
             continue
 
         print(f"🚀 Installing: {module.name} {'(production mode)' if production else '(development mode)'}")
-        subprocess.run(install_cmd, check=True)
+        try:
+            subprocess.run(install_cmd, check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Failed to install {module.name}: {e}")
 
 def ensure_pythonpath(modules_dir, dotfiles_dir):
     """Ensure PYTHONPATH includes the modules directory and persist it dynamically."""
@@ -47,16 +50,23 @@ def ensure_pythonpath(modules_dir, dotfiles_dir):
 
     pythonpath_entry = f'export PYTHONPATH="{modules_dir}:$PYTHONPATH"\n'
 
+    # ✅ Check if PYTHONPATH already contains the module path
+    current_pythonpath = os.environ.get("PYTHONPATH", "").split(":")
+    if str(modules_dir) in current_pythonpath:
+        print(f"✅ PYTHONPATH already includes {modules_dir}. No changes needed.")
+        return
+
     # ✅ Overwrite the file to prevent duplicates
-    with open(pythonpath_dynamic, "w") as f:
+    print(f"🔄 Updating PYTHONPATH to include {modules_dir}...")
+    with open(pythonpath_dynamic, "w", encoding="utf-8") as f:
         f.write(pythonpath_entry)
 
     print(f"✅ Updated PYTHONPATH in {pythonpath_dynamic}")
 
-    # ✅ Source the new dynamic file to apply immediately
+    # ✅ Source the new dynamic file **only if changes were made**
     try:
         subprocess.run(["zsh", "-c", f"source {pythonpath_dynamic}"], check=True)
-        print(f"✅ Sourced {pythonpath_dynamic}. Changes applied immediately.")
+        print(f"✅ Sourced {pythonpath_dynamic}. Python path changes applied immediately.")
     except Exception as e:
         print(f"❌ Failed to source {pythonpath_dynamic}: {e}")
 

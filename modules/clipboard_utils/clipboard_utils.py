@@ -1,15 +1,21 @@
+import os
 import sys
-import subprocess
 import platform
+import subprocess
+
+def is_termux():
+    """Detect if running inside Termux."""
+    return "ANDROID_ROOT" in os.environ and "com.termux" in os.environ.get("SHELL", "")
 
 def get_clipboard():
     """Retrieve clipboard contents, supporting Termux, Ubuntu, and PowerShell."""
     try:
+        if is_termux():  # ✅ Correct Termux detection
+            return subprocess.run(["termux-clipboard-get"], capture_output=True, text=True, check=True).stdout.strip()
+        
         system = platform.system()
 
-        if "Android" in system:  # Termux (Android)
-            return subprocess.run(["termux-clipboard-get"], capture_output=True, text=True, check=True).stdout.strip()
-        elif system == "Linux":  # Ubuntu/Linux
+        if system == "Linux":  # Ubuntu/Linux
             return subprocess.run(["xclip", "-selection", "clipboard", "-o"], capture_output=True, text=True, check=True).stdout.strip()
         elif system == "Windows":  # Windows (PowerShell)
             return subprocess.run(["powershell", "-command", "Get-Clipboard"], capture_output=True, text=True, check=True).stdout.strip()
@@ -23,11 +29,13 @@ def get_clipboard():
 def set_clipboard(text):
     """Set clipboard contents, supporting Termux, Ubuntu, and PowerShell."""
     try:
+        if is_termux():  # ✅ Correct Termux detection
+            subprocess.run(["termux-clipboard-set"], input=text, text=True, check=True)
+            return
+
         system = platform.system()
 
-        if "Android" in system:  # Termux (Android)
-            subprocess.run(["termux-clipboard-set"], input=text, text=True, check=True)
-        elif system == "Linux":  # Ubuntu/Linux
+        if system == "Linux":  # Ubuntu/Linux
             subprocess.run(["xclip", "-selection", "clipboard"], input=text, text=True, check=True)
         elif system == "Windows":  # Windows (PowerShell)
             subprocess.run(["powershell", "-command", f"Set-Clipboard -Value '{text}'"], text=True, check=True)

@@ -6,3 +6,4 @@ append_clipboard.py : apc
 clipboard_replace.py : crx
 copy_to_clipboard.py : c2c
 replace_with_clipboard.py : rwc
+run_pattern.py : rpt
