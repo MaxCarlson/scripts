@@ -1,112 +1,535 @@
-import inspect
-import sys
-import platform
+============================= test session starts ==============================
+platform linux -- Python 3.12.8, pytest-8.3.4, pluggy-1.5.0
+rootdir: /data/data/com.termux/files/home/scripts/pyscripts
+collected 19 items
 
-def write_debug(message="", channel="Debug", condition=True, file_and_line=False, output_stream="stdout"):
+tests/apply_git_diffs_test.py F.F.FF.F.FFFFF.FFFF                        [100%]
+
+=================================== FAILURES ===================================
+__________________ TestApplyDiffToFile.test_apply_valid_diff ___________________
+
+self = <apply_git_diffs_test.TestApplyDiffToFile object at 0x6e846fce90>
+test_file = '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-6/test_apply_valid_diff0/test_dir/test_file.txt'
+mock_debug_write_debug = <Mock id='474670611776'>
+
+        def test_apply_valid_diff(self, test_file, mock_debug_write_debug):
+            diff_content = """--- a/test_file.txt
+    +++ b/test_file.txt
+    @@ -1,2 +2,2 @@
+    -Original content line 1
+    +Modified content line 1
+     Original content line 2
     """
-    Write-Debug function for Python.
+            apply_git_diffs.apply_diff_to_file(test_file, diff_content)
+            with open(test_file, "r") as f:
+                content = f.read()
+>           assert content == "Modified content line 1\nOriginal content line 2\n"
+E           AssertionError: assert '' == 'Modified con...tent line 2\n'
+E             
+E             - Modified content line 1
+E             - Original content line 2
 
-    Parameters:
-    - message (str): The debug message to print.
-    - channel (str): The type of message ("Error", "Warning", "Verbose", "Information", "Debug").
-    - condition (bool): If False, the message will not be printed.
-    - file_and_line (bool): Include caller file and line number in the message.
-    - output_stream (str): "stdout" or "stderr" to direct the output.
+tests/apply_git_diffs_test.py:79: AssertionError
+________________ TestApplyDiffToFile.test_apply_diff_no_changes ________________
+
+self = <apply_git_diffs_test.TestApplyDiffToFile object at 0x6e82418710>
+test_file = '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-6/test_apply_diff_no_changes0/test_dir/test_file.txt'
+mock_debug_write_debug = <Mock id='474631836960'>
+
+        def test_apply_diff_no_changes(self, test_file, mock_debug_write_debug):
+            diff_content = """--- a/test_file.txt
+    +++ b/test_file.txt
+    """ # Empty diff
+            result = apply_git_diffs.apply_diff_to_file(test_file, diff_content)
+            assert result
+>           mock_debug_write_debug.assert_any_call(f"No changes detected for file: {test_file}", channel="Debug")
+
+tests/apply_git_diffs_test.py:96: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <Mock id='474631836960'>
+args = ('No changes detected for file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-6/test_apply_diff_no_changes0/test_dir/test_file.txt',)
+kwargs = {'channel': 'Debug'}
+expected = call('No changes detected for file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-6/test_apply_diff_no_changes0/test_dir/test_file.txt', channel='Debug')
+cause = None
+actual = [call('Applying diff to file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-6/test_apply_diff_no_change...x/files/usr/tmp/pytest-of-u0_a340/pytest-6/test_apply_diff_no_changes0/test_dir/test_file.txt', channel='Information')]
+expected_string = "mock('No changes detected for file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-6/test_apply_diff_no_changes0/test_dir/test_file.txt', channel='Debug')"
+
+    def assert_any_call(self, /, *args, **kwargs):
+        """assert the mock has been called with the specified arguments.
+    
+        The assert passes if the mock has *ever* been called, unlike
+        `assert_called_with` and `assert_called_once_with` that only pass if
+        the call is the most recent one."""
+        expected = self._call_matcher(_Call((args, kwargs), two=True))
+        cause = expected if isinstance(expected, Exception) else None
+        actual = [self._call_matcher(c) for c in self.call_args_list]
+        if cause or expected not in _AnyComparer(actual):
+            expected_string = self._format_mock_call_signature(args, kwargs)
+>           raise AssertionError(
+                '%s call not found' % expected_string
+            ) from cause
+E           AssertionError: mock('No changes detected for file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-6/test_apply_diff_no_changes0/test_dir/test_file.txt', channel='Debug') call not found
+
+../../../usr/lib/python3.12/unittest/mock.py:1020: AssertionError
+____________ TestParseDiffAndApply.test_parse_and_apply_single_diff ____________
+
+self = <apply_git_diffs_test.TestParseDiffAndApply object at 0x6e82418950>
+test_directory = '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-6/test_parse_and_apply_single_di0/test_dir'
+mock_debug_write_debug = <Mock id='474631838784'>
+
+        def test_parse_and_apply_single_diff(self, test_directory, mock_debug_write_debug):
+            file_path = os.path.join(test_directory, "file1.txt")
+            with open(file_path, "w") as f:
+                f.write("Original content\n")
+            diff_text = f"""diff --git a/file1.txt b/file1.txt
+    --- a/file1.txt
+    +++ b/file1.txt
+    @@ -1 +1,1 @@
+    -Original content
+    +Modified content
     """
-    if not condition:
-        return
+            apply_git_diffs.parse_diff_and_apply(diff_text, test_directory)
+            with open(file_path, "r") as f:
+                content = f.read()
+>           assert content == "Modified content\n"
+E           AssertionError: assert '' == 'Modified content\n'
+E             
+E             - Modified content
 
-    output_message = message
-    if file_and_line:
-        caller = inspect.stack()[1]
-        caller_file = caller.filename
-        caller_line = caller.lineno
-        output_message = f"[{caller_file}:{caller_line}] {message}"
+tests/apply_git_diffs_test.py:129: AssertionError
+__________ TestParseDiffAndApply.test_parse_and_apply_multiple_diffs ___________
 
-    # Prepend channel to message
-    formatted_message = f"[{channel.upper()}] {output_message}"
+self = <apply_git_diffs_test.TestParseDiffAndApply object at 0x6e82418b60>
+test_directory = '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-6/test_parse_and_apply_multiple_0/test_dir'
+mock_debug_write_debug = <Mock id='474631842288'>
 
-    color_map = {
-        "Error": "\033[91m",
-        "Warning": "\033[93m",
-        "Verbose": "\033[90m",
-        "Information": "\033[96m",
-        "Debug": "\033[92m"
-    }
-    reset_color = "\033[0m"
-    supports_color = sys.stdout.isatty() and platform.system() != "Windows"
-    color = color_map.get(channel, "") if supports_color else ""
-    colored_channel_prefix = f"{color}[{channel.upper()}]{reset} " if color else f"[{channel.upper()}] "
-
-    # Determine output stream
-    stream = sys.stdout if output_stream.lower() == "stdout" else sys.stderr
-
-    if color and channel in color_map: # Only colorize if there's a color for this channel
-        print(f"{color}[{channel.upper()}]{reset} {output_message}", file=stream) # Apply color to prefix only
-    else:
-        print(f"[{channel.upper()}] {output_message}", file=stream) # No color if no mapping or color not supported
-
-
-def write_debug_v2(message="", channel="Debug", output_stream="stdout", condition=True, file_and_line=False):
+        def test_parse_and_apply_multiple_diffs(self, test_directory, mock_debug_write_debug):
+            file_path1 = os.path.join(test_directory, "file1.txt")
+            file_path2 = os.path.join(test_directory, "file2.txt")
+            with open(file_path1, "w") as f:
+                f.write("Original content 1\n")
+            with open(file_path2, "w") as f:
+                f.write("Original content 2\n")
+            diff_text = f"""diff --git a/file1.txt b/file1.txt
+    --- a/file1.txt
+    +++ b/file1.txt
+    @@ -1 +1,1 @@
+    -Original content 1
+    +Modified content 1
+    diff --git a/file2.txt b/file2.txt
+    --- a/file2.txt
+    +++ b/file2.txt
+    @@ -1 +1,1 @@
+    -Original content 2
+    +Modified content 2
     """
-    Enhanced Write-Debug function for Python with stream control and automatic channel prefix.
+            apply_git_diffs.parse_diff_and_apply(diff_text, test_directory)
+            with open(file_path1, "r") as f:
+                content1 = f.read()
+            with open(file_path2, "r") as f:
+                content2 = f.read()
+>           assert content1 == "Modified content 1\n"
+E           AssertionError: assert '' == 'Modified content 1\n'
+E             
+E             - Modified content 1
 
-    Parameters:
-    - message (str): The debug message to print.
-    - channel (str): The type of message ("Error", "Warning", "Verbose", "Information", "Debug").
-    - output_stream (str): "stdout" or "stderr" to direct the output.
-    - condition (bool): If False, the message will not be printed.
-    - file_and_line (bool): Include caller file and line number in the message.
+tests/apply_git_diffs_test.py:157: AssertionError
+_ TestParseDiffAndApply.test_parse_and_apply_invalid_diff_block_missing_ab_lines _
+
+self = <apply_git_diffs_test.TestParseDiffAndApply object at 0x6e82418f80>
+test_directory = '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-6/test_parse_and_apply_invalid_d1/test_dir'
+mock_debug_write_debug = <Mock id='474631846080'>
+
+        def test_parse_and_apply_invalid_diff_block_missing_ab_lines(self, test_directory, mock_debug_write_debug):
+            diff_text = """diff --git a/file1.txt b/file1.txt
+    --- a/file1.txt
+    +++ b/file1.txt
+    @@ -1 +1,1 @@
+    -Original content
+    +Modified content
     """
-    if not condition:
-        return
+            apply_git_diffs.parse_diff_and_apply(diff_text, test_directory)
+>           mock_debug_write_debug.assert_any_call("Skipping invalid diff block: Missing --- a/ or +++ b/\n{}".format("""diff --git a/file1.txt b/file1.txt
+    --- a/file1.txt
+    +++ b/file1.txt
+    @@ -1 +1,1 @@
+    -Original content
+    +Modified content"""), channel="Warning") # Corrected expected diff block in warning message
 
-    output_message = message
-    if file_and_line:
-        caller = inspect.stack()[1]
-        caller_file = caller.filename
-        caller_line = caller.lineno
-        output_message = f"[{caller_file}:{caller_line}] {message}"
+tests/apply_git_diffs_test.py:178: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-    # Prepend channel to message (already done in v1, keeping for consistency in docstring)
-    formatted_message = f"[{channel.upper()}] {output_message}" # For docstring clarity, functionality is in v1 already
+self = <Mock id='474631846080'>
+args = ('Skipping invalid diff block: Missing --- a/ or +++ b/\ndiff --git a/file1.txt b/file1.txt\n--- a/file1.txt\n+++ b/file1.txt\n@@ -1 +1,1 @@\n-Original content\n+Modified content',)
+kwargs = {'channel': 'Warning'}
+expected = call('Skipping invalid diff block: Missing --- a/ or +++ b/\ndiff --git a/file1.txt b/file1.txt\n--- a/file1.txt\n+++ b/file1.txt\n@@ -1 +1,1 @@\n-Original content\n+Modified content', channel='Warning')
+cause = None
+actual = [call("File '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-6/test_parse_and_apply_invalid_d1/test_dir/f...y, skipping diff application.", channel='Warning'), call('Diff application process completed.', channel='Information')]
+expected_string = "mock('Skipping invalid diff block: Missing --- a/ or +++ b/\\ndiff --git a/file1.txt b/file1.txt\\n--- a/file1.txt\\n+++ b/file1.txt\\n@@ -1 +1,1 @@\\n-Original content\\n+Modified content', channel='Warning')"
 
-    color_map = { # Keep color map, can be expanded
-        "Error": "\033[91m",
-        "Warning": "\033[93m",
-        "Verbose": "\033[90m",
-        "Information": "\033[96m",
-        "Debug": "\033[92m"
-    }
-    reset_color = "\033[0m"
-    supports_color = sys.stdout.isatty() and platform.system() != "Windows"
-    color = color_map.get(channel, "") if supports_color else ""
-    colored_channel_prefix = f"{color}[{channel.upper()}]{reset} " if color else f"[{channel.upper()}] "
+    def assert_any_call(self, /, *args, **kwargs):
+        """assert the mock has been called with the specified arguments.
+    
+        The assert passes if the mock has *ever* been called, unlike
+        `assert_called_with` and `assert_called_once_with` that only pass if
+        the call is the most recent one."""
+        expected = self._call_matcher(_Call((args, kwargs), two=True))
+        cause = expected if isinstance(expected, Exception) else None
+        actual = [self._call_matcher(c) for c in self.call_args_list]
+        if cause or expected not in _AnyComparer(actual):
+            expected_string = self._format_mock_call_signature(args, kwargs)
+>           raise AssertionError(
+                '%s call not found' % expected_string
+            ) from cause
+E           AssertionError: mock('Skipping invalid diff block: Missing --- a/ or +++ b/\ndiff --git a/file1.txt b/file1.txt\n--- a/file1.txt\n+++ b/file1.txt\n@@ -1 +1,1 @@\n-Original content\n+Modified content', channel='Warning') call not found
 
-    # Determine output stream
-    stream = sys.stdout if output_stream.lower() == "stdout" else sys.stderr
+../../../usr/lib/python3.12/unittest/mock.py:1020: AssertionError
+__________ TestParseDiffAndApply.test_parse_and_apply_empty_diff_text __________
 
-    if color and channel in color_map: # Only colorize if there's a color for this channel
-        print(f"{color}[{channel.upper()}]{reset} {output_message}", file=stream) # Apply color to prefix only
-    else:
-        print(f"[{channel.upper()}] {output_message}", file=stream) # No color if no mapping or color not supported
+self = <apply_git_diffs_test.TestParseDiffAndApply object at 0x6e824193a0>
+test_directory = '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-6/test_parse_and_apply_empty_dif0/test_dir'
+mock_debug_write_debug = <Mock id='474630259104'>
 
+    def test_parse_and_apply_empty_diff_text(self, test_directory, mock_debug_write_debug):
+        apply_git_diffs.parse_diff_and_apply("", test_directory)
+>       mock_debug_write_debug.assert_not_called() # No debug calls if empty diff
 
-# Example Usage (in debug_utils.py for testing):
-if __name__ == '__main__':
-    write_debug("This is a debug message", channel="Debug")
-    write_debug("This is an info message", channel="Information")
-    write_debug("This is a warning message", channel="Warning", output_stream="stderr")
-    write_debug("This is an error message", channel="Error", output_stream="stderr", file_and_line=True)
+tests/apply_git_diffs_test.py:198: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-    write_debug_v2("This is a debug message (v2)", channel="Debug")
-    write_debug_v2("This is an info message (v2)", channel="Information")
-    write_debug_v2("This is a warning message (v2)", channel="Warning", output_stream="stderr")
-    write_debug_v2("This is an error message (v2)", channel="Error", output_stream="stderr", file_and_line=True)
+self = <Mock id='474630259104'>
 
+    def assert_not_called(self):
+        """assert that the mock was never called.
+        """
+        if self.call_count != 0:
+            msg = ("Expected '%s' to not have been called. Called %s times.%s"
+                   % (self._mock_name or 'mock',
+                      self.call_count,
+                      self._calls_repr()))
+>           raise AssertionError(msg)
+E           AssertionError: Expected 'mock' to not have been called. Called 1 times.
+E           Calls: [call('Diff application process completed.', channel='Information')].
 
+../../../usr/lib/python3.12/unittest/mock.py:910: AssertionError
+____ TestParseDiffAndApply.test_parse_and_apply_diff_block_processing_error ____
 
-Is a v2 function necessary? If none of the changes require a change to the function signature that's not additional optional arguments then we can skip a v2 and just write a new function with the improvements. Additionally, can  we determine the file and line number weite_debug is being called from? If so we should remove the optional argument (actually remove it, I've never used it so it won't affect anything) and determine the file and line number automatically from inside the debug function. Perhaps add an optional argument (default to true) that toggles the printing of the file and line number (or the flag could take an array and toggle the file and line number for each channel specified - default to error only showing file and line number)
+self = <apply_git_diffs_test.TestParseDiffAndApply object at 0x6e824195b0>
+test_directory = '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-6/test_parse_and_apply_diff_bloc0/test_dir'
+mock_debug_write_debug = <Mock id='474631846224'>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x6e82433140>
 
-:q!
+        def test_parse_and_apply_diff_block_processing_error(self, test_directory, mock_debug_write_debug, monkeypatch):
+            def mock_apply_diff(*args, **kwargs):
+                raise Exception("Error applying diff")
+            monkeypatch.setattr(apply_git_diffs, 'apply_diff_to_file', mock_apply_diff)
+    
+            diff_text = """diff --git a/file1.txt b/file1.txt
+    --- a/file1.txt
+    +++ b/file1.txt
+    @@ -1 +1,1 @@
+    -Original content
+    +Modified content
+    """
+            apply_git_diffs.parse_diff_and_apply(diff_text, test_directory)
+>           mock_debug_write_debug.assert_any_call("Error processing diff block: Error applying diff\nBlock content:\n{}".format("""a/file1.txt b/file1.txt
+    --- a/file1.txt
+    +++ b/file1.txt
+    @@ -1 +1,1 @@
+    -Original content
+    +Modified content"""), channel="Error")
 
+tests/apply_git_diffs_test.py:213: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <Mock id='474631846224'>
+args = ('Error processing diff block: Error applying diff\nBlock content:\na/file1.txt b/file1.txt\n--- a/file1.txt\n+++ b/file1.txt\n@@ -1 +1,1 @@\n-Original content\n+Modified content',)
+kwargs = {'channel': 'Error'}
+expected = call('Error processing diff block: Error applying diff\nBlock content:\na/file1.txt b/file1.txt\n--- a/file1.txt\n+++ b/file1.txt\n@@ -1 +1,1 @@\n-Original content\n+Modified content', channel='Error')
+cause = None
+actual = [call("File '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-6/test_parse_and_apply_diff_bloc0/test_dir/f...y, skipping diff application.", channel='Warning'), call('Diff application process completed.', channel='Information')]
+expected_string = "mock('Error processing diff block: Error applying diff\\nBlock content:\\na/file1.txt b/file1.txt\\n--- a/file1.txt\\n+++ b/file1.txt\\n@@ -1 +1,1 @@\\n-Original content\\n+Modified content', channel='Error')"
+
+    def assert_any_call(self, /, *args, **kwargs):
+        """assert the mock has been called with the specified arguments.
+    
+        The assert passes if the mock has *ever* been called, unlike
+        `assert_called_with` and `assert_called_once_with` that only pass if
+        the call is the most recent one."""
+        expected = self._call_matcher(_Call((args, kwargs), two=True))
+        cause = expected if isinstance(expected, Exception) else None
+        actual = [self._call_matcher(c) for c in self.call_args_list]
+        if cause or expected not in _AnyComparer(actual):
+            expected_string = self._format_mock_call_signature(args, kwargs)
+>           raise AssertionError(
+                '%s call not found' % expected_string
+            ) from cause
+E           AssertionError: mock('Error processing diff block: Error applying diff\nBlock content:\na/file1.txt b/file1.txt\n--- a/file1.txt\n+++ b/file1.txt\n@@ -1 +1,1 @@\n-Original content\n+Modified content', channel='Error') call not found
+
+../../../usr/lib/python3.12/unittest/mock.py:1020: AssertionError
+_____________ TestMainFunction.test_main_apply_diff_from_clipboard _____________
+
+self = <apply_git_diffs_test.TestMainFunction object at 0x6e824197c0>
+test_directory = '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-6/test_main_apply_diff_from_clip0/test_dir'
+mock_clipboard_utils = (<function mock_clipboard_utils.<locals>.mock_get_clipboard at 0x6e8229ce00>, <function mock_clipboard_utils.<locals>.mock_get_clipboard_exception at 0x6e8229da80>)
+mock_debug_write_debug = <Mock id='474631842864'>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x6e82433830>
+
+        def test_main_apply_diff_from_clipboard(self, test_directory, mock_clipboard_utils, mock_debug_write_debug, monkeypatch):
+            mock_get_clipboard, _ = mock_clipboard_utils
+            mock_get_clipboard(return_value=f"""diff --git a/file1.txt b/file1.txt
+    --- a/file1.txt
+    +++ b/file1.txt
+    @@ -1 +1,1 @@
+    -Original content
+    +Modified content
+    """)
+            file_path = os.path.join(test_directory, "file1.txt")
+            with open(file_path, "w") as f:
+                f.write("Original content\n")
+    
+            monkeypatch.setattr(sys, 'argv', ['apply_git_diffs.py', '-d', test_directory])
+            apply_git_diffs.main()
+    
+            with open(file_path, "r") as f:
+                content = f.read()
+>           assert content == "Modified content\n"
+E           AssertionError: assert '' == 'Modified content\n'
+E             
+E             - Modified content
+
+tests/apply_git_diffs_test.py:240: AssertionError
+_______________ TestMainFunction.test_main_apply_diff_from_file ________________
+
+self = <apply_git_diffs_test.TestMainFunction object at 0x6e82419c10>
+test_directory = '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-6/test_main_apply_diff_from_file0/test_dir'
+mock_debug_write_debug = <Mock id='474631841136'>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x6e82431a60>
+
+        def test_main_apply_diff_from_file(self, test_directory, mock_debug_write_debug, monkeypatch):
+            diff_file_path = os.path.join(test_directory, "diff.txt")
+            diff_content = f"""diff --git a/file1.txt b/file1.txt
+    --- a/file1.txt
+    +++ b/file1.txt
+    @@ -1 +1,1 @@
+    -Original content
+    +Modified content
+    """
+            with open(diff_file_path, "w") as f:
+                f.write(diff_content)
+            file_path = os.path.join(test_directory, "file1.txt")
+            with open(file_path, "w") as f:
+                f.write("Original content\n")
+    
+            monkeypatch.setattr(sys, 'argv', ['apply_git_diffs.py', '-d', test_directory, '-i', diff_file_path])
+            apply_git_diffs.main()
+    
+            with open(file_path, "r") as f:
+                content = f.read()
+>           assert content == "Modified content\n"
+E           AssertionError: assert '' == 'Modified content\n'
+E             
+E             - Modified content
+
+tests/apply_git_diffs_test.py:264: AssertionError
+__________ TestMainFunction.test_main_apply_diff_from_terminal_input ___________
+
+self = <apply_git_diffs_test.TestMainFunction object at 0x6e82419e80>
+test_directory = '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-6/test_main_apply_diff_from_term0/test_dir'
+mock_debug_write_debug = <Mock id='474631840896'>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x6e82432d50>
+
+        def test_main_apply_diff_from_terminal_input(self, test_directory, mock_debug_write_debug, monkeypatch):
+            diff_content = f"""diff --git a/file1.txt b/file1.txt
+    --- a/file1.txt
+    +++ b/file1.txt
+    @@ -1 +1,1 @@
+    -Original content
+    +Modified content
+    """
+            file_path = os.path.join(test_directory, "file1.txt")
+            with open(file_path, "w") as f:
+                f.write("Original content\n")
+    
+            monkeypatch.setattr(sys, 'argv', ['apply_git_diffs.py', '-d', test_directory, '-i'])
+            monkeypatch.setattr('sys.stdin', io.StringIO(diff_content)) # Mock stdin with diff content
+            apply_git_diffs.main()
+    
+            with open(file_path, "r") as f:
+                content = f.read()
+>           assert content == "Modified content\n"
+E           AssertionError: assert 'Original content\n' == 'Modified content\n'
+E             
+E             - Modified content
+E             + Original content
+
+tests/apply_git_diffs_test.py:286: AssertionError
+___________ TestMainFunction.test_main_no_diff_input_clipboard_empty ___________
+
+self = <apply_git_diffs_test.TestMainFunction object at 0x6e82419d60>
+test_directory = '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-6/test_main_no_diff_input_clipbo0/test_dir'
+mock_clipboard_utils = (<function mock_clipboard_utils.<locals>.mock_get_clipboard at 0x6e8229d300>, <function mock_clipboard_utils.<locals>.mock_get_clipboard_exception at 0x6e8229e020>)
+mock_debug_write_debug = <Mock id='474630263136'>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x6e822b1190>
+
+    def test_main_no_diff_input_clipboard_empty(self, test_directory, mock_clipboard_utils, mock_debug_write_debug, monkeypatch):
+        mock_get_clipboard, _ = mock_clipboard_utils
+        mock_get_clipboard(return_value="") # Empty clipboard
+    
+        monkeypatch.setattr(sys, 'argv', ['apply_git_diffs.py', '-d', test_directory])
+>       apply_git_diffs.main()
+
+tests/apply_git_diffs_test.py:301: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+apply_git_diffs.py:153: in main
+    diff_text = sys.stdin.read()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <_pytest.capture.DontReadFromInput object at 0x6e84920c20>, size = -1
+
+    def read(self, size: int = -1) -> str:
+>       raise OSError(
+            "pytest: reading from stdin while output is captured!  Consider using `-s`."
+        )
+E       OSError: pytest: reading from stdin while output is captured!  Consider using `-s`.
+
+../../../usr/lib/python3.12/site-packages/_pytest/capture.py:209: OSError
+___________ TestMainFunction.test_main_no_diff_input_terminal_empty ____________
+
+self = <apply_git_diffs_test.TestMainFunction object at 0x6e82419220>
+test_directory = '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-6/test_main_no_diff_input_termin0/test_dir'
+mock_debug_write_debug = <Mock id='474630265248'>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x6e822b35f0>
+
+    def test_main_no_diff_input_terminal_empty(self, test_directory, mock_debug_write_debug, monkeypatch):
+        monkeypatch.setattr(sys, 'argv', ['apply_git_diffs.py', '-d', test_directory, '-i'])
+        monkeypatch.setattr('sys.stdin', io.StringIO("")) # Mock empty stdin
+        apply_git_diffs.main()
+>       mock_debug_write_debug.assert_any_call("No diff input provided.", channel="Warning")
+
+tests/apply_git_diffs_test.py:308: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <Mock id='474630265248'>, args = ('No diff input provided.',)
+kwargs = {'channel': 'Warning'}
+expected = call('No diff input provided.', channel='Warning'), cause = None
+actual = [call('Reading diff from clipboard using clipboard_utils.', channel='Debug'), call('Starting diff parsing and applicat...missing_ab_lines(self, test_directory, mock_debug_write_debug):\n            diff_text = """', channel='Warning'), ...]
+expected_string = "mock('No diff input provided.', channel='Warning')"
+
+    def assert_any_call(self, /, *args, **kwargs):
+        """assert the mock has been called with the specified arguments.
+    
+        The assert passes if the mock has *ever* been called, unlike
+        `assert_called_with` and `assert_called_once_with` that only pass if
+        the call is the most recent one."""
+        expected = self._call_matcher(_Call((args, kwargs), two=True))
+        cause = expected if isinstance(expected, Exception) else None
+        actual = [self._call_matcher(c) for c in self.call_args_list]
+        if cause or expected not in _AnyComparer(actual):
+            expected_string = self._format_mock_call_signature(args, kwargs)
+>           raise AssertionError(
+                '%s call not found' % expected_string
+            ) from cause
+E           AssertionError: mock('No diff input provided.', channel='Warning') call not found
+
+../../../usr/lib/python3.12/unittest/mock.py:1020: AssertionError
+____ TestMainFunction.test_main_clipboard_read_exception_fallback_terminal _____
+
+self = <apply_git_diffs_test.TestMainFunction object at 0x6e8241a1b0>
+test_directory = '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-6/test_main_clipboard_read_excep0/test_dir'
+mock_clipboard_utils = (<function mock_clipboard_utils.<locals>.mock_get_clipboard at 0x6e8229fec0>, <function mock_clipboard_utils.<locals>.mock_get_clipboard_exception at 0x6e8229c900>)
+mock_debug_write_debug = <Mock id='474630261792'>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x6e822b0a70>
+
+        def test_main_clipboard_read_exception_fallback_terminal(self, test_directory, mock_clipboard_utils, mock_debug_write_debug, monkeypatch):
+            _, mock_get_clipboard_exception = mock_clipboard_utils
+            mock_get_clipboard_exception(exception=Exception("Clipboard read error"))
+    
+            diff_content = f"""diff --git a/file1.txt b/file1.txt
+    --- a/file1.txt
+    +++ b/file1.txt
+    @@ -1 +1,1 @@
+    -Original content
+    +Modified content
+    """
+            monkeypatch.setattr(sys, 'argv', ['apply_git_diffs.py', '-d', test_directory])
+            monkeypatch.setattr('sys.stdin', io.StringIO(diff_content)) # Provide diff via stdin as fallback
+            apply_git_diffs.main()
+    
+>           mock_debug_write_debug.assert_any_call("Error reading from clipboard using clipboard_utils: Exception('Clipboard read error'). Falling back to terminal input.", channel="Warning")
+
+tests/apply_git_diffs_test.py:325: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <Mock id='474630261792'>
+args = ("Error reading from clipboard using clipboard_utils: Exception('Clipboard read error'). Falling back to terminal input.",)
+kwargs = {'channel': 'Warning'}
+expected = call("Error reading from clipboard using clipboard_utils: Exception('Clipboard read error'). Falling back to terminal input.", channel='Warning')
+cause = None
+actual = [call('Reading diff from clipboard using clipboard_utils.', channel='Debug'), call('Error reading from clipboard using...y, skipping diff application.", channel='Warning'), call('Diff application process completed.', channel='Information')]
+expected_string = 'mock("Error reading from clipboard using clipboard_utils: Exception(\'Clipboard read error\'). Falling back to terminal input.", channel=\'Warning\')'
+
+    def assert_any_call(self, /, *args, **kwargs):
+        """assert the mock has been called with the specified arguments.
+    
+        The assert passes if the mock has *ever* been called, unlike
+        `assert_called_with` and `assert_called_once_with` that only pass if
+        the call is the most recent one."""
+        expected = self._call_matcher(_Call((args, kwargs), two=True))
+        cause = expected if isinstance(expected, Exception) else None
+        actual = [self._call_matcher(c) for c in self.call_args_list]
+        if cause or expected not in _AnyComparer(actual):
+            expected_string = self._format_mock_call_signature(args, kwargs)
+>           raise AssertionError(
+                '%s call not found' % expected_string
+            ) from cause
+E           AssertionError: mock("Error reading from clipboard using clipboard_utils: Exception('Clipboard read error'). Falling back to terminal input.", channel='Warning') call not found
+
+../../../usr/lib/python3.12/unittest/mock.py:1020: AssertionError
+_____________ TestMainFunction.test_main_direct_input_as_diff_text _____________
+
+self = <apply_git_diffs_test.TestMainFunction object at 0x6e8241a420>
+test_directory = '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-6/test_main_direct_input_as_diff0/test_dir'
+mock_debug_write_debug = <Mock id='474630269376'>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x6e822b0bc0>
+
+        def test_main_direct_input_as_diff_text(self, test_directory, mock_debug_write_debug, monkeypatch):
+            diff_text_arg = f"""diff --git a/file1.txt b/file1.txt
+    --- a/file1.txt
+    +++ b/file1.txt
+    @@ -1 +1,1 @@
+    -Original content
+    +Modified content
+    """
+            file_path = os.path.join(test_directory, "file1.txt")
+            with open(file_path, "w") as f:
+                f.write("Original content\n")
+    
+            monkeypatch.setattr(sys, 'argv', ['apply_git_diffs.py', '-d', test_directory, '-i', diff_text_arg]) # -i with direct diff text
+            apply_git_diffs.main()
+    
+            with open(file_path, "r") as f:
+                content = f.read()
+>           assert content == "Modified content\n"
+E           AssertionError: assert '' == 'Modified content\n'
+E             
+E             - Modified content
+
+tests/apply_git_diffs_test.py:346: AssertionError
+=========================== short test summary info ============================
+FAILED tests/apply_git_diffs_test.py::TestApplyDiffToFile::test_apply_valid_diff
+FAILED tests/apply_git_diffs_test.py::TestApplyDiffToFile::test_apply_diff_no_changes
+FAILED tests/apply_git_diffs_test.py::TestParseDiffAndApply::test_parse_and_apply_single_diff
+FAILED tests/apply_git_diffs_test.py::TestParseDiffAndApply::test_parse_and_apply_multiple_diffs
+FAILED tests/apply_git_diffs_test.py::TestParseDiffAndApply::test_parse_and_apply_invalid_diff_block_missing_ab_lines
+FAILED tests/apply_git_diffs_test.py::TestParseDiffAndApply::test_parse_and_apply_empty_diff_text
+FAILED tests/apply_git_diffs_test.py::TestParseDiffAndApply::test_parse_and_apply_diff_block_processing_error
+FAILED tests/apply_git_diffs_test.py::TestMainFunction::test_main_apply_diff_from_clipboard
+FAILED tests/apply_git_diffs_test.py::TestMainFunction::test_main_apply_diff_from_file
+FAILED tests/apply_git_diffs_test.py::TestMainFunction::test_main_apply_diff_from_terminal_input
+FAILED tests/apply_git_diffs_test.py::TestMainFunction::test_main_no_diff_input_clipboard_empty
+FAILED tests/apply_git_diffs_test.py::TestMainFunction::test_main_no_diff_input_terminal_empty
+FAILED tests/apply_git_diffs_test.py::TestMainFunction::test_main_clipboard_read_exception_fallback_terminal
+FAILED tests/apply_git_diffs_test.py::TestMainFunction::test_main_direct_input_as_diff_text
+========================= 14 failed, 5 passed in 2.36s =========================

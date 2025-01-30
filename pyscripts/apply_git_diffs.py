@@ -37,17 +37,15 @@ def apply_diff_to_file(filepath, diff_content):
         debug_utils.write_debug(f"Applying diff to file: {filepath}", channel="Information")
 
         diff_lines = diff_content.splitlines(keepends=True)
-        patch = difflib.unified_diff(original_lines, diff_lines, fromfile='a/'+filepath, tofile='b/'+filepath)
-        patch_str = ''.join(patch)
 
-        if not patch_str:
+        if not diff_content or '@@' not in diff_content: # Check for empty diff or no hunks
             debug_utils.write_debug(f"No changes detected for file: {filepath}", channel="Debug")
             return True  # No changes to apply, consider it successful
 
-        debug_utils.write_debug(f"Generated patch:\n{patch_str}", channel="Verbose")
+        debug_utils.write_debug(f"Applying patch:\n{diff_content}", channel="Verbose")
 
-        # Apply the patch using difflib
-        patched_lines = difflib.restore(patch_str.splitlines(keepends=True), 1) # argument '1' is important here
+        # Apply the patch using difflib.restore directly with the provided diff content
+        patched_lines = difflib.restore(diff_lines, 2) # argument '2' to get patched content
         with open(filepath, 'w') as f:
             f.writelines(patched_lines)
 
@@ -90,18 +88,18 @@ def parse_diff_and_apply(diff_text, target_directory):
 
             target_file_path = os.path.join(target_directory, file_path_in_diff)
 
-            hunk_start_index = -1
-            for i, line in enumerate(lines):
-                if line.startswith('@@'):
-                    hunk_start_index = i
-                    break
+            # Corrected: diff_content is the entire diff_block
+            diff_content = diff_block.strip()
 
-            if hunk_start_index == -1:
+            hunk_found = False
+            for line in diff_content.splitlines():
+                if line.startswith('@@'):
+                    hunk_found = True
+                    break
+            if not hunk_found:
                 debug_utils.write_debug(f"Skipping diff block without hunks: {file_path_in_diff}", channel="Warning")
                 continue
 
-            diff_content_lines = lines[hunk_start_index:]
-            diff_content = "\n".join(diff_content_lines)
 
             if os.path.exists(target_file_path):
                 apply_diff_to_file(target_file_path, diff_content)
