@@ -1,5 +1,6 @@
 import os
 import re
+import stat
 import subprocess
 from pathlib import Path
 
@@ -103,9 +104,10 @@ def write_aliases(bin_dir, alias_file, dotfiles_dir):
         print(f"{YELLOW}🔹 No new aliases to write. {shell_config} remains unchanged.{RESET}")
 
 
+
 def ensure_symlinks(scripts_dir, bin_dir):
-    """Ensure all Python scripts in pyscripts/ are symlinked to bin/."""
-    print("🔄 Ensuring Python scripts are symlinked...")
+    """Ensure all Python scripts in pyscripts/ are symlinked to bin/ with executable permissions."""
+    print("🔄 Ensuring Python scripts are symlinked and executable...")
 
     pyscripts_dir = scripts_dir / "pyscripts"
 
@@ -119,6 +121,9 @@ def ensure_symlinks(scripts_dir, bin_dir):
 
         symlink_path = bin_dir / script.stem  # Strip .py extension
 
+        # Ensure the script itself is executable
+        script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
         if symlink_path.exists():
             if symlink_path.is_symlink() and symlink_path.resolve() == script.resolve():
                 print(f"🔹 Symlink already exists: {symlink_path} -> {script}")
@@ -131,6 +136,8 @@ def ensure_symlinks(scripts_dir, bin_dir):
         symlink_path.symlink_to(script)
         print(f"✅ Created symlink: {symlink_path} -> {script}")
 
+        # Ensure the symlink is also executable
+        symlink_path.chmod(symlink_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 def main(scripts_dir, dotfiles_dir, bin_dir):
     """Main function to set up Python scripts, aliases, and symlinks."""
