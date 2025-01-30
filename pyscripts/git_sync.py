@@ -4,10 +4,12 @@ import argparse
 import os
 import subprocess
 import datetime
+import sys # Import sys for stderr
 
 LOG_DIR = os.path.expanduser("~/logs/scripts")
 LOG_FILENAME_PREFIX = "git_sync"
-DEBUG_ENABLED = False  # Global debug flag, can be set via argument
+DEBUG_ENABLED = False  # Global debug flag
+_current_log_filepath = None # Initialize _current_log_filepath to None at global scope
 
 def enable_file_logging():
     """Enables file logging to a timestamped log file."""
@@ -86,7 +88,7 @@ def run_command(command_list, cwd=".", verbose=False, capture_output=False, text
             error_message = f"Command failed with return code {returncode}: {command_str} in {cwd}"
             error_log(error_message)
             if stderr:
-                error_log("Stderr:\n" + stderr)
+                error_log("Stderr:\n" + stderr) # Always log stderr when there's an error
             return stdout, stderr, returncode # Still return output and stderr even on error
 
         return stdout, stderr, returncode
@@ -114,7 +116,7 @@ def get_submodule_names(repo_path):
             submodules.append(submodule_name)
     return submodules
 
-def summarize_git_status(status_output):
+def summarize_git_status_porcelain(status_output): # Renamed to clarify it's for --porcelain output
     """Creates a concise summary of git status --porcelain output."""
     lines = status_output.strip().splitlines()
     if not lines:
@@ -212,27 +214,38 @@ def process_git_workflow(add_pattern, force, cwd, branch, submodules_to_process,
     """Main function to process the git workflow."""
     repo_path = cwd
 
-    # --- Git Status before any changes ---
-    status_command = ["git", "status", "--porcelain", "-uall"] # -uall to show untracked files in submodules as well
-    stdout_status_before, stderr_status_before, returncode_status_before = run_command(status_command, cwd=repo_path, capture_output=True, text=True, verbose=verbose)
-    if returncode_status_before != 0:
-        error_log(f"Error getting git status: {stderr_status_before}")
-        print("Error getting git status, aborting.") # Inform user and abort
+    # --- Git Status before any changes (Full color output) ---
+    status_command_color = ["git", "status"] # No --porcelain for color
+    stdout_status_color, stderr_status_color, returncode_status_color = run_command(status_command_color, cwd=repo_path, capture_output=True, text=True, verbose=verbose)
+    if returncode_status_color != 0:
+        error_log(f"Error getting git status (color): {stderr_status_color}")
+        print("Error getting git status, aborting.")
         return
 
+    print("Current git status:") # Header for git status
+    print(stdout_status_color) # Print full color git status
+
+
+    # --- Git Status before any changes (Porcelain for summary) ---
+    status_command_porcelain = ["git", "status", "--porcelain", "-uall"] # -uall to show untracked files in submodules
+    stdout_status_porcelain, stderr_status_porcelain, returncode_status_porcelain = run_command(status_command_porcelain, cwd=repo_path, capture_output=True, text=True, verbose=verbose)
+    if returncode_status_porcelain != 0:
+        error_log(f"Error getting git status (porcelain): {stderr_status_porcelain}")
+        print("Error getting git status, summary might be unavailable.") # Non-critical for summary
+
     if verbose:
-        verbose_log("Git status before add:")
-        verbose_log(stdout_status_before)
+        verbose_log("Git status (porcelain output for verbose log):")
+        verbose_log(stdout_status_porcelain) # Log porcelain output in verbose mode
     else:
         print("Git status summary:")
-        print(summarize_git_status(stdout_status_before))
+        print(summarize_git_status_porcelain(stdout_status_porcelain)) # Use porcelain output for summary
 
-    if not stdout_status_before.strip():
+    if not stdout_status_porcelain.strip(): # Check porcelain output for changes
         print("No changes to commit.")
         return
 
     # --- Prompt to continue ---
-    continue_prompt = "Continue? (y/n/s) (s = Skip commit, but continue with git pull): "
+    continue_prompt = "Continue? (y/n/s) (s = Skip commit, but continue with git pull and push): " # Updated prompt to include push
     user_input = input(continue_prompt).lower()
 
     if user_input == 'n':
@@ -249,17 +262,17 @@ def process_git_workflow(add_pattern, force, cwd, branch, submodules_to_process,
         stdout_add, stderr_add, returncode_add = run_command(add_command, cwd=repo_path, verbose=verbose, capture_output=True, text=True)
         if returncode_add != 0:
             error_log(f"Error during git add: {stderr_add}")
-            print("Error during git add, aborting commit.") # Inform user, but continue with pull
+            print("Error during git add, aborting commit.")
             skip_commit = True # Prevent commit if add failed
 
-        if not verbose: # Show git status after add in non-verbose as well
-            stdout_status_after_add, stderr_status_after_add, returncode_status_after_add = run_command(status_command, cwd=repo_path, capture_output=True, text=True, verbose=verbose)
-            if returncode_status_after_add == 0:
+        if not verbose: # Show git status after add in non-verbose as well (using porcelain for summary)
+            stdout_status_after_add_porcelain, stderr_status_after_add_porcelain, returncode_status_after_add_porcelain = run_command(status_command_porcelain, cwd=repo_path, capture_output=True, text=True, verbose=verbose)
+            if returncode_status_after_add_porcelain == 0:
                 print("Git status after add:")
-                print(summarize_git_status(stdout_status_after_add))
+                print(summarize_git_status_porcelain(stdout_status_after_add_porcelain))
             else:
-                error_log(f"Error getting git status after add: {stderr_status_after_add}")
-                print("Warning: Could not get git status after add.")
+                error_log(f"Error getting git status after add (porcelain): {stderr_status_after_add_porcelain}")
+                print("Warning: Could not get git status after add summary.")
 
 
         # --- Git Commit ---
@@ -269,14 +282,22 @@ def process_git_workflow(add_pattern, force, cwd, branch, submodules_to_process,
             stdout_commit, stderr_commit, returncode_commit = run_command(commit_command, cwd=repo_path, verbose=verbose, capture_output=True, text=True)
             if returncode_commit != 0:
                 error_log(f"Error during git commit: {stderr_commit}")
-                print("Error during git commit, proceeding with pull.") # Non-critical, try to pull anyway
+                print("Error during git commit, proceeding with pull and push.") # Non-critical, try to pull and push anyway
 
     # --- Git Pull ---
     pull_command = ["git", "pull"]
     stdout_pull, stderr_pull, returncode_pull = run_command(pull_command, cwd=repo_path, verbose=verbose, capture_output=True, text=True)
     if returncode_pull != 0:
         error_log(f"Error during git pull: {stderr_pull}")
-        print("Error during git pull.") # Inform user of pull error, but still try submodule update
+        print("Error during git pull.")
+
+    # --- Git Push ---
+    push_command = ["git", "push"]
+    stdout_push, stderr_push, returncode_push = run_command(push_command, cwd=repo_path, verbose=verbose, capture_output=True, text=True)
+    if returncode_push != 0:
+        error_log(f"Error during git push: {stderr_push}")
+        print("Error during git push.")
+
 
     # --- Handle Submodules ---
     submodule_list = get_submodule_names(repo_path)
@@ -287,21 +308,21 @@ def process_git_workflow(add_pattern, force, cwd, branch, submodules_to_process,
 if __name__ == "__main__":
     import sys
 
-    parser = argparse.ArgumentParser(description="Synchronize git repository and submodules with add, commit, and pull.")
+    parser = argparse.ArgumentParser(description="Synchronize git repository and submodules with add, commit, pull, and push.") # Updated description
     parser.add_argument("add", nargs="?", default=".", help="Pattern to use for git add (default: '.').")
     parser.add_argument("-f", "--force", action="store_true", help="Force operations if needed (not currently implemented).") # Placeholder for future use
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output and logging.")
     parser.add_argument("-d", "--debug", action="store_true", help="Enable debug output and logging.")
-    parser.add_argument("--submodules", nargs='*', default=None, metavar='SUBMODULE', help="Specific submodules to process (or 'all'). If not specified, all submodules are processed.") # Allows specifying submodules or 'all'
-    parser.add_argument("--submodule-add-patterns", type=str, help="JSON string or dict for submodule specific add patterns, e.g., '{\"submodule1\": \"*.txt\", \"submodule2\": \"dir1/\"}'") # Future feature
-    parser.add_argument("--submodule-branches", type=str, help="JSON string or dict for submodule specific branches to pull, e.g., '{\"submodule1\": \"dev\", \"submodule2\": \"feature-x\"}'") # Future feature
+    parser.add_argument("--submodules", nargs='*', default=None, metavar='SUBMODULE', help="Specific submodules to process (or 'all'). If not specified, all submodules are processed.")
+    parser.add_argument("--submodule-add-patterns", type=str, help="JSON string or dict for submodule specific add patterns.")
+    parser.add_argument("--submodule-branches", type=str, help="JSON string or dict for submodule specific branches to pull.")
 
 
     args = parser.parse_args()
 
-    DEBUG_ENABLED = args.debug # Set global debug flag based on argument
+    DEBUG_ENABLED = args.debug
 
-    if args.debug or args.verbose: # Enable logging if verbose or debug is enabled
+    if args.debug or args.verbose:
         enable_file_logging()
 
     if args.verbose:
@@ -310,13 +331,14 @@ if __name__ == "__main__":
         debug_log("Debug mode enabled.")
 
     submodules_to_process_list = args.submodules
-    if submodules_to_process_list == ['all']: # Handle 'all' as a string 'all' not list ['all']
+    if submodules_to_process_list == ['all']:
         submodules_to_process_list = 'all'
-    elif isinstance(submodules_to_process_list, list) and not submodules_to_process_list: # Handle empty list case if --submodules is given without values
-        submodules_to_process_list = None # Treat empty list as no specific submodules specified, process all
+    elif isinstance(submodules_to_process_list, list) and not submodules_to_process_list:
+        submodules_to_process_list = None
 
-    submodule_add_patterns_dict = {} # Placeholder for future feature
-    submodule_branches_dict = {} # Placeholder for future feature
+    submodule_add_patterns_dict = {} # Placeholder
+    submodule_branches_dict = {} # Placeholder
+
 
     process_git_workflow(args.add, args.force, cwd=".", branch=None, submodules_to_process=submodules_to_process_list,
                            submodule_add_patterns=submodule_add_patterns_dict, submodule_branches=submodule_branches_dict, verbose=args.verbose)
