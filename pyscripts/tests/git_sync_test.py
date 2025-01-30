@@ -5,11 +5,18 @@ import os
 import shutil
 import tempfile
 import sys
+import importlib.util
 from io import StringIO
 from contextlib import contextmanager
 
-# Assuming git_sync_improved.py is in the same directory or importable
-import git_sync_improved
+# Get the script path
+script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'git_sync.py'))
+
+# Load the module dynamically
+spec = importlib.util.spec_from_file_location("git_sync", script_path)
+git_sync = importlib.util.module_from_spec(spec)
+sys.modules["git_sync"] = git_sync
+spec.loader.exec_module(git_sync)
 
 class TestGitSyncImproved(unittest.TestCase):
 

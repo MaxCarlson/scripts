@@ -3,7 +3,14 @@ import zipfile
 import pytest
 import shutil
 from pathlib import Path
-from zip_for_llm import zip_folder, get_directory_size, delete_files_to_fit_size, flatten_directory
+from zip_for_llms import zip_folder, get_directory_size, delete_files_to_fit_size, flatten_directory
+
+# Get the script path
+#script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'zip_for_llms.py'))                                                                                                                                                        # Load the module dynamically
+#spec = importlib.util.spec_from_file_location("zip_for_llms", script_path)
+#git_sync = importlib.util.module_from_spec(spec)
+#sys.modules["zip_for_llms"] = git_sync
+#spec.loader.exec_module(git_sync)
 
 @pytest.fixture
 def temp_test_dir(tmp_path):
