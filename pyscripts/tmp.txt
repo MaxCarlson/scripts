@@ -1,0 +1,112 @@
+import inspect
+import sys
+import platform
+
+def write_debug(message="", channel="Debug", condition=True, file_and_line=False, output_stream="stdout"):
+    """
+    Write-Debug function for Python.
+
+    Parameters:
+    - message (str): The debug message to print.
+    - channel (str): The type of message ("Error", "Warning", "Verbose", "Information", "Debug").
+    - condition (bool): If False, the message will not be printed.
+    - file_and_line (bool): Include caller file and line number in the message.
+    - output_stream (str): "stdout" or "stderr" to direct the output.
+    """
+    if not condition:
+        return
+
+    output_message = message
+    if file_and_line:
+        caller = inspect.stack()[1]
+        caller_file = caller.filename
+        caller_line = caller.lineno
+        output_message = f"[{caller_file}:{caller_line}] {message}"
+
+    # Prepend channel to message
+    formatted_message = f"[{channel.upper()}] {output_message}"
+
+    color_map = {
+        "Error": "\033[91m",
+        "Warning": "\033[93m",
+        "Verbose": "\033[90m",
+        "Information": "\033[96m",
+        "Debug": "\033[92m"
+    }
+    reset_color = "\033[0m"
+    supports_color = sys.stdout.isatty() and platform.system() != "Windows"
+    color = color_map.get(channel, "") if supports_color else ""
+    colored_channel_prefix = f"{color}[{channel.upper()}]{reset} " if color else f"[{channel.upper()}] "
+
+    # Determine output stream
+    stream = sys.stdout if output_stream.lower() == "stdout" else sys.stderr
+
+    if color and channel in color_map: # Only colorize if there's a color for this channel
+        print(f"{color}[{channel.upper()}]{reset} {output_message}", file=stream) # Apply color to prefix only
+    else:
+        print(f"[{channel.upper()}] {output_message}", file=stream) # No color if no mapping or color not supported
+
+
+def write_debug_v2(message="", channel="Debug", output_stream="stdout", condition=True, file_and_line=False):
+    """
+    Enhanced Write-Debug function for Python with stream control and automatic channel prefix.
+
+    Parameters:
+    - message (str): The debug message to print.
+    - channel (str): The type of message ("Error", "Warning", "Verbose", "Information", "Debug").
+    - output_stream (str): "stdout" or "stderr" to direct the output.
+    - condition (bool): If False, the message will not be printed.
+    - file_and_line (bool): Include caller file and line number in the message.
+    """
+    if not condition:
+        return
+
+    output_message = message
+    if file_and_line:
+        caller = inspect.stack()[1]
+        caller_file = caller.filename
+        caller_line = caller.lineno
+        output_message = f"[{caller_file}:{caller_line}] {message}"
+
+    # Prepend channel to message (already done in v1, keeping for consistency in docstring)
+    formatted_message = f"[{channel.upper()}] {output_message}" # For docstring clarity, functionality is in v1 already
+
+    color_map = { # Keep color map, can be expanded
+        "Error": "\033[91m",
+        "Warning": "\033[93m",
+        "Verbose": "\033[90m",
+        "Information": "\033[96m",
+        "Debug": "\033[92m"
+    }
+    reset_color = "\033[0m"
+    supports_color = sys.stdout.isatty() and platform.system() != "Windows"
+    color = color_map.get(channel, "") if supports_color else ""
+    colored_channel_prefix = f"{color}[{channel.upper()}]{reset} " if color else f"[{channel.upper()}] "
+
+    # Determine output stream
+    stream = sys.stdout if output_stream.lower() == "stdout" else sys.stderr
+
+    if color and channel in color_map: # Only colorize if there's a color for this channel
+        print(f"{color}[{channel.upper()}]{reset} {output_message}", file=stream) # Apply color to prefix only
+    else:
+        print(f"[{channel.upper()}] {output_message}", file=stream) # No color if no mapping or color not supported
+
+
+# Example Usage (in debug_utils.py for testing):
+if __name__ == '__main__':
+    write_debug("This is a debug message", channel="Debug")
+    write_debug("This is an info message", channel="Information")
+    write_debug("This is a warning message", channel="Warning", output_stream="stderr")
+    write_debug("This is an error message", channel="Error", output_stream="stderr", file_and_line=True)
+
+    write_debug_v2("This is a debug message (v2)", channel="Debug")
+    write_debug_v2("This is an info message (v2)", channel="Information")
+    write_debug_v2("This is a warning message (v2)", channel="Warning", output_stream="stderr")
+    write_debug_v2("This is an error message (v2)", channel="Error", output_stream="stderr", file_and_line=True)
+
+
+
+Is a v2 function necessary? If none of the changes require a change to the function signature that's not additional optional arguments then we can skip a v2 and just write a new function with the improvements. Additionally, can  we determine the file and line number weite_debug is being called from? If so we should remove the optional argument (actually remove it, I've never used it so it won't affect anything) and determine the file and line number automatically from inside the debug function. Perhaps add an optional argument (default to true) that toggles the printing of the file and line number (or the flag could take an array and toggle the file and line number for each channel specified - default to error only showing file and line number)
+
+:q!
+

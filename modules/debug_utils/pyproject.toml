@@ -1,5 +1,5 @@
 [build-system]
-requires = [ "setuptools>=64",]
+requires = ["setuptools>=61.0", "wheel"] # Minimum setuptools version and wheel package
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -12,4 +12,29 @@ dependencies = []
 name = "Maxwell Carlson"
 email = "carlsonamax@gmail.com"
 
+classifiers = [ # Optional, but good for PyPI if you decide to publish
+    "Development Status :: 3 - Alpha", # Or choose appropriate status
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+]
+
+dependencies = [
+    "GitPython" # Declare GitPython as a dependency (optional)
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "tox",
+    "twine"
+]
+
 [tool.setuptools.packages.find]
+
