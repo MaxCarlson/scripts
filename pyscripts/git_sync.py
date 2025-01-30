@@ -2,9 +2,9 @@
 Automates the git commit workflow with configurable options and submodule support.
 
 Description:
-    - Runs `git status` and colorizes output (M=yellow, A=green, ??=red)
+    - Runs `git status` and colorizes output (M=yellow, A=green, ??=red)  *(Now using debug channels for status info)*
     - Adds all changes (or a pattern if `-a <pattern>` or `--add <pattern>` is provided)
-    - Displays added files
+    - Displays added files *(Now using debug channels for staged files info)*
     - Allows skipping the commit (`s` option during confirmation)
     - Prompts for a commit message only if files are staged
     - Runs `git pull` and `git push`
@@ -16,6 +16,18 @@ Parameters:
         Example patterns: "*.py", "src/", "README.md"
     - `-f`, `--force`:
         Skips the confirmation prompt before committing. Use with caution.
+    - `-v`, `--verbose`:
+        Enables verbose debug output for all git commands and operations.
+    - `--submodules-to-process <list>`:
+        Comma-separated list of submodule names to process. 'all' to process all.
+    - `--submodule-add-patterns <list>`:
+        Comma-separated list of add patterns for submodules (applied in order).
+    - `--commit-template <template_name>`:
+        Specify commit message template (e.g., 'simple', 'conventional', 'concise').
+    - `--create-branch <branch_name>`:
+        Create a new branch if it doesn't exist in the main repository.
+    - `--submodule-branches <list>`:
+        Comma-separated list of branches for submodules (applied in order).
 
 Examples:
     # Run the script with default options (add all, with confirmation)
@@ -24,14 +36,23 @@ Examples:
     # Run the script, adding only Python files
     python git_sync.py -a "*.py"
 
-    # Run the script, adding files in the 'docs' directory
-    python git_sync.py --add "docs/"
+    # Run the script, adding files in the 'docs' directory with verbose output
+    python git_sync.py --add "docs/" -v
 
     # Run the script and force commit without confirmation
     python git_sync.py -f
 
-    # Run the script, adding specific files and forcing commit
-    python git_sync.py -a "file1.txt file2.md" --force
+    # Run the script, processing only 'submodule1' and 'submodule2'
+    python git_sync.py --submodules-to-process "submodule1,submodule2"
+
+    # Run with a specific commit template
+    python git_sync.py --commit-template "conventional"
+
+    # Run and create a new branch 'feature-x' if it doesn't exist
+    python git_sync.py --create-branch "feature-x"
+
+    # Run with specific branches for submodules
+    python git_sync.py --submodule-branches "develop,main"
 """
 #!/usr/bin/env python3
 
@@ -44,52 +65,26 @@ from datetime import datetime
 import textwrap
 import getpass
 import configparser
-
-# ANSI color codes
-COLOR_RESET = "\033[0m"
-COLOR_RED = "\033[91m"
-COLOR_GREEN = "\033[92m"
-COLOR_YELLOW = "\033[93m"
-COLOR_MAGENTA = "\033[95m"
-COLOR_BOLD_MAGENTA = "\033[1;95m"
-COLOR_BOLD_CYAN = "\033[1;96m"
-COLOR_CYAN = "\033[96m"
-
-def colorize_output(text, color_code):
-    """Colorizes text output with ANSI color codes if color is enabled."""
-    if color_enabled:  # Use the global flag
-        return f"{color_code}{text}{COLOR_RESET}"
-    return text
-
-def log_message(level, message):
-    """Logs a message with specified level and colorizes level output if enabled."""
-    log_level = level.upper()
-    log_colors = {
-        "INFO": COLOR_CYAN,
-        "WARNING": COLOR_YELLOW,
-        "ERROR": COLOR_RED,
-        "SUCCESS": COLOR_GREEN
-    }
-    color_code = log_colors.get(log_level, COLOR_RESET)
-    colored_level = colorize_output(f"[{log_level}]", color_code) if color_enabled else f"[{log_level}]"
-    logging.log(getattr(logging, log_level), f"{colored_level} {message}")
+from debug_utils import write_debug, set_console_verbosity, set_log_verbosity, enable_file_logging  # Import debug_utils functions
 
 
-def run_git_command(command, cwd=None, capture_output=True, check=True):
+def run_git_command(command, cwd=None, capture_output=True, check=True, verbose=False):
     """
-    Runs a git command using subprocess, with improved error handling.
+    Runs a git command using subprocess, with improved error handling and debug output.
 
     Args:
         command (list): List of command arguments (e.g., ["git", "status"]).
         cwd (str, optional): Current working directory. Defaults to None.
         capture_output (bool, optional): Whether to capture output. Defaults to True.
         check (bool, optional): Whether to raise an exception on non-zero exit code. Defaults to True.
+        verbose (bool, optional): Enable verbose output for this command.
 
     Returns:
         subprocess.CompletedProcess: Result of the command execution.
     """
     try:
-        log_message("info", f"Executing command: {' '.join(command)}")
+        cmd_str = ' '.join(command)
+        write_debug(f"Executing command: {cmd_str}", channel="Information", condition=verbose)
         result = subprocess.run(
             command,
             cwd=cwd,
@@ -98,18 +93,18 @@ def run_git_command(command, cwd=None, capture_output=True, check=True):
             check=check
         )
         if capture_output and result.stdout:
-            log_message("debug", f"Command output:\n{result.stdout.strip()}")
+            write_debug(f"Command output:\n{result.stdout.strip()}", channel="Verbose", condition=verbose)
         if capture_output and result.stderr:
-            log_message("debug", f"Command stderr:\n{result.stderr.strip()}") # Log stderr even if successful
+            write_debug(f"Command stderr:\n{result.stderr.strip()}", channel="Verbose", condition=verbose)
         return result
     except subprocess.CalledProcessError as e:
         error_msg = f"Git command failed: {e}\nCommand: {' '.join(command)}\nReturn Code: {e.returncode}"
         if e.stderr:
             error_msg += f"\nError details:\n{e.stderr.strip()}"
-        log_message("error", error_msg)
+        write_debug(error_msg, channel="Error", output_stream="stderr")
         sys.exit(1)
     except FileNotFoundError:
-        log_message("error", "Error: Git command not found. Please ensure Git is installed and in your PATH.")
+        write_debug(f"Error: Git command not found. Please ensure Git is installed and in your PATH.", channel="Error", output_stream="stderr")
         sys.exit(1)
 
 def get_default_commit_message():
@@ -118,101 +113,101 @@ def get_default_commit_message():
     user = getpass.getuser()
     return f"{timestamp} - {user}"
 
-def show_git_status(repo_path="."):
-    """Displays Git status with color-coded output."""
-    status_lines = get_git_status(repo_path)
+def show_git_status(repo_path=".", verbose=False):
+    """Displays Git status using debug output."""
+    status_lines = get_git_status(repo_path, verbose=verbose)
     if not status_lines:
         return False # Indicate no changes
 
-    log_message("info", "Git Status:")
+    write_debug("Git Status:", channel="Information", condition=True) # Always show status header
     for line in status_lines:
         if line.startswith("M"):
-            print(colorize_output(line, COLOR_YELLOW))  # Modified
+            write_debug(line, channel="Warning")  # Modified (Yellow in original)
         elif line.startswith("A"):
-            print(colorize_output(line, COLOR_GREEN))   # Added
+            write_debug(line, channel="Information")   # Added (Green in original) - Changed to Information
         elif line.startswith("??"):
-            print(colorize_output(line, COLOR_RED))     # Untracked
+            write_debug(line, channel="Error")     # Untracked (Red in original)
         else:
-            print(line)
+            write_debug(line, channel="Verbose", condition=verbose) # Less important status lines in verbose mode
     return True # Indicate changes were found and displayed
 
-def get_git_status(repo_path="."):
+def get_git_status(repo_path=".", verbose=False):
     """Runs git status --short and returns the output lines."""
-    result = run_git_command(["git", "status", "--short"], cwd=repo_path, capture_output=True)
+    result = run_git_command(["git", "status", "--short"], cwd=repo_path, capture_output=True, verbose=verbose)
     return result.stdout.strip().splitlines()
 
-def git_add_changes(add_pattern=".", repo_path="."):
+def git_add_changes(add_pattern=".", repo_path=".", verbose=False):
     """Runs git add with the specified pattern."""
-    log_message("info", f"Adding files: {add_pattern}")
-    run_git_command(["git", "add", add_pattern], cwd=repo_path)
+    write_debug(f"Adding files: {add_pattern}", channel="Information", condition=True) # Always show add info
+    run_git_command(["git", "add", add_pattern], cwd=repo_path, verbose=verbose)
 
-def get_staged_files(repo_path="."):
+def get_staged_files(repo_path=".", verbose=False):
     """Gets the list of staged files using git diff --cached --name-status."""
-    result = run_git_command(["git", "diff", "--cached", "--name-status"], cwd=repo_path, capture_output=True)
+    result = run_git_command(["git", "diff", "--cached", "--name-status"], cwd=repo_path, capture_output=True, verbose=verbose)
     return result.stdout.strip().splitlines()
 
-def show_staged_files(repo_path="."):
-    """Displays staged files with color-coded output."""
-    staged_files = get_staged_files(repo_path)
+def show_staged_files(repo_path=".", verbose=False):
+    """Displays staged files using debug output."""
+    staged_files = get_staged_files(repo_path, verbose=verbose)
     if not staged_files:
         return False # Indicate no staged files
 
-    log_message("info", "Staged Files:")
+    write_debug("Staged Files:", channel="Information", condition=True) # Always show staged files header
     for line in staged_files:
         if line.startswith("M"):
-            print(colorize_output(line, COLOR_YELLOW))  # Modified
+            write_debug(line, channel="Warning")  # Modified (Yellow in original)
         elif line.startswith("A"):
-            print(colorize_output(line, COLOR_GREEN))   # Added
+            write_debug(line, channel="Information")   # Added (Green in original) - Changed to Information
         elif line.startswith("D"):
-            print(colorize_output(line, COLOR_RED))     # Deleted (Red for attention in staged area)
+            write_debug(line, channel="Error")     # Deleted (Red in original)
         elif line.startswith("R"):
-            print(colorize_output(line, COLOR_CYAN))    # Renamed (Cyan for different type of change)
+            write_debug(line, channel="Information")    # Renamed (Cyan in original - Info level is fine)
         elif line.startswith("C"):
-            print(colorize_output(line, COLOR_CYAN))    # Copied (Cyan for different type of change)
+            write_debug(line, channel="Information")    # Copied (Cyan in original - Info level is fine)
         elif line.startswith("U"):
-            print(colorize_output(line, COLOR_YELLOW))  # Unmerged (Yellow - needs resolving)
+            write_debug(line, channel="Warning")  # Unmerged (Yellow - needs resolving)
         else:
-            print(line)
+            write_debug(line, channel="Verbose", condition=verbose) # Less important staged file info in verbose mode
     return True # Indicate staged files were found and displayed
 
 
-def git_commit_changes(commit_message, repo_path="."):
+def git_commit_changes(commit_message, repo_path=".", verbose=False):
     """Runs git commit with the given message."""
-    log_message("info", "Committing changes")
-    run_git_command(["git", "commit", "-m", commit_message], cwd=repo_path)
+    write_debug("Committing changes", channel="Information", condition=True) # Always show commit info
+    run_git_command(["git", "commit", "-m", commit_message], cwd=repo_path, verbose=verbose)
 
-def git_pull_changes(repo_path=".", branch=None):
+def git_pull_changes(repo_path=".", branch=None, verbose=False):
     """Runs git pull."""
     pull_command = ["git", "pull"]
     if branch:
         pull_command.extend(["origin", branch]) # Explicitly specify origin and branch
-    log_message("info", "Pulling latest changes")
-    run_git_command(pull_command, cwd=repo_path)
+    write_debug("Pulling latest changes", channel="Information", condition=True) # Always show pull info
+    run_git_command(pull_command, cwd=repo_path, verbose=verbose)
 
-def git_push_changes(repo_path=".", branch=None):
+def git_push_changes(repo_path=".", branch=None, verbose=False):
     """Runs git push."""
     push_command = ["git", "push"]
     if branch:
         push_command.extend(["origin", branch]) # Explicitly specify origin and branch
-    log_message("info", "Pushing changes")
-    run_git_command(push_command, cwd=repo_path)
+    write_debug("Pushing changes", channel="Information", condition=True) # Always show push info
+    run_git_command(push_command, cwd=repo_path, verbose=verbose)
 
-def create_local_branch_if_not_exists(repo_path, branch_name):
+def create_local_branch_if_not_exists(repo_path, branch_name, verbose=False):
     """Creates a local branch if it doesn't exist."""
     try:
-        run_git_command(["git", "rev-parse", "--quiet", "--verify", branch_name], cwd=repo_path, capture_output=True, check=False)
+        run_git_command(["git", "rev-parse", "--quiet", "--verify", branch_name], cwd=repo_path, capture_output=True, check=False, verbose=verbose)
         branch_exists = True # No exception, branch exists
     except subprocess.CalledProcessError:
         branch_exists = False # Exception, branch doesn't exist
 
     if not branch_exists:
-        log_message("info", f"Branch '{branch_name}' does not exist locally. Creating...")
-        run_git_command(["git", "checkout", "-b", branch_name], cwd=repo_path)
+        write_debug(f"Branch '{branch_name}' does not exist locally. Creating...", channel="Information", condition=True) # Always show branch creation info
+        run_git_command(["git", "checkout", "-b", branch_name], cwd=repo_path, verbose=verbose)
     else:
-        log_message("info", f"Branch '{branch_name}' already exists locally.")
+        write_debug(f"Branch '{branch_name}' already exists locally.", channel="Information", condition=True) # Always show branch exists info
     return True # Indicate success or branch now exists
 
-def apply_commit_template(template_name, repo_path):
+def apply_commit_template(template_name, repo_path, verbose=False):
     """Applies a predefined commit message template."""
     templates = {
         "simple": "feat: <Short description>\n\n<Long description if needed>",
@@ -222,14 +217,14 @@ def apply_commit_template(template_name, repo_path):
     }
 
     if template_name not in templates:
-        log_message("warning", f"Commit template '{template_name}' not found. Using default.")
+        write_debug(f"Commit template '{template_name}' not found. Using default.", channel="Warning")
         return None
 
     template = templates[template_name]
-    log_message("info", f"Using commit template: {template_name}")
-    print(colorize_output("\nCommit Message Template:\n", COLOR_BOLD_MAGENTA))
-    print(colorize_output(textwrap.dedent(template), COLOR_MAGENTA)) # dedent to remove leading whitespace
-    print(colorize_output("\n---", COLOR_BOLD_MAGENTA))
+    write_debug(f"Using commit template: {template_name}", channel="Information", condition=True) # Always show template info
+    write_debug("\nCommit Message Template:\n", channel="Information") # Using Information as BoldMagenta and Magenta are not standard levels
+    write_debug(textwrap.dedent(template), channel="Information")      # Using Information as BoldMagenta and Magenta are not standard levels
+    write_debug("\n---", channel="Information")                   # Using Information as BoldMagenta and Magenta are not standard levels
 
     placeholders = {} # Dictionary to store placeholder values
 
@@ -253,7 +248,7 @@ def apply_commit_template(template_name, repo_path):
                     break # Malformed placeholder, but just proceed
                 placeholder_name = templated_line[start_index+1:end_index]
                 if placeholder_name not in placeholders: # Only prompt for unknown placeholders
-                    prompt_text = colorize_output(f"Enter value for '<{placeholder_name}>': ", COLOR_CYAN)
+                    prompt_text = f"Enter value for '<{placeholder_name}>': "
                     placeholders[placeholder_name] = input(prompt_text).strip()
                 # Replace placeholder with value (or leave placeholder if no value)
                 value = placeholders.get(placeholder_name, f"<{placeholder_name}>") # Fallback to placeholder if no value
@@ -262,16 +257,16 @@ def apply_commit_template(template_name, repo_path):
 
     commit_message = "\n".join(message_lines)
 
-    print(colorize_output("\n--- Commit Message Preview ---", COLOR_BOLD_CYAN))
-    print(colorize_output(commit_message, COLOR_CYAN))
-    print(colorize_output("\n---", COLOR_BOLD_CYAN))
+    write_debug("\n--- Commit Message Preview ---", channel="Information") # Using Information as BoldCyan and Cyan are not standard levels
+    write_debug(commit_message, channel="Information")                     # Using Information as BoldCyan and Cyan are not standard levels
+    write_debug("\n---", channel="Information")                      # Using Information as BoldCyan and Cyan are not standard levels
 
     return commit_message
 
-def handle_submodules(repo_path, add_pattern, force, branch, submodules_to_process, submodule_add_patterns, submodule_branches):
+def handle_submodules(repo_path, add_pattern, force, branch, submodules_to_process, submodule_add_patterns, submodule_branches, verbose):
     """Handles Git submodules recursively."""
-    log_message("info", "Checking for submodules...")
-    result = run_git_command(["git", "submodule", "status"], cwd=repo_path, capture_output=True)
+    write_debug("Checking for submodules...", channel="Information", condition=True) # Always show submodule check info
+    result = run_git_command(["git", "submodule", "status"], cwd=repo_path, capture_output=True, verbose=verbose)
     submodules_output = result.stdout.strip().splitlines()
 
     for line in submodules_output:
@@ -283,11 +278,11 @@ def handle_submodules(repo_path, add_pattern, force, branch, submodules_to_proce
             submodule_name = os.path.basename(submodule_path) # Extract submodule name
 
             if submodules_to_process != 'all' and submodule_name not in submodules_to_process:
-                log_message("info", f"Skipping submodule: {submodule_path} as it's not in the process list.")
+                write_debug(f"Skipping submodule: {submodule_path} as it's not in the process list.", channel="Information")
                 continue # Skip if submodule is not in the list to process
 
             full_submodule_path = os.path.join(repo_path, submodule_path)
-            log_message("info", f"Entering submodule: {full_submodule_path}")
+            write_debug(f"Entering submodule: {full_submodule_path}", channel="Information", condition=True) # Always show submodule entry
 
             current_submodule_add_pattern = add_pattern # Default to main repo pattern
             if submodule_add_patterns: # If submodule-specific patterns are provided
@@ -295,7 +290,7 @@ def handle_submodules(repo_path, add_pattern, force, branch, submodules_to_proce
                     current_submodule_add_pattern = submodule_add_patterns[0]
                 elif len(submodule_add_patterns) >= submodules_output.index(line): # Pattern for each submodule in order
                      current_submodule_add_pattern = submodule_add_patterns[submodules_output.index(line)]
-                 else:
+                else:
                     current_submodule_add_pattern = "." # Fallback if not enough patterns provided
 
             current_submodule_branch = None # Default to no specific branch for submodule
@@ -308,81 +303,120 @@ def handle_submodules(repo_path, add_pattern, force, branch, submodules_to_proce
                     current_submodule_branch = None # Fallback to default branch behavior
 
             process_git_workflow(current_submodule_add_pattern, force, cwd=full_submodule_path, branch=current_submodule_branch,
-                                 submodules_to_process=submodules_to_process, submodule_add_patterns=submodule_add_patterns, submodule_branches=submodule_branches)
+                                 submodules_to_process=submodules_to_process, submodule_add_patterns=submodule_add_patterns, submodule_branches=submodule_branches, verbose=verbose)
 
-def process_git_workflow(add_pattern, force, cwd=".", branch=None, submodules_to_process=None, submodule_add_patterns=None, commit_template=None, submodule_branches=None, create_branch=None):
+def process_git_workflow(add_pattern, force, cwd=".", branch=None, submodules_to_process=None, submodule_add_patterns=None, commit_template=None, submodule_branches=None, create_branch=None, verbose=False):
     """Main function to process the git workflow."""
     repo_path = cwd # More descriptive variable name
 
     # Handle branch creation if requested and before any operations that might depend on branch
     if create_branch and repo_path == os.getcwd(): # Only for main repo
-        create_local_branch_if_not_exists(repo_path, create_branch)
+        create_local_branch_if_not_exists(repo_path, create_branch, verbose=verbose)
 
-    log_message("info", f"Processing repository: {repo_path}")
+    write_debug(f"Processing repository: {repo_path}", channel="Information", condition=True) # Always show repo processing info
 
     # Check git status
-    log_message("info", "Checking Git Status...")
-    if not show_git_status(repo_path):
-        log_message("success", "No changes detected. Running git pull...")
-        git_pull_changes(repo_path, branch=branch)
+    write_debug("Checking Git Status...", channel="Information", condition=True) # Always show status check info
+    if not show_git_status(repo_path, verbose=verbose):
+        write_debug("No changes detected. Running git pull...", channel="Information") # Changed Success to Information
+        git_pull_changes(repo_path, branch=branch, verbose=verbose)
         return
 
     # Run git add
-    git_add_changes(add_pattern, repo_path)
+    git_add_changes(add_pattern, repo_path, verbose=verbose)
 
     # Show staged files
-    log_message("info", "Checking Staged Files...")
-    if not show_staged_files(repo_path):
-        log_message("warning", "No files were staged. Skipping commit.")
-        log_message("info", "Proceeding to git pull.")
-        git_pull_changes(repo_path, branch=branch)
+    write_debug("Checking Staged Files...", channel="Information", condition=True) # Always show staged files check info
+    if not show_staged_files(repo_path, verbose=verbose):
+        write_debug("No files were staged. Skipping commit.", channel="Warning")
+        write_debug("Proceeding to git pull.", channel="Information")
+        git_pull_changes(repo_path, branch=branch, verbose=verbose)
         return
 
     # Handle confirmation step unless --force is used
     if not force:
-        confirmation = input(colorize_output("Continue? (y/n/s) (s = Skip commit, but continue with git pull): ", COLOR_CYAN)).strip().lower()
+        confirmation = input("Continue? (y/n/s) (s = Skip commit, but continue with git pull): ").strip().lower()
         if confirmation == "n":
-            log_message("error", "Aborting Git Process")
+            write_debug("Aborting Git Process", channel="Error")
             return
         elif confirmation == "s":
-            log_message("info", "Skipping commit, proceeding to git pull.")
-            git_pull_changes(repo_path, branch=branch)
+            write_debug("Skipping commit, proceeding to git pull.", channel="Information")
+            git_pull_changes(repo_path, branch=branch, verbose=verbose)
             return
 
     # Prompt for commit message
-    log_message("info", "Prompting for Commit Message")
+    write_debug("Prompting for Commit Message", channel="Information", condition=True) # Always show commit message prompt info
     if commit_template:
-        commit_message = apply_commit_template(commit_template, repo_path)
+        commit_message = apply_commit_template(commit_template, repo_path, verbose=verbose)
         if not commit_message: # apply_commit_template can return None if template not found
-            commit_message = input(colorize_output("Commit Message (or leave empty for default message): ", COLOR_CYAN)).strip()
+            commit_message = input("Commit Message (or leave empty for default message): ").strip()
     else: # No commit template
-        commit_message = input(colorize_output("Commit Message (leave empty for default message): ", COLOR_CYAN)).strip()
+        commit_message = input("Commit Message (leave empty for default message): ").strip()
         if not commit_message:
             commit_message = get_default_commit_message() # Generate default if still empty
 
-    git_commit_changes(commit_message, repo_path)
+    git_commit_changes(commit_message, repo_path, verbose=verbose)
 
-    git_pull_changes(repo_path, branch=branch)
+    git_pull_changes(repo_path, branch=branch, verbose=verbose)
 
-    new_commits_result = run_git_command(["git", "log", "--branches", "--not", "--remotes", "--oneline"], cwd=repo_path, capture_output=True)
+    new_commits_result = run_git_command(["git", "log", "--branches", "--not", "--remotes", "--oneline"], cwd=repo_path, capture_output=True, verbose=verbose)
     new_commits = new_commits_result.stdout.strip()
     if not new_commits:
-        log_message("success", "No new commits to push. Process complete.")
+        write_debug("No new commits to push. Process complete.", channel="Information") # Changed Success to Information
     else:
-        git_push_changes(repo_path, branch=branch)
+        git_push_changes(repo_path, branch=branch, verbose=verbose)
 
-    handle_submodules(repo_path, add_pattern, force, branch, submodules_to_process, submodule_add_patterns, submodule_branches) # Process submodules after main module
+    handle_submodules(repo_path, add_pattern, force, branch, submodules_to_process, submodule_add_patterns, submodule_branches, verbose=verbose) # Process submodules after main module
+
 
 def print_repo_processing_order(args, submodules_output):
-+def print_repo_processing_order(args, submodules_output):
-     """Prints the order in which repositories will be processed based on arguments and submodule status."""
-     repo_order = ["main repository"] # Main repo is always first
-     if submodules_output:
-@@ -582,6 +693,7 @@
-     parser.add_argument("--submodule-add-patterns", type=str, help="Specify add patterns for submodules (comma-separated, applied to submodules in order).")
-     parser.add_argument("--commit-template", type=str, help="Specify commit message template (e.g., 'simple', 'conventional').")
-     parser.add_argument("--create-branch", type=str, help="Create a new branch if it doesn't exist (for main repo).")
-+    parser.add_argument("--submodule-branches", type=str, help="Specify branches for submodules (comma-separated, applied to submodules in order).")
-     parser.add_argument("--submodule-branches", type=str, help="Specify branches for submodules (comma-separated, applied to submodules in order).")
+    """Prints the order in which repositories will be processed based on arguments and submodule status."""
+    repo_order = ["main repository"] # Main repo is always first
+    if submodules_output:
+        if args.submodules_to_process and args.submodules_to_process != 'all':
+            repo_order.extend([f"submodule '{name}'" for name in args.submodules_to_process.split(',') if name in [os.path.basename(path.split()[1]) for path in submodules_output if len(path.split()) > 1]])
+        elif args.submodules_to_process == 'all' or not args.submodules_to_process:
+            repo_order.extend([f"submodule '{path.split()[1]}'" for path in submodules_output if len(path.split()) > 1])
 
-     args = parser.parse_args()
+    write_debug("\nRepository processing order:", channel="Information", condition=True) # Always show processing order
+    for i, repo_desc in enumerate(repo_order):
+        write_debug(f"{i+1}. {repo_desc}", channel="Information")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Automates the git commit workflow with submodule handling.")
+    parser.add_argument("-a", "--add", type=str, default=".", help="File pattern to add instead of adding everything.")
+    parser.add_argument("-f", "--force", action="store_true", help="Skips the confirmation prompt.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug output.")
+    parser.add_argument("--submodules-to-process", type=str, help="Specify submodules to process (comma-separated names, or 'all').")
+    parser.add_argument("--submodule-add-patterns", type=str, help="Specify add patterns for submodules (comma-separated, applied to submodules in order).")
+    parser.add_argument("--commit-template", type=str, help="Specify commit message template (e.g., 'simple', 'conventional').")
+    parser.add_argument("--create-branch", type=str, help="Create a new branch if it doesn't exist (for main repo).")
+    parser.add_argument("--submodule-branches", type=str, help="Specify branches for submodules (comma-separated, applied to submodules in order).")
+
+
+    args = parser.parse_args()
+
+    # Initialize debug utils based on args.verbose
+    if args.verbose:
+        set_console_verbosity("Verbose") # Show verbose messages on console
+        set_log_verbosity("Verbose")     # Log verbose messages as well
+        enable_file_logging()          # Enable file logging
+    else:
+        set_console_verbosity("Debug")   # Default console verbosity
+        set_log_verbosity("Warning")   # Default log verbosity
+        enable_file_logging()          # Enable file logging
+
+    submodules_list_output = subprocess.run(["git", "submodule", "status"], capture_output=True, text=True).stdout.strip().splitlines()
+    print_repo_processing_order(args, submodules_list_output) # Print processing order upfront
+
+    submodule_add_patterns_list = args.submodule_add_patterns.split(',') if args.submodule_add_patterns else None
+    submodule_branches_list = args.submodule_branches.split(',') if args.submodule_branches else None
+    submodules_to_process_list = args.submodules_to_process.split(',') if args.submodules_to_process else 'all' if args.submodules_to_process == 'all' else None
+
+
+    process_git_workflow(args.add, args.force, cwd=".", branch=None, submodules_to_process=submodules_to_process_list,
+                         submodule_add_patterns=submodule_add_patterns_list, commit_template=args.commit_template, create_branch=args.create_branch,
+                         submodule_branches=submodule_branches_list, verbose=args.verbose)
+
+    write_debug("\nGit sync completed.", channel="Information") # Changed Success to Information

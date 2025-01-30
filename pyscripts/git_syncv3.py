@@ -290,7 +290,7 @@ def handle_submodules(repo_path, add_pattern, force, branch, submodules_to_proce
                     current_submodule_add_pattern = submodule_add_patterns[0]
                 elif len(submodule_add_patterns) >= submodules_output.index(line): # Pattern for each submodule in order
                      current_submodule_add_pattern = submodule_add_patterns[submodules_output.index(line)]
-                 else:
+                else:
                     current_submodule_add_pattern = "." # Fallback if not enough patterns provided
 
             current_submodule_branch = None # Default to no specific branch for submodule

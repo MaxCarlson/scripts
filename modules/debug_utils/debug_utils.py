@@ -41,8 +41,10 @@ def set_log_directory(filepath=DEFAULT_LOG_DIR):
 def enable_file_logging():
     """Enable logging to file."""
     global _log_file_enabled, _current_log_filepath
+    print("[Debug] Enabling file logging...") # ADDED DEBUG PRINT - ALREADY PRESENT
     _log_file_enabled = True
     _current_log_filepath = _initialize_log_file() # Initialize log file path
+    print(f"[Debug] _current_log_filepath after enable_file_logging: {_current_log_filepath}") # ADDED DEBUG PRINT - CHECK VALUE AFTER INITIALIZATION
 
 def disable_file_logging():
     """Disable logging to file."""
@@ -73,14 +75,19 @@ def _get_log_filename_prefix():
         repo_name = os.path.basename(repo.working_dir)
         return repo_name # Return repo_name directly for correct path joining later
     except ImportError:
+        print("[Debug] GitPython ImportError in _get_log_filename_prefix") # ADDED DEBUG PRINT
         return None # GitPython not installed, fallback to filename based log
     except git.InvalidGitRepositoryError:
+        print("[Debug] InvalidGitRepositoryError in _get_log_filename_prefix") # ADDED DEBUG PRINT
         return None # Not in a git repo, fallback to filename based log
-    except Exception: # Catch any other git related errors
+    except Exception as e: # Catch any other git related errors
+        print(f"[Debug] Exception in _get_log_filename_prefix: {e}") # ADDED DEBUG PRINT
         return None # Fallback if git detection fails
+    print("[Debug] _get_log_filename_prefix completed successfully") # ADDED DEBUG PRINT - SUCCESS
 
 def _initialize_log_file():
     """Initialize and return the log file path, creating directories and managing log rotation."""
+    print("[Debug] _initialize_log_file started") # ADDED DEBUG PRINT - START
     log_prefix = _get_log_filename_prefix()
     calling_filename = os.path.splitext(os.path.basename(inspect.stack()[2].filename))[0] # Deeper stack for caller file
     date_str = datetime.date.today().isoformat()
@@ -94,13 +101,14 @@ def _initialize_log_file():
 
     os.makedirs(log_dir, exist_ok=True) # Create log directory if it doesn't exist
     log_filepath = os.path.join(log_dir, log_filename)
+    print(f"[Debug] log_filepath after os.path.join: {log_filepath}") # ADDED DEBUG PRINT - FILEPATH
 
     if os.path.exists(log_filepath):
         if os.path.getsize(log_filepath) > MAX_LOG_FILE_SIZE_KB * 1024: # Check if log file is too large
             _rotate_logs(log_dir, log_filename) # Rotate logs if necessary
 
     _cleanup_old_logs(log_dir) # Clean up old logs if directory too large or too many files
-
+    print(f"[Debug] _initialize_log_file returning: {log_filepath}") # ADDED DEBUG PRINT - RETURN VALUE
     return log_filepath
 
 def _rotate_logs(log_dir, current_log_filename):
@@ -171,10 +179,13 @@ def write_debug(message="", channel="Debug", condition=True, output_stream="stdo
         return
 
     channel_upper = channel.capitalize()
+    global _current_log_filepath # Explicitly declare _current_log_filepath as global
+
+    output_message = message # ADDED - Unconditional definition to fix UnboundLocalError
 
     # --- Console Output Handling ---
     if _is_at_verbosity_level(channel_upper, _console_verbosity_level):
-        output_message = message
+        # output_message = message # REMOVED - No longer needed here, defined unconditionally above
         show_location = False
         if isinstance(location_channels, bool):
             show_location = location_channels
@@ -204,13 +215,13 @@ def write_debug(message="", channel="Debug", condition=True, output_stream="stdo
     # --- File Logging Handling ---
     if _log_file_enabled and _is_at_verbosity_level(channel_upper, _log_verbosity_level):
         if not _current_log_filepath: # Re-initialize log path if somehow lost
+            print("[Debug] _current_log_filepath is None, re-initializing...")
             _current_log_filepath = _initialize_log_file()
         try:
             with open(_current_log_filepath, "a") as log_file:
                 log_file.write(f"[{channel_upper}] {output_message}\n") # Use same output_message as console (with location if enabled)
         except Exception as e:
             print(f"[Error] Failed to write to log file {_current_log_filepath}: {e}") # Error to console if logging fails
-
 
 # --- Example Usage ---
 if __name__ == '__main__':
