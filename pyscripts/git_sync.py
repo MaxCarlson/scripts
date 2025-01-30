@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 """
 Automates the git commit workflow with configurable options and submodule support.
 
@@ -54,7 +55,6 @@ Examples:
     # Run with specific branches for submodules
     python git_sync.py --submodule-branches "develop,main"
 """
-#!/usr/bin/env python3
 
 import os
 import subprocess
