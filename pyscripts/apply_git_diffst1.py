@@ -3,7 +3,6 @@ import os
 import re
 import difflib
 import sys  # Import sys for potential exit calls from clipboard_utils
-import io
 
 # Import clipboard_utils (assuming it's in the same directory or importable)
 try:
@@ -32,7 +31,7 @@ except ImportError:
 def apply_diff_to_file(filepath, diff_content):
     """Applies git diff content to a file."""
     try:
-        with open(filepath, 'rb') as f: # Binary read
+        with open(filepath, 'r') as f:
             original_lines = f.readlines()
 
         debug_utils.write_debug(f"Applying diff to file: {filepath}", channel="Information")
@@ -45,26 +44,15 @@ def apply_diff_to_file(filepath, diff_content):
 
         debug_utils.write_debug(f"Applying patch:\n{diff_content}", channel="Verbose")
 
-        # Extract the relevant diff lines for difflib.restore - CORRECTED EXTRACTION
-        relevant_diff_lines = []
-        in_hunk = False
-        for line in diff_lines:
-            if line.startswith('@@'):
-                in_hunk = True
-                relevant_diff_lines.append(line) # Include @@ line
-            elif in_hunk and line.startswith((' ', '+', '-')):
-                relevant_diff_lines.append(line)
-            elif in_hunk and not line.startswith((' ', '+', '-', '@@')): # Hunk ended if a line doesn't start with diff chars
-                in_hunk = False # Stop adding lines, assuming hunk ended.
+        # Extract the relevant diff lines for difflib.restore
+        relevant_diff_lines = [line for line in diff_lines if line.startswith((' ', '+', '-', '@@'))]
 
-        debug_utils.write_debug(f"Relevant diff lines: {relevant_diff_lines}", channel="Debug") # ADDED DEBUG LOG
 
         patched_lines = list(difflib.restore(relevant_diff_lines, 2))
-        debug_utils.write_debug(f"patched_lines before write: {patched_lines}", channel="Debug") # ADDED DEBUG LOG
+        debug_utils.write_debug(f"patched_lines before write: {patched_lines}", channel="Debug")
 
-        with open(filepath, 'wb') as f: # Binary write
-            for line in patched_lines: # Need to encode lines back to bytes
-                f.write(line.encode('utf-8')) # Assuming UTF-8 encoding
+        with open(filepath, 'w') as f:
+            f.writelines(patched_lines)
 
         debug_utils.write_debug(f"Successfully applied diff to file: {filepath}", channel="Information")
         return True
@@ -129,55 +117,7 @@ def parse_diff_and_apply(diff_text, target_directory):
     debug_utils.write_debug("Diff application process completed.", channel="Information")
 
 
-def main_test_wrapper(directory, input_source, diff_text_terminal=None): # Wrapper for main function for testing
-    
-    class MockArgs: # Mock class for argparse arguments
-        def __init__(self, directory, input, log_level="Debug", console_log_level="Debug", enable_file_log=False, log_dir="logs"):
-            self.directory = directory
-            self.input = input
-            self.log_level = log_level
-            self.console_log_level = console_log_level
-            self.enable_file_log = enable_file_log
-            self.log_dir = log_dir
-            
-    # Mock argparse.ArgumentParser().parse_args() to return MockArgs
-    if input_source == 'terminal_input': # Handle terminal input case
-        mock_args = MockArgs(directory=directory, input='terminal_input')
-        sys.stdin = io.StringIO(diff_text_terminal) # Mock stdin for terminal input
-    else:
-        mock_args = MockArgs(directory=directory, input=input_source)
-
-    # Call main function with mock arguments
-    main_output = main_testable(mock_args) # Use testable main (renamed for testing)
-    return main_output
-
-def main_testable(args): # Renamed main to main_testable for testing
-    target_directory = os.path.abspath(args.directory)
-    if not os.path.isdir(target_directory):
-        return {"error": f"Directory '{target_directory}' does not exist."}
-
-    diff_text = ""
-    input_source = args.input
-
-    if input_source == 'clipboard':
-        diff_text = "clipboard content"  # Simulate clipboard input
-    elif input_source == 'file':
-        diff_text = "file content" # Simulate file input
-    elif input_source == 'terminal_input':
-        diff_text = sys.stdin.read() # Read from mocked stdin
-    elif isinstance(input_source, str) and input_source != 'clipboard' and input_source != 'file' and input_source != 'terminal_input':
-        diff_text = input_source # Direct diff text as input
-    elif input_source is None: # Fallback to terminal - simulate terminal input
-        diff_text = sys.stdin.read()
-
-    if not diff_text:
-        return {"warning": "No diff input provided."}
-
-    modified_contents = parse_diff_and_apply(diff_text, target_directory)
-    return {"modified_files": modified_contents, "input_source": input_source, "diff_text": diff_text} # Return results for testing
-
-
-def main(): # Original main function (using main_testable now for core logic)
+def main():
     parser = argparse.ArgumentParser(description="Apply git diff to files in a directory.")
     parser.add_argument("-d", "--directory", required=True, help="Path to the directory containing the files to modify.")
     parser.add_argument("-i", "--input", nargs='?', const='clipboard', default='clipboard',

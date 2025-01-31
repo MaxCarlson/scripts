@@ -65,7 +65,7 @@ class TestApplyGitDiffsInMemoryPytest:  # Test class for in-memory tests
 -Original content
 +Modified content
 """
-        modified_contents = apply_git_diffs.parse_diff_and_apply(diff_text, test_directory) # Corrected function name
+        modified_contents = apply_git_diff_s.parse_diff_and_apply(diff_text, test_directory) # Corrected function name
         actual_content = modified_contents.get("file1.txt", "")
         expected_content = "Modified content\n"
         assert actual_content == expected_content
@@ -92,7 +92,7 @@ diff --git a/file2.txt b/file2.txt
 -Original content 2
 +Modified content 2
 """
-        modified_contents = apply_git_diffs.parse_diff_and_apply(diff_text, test_directory) # Corrected function name
+        modified_contents = apply_git_diff_s.parse_diff_and_apply(diff_text, test_directory) # Corrected function name
         content1 = modified_contents.get("file1.txt", "")
         content2 = modified_contents.get("file2.txt", "")
         expected_content1 = "Modified content 1\n"
@@ -108,7 +108,7 @@ diff --git a/file2.txt b/file2.txt
 +++ b/file1.txt
 No hunk here
 """
-        modified_contents = apply_git_diffs.parse_diff_and_apply(diff_text, test_directory) # Corrected function name
+        modified_contents = apply_git_diff_s.parse_diff_and_apply(diff_text, test_directory) # Corrected function name
         assert not modified_contents
 
     def test_parse_and_apply_invalid_diff_block_missing_ab_lines(self): # Test 7 (Pytest)
@@ -120,7 +120,7 @@ Missing a/b lines but has hunk
 -Original content
 +Modified content
 """
-        modified_contents = apply_git_diffs.parse_diff_and_apply(diff_text, test_directory) # Corrected function name
+        modified_contents = apply_git_diff_s.parse_diff_and_apply(diff_text, test_directory) # Corrected function name
         assert not modified_contents
 
     def test_parse_and_apply_file_not_found_in_directory(self): # Test 8 (Pytest)
@@ -133,7 +133,7 @@ Missing a/b lines but has hunk
 -Original content
 +Modified content
 """
-        modified_contents = apply_git_diffs.parse_diff_and_apply(diff_text, test_directory) # Corrected function name
+        modified_contents = apply_git_diff_s.parse_diff_and_apply(diff_text, test_directory) # Corrected function name
         assert not modified_contents
 
     def test_main_apply_diff_from_clipboard(self, monkeypatch): # Test 9 (Pytest)

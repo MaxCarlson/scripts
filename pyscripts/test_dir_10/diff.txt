@@ -1,0 +1,6 @@
+diff --git a/file1.txt b/file1.txt
+--- a/file1.txt
++++ b/file1.txt
+@@ -1 +1,1 @@
+-Original content
++Modified content
