@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cross_platform"
+version = "0.2.0"
+description = "A cross-platform system utilities module supporting Windows, Linux, macOS, WSL2, Termux, with integrated debug utilities"
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.6"
+
+dependencies = [
+    "psutil",         # For process and system information
+    "pyperclip",      # For clipboard support where applicable
+]
+
+# Optional dependency for Git integration in debug utilities (if needed)
+[project.optional-dependencies]
+git = ["GitPython"]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/cross_platform"
+Documentation = "https://github.com/yourusername/cross_platform/wiki"
+Repository = "https://github.com/yourusername/cross_platform"
+
+[tool.setuptools.packages.find]
+where = ["."]
+

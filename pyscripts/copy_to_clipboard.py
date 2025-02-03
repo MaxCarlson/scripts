@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import sys
-from modules.clipboard_utils.clipboard_utils import set_clipboard
+from clipboard_utils.clipboard_utils import set_clipboard
 
 def copy_to_clipboard(files):
     try:
