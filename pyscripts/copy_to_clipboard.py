@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import sys
-import subprocess
+from modules.clipboard_utils.clipboard_utils import set_clipboard
 
 def copy_to_clipboard(files):
     try:
@@ -12,7 +12,7 @@ def copy_to_clipboard(files):
 
         # Join all file contents and copy to clipboard
         text_to_copy = "\n\n".join(content)
-        subprocess.run(["termux-clipboard-set"], input=text_to_copy, text=True, check=True)
+        set_clipboard(text_to_copy)
 
         print("Files copied to clipboard successfully!")
 
@@ -25,3 +25,4 @@ if __name__ == "__main__":
         sys.exit(1)
 
     copy_to_clipboard(sys.argv[1:])
+
