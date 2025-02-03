@@ -87,3 +87,11 @@ class ClipboardUtils(SystemUtils):
             write_debug(f"Error setting clipboard: {e}", channel="Error")
             sys.exit(1)
 
+# Module-level function that wraps the class method
+def get_clipboard() -> str:
+    instance = ClipboardUtils()
+    return instance.get_clipboard()
+
+def set_clipboard(text: str) -> None:
+    instance = ClipboardUtils()
+    instance.set_clipboard(text)
