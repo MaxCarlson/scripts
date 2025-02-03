@@ -139,35 +139,51 @@ def apply_diff_to_file(filepath, diff_content):
         debug_utils.write_debug(f"Error applying diff to file {filepath}: {e}", channel="Error")
         return None
 
-
 def parse_diff_and_apply(diff_text, target_directory):
-    """Parses git diff text and applies it to corresponding files in the target directory.
+    """
+    Parses git diff text and applies it to corresponding files in the target directory.
     
     Returns a dictionary mapping file paths (as given in the diff, without the 'a/' prefix)
-    to their updated contents. If no valid diff is applied, returns an empty dict.
+    to their updated contents. If any diff block is invalid, returns an empty dict (i.e.
+    transactional behavior: either all diffs are applied or none).
     """
+    import re, os
     modified = {}
     # Split on diff header lines.
     diff_blocks = re.split(r'^diff --git ', diff_text, flags=re.MULTILINE)
     if diff_blocks and diff_blocks[0].strip() == '':
         diff_blocks = diff_blocks[1:]
+    
+    # First pass: Validate all diff blocks.
+    for diff_block in diff_blocks:
+        if not diff_block.strip():
+            continue
+        lines = diff_block.strip().splitlines()
+        if len(lines) < 3:
+            debug_utils.write_debug(f"Invalid diff block (not enough lines):\n{diff_block}", channel="Warning")
+            return {}  # Transactional failure: abort if any block is invalid.
+        a_file_line = next((line for line in lines if line.startswith('--- a/')), None)
+        b_file_line = next((line for line in lines if line.startswith('+++ b/')), None)
+        if not a_file_line or not b_file_line:
+            debug_utils.write_debug(f"Invalid diff block (missing file markers):\n{diff_block}", channel="Warning")
+            return {}
+        hunk_found = any(line.startswith('@@') for line in diff_block.splitlines())
+        if not hunk_found:
+            debug_utils.write_debug(f"Invalid diff block (no hunks found) for file: {a_file_line[6:]}", channel="Warning")
+            return {}
+    
+    # Second pass: All diff blocks are valid; apply them.
     for diff_block in diff_blocks:
         if not diff_block.strip():
             continue
         try:
             lines = diff_block.strip().splitlines()
-            if len(lines) < 3:
-                debug_utils.write_debug(f"Skipping invalid diff block: Not enough lines\n{diff_block}", channel="Warning")
-                continue
             a_file_line = next((line for line in lines if line.startswith('--- a/')), None)
-            b_file_line = next((line for line in lines if line.startswith('+++ b/')), None)
-            if not a_file_line or not b_file_line:
-                debug_utils.write_debug(f"Skipping invalid diff block: Missing --- a/ or +++ b/\n{diff_block}", channel="Warning")
-                continue
+            # Get the file path from the a/ marker.
             file_path_in_diff = a_file_line[6:]
             target_file_path = os.path.join(target_directory, file_path_in_diff)
-            # Use the entire diff block as diff_content.
             diff_content = diff_block.strip()
+            # Check that there is at least one hunk.
             hunk_found = any(line.startswith('@@') for line in diff_content.splitlines())
             if not hunk_found:
                 debug_utils.write_debug(f"Skipping diff block without hunks: {file_path_in_diff}", channel="Warning")
@@ -180,8 +196,10 @@ def parse_diff_and_apply(diff_text, target_directory):
                 debug_utils.write_debug(f"File '{target_file_path}' not found in target directory, skipping diff application.", channel="Warning")
         except Exception as e:
             debug_utils.write_debug(f"Error processing diff block: {e}\nBlock content:\n{diff_block}", channel="Error")
+            return {}  # In case of error, abort applying any diffs.
     debug_utils.write_debug("Diff application process completed.", channel="Information")
     return modified
+
 
 def main_test_wrapper(directory, input_source, diff_text_terminal=None):
     """A wrapper for the main function for testing purposes."""
