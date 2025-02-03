@@ -1,271 +1,258 @@
-#!/usr/bin/env python3
-import unittest
-import subprocess
 import os
-import shutil
-import tempfile
+import datetime
+import subprocess
+import json
 import sys
-import importlib.util
-from io import StringIO
-from contextlib import contextmanager
+import tempfile
+import pytest
 
-# Get the script path
-script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'git_sync.py'))
+# Import functions and globals from your script.
+from git_sync import (
+    DEBUG_ENABLED,
+    _current_log_filepath,
+    LOG_DIR,
+    LOG_FILENAME_PREFIX,
+    enable_file_logging,
+    _initialize_log_file,
+    debug_log,
+    verbose_log,
+    error_log,
+    run_command,
+    get_submodule_names,
+    summarize_git_status_porcelain,
+    handle_submodules,
+    process_git_workflow,
+)
 
-# Load the module dynamically
-spec = importlib.util.spec_from_file_location("git_sync", script_path)
-git_sync = importlib.util.module_from_spec(spec)
-sys.modules["git_sync"] = git_sync
-spec.loader.exec_module(git_sync)
+# --- Fake process object that supports tuple unpacking ---
+class FakeCompletedProcess:
+    def __init__(self, stdout="", stderr="", returncode=0):
+        self.stdout = stdout
+        self.stderr = stderr
+        self.returncode = returncode
 
-class TestGitSyncImproved(unittest.TestCase):
+    def __iter__(self):
+        # Allows unpacking as (stdout, stderr, returncode)
+        yield self.stdout
+        yield self.stderr
+        yield self.returncode
 
-    def setUp(self):
-        self.temp_dir = tempfile.mkdtemp()
-        self.main_repo_path = os.path.join(self.temp_dir, "main_repo")
-        self.submodule_repo_path = os.path.join(self.temp_dir, "submodule_repo")
+# 1. Test log file initialization
+def test_initialize_log_file(monkeypatch, tmp_path):
+    temp_log_dir = tmp_path / "logs"
+    monkeypatch.setattr("git_sync.LOG_DIR", str(temp_log_dir))
+    
+    log_filepath = _initialize_log_file()
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    expected_filename = f"{LOG_FILENAME_PREFIX}_{today}.log"
+    assert expected_filename in log_filepath
+    assert os.path.exists(os.path.dirname(log_filepath))
 
-        # Initialize main repository
-        os.makedirs(self.main_repo_path)
-        subprocess.run(["git", "init"], cwd=self.main_repo_path, check=True, capture_output=True)
-        with open(os.path.join(self.main_repo_path, "main_file.txt"), "w") as f:
-            f.write("Initial main repo file")
-        subprocess.run(["git", "add", "main_file.txt"], cwd=self.main_repo_path, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "Initial commit in main repo"], cwd=self.main_repo_path, check=True, capture_output=True)
+# 2. Test enabling file logging sets the global _current_log_filepath
+def test_enable_file_logging(monkeypatch, tmp_path):
+    temp_log_dir = tmp_path / "logs"
+    monkeypatch.setattr("git_sync.LOG_DIR", str(temp_log_dir))
+    monkeypatch.setattr("git_sync._current_log_filepath", None)
+    enable_file_logging()
+    current_log_filepath = getattr(__import__("git_sync"), "_current_log_filepath")
+    assert current_log_filepath is not None
+    assert os.path.exists(os.path.dirname(current_log_filepath))
 
-        # Initialize submodule repository
-        os.makedirs(self.submodule_repo_path)
-        subprocess.run(["git", "init"], cwd=self.submodule_repo_path, check=True, capture_output=True)
-        with open(os.path.join(self.submodule_repo_path, "submodule_file.txt"), "w") as f:
-            f.write("Initial submodule file")
-        subprocess.run(["git", "add", "submodule_file.txt"], cwd=self.submodule_repo_path, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "Initial commit in submodule repo"], cwd=self.submodule_repo_path, check=True, capture_output=True)
+# 3. Test debug_log writes to stdout and file
+def test_debug_log(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr("git_sync.DEBUG_ENABLED", True)
+    temp_log_file = tmp_path / "debug.log"
+    monkeypatch.setattr("git_sync._current_log_filepath", str(temp_log_file))
+    message = "Test debug message"
+    debug_log(message)
+    captured = capsys.readouterr().out
+    assert "Test debug message" in captured
+    with open(str(temp_log_file), "r") as f:
+        file_content = f.read()
+    assert "Test debug message" in file_content
 
-        # Add submodule to main repo
-        os.chdir(self.main_repo_path) # Change to main repo dir for submodule add
-        subprocess.run(["git", "submodule", "add", self.submodule_repo_path, "submodule"], check=True, capture_output=True)
-        os.chdir(self.temp_dir) # Change back to temp dir
+# 4. Test verbose_log writes to stdout and file
+def test_verbose_log(monkeypatch, tmp_path, capsys):
+    temp_log_file = tmp_path / "verbose.log"
+    monkeypatch.setattr("git_sync._current_log_filepath", str(temp_log_file))
+    message = "Test verbose message"
+    verbose_log(message)
+    captured = capsys.readouterr().out
+    assert "Test verbose message" in captured
+    with open(str(temp_log_file), "r") as f:
+        file_content = f.read()
+    assert "Test verbose message" in file_content
 
-        # Set script path (assuming it's in the same directory as test script)
-        self.script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "git_sync_improved.py"))
-        if not os.path.exists(self.script_path):
-            raise FileNotFoundError(f"Script not found at: {self.script_path}. Ensure git_sync_improved.py is in the same directory.")
+# 5. Test error_log writes to stderr and file
+def test_error_log(monkeypatch, tmp_path, capsys):
+    temp_log_file = tmp_path / "error.log"
+    monkeypatch.setattr("git_sync._current_log_filepath", str(temp_log_file))
+    message = "Test error message"
+    error_log(message)
+    captured = capsys.readouterr().err
+    assert "Test error message" in captured
+    with open(str(temp_log_file), "r") as f:
+        file_content = f.read()
+    assert "Test error message" in file_content
 
-    def tearDown(self):
-        shutil.rmtree(self.temp_dir)
+# 6. Test run_command for a successful command
+def test_run_command_success(monkeypatch):
+    def fake_run(command_list, cwd, capture_output=False, text=False, check=False, encoding=None):
+        return FakeCompletedProcess(stdout="hello\n", stderr="", returncode=0)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    stdout, stderr, returncode = run_command(["echo", "hello"], cwd=".", capture_output=True, text=True)
+    assert stdout.strip() == "hello"
+    assert stderr == ""
+    assert returncode == 0
 
-    @contextmanager
-    def captured_output(self):
-        new_out, new_err = StringIO(), StringIO()
-        old_out, old_err = sys.stdout, sys.stderr
-        try:
-            sys.stdout, sys.stderr = new_out, new_err
-            yield sys.stdout, sys.stderr
-        finally:
-            sys.stdout, sys.stderr = old_out, old_err
+# 7. Test run_command when command is not found (simulate FileNotFoundError)
+def test_run_command_not_found(monkeypatch):
+    def fake_run(command_list, cwd, capture_output=False, text=False, check=False, encoding=None):
+        raise FileNotFoundError("Command not found")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    stdout, stderr, returncode = run_command(["nonexistent_cmd"], cwd=".", capture_output=True, text=True)
+    assert stdout is None
+    assert "Command not found" in stderr
+    assert returncode == 127
 
-    def run_script(self, *args, input_str=None, cwd=None):
-        command = [sys.executable, self.script_path] + list(args)
-        process = subprocess.Popen(
-            command,
-            cwd=cwd if cwd else self.main_repo_path,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        stdout, stderr = process.communicate(input=input_str)
-        return stdout, stderr, process.returncode
+# 8. Test run_command with a generic exception
+def test_run_command_exception(monkeypatch):
+    def fake_run(command_list, cwd, capture_output=False, text=False, check=False, encoding=None):
+        raise Exception("Generic error")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    stdout, stderr, returncode = run_command(["cmd"], cwd=".", capture_output=True, text=True)
+    assert stdout is None
+    assert "Generic error" in stderr
+    assert returncode == 1
 
-    def assertGitStatusClean(self, repo_path):
-        status_output = subprocess.run(["git", "status", "--short"], cwd=repo_path, capture_output=True, text=True, check=True).stdout.strip()
-        self.assertEqual(status_output, "", "Git status should be clean")
+# 9. Test get_submodule_names using a fake subprocess output
+def test_get_submodule_names(monkeypatch):
+    fake_output = " 3d2f4e0 submodule1 (heads/master)\n-abcdef0 submodule2 (remotes/origin/feature)\n"
+    monkeypatch.setattr("git_sync.run_command", lambda *args, **kwargs: (fake_output, "", 0))
+    submodules = get_submodule_names("dummy_repo")
+    assert "submodule1" in submodules
+    assert "submodule2" in submodules
 
-    def assertGitStatusChanges(self, repo_path):
-        status_output = subprocess.run(["git", "status", "--short"], cwd=repo_path, capture_output=True, text=True, check=True).stdout.strip()
-        self.assertNotEqual(status_output, "", "Git status should have changes")
+# 10. Test summarize_git_status_porcelain with sample input
+def test_summarize_git_status_porcelain():
+    empty_status = ""
+    summary = summarize_git_status_porcelain(empty_status)
+    assert summary == "No changes."
+    
+    status_input = "M  file1.txt\nA  file2.txt\n?? file3.txt\n"
+    summary = summarize_git_status_porcelain(status_input)
+    assert "Modified files:" in summary
+    assert "M file1.txt" in summary
+    assert "A file2.txt" in summary
+    assert "Untracked files:" in summary
+    assert "? file3.txt" in summary
 
-    def test_basic_workflow_no_changes(self):
-        stdout, stderr, returncode = self.run_script()
-        self.assertEqual(returncode, 0)
-        self.assertIn("No changes detected. Running git pull...", stdout)
-        self.assertGitStatusClean(self.main_repo_path)
-        self.assertGitStatusClean(os.path.join(self.main_repo_path, "submodule"))
+# 11. Test handle_submodules by simulating a repository with one submodule.
+def test_handle_submodules(monkeypatch, capsys):
+    fake_submodules = " 1111111 submodule_test (heads/main)\n"
+    called_commands = []
 
-    def test_basic_workflow_with_changes(self):
-        with open(os.path.join(self.main_repo_path, "main_file.txt"), "a") as f:
-            f.write("\nAdded line to main file")
-        stdout, stderr, returncode = self.run_script(input_str="y\nTest commit message\n")
-        self.assertEqual(returncode, 0)
-        self.assertIn("Committing changes", stdout)
-        self.assertIn("Pushing changes", stdout) # Assuming push will happen, might need mock remote for proper test
-        self.assertGitStatusClean(self.main_repo_path)
-        self.assertGitStatusClean(os.path.join(self.main_repo_path, "submodule"))
+    def fake_run(command_list, cwd, capture_output=False, text=False, verbose=False, **kwargs):
+        called_commands.append((command_list, cwd))
+        if "submodule" in command_list and "status" in command_list:
+            return FakeCompletedProcess(stdout=fake_submodules, stderr="", returncode=0)
+        return FakeCompletedProcess(stdout="", stderr="", returncode=0)
 
-    def test_force_flag(self):
-        with open(os.path.join(self.main_repo_path, "main_file.txt"), "a") as f:
-            f.write("\nAdded line for force test")
-        stdout, stderr, returncode = self.run_script("-f", input_str="Test commit message\n") # Input still needed for commit message
-        self.assertEqual(returncode, 0)
-        self.assertIn("Committing changes", stdout)
-        self.assertIn("Pushing changes", stdout)
-        self.assertGitStatusClean(self.main_repo_path)
-        self.assertGitStatusClean(os.path.join(self.main_repo_path, "submodule"))
+    monkeypatch.setattr("git_sync.run_command", fake_run)
+    repo_path = "dummy_repo"
+    add_pattern = "."
+    force = False
+    branch = "main"
+    submodules_to_process = "all"
+    submodule_add_patterns = {}
+    submodule_branches = {}
+    handle_submodules(repo_path, add_pattern, force, branch,
+                      submodules_to_process, submodule_add_patterns,
+                      submodule_branches, verbose=True)
+    init_found = any("submodule" in cmd[0] and "init" in cmd[0] for cmd in called_commands)
+    update_found = any("submodule" in cmd[0] and "update" in cmd[0] for cmd in called_commands)
+    assert init_found, "Expected a git submodule init command"
+    assert update_found, "Expected a git submodule update command"
 
-    def test_skip_commit_option(self):
-        with open(os.path.join(self.main_repo_path, "main_file.txt"), "a") as f:
-            f.write("\nAdded line for skip commit test")
-        stdout, stderr, returncode = self.run_script(input_str="s\n")
-        self.assertEqual(returncode, 0)
-        self.assertIn("Skipping commit, proceeding to git pull.", stdout)
-        self.assertNotIn("Committing changes", stdout)
-        self.assertIn("Pulling latest changes", stdout)
-        self.assertGitStatusChanges(self.main_repo_path) # Changes should be staged but not committed
-        subprocess.run(["git", "reset", "HEAD", "main_file.txt"], cwd=self.main_repo_path, check=True, capture_output=True) # Unstage for cleanup
-        self.assertGitStatusClean(self.main_repo_path)
+# 12. Test process_git_workflow for the case with no changes.
+def test_process_git_workflow_no_changes(monkeypatch, capsys):
+    def fake_run(command_list, cwd, capture_output=False, text=False, verbose=False, **kwargs):
+        if "status" in command_list and "--porcelain" in command_list:
+            return FakeCompletedProcess(stdout="", stderr="", returncode=0)
+        if "status" in command_list and "--color=always" in command_list:
+            return FakeCompletedProcess(stdout="On branch main\n", stderr="", returncode=0)
+        return FakeCompletedProcess(stdout="", stderr="", returncode=0)
+    monkeypatch.setattr("git_sync.run_command", lambda *args, **kwargs: fake_run(*args, **kwargs))
+    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+    process_git_workflow(add_pattern=".", force=False, cwd="dummy_repo", branch="main",
+                           submodules_to_process=None, submodule_add_patterns={}, submodule_branches={}, verbose=True)
+    captured = capsys.readouterr().out
+    assert "No changes to commit." in captured
 
-    def test_add_pattern_flag(self):
-        os.makedirs(os.path.join(self.main_repo_path, "test_dir"))
-        with open(os.path.join(self.main_repo_path, "test_dir", "test_file.special"), "w") as f:
-            f.write("Special file")
-        with open(os.path.join(self.main_repo_path, "main_file.txt"), "a") as f:
-            f.write("\nAdded line for add pattern test")
+# 13. Test process_git_workflow with a simulated change and commit flow.
+def test_process_git_workflow_with_changes(monkeypatch, capsys):
+    def fake_run(command_list, cwd, capture_output=False, text=False, verbose=False, **kwargs):
+        cmd_str = " ".join(command_list)
+        if "status --porcelain" in cmd_str:
+            return FakeCompletedProcess(stdout="M  file.txt\n", stderr="", returncode=0)
+        if "add --dry-run" in cmd_str:
+            return FakeCompletedProcess(stdout="file.txt\n", stderr="", returncode=0)
+        if "add " in cmd_str:
+            return FakeCompletedProcess(stdout="", stderr="", returncode=0)
+        if "commit" in cmd_str:
+            return FakeCompletedProcess(stdout="Committed\n", stderr="", returncode=0)
+        if "pull" in cmd_str:
+            return FakeCompletedProcess(stdout="Pulled\n", stderr="", returncode=0)
+        if "push" in cmd_str:
+            return FakeCompletedProcess(stdout="Pushed\n", stderr="", returncode=0)
+        return FakeCompletedProcess(stdout="", stderr="", returncode=0)
+    monkeypatch.setattr("git_sync.run_command", fake_run)
+    inputs = iter(["y", "Test commit message"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+    process_git_workflow(add_pattern=".", force=False, cwd="dummy_repo", branch="main",
+                           submodules_to_process=None, submodule_add_patterns={}, submodule_branches={}, verbose=True)
+    captured = capsys.readouterr().out
+    assert "Changes to be staged if you continue:" in captured or "No changes to stage" in captured
+    assert "Committed" in captured
 
-        stdout, stderr, returncode = self.run_script("-a", "*.txt", input_str="y\nTest add pattern\n")
-        self.assertEqual(returncode, 0)
-        self.assertIn("Adding files: *.txt", stdout)
-        self.assertIn("Committing changes", stdout)
-        self.assertGitStatusClean(self.main_repo_path)
-        status_output = subprocess.run(["git", "status", "--short"], cwd=self.main_repo_path, capture_output=True, text=True, check=True).stdout.strip()
-        self.assertNotIn("test_file.special", status_output) # special file should not be added
+# 14. Test process_git_workflow with multiple submodules and recursion.
+def test_process_git_workflow_multiple_submodules(monkeypatch, capsys):
+    call_history = []
 
-    def test_submodule_processing(self):
-        with open(os.path.join(self.submodule_repo_path, "submodule_file.txt"), "a") as f:
-            f.write("\nChange in submodule")
-        stdout, stderr, returncode = self.run_script(input_str="y\nTest submodule commit\n")
-        self.assertEqual(returncode, 0)
-        self.assertIn("Processing submodule: submodule", stdout)
-        self.assertIn("Committing changes", stdout) # Should commit in both main and submodule
-        self.assertGitStatusClean(self.main_repo_path)
-        self.assertGitStatusClean(os.path.join(self.main_repo_path, "submodule"))
+    def fake_run(command_list, cwd, capture_output=False, text=False, verbose=False, **kwargs):
+        cmd_str = " ".join(command_list)
+        call_history.append((cmd_str, cwd))
+        if "git submodule status" in cmd_str:
+            if cwd == "dummy_repo":
+                return FakeCompletedProcess(stdout=" 1111111 sub1 (heads/main)\n2222222 sub2 (heads/main)\n", stderr="", returncode=0)
+            elif cwd == os.path.join("dummy_repo", "sub1"):
+                return FakeCompletedProcess(stdout=" 3333333 sub1a (heads/main)\n", stderr="", returncode=0)
+            else:
+                return FakeCompletedProcess(stdout="", stderr="", returncode=0)
+        if "--porcelain" in cmd_str:
+            return FakeCompletedProcess(stdout="M  file.txt\n", stderr="", returncode=0)
+        if "add --dry-run" in cmd_str:
+            return FakeCompletedProcess(stdout="file.txt\n", stderr="", returncode=0)
+        if "add " in cmd_str:
+            return FakeCompletedProcess(stdout="", stderr="", returncode=0)
+        if "commit" in cmd_str:
+            return FakeCompletedProcess(stdout="Committed\n", stderr="", returncode=0)
+        if "pull" in cmd_str:
+            return FakeCompletedProcess(stdout="Pulled\n", stderr="", returncode=0)
+        if "push" in cmd_str:
+            return FakeCompletedProcess(stdout="Pushed\n", stderr="", returncode=0)
+        return FakeCompletedProcess(stdout="", stderr="", returncode=0)
 
-    def test_selective_submodule_processing(self):
-        # Add a second submodule for testing selective processing
-        second_submodule_repo_path = os.path.join(self.temp_dir, "second_submodule_repo")
-        os.makedirs(second_submodule_repo_path)
-        subprocess.run(["git", "init"], cwd=second_submodule_repo_path, check=True, capture_output=True)
-        with open(os.path.join(second_submodule_repo_path, "second_submodule_file.txt"), "w") as f:
-            f.write("Initial second submodule file")
-        subprocess.run(["git", "add", "second_submodule_file.txt"], cwd=second_submodule_repo_path, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "Initial commit in second submodule repo"], cwd=second_submodule_repo_path, check=True, capture_output=True)
-        os.chdir(self.main_repo_path)
-        subprocess.run(["git", "submodule", "add", second_submodule_repo_path, "submodule2"], check=True, capture_output=True)
-        os.chdir(self.temp_dir)
+    monkeypatch.setattr("git_sync.run_command", fake_run)
+    inputs = iter(["y", "Main commit message", "y", "Sub1 commit message", "y", "Sub1a commit message", "y", "Sub2 commit message"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+    process_git_workflow(add_pattern=".", force=False, cwd="dummy_repo", branch="main",
+                           submodules_to_process="all", submodule_add_patterns={}, submodule_branches={}, verbose=True)
+    captured = capsys.readouterr().out
+    sub1_present = any("sub1" in cwd for (cmd, cwd) in call_history)
+    sub2_present = any("sub2" in cwd for (cmd, cwd) in call_history)
+    sub1a_present = any("sub1a" in cwd for (cmd, cwd) in call_history)
+    assert sub1_present, "Expected commands to run in sub1"
+    assert sub2_present, "Expected commands to run in sub2"
+    assert sub1a_present, "Expected commands to run in sub1a (nested submodule)"
 
-        submodule1_path = os.path.join(self.main_repo_path, "submodule")
-        submodule2_path = os.path.join(self.main_repo_path, "submodule2")
-
-        with open(os.path.join(submodule1_path, "submodule_file.txt"), "a") as f:
-            f.write("\nChange in submodule1")
-        with open(os.path.join(submodule2_path, "second_submodule_file.txt"), "a") as f:
-            f.write("\nChange in submodule2")
-
-        stdout, stderr, returncode = self.run_script("--submodules", "submodule", input_str="y\nSelective submodule commit\n")
-        self.assertEqual(returncode, 0)
-        self.assertIn("Processing submodule: submodule", stdout)
-        self.assertNotIn("Entering submodule: submodule2", stdout) # Should skip submodule2
-        self.assertIn("Committing changes", stdout)
-        self.assertGitStatusClean(self.main_repo_path)
-        self.assertGitStatusClean(submodule1_path)
-        self.assertGitStatusChanges(submodule2_path) # submodule2 should still have changes
-
-    def test_config_file_load_and_generate(self):
-        config_file_path = os.path.join(self.temp_dir, ".test_git_sync.conf")
-        # Generate config file with force=true and verbose=true
-        stdout_gen, stderr_gen, returncode_gen = self.run_script("--generate-config", "--config", config_file_path, "-f", "-v")
-        self.assertEqual(returncode_gen, 0)
-        self.assertTrue(os.path.exists(config_file_path))
-
-        # Run script using config file
-        with open(os.path.join(self.main_repo_path, "main_file.txt"), "a") as f:
-            f.write("\nChange for config test")
-        stdout_config, stderr_config, returncode_config = self.run_script("--config", config_file_path, input_str="Test commit from config\n")
-        self.assertEqual(returncode_config, 0)
-        self.assertIn("Committing changes", stdout_config)
-        self.assertIn("[INFO] Pushing changes", stdout_config) # Verbose should be enabled from config
-        self.assertGitStatusClean(self.main_repo_path)
-
-    def test_dry_run_mode(self):
-        with open(os.path.join(self.main_repo_path, "main_file.txt"), "a") as f:
-            f.write("\nChange for dry run")
-        stdout, stderr, returncode = self.run_script("--dry-run", input_str="y\nDry run commit message\n")
-        self.assertEqual(returncode, 0)
-        self.assertIn("[DRY-RUN] Simulating command: git add .", stdout)
-        self.assertIn("[DRY-RUN] Simulating command: git commit -m", stdout)
-        self.assertIn("[DRY-RUN] Simulating command: git pull", stdout)
-        self.assertIn("[DRY-RUN] Simulating command: git push", stdout)
-        self.assertGitStatusChanges(self.main_repo_path) # No actual commit should happen
-
-    def test_commit_template_simple(self):
-        with captured_output() as (stdout_capture, stderr_capture):
-            stdout, stderr, returncode = self.run_script("--commit-template", "simple", input_str="y\nShort description input\nLong description input\n")
-        self.assertEqual(returncode, 0)
-        self.assertIn("Commit Message Preview", stdout_capture.getvalue())
-        self.assertIn("feat: Short description input", stdout_capture.getvalue())
-        self.assertIn("Long description input", stdout_capture.getvalue())
-        self.assertIn("Committing changes", stdout)
-        commit_message_log = subprocess.run(["git", "log", "-n", "1", "--pretty=format:%B"], cwd=self.main_repo_path, capture_output=True, text=True, check=True).stdout.strip()
-        self.assertIn("Short description input", commit_message_log)
-        self.assertIn("Long description input", commit_message_log)
-        self.assertGitStatusClean(self.main_repo_path)
-
-    def test_create_branch(self):
-        test_branch_name = "test-new-branch"
-        stdout, stderr, returncode = self.run_script("--create-branch", test_branch_name, input_str="y\nCommit on new branch\n")
-        self.assertEqual(returncode, 0)
-        self.assertIn(f"Branch '{test_branch_name}' does not exist locally. Creating...", stdout)
-        self.assertIn(f"Checking out new branch '{test_branch_name}'", stdout) # Check if your script logs branch checkout
-        current_branch = subprocess.run(["git", "branch", "--show-current"], cwd=self.main_repo_path, capture_output=True, text=True, check=True).stdout.strip()
-        self.assertEqual(current_branch, test_branch_name)
-        self.assertGitStatusClean(self.main_repo_path)
-
-    def test_branch_specification(self):
-        test_branch_name = "feature-branch"
-        subprocess.run(["git", "checkout", "-b", test_branch_name], cwd=self.main_repo_path, check=True, capture_output=True) # Create test branch
-        subprocess.run(["git", "checkout", "main"], cwd=self.main_repo_path, check=True, capture_output=True) # Switch back to main
-
-        stdout, stderr, returncode = self.run_script("--branch", test_branch_name, input_str="y\nCommit to feature branch\n")
-        self.assertEqual(returncode, 0)
-        self.assertIn(f"Pulling latest changes", stdout) # Should pull and push to feature-branch
-        self.assertIn(f"Pushing changes", stdout)
-        self.assertGitStatusClean(self.main_repo_path)
-        current_branch_after_run = subprocess.run(["git", "branch", "--show-current"], cwd=self.main_repo_path, capture_output=True, text=True, check=True).stdout.strip()
-        self.assertEqual(current_branch_after_run, "main") # Should remain on main branch after script finishes
-
-    def test_submodule_branches_specification(self):
-        test_submodule_branch_name = "submodule-feature-branch"
-        subprocess.run(["git", "checkout", "-b", test_submodule_branch_name], cwd=self.submodule_repo_path, check=True, capture_output=True)
-        subprocess.run(["git", "checkout", "main"], cwd=self.submodule_repo_path, check=True, capture_output=True)
-
-        with open(os.path.join(self.submodule_repo_path, "submodule_file.txt"), "a") as f:
-            f.write("\nChange in submodule for branch test")
-
-        stdout, stderr, returncode = self.run_script("--submodule-branches", test_submodule_branch_name, input_str="y\nCommit to submodule branch\n")
-        self.assertEqual(returncode, 0)
-        self.assertIn("Processing submodule: submodule", stdout)
-        self.assertIn("Pulling latest changes", stdout) # Should pull and push to submodule-feature-branch in submodule
-        self.assertIn("Pushing changes", stdout)
-        self.assertGitStatusClean(self.main_repo_path)
-        submodule_current_branch = subprocess.run(["git", "branch", "--show-current"], cwd=os.path.join(self.main_repo_path, "submodule"), capture_output=True, text=True, check=True).stdout.strip()
-        self.assertEqual(submodule_current_branch, "main") # Should remain on main branch in submodule after script finishes
-
-    def test_argument_count_warnings(self):
-        with captured_output() as (stdout_capture, stderr_capture):
-            stdout, stderr, returncode = self.run_script("--submodule-add-patterns", "*.txt", "--submodules", "submodule,submodule2") # Assuming submodule2 exists from previous test
-        self.assertIn("Number of submodule add patterns (1) is less than the number of submodules (2)", stderr_capture.getvalue())
-        with captured_output() as (stdout_capture2, stderr_capture2):
-             stdout2, stderr2, returncode2 = self.run_script("--submodule-add-patterns", "*.txt,*.js,*.css,*.html", "--submodules", "submodule")
-        self.assertIn("Number of submodule add patterns (4) exceeds the number of repositories (main + submodules = 2)", stderr_capture2.getvalue())
-
-if __name__ == '__main__':
-    unittest.main()

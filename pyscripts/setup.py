@@ -3,6 +3,7 @@ import re
 import stat
 import subprocess
 from pathlib import Path
+from cross_platform import SystemUtils
 
 RED = "\033[91m"
 YELLOW = "\033[93m"
@@ -63,7 +64,6 @@ def get_existing_aliases_from_file(alias_file):
                     aliases[alias_name] = alias_value
     return aliases
 
-
 def write_aliases(bin_dir, alias_file, dotfiles_dir):
     """Write aliases to the dynamic shell config file and ensure no conflicts."""
     aliases = parse_alias_file(alias_file)
@@ -97,13 +97,14 @@ def write_aliases(bin_dir, alias_file, dotfiles_dir):
 
         print(f"{GREEN}✅ Aliases updated in {shell_config}.{RESET}")
 
-        # ✅ Source the file to apply changes immediately
-        subprocess.run(["zsh", "-c", f"source {shell_config}"], check=False)
-        print(f"{GREEN}✅ Aliases have been applied. You can now use them immediately.{RESET}")
+        # ✅ Source the file to apply changes automatically (if supported)
+        sys_utils = SystemUtils()
+        if sys_utils.source_file(str(shell_config)):
+            print(f"{GREEN}✅ Aliases have been applied. You can now use them immediately.{RESET}")
+        else:
+            print(f"{YELLOW}⚠️ Automatic sourcing of aliases is not supported on your system. Please source {shell_config} manually.{RESET}")
     else:
         print(f"{YELLOW}🔹 No new aliases to write. {shell_config} remains unchanged.{RESET}")
-
-
 
 def ensure_symlinks(scripts_dir, bin_dir):
     """Ensure all Python scripts in pyscripts/ are symlinked to bin/ with executable permissions."""

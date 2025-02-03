@@ -6,6 +6,7 @@ append_clipboard.py : apc
 clipboard_replace.py : crx
 copy_to_clipboard.py : c2c
 replace_with_clipboard.py : rwc
+output_to_clipboard.py : otc
 run_pattern.py : rpt
 delete_files.py : ddf
 git_sync.py : gsy

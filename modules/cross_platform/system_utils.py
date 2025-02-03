@@ -10,23 +10,10 @@ class SystemUtils:
         self.os_name = platform.system().lower()
         write_debug(f"Initialized SystemUtils for OS: {self.os_name}", channel="Debug")
 
-        #def is_termux(self) -> bool:
-        #    """
-        #    Detect if running inside Termux.
-        #    Returns True if the environment variables indicate an Android Termux environment
-        #    and false if running under WSL2.
-        #    """
-        #    is_termux = "ANDROID_ROOT" in os.environ and "com.termux" in os.environ.get("SHELL", "")
-        #    # Ensure that if we're in a WSL2 environment, we don't consider it Termux.
-        #    if self.is_wsl2():
-        #        is_termux = False
-        #    write_debug(f"is_termux: {is_termux}", channel="Debug")
-        #    return is_termux
     def is_termux(self) -> bool:
         is_termux = "ANDROID_ROOT" in os.environ and "com.termux" in os.environ.get("SHELL", "")
         write_debug(f"is_termux: {is_termux}", channel="Debug")
         return is_termux
-
 
     def is_wsl2(self) -> bool:
         """
@@ -56,4 +43,28 @@ class SystemUtils:
         except Exception as e:
             write_debug(f"Exception while running command '{command}': {e}", channel="Critical")
             return ""
+
+    def source_file(self, filepath: str) -> bool:
+        """
+        Source a file in the shell. This is intended for Unix-like systems.
+        Returns True if the sourcing command succeeds, False otherwise.
+        """
+        try:
+            # Only source on Linux or macOS (and not under Termux)
+            if self.os_name in ["linux", "darwin"] and not self.is_termux():
+                command = f"source {filepath}"
+                write_debug(f"Attempting to source file with command: {command}", channel="Debug")
+                result = subprocess.run(["zsh", "-c", command], text=True, capture_output=True)
+                if result.returncode == 0:
+                    write_debug(f"Sourced file successfully: {filepath}", channel="Debug")
+                    return True
+                else:
+                    write_debug(f"Failed to source file: {filepath}\nError: {result.stderr.strip()}", channel="Error")
+                    return False
+            else:
+                write_debug(f"Automatic sourcing not supported on OS: {self.os_name} or under Termux.", channel="Debug")
+                return False
+        except Exception as e:
+            write_debug(f"Exception while sourcing file {filepath}: {e}", channel="Critical")
+            return False
 

@@ -2,6 +2,7 @@ import os
 import subprocess
 import platform
 import pytest
+
 from cross_platform.system_utils import SystemUtils
 from cross_platform.network_utils import NetworkUtils
 from cross_platform.process_manager import ProcessManager
@@ -34,6 +35,50 @@ def test_run_command_success(monkeypatch):
     # Use a command that should work on most systems.
     output = sys_utils.run_command("echo test")
     assert "test" in output
+
+# --- New tests for source_file() ---
+
+def test_source_file_success(monkeypatch):
+    sys_utils = SystemUtils()
+    sys_utils.os_name = "linux"
+    # Ensure we're not under Termux
+    monkeypatch.setattr(sys_utils, "is_termux", lambda: False)
+    # Fake subprocess.run to simulate a successful source command.
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = sys_utils.source_file("/fake/path/to/file.zsh")
+    assert result is True
+
+def test_source_file_failure(monkeypatch):
+    sys_utils = SystemUtils()
+    sys_utils.os_name = "linux"
+    monkeypatch.setattr(sys_utils, "is_termux", lambda: False)
+    # Simulate failure by returning a non-zero exit code.
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="error")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = sys_utils.source_file("/fake/path/to/file.zsh")
+    assert result is False
+
+def test_source_file_exception(monkeypatch):
+    sys_utils = SystemUtils()
+    sys_utils.os_name = "linux"
+    monkeypatch.setattr(sys_utils, "is_termux", lambda: False)
+    # Simulate an exception in subprocess.run.
+    def fake_run(cmd, **kwargs):
+        raise Exception("boom")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = sys_utils.source_file("/fake/path/to/file.zsh")
+    assert result is False
+
+def test_source_file_not_supported(monkeypatch):
+    sys_utils = SystemUtils()
+    # Simulate an unsupported OS (e.g., Windows)
+    sys_utils.os_name = "windows"
+    monkeypatch.setattr(sys_utils, "is_termux", lambda: False)
+    result = sys_utils.source_file("/fake/path/to/file.zsh")
+    assert result is False
 
 # -----------------------
 # Tests for network_utils.py
@@ -81,7 +126,6 @@ def test_kill_process(monkeypatch):
     proc_mgr = ProcessManager()
     proc_mgr.os_name = "linux"
     output = proc_mgr.kill_process("dummy_process")
-    # Instead of checking for 'pkill' in output, we now check the fake return string.
     assert output == "killed process"
 
 # -----------------------
@@ -124,7 +168,6 @@ def test_get_clipboard_linux(monkeypatch):
     monkeypatch.setattr(ClipboardUtils, "run_command", fake_run_command_clipboard)
     cp = ClipboardUtils()
     cp.os_name = "linux"
-    # Ensure is_wsl2 returns False so that Linux branch is used.
     monkeypatch.setattr(cp, "is_wsl2", lambda: False)
     result = cp.get_clipboard()
     assert result == "linux clipboard"
@@ -133,25 +176,20 @@ def test_get_clipboard_windows(monkeypatch):
     monkeypatch.setattr(ClipboardUtils, "run_command", fake_run_command_clipboard)
     cp = ClipboardUtils()
     cp.os_name = "windows"
-    # Force is_wsl2() to return False so the Windows branch is taken.
     monkeypatch.setattr(cp, "is_wsl2", lambda: False)
     result = cp.get_clipboard()
     assert result == "windows clipboard"
 
 def test_set_clipboard_windows(monkeypatch):
-    # To test set_clipboard we override subprocess.run
     captured = {}
-
     def fake_subprocess_run(args, **kwargs):
         captured["args"] = args
         return subprocess.CompletedProcess(args, 0)
-
     monkeypatch.setattr("cross_platform.clipboard_utils.subprocess.run", fake_subprocess_run)
     cp = ClipboardUtils()
     cp.os_name = "windows"
     monkeypatch.setattr(cp, "is_wsl2", lambda: False)
     cp.set_clipboard("test text")
-    # Check that the command contains Set-Clipboard
     assert any("Set-Clipboard" in arg for arg in captured["args"])
 
 # -----------------------
@@ -159,7 +197,6 @@ def test_set_clipboard_windows(monkeypatch):
 # -----------------------
 
 def test_write_debug_stdout(capsys):
-    # Clear any file logging to only capture console output.
     write_debug("Test debug message", channel="Debug", location_channels=False)
     captured = capsys.readouterr().out
     assert "Test debug message" in captured
