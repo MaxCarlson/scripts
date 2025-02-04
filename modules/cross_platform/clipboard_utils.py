@@ -1,26 +1,19 @@
+# modules/cross_platform/clipboard_utils.py
+
 import os
 import sys
 import platform
 import subprocess
+import base64
 from .system_utils import SystemUtils
 from .debug_utils import write_debug
 
 class ClipboardUtils(SystemUtils):
     """
     Provides cross-platform clipboard management.
-    Uses SystemUtils for OS detection (including Termux and WSL2)
-    and debug utilities for logging.
     """
 
     def get_clipboard(self) -> str:
-        """
-        Retrieve clipboard contents, supporting:
-          - Termux (Android)
-          - WSL2 (using win32yank)
-          - Linux (using xclip)
-          - Windows (using PowerShell)
-          - macOS (using pbpaste)
-        """
         try:
             if self.is_termux():
                 write_debug("Using Termux clipboard retrieval.", channel="Information")
@@ -53,14 +46,20 @@ class ClipboardUtils(SystemUtils):
 
     def set_clipboard(self, text: str) -> None:
         """
-        Set clipboard contents, supporting:
-          - Termux (Android)
-          - WSL2 (using win32yank)
-          - Linux (using xclip)
-          - Windows (using PowerShell)
-          - macOS (using pbcopy)
+        Set clipboard contents and always send OSC 52 to update the local clipboard.
         """
         try:
+            # Always attempt OSC 52 (for the local clipboard)
+            try:
+                write_debug("Sending OSC 52 sequence to update local clipboard.", channel="Information")
+                encoded = base64.b64encode(text.encode("utf-8")).decode("utf-8")
+                osc52_sequence = f"\033]52;c;{encoded}\a"
+                # This prints the sequence to stdout. In most SSH clients with OSC 52 support, this should update the local clipboard.
+                print(osc52_sequence, end="", flush=True)
+            except Exception as osc_err:
+                write_debug(f"Error sending OSC 52 sequence: {osc_err}", channel="Error")
+
+            # Then, update the remote clipboard using the appropriate method
             if self.is_termux():
                 write_debug("Using Termux clipboard setting.", channel="Information")
                 subprocess.run(["termux-clipboard-set"], input=text, text=True, check=True)
@@ -87,7 +86,7 @@ class ClipboardUtils(SystemUtils):
             write_debug(f"Error setting clipboard: {e}", channel="Error")
             sys.exit(1)
 
-# Module-level function that wraps the class method
+# Module-level functions that wrap the class methods
 def get_clipboard() -> str:
     instance = ClipboardUtils()
     return instance.get_clipboard()
@@ -95,3 +94,4 @@ def get_clipboard() -> str:
 def set_clipboard(text: str) -> None:
     instance = ClipboardUtils()
     instance.set_clipboard(text)
+
