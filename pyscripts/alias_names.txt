@@ -10,3 +10,4 @@ output_to_clipboard.py : otc
 run_pattern.py : rpt
 delete_files.py : ddf
 git_sync.py : gsy
+deduplicator.py% : ddd
