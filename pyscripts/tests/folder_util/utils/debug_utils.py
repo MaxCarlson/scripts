@@ -1,15 +1,10 @@
+# folder_util/utils/debug_utils.py
+
 import inspect
 import sys
 import platform
 import os
-import sys
-import glob
 import datetime
-from pathlib import Path
-from rich.table import Table
-from rich.console import Console
-
-console = Console()
 
 # --- Configuration ---
 DEFAULT_CONSOLE_VERBOSITY = "Debug"
@@ -27,38 +22,31 @@ _log_dir = DEFAULT_LOG_DIR
 _log_file_enabled = False          # Indicates if file logging is enabled
 _current_log_filepath = None       # Path to the currently active log file
 
-# --- Utility Functions ---
 def set_console_verbosity(level: str = DEFAULT_CONSOLE_VERBOSITY) -> None:
-    """Set the global verbosity level for console output."""
     global _console_verbosity_level
     _console_verbosity_level = _validate_verbosity_level(level, "console")
 
 def set_log_verbosity(level: str = DEFAULT_LOG_VERBOSITY) -> None:
-    """Set the global verbosity level for file logging."""
     global _log_verbosity_level
     _log_verbosity_level = _validate_verbosity_level(level, "log")
 
 def set_log_directory(filepath: str = DEFAULT_LOG_DIR) -> None:
-    """Set the directory where log files will be stored."""
     global _log_dir
     _log_dir = os.path.expanduser(filepath)
 
 def enable_file_logging() -> None:
-    """Enable logging to file."""
     global _log_file_enabled, _current_log_filepath
-    print("[Debug] Enabling file logging...")  # Debug print; can be removed if not desired
+    print("[Debug] Enabling file logging...")
     _log_file_enabled = True
     _current_log_filepath = _initialize_log_file()
     print(f"[Debug] Current log file: {_current_log_filepath}")
 
 def disable_file_logging() -> None:
-    """Disable logging to file."""
     global _log_file_enabled, _current_log_filepath
     _log_file_enabled = False
     _current_log_filepath = None
 
 def _validate_verbosity_level(level: str, target_type: str) -> str:
-    """Validate verbosity level and raise ValueError if invalid."""
     verbosity_levels = ["Verbose", "Debug", "Information", "Warning", "Error", "Critical"]
     level_capitalized = level.capitalize()
     if level_capitalized not in verbosity_levels:
@@ -66,17 +54,12 @@ def _validate_verbosity_level(level: str, target_type: str) -> str:
     return level_capitalized
 
 def _is_at_verbosity_level(channel: str, verbosity_level: str) -> bool:
-    """Check if a channel is at or above the given verbosity level."""
     verbosity_levels = ["Verbose", "Debug", "Information", "Warning", "Error", "Critical"]
     current_index = verbosity_levels.index(verbosity_level)
     channel_index = verbosity_levels.index(channel.capitalize())
     return channel_index >= current_index
 
 def _get_log_filename_prefix() -> str:
-    """
-    Determine a log filename prefix based on the git repository name
-    or fallback to a default name.
-    """
     try:
         import git
         repo = git.Repo('.', search_parent_directories=True)
@@ -86,7 +69,6 @@ def _get_log_filename_prefix() -> str:
         return "cross_platform_log"
 
 def _initialize_log_file() -> str:
-    """Initialize and return the log file path, handling rotation and cleanup."""
     log_prefix = _get_log_filename_prefix()
     caller_filename = os.path.splitext(os.path.basename(inspect.stack()[2].filename))[0]
     date_str = datetime.date.today().isoformat()
@@ -97,7 +79,6 @@ def _initialize_log_file() -> str:
     os.makedirs(log_dir, exist_ok=True)
     log_filepath = os.path.join(log_dir, log_filename)
 
-    # Rotate log file if too large
     if os.path.exists(log_filepath) and os.path.getsize(log_filepath) > MAX_LOG_FILE_SIZE_KB * 1024:
         _rotate_logs(log_dir, log_filename)
 
@@ -105,7 +86,6 @@ def _initialize_log_file() -> str:
     return log_filepath
 
 def _rotate_logs(log_dir: str, current_log_filename: str) -> None:
-    """Rotate the current log file."""
     base, ext = os.path.splitext(current_log_filename)
     timestamp = datetime.datetime.now().strftime("%H%M%S")
     rotated_filename = f"{base}_{timestamp}{ext}"
@@ -118,7 +98,6 @@ def _rotate_logs(log_dir: str, current_log_filename: str) -> None:
         print(f"[Warning] Log rotation failed: {e}")
 
 def _cleanup_old_logs(log_dir: str) -> None:
-    """Cleanup old log files if necessary."""
     log_files = sorted(
         [entry for entry in os.scandir(log_dir) if entry.is_file() and entry.name.endswith(LOG_FILE_EXTENSION)],
         key=lambda entry: entry.stat().st_mtime
@@ -127,13 +106,11 @@ def _cleanup_old_logs(log_dir: str) -> None:
     max_total_bytes = MAX_TOTAL_LOG_SIZE_MB * 1024 * 1024
 
     files_to_delete = []
-    # Delete oldest files if total size exceeds limit
     while total_size > max_total_bytes and log_files:
         oldest = log_files.pop(0)
         files_to_delete.append(oldest)
         total_size -= oldest.stat().st_size
 
-    # Also enforce a maximum number of log files
     if len(log_files) + len(files_to_delete) > MAX_LOG_FILES:
         excess = (len(log_files) + len(files_to_delete)) - MAX_LOG_FILES
         files_to_delete.extend(log_files[:excess])
@@ -147,15 +124,6 @@ def _cleanup_old_logs(log_dir: str) -> None:
 
 def write_debug(message: str = "", channel: str = "Debug", condition: bool = True,
                 output_stream: str = "stdout", location_channels=None) -> None:
-    """
-    Write a debug message to console and, if enabled, to the log file.
-    Parameters:
-      - message: The debug message.
-      - channel: One of ("Verbose", "Debug", "Information", "Warning", "Error", "Critical").
-      - condition: If False, the message will not be processed.
-      - output_stream: "stdout" or "stderr".
-      - location_channels: If True, always show caller location; if list, only for specified channels.
-    """
     if not condition:
         return
 
@@ -164,7 +132,6 @@ def write_debug(message: str = "", channel: str = "Debug", condition: bool = Tru
 
     output_message = message
 
-    # Determine whether to include caller location
     show_location = False
     if isinstance(location_channels, bool):
         show_location = location_channels
@@ -175,7 +142,6 @@ def write_debug(message: str = "", channel: str = "Debug", condition: bool = Tru
         caller = inspect.stack()[1]
         output_message = f"[{caller.filename}:{caller.lineno}] {message}"
 
-    # Color mapping for terminal output (if supported)
     color_map = {
         "Error": "\033[91m", "Warning": "\033[93m", "Verbose": "\033[90m",
         "Information": "\033[96m", "Debug": "\033[92m", "Critical": "\033[95m"
@@ -185,13 +151,10 @@ def write_debug(message: str = "", channel: str = "Debug", condition: bool = Tru
     color = color_map.get(channel_cap, "") if supports_color else ""
     formatted_message = f"{color}[{channel_cap}]{reset_color} {output_message}" if color else f"[{channel_cap}] {output_message}"
 
-    # Console output
     stream = sys.stdout if output_stream.lower() == "stdout" else sys.stderr
     if _is_at_verbosity_level(channel_cap, _console_verbosity_level):
-
         print(formatted_message, file=stream)
 
-    # File logging
     if _log_file_enabled and _is_at_verbosity_level(channel_cap, _log_verbosity_level):
         if not _current_log_filepath:
             _current_log_filepath = _initialize_log_file()
@@ -200,21 +163,3 @@ def write_debug(message: str = "", channel: str = "Debug", condition: bool = Tru
                 log_file.write(f"[{channel_cap}] {output_message}\n")
         except Exception as e:
             print(f"[Error] Failed to write to log file {_current_log_filepath}: {e}")
-
-
-def print_parsed_args(args):
-    """
-    Given an argparse.Namespace (as returned by parser.parse_args()),
-    print the script name/path and all argument names with their current values.
-    """
-    script_path = Path(sys.argv[0]).resolve()
-    console.rule(f"[bold blue] Script: {script_path} [/]")
-    table = Table(show_header=True, header_style="bold magenta")
-    table.add_column("Argument")
-    table.add_column("Value", overflow="fold")
-
-    # Convert Namespace to dict.
-    args_dict = vars(args)
-    for key, value in sorted(args_dict.items()):
-        table.add_row(key, str(value))
-    console.print(table)

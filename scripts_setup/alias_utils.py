@@ -1,3 +1,110 @@
+import re
+import subprocess
+from pathlib import Path
+
+RED = "\033[91m"
+YELLOW = "\033[93m"
+GREEN = "\033[92m"
+RESET = "\033[0m"
+
+def command_exists(command: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["zsh", "-c", f"command -v {command}"],
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode == 0
+    except Exception as e:
+        print(f"{YELLOW}⚠️ Warning: Could not check command existence for `{command}`: {e}{RESET}")
+        return False
+
+def parse_alias_file(alias_file: Path) -> dict:
+    aliases = {}
+    if not alias_file.exists():
+        print(f"{YELLOW}⚠️ Alias file not found: {alias_file}. Skipping alias setup.{RESET}")
+        return aliases
+    with open(alias_file, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            match = re.match(r"^(.+?)\s*:\s*(.+?)$", line)
+            if match:
+                script, alias = match.groups()
+                aliases[script.strip()] = alias.strip()
+            else:
+                print(f"{YELLOW}⚠️ Invalid alias format in {alias_file}: {line}{RESET}")
+    return aliases
+
+def get_existing_aliases(alias_config: Path) -> dict:
+    aliases = {}
+    if alias_config.exists():
+        with open(alias_config, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("alias "):
+                    parts = line.split("=", 1)
+                    if len(parts) == 2:
+                        alias_name = parts[0].replace("alias", "").strip()
+                        alias_value = parts[1].strip().strip('"')
+                        aliases[alias_name] = alias_value
+    return aliases
+
+def alias_target(bin_dir: Path, script: str, ext: str) -> Path:
+    if script.endswith(ext):
+        script = script[:-len(ext)]
+    return bin_dir / script
+
+def write_aliases(aliases: dict, bin_dir: Path, alias_config: Path, ext: str, verbose: bool = False) -> None:
+    """
+    Write alias definitions to alias_config.
+    In verbose mode, prints all aliases as:
+      alias_name : alias_value
+    In non-verbose mode, prints only the aliases that are newly created (i.e. did not exist before).
+    """
+    temp_aliases = []
+    existing_aliases = get_existing_aliases(alias_config)
+    newly_created = {}
+
+    for script, alias in aliases.items():
+        target = alias_target(bin_dir, script, ext)
+        # If the alias already exists with the same value, consider it not new.
+        if alias in existing_aliases and str(existing_aliases[alias]) == str(target):
+            if verbose:
+                print(f"🔹 Alias already exists: {alias} : {target}")
+        else:
+            newly_created[alias] = target
+        temp_aliases.append(f'alias {alias}="{target}"')
+
+    alias_config.parent.mkdir(parents=True, exist_ok=True)
+    with open(alias_config, "w", encoding="utf-8") as f:
+        f.write("\n".join(temp_aliases) + "\n")
+    print(f"{GREEN}✅ Aliases updated in {alias_config}.{RESET}")
+
+    # Print alias details:
+    print("---------- Alias Definitions ----------")
+    if verbose:
+        for line in temp_aliases:
+            parts = line.split("=", 1)
+            if len(parts) == 2:
+                alias_name = parts[0].replace("alias", "").strip()
+                alias_value = parts[1].strip().strip('"')
+                print(f"{alias_name} : {alias_value}")
+    else:
+        if newly_created:
+            print("Newly created aliases:")
+            for alias, target in newly_created.items():
+                print(f"{alias} : {target}")
+        else:
+            print("No new aliases were created.")
+    print("---------------------------------------")
+    
+    try:
+        subprocess.run(["zsh", "-c", f"source {alias_config}"], check=True)
+        print(f"{GREEN}✅ Aliases have been applied. You can now use them immediately.{RESET}")
+    except subprocess.CalledProcessError:
+        print(f"{YELLOW}⚠️ Automatic sourcing of aliases failed. Please source {alias_config} manually.{RESET}")
 #!/usr/bin/env python3
 import os
 import sys

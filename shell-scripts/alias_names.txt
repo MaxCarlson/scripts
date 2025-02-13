@@ -1,0 +1,5 @@
+# File of aliases for these scriots once theyve been syml8nked to bin
+# syntax
+# name_of_script.py : alias_name
+
+copyrsync.sh : cpr

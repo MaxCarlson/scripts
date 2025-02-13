@@ -58,31 +58,54 @@ def split_into_sections(text):
     sections = [section.strip() for section in sections if section.strip()]
     return sections
 
-def find_section_by_keyword(sections, keyword):
+def is_folder_structure_section(section):
     """
-    Returns the first section that contains the given keyword (case-insensitive).
+    Heuristically determine if a section looks like a folder structure.
+    It checks for at least one line that ends with '/' and at least one tree-drawing character.
+    """
+    lines = section.splitlines()
+    has_root = any(line.strip().endswith("/") for line in lines)
+    has_tree_chars = any(any(ch in line for ch in "├└│") for line in lines)
+    return has_root and (has_tree_chars or len(lines) > 1)
+
+def detect_folder_structure_section(sections):
+    """
+    Returns the first section that looks like a folder structure.
     """
     for section in sections:
-        if keyword.lower() in section.lower():
+        if is_folder_structure_section(section):
             return section
     return None
 
+def is_file_section(section):
+    """
+    Heuristically decide if a section defines a file.
+    We assume that the file section’s first nonempty line is a file path.
+    """
+    lines = [line for line in section.splitlines() if line.strip()]
+    if not lines:
+        return False
+    first_line = lines[0].strip()
+    # If the first line is a file path, it will usually contain a slash or a dot.
+    if "/" in first_line or "\\" in first_line or '.' in first_line:
+        return True
+    return False
+
 def extract_file_sections(sections):
     """
-    From the list of sections, return those that look like file definitions.
-    We assume that a file section contains a header line starting with a number and a dot.
+    Returns sections that look like file definitions.
     """
     file_sections = []
-    file_section_pattern = re.compile(r'^\s*\d+\.\s+.*$', re.MULTILINE)
     for section in sections:
-        if file_section_pattern.search(section):
+        if is_file_section(section):
             file_sections.append(section)
     return file_sections
 
 def parse_file_section(section):
     """
     Parses a section that defines one file.
-    Expects a header line like "1. web_scraper/__init__.py" and then the file contents.
+    Expects the first nonempty line to be the file path (optionally prefixed with numbering)
+    and the rest of the section to be the file contents.
     
     Returns:
         file_path (str): the relative file path.
@@ -91,11 +114,12 @@ def parse_file_section(section):
     lines = section.splitlines()
     file_path = None
     header_line_index = None
-    header_pattern = re.compile(r'^\s*\d+\.\s+(.*)$')
     for i, line in enumerate(lines):
-        m = header_pattern.match(line)
-        if m:
-            file_path = m.group(1).strip()
+        if line.strip():
+            header_line = line.strip()
+            # Remove any leading numbering like "1. " if present.
+            m = re.match(r'^(\d+\.\s+)?(.*)$', header_line)
+            file_path = m.group(2).strip() if m else header_line
             header_line_index = i
             break
     if file_path is None:
@@ -119,23 +143,23 @@ def parse_folder_structure(section):
     tree_lines = []
     start_collecting = False
     for line in lines:
-        stripped = line.strip()
-        # Start when we see a line that ends with "/" and looks like a folder name
+        stripped = line.rstrip()
+        # Start when we see a line that ends with "/" (likely the root)
         if not start_collecting and stripped.endswith("/"):
             start_collecting = True
         if start_collecting:
             if stripped:
-                tree_lines.append(line.rstrip())
+                tree_lines.append(stripped)
     directories = set()
     files = set()
     root = ""
     if tree_lines:
-        # Assume first line is the root directory (e.g., "web_scraper/")
+        # Assume first line is the root directory (e.g., "folder_util/")
         root = tree_lines[0].strip().rstrip("/")
         directories.add(root)
         # Process subsequent lines:
         for line in tree_lines[1:]:
-            # Remove common tree-drawing characters (like ├──, └──) and whitespace.
+            # Remove common tree-drawing characters and whitespace.
             line_clean = re.sub(r'^[\s│├└─]+', '', line).strip()
             if not line_clean:
                 continue
@@ -188,8 +212,8 @@ def main():
     # Split text into sections using '---' as a delimiter.
     sections = split_into_sections(text)
     
-    # Attempt to find the folder structure section.
-    folder_section = find_section_by_keyword(sections, "Folder Structure")
+    # Detect folder structure section (if any)
+    folder_section = detect_folder_structure_section(sections)
     if folder_section:
         folder_structure = parse_folder_structure(folder_section)
         if args.verbose:
@@ -197,8 +221,9 @@ def main():
             print("  Root:", folder_structure["root"])
             print("  Directories:", folder_structure["directories"])
             print("  Files (from tree):", folder_structure["files"])
-        # Create directories from the tree.
         create_directories(folder_structure["directories"], args.output, dry_run=args.dry_run, verbose=args.verbose)
+        # Remove the folder structure section from further processing
+        sections.remove(folder_section)
     else:
         if args.verbose:
             print("No folder structure section found.")
