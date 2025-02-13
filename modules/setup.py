@@ -4,7 +4,8 @@ import sys
 import argparse
 import subprocess
 from pathlib import Path
-from scripts_setup import setup_utils  # Shared utilities, if needed
+from scripts_setup import setup_utils  # existing utilities
+from standard_ui.standard_ui import log_info, log_warning, log_error, log_success, section
 
 GREEN = "\033[92m"
 RED = "\033[91m"
@@ -12,12 +13,6 @@ YELLOW = "\033[93m"
 RESET = "\033[0m"
 
 def get_module_install_mode(module_path: Path) -> str:
-    """
-    Returns the install mode of the module:
-      - "editable" if installed with -e,
-      - "normal" if installed normally,
-      - None if not installed.
-    """
     module_name = module_path.name
     result = subprocess.run(
         [sys.executable, "-m", "pip", "list", "--format=freeze"],
@@ -39,21 +34,21 @@ def is_module_installed(module_path: Path) -> bool:
 
 def install_python_modules(modules_dir: Path, skip_reinstall: bool, production: bool, verbose: bool) -> None:
     if not modules_dir.exists():
-        print(f"{YELLOW}⚠️ No 'modules' directory found at {modules_dir}. Skipping installation.{RESET}")
+        log_warning(f"No 'modules' directory found at {modules_dir}. Skipping installation.")
         return
 
-    print(f"🔍 Scanning for modules inside: {modules_dir}")
+    log_info(f"Scanning for modules inside: {modules_dir}")
     found_any = False
 
     for module in modules_dir.iterdir():
         if not module.is_dir():
-            print(f"{YELLOW}⚠️ Skipping {module}, not a directory.{RESET}")
+            log_warning(f"Skipping {module}, not a directory.")
             continue
 
         setup_py = module / "setup.py"
         pyproject_toml = module / "pyproject.toml"
         if not setup_py.exists() and not pyproject_toml.exists():
-            print(f"{YELLOW}⚠️ Skipping {module.name}, no setup.py or pyproject.toml found.{RESET}")
+            log_warning(f"Skipping {module.name}, no setup.py or pyproject.toml found.")
             continue
 
         found_any = True
@@ -63,39 +58,39 @@ def install_python_modules(modules_dir: Path, skip_reinstall: bool, production: 
             install_cmd.append("-e")  # Editable mode
         install_cmd.append(str(module))
 
-        # Check current install mode if skip_reinstall is enabled.
         if skip_reinstall:
             installed_mode = get_module_install_mode(module)
             desired_mode = "editable" if not production else "normal"
             if installed_mode == desired_mode:
-                print(f"⏭ Module already installed ({installed_mode}): {module.name}. Skipping.")
+                log_info(f"⏭ Module already installed ({installed_mode}): {module.name}. Skipping.")
                 continue
 
         mode_text = "(production mode)" if production else "(development mode)"
         if verbose:
-            print(f"🚀 Installing: {module.name} {mode_text}")
+            log_info(f"Installing: {module.name} {mode_text}")
         else:
-            print(f"🚀 Installing: {module.name} {mode_text}...", end=" ")
+            sys.stdout.write(f"Installing: {module.name} {mode_text}... ")
+            sys.stdout.flush()
 
         try:
             if verbose:
                 subprocess.run(install_cmd, check=True)
-                print(f"{GREEN}✅{RESET}")
+                log_success("✅")
             else:
                 result = subprocess.run(install_cmd, check=True,
                                           stdout=subprocess.PIPE,
                                           stderr=subprocess.PIPE,
                                           text=True)
-                print(f"{GREEN}✅{RESET}")
+                sys.stdout.write(f"{GREEN}✅{RESET}\n")
         except subprocess.CalledProcessError as e:
             if verbose:
-                print(f"{RED}❌ Failed to install {module.name}:{RESET}")
-                print(e.stderr)
+                log_error(f"Failed to install {module.name}:")
+                log_error(e.stderr)
             else:
-                print(f"{RED}❌{RESET}")
-                print(e.stderr)
+                sys.stdout.write(f"{RED}❌{RESET}\n")
+                sys.stdout.write(e.stderr + "\n")
     if not found_any:
-        print(f"{RED}❌ No valid modules found in {modules_dir}. Check if they have setup.py or pyproject.toml.{RESET}")
+        log_error(f"No valid modules found in {modules_dir}. Check if they have setup.py or pyproject.toml.")
 
 def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path) -> None:
     pythonpath_dynamic = dotfiles_dir / "dynamic/setup_modules.zsh"
@@ -103,24 +98,24 @@ def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path) -> None:
     pythonpath_entry = f'export PYTHONPATH="{modules_dir}:$PYTHONPATH"\n'
     current_pythonpath = os.environ.get("PYTHONPATH", "").split(":")
     if str(modules_dir) in current_pythonpath:
-        print(f"✅ PYTHONPATH already includes {modules_dir}. No changes needed.")
+        log_success(f"PYTHONPATH already includes {modules_dir}. No changes needed.")
         return
-    print(f"🔄 Updating PYTHONPATH to include {modules_dir}...")
+    log_info(f"Updating PYTHONPATH to include {modules_dir}...")
     with open(pythonpath_dynamic, "w", encoding="utf-8") as f:
         f.write(pythonpath_entry)
-    print(f"✅ Updated PYTHONPATH in {pythonpath_dynamic}")
+    log_success(f"Updated PYTHONPATH in {pythonpath_dynamic}")
     try:
         subprocess.run(["zsh", "-c", f"source {pythonpath_dynamic}"], check=True)
-        print(f"✅ Sourced {pythonpath_dynamic}. Python path changes applied immediately.")
+        log_success(f"Sourced {pythonpath_dynamic}. Python path changes applied immediately.")
     except Exception as e:
-        print(f"❌ Failed to source {pythonpath_dynamic}: {e}")
+        log_error(f"Failed to source {pythonpath_dynamic}: {e}")
 
 def main(scripts_dir: Path, dotfiles_dir: Path, bin_dir: Path, skip_reinstall: bool, production: bool, verbose: bool) -> None:
-    print("\n========== Starting MODULES SETUP ==========")
-    modules_dir = scripts_dir / "modules"
-    install_python_modules(modules_dir, skip_reinstall, production, verbose)
-    ensure_pythonpath(modules_dir, dotfiles_dir)
-    print("========== Finished MODULES SETUP ==========\n")
+    with section("Starting MODULES SETUP"):
+        modules_dir = scripts_dir / "modules"
+        install_python_modules(modules_dir, skip_reinstall, production, verbose)
+        ensure_pythonpath(modules_dir, dotfiles_dir)
+    log_info("Finished MODULES SETUP.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Setup Python modules and PYTHONPATH.")

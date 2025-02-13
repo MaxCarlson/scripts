@@ -7,38 +7,44 @@ import importlib
 import subprocess
 from pathlib import Path
 
+# Import our unified UI functions
+from standard_ui.standard_ui import (
+    init_timer,
+    print_global_elapsed,
+    log_info,
+    log_success,
+    log_warning,
+    log_error,
+    section,
+)
+
 SCRIPTS_DIR = Path(__file__).resolve().parent
 DOTFILES_DIR = Path(os.environ.get("DOTFILES", SCRIPTS_DIR.parent / "dotfiles"))
 BIN_DIR = SCRIPTS_DIR / "bin"
 MODULES_DIR = SCRIPTS_DIR / "modules"
 SCRIPTS_SETUP_DIR = SCRIPTS_DIR / "scripts_setup"
 CROSS_PLATFORM_DIR = MODULES_DIR / "cross_platform"
+STANDARD_UI_SETUP_DIR = MODULES_DIR / "standard_ui"
 
 def ensure_module_installed(module_import: str, install_path: Path):
-    """
-    Ensure that a module can be imported.
-    If not, install it using pip in editable mode from the provided path.
-    
-    :param module_import: The name of the module to import (e.g., "scripts_setup" or "debug_utils").
-    :param install_path: The filesystem path to install the module from.
-    """
     try:
         importlib.import_module(module_import)
-        print(f"✅ {module_import} is installed.")
+        log_success(f"{module_import} is installed.")
     except ImportError:
-        print(f"🔄 {module_import} not found. Installing from {install_path} ...")
+        log_info(f"{module_import} not found. Installing from {install_path} ...")
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-e", str(install_path)],
             check=True
         )
         try:
             importlib.import_module(module_import)
-            print(f"✅ Successfully installed {module_import}.")
+            log_success(f"Successfully installed {module_import}.")
         except ImportError:
-            print(f"❌ Failed to import {module_import} even after installation.")
+            log_error(f"Failed to import {module_import} even after installation.")
             sys.exit(1)
 
 required_modules = {
+    "standard_ui": STANDARD_UI_SETUP_DIR,
     "scripts_setup": SCRIPTS_SETUP_DIR,
     "cross_platform": CROSS_PLATFORM_DIR,
     # Add other required modules here.
@@ -49,10 +55,10 @@ for mod, path in required_modules.items():
 
 def run_setup(script_path, *args):
     if script_path.exists():
-        print(f"🔄 Running {script_path} ...")
+        log_info(f"Running {script_path} ...")
         subprocess.run([sys.executable, str(script_path)] + list(args), check=True)
     else:
-        print(f"⚠️ Setup script {script_path} not found. Skipping.")
+        log_warning(f"Setup script {script_path} not found. Skipping.")
 
 def main():
     parser = argparse.ArgumentParser(description="Master setup script.")
@@ -63,14 +69,17 @@ def main():
     parser.add_argument("--verbose", "-v", action="store_true", help="Show detailed output")
     args = parser.parse_args()
 
-    print("\n=== Running Master Setup Script ===\n")
+    # Start the global timer.
+    init_timer()
+
+    log_info("=== Running Master Setup Script ===")
 
     if "microsoft" in platform.uname().release.lower():
-        print("🔄 Detected WSL2 environment. Running win32yank setup...")
+        log_info("Detected WSL2 environment. Running win32yank setup...")
         wsl2_setup = SCRIPTS_DIR / "scripts_setup/setup_wsl2.py"
         subprocess.run([sys.executable, str(wsl2_setup)], check=True)
     else:
-        print("✅ Not running on WSL2. Skipping win32yank setup.")
+        log_success("Not running on WSL2. Skipping win32yank setup.")
 
     common_args = [
         "--scripts-dir", str(SCRIPTS_DIR),
@@ -93,15 +102,20 @@ def main():
                 extra_args.append("--skip-reinstall")
             if args.production:
                 extra_args.append("--production")
-        run_setup(SCRIPTS_DIR / script, *common_args, *extra_args)
+        with section(f"Running {script}"):
+            run_setup(SCRIPTS_DIR / script, *common_args, *extra_args)
 
-    path_setup_args = [
-        "--bin-dir", str(BIN_DIR),
-        "--dotfiles-dir", str(DOTFILES_DIR)
-    ]
-    if args.verbose:
-        path_setup_args.append("--verbose")
-    run_setup(SCRIPTS_DIR / "scripts_setup/setup_path.py", *path_setup_args)
+    with section("Running scripts_setup/setup_path.py"):
+        path_setup_args = [
+            "--bin-dir", str(BIN_DIR),
+            "--dotfiles-dir", str(DOTFILES_DIR)
+        ]
+        if args.verbose:
+            path_setup_args.append("--verbose")
+        run_setup(SCRIPTS_DIR / "scripts_setup/setup_path.py", *path_setup_args)
+
+    print_global_elapsed()
+    log_info("Master setup script complete.")
 
 if __name__ == "__main__":
     main()
