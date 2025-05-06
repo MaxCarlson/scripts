@@ -7,9 +7,9 @@ import os
 import sys
 from collections import defaultdict
 import re # For checking output highlights
+import argparse # <<< IMPORT ADDED
 
 # Import the CLI script module
-# Assuming rgcodeblock_cli.py is in the project root relative to tests/
 import rgcodeblock_cli as rgcb_cli
 # Import the library module for mocking its functions
 import rgcodeblock_lib as rgc_lib
@@ -48,14 +48,13 @@ def mock_file_content(monkeypatch):
         filename_str = str(filename)
         if filename_str in files_dict and 'r' in mode:
             content = files_dict[filename_str]
-            # Use mock_open correctly with read_data
             m_open = mock_open(read_data=content)
-            # Return the mock object *instance* created by calling m_open
             mock_file_handle = m_open(filename_str, mode, *args, **kwargs)
-            # Ensure readlines behaves correctly
             mock_file_handle.readlines.return_value = [(line + '\n') for line in content.splitlines()]
+            mock_file_handle.read.return_value = content
             return mock_file_handle
         else:
+            # Fallback for files not mocked (like maybe pytest internals)
             return original_open(filename_str, mode, *args, **kwargs)
 
     monkeypatch.setattr("builtins.open", side_effect_open)
@@ -77,10 +76,14 @@ def run_cli_main_with_args(args_list, capsys):
 
     # Store args globally (workaround for print_statistics needing sep_style)
     # Parse args briefly to get sep_style or use default
-    temp_parser = argparse.ArgumentParser(add_help=False) # Suppress help output during test setup
+    temp_parser = argparse.ArgumentParser(add_help=False) # <<< argparse IMPORTED NOW
     temp_parser.add_argument("--sep-style", default="fancy")
+    # Use parse_known_args to ignore arguments not defined in this temp parser
     parsed_args, _ = temp_parser.parse_known_args(args_list)
-    rgcb_cli.args_for_main_thread = MagicMock(sep_style=parsed_args.sep_style)
+    # Ensure the global exists before assigning to its attribute
+    if not hasattr(rgcb_cli, 'args_for_main_thread'):
+        rgcb_cli.args_for_main_thread = MagicMock()
+    rgcb_cli.args_for_main_thread.sep_style = parsed_args.sep_style
 
     with patch.object(sys, 'argv', ['rgcodeblock_cli.py'] + args_list):
         exit_code = None
@@ -138,7 +141,7 @@ return M
 def test_list_languages_cli(capsys):
     """Test --list-languages flag."""
     out, err, code = run_cli_main_with_args(["--list-languages"], capsys)
-    assert code == 0
+    assert code == 0, f"Expected exit 0, got {code}. Err: {err}"
     assert "Supported Language Types" in out
     assert "python" in out
     assert ".py" in out
@@ -148,10 +151,10 @@ def test_list_languages_cli(capsys):
 def test_no_matches_found_cli(mock_rg_subprocess, capsys):
     """Test scenario where rg finds no matches."""
     mock_rg_subprocess.stdout_val = ""
-    mock_rg_subprocess.returncode_val = 1
+    mock_rg_subprocess.returncode_val = 1 # rg returns 1 for no matches
     out, err, code = run_cli_main_with_args(["nonexistentpattern", "."], capsys)
-    assert code == 0
-    assert out == ""
+    assert code == 0 # Script should exit 0 if rg finding no matches is the only outcome
+    assert out == "" # No output expected from script itself
 
 def test_basic_match_and_extraction_text_format_cli(mock_rg_subprocess, mock_file_content, capsys):
     """Test a basic match, extraction, and text output via CLI."""
@@ -160,8 +163,9 @@ def test_basic_match_and_extraction_text_format_cli(mock_rg_subprocess, mock_fil
         "data": { "path": {"text": "test.py"}, "line_number": 4, "submatches": [{"match": {"text": "__init__"}}]}
     }) + "\n"
     mock_rg_subprocess.stdout_val = rg_json_output
-    mock_file_content["test.py"] = PYTHON_SAMPLE_CODE_1
+    mock_file_content["test.py"] = PYTHON_SAMPLE_CODE_1 # Use fixture to set content
 
+    # Mock the library's extractor
     expected_block = [(l + '\n') for l in PYTHON_SAMPLE_CODE_1.splitlines()][2:5] # __init__ method
     expected_start_0idx = 2
     expected_end_0idx = 4
@@ -169,7 +173,7 @@ def test_basic_match_and_extraction_text_format_cli(mock_rg_subprocess, mock_fil
         out, err, code = run_cli_main_with_args(["__init__", "test.py"], capsys)
 
     assert code == 0
-    assert "Match Found" in out # Separator check
+    assert "Match Found" in out
     assert "File: test.py:4" in out
     assert "Highlight(s) (1): \"__init__\"" in out
     assert re.search(r"def .*\033\[1;31m__init__\033\[0m.*:", out) # Highlighted
@@ -184,7 +188,7 @@ def test_json_format_output_cli(mock_rg_subprocess, mock_file_content, capsys):
     mock_rg_subprocess.stdout_val = rg_json_output_line
     mock_file_content["config.json"] = JSON_SAMPLE_CODE_1
 
-    expected_block = [(l + '\n') for l in JSON_SAMPLE_CODE_1.splitlines()] # Whole file block
+    expected_block = [(l + '\n') for l in JSON_SAMPLE_CODE_1.splitlines()] # Assume whole file block found
     expected_start_0idx = 0
     expected_end_0idx = len(expected_block) - 1
 
@@ -199,38 +203,41 @@ def test_json_format_output_cli(mock_rg_subprocess, mock_file_content, capsys):
         result = json_output[0]
         assert result["status"] == "success"
         assert result["file_path"] == "config.json"
-        assert result["block_start_line"] == expected_start_0idx + 1
-        assert result["block_end_line"] == expected_end_0idx + 1
+        assert result["block_start_line"] == expected_start_0idx + 1 # 1
+        assert result["block_end_line"] == expected_end_0idx + 1 # 5
         assert result["language_type"] == "json"
         assert '"name": "example"' in result["block"]
         assert "data" in result["texts_highlighted_in_block"]
     except json.JSONDecodeError: pytest.fail(f"Output was not valid JSON:\n{out}")
     except Exception as e: pytest.fail(f"Error processing JSON output or assertion: {e}\nOutput:\n{out}")
 
+
 def test_cli_stats_output_format(mock_rg_subprocess, mock_file_content, capsys):
     """Test the format of the --stats output in the CLI."""
     rg_output = [
         {"type": "match", "data": {"path": {"text": "file1.py"}, "line_number": 1, "submatches": [{"match": {"text": "term1"}}]}},
-        {"type": "match", "data": {"path": {"text": "file2.c"}, "line_number": 5, "submatches": [{"match": {"text": "term2"}}]}},
-        {"type": "match", "data": {"path": {"text": "file1.py"}, "line_number": 10, "submatches": [{"match": {"text": "term3"}}]}}
+        {"type": "match", "data": {"path": {"text": "file2.c"}, "line_number": 2, "submatches": [{"match": {"text": "term2"}}]}}, # Adjusted line num
+        {"type": "match", "data": {"path": {"text": "file1.py"}, "line_number": 3, "submatches": [{"match": {"text": "term3"}}]}}
     ]
     mock_rg_subprocess.stdout_val = "\n".join(json.dumps(m) for m in rg_output) + "\n"
     mock_file_content["file1.py"] = "term1 = 1\n#...\nterm3 = 3"
     mock_file_content["file2.c"] = "//...\nint term2 = 2;"
 
-    # Need to use parentheses for multiple context managers in 'with'
-    with patch.object(rgc_lib, 'extract_python_block_ast', return_value=(["term1 = 1\n"], 0, 0)), \
-         patch.object(rgc_lib, 'extract_brace_block', return_value=(["int term2 = 2;\n"], 1, 1)): # <<< CORRECTED SYNTAX HERE
+    # Mock extractors to succeed simply, returning single lines
+    # Note: Ensure the mock return value matches the expected tuple format (block_lines, start_0idx, end_0idx)
+    with patch.object(rgc_lib, 'extract_python_block_ast', side_effect=[(["term1 = 1\n"], 0, 0), (["term3 = 3\n"], 2, 2)]), \
+         patch.object(rgc_lib, 'extract_brace_block', return_value=(["int term2 = 2;\n"], 1, 1)):
         out, err, code = run_cli_main_with_args(["term", ".", "--stats"], capsys)
 
     assert code == 0
+    # Stats are printed after normal output.
     assert "Run Statistics" in out
     assert "Total Ripgrep Matches Found: 3" in out
-    assert "Unique Code Blocks Processed: 2" in out # Assuming two unique blocks found
+    assert "Unique Code Blocks Processed: 2" in out # One for python (file1), one for brace (file2)
     assert "Unique Files with Matches: 2" in out
-    assert "python: 1" in out
+    assert "python: 1" in out # Block count per lang (only count unique blocks)
     assert "brace: 1" in out
-    assert ".py: 1" in out
+    assert ".py: 1" in out     # File count per ext
     assert ".c: 1" in out
     assert "Blocks Successfully Extracted: 2" in out
     assert "Average Original Extracted Block Length (lines): 1.00" in out
@@ -246,6 +253,7 @@ def test_cli_line_numbers(mock_rg_subprocess, mock_file_content, capsys):
          out, err, code = run_cli_main_with_args(["b", "ln.py", "--line-numbers"], capsys)
 
     assert code == 0
+    # Use regex to be more robust against minor spacing variations and ANSI codes
     assert re.search(r"\s+1\s*\| a=1", out), "Line number 1 missing or incorrect"
     assert re.search(r"\s+2\s*\| b=2", out), "Line number 2 missing or incorrect"
 
@@ -270,9 +278,9 @@ def test_cli_ruby_extraction(mock_rg_subprocess, mock_file_content, capsys):
     assert "def greet" in out
     assert re.search(r"puts.*#{@name}.*", out)
     assert re.search(r"\033\[1;31m@name\033\[0m", out) # Highlight check
-    # Check last non-empty line after stripping leading/trailing whitespace from output block
     output_lines = [l for l in out.split('Match Found')[-1].splitlines() if l.strip()]
-    assert output_lines[-1].strip().endswith("end")
+    # The last relevant line of the block output should end with 'end' after stripping whitespace
+    assert output_lines[-1].strip() == "end" # More robust check
 
 def test_cli_lua_extraction(mock_rg_subprocess, mock_file_content, capsys):
     """Test CLI output for a Lua file match."""
@@ -296,7 +304,7 @@ def test_cli_lua_extraction(mock_rg_subprocess, mock_file_content, capsys):
     assert re.search(r"local \033\[1;31mproduct\033\[0m", out) # Highlight check
     assert "return sum, product" in out
     output_lines = [l for l in out.split('Match Found')[-1].splitlines() if l.strip()]
-    assert output_lines[-1].strip().endswith("end")
+    assert output_lines[-1].strip() == "end"
 
 
 def test_cli_include_ext_args(mock_rg_subprocess, capsys):
@@ -345,18 +353,19 @@ def test_cli_max_block_lines_truncation(mock_rg_subprocess, mock_file_content, c
     mock_rg_subprocess.stdout_val = rg_json_output
     long_code = "def func():\n  l2\n  hit\n  l4\n  l5\n  l6\npass # line 7"
     mock_file_content["large.py"] = long_code
-    
+
     block = [(l + '\n') for l in long_code.splitlines()] # 7 lines
     with patch.object(rgc_lib, 'extract_python_block_ast', return_value=(block, 0, 6)):
         out, err, code = run_cli_main_with_args(["hit", "large.py", "-M", "4"], capsys) # Max 4 lines
 
     assert code == 0
-    assert "def func()" in out # First line (half=2)
-    assert "l2" in out       # Second line
+    # Max 4 lines -> half = 2. Show lines 0,1 and lines 5,6 (0-based from block)
+    assert "def func()" in out # block[0]
+    assert "l2" in out       # block[1]
     # Ellipsis hides lines: hit, l4, l5 (3 lines)
     assert "... (3 lines truncated) ..." in out
-    assert "l6" in out       # Last half=2 lines
-    assert "pass # line 7" in out
+    assert "l6" in out       # block[5]
+    assert "pass # line 7" in out # block[6]
     assert "hit" not in out # Should be hidden by ellipsis
 
 def test_cli_separator_styles(mock_rg_subprocess, mock_file_content, capsys):
@@ -364,19 +373,21 @@ def test_cli_separator_styles(mock_rg_subprocess, mock_file_content, capsys):
     rg_json_output = json.dumps({"type": "match", "data": {"path": {"text": "sep.txt"}, "line_number": 1, "submatches": [{"match": {"text": "a"}}]}}) + "\n"
     mock_rg_subprocess.stdout_val = rg_json_output
     mock_file_content["sep.txt"] = "a = 1"
-    
-    # Mock extractor (lang doesn't matter much here)
+
+    # Mock extractor (lang doesn't matter, force fallback)
     with patch.object(rgc_lib, 'get_language_type_from_filename', return_value=("unknown", "txt")), \
          patch.object(rgc_lib, 'EXTRACTOR_DISPATCH_MAP', {}): # No extractor -> fallback
 
         out_fancy, _, _ = run_cli_main_with_args(["a", "sep.txt", "--sep-style", "fancy"], capsys)
-        assert "╠" in out_fancy and "╣" in out_fancy
+        assert "╠" in out_fancy and "╣" in out_fancy # Fancy separators
 
         out_simple, _, _ = run_cli_main_with_args(["a", "sep.txt", "--sep-style", "simple"], capsys)
         assert rgcb_cli.COLOR_SEPARATOR_SIMPLE + "-"*44 + rgcb_cli.RESET_COLOR_ANSI in out_simple
         assert "╠" not in out_simple
 
         out_none, _, _ = run_cli_main_with_args(["a", "sep.txt", "--sep-style", "none"], capsys)
+        # With style none, there should be no fancy/simple line separators printed
         assert "------" not in out_none
         assert "╠" not in out_none
-        assert "File: sep.txt:1" in out_none # Content header still there
+        # The content header should still appear, just without the fancy lines
+        assert "File: sep.txt:1" in out_none
