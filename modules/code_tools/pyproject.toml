@@ -1,0 +1,65 @@
+# pyproject.toml (Corrected)
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+# No backend-path needed here
+
+[project]
+name = "rgcodeblock_suite"
+version = "0.2.0" # Or your current version
+description = "A library and tools for extracting and manipulating code blocks."
+readme = "README.md"
+requires-python = ">=3.8"
+# license = { file = "LICENSE.txt" } # Optional
+authors = [
+    { name = "Your Name", email = "your.email@example.com" },
+]
+keywords = ["code", "parser", "ripgrep", "developer-tools", "cli"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    # "License :: OSI Approved :: MIT License", # Choose your license
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Utilities",
+]
+
+dependencies = [
+    # List runtime dependencies here IF rgcodeblock_lib needs any non-standard-lib packages.
+    # Do NOT list cross_platform here unless it's separately installable via pip.
+]
+
+[project.optional-dependencies]
+yaml = ["PyYAML>=5.0"]
+xml = ["lxml>=4.5"]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    # Also add build tools here if desired for dev environment setup
+    "build",
+    "wheel",
+    # Add your cross_platform package here if it's installable and needed for tests
+    # "my-cross-platform-lib",
+]
+all = [
+    "rgcodeblock_suite[yaml]",
+    "rgcodeblock_suite[xml]",
+]
+
+[project.scripts]
+# Assuming rgcodeblock_cli.py and func_replacer.py are in the root
+# and have main() functions. Adjust module path if they are elsewhere.
+rgcodeblock = "rgcodeblock_cli:main"
+func_replacer = "func_replacer:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["rgcodeblock_lib*"] # Find rgcodeblock_lib package
+exclude = ["tests*", "bin*"] # Exclude tests, bin (if bin is just for non-package scripts)

@@ -1,0 +1,707 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.10, pytest-8.3.4, pluggy-1.5.0
+rootdir: /data/data/com.termux/files/home/scripts/modules/code_tools
+configfile: pyproject.toml
+collected 38 items
+
+tests/test_func_replacer.py ...F.F..                                     [ 21%]
+tests/test_rgcodeblock_cli.py FFFFFFFFFFFFF                              [ 55%]
+tests/test_rgcodeblock_lib_extractors.py ....F...FFFFFFss.               [100%]
+
+=================================== FAILURES ===================================
+_________________________ test_replace_using_line_hint _________________________
+
+mock_clipboard = <function mock_clipboard.<locals>.set_clipboard_content at 0x71fa6ea0c0>
+temp_target_file = '/data/data/com.termux/files/usr/tmp/tmpjxk4lp1s.py'
+capsys = <_pytest.capture.CaptureFixture object at 0x71fe299370>
+
+    def test_replace_using_line_hint(mock_clipboard, temp_target_file, capsys):
+        """Test pinpointing the function using --line."""
+        mock_clipboard(NEW_FUNC_FROM_CLIPBOARD_FOR_OLD_NAME)
+        with open(temp_target_file, 'w', encoding='utf-8') as f: f.write(PYTHON_TARGET_CONTENT_ORIGINAL)
+    
+        # Explicit side effect function for the mock
+        def mock_py_extractor_for_line_hint(lines, content, target_entity_name=None, target_line_1idx=None):
+            # Simulate finding based on line hint AND name check
+            if target_entity_name == "old_function_name" and target_line_1idx == 3:
+                 # Return the expected block (lines 3-6, 0-indexed 2-5)
+                 return lines[2:6], 2, 5
+            return None, -1, -1
+    
+        # Use the side_effect with MagicMock or directly
+        mock_obj = MagicMock(side_effect=mock_py_extractor_for_line_hint)
+    
+        with patch.object(rgc_lib, 'extract_python_block_ast', mock_obj):
+             out, err, code = run_func_replacer([
+                 str(temp_target_file),
+                 "--name", "old_function_name", # Name is still useful for confirmation inside extractor
+                 "--line", "3", # 1-based line number where 'def old_function_name' starts
+                 "--yes"
+             ], capsys)
+    
+>       assert code == 0, f"Expected exit code 0, got {code}. Output:\n{out}\nError:\n{err}"
+E       AssertionError: Expected exit code 0, got 1. Output:
+E         
+E         Error:
+E         Error: Could not find or extract the specified block for 'old_function_name' near line 3 in '/data/data/com.termux/files/usr/tmp/tmpjxk4lp1s.py'.
+E         Please check the name, line number, and language type. Lang: python
+E         
+E       assert 1 == 0
+
+tests/test_func_replacer.py:254: AssertionError
+_________________________ test_confirmation_prompt_no __________________________
+
+mock_clipboard = <function mock_clipboard.<locals>.set_clipboard_content at 0x71fa6ea3e0>
+temp_target_file = '/data/data/com.termux/files/usr/tmp/tmpv6it15t7.py'
+capsys = <_pytest.capture.CaptureFixture object at 0x71fa6dfce0>
+
+    def test_confirmation_prompt_no(mock_clipboard, temp_target_file, capsys):
+        """Test user aborting via confirmation prompt."""
+        mock_clipboard(NEW_FUNC_FROM_CLIPBOARD_FOR_OLD_NAME)
+        with open(temp_target_file, 'w', encoding='utf-8') as f: f.write(PYTHON_TARGET_CONTENT_ORIGINAL)
+    
+        def mock_py_extractor(lines, content, target_entity_name=None, target_line_1idx=None):
+            if target_entity_name == "old_function_name": return lines[2:6], 2, 5
+            return None, -1, -1
+    
+        # Simulate user typing 'n' then Enter
+        with patch('builtins.input', return_value='n'), \
+             patch.object(rgc_lib, 'extract_python_block_ast', side_effect=mock_py_extractor):
+            out, err, code = run_func_replacer([str(temp_target_file), "--name", "old_function_name"], capsys) # No --yes
+    
+        assert code == 0 # Aborting is considered a "successful" exit (code 0)
+        # Check that the prompt output was shown
+>       assert "Replace 'old_function_name'" in out # Part of the prompt question
+E       assert "Replace 'old_function_name'" in "Found block for 'old_function_name' in '/data/data/com.termux/files/usr/tmp/tmpv6it15t7.py' (lines 4 - 7).\n--- Curre... content\n    # With multiple lines\n    return new_param * 100\n--- End New Block ---\nReplacement aborted by user.\n"
+
+tests/test_func_replacer.py:297: AssertionError
+___________________________ test_list_languages_cli ____________________________
+
+capsys = <_pytest.capture.CaptureFixture object at 0x71fa70cd70>
+
+    def test_list_languages_cli(capsys):
+        """Test --list-languages flag."""
+>       out, err, code = run_cli_main_with_args(["--list-languages"], capsys)
+
+tests/test_rgcodeblock_cli.py:140: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+args_list = ['--list-languages']
+capsys = <_pytest.capture.CaptureFixture object at 0x71fa70cd70>
+
+    def run_cli_main_with_args(args_list, capsys):
+        """Helper to run the CLI script's main() with mocked sys.argv."""
+        # Reset STATS and Notes before each CLI run test
+        global_stats_keys = list(rgcb_cli.STATS.keys())
+        for key in global_stats_keys:
+            if key == "matches_by_lang_type": rgcb_cli.STATS[key] = defaultdict(int)
+            elif key == "files_with_matches_by_ext": rgcb_cli.STATS[key] = defaultdict(set)
+            elif key == "processed_files": rgcb_cli.STATS[key] = set()
+            else: rgcb_cli.STATS[key] = 0
+        if hasattr(rgc_lib, 'OPTIONAL_LIBRARY_NOTES'):
+            rgc_lib.OPTIONAL_LIBRARY_NOTES.clear()
+    
+        # Store args globally (workaround for print_statistics needing sep_style)
+        # Parse args briefly to get sep_style or use default
+>       temp_parser = argparse.ArgumentParser(add_help=False) # Suppress help output during test setup
+E       NameError: name 'argparse' is not defined. Did you forget to import 'argparse'
+
+tests/test_rgcodeblock_cli.py:80: NameError
+__________________________ test_no_matches_found_cli ___________________________
+
+mock_rg_subprocess = <function mock_rg_subprocess.<locals>.side_effect_func at 0x71fa6eb560>
+capsys = <_pytest.capture.CaptureFixture object at 0x71fa70c0e0>
+
+    def test_no_matches_found_cli(mock_rg_subprocess, capsys):
+        """Test scenario where rg finds no matches."""
+        mock_rg_subprocess.stdout_val = ""
+        mock_rg_subprocess.returncode_val = 1
+>       out, err, code = run_cli_main_with_args(["nonexistentpattern", "."], capsys)
+
+tests/test_rgcodeblock_cli.py:152: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+args_list = ['nonexistentpattern', '.']
+capsys = <_pytest.capture.CaptureFixture object at 0x71fa70c0e0>
+
+    def run_cli_main_with_args(args_list, capsys):
+        """Helper to run the CLI script's main() with mocked sys.argv."""
+        # Reset STATS and Notes before each CLI run test
+        global_stats_keys = list(rgcb_cli.STATS.keys())
+        for key in global_stats_keys:
+            if key == "matches_by_lang_type": rgcb_cli.STATS[key] = defaultdict(int)
+            elif key == "files_with_matches_by_ext": rgcb_cli.STATS[key] = defaultdict(set)
+            elif key == "processed_files": rgcb_cli.STATS[key] = set()
+            else: rgcb_cli.STATS[key] = 0
+        if hasattr(rgc_lib, 'OPTIONAL_LIBRARY_NOTES'):
+            rgc_lib.OPTIONAL_LIBRARY_NOTES.clear()
+    
+        # Store args globally (workaround for print_statistics needing sep_style)
+        # Parse args briefly to get sep_style or use default
+>       temp_parser = argparse.ArgumentParser(add_help=False) # Suppress help output during test setup
+E       NameError: name 'argparse' is not defined. Did you forget to import 'argparse'
+
+tests/test_rgcodeblock_cli.py:80: NameError
+_______________ test_basic_match_and_extraction_text_format_cli ________________
+
+mock_rg_subprocess = <function mock_rg_subprocess.<locals>.side_effect_func at 0x71fa6eb880>
+mock_file_content = {'test.py': '# Comment line 1\nclass MyClass: # Line 2 (0-idx: 1)\n    def __init__(self, value): # Line 3 (0-idx: 2)\...ue = value # Line 4 (0-idx: 3)\n\n    def another_method(self): # Line 6 (0-idx: 5)\n        pass # Line 7 (0-idx: 6)'}
+capsys = <_pytest.capture.CaptureFixture object at 0x71fa70c9b0>
+
+    def test_basic_match_and_extraction_text_format_cli(mock_rg_subprocess, mock_file_content, capsys):
+        """Test a basic match, extraction, and text output via CLI."""
+        rg_json_output = json.dumps({
+            "type": "match",
+            "data": { "path": {"text": "test.py"}, "line_number": 4, "submatches": [{"match": {"text": "__init__"}}]}
+        }) + "\n"
+        mock_rg_subprocess.stdout_val = rg_json_output
+        mock_file_content["test.py"] = PYTHON_SAMPLE_CODE_1
+    
+        expected_block = [(l + '\n') for l in PYTHON_SAMPLE_CODE_1.splitlines()][2:5] # __init__ method
+        expected_start_0idx = 2
+        expected_end_0idx = 4
+        with patch.object(rgc_lib, 'extract_python_block_ast', return_value=(expected_block, expected_start_0idx, expected_end_0idx)):
+>           out, err, code = run_cli_main_with_args(["__init__", "test.py"], capsys)
+
+tests/test_rgcodeblock_cli.py:169: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+args_list = ['__init__', 'test.py']
+capsys = <_pytest.capture.CaptureFixture object at 0x71fa70c9b0>
+
+    def run_cli_main_with_args(args_list, capsys):
+        """Helper to run the CLI script's main() with mocked sys.argv."""
+        # Reset STATS and Notes before each CLI run test
+        global_stats_keys = list(rgcb_cli.STATS.keys())
+        for key in global_stats_keys:
+            if key == "matches_by_lang_type": rgcb_cli.STATS[key] = defaultdict(int)
+            elif key == "files_with_matches_by_ext": rgcb_cli.STATS[key] = defaultdict(set)
+            elif key == "processed_files": rgcb_cli.STATS[key] = set()
+            else: rgcb_cli.STATS[key] = 0
+        if hasattr(rgc_lib, 'OPTIONAL_LIBRARY_NOTES'):
+            rgc_lib.OPTIONAL_LIBRARY_NOTES.clear()
+    
+        # Store args globally (workaround for print_statistics needing sep_style)
+        # Parse args briefly to get sep_style or use default
+>       temp_parser = argparse.ArgumentParser(add_help=False) # Suppress help output during test setup
+E       NameError: name 'argparse' is not defined. Did you forget to import 'argparse'
+
+tests/test_rgcodeblock_cli.py:80: NameError
+_________________________ test_json_format_output_cli __________________________
+
+mock_rg_subprocess = <function mock_rg_subprocess.<locals>.side_effect_func at 0x71fa6ebf60>
+mock_file_content = {'config.json': '{\n  "name": "example",\n  "data": [1, 2, 3],\n  "details": { "id": 101 }\n}'}
+capsys = <_pytest.capture.CaptureFixture object at 0x71ff0d2810>
+
+    def test_json_format_output_cli(mock_rg_subprocess, mock_file_content, capsys):
+        """Test --format json output from the CLI script."""
+        rg_json_output_line = json.dumps({
+            "type": "match",
+            "data": { "path": {"text": "config.json"}, "line_number": 3, "submatches": [{"match": {"text": "data"}}]}
+        }) + "\n"
+        mock_rg_subprocess.stdout_val = rg_json_output_line
+        mock_file_content["config.json"] = JSON_SAMPLE_CODE_1
+    
+        expected_block = [(l + '\n') for l in JSON_SAMPLE_CODE_1.splitlines()] # Whole file block
+        expected_start_0idx = 0
+        expected_end_0idx = len(expected_block) - 1
+    
+        with patch.object(rgc_lib, 'extract_json_block', return_value=(expected_block, expected_start_0idx, expected_end_0idx)):
+>           out, err, code = run_cli_main_with_args(["data", "config.json", "--format", "json"], capsys)
+
+tests/test_rgcodeblock_cli.py:192: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+args_list = ['data', 'config.json', '--format', 'json']
+capsys = <_pytest.capture.CaptureFixture object at 0x71ff0d2810>
+
+    def run_cli_main_with_args(args_list, capsys):
+        """Helper to run the CLI script's main() with mocked sys.argv."""
+        # Reset STATS and Notes before each CLI run test
+        global_stats_keys = list(rgcb_cli.STATS.keys())
+        for key in global_stats_keys:
+            if key == "matches_by_lang_type": rgcb_cli.STATS[key] = defaultdict(int)
+            elif key == "files_with_matches_by_ext": rgcb_cli.STATS[key] = defaultdict(set)
+            elif key == "processed_files": rgcb_cli.STATS[key] = set()
+            else: rgcb_cli.STATS[key] = 0
+        if hasattr(rgc_lib, 'OPTIONAL_LIBRARY_NOTES'):
+            rgc_lib.OPTIONAL_LIBRARY_NOTES.clear()
+    
+        # Store args globally (workaround for print_statistics needing sep_style)
+        # Parse args briefly to get sep_style or use default
+>       temp_parser = argparse.ArgumentParser(add_help=False) # Suppress help output during test setup
+E       NameError: name 'argparse' is not defined. Did you forget to import 'argparse'
+
+tests/test_rgcodeblock_cli.py:80: NameError
+_________________________ test_cli_stats_output_format _________________________
+
+mock_rg_subprocess = <function mock_rg_subprocess.<locals>.side_effect_func at 0x71fa6eb560>
+mock_file_content = {'file1.py': 'term1 = 1\n#...\nterm3 = 3', 'file2.c': '//...\nint term2 = 2;'}
+capsys = <_pytest.capture.CaptureFixture object at 0x71fa70fbf0>
+
+    def test_cli_stats_output_format(mock_rg_subprocess, mock_file_content, capsys):
+        """Test the format of the --stats output in the CLI."""
+        rg_output = [
+            {"type": "match", "data": {"path": {"text": "file1.py"}, "line_number": 1, "submatches": [{"match": {"text": "term1"}}]}},
+            {"type": "match", "data": {"path": {"text": "file2.c"}, "line_number": 5, "submatches": [{"match": {"text": "term2"}}]}},
+            {"type": "match", "data": {"path": {"text": "file1.py"}, "line_number": 10, "submatches": [{"match": {"text": "term3"}}]}}
+        ]
+        mock_rg_subprocess.stdout_val = "\n".join(json.dumps(m) for m in rg_output) + "\n"
+        mock_file_content["file1.py"] = "term1 = 1\n#...\nterm3 = 3"
+        mock_file_content["file2.c"] = "//...\nint term2 = 2;"
+    
+        # Need to use parentheses for multiple context managers in 'with'
+        with patch.object(rgc_lib, 'extract_python_block_ast', return_value=(["term1 = 1\n"], 0, 0)), \
+             patch.object(rgc_lib, 'extract_brace_block', return_value=(["int term2 = 2;\n"], 1, 1)): # <<< CORRECTED SYNTAX HERE
+>           out, err, code = run_cli_main_with_args(["term", ".", "--stats"], capsys)
+
+tests/test_rgcodeblock_cli.py:224: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+args_list = ['term', '.', '--stats']
+capsys = <_pytest.capture.CaptureFixture object at 0x71fa70fbf0>
+
+    def run_cli_main_with_args(args_list, capsys):
+        """Helper to run the CLI script's main() with mocked sys.argv."""
+        # Reset STATS and Notes before each CLI run test
+        global_stats_keys = list(rgcb_cli.STATS.keys())
+        for key in global_stats_keys:
+            if key == "matches_by_lang_type": rgcb_cli.STATS[key] = defaultdict(int)
+            elif key == "files_with_matches_by_ext": rgcb_cli.STATS[key] = defaultdict(set)
+            elif key == "processed_files": rgcb_cli.STATS[key] = set()
+            else: rgcb_cli.STATS[key] = 0
+        if hasattr(rgc_lib, 'OPTIONAL_LIBRARY_NOTES'):
+            rgc_lib.OPTIONAL_LIBRARY_NOTES.clear()
+    
+        # Store args globally (workaround for print_statistics needing sep_style)
+        # Parse args briefly to get sep_style or use default
+>       temp_parser = argparse.ArgumentParser(add_help=False) # Suppress help output during test setup
+E       NameError: name 'argparse' is not defined. Did you forget to import 'argparse'
+
+tests/test_rgcodeblock_cli.py:80: NameError
+____________________________ test_cli_line_numbers _____________________________
+
+mock_rg_subprocess = <function mock_rg_subprocess.<locals>.side_effect_func at 0x71fa6ea7a0>
+mock_file_content = {'ln.py': 'a=1 # line 1\nb=2 # line 2\nc=3 # line 3'}
+capsys = <_pytest.capture.CaptureFixture object at 0x71fa70f020>
+
+    def test_cli_line_numbers(mock_rg_subprocess, mock_file_content, capsys):
+        """Test --line-numbers flag in CLI output."""
+        rg_json_output_line = json.dumps({"type": "match", "data": {"path": {"text": "ln.py"}, "line_number": 2, "submatches": [{"match": {"text": "b"}}]}}) + "\n"
+        mock_rg_subprocess.stdout_val = rg_json_output_line
+        mock_file_content["ln.py"] = "a=1 # line 1\nb=2 # line 2\nc=3 # line 3"
+    
+        # Mock extractor returns lines 1-2 (0-indexed), original lines 1, 2
+        with patch.object(rgc_lib, 'extract_python_block_ast', return_value=(["a=1 # line 1\n", "b=2 # line 2\n"], 0, 1)):
+>            out, err, code = run_cli_main_with_args(["b", "ln.py", "--line-numbers"], capsys)
+
+tests/test_rgcodeblock_cli.py:246: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+args_list = ['b', 'ln.py', '--line-numbers']
+capsys = <_pytest.capture.CaptureFixture object at 0x71fa70f020>
+
+    def run_cli_main_with_args(args_list, capsys):
+        """Helper to run the CLI script's main() with mocked sys.argv."""
+        # Reset STATS and Notes before each CLI run test
+        global_stats_keys = list(rgcb_cli.STATS.keys())
+        for key in global_stats_keys:
+            if key == "matches_by_lang_type": rgcb_cli.STATS[key] = defaultdict(int)
+            elif key == "files_with_matches_by_ext": rgcb_cli.STATS[key] = defaultdict(set)
+            elif key == "processed_files": rgcb_cli.STATS[key] = set()
+            else: rgcb_cli.STATS[key] = 0
+        if hasattr(rgc_lib, 'OPTIONAL_LIBRARY_NOTES'):
+            rgc_lib.OPTIONAL_LIBRARY_NOTES.clear()
+    
+        # Store args globally (workaround for print_statistics needing sep_style)
+        # Parse args briefly to get sep_style or use default
+>       temp_parser = argparse.ArgumentParser(add_help=False) # Suppress help output during test setup
+E       NameError: name 'argparse' is not defined. Did you forget to import 'argparse'
+
+tests/test_rgcodeblock_cli.py:80: NameError
+___________________________ test_cli_ruby_extraction ___________________________
+
+mock_rg_subprocess = <function mock_rg_subprocess.<locals>.side_effect_func at 0x71fa5ac400>
+mock_file_content = {'greeter.rb': '\nclass Greeter\n  def initialize(name) # line 2 (idx 1)\n    @name = name\n  end\n\n  def greet # line 6 (idx 5)\n    puts "Hello, #{@name}!" # line 7 (idx 6) - target match\n  end # line 8 (idx 7)\nend\n'}
+capsys = <_pytest.capture.CaptureFixture object at 0x71fa70eba0>
+
+    def test_cli_ruby_extraction(mock_rg_subprocess, mock_file_content, capsys):
+        """Test CLI output for a Ruby file match."""
+        rg_json_output_line = json.dumps({
+            "type": "match", "data": {"path": {"text": "greeter.rb"}, "line_number": 7, "submatches": [{"match": {"text": "@name"}}]}
+        }) + "\n"
+        mock_rg_subprocess.stdout_val = rg_json_output_line
+        mock_file_content["greeter.rb"] = RUBY_SAMPLE_FOR_CLI
+    
+        expected_block = [(l + '\n') for l in RUBY_SAMPLE_FOR_CLI.splitlines()][5:8] # 'greet' method
+        expected_start_0idx = 5
+        expected_end_0idx = 7
+        with patch.object(rgc_lib, 'extract_ruby_block', return_value=(expected_block, expected_start_0idx, expected_end_0idx)):
+>           out, err, code = run_cli_main_with_args(["@name", "greeter.rb"], capsys)
+
+tests/test_rgcodeblock_cli.py:264: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+args_list = ['@name', 'greeter.rb']
+capsys = <_pytest.capture.CaptureFixture object at 0x71fa70eba0>
+
+    def run_cli_main_with_args(args_list, capsys):
+        """Helper to run the CLI script's main() with mocked sys.argv."""
+        # Reset STATS and Notes before each CLI run test
+        global_stats_keys = list(rgcb_cli.STATS.keys())
+        for key in global_stats_keys:
+            if key == "matches_by_lang_type": rgcb_cli.STATS[key] = defaultdict(int)
+            elif key == "files_with_matches_by_ext": rgcb_cli.STATS[key] = defaultdict(set)
+            elif key == "processed_files": rgcb_cli.STATS[key] = set()
+            else: rgcb_cli.STATS[key] = 0
+        if hasattr(rgc_lib, 'OPTIONAL_LIBRARY_NOTES'):
+            rgc_lib.OPTIONAL_LIBRARY_NOTES.clear()
+    
+        # Store args globally (workaround for print_statistics needing sep_style)
+        # Parse args briefly to get sep_style or use default
+>       temp_parser = argparse.ArgumentParser(add_help=False) # Suppress help output during test setup
+E       NameError: name 'argparse' is not defined. Did you forget to import 'argparse'
+
+tests/test_rgcodeblock_cli.py:80: NameError
+___________________________ test_cli_lua_extraction ____________________________
+
+mock_rg_subprocess = <function mock_rg_subprocess.<locals>.side_effect_func at 0x71fa5ac680>
+mock_file_content = {'math.lua': '\nlocal M = {}\n\nfunction M.calculate(a, b) -- line 3 (idx 2)\n  local sum = a + b -- line 4 (idx 3)\n ... a * b -- line 5 (idx 4) - target match\n  return sum, product -- line 6 (idx 5)\nend -- line 7 (idx 6)\n\nreturn M\n'}
+capsys = <_pytest.capture.CaptureFixture object at 0x71fa70e510>
+
+    def test_cli_lua_extraction(mock_rg_subprocess, mock_file_content, capsys):
+        """Test CLI output for a Lua file match."""
+        rg_json_output_line = json.dumps({
+            "type": "match", "data": {"path": {"text": "math.lua"}, "line_number": 5, "submatches": [{"match": {"text": "product"}}]}
+        }) + "\n"
+        mock_rg_subprocess.stdout_val = rg_json_output_line
+        mock_file_content["math.lua"] = LUA_SAMPLE_FOR_CLI
+    
+        expected_block = [(l + '\n') for l in LUA_SAMPLE_FOR_CLI.splitlines()][2:7] # 'calculate' function
+        expected_start_0idx = 2
+        expected_end_0idx = 6
+        with patch.object(rgc_lib, 'extract_lua_block', return_value=(expected_block, expected_start_0idx, expected_end_0idx)):
+>           out, err, code = run_cli_main_with_args(["product", "math.lua"], capsys)
+
+tests/test_rgcodeblock_cli.py:289: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+args_list = ['product', 'math.lua']
+capsys = <_pytest.capture.CaptureFixture object at 0x71fa70e510>
+
+    def run_cli_main_with_args(args_list, capsys):
+        """Helper to run the CLI script's main() with mocked sys.argv."""
+        # Reset STATS and Notes before each CLI run test
+        global_stats_keys = list(rgcb_cli.STATS.keys())
+        for key in global_stats_keys:
+            if key == "matches_by_lang_type": rgcb_cli.STATS[key] = defaultdict(int)
+            elif key == "files_with_matches_by_ext": rgcb_cli.STATS[key] = defaultdict(set)
+            elif key == "processed_files": rgcb_cli.STATS[key] = set()
+            else: rgcb_cli.STATS[key] = 0
+        if hasattr(rgc_lib, 'OPTIONAL_LIBRARY_NOTES'):
+            rgc_lib.OPTIONAL_LIBRARY_NOTES.clear()
+    
+        # Store args globally (workaround for print_statistics needing sep_style)
+        # Parse args briefly to get sep_style or use default
+>       temp_parser = argparse.ArgumentParser(add_help=False) # Suppress help output during test setup
+E       NameError: name 'argparse' is not defined. Did you forget to import 'argparse'
+
+tests/test_rgcodeblock_cli.py:80: NameError
+__________________________ test_cli_include_ext_args ___________________________
+
+mock_rg_subprocess = <function mock_rg_subprocess.<locals>.side_effect_func at 0x71fa5acae0>
+capsys = <_pytest.capture.CaptureFixture object at 0x71fa70deb0>
+
+    def test_cli_include_ext_args(mock_rg_subprocess, capsys):
+        """Test --include-ext passes correct args to rg."""
+        mock_rg_subprocess.stdout_val = ""
+>       run_cli_main_with_args(["p", ".", "--include-ext", "py", "-I", "md"], capsys)
+
+tests/test_rgcodeblock_cli.py:305: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+args_list = ['p', '.', '--include-ext', 'py', '-I', 'md']
+capsys = <_pytest.capture.CaptureFixture object at 0x71fa70deb0>
+
+    def run_cli_main_with_args(args_list, capsys):
+        """Helper to run the CLI script's main() with mocked sys.argv."""
+        # Reset STATS and Notes before each CLI run test
+        global_stats_keys = list(rgcb_cli.STATS.keys())
+        for key in global_stats_keys:
+            if key == "matches_by_lang_type": rgcb_cli.STATS[key] = defaultdict(int)
+            elif key == "files_with_matches_by_ext": rgcb_cli.STATS[key] = defaultdict(set)
+            elif key == "processed_files": rgcb_cli.STATS[key] = set()
+            else: rgcb_cli.STATS[key] = 0
+        if hasattr(rgc_lib, 'OPTIONAL_LIBRARY_NOTES'):
+            rgc_lib.OPTIONAL_LIBRARY_NOTES.clear()
+    
+        # Store args globally (workaround for print_statistics needing sep_style)
+        # Parse args briefly to get sep_style or use default
+>       temp_parser = argparse.ArgumentParser(add_help=False) # Suppress help output during test setup
+E       NameError: name 'argparse' is not defined. Did you forget to import 'argparse'
+
+tests/test_rgcodeblock_cli.py:80: NameError
+__________________________ test_cli_exclude_path_args __________________________
+
+mock_rg_subprocess = <function mock_rg_subprocess.<locals>.side_effect_func at 0x71fa5ace00>
+capsys = <_pytest.capture.CaptureFixture object at 0x71fa5ab590>
+
+    def test_cli_exclude_path_args(mock_rg_subprocess, capsys):
+        """Test --exclude-path passes correct globs to rg."""
+        mock_rg_subprocess.stdout_val = ""
+>       run_cli_main_with_args(["p", ".", "-X", "*/build/*", "--exclude-path=*.log"], capsys)
+
+tests/test_rgcodeblock_cli.py:318: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+args_list = ['p', '.', '-X', '*/build/*', '--exclude-path=*.log']
+capsys = <_pytest.capture.CaptureFixture object at 0x71fa5ab590>
+
+    def run_cli_main_with_args(args_list, capsys):
+        """Helper to run the CLI script's main() with mocked sys.argv."""
+        # Reset STATS and Notes before each CLI run test
+        global_stats_keys = list(rgcb_cli.STATS.keys())
+        for key in global_stats_keys:
+            if key == "matches_by_lang_type": rgcb_cli.STATS[key] = defaultdict(int)
+            elif key == "files_with_matches_by_ext": rgcb_cli.STATS[key] = defaultdict(set)
+            elif key == "processed_files": rgcb_cli.STATS[key] = set()
+            else: rgcb_cli.STATS[key] = 0
+        if hasattr(rgc_lib, 'OPTIONAL_LIBRARY_NOTES'):
+            rgc_lib.OPTIONAL_LIBRARY_NOTES.clear()
+    
+        # Store args globally (workaround for print_statistics needing sep_style)
+        # Parse args briefly to get sep_style or use default
+>       temp_parser = argparse.ArgumentParser(add_help=False) # Suppress help output during test setup
+E       NameError: name 'argparse' is not defined. Did you forget to import 'argparse'
+
+tests/test_rgcodeblock_cli.py:80: NameError
+_________________________ test_cli_rg_args_passthrough _________________________
+
+mock_rg_subprocess = <function mock_rg_subprocess.<locals>.side_effect_func at 0x71fa5ad120>
+capsys = <_pytest.capture.CaptureFixture object at 0x71fe2997f0>
+
+    def test_cli_rg_args_passthrough(mock_rg_subprocess, capsys):
+        """Test --rg-args passes through to rg command."""
+        mock_rg_subprocess.stdout_val = ""
+>       run_cli_main_with_args(["p", ".", "--rg-args", "--hidden -i -C 2 --fixed-strings"], capsys)
+
+tests/test_rgcodeblock_cli.py:329: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+args_list = ['p', '.', '--rg-args', '--hidden -i -C 2 --fixed-strings']
+capsys = <_pytest.capture.CaptureFixture object at 0x71fe2997f0>
+
+    def run_cli_main_with_args(args_list, capsys):
+        """Helper to run the CLI script's main() with mocked sys.argv."""
+        # Reset STATS and Notes before each CLI run test
+        global_stats_keys = list(rgcb_cli.STATS.keys())
+        for key in global_stats_keys:
+            if key == "matches_by_lang_type": rgcb_cli.STATS[key] = defaultdict(int)
+            elif key == "files_with_matches_by_ext": rgcb_cli.STATS[key] = defaultdict(set)
+            elif key == "processed_files": rgcb_cli.STATS[key] = set()
+            else: rgcb_cli.STATS[key] = 0
+        if hasattr(rgc_lib, 'OPTIONAL_LIBRARY_NOTES'):
+            rgc_lib.OPTIONAL_LIBRARY_NOTES.clear()
+    
+        # Store args globally (workaround for print_statistics needing sep_style)
+        # Parse args briefly to get sep_style or use default
+>       temp_parser = argparse.ArgumentParser(add_help=False) # Suppress help output during test setup
+E       NameError: name 'argparse' is not defined. Did you forget to import 'argparse'
+
+tests/test_rgcodeblock_cli.py:80: NameError
+_____________________ test_cli_max_block_lines_truncation ______________________
+
+mock_rg_subprocess = <function mock_rg_subprocess.<locals>.side_effect_func at 0x71fa5ad620>
+mock_file_content = {'large.py': 'def func():\n  l2\n  hit\n  l4\n  l5\n  l6\npass # line 7'}
+capsys = <_pytest.capture.CaptureFixture object at 0x71fa5a9fa0>
+
+    def test_cli_max_block_lines_truncation(mock_rg_subprocess, mock_file_content, capsys):
+        """Test --max-block-lines truncation in CLI output."""
+        rg_json_output = json.dumps({"type": "match", "data": {"path": {"text": "large.py"}, "line_number": 3, "submatches": [{"match": {"text": "hit"}}]}}) + "\n"
+        mock_rg_subprocess.stdout_val = rg_json_output
+        long_code = "def func():\n  l2\n  hit\n  l4\n  l5\n  l6\npass # line 7"
+        mock_file_content["large.py"] = long_code
+    
+        block = [(l + '\n') for l in long_code.splitlines()] # 7 lines
+        with patch.object(rgc_lib, 'extract_python_block_ast', return_value=(block, 0, 6)):
+>           out, err, code = run_cli_main_with_args(["hit", "large.py", "-M", "4"], capsys) # Max 4 lines
+
+tests/test_rgcodeblock_cli.py:351: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+args_list = ['hit', 'large.py', '-M', '4']
+capsys = <_pytest.capture.CaptureFixture object at 0x71fa5a9fa0>
+
+    def run_cli_main_with_args(args_list, capsys):
+        """Helper to run the CLI script's main() with mocked sys.argv."""
+        # Reset STATS and Notes before each CLI run test
+        global_stats_keys = list(rgcb_cli.STATS.keys())
+        for key in global_stats_keys:
+            if key == "matches_by_lang_type": rgcb_cli.STATS[key] = defaultdict(int)
+            elif key == "files_with_matches_by_ext": rgcb_cli.STATS[key] = defaultdict(set)
+            elif key == "processed_files": rgcb_cli.STATS[key] = set()
+            else: rgcb_cli.STATS[key] = 0
+        if hasattr(rgc_lib, 'OPTIONAL_LIBRARY_NOTES'):
+            rgc_lib.OPTIONAL_LIBRARY_NOTES.clear()
+    
+        # Store args globally (workaround for print_statistics needing sep_style)
+        # Parse args briefly to get sep_style or use default
+>       temp_parser = argparse.ArgumentParser(add_help=False) # Suppress help output during test setup
+E       NameError: name 'argparse' is not defined. Did you forget to import 'argparse'
+
+tests/test_rgcodeblock_cli.py:80: NameError
+__________________________ test_cli_separator_styles ___________________________
+
+mock_rg_subprocess = <function mock_rg_subprocess.<locals>.side_effect_func at 0x71fa5adda0>
+mock_file_content = {'sep.txt': 'a = 1'}
+capsys = <_pytest.capture.CaptureFixture object at 0x71fa5a9ee0>
+
+    def test_cli_separator_styles(mock_rg_subprocess, mock_file_content, capsys):
+        """Test --sep-style argument in CLI."""
+        rg_json_output = json.dumps({"type": "match", "data": {"path": {"text": "sep.txt"}, "line_number": 1, "submatches": [{"match": {"text": "a"}}]}}) + "\n"
+        mock_rg_subprocess.stdout_val = rg_json_output
+        mock_file_content["sep.txt"] = "a = 1"
+    
+        # Mock extractor (lang doesn't matter much here)
+        with patch.object(rgc_lib, 'get_language_type_from_filename', return_value=("unknown", "txt")), \
+             patch.object(rgc_lib, 'EXTRACTOR_DISPATCH_MAP', {}): # No extractor -> fallback
+    
+>           out_fancy, _, _ = run_cli_main_with_args(["a", "sep.txt", "--sep-style", "fancy"], capsys)
+
+tests/test_rgcodeblock_cli.py:372: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+args_list = ['a', 'sep.txt', '--sep-style', 'fancy']
+capsys = <_pytest.capture.CaptureFixture object at 0x71fa5a9ee0>
+
+    def run_cli_main_with_args(args_list, capsys):
+        """Helper to run the CLI script's main() with mocked sys.argv."""
+        # Reset STATS and Notes before each CLI run test
+        global_stats_keys = list(rgcb_cli.STATS.keys())
+        for key in global_stats_keys:
+            if key == "matches_by_lang_type": rgcb_cli.STATS[key] = defaultdict(int)
+            elif key == "files_with_matches_by_ext": rgcb_cli.STATS[key] = defaultdict(set)
+            elif key == "processed_files": rgcb_cli.STATS[key] = set()
+            else: rgcb_cli.STATS[key] = 0
+        if hasattr(rgc_lib, 'OPTIONAL_LIBRARY_NOTES'):
+            rgc_lib.OPTIONAL_LIBRARY_NOTES.clear()
+    
+        # Store args globally (workaround for print_statistics needing sep_style)
+        # Parse args briefly to get sep_style or use default
+>       temp_parser = argparse.ArgumentParser(add_help=False) # Suppress help output during test setup
+E       NameError: name 'argparse' is not defined. Did you forget to import 'argparse'
+
+tests/test_rgcodeblock_cli.py:80: NameError
+________________________ test_extract_brace_inner_scope ________________________
+
+    def test_extract_brace_inner_scope():
+        block, start, end = extract_brace_block(BRACE_LINES_1, target_line_0idx=5) # 'int nested' line
+        assert block is not None
+        # CORRECTED LINE BELOW: Use double quotes for f-string, double {{ and }} for literal braces
+        assert start == 4, f"Expected start index 4 (inner scope '{{'), got {start}"
+        assert end == 6, f"Expected end index 6 (inner scope '}}'), got {end}"
+>       assert block[0].strip() == "{"
+E       AssertionError: assert '{ // Inner s...ine 5 (idx 4)' == '{'
+E         
+E         - {
+E         + { // Inner scope line 5 (idx 4)
+
+tests/test_rgcodeblock_lib_extractors.py:95: AssertionError
+________________________ test_extract_ruby_outer_class _________________________
+
+    def test_extract_ruby_outer_class():
+        # Target line 4 (inside method_one) -> finds outer `class`
+        block, start, end = extract_ruby_block(RUBY_LINES_1, target_line_0idx=4)
+        assert block is not None
+>       assert start == 1, f"Expected start index 1 (class MyRuby), got {start}"
+E       AssertionError: Expected start index 1 (class MyRuby), got 3
+E       assert 3 == 1
+
+tests/test_rgcodeblock_lib_extractors.py:157: AssertionError
+_______________________ test_extract_ruby_method_by_name _______________________
+
+    def test_extract_ruby_method_by_name():
+        # Target the specific method by name (provide a line inside it to help find instance)
+        block, start, end = extract_ruby_block(RUBY_LINES_1, target_line_0idx=4, target_entity_name="method_one")
+        assert block is not None
+>       assert start == 2, f"Expected start index 2 (def method_one), got {start}"
+E       AssertionError: Expected start index 2 (def method_one), got 3
+E       assert 3 == 2
+
+tests/test_rgcodeblock_lib_extractors.py:165: AssertionError
+_____________________ test_extract_ruby_if_block_heuristic _____________________
+
+    def test_extract_ruby_if_block_heuristic():
+        # Target line 5 ('puts "Positive"') which is inside the 'if'
+        block, start, end = extract_ruby_block(RUBY_LINES_1, target_line_0idx=4) # Target line 5 (index 4)
+        # Scans back, finds 'if' at line 4 (idx 3). Scans forward, finds matching 'end' at line 8 (idx 7).
+        assert block is not None
+        assert start == 3, f"Expected start index 3 (if), got {start}"
+        assert end == 7, f"Expected end index 7 (end for if), got {end}"
+        assert block[0].strip().startswith("if")
+>       assert block[-1].strip() == "end"
+E       AssertionError: assert 'end # line 8 (idx 7)' == 'end'
+E         
+E         - end
+E         + end # line 8 (idx 7)
+
+tests/test_rgcodeblock_lib_extractors.py:177: AssertionError
+_______________________ test_extract_lua_function_outer ________________________
+
+    def test_extract_lua_function_outer():
+        # Target line 4 (inside function but outside if)
+        block, start, end = extract_lua_block(LUA_LINES_1, target_line_0idx=3)
+        assert block is not None
+>       assert start == 2, f"Expected start index 2 (function M.calculate), got {start}"
+E       AssertionError: Expected start index 2 (function M.calculate), got 3
+E       assert 3 == 2
+
+tests/test_rgcodeblock_lib_extractors.py:201: AssertionError
+_____________________ test_extract_lua_if_block_heuristic ______________________
+
+    def test_extract_lua_if_block_heuristic():
+         # Target line 6 (inside 'if'/'else')
+        block, start, end = extract_lua_block(LUA_LINES_1, target_line_0idx=5)
+        # Scans back from 5. Line 4 'if' matches starter. bal=-1. start=4.
+        # Scans forward from 4. Line 4 'if' bal=1. Line 8 'end' matches ender, bal=0. Indent matches. end=8.
+        assert block is not None
+>       assert start == 4, f"Expected start index 4 (if), got {start}"
+E       AssertionError: Expected start index 4 (if), got 5
+E       assert 5 == 4
+
+tests/test_rgcodeblock_lib_extractors.py:211: AssertionError
+___________________ test_extract_lua_outer_function_by_name ____________________
+
+    def test_extract_lua_outer_function_by_name():
+         # Target function by name (line hint helps find the right instance if overloaded)
+        block, start, end = extract_lua_block(LUA_LINES_1, target_line_0idx=3, target_entity_name="M.calculate")
+        assert block is not None
+>       assert start == 2, f"Expected start index 2 (function M.calculate), got {start}"
+E       AssertionError: Expected start index 2 (function M.calculate), got 3
+E       assert 3 == 2
+
+tests/test_rgcodeblock_lib_extractors.py:220: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_func_replacer.py::test_replace_using_line_hint - AssertionE...
+FAILED tests/test_func_replacer.py::test_confirmation_prompt_no - assert "Rep...
+FAILED tests/test_rgcodeblock_cli.py::test_list_languages_cli - NameError: na...
+FAILED tests/test_rgcodeblock_cli.py::test_no_matches_found_cli - NameError: ...
+FAILED tests/test_rgcodeblock_cli.py::test_basic_match_and_extraction_text_format_cli
+FAILED tests/test_rgcodeblock_cli.py::test_json_format_output_cli - NameError...
+FAILED tests/test_rgcodeblock_cli.py::test_cli_stats_output_format - NameErro...
+FAILED tests/test_rgcodeblock_cli.py::test_cli_line_numbers - NameError: name...
+FAILED tests/test_rgcodeblock_cli.py::test_cli_ruby_extraction - NameError: n...
+FAILED tests/test_rgcodeblock_cli.py::test_cli_lua_extraction - NameError: na...
+FAILED tests/test_rgcodeblock_cli.py::test_cli_include_ext_args - NameError: ...
+FAILED tests/test_rgcodeblock_cli.py::test_cli_exclude_path_args - NameError:...
+FAILED tests/test_rgcodeblock_cli.py::test_cli_rg_args_passthrough - NameErro...
+FAILED tests/test_rgcodeblock_cli.py::test_cli_max_block_lines_truncation - N...
+FAILED tests/test_rgcodeblock_cli.py::test_cli_separator_styles - NameError: ...
+FAILED tests/test_rgcodeblock_lib_extractors.py::test_extract_brace_inner_scope
+FAILED tests/test_rgcodeblock_lib_extractors.py::test_extract_ruby_outer_class
+FAILED tests/test_rgcodeblock_lib_extractors.py::test_extract_ruby_method_by_name
+FAILED tests/test_rgcodeblock_lib_extractors.py::test_extract_ruby_if_block_heuristic
+FAILED tests/test_rgcodeblock_lib_extractors.py::test_extract_lua_function_outer
+FAILED tests/test_rgcodeblock_lib_extractors.py::test_extract_lua_if_block_heuristic
+FAILED tests/test_rgcodeblock_lib_extractors.py::test_extract_lua_outer_function_by_name
+=================== 22 failed, 14 passed, 2 skipped in 0.77s ===================

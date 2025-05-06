@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import sys
-from cross_platform.clipboard_utils import set_clipboard
+from cross_platform.clipboard_utils import set_clipboard, get_clipboard
 
 def copy_to_clipboard(files):
     try:
@@ -12,9 +12,18 @@ def copy_to_clipboard(files):
 
         # Join all file contents and copy to clipboard
         text_to_copy = "\n\n".join(content)
-        set_clipboard(text_to_copy)
+        total_lines = text_to_copy.count("\n") + 1
 
-        print("Files copied to clipboard successfully!")
+        set_clipboard(text_to_copy)
+        print(f"[INFO] Requested copy: {total_lines} lines.")
+
+        # Fetch clipboard contents and validate
+        actual_clipboard = get_clipboard()
+        copied_lines = actual_clipboard.count("\n") + 1
+        if copied_lines < total_lines:
+            print(f"[WARNING] Clipboard may have been truncated: {copied_lines} / {total_lines} lines copied.")
+        else:
+            print("[SUCCESS] Clipboard copy appears complete.")
 
     except Exception as e:
         print(f"Error: {e}")
@@ -25,4 +34,3 @@ if __name__ == "__main__":
         sys.exit(1)
 
     copy_to_clipboard(sys.argv[1:])
-
