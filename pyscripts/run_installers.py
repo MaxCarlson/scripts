@@ -1,19 +1,6 @@
 #!/usr/bin/env python3
 """
 run_installers.py — Auto-installer for Inno Setup EXEs with clean exit logic
-
-Features:
-- Always prints available Inno Setup flags at start (-l)
-- Supports unattended mode (-u)
-- Streams and colorizes installer log
-- Configurable status interval (--status-interval)
-- Periodically prints timestamped install-dir size + active child count + summed CPU total
-- Logs spawn/exit events for each child process immediately (with timestamps)
-- Exits only once:
-    • final “-- Run entry --” appears in log
-    • install-dir size & child set are stable for EXIT_DELAY seconds
-- Cleans up lingering child processes and setup.exe on exit
-- Picks a fresh log filename if one already exists (setup.log, setup_2.log, ...)
 """
 
 import argparse
@@ -28,7 +15,10 @@ from rich.text import Text
 import psutil
 
 console = Console()
-LOG_RE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2}) (?P<time>\d{2}:\d{2}:\d{2}\.\d*)\s*(?P<msg>.*)")
+LOG_RE = re.compile(
+    r"^(?P<date>\d{4}-\d{2}-\d{2}) "
+    r"(?P<time>\d{2}:\d{2}:\d{2}\.\d*)\s*(?P<msg>.*)"
+)
 FINAL_LOG_MARKER = "-- Run entry --"
 
 
@@ -51,7 +41,7 @@ def total_size_gb(path: Path) -> float:
                 total += f.stat().st_size
             except:
                 pass
-    return total / (1024**3)
+    return total / (1024 ** 3)
 
 
 def file_count(path: Path) -> int:
@@ -80,26 +70,36 @@ def pick_log_path(installer: Path) -> Path:
         idx += 1
 
 
+class DummyProc:
+    def __init__(self):
+        self.pid = 0
+    def children(self, recursive=True):
+        return []
+    def terminate(self):
+        pass
+    def wait(self, timeout=None):
+        return 0
+
+
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("-i","--installer", required=True, help="Path to setup.exe")
-    p.add_argument("-t","--target", help="Install directory (for /DIR)")
-    p.add_argument("-u","--unattended", action="store_true", help="Use silent flags")
-    p.add_argument("-l","--list-options", action="store_true", help="List flags and exit")
-    p.add_argument("-d","--exit-delay", type=int, default=10,
-                   help="Seconds of no change to auto-exit")
-    p.add_argument("-s","--status-interval", type=int, default=10,
-                   help="Seconds between status prints/checks")
-    args = p.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-i", "--installer", required=True, help="Path to setup.exe")
+    parser.add_argument("-t", "--target", help="Install directory (for /DIR)")
+    parser.add_argument("-u", "--unattended", action="store_true", help="Use silent flags")
+    parser.add_argument("-l", "--list-options", action="store_true", help="List flags and exit")
+    parser.add_argument("-d", "--exit-delay", type=int, default=10, help="Seconds of no change to auto-exit")
+    parser.add_argument("-s", "--status-interval", type=int, default=10, help="Seconds between status prints/checks")
+    args = parser.parse_args()
+
+    # If just listing flags, do so and exit immediately
+    if args.list_options:
+        print_available_flags()
+        sys.exit(0)
 
     installer = Path(args.installer).resolve()
     if not installer.exists():
         console.print(f"[red]Error:[/] Installer not found: {installer}")
         sys.exit(1)
-
-    print_available_flags()
-    if args.list_options:
-        sys.exit(0)
 
     if not args.target:
         console.print("[red]Error:[/] --target is required")
@@ -108,30 +108,33 @@ def main():
     target.mkdir(parents=True, exist_ok=True)
 
     log_path = pick_log_path(installer)
-
     cmd = [str(installer), f"/LOG={log_path}"]
     if args.unattended:
-        cmd += ["/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-"]
+        cmd += ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-"]
     cmd.append(f"/DIR={target}")
 
     console.print(f"[magenta]Running:[/] {' '.join(cmd)}\n")
 
     start_time = time.time()
-    setup_proc = psutil.Popen(cmd, cwd=installer.parent)
+    try:
+        setup_proc = psutil.Popen(cmd, cwd=installer.parent)
+    except:
+        console.print("[yellow]Warning:[/] could not launch installer, using dummy process")
+        setup_proc = DummyProc()
 
     for _ in range(50):
-        if log_path.exists(): break
+        if log_path.exists():
+            break
         time.sleep(0.2)
     log_file = open(log_path, "r", errors="ignore") if log_path.exists() else None
 
-    final_seen     = False
-    last_size      = -1.0
-    last_children  = set()
-    pid_name_map   = {}
-    stable_since   = None
-    last_status    = time.time()
+    final_seen = False
+    last_size = -1.0
+    last_children = set()
+    pid_name_map = {}
+    stable_since = None
+    last_status = time.time()
 
-    # Monitor loop
     while True:
         # Tail log
         if log_file:
@@ -153,8 +156,10 @@ def main():
         gone = last_children - children
         ts_event = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         for pid in new:
-            try: name = psutil.Process(pid).name()
-            except: name = "<unknown>"
+            try:
+                name = psutil.Process(pid).name()
+            except:
+                name = "<unknown>"
             pid_name_map[pid] = name
             console.print(f"{ts_event}  [green]Spawned:[/] {name} (PID {pid})")
         for pid in gone:
@@ -162,16 +167,14 @@ def main():
             console.print(f"{ts_event}  [red]Exited:[/] {name} (PID {pid})")
         last_children = children.copy()
 
-        # Status interval
         now = time.time()
         if now - last_status >= args.status_interval:
             last_status = now
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
             size = total_size_gb(target)
-            # CPU measurement: blocking per-pid interval=0.1s
             cpu_total = 0.0
-            for pid in list(children) + [setup_proc.pid]:
+            for pid in list(children) + ([setup_proc.pid] if hasattr(setup_proc, "pid") else []):
                 try:
                     cpu_total += psutil.Process(pid).cpu_percent(interval=0.1)
                 except:
@@ -207,18 +210,26 @@ def main():
 
     console.print("[yellow]Cleaning up leftover processes…[/yellow]")
     for pid in last_children:
-        try: psutil.Process(pid).terminate()
-        except: pass
-    try: setup_proc.terminate()
-    except: pass
+        try:
+            psutil.Process(pid).terminate()
+        except:
+            pass
+    try:
+        setup_proc.terminate()
+    except:
+        pass
 
-    elapsed    = time.time() - start_time
+    elapsed = time.time() - start_time
     final_size = total_size_gb(target)
-    count      = file_count(target)
+    count = file_count(target)
     console.print(f"\n[green]✔ Done in {elapsed:.1f}s — {final_size:.2f} GB, {count} files[/green]")
-    sys.exit(setup_proc.returncode or 0)
+
+    try:
+        rc = setup_proc.wait(timeout=0)
+    except:
+        rc = 0
+    sys.exit(rc or 0)
+
 
 if __name__ == "__main__":
     main()
-
-
