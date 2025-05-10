@@ -85,13 +85,17 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--installer", required=True, help="Path to setup.exe")
     parser.add_argument("-t", "--target", help="Install directory (for /DIR)")
+    parser.add_argument("-F", "--force-install", action="store_true",
+                        help="Allow installing into an existing directory")
     parser.add_argument("-u", "--unattended", action="store_true", help="Use silent flags")
     parser.add_argument("-l", "--list-options", action="store_true", help="List flags and exit")
-    parser.add_argument("-d", "--exit-delay", type=int, default=10, help="Seconds of no change to auto-exit")
-    parser.add_argument("-s", "--status-interval", type=int, default=10, help="Seconds between status prints/checks")
+    parser.add_argument("-d", "--exit-delay", type=int, default=10,
+                        help="Seconds of no change to auto-exit")
+    parser.add_argument("-s", "--status-interval", type=int, default=10,
+                        help="Seconds between status prints/checks")
     args = parser.parse_args()
 
-    # If just listing flags, do so and exit immediately
+    # List flags and exit immediately
     if args.list_options:
         print_available_flags()
         sys.exit(0)
@@ -105,6 +109,14 @@ def main():
         console.print("[red]Error:[/] --target is required")
         sys.exit(1)
     target = Path(args.target).resolve()
+
+    # New: Prevent installing into an existing directory unless forced
+    if target.exists() and not args.force_install:
+        console.print(f"[red]Error:[/] Target directory already exists: {target}")
+        console.print("Use [bold]-F[/bold] or [bold]--force-install[/bold] to override.")
+        sys.exit(1)
+
+    # Now create (or recreate) the directory
     target.mkdir(parents=True, exist_ok=True)
 
     log_path = pick_log_path(installer)
@@ -167,6 +179,7 @@ def main():
             console.print(f"{ts_event}  [red]Exited:[/] {name} (PID {pid})")
         last_children = children.copy()
 
+        # Status update
         now = time.time()
         if now - last_status >= args.status_interval:
             last_status = now
