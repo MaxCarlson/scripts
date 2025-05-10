@@ -66,9 +66,10 @@ def get_language_type_from_filename(filename: str) -> tuple[str, str]:
     """
     name, ext_with_dot = os.path.splitext(filename)
     raw_ext = ext_with_dot[1:].lower() if ext_with_dot else ""
-    
+
     # Check for exact matches first (e.g., if a specific file has no extension but is known type)
-    # if os.path.basename(filename) == "Makefile": return "makefile", "" # Example
+    # basename = os.path.basename(filename)
+    # if basename == "Makefile": return "makefile", "" # Example specific handling
 
     for lang, details in LANGUAGE_DEFINITIONS.items():
         if ext_with_dot.lower() in details["exts"]:

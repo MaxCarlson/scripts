@@ -22,7 +22,8 @@ from .extractors import (
     OPTIONAL_LIBRARY_NOTES # Expose this for CLIs to access
 )
 
-# Dispatch map for convenience, mapping language type to its main extractor
+# Dispatch map for convenience, mapping language type to its main extractor function
+# CLIs or other tools can use this map.
 EXTRACTOR_DISPATCH_MAP = {
     "python": extract_python_block_ast,
     "brace": extract_brace_block,
@@ -33,4 +34,4 @@ EXTRACTOR_DISPATCH_MAP = {
     "lua": extract_lua_block,
 }
 
-__version__ = "0.2.0" # Updated version example
+__version__ = "0.2.1" # Updated version example
