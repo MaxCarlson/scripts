@@ -1,49 +1,40 @@
 #!/usr/bin/env python3
 """
-run_installers.py
+run_installers.py — Launch Inno Setup/NSIS-based installers remotely
 
-Detects Inno Setup vs NSIS installers, writes a fresh log file each run,
-streams all log lines with colorized output, prints install-dir size every
-EXIT_DELAY seconds, and auto-exits when both the installer process has ended
-and no new log or filesystem activity has occurred for a configurable delay.
+Features:
+- Detects setup.exe type (Inno/NSIS)
+- Interactive & unattended CLI
+- Streams installer log with rich formatting
+- Periodically shows install directory size
+- Auto-exits after "Run entry" appears + no folder change for N seconds
 
-Requires: rich (for styling output)
+Requires: rich
 """
-import argparse
-import subprocess
-import sys
-import shlex
-import time
-import os
-import re
+
+import argparse, subprocess, sys, shlex, time, os, re
 from pathlib import Path
 from typing import Optional
-
 from rich.console import Console
 from rich.table import Table
 from rich.prompt import Confirm
 from rich.text import Text
 
-LOG_RE = re.compile(
-    r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.?\d*)\s*(?P<msg>.*)"
-)
+LOG_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2}) (?P<time>\d{2}:\d{2}:\d{2}\.?\d*)\s*(?P<msg>.*)")
+FINAL_LOG_MARKER = "Run entry"
 
 def print_colored(line: str, console: Console):
     m = LOG_RE.match(line)
     if m:
-        t = Text()
-        t.append(m.group("ts"), style="dim")
-        t.append("  ")
-        t.append(m.group("msg"), style="white")
-        console.print(t)
+        ts = Text(m.group("ts"), style="grey50")
+        tm = Text(m.group("time"), style="cyan")
+        msg = Text(m.group("msg"), style="white")
+        console.print(ts.append(" ").append(tm).append("  ").append(msg))
     else:
-        console.print(line, style="white")
+        console.print(line.strip(), style="white")
 
 def detect_setup_type(path: str) -> Optional[str]:
-    sigs = {
-        "inno": b"Inno Setup",
-        "nsis": b"Nullsoft Install System",
-    }
+    sigs = {'inno': b'Inno Setup', 'nsis': b'Nullsoft Install System'}
     try:
         data = Path(path).read_bytes()[:200_000]
         for t, sig in sigs.items():
@@ -54,200 +45,131 @@ def detect_setup_type(path: str) -> Optional[str]:
     return None
 
 def total_size(path: Optional[Path]) -> int:
-    if not path or not path.exists():
-        return 0
-    total = 0
-    for root, _, files in os.walk(path):
-        for f in files:
-            try:
-                total += (Path(root) / f).stat().st_size
-            except:
-                pass
-    return total
+    if not path or not path.exists(): return 0
+    return sum((Path(root)/f).stat().st_size for root, _, files in os.walk(path) for f in files if (Path(root)/f).exists())
+
+def file_count(path: Optional[Path]) -> int:
+    return sum(len(files) for _, _, files in os.walk(path)) if path and path.exists() else 0
 
 def main():
     console = Console()
-    parser = argparse.ArgumentParser(description="Auto-installer for EXE setups")
-    parser.add_argument("-i", "--installer", required=True, help="Path to setup.exe")
-    parser.add_argument("-l", "--list-options", action="store_true",
-                        help="List supported installer flags and exit")
-    parser.add_argument("-t", "--target",
-                        help="Installation directory (not required with -l)")
-    parser.add_argument("-n", "--non-interactive", action="store_true",
-                        help="Run without prompts")
-    parser.add_argument("-u", "--unattended", action="store_true",
-                        help="Silent, no popups, no restart, skip prompt")
-    parser.add_argument("-g", "--gui", action="store_true",
-                        help="Use GUI-progress (/SILENT) instead of fully silent")
-    parser.add_argument("-s", "--silent", action="store_true",
-                        help="Silent install (/VERYSILENT or /S)")
-    parser.add_argument("-m", "--no-msg", action="store_true", dest="no_msg",
-                        help="Suppress pop-ups (/SUPPRESSMSGBOXES)")
-    parser.add_argument("-r", "--no-restart", action="store_true", dest="no_restart",
-                        help="Prevent auto-restart (/NORESTART)")
-    parser.add_argument("-p", "--skip-prompt", action="store_true", dest="skip_prompt",
-                        help="Skip initial prompt (/SP-)")
-    parser.add_argument("-x", "--extra",
-                        help="Additional custom installer flags (space-separated)")
-    parser.add_argument("-d", "--exit-delay", type=int, default=10,
-                        help="Seconds of inactivity before auto-exit")
-    parser.add_argument("-f", "--force", action="store_true",
-                        help="Skip confirmation in interactive mode")
-    args = parser.parse_args()
+    p = argparse.ArgumentParser(description="Remote installer helper for setup.exe")
+    p.add_argument("-i","--installer",required=True, help="Path to setup.exe")
+    p.add_argument("-l","--list-options",action="store_true", help="List supported flags and exit")
+    p.add_argument("-t","--target", help="Install directory (required unless -l)")
+    p.add_argument("-n","--non-interactive",action="store_true")
+    p.add_argument("-u","--unattended",action="store_true")
+    p.add_argument("-g","--gui",action="store_true")
+    p.add_argument("-s","--silent",action="store_true")
+    p.add_argument("-m","--no-msg",action="store_true",dest="no_msg")
+    p.add_argument("-r","--no-restart",action="store_true",dest="no_restart")
+    p.add_argument("-p","--skip-prompt",action="store_true",dest="skip_prompt")
+    p.add_argument("-x","--extra", help="Additional installer flags (quoted)")
+    p.add_argument("-d","--exit-delay",type=int,default=10, help="Seconds of no activity before exit")
+    p.add_argument("-f","--force",action="store_true")
+    args = p.parse_args()
 
     installer = Path(args.installer).resolve()
-    if not installer.exists():
-        console.print(f"[red]Error:[/red] Installer not found: {installer}")
-        sys.exit(1)
+    if not installer.exists(): console.print(f"[red]Missing:[/red] {installer}"); sys.exit(1)
 
     stype = detect_setup_type(str(installer)) or "inno"
 
-    # List flags and exit
     if args.list_options:
-        console.print(f"Detected installer type: [bold]{stype.upper()}[/bold]\n")
-        if stype == "inno":
-            opts = {
-                "silent": "/VERYSILENT", "gui": "/SILENT",
-                "no_msg": "/SUPPRESSMSGBOXES", "no_restart": "/NORESTART",
-                "skip_prompt": "/SP-", "dir": "/DIR",
-            }
-        else:
-            opts = {"silent": "/S", "gui": "/S", "dir": "/D"}
-        table = Table(title="Available Installer Options")
-        table.add_column("Key", style="cyan")
-        table.add_column("Flag", style="green")
-        table.add_column("Description")
-        descs = {
-            "silent": "No UI at all",
-            "gui": "Show progress UI",
-            "no_msg": "Hide pop-ups",
-            "no_restart": "Prevent auto-restart",
-            "skip_prompt": "Skip initial prompt",
-            "dir": "Install folder (syntax: DIR=path)",
-        }
-        for k, v in opts.items():
-            table.add_row(k, v, descs.get(k, ""))
-        console.print(table)
-        sys.exit(0)
+        console.print(f"[bold]Detected installer:[/bold] {stype.upper()}")
+        table = Table(title="Supported Flags")
+        table.add_column("Key", style="cyan"); table.add_column("Flag", style="green")
+        opts = {"silent": "/VERYSILENT or /S", "gui": "/SILENT", "no_msg": "/SUPPRESSMSGBOXES", 
+                "no_restart": "/NORESTART", "skip_prompt": "/SP-", "dir": "/DIR or /D"}
+        for k,v in opts.items(): table.add_row(k, v)
+        console.print(table); sys.exit(0)
 
-    # Require target
     if not args.target:
-        console.print("[red]Error:[/red] --target required unless listing flags")
-        sys.exit(1)
+        console.print("[red]--target required unless using -l[/red]"); sys.exit(1)
     target = Path(args.target).resolve()
 
-    # Fresh log filename
     base = installer.with_suffix("")
-    idx = 1
-    while True:
-        suffix = "" if idx == 1 else f"_{idx}"
-        cand = base.with_name(base.name + suffix + ".log")
-        if not cand.exists():
-            log_path = cand
-            break
-        idx += 1
+    for idx in range(1,100):
+        log_path = base.with_name(f"{base.name}_{idx}.log") if idx > 1 else base.with_name(f"{base.name}.log")
+        if not log_path.exists(): break
 
-    # Unattended presets
     if args.unattended:
-        args.non_interactive = True
-        args.force = True
-        args.silent = True
-        args.no_msg = True
-        args.no_restart = True
-        args.skip_prompt = True
+        args.non_interactive = args.force = True
+        args.silent = args.no_msg = args.no_restart = args.skip_prompt = True
 
-    console.print(f"Detected installer type: [bold]{stype.upper()}[/bold]")
+    console.print(f"[bold]Installer:[/bold] {stype.upper()}")
+    fd = {"silent": "/VERYSILENT" if stype == "inno" else "/S",
+          "gui": "/SILENT" if stype == "inno" else "/S",
+          "no_msg": "/SUPPRESSMSGBOXES", "no_restart": "/NORESTART",
+          "skip_prompt": "/SP-", "dir": "/DIR" if stype == "inno" else "/D"}
 
-    # Flag definitions
-    if stype == "inno":
-        fd = {
-            "silent": "/VERYSILENT", "gui": "/SILENT",
-            "no_msg": "/SUPPRESSMSGBOXES", "no_restart": "/NORESTART",
-            "skip_prompt": "/SP-", "dir": "/DIR",
-        }
-    else:
-        fd = {"silent": "/S", "gui": "/S", "dir": "/D"}
-
-    # Interactive confirmations
     if not args.non_interactive:
         if not args.gui:
-            args.silent = Confirm.ask("Enable silent install?", default=True)
-        if stype == "inno" and args.silent:
-            args.no_msg = Confirm.ask("Hide pop-ups?", default=True)
-            args.no_restart = Confirm.ask("Prevent auto-restart?", default=True)
-            args.skip_prompt = Confirm.ask("Skip initial prompt?", default=True)
+            args.silent = Confirm.ask("Silent install?", default=True)
+        if args.silent:
+            args.no_msg = Confirm.ask("Suppress popups?", default=True)
+            args.no_restart = Confirm.ask("Prevent restart?", default=True)
+            args.skip_prompt = Confirm.ask("Skip prompt?", default=True)
 
-    # Build command
     cmd_flags = [f"/LOG={log_path}"]
     cmd_flags.append(fd["gui"] if args.gui else fd["silent"])
-    if stype == "inno":
-        if args.no_msg:      cmd_flags.append(fd["no_msg"])
-        if args.no_restart:  cmd_flags.append(fd["no_restart"])
-        if args.skip_prompt: cmd_flags.append(fd["skip_prompt"])
-    cmd_flags.append(f"{fd['dir']}={target}")
-    if args.extra:
-        cmd_flags.extend(shlex.split(args.extra))
-
+    if args.no_msg: cmd_flags.append(fd["no_msg"])
+    if args.no_restart: cmd_flags.append(fd["no_restart"])
+    if args.skip_prompt: cmd_flags.append(fd["skip_prompt"])
+    cmd_flags.append(f'{fd["dir"]}={target}')
+    if args.extra: cmd_flags.extend(shlex.split(args.extra))
     cmd = [str(installer)] + cmd_flags
-    console.print(f"\n[bold magenta]Running:[/bold magenta] [magenta]{' '.join(cmd)}[/magenta]\n")
+    console.print(f"[magenta]Running:[/magenta] {' '.join(cmd)}\n")
 
+    start_time = time.time()
     proc = subprocess.Popen(cmd, cwd=installer.parent)
 
-    # Wait for log
-    start = time.time()
-    log_file = None
-    while time.time() - start < 5:
-        if log_path.exists():
-            log_file = open(log_path, "r", errors="ignore")
-            break
+    for _ in range(50):
+        if log_path.exists(): break
         time.sleep(0.2)
+    log_file = open(log_path, "r", errors="ignore") if log_path.exists() else None
 
-    last_log = time.time()
-    last_fs = time.time()
-    last_report = time.time()
-    delay = args.exit_delay
+    last_size = -1
+    last_report_time = time.time()
+    exit_watch_started = False
+    exit_watch_time = 0
+    final_log_seen = False
 
-    # Tail & monitor
     while True:
         now = time.time()
 
-        # Stream log lines
+        # Stream log
         if log_file:
             line = log_file.readline()
             while line:
-                last_log = now
                 print_colored(line.rstrip(), console)
+                if FINAL_LOG_MARKER in line:
+                    final_log_seen = True
+                    exit_watch_time = now
+                    last_report_time = now  # reset delay start
                 line = log_file.readline()
 
-        # Detect FS activity
         size = total_size(target)
-        if size and size != getattr(main, "_last_size", None):
-            main._last_size = size
-            last_fs = now
+        if size != last_size:
+            last_size = size
+            exit_watch_time = now  # reset timer if dir changed
 
-        # Periodic dir-size report
-        if now - last_report >= delay:
+        if now - last_report_time > args.exit_delay:
             console.print(f"[cyan]Install dir size: {size/1e9:.2f} GB[/cyan]")
-            last_report = now
+            last_report_time = now
 
-        # Exit when installer ended and idle
-        if proc.poll() is not None and now - last_log >= delay and now - last_fs >= delay:
+        if final_log_seen and (now - exit_watch_time) > args.exit_delay:
             break
 
         time.sleep(0.2)
 
-    # Final flush
     if log_file:
-        rem = log_file.read()
-        if rem:
-            print(rem.rstrip())
         log_file.close()
 
-    ret = proc.wait()
-    if ret == 0:
-        console.print("[green]✓ Installation completed successfully[/green]")
-    else:
-        console.print(f"[red]✗ Installation failed (exit code {ret})[/red]")
+    dur = time.time() - start_time
+    final_gb = total_size(target) / 1e9
+    count = file_count(target)
+    console.print(f"\n[green]✔ Done in {dur:.1f}s — {final_gb:.2f} GB, {count} files[/green]")
+    sys.exit(proc.returncode or 0)
 
 if __name__ == "__main__":
     main()
