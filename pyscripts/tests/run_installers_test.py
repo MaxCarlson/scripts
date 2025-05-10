@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import psutil
 
-import run_installers as ri
+import run_installers2 as ri
 
 
 def test_pick_log_path(tmp_path):
