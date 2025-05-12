@@ -1,458 +1,616 @@
-import pytest
+#!/usr/bin/env python3
+import argparse
+import datetime
+import json
+import os
+import shlex
+import signal
 import subprocess
 import sys
-import os
 import time
-import json
 from pathlib import Path
-import shutil
-import signal
+from typing import List, Dict, Any, Optional
 
-# Assume batch_runner.py is in the same directory or accessible in PATH
-SCRIPT_NAME = "batch_runner.py"
-PYTHON_EXEC = sys.executable # Use the same python interpreter running pytest
+# External dependencies: rich, psutil, filelock, readchar
+try:
+    from rich.console import Console
+    from rich.table import Table
+    from rich.live import Live
+    from rich.panel import Panel
+    from rich import box
+    import psutil
+    import filelock
+    import readchar
+except ImportError as e:
+    print(f"Error: Missing required package(s): {e.name}", file=sys.stderr)
+    print("Please install them using: pip install rich psutil filelock readchar", file=sys.stderr)
+    sys.exit(1)
 
-# --- Fixtures ---
+console = Console()
 
-@pytest.fixture(scope="function")
-def test_dir(tmp_path):
-    """Provides a temporary directory for each test function."""
-    # tmp_path is a Path object provided by pytest
-    yield tmp_path
-    # Cleanup happens automatically when tmp_path goes out of scope
+# --- Configuration ---
+STATE_FILENAME = ".batch_runner_state.json"
+STATE_LOCK_FILENAME = ".batch_runner_state.lock"
+TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
+# --- State Management ---
 
-@pytest.fixture(scope="function")
-def batch_file(test_dir):
-    """Provides the path to a batch file within the test directory."""
-    return test_dir / "test_batch.cmds"
+def get_state_paths(batch_file_path: Path) -> (Path, Path):
+    """Gets the paths for the state file and lock file based on the batch file location."""
+    state_dir = batch_file_path.parent
+    state_path = state_dir / STATE_FILENAME
+    lock_path = state_dir / STATE_LOCK_FILENAME
+    return state_path, lock_path
 
-@pytest.fixture(scope="function")
-def state_file(batch_file):
-    """Provides the expected path to the state file."""
-    return batch_file.parent / ".batch_runner_state.json"
+def load_state(state_path: Path, lock: filelock.FileLock) -> Dict[str, Any]:
+    """Loads the state from the JSON file."""
+    with lock:
+        if not state_path.exists():
+            return {"batches": {}}
+        try:
+            with open(state_path, 'r') as f:
+                state_data = json.load(f)
+                # Basic validation
+                if "batches" not in state_data or not isinstance(state_data["batches"], dict):
+                    console.print(f"[yellow]Warning:[/yellow] State file '{state_path}' has invalid format. Initializing new state.", file=sys.stderr)
+                    return {"batches": {}}
+                return state_data
+        except json.JSONDecodeError:
+            console.print(f"[yellow]Warning:[/yellow] State file '{state_path}' is corrupted. Initializing new state.", file=sys.stderr)
+            return {"batches": {}}
+        except Exception as e:
+            console.print(f"[red]Error loading state file '{state_path}': {e}[/red]", file=sys.stderr)
+            return {"batches": {}} # Return default empty state on error
 
-@pytest.fixture(scope="function")
-def log_dir(batch_file):
-    """Provides the expected path to the log directory."""
-    return batch_file.parent / "logs"
-
-# --- Helper Function ---
-
-def run_script(args: list, cwd: Path) -> subprocess.CompletedProcess:
-    """Runs the batch_runner.py script with given arguments."""
-    command = [PYTHON_EXEC, SCRIPT_NAME] + args
-    # Setting a timeout is crucial to prevent tests hanging indefinitely
-    # Extend if testing longer-running commands, but keep it reasonable
-    timeout_seconds = 10
+def save_state(state_path: Path, lock: filelock.FileLock, state_data: Dict[str, Any]):
+    """Saves the state to the JSON file."""
     try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            cwd=cwd, # Run the script relative to the test directory
-            check=False, # Don't raise exception on non-zero exit code
-            timeout=timeout_seconds
-        )
-        return result
-    except subprocess.TimeoutExpired as e:
-        print(f"Timeout expired running: {' '.join(command)}")
-        print(f"Stdout: {e.stdout}")
-        print(f"Stderr: {e.stderr}")
-        pytest.fail(f"Script timed out after {timeout_seconds}s: {' '.join(command)}")
+        with lock:
+            # Ensure directory exists (should normally exist by now, but defensive)
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            # Write atomically if possible (write to temp then rename)
+            temp_state_path = state_path.with_suffix(state_path.suffix + '.tmp')
+            with open(temp_state_path, 'w') as f:
+                json.dump(state_data, f, indent=2)
+            os.replace(temp_state_path, state_path) # Atomic rename
+    except Exception as e:
+        console.print(f"[red]Error saving state file '{state_path}': {e}[/red]", file=sys.stderr)
+        # Attempt to remove temporary file if rename failed
+        if 'temp_state_path' in locals() and temp_state_path.exists():
+            try:
+                temp_state_path.unlink()
+            except OSError:
+                pass # Ignore error during cleanup
 
 
-def wait_for_processes(state_data: dict, batch_key: str, timeout: int = 5):
-    """Waits for processes listed in the state file to finish."""
-    import psutil # Import locally as it's only needed here
-    start_time = time.time()
-    processes_to_watch = []
-    if batch_key in state_data.get("batches", {}):
-         processes_info = state_data["batches"][batch_key].get("processes", [])
-         for pinfo in processes_info:
-             pid = pinfo.get("pid")
-             if pid:
+def sanitize_filename(name: str) -> str:
+    """Removes potentially problematic characters for filenames."""
+    sanitized = "".join(c if c.isalnum() or c in ('-', '_', '.') else '_' for c in name)
+    return sanitized[:100] # Limit length
+
+def format_duration(seconds: float) -> str:
+    """Formats a duration in seconds into a human-readable string."""
+    if seconds < 0: return "N/A"
+    delta = datetime.timedelta(seconds=int(seconds))
+    return str(delta)
+
+def format_bytes(byte_count: Optional[int]) -> str:
+    """Formats bytes into KB, MB, GB."""
+    if byte_count is None: return "N/A"
+    if byte_count < 1024: return f"{byte_count} B"
+    if byte_count < 1024**2: return f"{byte_count/1024:.1f} KB"
+    if byte_count < 1024**3: return f"{byte_count/1024**2:.1f} MB"
+    return f"{byte_count/1024**3:.1f} GB"
+
+# --- Command Handlers ---
+
+def handle_add(args: argparse.Namespace):
+    """Adds commands to the specified batch file."""
+    batch_file = Path(args.batch_file).resolve()
+    added_count = 0
+
+    try:
+        batch_file.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(batch_file, 'a+') as f:
+            if args.command:
+                f.write(args.command.strip() + "\n") # Ensure newline
+                added_count = 1
+                console.print(f"Added command to '{batch_file}'.")
+            elif args.from_file:
+                source_file = Path(args.from_file)
+                if not source_file.is_file():
+                    # Use console.print for rich formatting, print to stdout by default
+                    console.print(f"[red]Error:[/red] Source file '{source_file}' not found.")
+                    return # Exit the function on error
+                with open(source_file, 'r') as sf:
+                    for line in sf:
+                        command = line.strip()
+                        if command and not command.startswith('#'):
+                            f.write(command + "\n")
+                            added_count += 1
+                console.print(f"Added {added_count} command(s) from '{source_file}' to '{batch_file}'.")
+            else:
+                console.print("[red]Error:[/red] No command or source file specified for adding.")
+                return
+
+        # Read the file back to count total commands accurately
+        with open(batch_file, 'r') as f:
+            total_commands = sum(1 for line in f if line.strip() and not line.strip().startswith('#'))
+
+        console.print(f"Batch file '[cyan]{batch_file.name}[/cyan]' in directory '[cyan]{batch_file.parent}[/cyan]' now contains [bold]{total_commands}[/bold] command(s).")
+
+    except IOError as e:
+        console.print(f"[red]Error accessing file '{batch_file}': {e}[/red]")
+    except Exception as e:
+        console.print(f"[red]An unexpected error occurred during add: {e}[/red]")
+
+
+def handle_run(args: argparse.Namespace):
+    """Runs commands from the specified batch file, each in a new process."""
+    batch_file = Path(args.batch_file).resolve()
+    state_path, lock_path = get_state_paths(batch_file)
+    state_lock = filelock.FileLock(lock_path, timeout=5)
+
+    if not batch_file.is_file():
+        console.print(f"[red]Error:[/red] Batch file '{batch_file}' not found.")
+        return
+
+    log_dir = batch_file.parent / "logs"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        console.print(f"[red]Error creating log directory '{log_dir}': {e}[/red]")
+        return
+
+    try:
+        with open(batch_file, 'r') as f:
+            commands = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
+    except IOError as e:
+        console.print(f"[red]Error reading batch file '{batch_file}': {e}[/red]")
+        return
+
+    if not commands:
+        console.print(f"Batch file '{batch_file.name}' is empty or contains only comments. Nothing to run.")
+        return
+
+    console.print(f"Starting batch run from '[cyan]{batch_file.name}[/cyan]'...")
+    run_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    batch_key = str(batch_file) # Use resolved path as key
+    batch_processes = []
+
+    try:
+        state_data = load_state(state_path, state_lock)
+
+        # Improved check for already running batches
+        if batch_key in state_data.get("batches", {}) and state_data["batches"][batch_key].get("status") == "Running":
+             active_pids_in_state = []
+             stale_pids_found = False
+             potentially_active_script_pids = []
+             current_pid = os.getpid() # Don't count the current process
+
+             for proc_info in state_data["batches"][batch_key].get("processes", []):
+                 pid = proc_info.get('pid')
+                 if not pid: continue
+                 active_pids_in_state.append(pid)
                  try:
                      p = psutil.Process(pid)
-                     processes_to_watch.append(p)
+                     # Check if it's running and looks like our script or a child
+                     # This check is heuristic and might need adjustment
+                     cmdline = " ".join(p.cmdline()).lower() if hasattr(p, 'cmdline') else p.name().lower()
+                     if p.is_running() and pid != current_pid and ('python' in cmdline and SCRIPT_NAME.lower() in cmdline or p.parent().pid in active_pids_in_state ):
+                          potentially_active_script_pids.append(pid)
                  except psutil.NoSuchProcess:
-                     continue # Already gone
+                     stale_pids_found = True # Found a PID that doesn't exist anymore
+                 except (psutil.AccessDenied, psutil.ZombieProcess):
+                      # If access denied or zombie, can't be sure, assume maybe active
+                      potentially_active_script_pids.append(pid)
+                 except Exception: # Catch other potential psutil errors
+                     stale_pids_found = True # Treat errors as potentially stale
 
-    gone, alive = psutil.wait_procs(processes_to_watch, timeout=timeout)
-    if alive:
-        print(f"Warning: Processes still alive after {timeout}s: {[p.pid for p in alive]}")
-        # Force kill remaining processes to prevent test interference
-        for p in alive:
+             if potentially_active_script_pids and not stale_pids_found:
+                 console.print(f"[yellow]Warning:[/yellow] Batch '{batch_file.name}' seems to be already running (PIDs: {potentially_active_script_pids}).")
+                 console.print("Use the 'status' command to check details. Consider stopping the existing run before starting a new one.")
+                 # Allow running anyway, but warn strongly. Could add a --force flag later.
+             elif stale_pids_found:
+                 console.print("[yellow]Warning:[/yellow] Found stale process entries for a previous run in the state file. Proceeding with new run.")
+                 # Overwrite the old entry by proceeding below
+
+        # --- Start Processes ---
+        for i, command in enumerate(commands):
+            safe_cmd_name = sanitize_filename(command.split()[0] if command else f"cmd_{i+1}")
+            log_filename = f"cmd_{i+1}_{safe_cmd_name}_{run_timestamp}.log"
+            log_path = log_dir / log_filename
+            log_file = None # Define log_file here to ensure it's available in finally
+
             try:
-                p.terminate() # Try gentle first
-                time.sleep(0.1)
-                if p.is_running():
-                    p.kill() # Force kill
-            except psutil.NoSuchProcess:
-                continue # Gone between check and kill
+                # Open log file first
+                log_file = open(log_path, 'w')
+
+                # Use os.setsid for process group separation (Unix-like only)
+                preexec = os.setsid if sys.platform != "win32" else None
+
+                process = subprocess.Popen(
+                    command,
+                    shell=True, # Be cautious with shell=True
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    preexec_fn=preexec,
+                    cwd=batch_file.parent # Run command relative to batch file directory
+                )
+
+                start_time = time.time()
+                proc_info = {
+                    "pid": process.pid,
+                    "command": command,
+                    "log_path": str(log_path),
+                    "start_time": start_time,
+                    "status": "Running", # Initial status
+                    "exit_code": None,
+                    "end_time": None,
+                }
+                batch_processes.append(proc_info)
+                console.print(f"  [green]Started:[/green] PID {process.pid} - '{command}' -> Log: '{log_path.name}'")
+
             except Exception as e:
-                print(f"Error terminating/killing process {p.pid}: {e}")
-
-
-# --- Test Cases ---
-
-class TestAddCommand:
-    def test_add_single_command(self, test_dir, batch_file):
-        cmd_to_add = "echo 'Hello Batch'"
-        result = run_script(["add", "--batch-file", str(batch_file), "--command", cmd_to_add], test_dir)
-
-        assert result.returncode == 0
-        assert batch_file.exists()
-        with open(batch_file, 'r') as f:
-            content = f.read()
-        assert cmd_to_add in content
-        assert f"now contains [bold]1[/bold] command(s)" in result.stdout # Check count output
-
-    def test_add_create_file(self, test_dir, batch_file):
-        assert not batch_file.exists()
-        result = run_script(["add", "--batch-file", str(batch_file), "-c", "ls"], test_dir)
-        assert result.returncode == 0
-        assert batch_file.exists()
-        assert "now contains [bold]1[/bold] command(s)" in result.stdout
-
-    def test_add_append_command(self, test_dir, batch_file):
-        cmd1 = "echo first"
-        cmd2 = "echo second"
-        run_script(["add", "--batch-file", str(batch_file), "-c", cmd1], test_dir)
-        result = run_script(["add", "--batch-file", str(batch_file), "-c", cmd2], test_dir)
-
-        assert result.returncode == 0
-        with open(batch_file, 'r') as f:
-            lines = f.readlines()
-        assert len(lines) == 2
-        assert lines[0].strip() == cmd1
-        assert lines[1].strip() == cmd2
-        assert f"now contains [bold]2[/bold] command(s)" in result.stdout
-
-    def test_add_from_file(self, test_dir, batch_file):
-        source_file = test_dir / "source_cmds.txt"
-        cmds_in_source = ["cmd 1", "# comment", "cmd 2", "", "cmd 3"]
-        with open(source_file, 'w') as f:
-            f.write("\n".join(cmds_in_source))
-
-        result = run_script(["add", "--batch-file", str(batch_file), "--from-file", str(source_file)], test_dir)
-
-        assert result.returncode == 0
-        assert batch_file.exists()
-        with open(batch_file, 'r') as f:
-            lines = [line.strip() for line in f if line.strip()]
-        assert lines == ["cmd 1", "cmd 2", "cmd 3"] # Comments and empty lines ignored
-        assert f"Added 3 command(s) from" in result.stdout
-        assert f"now contains [bold]3[/bold] command(s)" in result.stdout
-
-    def test_add_from_file_not_found(self, test_dir, batch_file):
-        source_file = test_dir / "non_existent_source.txt"
-        result = run_script(["add", "--batch-file", str(batch_file), "-f", str(source_file)], test_dir)
-
-        assert result.returncode == 0 # Script doesn't exit with error code here, prints error
-        assert not batch_file.exists() # Batch file shouldn't be created if source is invalid
-        assert f"Error:[/red] Source file '{source_file}' not found" in result.stdout
-
-
-class TestRunCommand:
-    def test_run_simple_batch(self, test_dir, batch_file, log_dir, state_file):
-        cmd1 = f"{PYTHON_EXEC} -c \"import sys; sys.stdout.write('out1'); sys.stderr.write('err1');\""
-        cmd2 = "echo 'line2'"
-        batch_content = f"{cmd1}\n{cmd2}\n"
-        batch_file.write_text(batch_content)
-
-        result = run_script(["run", "--batch-file", str(batch_file)], test_dir)
-
-        assert result.returncode == 0
-        assert "Batch run initiated successfully" in result.stdout
-        assert log_dir.exists()
-        assert state_file.exists()
-
-        # Check state file basic structure
-        with open(state_file, 'r') as f:
-            state_data = json.load(f)
-
-        batch_key = str(batch_file.resolve())
-        assert batch_key in state_data["batches"]
-        batch_info = state_data["batches"][batch_key]
-        assert batch_info["status"] == "Running" # Initially marked as running
-        assert len(batch_info["processes"]) == 2
-
-        pids = []
-        log_files = []
-        for i, pinfo in enumerate(batch_info["processes"]):
-            assert isinstance(pinfo["pid"], int)
-            assert pinfo["status"] == "Running"
-            assert pinfo["start_time"] is not None
-            assert pinfo["exit_code"] is None
-            assert pinfo["end_time"] is None
-            assert pinfo["command"] == batch_content.strip().split('\n')[i]
-            log_path = Path(pinfo["log_path"])
-            assert log_path.name.startswith(f"cmd_{i+1}_")
-            assert log_path.parent == log_dir
-            assert log_path.exists() # Log file should be created
-            pids.append(pinfo["pid"])
-            log_files.append(log_path)
-
-        # Wait for short processes to finish
-        wait_for_processes(state_data, batch_key)
-        time.sleep(0.5) # Give a little extra time for logs to flush
-
-        # Check log content
-        log1_content = log_files[0].read_text()
-        log2_content = log_files[1].read_text()
-
-        assert "out1" in log1_content
-        assert "err1" in log1_content # Stderr redirected
-        # Echo might add a newline depending on OS/shell
-        assert "line2" in log2_content.strip()
-
-    def test_run_empty_batch(self, test_dir, batch_file, log_dir, state_file):
-        batch_file.touch() # Create empty file
-        result = run_script(["run", "--batch-file", str(batch_file)], test_dir)
-
-        assert result.returncode == 0
-        assert "Batch file is empty or contains only comments" in result.stdout
-        assert not log_dir.exists()
-        assert not state_file.exists() # State file shouldn't be created for empty run
-
-    def test_run_comments_only_batch(self, test_dir, batch_file, log_dir, state_file):
-        batch_file.write_text("# A comment\n# Another comment")
-        result = run_script(["run", "--batch-file", str(batch_file)], test_dir)
-
-        assert result.returncode == 0
-        assert "Batch file is empty or contains only comments" in result.stdout
-        assert not log_dir.exists()
-        assert not state_file.exists()
-
-    def test_run_batch_file_not_found(self, test_dir, batch_file):
-        result = run_script(["run", "--batch-file", str(batch_file)], test_dir)
-
-        assert result.returncode == 0 # Script prints error, doesn't exit non-zero
-        assert f"Error:[/red] Batch file '{batch_file.resolve()}' not found." in result.stdout
-
-    def test_run_command_not_found(self, test_dir, batch_file, log_dir, state_file):
-        # Use a command that's unlikely to exist
-        invalid_cmd = "this_command_should_definitely_not_exist_qwertyuiop"
-        batch_file.write_text(invalid_cmd)
-
-        result = run_script(["run", "--batch-file", str(batch_file)], test_dir)
-        assert result.returncode == 0 # run itself succeeds in starting the *attempt*
-
-        assert state_file.exists()
-        assert log_dir.exists()
-
-        # Check state - process was created but likely failed quickly
-        with open(state_file, 'r') as f:
-             state_data = json.load(f)
-        batch_key = str(batch_file.resolve())
-        assert len(state_data["batches"][batch_key]["processes"]) == 1
-        proc_info = state_data["batches"][batch_key]["processes"][0]
-        log_path = Path(proc_info["log_path"])
-        assert log_path.exists()
-
-        # Wait briefly
-        wait_for_processes(state_data, batch_key, timeout=2)
-        time.sleep(0.5)
-
-        # Check log file for error message (shell usually prints 'command not found')
-        log_content = log_path.read_text()
-        assert "not found" in log_content or "nicht gefunden" in log_content or "No such file or directory" in log_content # Linux/macOS/Windows variations
-
-        # Status should eventually reflect failure
-        status_result = run_script(["status", "--batch-file", str(batch_file)], test_dir)
-        # Reload state after status command (which should update it)
-        with open(state_file, 'r') as f:
-             updated_state_data = json.load(f)
-        updated_proc_info = updated_state_data["batches"][batch_key]["processes"][0]
-        assert updated_proc_info["status"] == "Exited"
-        assert updated_proc_info["exit_code"] is not None
-        assert updated_proc_info["exit_code"] != 0 # Should be non-zero exit code
-
-
-class TestStatusCommand:
-    @pytest.fixture(autouse=True) # Automatically use this fixture for all tests in this class
-    def _run_batch_first(self, test_dir, batch_file):
-        """Fixture to run a simple batch before each status test."""
-        # Use commands that finish relatively quickly but not instantly
-        cmd1 = f"{PYTHON_EXEC} -c \"import time; print('Proc 1 Running'); time.sleep(0.5); print('Proc 1 Done')\""
-        cmd2 = "sleep 0.2 && echo 'Proc 2 Done'"
-        batch_file.write_text(f"{cmd1}\n{cmd2}")
-        run_script(["run", "--batch-file", str(batch_file)], test_dir)
-        # Give processes time to start
-        time.sleep(0.2)
-        # Return the key needed to access state
-        return str(batch_file.resolve())
-
-    def test_status_running(self, test_dir, batch_file, state_file, _run_batch_first):
-        batch_key = _run_batch_first
-        # Run status while processes are likely still running
-        # Use timeout and SIGINT to simulate 'q' press, as mocking readchar is complex here
-        command = [PYTHON_EXEC, SCRIPT_NAME, "status", "--batch-file", str(batch_file)]
-        proc = subprocess.Popen(command, cwd=test_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        try:
-            # Let status run for a short time
-            stdout, stderr = proc.communicate(timeout=1.5)
-        except subprocess.TimeoutExpired:
-            # Send Ctrl+C equivalent to stop it
-            proc.send_signal(signal.SIGINT)
-            stdout, stderr = proc.communicate() # Get output after signal
-
-        # Check if the output contains expected elements (less fragile than exact table)
-        assert "Status for Batch" in stdout
-        assert batch_file.name in stdout
-        assert "PID" in stdout and "Command" in stdout and "Status" in stdout and "Runtime" in stdout
-        assert "Proc 1 Running" in stdout or "sleep 0.2" in stdout # Check command names
-        assert "[green]Running" in stdout or "[blue]Sleeping" in stdout # Check status colors/text
-
-        # Check that state file wasn't drastically changed (processes still running)
-        with open(state_file, 'r') as f:
-             state_data = json.load(f)
-        assert state_data["batches"][batch_key]["status"] == "Running" # Overall batch status
-        assert state_data["batches"][batch_key]["processes"][0]["status"] == "Running"
-
-
-    def test_status_after_completion(self, test_dir, batch_file, state_file, _run_batch_first):
-        batch_key = _run_batch_first
-        # Wait long enough for processes to complete
-        time.sleep(1.0) # Wait longer than the sleeps in the commands
-
-        # Run status - it should detect completed processes and update the state
-        command = [PYTHON_EXEC, SCRIPT_NAME, "status", "--batch-file", str(batch_file)]
-        proc = subprocess.Popen(command, cwd=test_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        try:
-            stdout, stderr = proc.communicate(timeout=1.5) # Should exit quickly if 'q' isn't pressed
-        except subprocess.TimeoutExpired:
-            proc.send_signal(signal.SIGINT)
-            stdout, stderr = proc.communicate()
-
-        assert "Status for Batch" in stdout
-        assert "Exited" in stdout # Should show exited status
-
-        # Crucially, check if the state file was updated
-        with open(state_file, 'r') as f:
-             state_data = json.load(f)
-
-        assert state_data["batches"][batch_key]["status"] == "Completed" # Overall status updated
-        all_exited = True
-        for pinfo in state_data["batches"][batch_key]["processes"]:
-            assert pinfo["status"] == "Exited"
-            assert pinfo["exit_code"] == 0 # Assuming clean exits for these test commands
-            assert pinfo["end_time"] is not None
-            runtime = pinfo["end_time"] - pinfo["start_time"]
-            assert runtime > 0 # Runtime should be positive
-            if pinfo["status"] != "Exited":
-                all_exited = False
-
-        assert all_exited
-
-    def test_status_batch_not_found(self, test_dir, batch_file):
-        # Don't run the batch first, just try status on a non-existent run
-        non_existent_batch = test_dir / "no_such_batch.cmds"
-        result = run_script(["status", "--batch-file", str(non_existent_batch)], test_dir)
-
-        assert result.returncode == 0
-        assert f"No running or previous batch found for '{non_existent_batch.resolve()}'" in result.stdout
-        assert "Checked state file:" in result.stdout
-
-    def test_status_invalid_state_file(self, test_dir, batch_file, state_file):
-        # Create a corrupted state file
-        state_file.write_text("{invalid json")
-        # Create a dummy batch file so the script tries to find state
-        batch_file.touch()
-
-        result = run_script(["status", "--batch-file", str(batch_file)], test_dir)
-        # The status command itself shouldn't crash, load_state handles corruption
-        assert result.returncode == 0
-        # load_state should print a warning
-        # Note: Capturing rich's stderr output reliably can sometimes be tricky.
-        # We check stdout for the expected "not found" message resulting from the reset state.
-        assert f"No running or previous batch found for '{batch_file.resolve()}'" in result.stdout
-        # Check stderr for the warning (may vary slightly based on rich version)
-        assert "Warning:[/yellow] State file" in result.stderr
-        assert "corrupted. Initializing new state." in result.stderr
-
-
-class TestHelpers:
-    def test_sanitize_filename(self):
-        # Import the function directly for unit testing
-        from batch_runner import sanitize_filename
-        assert sanitize_filename("cmd /c echo") == "cmd__c_echo"
-        assert sanitize_filename("my_script.py") == "my_script.py"
-        assert sanitize_filename("a*b?c<d>e|f:g\"h") == "a_b_c_d_e_f_g_h"
-        long_name = "a" * 150
-        assert len(sanitize_filename(long_name)) == 100
-        assert sanitize_filename("  leading spaces  ") == "__leading_spaces__"
-
-    def test_format_duration(self):
-        from batch_runner import format_duration
-        assert format_duration(5) == "0:00:05"
-        assert format_duration(65) == "0:01:05"
-        assert format_duration(3661) == "1:01:01"
-        assert format_duration(0) == "0:00:00"
-        assert format_duration(-1) == "N/A"
-        assert format_duration(86400 + 3600 + 60 + 1) == "1 day, 1:01:01"
-
-    def test_format_bytes(self):
-        from batch_runner import format_bytes
-        assert format_bytes(100) == "100 B"
-        assert format_bytes(1024) == "1.0 KB"
-        assert format_bytes(1500) == "1.5 KB"
-        assert format_bytes(1024*1024) == "1.0 MB"
-        assert format_bytes(1024*1024*1.5) == "1.5 MB"
-        assert format_bytes(1024*1024*1024*2.3) == "2.3 GB"
-        assert format_bytes(None) == "N/A"
-
-class TestStateFileHandling:
-    def test_state_file_location(self, test_dir):
-        # Test with nested directories
-        nested_dir = test_dir / "subdir1" / "subdir2"
-        nested_dir.mkdir(parents=True)
-        batch_file = nested_dir / "nested_batch.cmds"
-        state_file = nested_dir / ".batch_runner_state.json"
-        log_dir = nested_dir / "logs"
-
-        batch_file.write_text("echo 'hello nested'")
-        result = run_script(["run", "--batch-file", str(batch_file)], test_dir) # Run from root test dir
-
-        assert result.returncode == 0
-        assert state_file.exists()
-        assert log_dir.exists()
-        assert len(list(log_dir.glob("*.log"))) == 1
-
-        with open(state_file, 'r') as f:
-             state_data = json.load(f)
-        batch_key = str(batch_file.resolve())
-        assert batch_key in state_data["batches"]
-
-        # Clean up to avoid interference if tests run in parallel within tmp_path
-        wait_for_processes(state_data, batch_key)
-
-
-    def test_load_state_no_file(self, test_dir, state_file):
-        from batch_runner import load_state, STATE_LOCK_FILENAME
-        import filelock
-        lock_path = state_file.parent / STATE_LOCK_FILENAME
-        lock = filelock.FileLock(lock_path)
-
-        assert not state_file.exists()
-        state = load_state(state_file, lock)
-        assert state == {"batches": {}}
-
-    def test_save_load_state_roundtrip(self, test_dir, state_file):
-        from batch_runner import load_state, save_state, STATE_LOCK_FILENAME
-        import filelock
-        lock_path = state_file.parent / STATE_LOCK_FILENAME
-        lock = filelock.FileLock(lock_path)
-
-        test_data = {
-            "batches": {
-                "/path/to/batch1.cmds": {"status": "Running", "processes": [{"pid": 123}]},
-                "/path/to/batch2.cmds": {"status": "Completed", "processes": []}
-            }
+                console.print(f"  [red]Failed:[/red] Could not start '{command}': {e}")
+                if log_file: # Write failure to log if file was opened
+                     log_file.write(f"Failed to start process: {e}\n")
+            finally:
+                if log_file: # Ensure log file is closed even on Popen error
+                    log_file.close()
+
+        # --- Update State File ---
+        if not batch_processes:
+             console.print("[yellow]Warning:[/yellow] No processes were successfully started.")
+             # Don't update state if nothing started
+             return
+
+        state_data.setdefault("batches", {})
+        state_data["batches"][batch_key] = {
+            "file_path": str(batch_file),
+            "run_start_time": time.time(),
+            "status": "Running", # Overall batch status
+            "processes": batch_processes
         }
-        save_state(state_file, lock, test_data)
-        assert state_file.exists()
+        save_state(state_path, state_lock, state_data)
 
-        loaded_state = load_state(state_file, lock)
-        assert loaded_state == test_data
+        console.print(f"[bold green]Batch run initiated successfully.[/bold] Use 'status --batch-file \"{batch_file}\"' to monitor.")
+
+    except filelock.Timeout:
+        console.print(f"[red]Error:[/red] Could not acquire lock on state file '{lock_path}'. Another process might be holding it.")
+    except Exception as e:
+        console.print(f"[red]An unexpected error occurred during run: {e}[/red]")
+        import traceback
+        traceback.print_exc() # Print traceback for debugging
+
+
+def generate_status_table(batch_key: str, state_data: Dict[str, Any], state_path: Path, lock: filelock.FileLock) -> Optional[Table]:
+    """Generates the Rich table for the status display. Updates state if discrepancies found."""
+    if batch_key not in state_data.get("batches", {}):
+        # Check if batch_key is just the filename vs full path
+        found_match = None
+        for key, batch_info_check in state_data.get("batches", {}).items():
+            if Path(batch_info_check.get("file_path", "")).name == Path(batch_key).name:
+                batch_key = key # Use the full path key found in state
+                found_match = True
+                break
+        if not found_match:
+            console.print(f"No running or previous batch found matching key pattern '*{Path(batch_key).name}*'.")
+            console.print(f"Checked state file: '{state_path}'")
+            return None
+
+
+    batch_info = state_data["batches"][batch_key]
+    processes_info = batch_info.get("processes", [])
+    batch_file_path = Path(batch_info.get("file_path", "Unknown"))
+    run_start_time_ts = batch_info.get("run_start_time")
+    run_start_str = datetime.datetime.fromtimestamp(run_start_time_ts).strftime(TIMESTAMP_FORMAT) if run_start_time_ts else "Unknown"
+
+    table = Table(
+        title=f"Status for Batch: [cyan]{batch_file_path.name}[/cyan] (Path: {batch_file_path.parent})",
+        caption=f"Started: {run_start_str}. Press 'q' to quit.",
+        box=box.ROUNDED,
+        show_header=True,
+        header_style="bold magenta"
+    )
+    table.add_column("PID", style="dim", width=7, justify="right")
+    table.add_column("Command", max_width=50)
+    table.add_column("Status", justify="center", width=15) # Wider for exit codes
+    table.add_column("Runtime", justify="right", width=15)
+    table.add_column("CPU %", justify="right", width=7)
+    table.add_column("Memory", justify="right", width=10)
+    table.add_column("Log File", style="dim", max_width=35)
+
+    state_changed = False
+    active_process_count = 0
+    now = time.time() # Get time once for consistency
+
+    for i, p_info in enumerate(processes_info):
+        pid = p_info.get("pid")
+        command = p_info.get("command", "N/A")
+        log_path = Path(p_info.get("log_path", "N/A"))
+        start_time = p_info.get("start_time")
+        current_recorded_status = p_info.get("status", "Unknown")
+        end_time = p_info.get("end_time")
+        exit_code = p_info.get("exit_code")
+
+        # Default values
+        display_status = current_recorded_status
+        cpu_usage = "N/A"
+        mem_usage = "N/A"
+        runtime_seconds = -1
+        status_style = "yellow" # Default if unknown/problem
+
+        if pid is None: # Handle case where process failed to start properly
+             display_status = "[red]Start Failed[/red]"
+             runtime_seconds = -1
+             state_changed = state_changed or (current_recorded_status != "Start Failed")
+             p_info["status"] = "Start Failed" # Ensure state reflects this
+        elif current_recorded_status == "Running":
+            try:
+                p = psutil.Process(pid)
+                if p.is_running():
+                    active_process_count += 1
+                    with p.oneshot():
+                        cpu_usage = f"{p.cpu_percent(interval=0.05):.1f}" # Shorter interval
+                        mem_info = p.memory_info()
+                        mem_usage = format_bytes(mem_info.rss)
+                        ps_status = p.status()
+                        # Map psutil status to simpler display statuses
+                        if ps_status == psutil.STATUS_RUNNING:
+                             display_status = "Running"
+                             status_style = "green"
+                        elif ps_status == psutil.STATUS_SLEEPING:
+                             display_status = "Sleeping"
+                             status_style = "blue"
+                        elif ps_status == psutil.STATUS_DISK_SLEEP:
+                             display_status = "Disk Sleep"
+                             status_style = "cyan"
+                        elif ps_status == psutil.STATUS_STOPPED:
+                             display_status = "Stopped"
+                             status_style = "magenta"
+                        elif ps_status == psutil.STATUS_ZOMBIE:
+                            display_status = "Zombie"
+                            status_style = "red"
+                            # Treat Zombie as exited for state update purposes
+                            current_recorded_status = "Exited" # Trigger state update below
+                            p_info["status"] = "Exited"
+                            if p_info["end_time"] is None: p_info["end_time"] = now
+                            if p_info["exit_code"] is None:
+                                try: p_info["exit_code"] = p.wait(timeout=0)
+                                except Exception: p_info["exit_code"] = "?"
+                            state_changed = True
+                        else:
+                             display_status = ps_status.capitalize()
+                             status_style = "yellow"
+
+                    runtime_seconds = now - start_time if start_time else -1
+
+                else: # Process object exists but not running (e.g., finished between checks)
+                    display_status = "Exited"
+                    status_style = "yellow"
+                    p_info["status"] = "Exited" # Update state
+                    if p_info["end_time"] is None: p_info["end_time"] = now
+                    if p_info["exit_code"] is None:
+                         try: p_info["exit_code"] = p.wait(timeout=0)
+                         except Exception: p_info["exit_code"] = "?" # Mark as unknown if error
+                    state_changed = True
+                    runtime_seconds = (p_info["end_time"] or start_time) - start_time if start_time else -1
+
+            except psutil.NoSuchProcess:
+                display_status = "Exited"
+                status_style = "red" # Exited unexpectedly (from script's perspective)
+                if current_recorded_status == "Running": # Update state only if it was thought to be running
+                    p_info["status"] = "Exited"
+                    if p_info["end_time"] is None: p_info["end_time"] = now # Approx end time
+                    if p_info["exit_code"] is None: p_info["exit_code"] = "?" # Assume abnormal exit
+                    state_changed = True
+                runtime_seconds = (p_info.get("end_time", start_time) or start_time) - start_time if start_time else -1
+
+
+            except psutil.AccessDenied:
+                display_status = "AccessDenied"
+                status_style = "red"
+                runtime_seconds = now - start_time if start_time else -1
+                active_process_count += 1 # Assume running if access denied
+
+            except Exception as e:
+                display_status = "Error"
+                status_style = "red"
+                console.print(f"\n[red]Error checking PID {pid}: {e}[/red]", file=sys.stderr)
+                # Keep process marked as running in state? Let's mark as error status in display only
+                runtime_seconds = now - start_time if start_time else -1
+                # Don't mark state_changed here unless we decide Error is a final state
+
+        # Handle already exited states
+        if p_info.get("status") != "Running" and p_info.get("status") != "Start Failed":
+             display_status = p_info.get("status", "Unknown") # Use recorded status
+             exit_code = p_info.get("exit_code")
+             exit_info = f" (Code: {exit_code})" if exit_code is not None else ""
+             display_status = f"Exited{exit_info}"
+
+             if status_style == "yellow": # Set default style if not set by error/zombie above
+                 status_style = "dim" if exit_code == 0 else "red" if exit_code != "?" else "yellow"
+
+             runtime_seconds = (p_info.get("end_time", start_time) or start_time) - start_time if start_time else -1
+
+        # Format runtime
+        runtime_str = format_duration(runtime_seconds)
+
+        # Truncate command and log file for display
+        display_command = (command[:47] + '...') if len(command) > 50 else command
+        display_log = (log_path.name[:32] + '...') if len(log_path.name) > 35 else log_path.name
+
+        table.add_row(
+            str(pid) if pid else "[dim]N/A[/dim]",
+            display_command,
+            f"[{status_style}]{display_status}[/{status_style}]",
+            runtime_str,
+            cpu_usage,
+            mem_usage,
+            display_log
+        )
+
+    # Update overall batch status if no processes are actively running
+    if active_process_count == 0 and batch_info.get("status") == "Running" and len(processes_info)>0 :
+        batch_info["status"] = "Completed" # Mark overall batch as completed
+        # Can add a batch_end_time here if needed: batch_info["run_end_time"] = now
+        state_changed = True
+
+    if state_changed:
+        # Save the updated state (e.g., process status changes)
+        save_state(state_path, lock, state_data)
+
+    return table
+
+
+def handle_status(args: argparse.Namespace):
+    """Displays the status of the running batch processes."""
+    batch_file = Path(args.batch_file).resolve()
+    state_path, lock_path = get_state_paths(batch_file)
+    # Use shared lock for status as it might need to write updates
+    state_lock = filelock.FileLock(lock_path, timeout=1)
+
+    batch_key = str(batch_file)
+
+    console.print("Starting status monitor...")
+
+    try:
+        # Use transient=True to clean up the table on exit
+        with Live(console=console, refresh_per_second=1.5, transient=True) as live:
+            while True:
+                # Load the latest state within the loop
+                # Use a short timeout for status lock acquisition
+                try:
+                    state_data = load_state(state_path, state_lock)
+                except filelock.Timeout:
+                     live.update(Panel("[red]Could not acquire state lock. Status might be stale.[/red]", title="Warning", border_style="red"))
+                     time.sleep(1) # Wait before retrying lock
+                     continue # Skip this update cycle
+
+                # Generate the table (this function also updates state if needed)
+                table = generate_status_table(batch_key, state_data, state_path, state_lock)
+
+                if table is None:
+                    # generate_status_table already printed message
+                    live.update(Panel(f"No active or completed batch found for [cyan]{Path(batch_key).name}[/cyan].\nState file checked: [dim]{state_path}[/dim]", title="Info", border_style="yellow"))
+                    # Wait for q press or timeout before exiting
+                    try:
+                        char = readchar.readkey()
+                        if char.lower() == 'q':
+                            break
+                    except Exception:
+                         pass # Ignore input errors
+                    time.sleep(1) # Keep message displayed briefly
+                    break # Exit loop if batch not found
+
+                live.update(table)
+
+                # Non-blocking check for 'q' with timeout
+                try:
+                    # readchar with timeout is tricky cross-platform.
+                    # A simpler approach is frequent checks with short sleep.
+                    start_wait = time.time()
+                    char = None
+                    while time.time() - start_wait < (1.0 / 1.5): # Check within refresh interval
+                        # This part requires a way to check if key is pressed without blocking
+                        # readchar doesn't directly support non-blocking check easily cross-platform
+                        # For simplicity in this script, we'll rely on the refresh loop and Ctrl+C
+                        # or a potentially slightly blocking readkey if available.
+                        # Let's assume readchar might block briefly
+                        pass # Replace with actual non-blocking check if library supports it
+
+                    # If non-blocking check isn't feasible, use a blocking read with short timeout
+                    # This might make refresh slightly less smooth if key is held down
+                    # char = readchar.readkey() # This would block until a key is pressed
+
+                    # Alternative: Rely solely on Ctrl+C and the refresh interval sleep
+                    time.sleep(1.0 / 1.5) # Sleep for the refresh interval
+
+                    # Check for 'q' IF a non-blocking mechanism was available and returned a char:
+                    # if char and char.lower() == 'q':
+                    #    break
+
+                except KeyboardInterrupt: # Allow Ctrl+C to exit cleanly
+                    break
+                except Exception as e:
+                     # Log or display error related to reading input if necessary
+                     # console.print(f"[red]Input error: {e}[/red]")
+                     time.sleep(1.0 / 1.5) # Still sleep
+
+
+    except KeyboardInterrupt:
+        console.print("\nExiting status monitor.")
+    except Exception as e:
+        console.print(f"[red]An unexpected error occurred during status monitoring: {e}[/red]")
+        import traceback
+        traceback.print_exc()
+    finally:
+        # Live(transient=True) should handle cleanup
+        pass
+
+
+# --- Signal Handling ---
+def signal_handler(sig, frame):
+    """Gracefully handle Ctrl+C or termination signals."""
+    console.print("\n[yellow]Signal received, exiting...[/yellow]")
+    # Add cleanup here if necessary (e.g., attempt to terminate child process groups)
+    # Finding and killing specific child groups reliably can be complex.
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
+
+# --- Main Execution ---
+def main():
+    parser = argparse.ArgumentParser(
+        description="Manage and run batches of commands.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
+  %(prog)s add --batch-file my_jobs.cmds --command "sleep 30 && echo done"
+  %(prog)s add --batch-file my_jobs.cmds -f commands.txt
+  %(prog)s run --batch-file my_jobs.cmds
+  %(prog)s status --batch-file my_jobs.cmds
+"""
+    )
+    subparsers = parser.add_subparsers(dest='action', required=True, help='Action to perform')
+
+    # --- Add Command ---
+    parser_add = subparsers.add_parser('add', help='Add commands to a batch file.')
+    parser_add.add_argument('--batch-file', required=True, help='Path to the batch file (will be created if needed).')
+    add_group = parser_add.add_mutually_exclusive_group(required=True)
+    add_group.add_argument('--command', '-c', help='The command string to add.')
+    add_group.add_argument('--from-file', '-f', help='Path to a file containing commands to add (one per line).')
+    parser_add.set_defaults(func=handle_add)
+
+    # --- Run Command ---
+    parser_run = subparsers.add_parser('run', help='Run all commands in a batch file in the background.')
+    parser_run.add_argument('--batch-file', required=True, help='Path to the batch file to execute.')
+    parser_run.set_defaults(func=handle_run)
+
+    # --- Status Command ---
+    parser_status = subparsers.add_parser('status', help='Monitor the status of a running batch.')
+    parser_status.add_argument('--batch-file', required=True, help='Path to the batch file being monitored.')
+    parser_status.set_defaults(func=handle_status)
+
+    # --- Future Commands (Examples) ---
+    # parser_stop = subparsers.add_parser('stop', help='Stop a running batch.')
+    # parser_stop.add_argument('--batch-file', required=True, help='Path to the batch file to stop.')
+    # parser_stop.add_argument('--force', '-f', action='store_true', help='Force kill processes (SIGKILL).')
+    # parser_stop.set_defaults(func=handle_stop) # Need to implement handle_stop
+
+    # parser_list = subparsers.add_parser('list', help='List known batch files and their status.')
+    # parser_list.add_argument('--dir', default='.', help='Directory to search for state files (default: current).')
+    # parser_list.set_defaults(func=handle_list) # Need to implement handle_list
+
+    if len(sys.argv) == 1:
+        parser.print_help(sys.stderr)
+        sys.exit(1)
+
+    args = parser.parse_args()
+    args.func(args)
+
+if __name__ == "__main__":
+    main()
