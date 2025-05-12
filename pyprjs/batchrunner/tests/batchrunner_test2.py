@@ -8,12 +8,13 @@ import json
 from pathlib import Path
 import shutil
 import signal
+from typing import Optional, List, Dict, Any # Corrected import line
 
 # Assume batch_runner.py is in the same directory or accessible in PATH
 # --- Determine the absolute path to the script ---
 try:
     # If tests are in tests/ subdir relative to script
-    SCRIPT_PATH = (Path(__file__).parent.parent / "batch_runner.py").resolve(strict=True)
+    SCRIPT_PATH = (Path(__file__).parent.parent / "batch_runner2.py").resolve(strict=True)
 except FileNotFoundError:
     try:
         # If tests are in the same dir as script
@@ -184,7 +185,6 @@ class TestAddCommand:
         nested_dir = test_dir / "new_subdir"
         batch_file = nested_dir / "new_batch.cmds"
         assert not nested_dir.exists()
-        result = run_script(["add", "--batch-file", str(batch_file), "-c", "ls"], test_dir) # Use 'dir' on windows? 'ls' might fail. Let's use echo.
         result = run_script(["add", "--batch-file", str(batch_file), "-c", "echo test"], test_dir)
         assert result.returncode == 0, f"Script failed with stderr:\n{result.stderr}"
         assert nested_dir.exists()
@@ -436,8 +436,9 @@ class TestStatusCommand:
         assert run_result.returncode == 0, f"Setup for status test failed:\n{run_result.stderr}"
         time.sleep(0.4) # Give processes extra time to start and state file to be written
         # Ensure state file exists after run
-        state_path = test_dir / ".batch_runner_state.json"
-        assert state_path.exists(), "State file was not created by the setup run command"
+        # Calculate expected state file path relative to batch file in test_dir
+        state_path = batch_file.parent / ".batch_runner_state.json"
+        assert state_path.exists(), f"State file {state_path} was not created by the setup run command"
         return str(batch_file.resolve()) # Return the batch key
 
     def _run_status_interactive(self, test_dir, batch_file, duration=1.0):
@@ -470,16 +471,18 @@ class TestStatusCommand:
                     # Need to get the process group ID (same as PID if setsid was used)
                      pgid = os.getpgid(proc.pid)
                      os.killpg(pgid, signal.SIGINT)
+            except ProcessLookupError:
+                print(f"Warning: Status process {proc.pid} already exited before signal could be sent.")
             except Exception as sig_err:
                 print(f"Warning: Error sending signal to stop status process {proc.pid}: {sig_err}")
-                proc.kill() # Fallback to kill
+                if proc.poll() is None: proc.kill() # Fallback to kill
 
             # Get output after signal
             try:
                  stdout, stderr = proc.communicate(timeout=2.0) # Increased wait for termination
             except subprocess.TimeoutExpired:
                 print(f"Warning: Status process {proc.pid} did not terminate after signal, killing.")
-                proc.kill()
+                if proc.poll() is None: proc.kill()
                 stdout, stderr = proc.communicate() # Consume any remaining output
             except Exception as comm_err:
                  print(f"Warning: Error communicating with status process after signal: {comm_err}")
@@ -514,7 +517,7 @@ class TestStatusCommand:
         assert ("Proc 1 Running" in stdout or "[green]Running" in stdout or "[blue]Sleeping" in stdout), f"Expected running/sleeping status not found:\n{stdout}"
         # Check stderr for unexpected errors from the status command itself
         # Allow specific warnings (like signal handler issues if not main thread) but not tracebacks
-        assert "Traceback" not in stderr, f"Status command produced unexpected Traceback in stderr:\n{stderr}"
+        assert "Traceback (most recent call last)" not in stderr, f"Status command produced unexpected Traceback in stderr:\n{stderr}"
         # assert "Error" not in stderr # Re-evaluate this - some expected warnings contain "Error"
 
         # Check state file: Overall status should be Running, at least one process Running
@@ -529,7 +532,7 @@ class TestStatusCommand:
             except Exception as e:
                 pytest.fail(f"Error reading or asserting state file content: {e}")
         else:
-             pytest.fail("State file was not created or disappeared during setup/run.")
+             pytest.fail(f"State file {state_file} was not created or disappeared during setup/run.")
 
 
     def test_status_after_completion(self, test_dir, batch_file, state_file, _run_batch_first):
@@ -546,10 +549,10 @@ class TestStatusCommand:
         # Check that "Exited" is present for the finished processes
         assert "Exited" in stdout, f"Expected 'Exited' status not found in output:\n{stdout}"
         # Ensure no unexpected errors printed by status command
-        assert "Traceback" not in stderr, f"Status command produced unexpected Traceback in stderr:\n{stderr}"
+        assert "Traceback (most recent call last)" not in stderr, f"Status command produced unexpected Traceback in stderr:\n{stderr}"
 
         # Check state file for updated status (it might need a second non-interactive run)
-        assert state_file.exists(), "State file does not exist"
+        assert state_file.exists(), f"State file {state_file} does not exist"
         final_state_data = {}
         batch_info = {}
         batch_status = "Unknown"
@@ -562,7 +565,7 @@ class TestStatusCommand:
             batch_info = current_state_data.get("batches", {}).get(batch_key, {})
             batch_status = batch_info.get("status", "Unknown")
         except Exception as e:
-             pytest.fail(f"Failed to read state file after interactive status: {e}")
+             pytest.fail(f"Failed to read state file {state_file} after interactive status: {e}")
 
         # If status command didn't update state fully during interactive run, run it once more non-interactively
         # This handles the case where the state update write happens just as the interactive status is killed
@@ -577,12 +580,13 @@ class TestStatusCommand:
                  batch_info = final_state_data.get("batches", {}).get(batch_key, {})
                  batch_status = batch_info.get("status", "Unknown")
              except Exception as e:
-                 pytest.fail(f"Failed to read state file after non-interactive status: {e}")
+                 pytest.fail(f"Failed to read state file {state_file} after non-interactive status: {e}")
         else:
              final_state_data = current_state_data # Use already updated state
 
         # Now assert the final state
-        assert batch_status in ["Completed", "CompletedWithErrors"], f"Final batch status is '{batch_status}', expected Completed or CompletedWithErrors"
+        # Expect 'Completed' because both test commands exit cleanly (0)
+        assert batch_status == "Completed", f"Final batch status is '{batch_status}', expected Completed"
 
         processes_info = batch_info.get("processes", [])
         assert len(processes_info) == 2, "Should still have info for 2 processes"
@@ -602,8 +606,8 @@ class TestStatusCommand:
                  pytest.fail(f"Missing start or end time for process {i+1} (PID {pinfo.get('pid', 'N/A')})")
 
 
-    def test_status_batch_not_found(self, test_dir, batch_file):
-        # Fixture _run_batch_first creates a batch run, but we test a different file
+    def test_status_batch_not_found(self, test_dir, batch_file, _run_batch_first):
+        # Fixture _run_batch_first creates a batch run (batch_file), but we test a *different* file
         non_existent_batch = test_dir / "no_such_batch.cmds"
         # Run status non-interactively is sufficient
         result = run_script(["status", "--batch-file", str(non_existent_batch)], test_dir, timeout_override=3)
@@ -616,6 +620,7 @@ class TestStatusCommand:
 
     def test_status_invalid_state_file(self, test_dir, batch_file, state_file, _run_batch_first):
         # Corrupt the state file created by the fixture
+        assert state_file.exists(), "State file should exist from fixture run"
         state_file.write_text("{invalid json", encoding='utf-8')
 
         # Run status non-interactively
