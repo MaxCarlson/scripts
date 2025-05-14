@@ -2,6 +2,7 @@
 # syntax
 # name_of_script.py : alias_name
 
+apply_git_diff.py : agd
 append_clipboard.py : apc
 clipboard_replace.py : crx
 copy_to_clipboard.py : c2c
