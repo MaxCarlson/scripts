@@ -28,7 +28,7 @@ def copy_files_to_clipboard(file_paths, show_full_path=False, force_wrap=False, 
     text_to_copy = ""
     successful_files_count = 0
     is_single_file_input = (len(file_paths) == 1)
-    operation_description = ""
+    operation_description = "" # Initialize
 
     if raw_copy:
         non_default_ops.append("Raw copy mode enabled (filenames, paths, and wrapping are disabled)")
@@ -47,10 +47,12 @@ def copy_files_to_clipboard(file_paths, show_full_path=False, force_wrap=False, 
         
         if not content_parts:
             print("[INFO] No content was successfully processed from any files. Clipboard not updated.")
-            return
+            # Early return removed to allow flow to [CHANGES] printing
         
         text_to_copy = "".join(content_parts)
+        # Update operation_description even if no files were successful
         operation_description = f"raw concatenated content from {successful_files_count} of {len(file_paths)} specified file(s)"
+
 
     elif is_single_file_input and not force_wrap:
         # Default single-file raw copy
@@ -70,10 +72,9 @@ def copy_files_to_clipboard(file_paths, show_full_path=False, force_wrap=False, 
             return
     else:
         # Wrap mode for one or more files (multiple files by default, or single with --force-wrap)
-        if is_single_file_input and force_wrap: # This implies force_wrap is True
+        if is_single_file_input and force_wrap: 
             non_default_ops.append("Forced wrapping of single file in code block")
         
-        # This will always be true in this branch now, due to new logic structure
         non_default_ops.append(f"Wrapping content of {len(file_paths)} file(s) in code blocks with relative paths")
 
         if show_full_path:
@@ -105,16 +106,25 @@ def copy_files_to_clipboard(file_paths, show_full_path=False, force_wrap=False, 
 
         if not processed_blocks:
             print("[INFO] No content was successfully processed from any of the files. Clipboard not updated.")
-            return
-
+            # Early return removed to allow flow to [CHANGES] printing
+        
         text_to_copy = "\n\n".join(processed_blocks)
+        # Update operation_description even if no files were successful
         operation_description = f"wrapped content from {successful_files_count} of {len(file_paths)} file(s)"
+
+    # Ensure operation_description is set if it somehow wasn't (should be covered by branches above)
+    if not operation_description:
+        if successful_files_count > 0 and is_single_file_input and not force_wrap and not raw_copy :
+             operation_description = f"raw content from 1 file ('{file_paths[0]}')"
+        elif successful_files_count == 0: # Generic fallback if other descriptions were missed
+            operation_description = f"content from {successful_files_count} of {len(file_paths)} file(s)"
+
 
     # Copy to clipboard and validate
     total_lines_expected = len(text_to_copy.splitlines())
     try:
-        set_clipboard(text_to_copy)
         print(f"[INFO] Attempted to copy {operation_description} ({total_lines_expected} lines total) to clipboard.")
+        set_clipboard(text_to_copy) 
 
         try:
             actual_clipboard_content = get_clipboard()
@@ -141,7 +151,7 @@ def copy_files_to_clipboard(file_paths, show_full_path=False, force_wrap=False, 
         print("[ERROR] set_clipboard is not implemented in clipboard_utils. Cannot copy content.")
     except Exception as e_set_clipboard:
         print(f"[ERROR] Failed to set clipboard content: {e_set_clipboard}")
-    except Exception as e_general:
+    except Exception as e_general: 
         print(f"[ERROR] An unexpected error occurred during clipboard operations: {e_general}")
 
     # Print non-default behavior summary
