@@ -1,242 +1,191 @@
+#!/usr/bin/env python3
 import re
 import subprocess
-from pathlib import Path
+from pathlib import Path # <--- CRUCIAL IMPORT FOR Path
 
 RED = "\033[91m"
 YELLOW = "\033[93m"
 GREEN = "\033[92m"
 RESET = "\033[0m"
 
+def _log_warning(message: str): # Added type hint for clarity
+    print(f"{YELLOW}⚠️ {message}{RESET}")
+
 def command_exists(command: str) -> bool:
     try:
+        base_command_for_check = command.split()[0]
+        # Check if it's a file path first
+        if Path(base_command_for_check).is_absolute() or \
+           (Path.cwd() / base_command_for_check).exists(): # Check relative to CWD too
+            if (Path.cwd() / base_command_for_check).is_file() or Path(base_command_for_check).is_file():
+                # For a direct file path, os.access might be more reliable for executability
+                # import os
+                # return os.access(str(Path(base_command_for_check).resolve()), os.X_OK)
+                return True # Simplified: if it's a file, assume it might be executable
+
         result = subprocess.run(
-            ["zsh", "-c", f"command -v {command}"],
+            ["zsh", "-c", f"command -v {base_command_for_check}"],
             capture_output=True,
             text=True,
+            check=False
         )
         return result.returncode == 0
     except Exception as e:
-        print(f"{YELLOW}⚠️ Warning: Could not check command existence for `{command}`: {e}{RESET}")
+        _log_warning(f"Could not check command existence for `{base_command_for_check}`: {e}")
         return False
 
-def parse_alias_file(alias_file: Path) -> dict:
-    aliases = {}
+def get_executable_path(bin_dir: Path, script_filename_from_alias_file: str) -> Path:
+    name_to_process = script_filename_from_alias_file
+    
+    if name_to_process.endswith(".py%"):
+        name_to_process = name_to_process[:-3] 
+    elif name_to_process.endswith("%") and not name_to_process.endswith(".py%"):
+        name_to_process = name_to_process[:-1]
+
+    base_name = name_to_process
+    known_extensions = [".py", ".sh", ".pl", ".rb"] 
+    for ext_to_strip in known_extensions:
+        if name_to_process.endswith(ext_to_strip):
+            base_name = name_to_process[:-len(ext_to_strip)]
+            break 
+            
+    return bin_dir / base_name
+
+def parse_alias_file(alias_file: Path) -> list:
+    parsed_aliases = []
     if not alias_file.exists():
-        print(f"{YELLOW}⚠️ Alias file not found: {alias_file}. Skipping alias setup.{RESET}")
-        return aliases
+        _log_warning(f"Alias file not found: {alias_file}. Skipping alias setup.")
+        return parsed_aliases
+        
     with open(alias_file, "r", encoding="utf-8") as f:
-        for line in f:
+        for line_num, line in enumerate(f, 1):
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            match = re.match(r"^(.+?)\s*:\s*(.+?)$", line)
-            if match:
-                script, alias = match.groups()
-                aliases[script.strip()] = alias.strip()
-            else:
-                print(f"{YELLOW}⚠️ Invalid alias format in {alias_file}: {line}{RESET}")
-    return aliases
+            
+            parts = [p.strip() for p in line.split(":", 2)] 
+            
+            script_file = ""
+            alias_name = ""
+            args_str = ""
+
+            if len(parts) >= 2: 
+                script_file = parts[0]
+                alias_name = parts[1]
+                if len(parts) == 3: 
+                    args_str = parts[2]
+            else: 
+                _log_warning(f"Invalid alias format in {alias_file} (line {line_num}). Expected 'source_script : alias_name : [arguments]' or 'source_script : alias_name'. Line: '{line}'")
+                continue
+
+            if not script_file:
+                _log_warning(f"Invalid format in {alias_file} (line {line_num}): Source script name missing. Line: '{line}'")
+                continue
+            if not alias_name:
+                _log_warning(f"Invalid format in {alias_file} (line {line_num}): Desired alias name missing. Line: '{line}'")
+                continue
+            
+            parsed_aliases.append((script_file, alias_name, args_str))
+            
+    return parsed_aliases
 
 def get_existing_aliases(alias_config: Path) -> dict:
     aliases = {}
-    if alias_config.exists():
+    if not alias_config.exists():
+        return aliases
+    try:
         with open(alias_config, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line.startswith("alias "):
-                    parts = line.split("=", 1)
-                    if len(parts) == 2:
-                        alias_name = parts[0].replace("alias", "").strip()
-                        alias_value = parts[1].strip().strip('"')
-                        aliases[alias_name] = alias_value
+                    match = re.match(r"alias\s+([^=]+)=(['\"])(.*?)\2", line)
+                    if match:
+                        name = match.group(1).strip()
+                        value = match.group(3).strip()
+                        aliases[name] = value
+    except FileNotFoundError:
+        _log_warning(f"Alias configuration file {alias_config} not found during get_existing_aliases (should have been caught by exists()).")
+    except Exception as e:
+        _log_warning(f"Error reading alias configuration file {alias_config}: {e}")
     return aliases
 
-def alias_target(bin_dir: Path, script: str, ext: str) -> Path:
-    if script.endswith(ext):
-        script = script[:-len(ext)]
-    return bin_dir / script
+def write_aliases(
+    parsed_alias_definitions: list, 
+    bin_dir: Path, 
+    alias_config: Path, 
+    alias_file_path_for_header: str, 
+    verbose: bool = False
+) -> None:
+    temp_aliases_lines = []
+    existing_aliases_map = get_existing_aliases(alias_config)
+    newly_created_or_changed = {}
+    aliases_to_process = {} 
 
-def write_aliases(aliases: dict, bin_dir: Path, alias_config: Path, ext: str, verbose: bool = False) -> None:
-    """
-    Write alias definitions to alias_config.
-    In verbose mode, prints all aliases as:
-      alias_name : alias_value
-    In non-verbose mode, prints only the aliases that are newly created (i.e. did not exist before).
-    """
-    temp_aliases = []
-    existing_aliases = get_existing_aliases(alias_config)
-    newly_created = {}
+    for script_file_from_parser, desired_alias_name, args_string in parsed_alias_definitions:
+        base_executable_command_path = get_executable_path(bin_dir, script_file_from_parser)
+        full_command_for_alias = str(base_executable_command_path)
+        if args_string: 
+            full_command_for_alias += f" {args_string.strip()}"
+            
+        if desired_alias_name in aliases_to_process:
+            _log_warning(f"Duplicate alias name '{desired_alias_name}' defined in {Path(alias_file_path_for_header).name}. Using last definition for script '{script_file_from_parser}'.")
+        aliases_to_process[desired_alias_name] = full_command_for_alias.strip()
 
-    for script, alias in aliases.items():
-        target = alias_target(bin_dir, script, ext)
-        # If the alias already exists with the same value, consider it not new.
-        if alias in existing_aliases and str(existing_aliases[alias]) == str(target):
-            if verbose:
-                print(f"🔹 Alias already exists: {alias} : {target}")
+    sorted_alias_names = sorted(aliases_to_process.keys())
+
+    for alias_name in sorted_alias_names:
+        command_string = aliases_to_process[alias_name]
+        if alias_name in existing_aliases_map and existing_aliases_map[alias_name] == command_string:
+            if verbose: print(f"🔹 Alias unchanged: {alias_name} : {command_string}")
         else:
-            newly_created[alias] = target
-        temp_aliases.append(f'alias {alias}="{target}"')
+            old_cmd_display = ""
+            if alias_name in existing_aliases_map:
+                newly_created_or_changed[alias_name] = (command_string, existing_aliases_map[alias_name])
+                old_cmd_display = f" (was: {existing_aliases_map[alias_name]})"
+                if verbose: print(f"🔄 Alias updated: {alias_name} : {command_string}{old_cmd_display}")
+            else: 
+                newly_created_or_changed[alias_name] = (command_string, None)
+                if verbose: print(f"✨ Alias created: {alias_name} : {command_string}")
+        temp_aliases_lines.append(f'alias {alias_name}="{command_string}"')
 
-    alias_config.parent.mkdir(parents=True, exist_ok=True)
-    with open(alias_config, "w", encoding="utf-8") as f:
-        f.write("\n".join(temp_aliases) + "\n")
-    print(f"{GREEN}✅ Aliases updated in {alias_config}.{RESET}")
+    try:
+        alias_config.parent.mkdir(parents=True, exist_ok=True)
+        with open(alias_config, "w", encoding="utf-8") as f:
+            f.write(f"# Generated by alias_utils.py from {Path(alias_file_path_for_header).name}\n\n")
+            f.write("\n".join(temp_aliases_lines) + "\n")
+        print(f"{GREEN}✅ Aliases written to {alias_config}.{RESET}")
+    except Exception as e:
+        _log_warning(f"Could not write aliases to {alias_config}: {e}")
+        return
 
-    # Print alias details:
-    print("---------- Alias Definitions ----------")
-    if verbose:
-        for line in temp_aliases:
-            parts = line.split("=", 1)
-            if len(parts) == 2:
-                alias_name = parts[0].replace("alias", "").strip()
-                alias_value = parts[1].strip().strip('"')
-                print(f"{alias_name} : {alias_value}")
-    else:
-        if newly_created:
-            print("Newly created aliases:")
-            for alias, target in newly_created.items():
-                print(f"{alias} : {target}")
-        else:
-            print("No new aliases were created.")
-    print("---------------------------------------")
+    print("---------- Alias Definitions Summary ----------")
+    if not newly_created_or_changed and not verbose: print("No new or changed aliases.")
+    elif not newly_created_or_changed and verbose:
+        if aliases_to_process: print("All defined aliases were existing and unchanged.")
+        else: print(f"No aliases were defined to process from {Path(alias_file_path_for_header).name}.")
+    
+    if newly_created_or_changed:
+        if not verbose: print("New or Changed Aliases:")
+        for alias, (new_cmd, old_cmd) in sorted(newly_created_or_changed.items()):
+            if not verbose :
+                if old_cmd is not None: print(f"    🔄 {alias} : {new_cmd} (was: {old_cmd})")
+                else: print(f"    ✨ {alias} : {new_cmd}")
+    
+    if verbose and not newly_created_or_changed and aliases_to_process: 
+        print("Processed aliases (all were existing and unchanged):")
+        for alias_name in sorted_alias_names: print(f"    {alias_name} : {aliases_to_process[alias_name]}")
+    
+    if not aliases_to_process and not newly_created_or_changed: 
+        if not verbose:
+            print(f"No alias definitions were found/processed from {Path(alias_file_path_for_header).name}.")
+        
+    print("---------------------------------------------")
     
     try:
-        subprocess.run(["zsh", "-c", f"source {alias_config}"], check=True)
-        print(f"{GREEN}✅ Aliases have been applied. You can now use them immediately.{RESET}")
-    except subprocess.CalledProcessError:
-        print(f"{YELLOW}⚠️ Automatic sourcing of aliases failed. Please source {alias_config} manually.{RESET}")
-#!/usr/bin/env python3
-import os
-import sys
-import argparse
-import subprocess
-from pathlib import Path
-from scripts_setup import setup_utils  # Shared utilities, if needed
-
-GREEN = "\033[92m"
-RED = "\033[91m"
-YELLOW = "\033[93m"
-RESET = "\033[0m"
-
-def get_module_install_mode(module_path: Path) -> str:
-    """
-    Returns the install mode of the module:
-      - "editable" if installed with -e,
-      - "normal" if installed normally,
-      - None if not installed.
-    """
-    module_name = module_path.name
-    result = subprocess.run(
-        [sys.executable, "-m", "pip", "list", "--format=freeze"],
-        capture_output=True, text=True
-    )
-    for line in result.stdout.splitlines():
-        if " @ " in line:
-            name = line.split(" @ ")[0].strip()
-            if name.lower() == module_name.lower():
-                return "editable"
-        elif "==" in line:
-            name = line.split("==")[0].strip()
-            if name.lower() == module_name.lower():
-                return "normal"
-    return None
-
-def is_module_installed(module_path: Path) -> bool:
-    return get_module_install_mode(module_path) is not None
-
-def install_python_modules(modules_dir: Path, skip_reinstall: bool, production: bool, verbose: bool) -> None:
-    if not modules_dir.exists():
-        print(f"{YELLOW}⚠️ No 'modules' directory found at {modules_dir}. Skipping installation.{RESET}")
-        return
-
-    print(f"🔍 Scanning for modules inside: {modules_dir}")
-    found_any = False
-
-    for module in modules_dir.iterdir():
-        if not module.is_dir():
-            print(f"{YELLOW}⚠️ Skipping {module}, not a directory.{RESET}")
-            continue
-
-        setup_py = module / "setup.py"
-        pyproject_toml = module / "pyproject.toml"
-        if not setup_py.exists() and not pyproject_toml.exists():
-            print(f"{YELLOW}⚠️ Skipping {module.name}, no setup.py or pyproject.toml found.{RESET}")
-            continue
-
-        found_any = True
-
-        install_cmd = [sys.executable, "-m", "pip", "install"]
-        if not production:
-            install_cmd.append("-e")  # Editable mode
-        install_cmd.append(str(module))
-
-        # Check current install mode if skip_reinstall is enabled.
-        if skip_reinstall:
-            installed_mode = get_module_install_mode(module)
-            desired_mode = "editable" if not production else "normal"
-            if installed_mode == desired_mode:
-                print(f"⏭ Module already installed ({installed_mode}): {module.name}. Skipping.")
-                continue
-
-        mode_text = "(production mode)" if production else "(development mode)"
-        if verbose:
-            print(f"🚀 Installing: {module.name} {mode_text}")
+        if command_exists("zsh"):
+            source_command = f"source {alias_config}"
+            print(f"{GREEN}✅ Aliases updated. To apply in your current Zsh session, run: {RESET}{YELLOW}{source_command}{RESET}")
         else:
-            print(f"🚀 Installing: {module.name} {mode_text}...", end=" ")
-
-        try:
-            if verbose:
-                subprocess.run(install_cmd, check=True)
-                print(f"{GREEN}✅{RESET}")
-            else:
-                result = subprocess.run(install_cmd, check=True,
-                                          stdout=subprocess.PIPE,
-                                          stderr=subprocess.PIPE,
-                                          text=True)
-                print(f"{GREEN}✅{RESET}")
-        except subprocess.CalledProcessError as e:
-            if verbose:
-                print(f"{RED}❌ Failed to install {module.name}:{RESET}")
-                print(e.stderr)
-            else:
-                print(f"{RED}❌{RESET}")
-                print(e.stderr)
-    if not found_any:
-        print(f"{RED}❌ No valid modules found in {modules_dir}. Check if they have setup.py or pyproject.toml.{RESET}")
-
-def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path) -> None:
-    pythonpath_dynamic = dotfiles_dir / "dynamic/setup_modules.zsh"
-    pythonpath_dynamic.parent.mkdir(parents=True, exist_ok=True)
-    pythonpath_entry = f'export PYTHONPATH="{modules_dir}:$PYTHONPATH"\n'
-    current_pythonpath = os.environ.get("PYTHONPATH", "").split(":")
-    if str(modules_dir) in current_pythonpath:
-        print(f"✅ PYTHONPATH already includes {modules_dir}. No changes needed.")
-        return
-    print(f"🔄 Updating PYTHONPATH to include {modules_dir}...")
-    with open(pythonpath_dynamic, "w", encoding="utf-8") as f:
-        f.write(pythonpath_entry)
-    print(f"✅ Updated PYTHONPATH in {pythonpath_dynamic}")
-    try:
-        subprocess.run(["zsh", "-c", f"source {pythonpath_dynamic}"], check=True)
-        print(f"✅ Sourced {pythonpath_dynamic}. Python path changes applied immediately.")
+            _log_warning(f"zsh not found. Please source {alias_config} manually in your shell.")
     except Exception as e:
-        print(f"❌ Failed to source {pythonpath_dynamic}: {e}")
-
-def main(scripts_dir: Path, dotfiles_dir: Path, bin_dir: Path, skip_reinstall: bool, production: bool, verbose: bool) -> None:
-    print("\n========== Starting MODULES SETUP ==========")
-    modules_dir = scripts_dir / "modules"
-    install_python_modules(modules_dir, skip_reinstall, production, verbose)
-    ensure_pythonpath(modules_dir, dotfiles_dir)
-    print("========== Finished MODULES SETUP ==========\n")
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Setup Python modules and PYTHONPATH.")
-    parser.add_argument("--scripts-dir", type=Path, required=True, help="Path to the scripts directory")
-    parser.add_argument("--dotfiles-dir", type=Path, required=True, help="Path to the dotfiles directory")
-    parser.add_argument("--bin-dir", type=Path, required=True, help="Path to the bin directory")
-    parser.add_argument("--skip-reinstall", action="store_true", help="Skip reinstallation of already installed modules")
-    parser.add_argument("--production", action="store_true", help="Install modules in production mode (without -e)")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Show detailed output")
-    args = parser.parse_args()
-    main(args.scripts_dir, args.dotfiles_dir, args.bin_dir,
-         args.skip_reinstall, args.production, args.verbose)
+        _log_warning(f"Automatic sourcing of aliases might not have taken full effect. Error: {e}")
