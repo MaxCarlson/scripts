@@ -11,3 +11,4 @@ run_pattern.py : rpt
 delete_files.py : ddf
 git_sync.py : gsy
 deduplicator.py% : ddd
+folder_stats.py : fs
