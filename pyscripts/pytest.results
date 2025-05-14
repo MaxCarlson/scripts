@@ -1,0 +1,849 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.10, pytest-8.3.4, pluggy-1.5.0
+rootdir: /data/data/com.termux/files/home/scripts/pyscripts
+configfile: pytest.ini
+plugins: anyio-4.9.0, mock-3.14.0
+collected 102 items
+
+tests/apply_git_diffs_test.py ....................                       [ 19%]
+tests/check_pytest_test.py .......                                       [ 26%]
+tests/clipboard_replace_test.py .....F                                   [ 32%]
+tests/copy_to_clipboard_test.py ...FFFFFF                                [ 41%]
+tests/folder_stats_test.py ...s....                                      [ 49%]
+tests/git_sync_test.py ............FF                                    [ 62%]
+tests/repo_processor_test.py ....F....                                   [ 71%]
+tests/run_installers_test.py ...............                             [ 86%]
+tests/run_pattern_test.py FF.FFF                                         [ 92%]
+tests/zip_for_llms_test.py .F...F..                                      [100%]
+
+=================================== FAILURES ===================================
+_____________________________ test_main_end_to_end _____________________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x74f7f99460>
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_main_end_to_end0')
+capsys = <_pytest.capture.CaptureFixture object at 0x74f7f99580>
+
+    def test_main_end_to_end(monkeypatch, tmp_path, capsys):
+        # prepare a real file
+        p = tmp_path / "t.py"
+        p.write_text(PY_TEMPLATE.lstrip(), encoding="utf-8")
+    
+        # fake clipboard
+        monkeypatch.setenv("CLIPBOARD", "ignored")  # if your get_clipboard reads env
+        # better monkeypatch get_clipboard() directly:
+        import clipboard_replace
+        monkeypatch.setattr("clipboard_replace.get_clipboard", lambda: NEW_FOO)
+    
+        # run
+        monkeypatch.setattr(sys, "argv", ["clipboard_replace.py", str(p)])
+>       with pytest.raises(SystemExit) as e:
+E       Failed: DID NOT RAISE <class 'SystemExit'>
+
+tests/clipboard_replace_test.py:71: Failed
+----------------------------- Captured stdout call -----------------------------
+Replaced 'foo' successfully in /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_main_end_to_end0/t.py.
+______________________ test_multiple_files_formatted_copy ______________________
+
+self = <MagicMock name='set_clipboard' id='502374383936'>
+args = ('------------------------------------------------------\n--- Start of file: /data/data/com.termux/files/usr/tmp/pytes...a340/pytest-70/test_multiple_files_formatted_0/file2.txt ---\n------------------------------------------------------',)
+kwargs = {}
+expected = call('------------------------------------------------------\n--- Start of file: /data/data/com.termux/files/usr/tmp/p..._a340/pytest-70/test_multiple_files_formatted_0/file2.txt ---\n------------------------------------------------------')
+actual = call('../../../usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file1.txt\n```\nContent of file1.\n...test-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file2.txt\n```\nContent of file2.\nThis has two lines.\n```')
+_error_message = <function NonCallableMock.assert_called_with.<locals>._error_message at 0x74f7f87060>
+cause = None
+
+    def assert_called_with(self, /, *args, **kwargs):
+        """assert that the last call was made with the specified arguments.
+    
+        Raises an AssertionError if the args and keyword args passed in are
+        different to the last call to the mock."""
+        if self.call_args is None:
+            expected = self._format_mock_call_signature(args, kwargs)
+            actual = 'not called.'
+            error_message = ('expected call not found.\nExpected: %s\n  Actual: %s'
+                    % (expected, actual))
+            raise AssertionError(error_message)
+    
+        def _error_message():
+            msg = self._format_mock_failure_message(args, kwargs)
+            return msg
+        expected = self._call_matcher(_Call((args, kwargs), two=True))
+        actual = self._call_matcher(self.call_args)
+        if actual != expected:
+            cause = expected if isinstance(expected, Exception) else None
+>           raise AssertionError(_error_message()) from cause
+E           AssertionError: expected call not found.
+E           Expected: set_clipboard('------------------------------------------------------\n--- Start of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file1.txt ---\n------------------------------------------------------\nContent of file1.\n------------------------------------------------------\n--- End of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file1.txt ---\n------------------------------------------------------\n\n------------------------------------------------------\n--- Start of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file2.txt ---\n------------------------------------------------------\nContent of file2.\nThis has two lines.\n------------------------------------------------------\n--- End of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file2.txt ---\n------------------------------------------------------')
+E             Actual: set_clipboard('../../../usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file1.txt\n```\nContent of file1.\n```\n\n../../../usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file2.txt\n```\nContent of file2.\nThis has two lines.\n```')
+
+../../../usr/lib/python3.12/unittest/mock.py:949: AssertionError
+
+During handling of the above exception, another exception occurred:
+
+self = <MagicMock name='set_clipboard' id='502374383936'>
+args = ('------------------------------------------------------\n--- Start of file: /data/data/com.termux/files/usr/tmp/pytes...a340/pytest-70/test_multiple_files_formatted_0/file2.txt ---\n------------------------------------------------------',)
+kwargs = {}
+
+    def assert_called_once_with(self, /, *args, **kwargs):
+        """assert that the mock was called exactly once and that that call was
+        with the specified arguments."""
+        if not self.call_count == 1:
+            msg = ("Expected '%s' to be called once. Called %s times.%s"
+                   % (self._mock_name or 'mock',
+                      self.call_count,
+                      self._calls_repr()))
+            raise AssertionError(msg)
+>       return self.assert_called_with(*args, **kwargs)
+E       AssertionError: expected call not found.
+E       Expected: set_clipboard('------------------------------------------------------\n--- Start of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file1.txt ---\n------------------------------------------------------\nContent of file1.\n------------------------------------------------------\n--- End of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file1.txt ---\n------------------------------------------------------\n\n------------------------------------------------------\n--- Start of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file2.txt ---\n------------------------------------------------------\nContent of file2.\nThis has two lines.\n------------------------------------------------------\n--- End of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file2.txt ---\n------------------------------------------------------')
+E         Actual: set_clipboard('../../../usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file1.txt\n```\nContent of file1.\n```\n\n../../../usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file2.txt\n```\nContent of file2.\nThis has two lines.\n```')
+E       
+E       pytest introspection follows:
+E       
+E       Args:
+E       assert ('../../../us...lines.\n```',) == ('-----------...-----------',)
+E         
+E         At index 0 diff: '../../../usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file1.txt\n```\nContent of file1.\n```\n\n../../../usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file2.txt\n```\nContent of file2.\nThis has two lines.\n```' != '------------------------------------------------------\n--- Start of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file1.txt ---\n------------------------------------------------------\nContent of file1.\n------------------------------------...
+E         
+E         ...Full output truncated (2 lines hidden), use '-vv' to show
+
+../../../usr/lib/python3.12/unittest/mock.py:961: AssertionError
+
+During handling of the above exception, another exception occurred:
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0')
+mocker = <pytest_mock.plugin.MockerFixture object at 0x74f8420590>
+capsys = <_pytest.capture.CaptureFixture object at 0x74f807a150>
+
+    def test_multiple_files_formatted_copy(tmp_path: Path, mocker, capsys):
+        """Test copying multiple files results in formatted content."""
+        mock_set_clipboard = mocker.patch.object(copy_to_clipboard, 'set_clipboard')
+        mock_get_clipboard = mocker.patch.object(copy_to_clipboard, 'get_clipboard')
+    
+        file1_content = "Content of file1."
+        file2_content = "Content of file2.\nThis has two lines."
+        file1_path = create_dummy_file(tmp_path, "file1.txt", file1_content)
+        file2_path = create_dummy_file(tmp_path, "file2.txt", file2_content)
+    
+        separator_visual = "---" * 18
+        header1 = f"{separator_visual}\n--- Start of file: {file1_path} ---\n{separator_visual}"
+        footer1 = f"{separator_visual}\n--- End of file: {file1_path} ---\n{separator_visual}"
+        block1 = f"{header1}\n{file1_content}\n{footer1}"
+    
+        header2 = f"{separator_visual}\n--- Start of file: {file2_path} ---\n{separator_visual}"
+        footer2 = f"{separator_visual}\n--- End of file: {file2_path} ---\n{separator_visual}"
+        block2 = f"{header2}\n{file2_content}\n{footer2}"
+    
+        expected_clipboard_content = f"{block1}\n\n{block2}"
+        mock_get_clipboard.return_value = expected_clipboard_content
+    
+        copy_to_clipboard.copy_files_to_clipboard([str(file1_path), str(file2_path)])
+    
+>       mock_set_clipboard.assert_called_once_with(expected_clipboard_content)
+E       AssertionError: expected call not found.
+E       Expected: set_clipboard('------------------------------------------------------\n--- Start of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file1.txt ---\n------------------------------------------------------\nContent of file1.\n------------------------------------------------------\n--- End of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file1.txt ---\n------------------------------------------------------\n\n------------------------------------------------------\n--- Start of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file2.txt ---\n------------------------------------------------------\nContent of file2.\nThis has two lines.\n------------------------------------------------------\n--- End of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file2.txt ---\n------------------------------------------------------')
+E         Actual: set_clipboard('../../../usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file1.txt\n```\nContent of file1.\n```\n\n../../../usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file2.txt\n```\nContent of file2.\nThis has two lines.\n```')
+E       
+E       pytest introspection follows:
+E       
+E       Args:
+E       assert ('../../../us...lines.\n```',) == ('-----------...-----------',)
+E         
+E         At index 0 diff: '../../../usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file1.txt\n```\nContent of file1.\n```\n\n../../../usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file2.txt\n```\nContent of file2.\nThis has two lines.\n```' != '------------------------------------------------------\n--- Start of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file1.txt ---\n------------------------------------------------------\nContent of file1.\n------------------------------------...
+E         
+E         ...Full output truncated (2 lines hidden), use '-vv' to show
+
+tests/copy_to_clipboard_test.py:112: AssertionError
+----------------------------- Captured stdout call -----------------------------
+[INFO] Processed '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file1.txt' into code block.
+[INFO] Processed '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_formatted_0/file2.txt' into code block.
+[INFO] Attempted to copy wrapped content from 2 of 2 file(s) (10 lines total) to clipboard.
+[WARNING] Clipboard content longer than expected: 16 vs 10 lines.
+[CHANGES]
+- Wrapping content of 2 file(s) in code blocks
+- Displaying relative paths above each code block
+______________________ test_multiple_files_one_not_found _______________________
+
+self = <MagicMock name='set_clipboard' id='502376544976'>
+args = ('------------------------------------------------------\n--- Start of file: /data/data/com.termux/files/usr/tmp/pytes...340/pytest-70/test_multiple_files_one_not_fo0/exists.txt ---\n------------------------------------------------------',)
+kwargs = {}
+expected = call('------------------------------------------------------\n--- Start of file: /data/data/com.termux/files/usr/tmp/p...a340/pytest-70/test_multiple_files_one_not_fo0/exists.txt ---\n------------------------------------------------------')
+actual = call('../../../usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_one_not_fo0/exists.txt\n```\nExisting file content.\n```')
+_error_message = <function NonCallableMock.assert_called_with.<locals>._error_message at 0x74f7de4400>
+cause = None
+
+    def assert_called_with(self, /, *args, **kwargs):
+        """assert that the last call was made with the specified arguments.
+    
+        Raises an AssertionError if the args and keyword args passed in are
+        different to the last call to the mock."""
+        if self.call_args is None:
+            expected = self._format_mock_call_signature(args, kwargs)
+            actual = 'not called.'
+            error_message = ('expected call not found.\nExpected: %s\n  Actual: %s'
+                    % (expected, actual))
+            raise AssertionError(error_message)
+    
+        def _error_message():
+            msg = self._format_mock_failure_message(args, kwargs)
+            return msg
+        expected = self._call_matcher(_Call((args, kwargs), two=True))
+        actual = self._call_matcher(self.call_args)
+        if actual != expected:
+            cause = expected if isinstance(expected, Exception) else None
+>           raise AssertionError(_error_message()) from cause
+E           AssertionError: expected call not found.
+E           Expected: set_clipboard('------------------------------------------------------\n--- Start of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_one_not_fo0/exists.txt ---\n------------------------------------------------------\nExisting file content.\n------------------------------------------------------\n--- End of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_one_not_fo0/exists.txt ---\n------------------------------------------------------')
+E             Actual: set_clipboard('../../../usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_one_not_fo0/exists.txt\n```\nExisting file content.\n```')
+
+../../../usr/lib/python3.12/unittest/mock.py:949: AssertionError
+
+During handling of the above exception, another exception occurred:
+
+self = <MagicMock name='set_clipboard' id='502376544976'>
+args = ('------------------------------------------------------\n--- Start of file: /data/data/com.termux/files/usr/tmp/pytes...340/pytest-70/test_multiple_files_one_not_fo0/exists.txt ---\n------------------------------------------------------',)
+kwargs = {}
+
+    def assert_called_once_with(self, /, *args, **kwargs):
+        """assert that the mock was called exactly once and that that call was
+        with the specified arguments."""
+        if not self.call_count == 1:
+            msg = ("Expected '%s' to be called once. Called %s times.%s"
+                   % (self._mock_name or 'mock',
+                      self.call_count,
+                      self._calls_repr()))
+            raise AssertionError(msg)
+>       return self.assert_called_with(*args, **kwargs)
+E       AssertionError: expected call not found.
+E       Expected: set_clipboard('------------------------------------------------------\n--- Start of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_one_not_fo0/exists.txt ---\n------------------------------------------------------\nExisting file content.\n------------------------------------------------------\n--- End of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_one_not_fo0/exists.txt ---\n------------------------------------------------------')
+E         Actual: set_clipboard('../../../usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_one_not_fo0/exists.txt\n```\nExisting file content.\n```')
+E       
+E       pytest introspection follows:
+E       
+E       Args:
+E       assert ('../../../us...ntent.\n```',) == ('-----------...-----------',)
+E         
+E         At index 0 diff: '../../../usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_one_not_fo0/exists.txt\n```\nExisting file content.\n```' != '------------------------------------------------------\n--- Start of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_one_not_fo0/exists.txt ---\n------------------------------------------------------\nExisting file content.\n------------------------------------------------------\n--- End of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_one_not...
+E         
+E         ...Full output truncated (2 lines hidden), use '-vv' to show
+
+../../../usr/lib/python3.12/unittest/mock.py:961: AssertionError
+
+During handling of the above exception, another exception occurred:
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_one_not_fo0')
+mocker = <pytest_mock.plugin.MockerFixture object at 0x74f7f9b1a0>
+capsys = <_pytest.capture.CaptureFixture object at 0x74f7f9a810>
+
+    def test_multiple_files_one_not_found(tmp_path: Path, mocker, capsys):
+        mock_set_clipboard = mocker.patch.object(copy_to_clipboard, 'set_clipboard')
+        mock_get_clipboard = mocker.patch.object(copy_to_clipboard, 'get_clipboard')
+    
+        file1_content = "Existing file content."
+        file1_path = create_dummy_file(tmp_path, "exists.txt", file1_content)
+        non_existent_file = tmp_path / "notfound.txt"
+    
+        separator_visual = "---" * 18
+        header1 = f"{separator_visual}\n--- Start of file: {file1_path} ---\n{separator_visual}"
+        footer1 = f"{separator_visual}\n--- End of file: {file1_path} ---\n{separator_visual}"
+        expected_clipboard_content = f"{header1}\n{file1_content}\n{footer1}"
+        mock_get_clipboard.return_value = expected_clipboard_content
+    
+        copy_to_clipboard.copy_files_to_clipboard([str(file1_path), str(non_existent_file)])
+    
+>       mock_set_clipboard.assert_called_once_with(expected_clipboard_content)
+E       AssertionError: expected call not found.
+E       Expected: set_clipboard('------------------------------------------------------\n--- Start of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_one_not_fo0/exists.txt ---\n------------------------------------------------------\nExisting file content.\n------------------------------------------------------\n--- End of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_one_not_fo0/exists.txt ---\n------------------------------------------------------')
+E         Actual: set_clipboard('../../../usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_one_not_fo0/exists.txt\n```\nExisting file content.\n```')
+E       
+E       pytest introspection follows:
+E       
+E       Args:
+E       assert ('../../../us...ntent.\n```',) == ('-----------...-----------',)
+E         
+E         At index 0 diff: '../../../usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_one_not_fo0/exists.txt\n```\nExisting file content.\n```' != '------------------------------------------------------\n--- Start of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_one_not_fo0/exists.txt ---\n------------------------------------------------------\nExisting file content.\n------------------------------------------------------\n--- End of file: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_one_not...
+E         
+E         ...Full output truncated (2 lines hidden), use '-vv' to show
+
+tests/copy_to_clipboard_test.py:138: AssertionError
+----------------------------- Captured stdout call -----------------------------
+[INFO] Processed '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_one_not_fo0/exists.txt' into code block.
+[WARNING] File not found: '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_one_not_fo0/notfound.txt'. Skipping this file.
+[INFO] Attempted to copy wrapped content from 1 of 2 file(s) (4 lines total) to clipboard.
+[WARNING] Clipboard content longer than expected: 7 vs 4 lines.
+[CHANGES]
+- Wrapping content of 2 file(s) in code blocks
+- Displaying relative paths above each code block
+______________________ test_multiple_files_all_not_found _______________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_all_not_fo0')
+mocker = <pytest_mock.plugin.MockerFixture object at 0x74f7da75c0>
+capsys = <_pytest.capture.CaptureFixture object at 0x74f7da7080>
+
+    def test_multiple_files_all_not_found(tmp_path: Path, mocker, capsys):
+        mock_set_clipboard = mocker.patch.object(copy_to_clipboard, 'set_clipboard')
+    
+        non_existent1 = tmp_path / "notfound1.txt"
+        non_existent2 = tmp_path / "notfound2.txt"
+    
+        copy_to_clipboard.copy_files_to_clipboard([str(non_existent1), str(non_existent2)])
+    
+        mock_set_clipboard.assert_not_called()
+    
+        captured = capsys.readouterr()
+        assert f"[WARNING] File not found: '{non_existent1}'. Skipping this file." in captured.out
+        assert f"[WARNING] File not found: '{non_existent2}'. Skipping this file." in captured.out
+>       assert "[INFO] No content was successfully processed from any of the multiple files. Clipboard not updated." in captured.out
+E       assert '[INFO] No content was successfully processed from any of the multiple files. Clipboard not updated.' in "[WARNING] File not found: '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_all_no...xt'. Skipping this file.\n[INFO] No content was successfully processed from any of the files. Clipboard not updated.\n"
+E        +  where "[WARNING] File not found: '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_multiple_files_all_no...xt'. Skipping this file.\n[INFO] No content was successfully processed from any of the files. Clipboard not updated.\n" = CaptureResult(out="[WARNING] File not found: '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_mul...ping this file.\n[INFO] No content was successfully processed from any of the files. Clipboard not updated.\n", err='').out
+
+tests/copy_to_clipboard_test.py:161: AssertionError
+__________________ test_validation_logic_truncated_clipboard ___________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_validation_logic_truncate0')
+mocker = <pytest_mock.plugin.MockerFixture object at 0x74f7e454f0>
+capsys = <_pytest.capture.CaptureFixture object at 0x74f7e456a0>
+
+    def test_validation_logic_truncated_clipboard(tmp_path: Path, mocker, capsys):
+        mock_set_clipboard = mocker.patch.object(copy_to_clipboard, 'set_clipboard')
+        mock_get_clipboard = mocker.patch.object(copy_to_clipboard, 'get_clipboard')
+    
+        file_content = "Line 1\nLine 2\nLine 3 is very long."
+        single_file_path = create_dummy_file(tmp_path, "full.txt", file_content)
+        truncated_content = "Line 1\nLine 2"
+        mock_get_clipboard.return_value = truncated_content
+    
+        copy_to_clipboard.copy_files_to_clipboard([str(single_file_path)])
+    
+        mock_set_clipboard.assert_called_once_with(file_content)
+        mock_get_clipboard.assert_called_once()
+    
+        captured = capsys.readouterr()
+>       assert "[WARNING] Clipboard content may be truncated or incomplete: 2 lines found in clipboard vs. 3 expected." in captured.out
+E       assert '[WARNING] Clipboard content may be truncated or incomplete: 2 lines found in clipboard vs. 3 expected.' in "[INFO] Processing single file for raw copy: '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_val...ogic_truncate0/full.txt') (3 lines total) to clipboard.\n[WARNING] Clipboard content may be truncated: 2 vs 3 lines.\n"
+E        +  where "[INFO] Processing single file for raw copy: '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_val...ogic_truncate0/full.txt') (3 lines total) to clipboard.\n[WARNING] Clipboard content may be truncated: 2 vs 3 lines.\n" = CaptureResult(out="[INFO] Processing single file for raw copy: '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/...cate0/full.txt') (3 lines total) to clipboard.\n[WARNING] Clipboard content may be truncated: 2 vs 3 lines.\n", err='').out
+
+tests/copy_to_clipboard_test.py:178: AssertionError
+______________________ test_set_clipboard_not_implemented ______________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_set_clipboard_not_impleme0')
+mocker = <pytest_mock.plugin.MockerFixture object at 0x74f7dbec30>
+capsys = <_pytest.capture.CaptureFixture object at 0x74f7dbc8c0>
+
+    def test_set_clipboard_not_implemented(tmp_path: Path, mocker, capsys):
+        mock_set_clipboard = mocker.patch.object(copy_to_clipboard, 'set_clipboard', side_effect=NotImplementedError("set_clipboard NI"))
+        mock_get_clipboard = mocker.patch.object(copy_to_clipboard, 'get_clipboard') # Won't be called
+    
+        file_content = "Some content."
+        single_file_path = create_dummy_file(tmp_path, "test.txt", file_content)
+    
+        copy_to_clipboard.copy_files_to_clipboard([str(single_file_path)])
+    
+        mock_set_clipboard.assert_called_once_with(file_content)
+        mock_get_clipboard.assert_not_called()
+    
+        captured = capsys.readouterr()
+>       assert "[ERROR] set_clipboard is not implemented in clipboard_utils. Cannot copy content." in captured.out
+E       assert '[ERROR] set_clipboard is not implemented in clipboard_utils. Cannot copy content.' in "[INFO] Processing single file for raw copy: '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_set...40/pytest-70/test_set_clipboard_not_impleme0/test.txt'.\n[ERROR] set_clipboard not implemented. Cannot copy content.\n"
+E        +  where "[INFO] Processing single file for raw copy: '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_set...40/pytest-70/test_set_clipboard_not_impleme0/test.txt'.\n[ERROR] set_clipboard not implemented. Cannot copy content.\n" = CaptureResult(out="[INFO] Processing single file for raw copy: '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/...-70/test_set_clipboard_not_impleme0/test.txt'.\n[ERROR] set_clipboard not implemented. Cannot copy content.\n", err='').out
+
+tests/copy_to_clipboard_test.py:193: AssertionError
+______________________ test_get_clipboard_not_implemented ______________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_get_clipboard_not_impleme0')
+mocker = <pytest_mock.plugin.MockerFixture object at 0x74f7dcad20>
+capsys = <_pytest.capture.CaptureFixture object at 0x74f7dcb050>
+
+    def test_get_clipboard_not_implemented(tmp_path: Path, mocker, capsys):
+        mock_set_clipboard = mocker.patch.object(copy_to_clipboard, 'set_clipboard')
+        mock_get_clipboard = mocker.patch.object(copy_to_clipboard, 'get_clipboard', side_effect=NotImplementedError("get_clipboard NI"))
+    
+        file_content = "Validation content."
+        single_file_path = create_dummy_file(tmp_path, "validate.txt", file_content)
+    
+        copy_to_clipboard.copy_files_to_clipboard([str(single_file_path)])
+    
+        mock_set_clipboard.assert_called_once_with(file_content)
+        mock_get_clipboard.assert_called_once()
+    
+        captured = capsys.readouterr()
+>       assert "[INFO] get_clipboard is not implemented in clipboard_utils. Skipping verification step." in captured.out
+E       assert '[INFO] get_clipboard is not implemented in clipboard_utils. Skipping verification step.' in "[INFO] Processing single file for raw copy: '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_get..._impleme0/validate.txt') (1 lines total) to clipboard.\n[INFO] get_clipboard not implemented. Skipping verification.\n"
+E        +  where "[INFO] Processing single file for raw copy: '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_get..._impleme0/validate.txt') (1 lines total) to clipboard.\n[INFO] get_clipboard not implemented. Skipping verification.\n" = CaptureResult(out="[INFO] Processing single file for raw copy: '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/.../validate.txt') (1 lines total) to clipboard.\n[INFO] get_clipboard not implemented. Skipping verification.\n", err='').out
+
+tests/copy_to_clipboard_test.py:208: AssertionError
+____________________ test_process_git_workflow_with_changes ____________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x74f7db1d00>
+capsys = <_pytest.capture.CaptureFixture object at 0x74f7db1400>
+
+    def test_process_git_workflow_with_changes(monkeypatch, capsys):
+        def fake_run(command_list, cwd, capture_output=False, text=False, verbose=False, **kwargs):
+            cmd_str = " ".join(command_list)
+            if "status --porcelain" in cmd_str:
+                return FakeCompletedProcess(stdout="M  file.txt\n", stderr="", returncode=0)
+            if "add --dry-run" in cmd_str:
+                return FakeCompletedProcess(stdout="file.txt\n", stderr="", returncode=0)
+            if "add " in cmd_str:
+                return FakeCompletedProcess(stdout="", stderr="", returncode=0)
+            if "commit" in cmd_str:
+                return FakeCompletedProcess(stdout="Committed\n", stderr="", returncode=0)
+            if "pull" in cmd_str:
+                return FakeCompletedProcess(stdout="Pulled\n", stderr="", returncode=0)
+            if "push" in cmd_str:
+                return FakeCompletedProcess(stdout="Pushed\n", stderr="", returncode=0)
+            return FakeCompletedProcess(stdout="", stderr="", returncode=0)
+        monkeypatch.setattr("git_sync.run_command", fake_run)
+        inputs = iter(["y", "Test commit message"])
+        monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+>       process_git_workflow(add_pattern=".", force=False, cwd="dummy_repo", branch="main",
+                               submodules_to_process=None, submodule_add_patterns={}, submodule_branches={}, verbose=True)
+
+tests/git_sync_test.py:212: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+add_pattern = '.', force = False, cwd = 'dummy_repo', branch = 'main'
+submodules_to_process = None, submodule_add_patterns = {}
+submodule_branches = {}, verbose = True
+
+    def process_git_workflow(add_pattern, force, cwd, branch, submodules_to_process, submodule_add_patterns, submodule_branches, verbose):
+        """Main function to process the git workflow."""
+        repo_path = cwd
+    
+        print(f"Entering process_git_workflow at: {repo_path}") # DEBUG PRINT
+    
+        # --- Recursively process submodules FIRST if they have changes ---
+        submodule_list = get_submodule_names(repo_path)
+        print(f"Submodule list at {repo_path}: {submodule_list}") # DEBUG PRINT
+        if submodule_list:
+            for submodule_name in submodule_list:
+                submodule_path = os.path.join(repo_path, submodule_name)
+                status_command_submodule = ["git", "status", "--porcelain"]
+                stdout_status_submodule, _, _ = run_command(status_command_submodule, cwd=submodule_path, capture_output=True, text=True, verbose=False) # Check for changes quietly
+                print(f"Submodule status output for {submodule_name} at {submodule_path}: {stdout_status_submodule}") # DEBUG PRINT
+                if stdout_status_submodule.strip(): # If submodule has changes
+                    print(f"--- Processing submodule: {submodule_name} ---")
+                    process_git_workflow(add_pattern, force, cwd=submodule_path, branch=branch, submodules_to_process='all', # Process all sub-submodules if any
+                                           submodule_add_patterns=submodule_add_patterns, submodule_branches=submodule_branches, verbose=verbose)
+                    print(f"--- Back to main repo from submodule: {submodule_name} ---")
+        else:
+            print(f"No submodules found at {repo_path}") # DEBUG PRINT
+    
+    
+        # --- Git Status before any changes (Full color output) ---
+        status_command_color = ["git", "status", "--color=always"] # Force color output
+        stdout_status_color, stderr_status_color, returncode_status_color = run_command(status_command_color, cwd=repo_path, capture_output=True, text=True, verbose=verbose)
+        if returncode_status_color != 0:
+            error_log(f"Error getting git status (color): {stderr_status_color}")
+            print("Error getting git status, aborting.")
+            return
+    
+        print("Current git status:") # Header for git status
+        print(stdout_status_color) # Print full color git status
+        print(f"Using add pattern: '{add_pattern}'") # Inform user about add pattern
+    
+    
+        # --- Git Status before any changes (Porcelain for summary) ---
+        status_command_porcelain = ["git", "status", "--porcelain", "-uall"] # -uall to show untracked files in submodules
+        stdout_status_porcelain, stderr_status_porcelain, returncode_status_porcelain = run_command(status_command_porcelain, cwd=repo_path, capture_output=True, text=True, verbose=verbose)
+        if returncode_status_porcelain != 0:
+            error_log(f"Error getting git status (porcelain): {stderr_status_porcelain}")
+            print("Error getting git status summary, summary might be unavailable.") # Non-critical for summary
+    
+    
+        if verbose:
+            verbose_log("Git status (porcelain output for verbose log):")
+            verbose_log(stdout_status_porcelain) # Log porcelain output in verbose mode
+        else:
+            print("Git status summary:")
+            print(summarize_git_status_porcelain(stdout_status_porcelain)) # Use porcelain output for summary
+    
+        if not stdout_status_porcelain.strip(): # Check porcelain output for changes
+            print("No changes to commit.")
+            return
+    
+        # --- Git Add (Dry-run for preview) ---
+        add_command_dry_run = ["git", "add", "--dry-run", add_pattern]
+>       stdout_add_dry_run, _, _ = run_command(add_command_dry_run, cwd=repo_path, capture_output=True, text=Text, verbose=verbose)
+E       NameError: name 'Text' is not defined
+
+git_sync.py:296: NameError
+----------------------------- Captured stdout call -----------------------------
+Entering process_git_workflow at: dummy_repo
+Submodule list at dummy_repo: []
+No submodules found at dummy_repo
+Current git status:
+
+Using add pattern: '.'
+[Verbose] 2025-05-14 05:07:51 - Git status (porcelain output for verbose log):
+[Verbose] 2025-05-14 05:07:51 - M  file.txt
+
+________________ test_process_git_workflow_multiple_submodules _________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x74f7db0710>
+capsys = <_pytest.capture.CaptureFixture object at 0x74f7db29f0>
+
+    def test_process_git_workflow_multiple_submodules(monkeypatch, capsys):
+        call_history = []
+    
+        def fake_run(command_list, cwd, capture_output=False, text=False, verbose=False, **kwargs):
+            cmd_str = " ".join(command_list)
+            call_history.append((cmd_str, cwd))
+            if "git submodule status" in cmd_str:
+                if cwd == "dummy_repo":
+                    return FakeCompletedProcess(stdout=" 1111111 sub1 (heads/main)\n2222222 sub2 (heads/main)\n", stderr="", returncode=0)
+                elif cwd == os.path.join("dummy_repo", "sub1"):
+                    return FakeCompletedProcess(stdout=" 3333333 sub1a (heads/main)\n", stderr="", returncode=0)
+                else:
+                    return FakeCompletedProcess(stdout="", stderr="", returncode=0)
+            if "--porcelain" in cmd_str:
+                return FakeCompletedProcess(stdout="M  file.txt\n", stderr="", returncode=0)
+            if "add --dry-run" in cmd_str:
+                return FakeCompletedProcess(stdout="file.txt\n", stderr="", returncode=0)
+            if "add " in cmd_str:
+                return FakeCompletedProcess(stdout="", stderr="", returncode=0)
+            if "commit" in cmd_str:
+                return FakeCompletedProcess(stdout="Committed\n", stderr="", returncode=0)
+            if "pull" in cmd_str:
+                return FakeCompletedProcess(stdout="Pulled\n", stderr="", returncode=0)
+            if "push" in cmd_str:
+                return FakeCompletedProcess(stdout="Pushed\n", stderr="", returncode=0)
+            return FakeCompletedProcess(stdout="", stderr="", returncode=0)
+    
+        monkeypatch.setattr("git_sync.run_command", fake_run)
+        inputs = iter(["y", "Main commit message", "y", "Sub1 commit message", "y", "Sub1a commit message", "y", "Sub2 commit message"])
+        monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+>       process_git_workflow(add_pattern=".", force=False, cwd="dummy_repo", branch="main",
+                               submodules_to_process="all", submodule_add_patterns={}, submodule_branches={}, verbose=True)
+
+tests/git_sync_test.py:249: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+git_sync.py:255: in process_git_workflow
+    process_git_workflow(add_pattern, force, cwd=submodule_path, branch=branch, submodules_to_process='all', # Process all sub-submodules if any
+git_sync.py:255: in process_git_workflow
+    process_git_workflow(add_pattern, force, cwd=submodule_path, branch=branch, submodules_to_process='all', # Process all sub-submodules if any
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+add_pattern = '.', force = False, cwd = 'dummy_repo/sub1/sub1a', branch = 'main'
+submodules_to_process = 'all', submodule_add_patterns = {}
+submodule_branches = {}, verbose = True
+
+    def process_git_workflow(add_pattern, force, cwd, branch, submodules_to_process, submodule_add_patterns, submodule_branches, verbose):
+        """Main function to process the git workflow."""
+        repo_path = cwd
+    
+        print(f"Entering process_git_workflow at: {repo_path}") # DEBUG PRINT
+    
+        # --- Recursively process submodules FIRST if they have changes ---
+        submodule_list = get_submodule_names(repo_path)
+        print(f"Submodule list at {repo_path}: {submodule_list}") # DEBUG PRINT
+        if submodule_list:
+            for submodule_name in submodule_list:
+                submodule_path = os.path.join(repo_path, submodule_name)
+                status_command_submodule = ["git", "status", "--porcelain"]
+                stdout_status_submodule, _, _ = run_command(status_command_submodule, cwd=submodule_path, capture_output=True, text=True, verbose=False) # Check for changes quietly
+                print(f"Submodule status output for {submodule_name} at {submodule_path}: {stdout_status_submodule}") # DEBUG PRINT
+                if stdout_status_submodule.strip(): # If submodule has changes
+                    print(f"--- Processing submodule: {submodule_name} ---")
+                    process_git_workflow(add_pattern, force, cwd=submodule_path, branch=branch, submodules_to_process='all', # Process all sub-submodules if any
+                                           submodule_add_patterns=submodule_add_patterns, submodule_branches=submodule_branches, verbose=verbose)
+                    print(f"--- Back to main repo from submodule: {submodule_name} ---")
+        else:
+            print(f"No submodules found at {repo_path}") # DEBUG PRINT
+    
+    
+        # --- Git Status before any changes (Full color output) ---
+        status_command_color = ["git", "status", "--color=always"] # Force color output
+        stdout_status_color, stderr_status_color, returncode_status_color = run_command(status_command_color, cwd=repo_path, capture_output=True, text=True, verbose=verbose)
+        if returncode_status_color != 0:
+            error_log(f"Error getting git status (color): {stderr_status_color}")
+            print("Error getting git status, aborting.")
+            return
+    
+        print("Current git status:") # Header for git status
+        print(stdout_status_color) # Print full color git status
+        print(f"Using add pattern: '{add_pattern}'") # Inform user about add pattern
+    
+    
+        # --- Git Status before any changes (Porcelain for summary) ---
+        status_command_porcelain = ["git", "status", "--porcelain", "-uall"] # -uall to show untracked files in submodules
+        stdout_status_porcelain, stderr_status_porcelain, returncode_status_porcelain = run_command(status_command_porcelain, cwd=repo_path, capture_output=True, text=True, verbose=verbose)
+        if returncode_status_porcelain != 0:
+            error_log(f"Error getting git status (porcelain): {stderr_status_porcelain}")
+            print("Error getting git status summary, summary might be unavailable.") # Non-critical for summary
+    
+    
+        if verbose:
+            verbose_log("Git status (porcelain output for verbose log):")
+            verbose_log(stdout_status_porcelain) # Log porcelain output in verbose mode
+        else:
+            print("Git status summary:")
+            print(summarize_git_status_porcelain(stdout_status_porcelain)) # Use porcelain output for summary
+    
+        if not stdout_status_porcelain.strip(): # Check porcelain output for changes
+            print("No changes to commit.")
+            return
+    
+        # --- Git Add (Dry-run for preview) ---
+        add_command_dry_run = ["git", "add", "--dry-run", add_pattern]
+>       stdout_add_dry_run, _, _ = run_command(add_command_dry_run, cwd=repo_path, capture_output=True, text=Text, verbose=verbose)
+E       NameError: name 'Text' is not defined
+
+git_sync.py:296: NameError
+----------------------------- Captured stdout call -----------------------------
+Entering process_git_workflow at: dummy_repo
+Submodule list at dummy_repo: ['sub1', 'sub2']
+Submodule status output for sub1 at dummy_repo/sub1: M  file.txt
+
+--- Processing submodule: sub1 ---
+Entering process_git_workflow at: dummy_repo/sub1
+Submodule list at dummy_repo/sub1: ['sub1a']
+Submodule status output for sub1a at dummy_repo/sub1/sub1a: M  file.txt
+
+--- Processing submodule: sub1a ---
+Entering process_git_workflow at: dummy_repo/sub1/sub1a
+Submodule list at dummy_repo/sub1/sub1a: []
+No submodules found at dummy_repo/sub1/sub1a
+Current git status:
+
+Using add pattern: '.'
+[Verbose] 2025-05-14 05:07:51 - Git status (porcelain output for verbose log):
+[Verbose] 2025-05-14 05:07:51 - M  file.txt
+
+_____________________ test_llm_output_with_remove_patterns _____________________
+
+temp_repo_structure = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_llm_output_with_remove_pa0/sample_repo')
+llm_output_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_llm_output_with_remove_pa0/llm_repo_analysis.txt')
+
+    def test_llm_output_with_remove_patterns(temp_repo_structure, llm_output_path):
+        generate_llm_text_output(
+            source_dir_path_str=str(temp_repo_structure),
+            output_file_path_str=str(llm_output_path),
+            exclude_dirs_list=list(DEFAULT_EXCLUDE_DIRS),
+            exclude_exts_list=list(DEFAULT_EXCLUDE_EXTS),
+            exclude_files_list=list(DEFAULT_EXCLUDE_FILES),
+            remove_patterns_list=["*.json", "**/temp_files/*"],
+            keep_patterns_list=[],
+            max_tree_depth=DEFAULT_MAX_HIERARCHY_DEPTH,
+            verbose=True
+        )
+        content = llm_output_path.read_text(encoding='utf-8')
+        # print(f"\nCONTENT FOR test_llm_output_with_remove_patterns:\n{content}\n")
+    
+        assert "--- File: package.json ---" not in content
+        assert "package.json (Reason: Excluded by rules" in content
+        assert str(Path("src") / "config.important.json") + " (Reason: Excluded by rules" in content
+        # This is the key assertion that was failing:
+>       assert str(Path("temp_files") / "a.bak") + " (Reason: Excluded by rules" in content
+E       AssertionError: assert ('temp_files/a.bak' + ' (Reason: Excluded by rules') in '=== Repository Analysis: sample_repo ===\nDate Processed: 2025-05-14 05:07:51\nRoot Path: /data/data/com.termux/files...n--- File: temp_files/a.bak ---\nbackup a\n--- End of File: temp_files/a.bak ---\n\n=== End of Repository Analysis ==='
+E        +  where 'temp_files/a.bak' = str((PosixPath('temp_files') / 'a.bak'))
+E        +    where PosixPath('temp_files') = Path('temp_files')
+
+tests/repo_processor_test.py:220: AssertionError
+----------------------------- Captured stdout call -----------------------------
+Using source directory for LLM output: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_llm_output_with_remove_pa0/sample_repo
+Global source_dir_global set to: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_llm_output_with_remove_pa0/sample_repo for generate_llm_text_output
+DEBUG: Excluded '.git' because component '.git' (/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_llm_output_with_remove_pa0/sample_repo/.git) is an excluded dir.
+DEBUG _is_dir_skippable: Dir '.git' is skippable (is_normally_excluded=True).
+DEBUG: Excluded 'build' because component 'build' (/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_llm_output_with_remove_pa0/sample_repo/build) is an excluded dir.
+DEBUG _is_dir_skippable: Dir 'build' is skippable (is_normally_excluded=True).
+DEBUG: Not excluding 'data'.
+DEBUG: Excluded 'dist' because component 'dist' (/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_llm_output_with_remove_pa0/sample_repo/dist) is an excluded dir.
+DEBUG _is_dir_skippable: Dir 'dist' is skippable (is_normally_excluded=True).
+DEBUG: Excluded 'node_modules' because component 'node_modules' (/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_llm_output_with_remove_pa0/sample_repo/node_modules) is an excluded dir.
+DEBUG _is_dir_skippable: Dir 'node_modules' is skippable (is_normally_excluded=True).
+DEBUG: Not excluding 'src'.
+DEBUG: Not excluding 'temp_files'.
+DEBUG: Not excluding '.gitignore'.
+DEBUG: Removed 'package-lock.json' by pattern '*.json'
+DEBUG: Removed 'package.json' by pattern '*.json'
+DEBUG: Not excluding 'README.md'.
+DEBUG: Excluded file 'data/archive.zip' by extension '.zip'.
+DEBUG: Not excluding 'data/image.png'.
+DEBUG: Excluded file 'data/report.log' by extension '.log'.
+DEBUG: Not excluding 'src/moduleA'.
+DEBUG: Removed 'src/config.important.json' by pattern '*.json'
+DEBUG: Not excluding 'src/main.py'.
+DEBUG: Not excluding 'src/utils.js'.
+DEBUG: Not excluding 'src/moduleA/service.ts'.
+DEBUG: Excluded file 'src/moduleA/temp_data.tmp' by extension '.tmp'.
+DEBUG: remove_check: rel_path='temp_files/a.bak', name='a.bak', pattern='**/temp_files/*'
+DEBUG: fnmatch('temp_files/a.bak', '**/temp_files/*') = False
+DEBUG: fnmatch('a.bak', '**/temp_files/*') = False
+DEBUG: Not excluding 'temp_files/a.bak'.
+DEBUG: Excluded file 'temp_files/b.tmp' by extension '.tmp'.
+DEBUG: Not excluding 'src'.
+DEBUG: Not excluding 'data'.
+DEBUG: Excluded '.git' because component '.git' (/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_llm_output_with_remove_pa0/sample_repo/.git) is an excluded dir.
+DEBUG _is_dir_skippable: Dir '.git' is skippable (is_normally_excluded=True).
+LLM Output: Traversal excluded directory: .git (skipped by _is_dir_skippable_for_traversal)
+DEBUG: Excluded 'node_modules' because component 'node_modules' (/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_llm_output_with_remove_pa0/sample_repo/node_modules) is an excluded dir.
+DEBUG _is_dir_skippable: Dir 'node_modules' is skippable (is_normally_excluded=True).
+LLM Output: Traversal excluded directory: node_modules (skipped by _is_dir_skippable_for_traversal)
+DEBUG: Not excluding 'temp_files'.
+DEBUG: Excluded 'dist' because component 'dist' (/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_llm_output_with_remove_pa0/sample_repo/dist) is an excluded dir.
+DEBUG _is_dir_skippable: Dir 'dist' is skippable (is_normally_excluded=True).
+LLM Output: Traversal excluded directory: dist (skipped by _is_dir_skippable_for_traversal)
+DEBUG: Excluded 'build' because component 'build' (/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_llm_output_with_remove_pa0/sample_repo/build) is an excluded dir.
+DEBUG _is_dir_skippable: Dir 'build' is skippable (is_normally_excluded=True).
+LLM Output: Traversal excluded directory: build (skipped by _is_dir_skippable_for_traversal)
+DEBUG: Not excluding 'README.md'.
+LLM Output: Included content for: README.md
+DEBUG: Not excluding '.gitignore'.
+LLM Output: Included content for: .gitignore
+DEBUG: Removed 'package.json' by pattern '*.json'
+DEBUG: Removed 'package-lock.json' by pattern '*.json'
+DEBUG: Not excluding 'src/moduleA'.
+DEBUG: Not excluding 'src/main.py'.
+LLM Output: Included content for: src/main.py
+DEBUG: Not excluding 'src/utils.js'.
+LLM Output: Included content for: src/utils.js
+DEBUG: Removed 'src/config.important.json' by pattern '*.json'
+DEBUG: Not excluding 'src/moduleA/service.ts'.
+LLM Output: Included content for: src/moduleA/service.ts
+DEBUG: Excluded file 'src/moduleA/temp_data.tmp' by extension '.tmp'.
+DEBUG: Not excluding 'data/image.png'.
+LLM Output: Included content for: data/image.png
+DEBUG: Excluded file 'data/archive.zip' by extension '.zip'.
+DEBUG: Excluded file 'data/report.log' by extension '.log'.
+DEBUG: remove_check: rel_path='temp_files/a.bak', name='a.bak', pattern='**/temp_files/*'
+DEBUG: fnmatch('temp_files/a.bak', '**/temp_files/*') = False
+DEBUG: fnmatch('a.bak', '**/temp_files/*') = False
+DEBUG: Not excluding 'temp_files/a.bak'.
+LLM Output: Included content for: temp_files/a.bak
+DEBUG: Excluded file 'temp_files/b.tmp' by extension '.tmp'.
+
+LLM text output generated at: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_llm_output_with_remove_pa0/llm_repo_analysis.txt
+________________________________ test_cat_basic ________________________________
+
+create_test_files = ['test1.txt', 'test2.txt', 'test3.log']
+
+    def test_cat_basic(create_test_files):
+        """Test cat command with pattern."""
+        result = subprocess.run([SCRIPT, "cat", "*.txt"], capture_output=True, text=True)
+>       assert "Hello" in result.stdout
+E       assert 'Hello' in "Error: No files matching pattern '*.txt' found.\n"
+E        +  where "Error: No files matching pattern '*.txt' found.\n" = CompletedProcess(args=['./run_pattern.py', 'cat', '*.txt'], returncode=1, stdout="Error: No files matching pattern '*.txt' found.\n", stderr='').stdout
+
+tests/run_pattern_test.py:23: AssertionError
+_______________________________ test_grep_error ________________________________
+
+create_test_files = ['test1.txt', 'test2.txt', 'test3.log']
+
+    def test_grep_error(create_test_files):
+        """Test grep on .log files."""
+        result = subprocess.run([SCRIPT, "grep", "Error", "*.log"], capture_output=True, text=True)
+>       assert "Error: Something went wrong" in result.stdout
+E       AssertionError: assert 'Error: Something went wrong' in 'Error: Multiple patterns provided (Error and *.log).\n'
+E        +  where 'Error: Multiple patterns provided (Error and *.log).\n' = CompletedProcess(args=['./run_pattern.py', 'grep', 'Error', '*.log'], returncode=1, stdout='Error: Multiple patterns provided (Error and *.log).\n', stderr='').stdout
+
+tests/run_pattern_test.py:29: AssertionError
+_________________________ test_flags_before_and_after __________________________
+
+create_test_files = ['test1.txt', 'test2.txt', 'test3.log']
+
+    def test_flags_before_and_after(create_test_files):
+        """Ensure pre/post flags are preserved."""
+        result = subprocess.run([SCRIPT, "grep", "-i", "hello", "*.txt", "-n"], capture_output=True, text=True)
+>       assert "1:Hello" in result.stdout
+E       AssertionError: assert '1:Hello' in 'Error: Multiple patterns provided (hello and *.txt).\n'
+E        +  where 'Error: Multiple patterns provided (hello and *.txt).\n' = CompletedProcess(args=['./run_pattern.py', 'grep', '-i', 'hello', '*.txt', '-n'], returncode=1, stdout='Error: Multiple patterns provided (hello and *.txt).\n', stderr='').stdout
+
+tests/run_pattern_test.py:39: AssertionError
+_______________________________ test_fd_fallback _______________________________
+
+create_test_files = ['test1.txt', 'test2.txt', 'test3.log']
+
+    def test_fd_fallback(create_test_files):
+        """Check if fd is used when available."""
+        fd_path = subprocess.run(["which", "fd"], capture_output=True, text=True)
+        if fd_path.stdout.strip():
+            result = subprocess.run([SCRIPT, "cat", "*.txt"], capture_output=True, text=True)
+>           assert "Hello" in result.stdout
+E           assert 'Hello' in "Error: No files matching pattern '*.txt' found.\n"
+E            +  where "Error: No files matching pattern '*.txt' found.\n" = CompletedProcess(args=['./run_pattern.py', 'cat', '*.txt'], returncode=1, stdout="Error: No files matching pattern '*.txt' found.\n", stderr='').stdout
+
+tests/run_pattern_test.py:46: AssertionError
+______________________________ test_find_fallback ______________________________
+
+create_test_files = ['test1.txt', 'test2.txt', 'test3.log']
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x74f7e45160>
+
+    def test_find_fallback(create_test_files, monkeypatch):
+        """Ensure find is used if fd is missing."""
+        monkeypatch.setenv("PATH", "/tmp")  # Remove fd from PATH
+        result = subprocess.run([SCRIPT, "cat", "*.txt"], capture_output=True, text=True)
+>       assert "Hello" in result.stdout
+E       AssertionError: assert 'Hello' in ''
+E        +  where '' = CompletedProcess(args=['./run_pattern.py', 'cat', '*.txt'], returncode=127, stdout='', stderr='env: ‘python3’: No such file or directory\n').stdout
+
+tests/run_pattern_test.py:52: AssertionError
+____________________________ test_flatten_directory ____________________________
+
+temp_test_dir = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_flatten_directory0/test_repo')
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_flatten_directory0')
+
+    def test_flatten_directory(temp_test_dir, tmp_path):
+        """Tests the flattening of a directory."""
+        temp_dir = flatten_directory(temp_test_dir, name_by_path=False)
+        files = list(temp_dir.iterdir())
+    
+>       assert len(files) == 3  # Only files should be moved
+E       AssertionError: assert 4 == 3
+E        +  where 4 = len([PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_flatten_directory0/test_repo/_flatten...ta/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_flatten_directory0/test_repo/_flattened/small.json')])
+
+tests/zip_for_llms_test.py:66: AssertionError
+----------------------------- Captured stdout call -----------------------------
+Flattened 4 files into /data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_flatten_directory0/test_repo/_flattened.
+_________________________ test_zip_with_post_hierarchy _________________________
+
+temp_test_dir = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_zip_with_post_hierarchy0/test_repo')
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_zip_with_post_hierarchy0')
+
+    def test_zip_with_post_hierarchy(temp_test_dir, tmp_path):
+        """Tests if hierarchy file is correctly generated after processing."""
+        hierarchy_file = temp_test_dir / "folder_structure.txt"
+    
+        zip_folder(
+            source_dir=temp_test_dir,
+            output_zip=tmp_path / "test_post_hierarchy.zip",
+            exclude_dirs=set(),
+            exclude_exts=set(),
+            exclude_files=set(),
+            remove_patterns=[],
+            keep_patterns=[],
+            max_size=None,
+            preferences=[],
+            flatten=False,
+            name_by_path=False,
+            verbose=False
+        )
+    
+>       assert hierarchy_file.exists()
+E       AssertionError: assert False
+E        +  where False = exists()
+E        +    where exists = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a340/pytest-70/test_zip_with_post_hierarchy0/test_repo/folder_structure.txt').exists
+
+tests/zip_for_llms_test.py:141: AssertionError
+----------------------------- Captured stdout call -----------------------------
+
+Final zip file size: 0.01 MB
+=========================== short test summary info ============================
+FAILED tests/clipboard_replace_test.py::test_main_end_to_end - Failed: DID NO...
+FAILED tests/copy_to_clipboard_test.py::test_multiple_files_formatted_copy - ...
+FAILED tests/copy_to_clipboard_test.py::test_multiple_files_one_not_found - A...
+FAILED tests/copy_to_clipboard_test.py::test_multiple_files_all_not_found - a...
+FAILED tests/copy_to_clipboard_test.py::test_validation_logic_truncated_clipboard
+FAILED tests/copy_to_clipboard_test.py::test_set_clipboard_not_implemented - ...
+FAILED tests/copy_to_clipboard_test.py::test_get_clipboard_not_implemented - ...
+FAILED tests/git_sync_test.py::test_process_git_workflow_with_changes - NameE...
+FAILED tests/git_sync_test.py::test_process_git_workflow_multiple_submodules
+FAILED tests/repo_processor_test.py::test_llm_output_with_remove_patterns - A...
+FAILED tests/run_pattern_test.py::test_cat_basic - assert 'Hello' in "Error: ...
+FAILED tests/run_pattern_test.py::test_grep_error - AssertionError: assert 'E...
+FAILED tests/run_pattern_test.py::test_flags_before_and_after - AssertionErro...
+FAILED tests/run_pattern_test.py::test_fd_fallback - assert 'Hello' in "Error...
+FAILED tests/run_pattern_test.py::test_find_fallback - AssertionError: assert...
+FAILED tests/zip_for_llms_test.py::test_flatten_directory - AssertionError: a...
+FAILED tests/zip_for_llms_test.py::test_zip_with_post_hierarchy - AssertionEr...
+=================== 17 failed, 84 passed, 1 skipped in 3.58s ===================

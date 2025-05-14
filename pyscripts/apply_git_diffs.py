@@ -17,7 +17,7 @@ except ImportError:
 
 # Import debug_utils (or its wrapper)
 try:
-    import debug_utils as debug_utils
+    import cross_platform.debug_utils as debug_utils
 except ImportError:
     print("Error: debug_utils.py not found. Please ensure it is in the same directory or installed.")
     class debug_utils:
@@ -271,7 +271,26 @@ def main():
     parser.add_argument("--console-log-level", default="Debug", help="Set the console log level (Verbose, Debug, Information, Warning, Error, Critical).")
     parser.add_argument("--enable-file-log", action="store_true", help="Enable file logging.")
     parser.add_argument("--log-dir", default=debug_utils.DEFAULT_LOG_DIR, help=f"Set the log directory (default: {debug_utils.DEFAULT_LOG_DIR}).")
+
+    parser.add_argument("--help-format", action="store_true", help="Print a message to guide LLMs on how to format their output for easy application.")
+
     args = parser.parse_args()
+
+    if args.help_format:
+        print("""
+        To format output in a way that can be easily copied and applied to change a file, follow this structure:
+
+        ```<language> name=<filename>
+        <contents of the file>
+        ```
+
+        Example:
+        ```python name=example.py
+        print("Hello, World!")
+        ```
+        """)
+        return
+
     debug_utils.set_log_verbosity(args.log_level)
     debug_utils.set_console_verbosity(args.console_log_level)
     debug_utils.set_log_directory(args.log_dir)
