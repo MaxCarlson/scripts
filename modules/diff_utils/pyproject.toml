@@ -3,25 +3,37 @@ requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "directory-diff"
+name = "directory-diff" # This is the distribution name
 version = "0.1.0"
 description = "A robust, cross-platform directory diff tool for comparing and synchronizing directories."
 authors = [
-    { name = "Your Name", email = "you@example.com" }
+    { name = "Your Name", email = "you@example.com" } # Please update this
 ]
-license = { text = "MIT" }
+license = { text = "MIT" } # Consider using a SPDX identifier if appropriate, e.g., "MIT"
 readme = "README.md"
 requires-python = ">=3.7"
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: MIT License", # This is fine, though setuptools might warn about SPDX preference
     "Operating System :: OS Independent"
 ]
 dependencies = [
-    "colorama"
-    # Add additional dependencies if needed (e.g., if your cross_platform modules come via PyPI)
+    # Add 'standard_ui' and 'cross_platform' if they are PyPI dependencies
+    # If they are local project dependencies, ensure they are installed first
+    # or consider structuring as a monorepo with local path dependencies (more advanced).
+    # For now, assuming they'll be available in the environment.
 ]
 
 [project.scripts]
-# This will install a command-line entry point "diff" that runs the main() in diff.py.
+# This makes `diff` command available, pointing to main() in diff_utils/diff.py
+# The import path for "diff:main" means it will look for a `diff.py` module.
 diff = "diff:main"
+# If python_diff.py is also a script:
+# python_diff = "python_diff:main"
+
+# Explicitly tell setuptools what to package
+[tool.setuptools]
+# py_modules are top-level single-file Python modules
+py_modules = ["python_diff", "diff"] # Include diff.py here if it's also meant to be importable as a module
+# packages are directories with an __init__.py
+packages = ["diff_utils"] # This will include diff_utils/__init__.py and diff_utils/dir_diff.py

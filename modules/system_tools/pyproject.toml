@@ -3,23 +3,221 @@ requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "system_tools"
+name = "system_tools" # This is the distribution name
 version = "0.1.0"
 description = "A cross-platform system utilities package for file system, network, process management, privileges, and detailed system information."
 authors = [
   { name="Maxwell Carlson", email="carlsonamax@gmail.com" }
 ]
-readme = "README.md"
-license = { file="LICENSE" }
+readme = "README.md" # Ensure README.md exists or remove/comment out this line
+license = { file="LICENSE" } # Ensure LICENSE exists or remove/comment out this line, or use { text = "..." }
 requires-python = ">=3.7"
-dependencies = []
+dependencies = [
+    # Add 'standard_ui' and 'cross_platform' here if they are actual PyPI dependencies.
+    # If they are local project dependencies, pip might not resolve them unless
+    # this is part of a larger monorepo setup or they are installed separately first.
+    # For direct imports like `from cross_platform.system_utils import ...` within system_tools code,
+    # cross_platform needs to be an installed package.
+]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
 ]
 
 [project.scripts]
+# This makes `system_tools` command available, pointing to main() in system_tools/cli.py
 system_tools = "system_tools.cli:main"
+
+# To fix the "flat-layout" error, explicitly tell setuptools what to include.
+# Option 1: Explicitly list the main package and sub-packages.
+# The names here are what you'd use in an import statement, relative to the project root.
+# Since pyproject.toml is in `system_tools/`, and your code is structured like:
+# system_tools/
+#   __init__.py
+#   cli.py
+#   core/
+#     __init__.py
+#     ...
+#   file_system/
+#     __init__.py
+#     ...
+# ... etc.
+# setuptools will find these based on the `packages` directive relative to where pyproject.toml is.
+# If the main importable package is `system_tools` itself (because of system_tools/__init__.py),
+# and `core`, `file_system` are subpackages of it:
+
+[tool.setuptools.packages.find]
+where = ["."]  # Look in the current directory (where pyproject.toml is)
+# This will find all packages (directories with __init__.py) automatically.
+# It should find 'core', 'file_system', 'network', 'process', 'privileges', 'system_info'.
+# And because there's an __init__.py in the root (system_tools/), setuptools
+# should correctly package `system_tools` as the top-level package containing these subpackages
+# and top-level modules like `cli.py`.
+
+# If find isn't working as expected, or for more control, list explicitly:
+# [tool.setuptools]
+# packages = [
+#     "core",
+#     "file_system",
+#     "network",
+#     "process",
+#     "privileges",
+#     "system_info"
+# ]
+# py_modules = ["cli"] # if cli.py is a top-level module within system_tools package
+
+# The most robust way for your described flat structure where pyproject.toml is in the
+# root of the package code (e.g., in 'system_tools/' directory itself which becomes the package):
+# The package name itself (system_tools) is implied by the directory and __init__.py.
+# The sub-directories are its sub-packages.
+# Using find is generally good:
+
+# [tool.setuptools.packages.find]
+# where = ["."] # Search in the current directory (system_tools/)
+               # This will find subdirectories like 'core', 'network' if they have __init__.py
+               # and will make them part of the 'system_tools' distribution.
+
+# However, the error states "Multiple top-level packages discovered". This suggests
+# setuptools is considering 'core', 'network' etc. as *separate* top-level packages
+# rather than sub-packages of a main 'system_tools' package derived from the directory.
+# To be very explicit for a flat layout where the directory 'system_tools' IS the package:
+[tool.setuptools]
+packages = [
+    "core", # These are directories directly under system_tools/
+    "file_system",
+    "network",
+    "process",
+    "privileges",
+    "system_info",
+    # "tests" # Only if you want to package tests
+]
+# And we need to ensure the top-level modules of system_tools itself are included
+# if they are not automatically picked up by just listing sub-packages.
+# For modules directly under system_tools/ (like cli.py, __init__.py),
+# if system_tools/ is itself the package root:
+# The __init__.py makes system_tools/ the package.
+# The cli.py will be system_tools.cli
+# The core/ will be system_tools.core
+# Try this:
+# packages = find: {where = ["."]} # this should find all packages and subpackages
+# The original error suggests 'find' without arguments isn't working due to ambiguity.
+
+# Given the error, the most direct fix is to explicitly list what it's finding as "top-level":
+# [tool.setuptools]
+# packages = ["core", "file_system", "network", "process", "privileges", "system_info"]
+# This tells setuptools "these directories are the packages I want you to care about from this level."
+# To make them part of the `system_tools` distribution and importable as `system_tools.core`, etc.,
+# your main `system_tools/__init__.py` should exist and the `name` field in `[project]` should be `system_tools`.
+# The structure of your provided `system_tools/__init__.py` does this: `from .core.system_utils import SystemUtils`.
+
+# Let's use find with specific includes to be very clear for setuptools
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+    "core", "core.*",
+    "file_system", "file_system.*",
+    "network", "network.*",
+    "process", "process.*",
+    "privileges", "privileges.*",
+    "system_info", "system_info.*",
+    # To include the top-level system_tools package itself (for __init__.py and cli.py)
+    # this needs to be handled carefully. If `name = "system_tools"` and pyproject.toml
+    # is inside the `system_tools` folder which also has `__init__.py`,
+    # setuptools' default behavior for `packages = find:` should make `system_tools` the importable package.
+
+    # The simplest for flat layouts when pyproject.toml is in the package root:
+    # Tell it to find all packages in the current directory.
+    # The `name` in `[project]` becomes the distribution name.
+    # The directory containing `pyproject.toml` (if it has an `__init__.py`) becomes the package.
+]
+# For your structure, this should find 'core', 'file_system', etc. AND because there's an
+# __init__.py in the same directory as pyproject.toml, it treats this directory as the
+# root of the 'system_tools' package.
+
+# Try being explicit with the packages found in the root of system_tools/:
+# [tool.setuptools]
+# packages = ["core", "file_system", "network", "process", "privileges", "system_info"]
+# And for top-level modules within system_tools/ package (like cli.py):
+# py_modules = ["cli"]
+# This would package `cli.py` as `system_tools.cli` and `core` as `system_tools.core`
+# if `system_tools/__init__.py` makes `system_tools` the package.
+
+# Given the error "Multiple top-level packages discovered", and the list it provides,
+# the most direct approach is to specify these as the packages:
+[tool.setuptools]
+packages = [
+    "core",
+    "file_system",
+    "network",
+    "process",
+    "privileges",
+    "system_info",
+    # "tests" # Add if you want to package tests
+]
+# Also, include top-level modules if any are part of the main package API and not in sub-packages
+# Your main __init__.py imports from these, so they form the `system_tools` package.
+# The `cli.py` is a top-level module within the `system_tools` package.
+# Setuptools' package discovery should handle `__init__.py` and `cli.py` correctly if
+# it knows how to find the main package.
+# The issue is it's seeing 'core', 'network' as peers that *could* be separate things.
+
+# Let's try the most common fix for this "flat layout with subpackages"
+# [tool.setuptools.packages.find]
+# where = ["."]
+#
+# This will make `system_tools` (the directory containing pyproject.toml and __init__.py)
+# the main package, and `core`, `network`, etc., its subpackages.
+# The `[project.scripts]` entry `system_tools = "system_tools.cli:main"` correctly assumes this structure.
+# The setuptools default find should be sufficient if __init__.py files are present.
+# The error suggests it *is* finding them but doesn't know they are *all* part of the *same* distribution.
+# Using `packages = find:` without further options should work if your directory is the package.
+# For clarity and to directly address the error's list:
+# [tool.setuptools]
+# packages = ["core", "file_system", "network", "process", "privileges", "system_info"]
+# This is what setuptools sees as potentially distinct top-level items.
+# However, to make them importable as `system_tools.core`, etc., the `system_tools`
+# directory itself (containing pyproject.toml and __init__.py) must be seen as the root of the `system_tools` package.
+
+# The simplest for a flat layout project named 'system_tools' where pyproject.toml is in 'system_tools/'
+# and 'system_tools/' contains '__init__.py', 'cli.py', and subdirs 'core/', 'network/' etc (each with '__init__.py'):
+# You want to package 'system_tools' and all its contents.
+# [tool.setuptools.packages.find]
+# where = ["."] # This looks in the current directory for packages
+               # It should find 'core', 'network', etc.
+               # And because system_tools/ has an __init__.py, it should be part of the package itself.
+# Let's rely on find:
+[tool.setuptools.packages.find]
+# `where` defaults to ["."], so it's often not needed if pyproject.toml is at the package root.
+# It should automatically find 'core', 'file_system', etc., and because
+# the directory containing pyproject.toml also has an '__init__.py',
+# these become sub-packages of 'system_tools'.
+# No explicit `packages` or `py_modules` list should be needed here if using `find`.
+
+# If `find:` alone is still ambiguous for setuptools with your flat layout,
+# explicitly list the packages that are part of this distribution.
+# These are directories directly under 'system_tools/' that are Python packages.
+# packages = ["core", "file_system", "network", "process", "privileges", "system_info"]
+# And also include the top-level modules of system_tools itself.
+# py_modules = ["cli"] # Assuming __init__.py is handled as part of the package root.
+
+# Given the error, it seems setuptools is confused about these being top-level.
+# Let's be explicit about what forms the `system_tools` package.
+# The package `system_tools` contains modules like `cli.py` and subpackages `core`, `network`, etc.
+# If your `pyproject.toml` is in `scripts/modules/system_tools/`, then:
+[tool.setuptools]
+py_modules = ["cli"] # For system_tools/cli.py
+packages = [
+    "core",          # For system_tools/core/
+    "file_system",   # For system_tools/file_system/
+    "network",       # For system_tools/network/
+    "process",       # For system_tools/process/
+    "privileges",    # For system_tools/privileges/
+    "system_info",   # For system_tools/system_info/
+    "tests"          # For system_tools/tests/ (optional, but good to be explicit if needed)
+]
+# This explicitly tells setuptools that `cli.py` is a top-level module within the `system_tools` distribution,
+# and `core`, `file_system`, etc., are packages within the `system_tools` distribution.
+# The `system_tools/__init__.py` ties it all together.
 
 [tool.pytest.ini_options]
 minversion = "6.0"
