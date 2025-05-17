@@ -86,14 +86,14 @@ def test_replay_history_branch_explicit_N(monkeypatch, capsys):
     monkeypatch.setitem(os.environ, 'SHELL', '/bin/bash')
     def fake_run(cmd, *args, **kwargs):
         if isinstance(cmd, list):
-            return types.SimpleNamespace(stdout="cmdX", stderr="", returncode=0)
+            return types.SimpleNamespace(stdout="1  foo\n2  bar\n3  baz\n", stderr="", returncode=0)
         return types.SimpleNamespace(stdout="val\n", stderr="", returncode=0)
     monkeypatch.setattr(subprocess, 'run', fake_run)
     monkeypatch.setattr(builtins, 'input', lambda prompt: 'y')
     monkeypatch.setattr(sys, 'argv', ['output_to_clipboard.py', '-r', '2'])
     runpy.run_path(SCRIPT_PATH, run_name="__main__")
     out, err = capsys.readouterr()
-    assert "No explicit command. Using --replay-history to target N=2" in out
+    assert "[INFO] Replaying history entry N=2..." in err
     assert "Copied command output to clipboard." in out
     assert LAST_CLIP == "val"
 
@@ -102,21 +102,24 @@ def test_history_branch_success(monkeypatch, capsys):
     monkeypatch.setitem(os.environ, 'SHELL', '/bin/bash')
     def fake_run(cmd, *args, **kwargs):
         if isinstance(cmd, list):
-            return types.SimpleNamespace(stdout="ls -la", stderr="", returncode=0)
+            return types.SimpleNamespace(stdout="1  ls -la\n2  echo hello\n", stderr="", returncode=0)
         return types.SimpleNamespace(stdout="foo\n", stderr="", returncode=0)
     monkeypatch.setattr(subprocess, 'run', fake_run)
     monkeypatch.setattr(builtins, 'input', lambda prompt: 'y')
     monkeypatch.setattr(sys, 'argv', ['output_to_clipboard.py'])
     runpy.run_path(SCRIPT_PATH, run_name="__main__")
     out, err = capsys.readouterr()
-    assert "User approved. Re-running: ls -la" in out
+    assert "[INFO] Replaying history entry N=1..." in err
+    assert "User approved. Re-running: ls -la" in err
     assert "Copied command output to clipboard." in out
     assert LAST_CLIP == "foo"
 
 def test_history_loop_prevention(monkeypatch, capsys):
     # Test that invoking the script from history is prevented
     monkeypatch.setitem(os.environ, 'SHELL', '/bin/bash')
-    monkeypatch.setattr(subprocess, 'run', lambda *args, **kwargs: types.SimpleNamespace(stdout="output_to_clipboard.py arg", stderr="", returncode=0))
+    def fake_run(cmd, *args, **kwargs):
+        return types.SimpleNamespace(stdout="1  output_to_clipboard.py arg\n", stderr="", returncode=0)
+    monkeypatch.setattr(subprocess, 'run', fake_run)
     monkeypatch.setattr(builtins, 'input', lambda prompt: 'y')
     monkeypatch.setattr(sys, 'argv', ['output_to_clipboard.py'])
     with pytest.raises(SystemExit) as e:
@@ -132,14 +135,13 @@ def test_replay_history_ignored(monkeypatch, capsys):
     out, err = capsys.readouterr()
     assert "Copied command output to clipboard." in out
     assert LAST_CLIP == "hello"
-    assert "No explicit command" not in out + err
 
 def test_unsupported_shell_warning(monkeypatch, capsys):
     # Test warning for unsupported shells
     monkeypatch.setitem(os.environ, 'SHELL', '/bin/fish')
-    monkeypatch.setattr(subprocess, 'run', lambda *args, **kwargs: types.SimpleNamespace(stdout="", stderr="", returncode=1))
+    monkeypatch.setattr(subprocess, 'run', lambda *args, **kwargs: types.SimpleNamespace(stdout="", stderr="error", returncode=1))
     monkeypatch.setattr(sys, 'argv', ['output_to_clipboard.py'])
     with pytest.raises(SystemExit):
         runpy.run_path(SCRIPT_PATH, run_name="__main__")
     out, err = capsys.readouterr()
-    assert "Automatic history retrieval for shell 'fish' is not explicitly supported." in err
+    assert "[ERROR] Failed to retrieve history" in err

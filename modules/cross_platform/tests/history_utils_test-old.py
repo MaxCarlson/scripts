@@ -1,5 +1,6 @@
+# VERSION CHECK: THIS IS THE FILE FROM AFTER THE "SIMPLIFIED MOCK" ATTEMPT - RUNNING NOW
+
 # tests/history_utils_test.py
-print("<<<<< EXECUTING THIS tests/history_utils_test.py - VERSION MAY 17 AM (Mock via side_effect) >>>>>")
 
 import pytest
 import os
@@ -29,56 +30,53 @@ def mock_os_expanduser(monkeypatch):
     monkeypatch.setattr(os.path, 'expanduser', mock)
     return mock
 
-# --- Helper function using side_effect for mock methods ---
+# --- SIMPLIFIED Helper function to create path_constructor_side_effect ---
 def create_path_constructor_side_effect(exists_check_func_from_test, test_name="UnknownTest"):
-    print(f">>> [{test_name}] Top of create_path_constructor_side_effect - MOCK_VIA_SIDE_EFFECT_V2 <<<")
-    
-    def path_constructor_side_effect(path_str_arg_to_constructor_param):
-        # This 'mock_path_instance' is the object that will be returned when Path() is called.
-        # It needs to behave like a Path object for the SUT.
+    def path_constructor_side_effect(path_str_arg_to_constructor_param): # This is the side_effect for Path()
         mock_path_instance = MagicMock(spec=pathlib.Path)
         
-        # Store the path string this instance represents. Relies on closure for side_effect functions.
+        # Store the path string that this mock instance represents.
+        # Ensure it's a string, as pathlib.Path() can accept Path-like objects.
         actual_path_str = str(path_str_arg_to_constructor_param)
+        mock_path_instance._test_path_str = actual_path_str
         
-        # Set attributes like 'name' directly if needed by SUT during __init__ or early on.
+        # For .name attribute, typically used in _get_shell_type
         mock_path_instance.name = os.path.basename(actual_path_str)
-        
-        print(f">>> [{test_name}] In path_constructor_side_effect for '{actual_path_str}' - MOCK_VIA_SIDE_EFFECT_V2 <<<")
 
-        # --- .exists() via side_effect ---
-        # This function is called by mock_path_instance.exists.side_effect.
-        # It receives the arguments that mock_path_instance.exists() was called with.
-        # SUT calls path_obj.exists() (no arguments), so this side_effect function takes no arguments.
-        def exists_side_effect_func():
-            # Uses 'actual_path_str' and 'exists_check_func_from_test' from closures.
-            print(f"[{test_name}_SIDE_EFFECT_EXISTS] Path is '{actual_path_str}'. Calling test lambda.")
-            result = bool(exists_check_func_from_test(actual_path_str))
-            print(f"[{test_name}_SIDE_EFFECT_EXISTS] Test lambda returned {result}. Mock .exists() is returning {result} via side_effect.")
+        # --- Mocked .exists() method ---
+        # This function is assigned as a method, so it needs a 'self'-like first argument.
+        def simplified_exists_method(self_obj): # self_obj will be mock_path_instance
+            path_to_check = self_obj._test_path_str
+            print(f"[{test_name}_SIMPLIFIED_MOCK_EXISTS] Path is '{path_to_check}'. Calling test lambda.")
+            # exists_check_func_from_test is the lambda from the specific test (e.g., lambda p: p == "/foo/bar")
+            result = bool(exists_check_func_from_test(path_to_check))
+            print(f"[{test_name}_SIMPLIFIED_MOCK_EXISTS] Test lambda returned {result}. Mock .exists() is returning {result}.")
             return result
-        # mock_path_instance.exists is already a MagicMock due to spec=pathlib.Path.
-        # We assign our function to its side_effect.
-        mock_path_instance.exists.side_effect = exists_side_effect_func
+        mock_path_instance.exists = simplified_exists_method
 
-        # --- .resolve() via side_effect ---
-        # This function is called by mock_path_instance.resolve.side_effect.
-        # It receives args passed to mock_path_instance.resolve() (e.g., strict).
-        def resolve_side_effect_func(strict=False):
-            # Uses 'actual_path_str' and 'path_constructor_side_effect' (for recursion) from closures.
-            print(f"[{test_name}_SIDE_EFFECT_RESOLVE] Path is '{actual_path_str}'. Strict: {strict}. Returning new mock via recursive factory call.")
-            # Resolve returns a *new* Path object. We create a new, fully configured mock.
-            return path_constructor_side_effect(actual_path_str)
-        mock_path_instance.resolve.side_effect = resolve_side_effect_func
+        # --- Mocked .resolve() method ---
+        # This function is assigned as a method, so it needs a 'self'-like first argument.
+        def simplified_resolve_method(self_obj, strict=False): # self_obj will be mock_path_instance
+            path_to_resolve = self_obj._test_path_str
+            print(f"[{test_name}_SIMPLIFIED_MOCK_RESOLVE] Path is '{path_to_resolve}'. Returning a new mock for the same path string.")
+            
+            # Resolve returns a *new* Path object. For simplicity, this new mock will be basic.
+            resolved_obj_mock = MagicMock(spec=pathlib.Path)
+            resolved_obj_mock._test_path_str = path_to_resolve # Represents the same path string
+            # Ensure the new mock can be stringified
+            resolved_obj_mock.__str__ = lambda s: s._test_path_str # s is resolved_obj_mock
+            # Basic resolve for the new object returns itself
+            resolved_obj_mock.resolve = lambda s, st=False: s 
+            return resolved_obj_mock
+        mock_path_instance.resolve = simplified_resolve_method
 
-        # --- __str__() via side_effect ---
-        # This function is called by mock_path_instance.__str__.side_effect.
-        # str(mock_path_instance) calls mock_path_instance.__str__(), which calls this.
-        # __str__ takes no arguments other than self (which is handled by the mock).
-        def str_side_effect_func():
-            # Uses 'actual_path_str' from closure.
-            print(f"[{test_name}_SIDE_EFFECT_STR] Path is '{actual_path_str}'.")
-            return actual_path_str
-        mock_path_instance.__str__.side_effect = str_side_effect_func
+        # --- Mocked __str__() method ---
+        # This function is assigned as a method, so it needs a 'self'-like first argument.
+        def simplified_str_method(self_obj): # self_obj will be mock_path_instance
+            path_for_str = self_obj._test_path_str
+            print(f"[{test_name}_SIMPLIFIED_MOCK_STR] Path is '{path_for_str}'.")
+            return path_for_str
+        mock_path_instance.__str__ = simplified_str_method
         
         return mock_path_instance
     return path_constructor_side_effect
