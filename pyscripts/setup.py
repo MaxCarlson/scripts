@@ -1,10 +1,8 @@
-pyscripts/setup.py
-```
 #!/usr/bin/env python3
 import argparse
 import sys # Import sys for sys.exit
 from pathlib import Path
-from scripts_setup.alias_utils import parse_alias_file, write_aliases
+from scripts_setup.alias_utils import parse_alias_file, write_aliases, write_pwsh_aliases # Added write_pwsh_aliases
 from scripts_setup.setup_utils import process_symlinks 
 from standard_ui.standard_ui import log_info, log_success, log_warning, log_error, section # Added log_error
 
@@ -45,8 +43,7 @@ def main(scripts_dir: Path, dotfiles_dir: Path, bin_dir: Path, verbose: bool) ->
     """Main setup routine for pyscripts."""
     with section("PY SCRIPTS SETUP"):
         alias_definitions_file = scripts_dir / "pyscripts/alias_names.txt"
-        alias_config_output_file = dotfiles_dir / "dynamic/setup_pyscripts_aliases.zsh"
-
+        
         if not bin_dir.exists():
             log_info(f"Creating bin directory at: {bin_dir}")
             try:
@@ -64,28 +61,41 @@ def main(scripts_dir: Path, dotfiles_dir: Path, bin_dir: Path, verbose: bool) ->
             log_error("Halting pyscripts setup due to an unexpected error in ensure_symlinks.")
             return
 
+        parsed_alias_definitions = parse_alias_file(alias_definitions_file)
+        if not parsed_alias_definitions:
+            log_warning(f"No alias definitions found or parsed from '{alias_definitions_file}'. Skipping alias generation.")
+        else:
+            log_info(f"Found {len(parsed_alias_definitions)} alias definitions to process from '{alias_definitions_file}'.")
 
-        with section("Aliases for Python scripts"):
-            log_info(f"Processing alias definitions from: {alias_definitions_file}")
-            log_info(f"Aliases will be written to: {alias_config_output_file}")
-            
-            parsed_alias_definitions = parse_alias_file(alias_definitions_file)
-            
-            if not parsed_alias_definitions:
-                log_warning(f"No alias definitions found or parsed from '{alias_definitions_file}'.")
-            else:
-                log_info(f"Found {len(parsed_alias_definitions)} alias definitions to process.")
-            
-            try:
-                write_aliases(
-                    parsed_alias_definitions=parsed_alias_definitions,
-                    bin_dir=bin_dir, 
-                    alias_config=alias_config_output_file,
-                    alias_file_path_for_header=str(alias_definitions_file),
-                    verbose=verbose
-                )
-            except Exception as e:
-                log_error(f"Error writing aliases for Python scripts: {e}")
+            # --- Zsh/Bash Aliases ---
+            with section("Aliases for Python scripts (Zsh/Bash)"):
+                alias_config_output_file_zsh = dotfiles_dir / "dynamic/setup_pyscripts_aliases.zsh"
+                log_info(f"Zsh/Bash aliases will be written to: {alias_config_output_file_zsh}")
+                try:
+                    write_aliases(
+                        parsed_alias_definitions=parsed_alias_definitions,
+                        bin_dir=bin_dir, 
+                        alias_config=alias_config_output_file_zsh,
+                        alias_file_path_for_header=str(alias_definitions_file),
+                        verbose=verbose
+                    )
+                except Exception as e:
+                    log_error(f"Error writing Zsh/Bash aliases for Python scripts: {e}")
+
+            # --- PowerShell Aliases ---
+            with section("Aliases for Python scripts (PowerShell)"):
+                alias_config_output_file_ps1 = dotfiles_dir / "dynamic/setup_pyscripts_aliases.ps1"
+                log_info(f"PowerShell aliases will be written to: {alias_config_output_file_ps1}")
+                try:
+                    write_pwsh_aliases(
+                        parsed_alias_definitions=parsed_alias_definitions,
+                        bin_dir=bin_dir,
+                        alias_config_ps1=alias_config_output_file_ps1,
+                        alias_file_path_for_header=str(alias_definitions_file),
+                        verbose=verbose
+                    )
+                except Exception as e:
+                    log_error(f"Error writing PowerShell aliases for Python scripts: {e}")
 
         log_success("Finished PY SCRIPTS SETUP.")
 
@@ -111,4 +121,3 @@ if __name__ == "__main__":
         print(f"FATAL ERROR in pyscripts/setup.py: {e}", file=sys.stderr)
         sys.exit(1)
 
-```
