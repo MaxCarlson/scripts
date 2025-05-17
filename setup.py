@@ -3,10 +3,10 @@ import os
 import sys
 import argparse
 import platform
-import importlib # For invalidate_caches and import_module
+import importlib 
 import subprocess
 from pathlib import Path
-import time # Import time for fallbacks
+import time 
 
 # --- Global UI Function Placeholders ---
 init_timer = None
@@ -36,7 +36,7 @@ try:
     sui_log_success = real_sui_log_success
     sui_log_warning = real_sui_log_warning
     sui_log_error = real_sui_log_error
-    sui_section = real_sui_section # This should be the class or a context manager function
+    sui_section = real_sui_section
     STANDARD_UI_AVAILABLE = True
 except ImportError:
     _start_time_fb = None 
@@ -71,7 +71,6 @@ except ImportError:
     
     if '--quiet' not in sys.argv:
         fb_log_warning("standard_ui module not found initially. Using basic print for logging.")
-        # fb_log_info("Attempting to install standard_ui as part of the setup...") # Moved this to main
 
 # --- Helper function to dynamically reload standard_ui functions globally ---
 def _try_reload_standard_ui_globally():
@@ -81,15 +80,15 @@ def _try_reload_standard_ui_globally():
     warning_logger_before_reload = sui_log_warning
 
     try:
-        importlib.invalidate_caches() # Attempt to clear import caches
-        from standard_ui.standard_ui import (
+        importlib.invalidate_caches() 
+        from standard_ui.standard_ui import ( # This is the import that was failing
             init_timer as imported_init_timer,
             print_global_elapsed as imported_print_global_elapsed,
             log_info as imported_log_info,
             log_success as imported_log_success,
             log_warning as imported_log_warning,
             log_error as imported_log_error,
-            section as imported_section, # This should be the actual context manager class/function
+            section as imported_section,
         )
         init_timer = imported_init_timer
         print_global_elapsed = imported_print_global_elapsed
@@ -97,7 +96,7 @@ def _try_reload_standard_ui_globally():
         sui_log_success = imported_log_success
         sui_log_warning = imported_log_warning
         sui_log_error = imported_log_error
-        sui_section = imported_section # Assign the imported callable/class
+        sui_section = imported_section
         
         STANDARD_UI_AVAILABLE = True
         if callable(sui_log_success):
@@ -106,15 +105,21 @@ def _try_reload_standard_ui_globally():
             init_timer() 
     except ImportError as e:
         if callable(warning_logger_before_reload):
-            warning_logger_before_reload(f"standard_ui was installed, but failed to import dynamically for global update (Error: {e}). Previous logging functions remain active.")
+            # Provide more detail from the import error
+            warning_logger_before_reload(f"standard_ui was installed, but failed to import dynamically for global update (Error: {type(e).__name__}: {e}). Previous logging functions remain active.")
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
+# Determine actual on-disk casing for 'Modules' or 'modules'
+# This assumes 'modules' (lowercase) is the intended logical name but respects on-disk reality.
+MODULES_DIR_NAME_ON_DISK = "Modules" if (SCRIPTS_DIR / "Modules").exists() else "modules"
+MODULES_DIR = SCRIPTS_DIR / MODULES_DIR_NAME_ON_DISK # e.g., C:\...\scripts\Modules
+STANDARD_UI_SETUP_DIR = MODULES_DIR / "standard_ui" # e.g., C:\...\scripts\Modules\standard_ui
+CROSS_PLATFORM_DIR = MODULES_DIR / "cross_platform" # e.g., C:\...\scripts\Modules\cross_platform
+
 DOTFILES_DIR = Path(os.environ.get("DOTFILES", SCRIPTS_DIR.parent / "dotfiles"))
 BIN_DIR = SCRIPTS_DIR / "bin"
-MODULES_DIR = SCRIPTS_DIR / "modules"
 SCRIPTS_SETUP_DIR = SCRIPTS_DIR / "scripts_setup"
-CROSS_PLATFORM_DIR = MODULES_DIR / "cross_platform"
-STANDARD_UI_SETUP_DIR = MODULES_DIR / "standard_ui"
+
 
 ERROR_LOG = SCRIPTS_DIR / "setup_errors.log"
 errors = []
@@ -139,11 +144,10 @@ def write_error_log(title: str, proc: subprocess.CompletedProcess):
 def ensure_module_installed(module_import: str, install_path: Path,
                             skip_reinstall: bool, editable: bool):
     try:
-        importlib.invalidate_caches() # Invalidate before trying to import
+        importlib.invalidate_caches() 
         importlib.import_module(module_import)
         sui_log_success(f"{module_import} is already installed.")
         if skip_reinstall:
-            # If it's standard_ui and it wasn't available, try to load it anyway
             if module_import == "standard_ui" and not STANDARD_UI_AVAILABLE:
                  sui_log_info("standard_ui detected as installed but not active; attempting to activate...")
                  _try_reload_standard_ui_globally()
@@ -155,58 +159,70 @@ def ensure_module_installed(module_import: str, install_path: Path,
     install_cmd = [sys.executable, "-m", "pip", "install"]
     if editable:
         install_cmd.append("-e")
-    install_cmd.append(str(install_path.resolve())) # Use absolute path for pip install
+    # Ensure install_path is resolved to an absolute path for pip
+    resolved_install_path = install_path.resolve()
+    install_cmd.append(str(resolved_install_path))
 
-    sui_log_info(f"Installing {module_import} from {install_path.resolve()} {'(editable)' if editable else ''}...")
-    proc = subprocess.run(install_cmd, capture_output=True, text=True) # Removed env here, pip should work in current env
+    sui_log_info(f"Installing {module_import} from {resolved_install_path} {'(editable)' if editable else ''}...")
+    # For pip install, it should generally operate within the current Python environment's context
+    # without needing explicit PYTHONPATH modification for the pip command itself.
+    proc = subprocess.run(install_cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore')
     if proc.returncode == 0:
         sui_log_success(f"Successfully installed/updated {module_import}.")
-        if module_import == "standard_ui": # Always try to reload if standard_ui was the one installed
+        if module_import == "standard_ui": 
             _try_reload_standard_ui_globally()
     else:
         sui_log_error(f"Error installing {module_import} (rc: {proc.returncode}); see log for details.")
-        sui_log_error(f"Pip stdout: {proc.stdout}")
-        sui_log_error(f"Pip stderr: {proc.stderr}")
+        sui_log_error(f"Pip stdout: {proc.stdout.strip() if proc.stdout else '<empty>'}")
+        sui_log_error(f"Pip stderr: {proc.stderr.strip() if proc.stderr else '<empty>'}")
         write_error_log(f"Install {module_import}", proc)
         errors.append(f"Installation of {module_import}")
 
 def run_setup(script_path: Path, *args):
-    # Debug: Check script path existence
-    sui_log_info(f"Debug run_setup: Checking script '{script_path}', Exists: {script_path.exists()}")
-    if not script_path.exists():
-        sui_log_warning(f"Setup script {script_path.name} not found at {script_path}; skipping.")
-        errors.append(f"Missing setup script: {script_path.name}")
+    resolved_script_path = script_path.resolve() # Resolve once
+    sui_log_info(f"Debug run_setup: Checking script '{resolved_script_path}', Exists: {resolved_script_path.exists()}")
+    if not resolved_script_path.exists():
+        sui_log_warning(f"Setup script {resolved_script_path.name} not found at {resolved_script_path}; skipping.")
+        errors.append(f"Missing setup script: {resolved_script_path.name}")
         return
 
-    sui_log_info(f"Running {script_path.name} with args: {' '.join(args)}...")
-    cmd = [sys.executable, str(script_path)]
+    sui_log_info(f"Running {resolved_script_path.name} with args: {' '.join(args)}...")
+    cmd = [sys.executable, str(resolved_script_path)]
     cmd.extend(args)
 
-    # Prepare environment for subprocess to find local packages
     env = os.environ.copy()
-    # SCRIPTS_DIR is the directory containing 'scripts_setup', 'modules' etc.
-    # Adding SCRIPTS_DIR to PYTHONPATH allows `import scripts_setup` etc.
-    python_path_parts = [str(SCRIPTS_DIR.resolve())] 
-    if "PYTHONPATH" in env and env["PYTHONPATH"]: # Check if not empty
-        python_path_parts.append(env["PYTHONPATH"])
-    env["PYTHONPATH"] = os.pathsep.join(python_path_parts)
+    # `scripts_setup` is directly under SCRIPTS_DIR.
+    # `standard_ui`, `cross_platform` are under MODULES_DIR (e.g., SCRIPTS_DIR/"Modules").
+    # Add both SCRIPTS_DIR and MODULES_DIR to PYTHONPATH for subprocesses.
+    # This makes `import scripts_setup` and `import standard_ui` work if they are packages.
+    python_path_to_add = [str(SCRIPTS_DIR.resolve()), str(MODULES_DIR.resolve())]
     
-    if _is_verbose: # Log PYTHONPATH only if verbose
-        sui_log_info(f"Subprocess PYTHONPATH for {script_path.name}: {env['PYTHONPATH']}")
+    existing_pythonpath = env.get("PYTHONPATH")
+    if existing_pythonpath:
+        python_path_to_add.extend(existing_pythonpath.split(os.pathsep))
+    
+    # Remove duplicates while preserving order (from Python 3.7+, dict preserves insertion order)
+    env["PYTHONPATH"] = os.pathsep.join(list(dict.fromkeys(python_path_to_add)))
+    env["PYTHONIOENCODING"] = "utf-8" # For better Unicode handling in subprocesses
 
-    proc = subprocess.run(cmd, capture_output=True, text=True, env=env) # Pass modified env
+    if _is_verbose: 
+        sui_log_info(f"Subprocess PYTHONPATH for {resolved_script_path.name}: {env['PYTHONPATH']}")
+        sui_log_info(f"Subprocess PYTHONIOENCODING for {resolved_script_path.name}: {env['PYTHONIOENCODING']}")
+
+
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, encoding='utf-8', errors='ignore')
     if proc.returncode == 0:
-        sui_log_success(f"{script_path.name} completed.")
+        sui_log_success(f"{resolved_script_path.name} completed.")
         if proc.stdout and proc.stdout.strip():
-            sui_log_info(f"Output from {script_path.name}:\n{proc.stdout.strip()}")
+            sui_log_info(f"Output from {resolved_script_path.name}:\n{proc.stdout.strip()}")
         if proc.stderr and proc.stderr.strip(): 
-            sui_log_warning(f"Stderr from {script_path.name} (may be informational):\n{proc.stderr.strip()}")
+            sui_log_warning(f"Stderr from {resolved_script_path.name} (may be informational):\n{proc.stderr.strip()}")
     else:
-        sui_log_error(f"Error in {script_path.name} (rc: {proc.returncode}); see log for details.")
-        sui_log_error(f"Subprocess stdout for {script_path.name}:\n{proc.stdout or '<empty>'}")
-        sui_log_error(f"Subprocess stderr for {script_path.name}:\n{proc.stderr or '<empty>'}")
-        write_error_log(f"Setup {script_path.name}", proc)
-        errors.append(f"Execution of {script_path.name}")
+        sui_log_error(f"Error in {resolved_script_path.name} (rc: {proc.returncode}); see log for details.")
+        sui_log_error(f"Subprocess stdout for {resolved_script_path.name}:\n{proc.stdout.strip() or '<empty>'}")
+        sui_log_error(f"Subprocess stderr for {resolved_script_path.name}:\n{proc.stderr.strip() or '<empty>'}")
+        write_error_log(f"Setup {resolved_script_path.name}", proc)
+        errors.append(f"Execution of {resolved_script_path.name}")
 
 def main():
     global _is_verbose 
@@ -221,15 +237,13 @@ def main():
                         help="Suppress informational messages (mainly for fallback logger).")
     args = parser.parse_args()
 
-    _is_verbose = args.verbose # Update based on parsed args
+    _is_verbose = args.verbose 
 
-    # Call init_timer, which is now guaranteed to be one of the versions
     if callable(init_timer): init_timer()
-    else: print("[ERROR] init_timer is not callable. This should not happen.") # Should be unreachable
+    else: print("[ERROR] init_timer is not callable.") 
 
-    if not STANDARD_UI_AVAILABLE and not args.quiet: # Print this info if using fallback and not quiet
+    if not STANDARD_UI_AVAILABLE and not args.quiet: 
         sui_log_info("Attempting to install standard_ui as part of the setup...")
-
 
     if ERROR_LOG.exists():
         try:
@@ -241,9 +255,11 @@ def main():
     sui_log_info(f"Operating System: {platform.system()} ({os.name}), Release: {platform.release()}")
     sui_log_info(f"Python Version: {sys.version.split()[0]}")
     sui_log_info(f"Python Executable: {sys.executable}")
-    sui_log_info(f"Scripts base directory: {SCRIPTS_DIR}")
-    sui_log_info(f"Dotfiles directory: {DOTFILES_DIR}")
-    sui_log_info(f"Target bin directory for symlinks/executables: {BIN_DIR}")
+    sui_log_info(f"SCRIPTS_DIR: {SCRIPTS_DIR}")
+    sui_log_info(f"MODULES_DIR (resolved on-disk name '{MODULES_DIR_NAME_ON_DISK}'): {MODULES_DIR}")
+    sui_log_info(f"STANDARD_UI_SETUP_DIR: {STANDARD_UI_SETUP_DIR}")
+    sui_log_info(f"DOTFILES_DIR: {DOTFILES_DIR}")
+    sui_log_info(f"Target BIN_DIR: {BIN_DIR}")
 
     try:
         BIN_DIR.mkdir(parents=True, exist_ok=True)
@@ -252,30 +268,31 @@ def main():
         sui_log_error(f"Could not create bin directory {BIN_DIR}: {e}. Symlink creation will likely fail.")
         errors.append(f"Bin directory creation failed: {BIN_DIR}")
 
-    active_section_mgr_class = sui_section # sui_section is either the real one or FallbackSectionClass
+    active_section_mgr_class = sui_section 
 
     with active_section_mgr_class("Core Module Installation"):
+        # STANDARD_UI_SETUP_DIR should now correctly point to .../scripts/Modules/standard_ui or .../scripts/modules/standard_ui
         if (STANDARD_UI_SETUP_DIR / "setup.py").exists() or \
            (STANDARD_UI_SETUP_DIR / "pyproject.toml").exists():
             ensure_module_installed(
-                "standard_ui",
-                STANDARD_UI_SETUP_DIR,
+                "standard_ui", # The name of the package to import
+                STANDARD_UI_SETUP_DIR, # The path to the package source for pip install -e
                 skip_reinstall=args.skip_reinstall,
                 editable=not args.production
             )
         else:
-            sui_log_info("standard_ui setup files (setup.py or pyproject.toml) not found. Assuming direct usage or pre-installed.")
+            sui_log_warning(f"standard_ui setup files (setup.py or pyproject.toml) not found in {STANDARD_UI_SETUP_DIR}.")
 
         if (SCRIPTS_SETUP_DIR / "setup.py").exists() or \
            (SCRIPTS_SETUP_DIR / "pyproject.toml").exists():
             ensure_module_installed(
-                "scripts_setup", # This is the import name
-                SCRIPTS_SETUP_DIR, # This is the path to the package
+                "scripts_setup", 
+                SCRIPTS_SETUP_DIR, 
                 skip_reinstall=args.skip_reinstall,
                 editable=not args.production
             )
         else:
-            sui_log_info("scripts_setup is used directly, not via package installation, or setup files not found.")
+            sui_log_warning(f"scripts_setup setup files not found in {SCRIPTS_SETUP_DIR}.")
 
         if (CROSS_PLATFORM_DIR / "setup.py").exists() or \
            (CROSS_PLATFORM_DIR / "pyproject.toml").exists():
@@ -286,7 +303,7 @@ def main():
                 editable=not args.production
             )
         else:
-            sui_log_info("cross_platform is used directly, not via package installation, or setup files not found.")
+            sui_log_warning(f"cross_platform setup files not found in {CROSS_PLATFORM_DIR}.")
 
     if "microsoft" in platform.uname().release.lower() and "WSL" in platform.uname().release.upper():
         with active_section_mgr_class("WSL2 Specific Setup"):
@@ -304,15 +321,42 @@ def main():
     if args.skip_reinstall: common_setup_args.append("--skip-reinstall")
     if args.production: common_setup_args.append("--production")
 
+    # These paths are relative to SCRIPTS_DIR
     sub_setup_scripts_relative_paths = [
-        Path("pyscripts/setup.py"),
-        Path("shell-scripts/setup.py"),
-        Path("modules/setup.py")
+        Path("pyscripts/setup.py"),       # SCRIPTS_DIR/pyscripts/setup.py
+        Path("shell-scripts/setup.py"), # SCRIPTS_DIR/shell-scripts/setup.py
+        MODULES_DIR.name + "/setup.py"    # e.g. "Modules/setup.py" or "modules/setup.py" relative to SCRIPTS_DIR
+                                          # This should be SCRIPTS_DIR / MODULES_DIR.name / "setup.py"
+                                          # Or simply MODULES_DIR / "setup.py"
+    ]
+    
+    # Correcting the path for modules/setup.py
+    # The script `modules/setup.py` is directly within the MODULES_DIR (e.g. scripts/Modules/setup.py)
+    # NOT scripts/Modules/Modules/setup.py
+    # And it's not relative to SCRIPTS_DIR in the same way as pyscripts is.
+    # It should be MODULES_DIR / "setup.py" for the full path.
+
+    # The list should be paths to setup scripts.
+    # modules/setup.py is at SCRIPTS_DIR/modules/setup.py or SCRIPTS_DIR/Modules/setup.py
+    # So, MODULES_DIR / "setup.py" is the full path.
+    # The loop constructs SCRIPTS_DIR / rel_script_path.
+    # So rel_script_path for modules/setup.py should be MODULES_DIR.relative_to(SCRIPTS_DIR) / "setup.py"
+
+    sub_setup_scripts_to_run = [
+        SCRIPTS_DIR / "pyscripts" / "setup.py",
+        SCRIPTS_DIR / "shell-scripts" / "setup.py",
+        MODULES_DIR / "setup.py" # This is C:\...\scripts\Modules\setup.py
     ]
 
-    for rel_script_path in sub_setup_scripts_relative_paths:
-        full_script_path = SCRIPTS_DIR / rel_script_path
-        with active_section_mgr_class(f"Running sub-setup: {rel_script_path.name}"):
+
+    for full_script_path in sub_setup_scripts_to_run:
+        # Use a title that makes sense, e.g., its name or relative path from SCRIPTS_DIR
+        try:
+            title_rel_path = full_script_path.relative_to(SCRIPTS_DIR)
+        except ValueError: # Not under SCRIPTS_DIR (should not happen with current construction)
+            title_rel_path = full_script_path.name
+            
+        with active_section_mgr_class(f"Running sub-setup: {title_rel_path}"):
             run_setup(full_script_path, *common_setup_args)
             
     with active_section_mgr_class("Shell PATH Configuration (setup_path.py)"):
@@ -321,11 +365,11 @@ def main():
             "--bin-dir", str(BIN_DIR),
             "--dotfiles-dir", str(DOTFILES_DIR)
         ]
-        if args.verbose: path_args.append("--verbose") # setup_path.py now accepts verbose
+        if args.verbose: path_args.append("--verbose")
         run_setup(setup_path_script, *path_args)
 
     if callable(print_global_elapsed): print_global_elapsed()
-    else: print("[ERROR] print_global_elapsed not callable.") # Should be unreachable
+    else: print("[ERROR] print_global_elapsed not callable.") 
 
 
     if errors:
