@@ -100,20 +100,25 @@ def test_replay_history_branch_explicit_N(monkeypatch, capsys):
 def test_history_branch_success(monkeypatch, capsys):
     # Test default history branch (N=1)
     monkeypatch.setitem(os.environ, 'SHELL', '/bin/bash')
+    
     def fake_run(cmd, *args, **kwargs):
+        # Simulate history output with 'echo hello' as most recent
         if isinstance(cmd, list):
             return types.SimpleNamespace(stdout="1  ls -la\n2  echo hello\n", stderr="", returncode=0)
-        return types.SimpleNamespace(stdout="foo\n", stderr="", returncode=0)
+        return types.SimpleNamespace(stdout="output from echo\n", stderr="", returncode=0)
+    
     monkeypatch.setattr(subprocess, 'run', fake_run)
     monkeypatch.setattr(builtins, 'input', lambda prompt: 'y')
     monkeypatch.setattr(sys, 'argv', ['output_to_clipboard.py'])
+
     runpy.run_path(SCRIPT_PATH, run_name="__main__")
     out, err = capsys.readouterr()
-    assert "[INFO] Replaying history entry N=1..." in err
-    assert "User approved. Re-running: ls -la" in err
-    assert "Copied command output to clipboard." in out
-    assert LAST_CLIP == "foo"
 
+    # Confirm expected stderr and stdout messages
+    assert "[INFO] Replaying history entry N=1..." in err
+    assert "User approved. Re-running: echo hello" in err
+    assert "Copied command output to clipboard." in out
+    assert LAST_CLIP == "output from echo"
 def test_history_loop_prevention(monkeypatch, capsys):
     # Test that invoking the script from history is prevented
     monkeypatch.setitem(os.environ, 'SHELL', '/bin/bash')
