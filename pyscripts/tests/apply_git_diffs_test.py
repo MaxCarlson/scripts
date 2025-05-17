@@ -15,6 +15,7 @@ from apply_git_diffs import (
     apply_diff_to_file,
     parse_diff_and_apply,
     main_testable,
+    # get_output_copy_path # Not typically tested directly, but used by the script
 )
 
 # For testing purposes, we override debug_utils in the module to avoid side effects.
@@ -143,7 +144,8 @@ def test_apply_diff_to_file_nonexistent(tmp_path):
         "+first line\n"
         "+second line\n"
     )
-    new_content = apply_diff_to_file(str(file_path), diff_content)
+    # Updated call: apply_diff_to_file(read_filepath, diff_content, dry_run, effective_write_filepath)
+    new_content = apply_diff_to_file(str(file_path), diff_content, False, str(file_path))
     assert new_content == "first line\nsecond line\n"
     with open(file_path, 'r', encoding='utf-8') as f:
         content_on_disk = f.read()
@@ -162,7 +164,8 @@ def test_apply_diff_to_file_existing(tmp_path):
         "-line2\n"
         "+modified line2\n"
     )
-    new_content = apply_diff_to_file(str(file_path), diff_content)
+    # Updated call
+    new_content = apply_diff_to_file(str(file_path), diff_content, False, str(file_path))
     expected = "line1\nmodified line2\nline3\n"
     assert new_content == expected
     assert file_path.read_text(encoding='utf-8') == expected
@@ -185,7 +188,8 @@ def test_parse_diff_and_apply_valid(tmp_path):
         "+B_modified\n"
         " c\n"
     )
-    modified = parse_diff_and_apply(diff_text, str(target_dir))
+    # Updated call: parse_diff_and_apply(diff_text, target_directory, dry_run, output_copy)
+    modified = parse_diff_and_apply(diff_text, str(target_dir), False, False)
     assert file_rel_path in modified
     expected = "a\nB_modified\nc\n"
     assert modified[file_rel_path] == expected
@@ -203,7 +207,8 @@ def test_parse_diff_and_apply_no_hunks(tmp_path):
         f"+++ b/{file_rel_path}\n"
         "Some header text\n" # No '@@' hunks
     )
-    modified = parse_diff_and_apply(diff_text, str(target_dir))
+    # Updated call
+    modified = parse_diff_and_apply(diff_text, str(target_dir), False, False)
     assert modified == {}
 
 
@@ -215,23 +220,28 @@ def test_parse_diff_and_apply_invalid_block(tmp_path):
         "diff --git a/missing.txt b/missing.txt\n"
         "Some invalid diff content without proper ---/+++ lines\n"
     )
-    modified = parse_diff_and_apply(diff_text, str(target_dir))
+    # Updated call
+    modified = parse_diff_and_apply(diff_text, str(target_dir), False, False)
     assert modified == {}
 
 # -----------------------
 # Tests for Main Functionality (main_testable)
 # -----------------------
 
-class MockArgs: # Renamed from MockArgsLocalTest for consistency if this was the original name
+class MockArgs: 
     def __init__(self, directory, input, log_level="Debug", console_log_level="Debug", 
-                 enable_file_log=False, log_dir="logs", force=False): 
+                 enable_file_log=False, log_dir="logs", force=False, # force is legacy from some edits, not used by current script
+                 dry_run=False, output_copy=False): # Added new args with defaults
         self.directory = directory
-        self.input = input # Kept as 'input' to match test usage
+        self.input = input 
         self.log_level = log_level
         self.console_log_level = console_log_level
         self.enable_file_log = enable_file_log
         self.log_dir = log_dir
-        self.force = force
+        self.force = force 
+        self.dry_run = dry_run
+        self.output_copy = output_copy
+
 
 def test_main_testable_with_direct_diff(tmp_path):
     """Test main_testable using direct diff text input."""
@@ -249,6 +259,7 @@ def test_main_testable_with_direct_diff(tmp_path):
         "-old line\n"
         "+new line\n"
     )
+    # MockArgs will use default dry_run=False, output_copy=False
     args = MockArgs(directory=str(target_dir), input=diff_text) 
     result = main_testable(args)
     assert "modified_files" in result
@@ -365,7 +376,8 @@ def test_parse_and_apply_multiple_valid_diffs(tmp_path):
         "+Modified Line2A\n"
         " Line2B\n"
     )
-    modified = parse_diff_and_apply(diff_text, str(target_dir))
+    # Updated call
+    modified = parse_diff_and_apply(diff_text, str(target_dir), False, False)
     assert file1_rel in modified
     assert file2_rel in modified
     assert modified[file1_rel] == "Modified Line1A\nLine1B\n"
@@ -392,12 +404,12 @@ def test_parse_and_apply_multiple_with_invalid_diff(tmp_path):
         "+Modified\n"
         "\n"
         "diff --git a/invalid.txt b/invalid.txt\n"
+        "--- /dev/null\n" # Make it a bit more structured to ensure it's the content check
+        "+++ b/invalid.txt\n"
         "Some random text that does not conform to diff format\n" 
-        "@@ -1,1 +1,1 @@\n" 
-        "-Foo\n"
-        "+Bar\n"
     )
-    modified = parse_diff_and_apply(diff_text, str(target_dir))
+    # Updated call
+    modified = parse_diff_and_apply(diff_text, str(target_dir), False, False)
     assert modified == {} 
     assert file_path.read_text(encoding="utf-8") == "Original\n"
 
@@ -428,8 +440,8 @@ def test_parse_and_apply_diff_file_not_found(tmp_path):
         "-NonExistentOld\n"
         "+NonExistentNew\n"
     )
-    
-    modified = parse_diff_and_apply(diff_text, str(target_dir))
+    # Updated call
+    modified = parse_diff_and_apply(diff_text, str(target_dir), False, False)
     
     assert file_rel_exists in modified 
     assert modified[file_rel_exists] == "content modified\n"
@@ -439,18 +451,11 @@ def test_parse_and_apply_diff_file_not_found(tmp_path):
 def test_apply_unified_diff_multiple_hunks_line_count_change():
     """
     Tests applying a diff with multiple hunks to the same file, where the first
-    hunk changes the line count. This specifically tests if subsequent hunks
-    are applied correctly despite index shifts.
+    hunk changes the line count.
     """
     original_lines = [
-        "Line A\n",
-        "Line B\n",
-        "Line C\n",
-        "Line D\n",
-        "Line E\n",
-        "Line F\n",
-        "Line G\n",
-        "Line H\n",
+        "Line A\n", "Line B\n", "Line C\n", "Line D\n",
+        "Line E\n", "Line F\n", "Line G\n", "Line H\n",
     ]
     diff_content = (
         "--- a/testfile.txt\n"
@@ -465,15 +470,8 @@ def test_apply_unified_diff_multiple_hunks_line_count_change():
         "+Line F MODIFIED\n"
     )
     expected_new_lines = [
-        "Line A\n",
-        "Line B MODIFIED\n",
-        "Line B.5 ADDED\n",
-        "Line C\n",
-        "Line D\n",
-        "Line E\n",
-        "Line F MODIFIED\n",
-        "Line G\n",
-        "Line H\n",
+        "Line A\n", "Line B MODIFIED\n", "Line B.5 ADDED\n", "Line C\n",
+        "Line D\n", "Line E\n", "Line F MODIFIED\n", "Line G\n", "Line H\n",
     ]
     actual_new_lines = apply_unified_diff(original_lines, diff_content)
     assert actual_new_lines == expected_new_lines
@@ -485,14 +483,8 @@ def test_apply_diff_to_file_multiple_hunks_line_count_change(tmp_path):
     """
     file_path = tmp_path / "testfile_multihunk.txt"
     original_content_str = (
-        "Line A\n"
-        "Line B\n"
-        "Line C\n"
-        "Line D\n"
-        "Line E\n"
-        "Line F\n"
-        "Line G\n"
-        "Line H\n"
+        "Line A\nLine B\nLine C\nLine D\n"
+        "Line E\nLine F\nLine G\nLine H\n"
     )
     file_path.write_text(original_content_str, encoding='utf-8')
     diff_content = (
@@ -508,17 +500,11 @@ def test_apply_diff_to_file_multiple_hunks_line_count_change(tmp_path):
         "+Line F MODIFIED\n"
     )
     expected_content_str = (
-        "Line A\n"
-        "Line B MODIFIED\n"
-        "Line B.5 ADDED\n"
-        "Line C\n"
-        "Line D\n"
-        "Line E\n"
-        "Line F MODIFIED\n"
-        "Line G\n"
-        "Line H\n"
+        "Line A\nLine B MODIFIED\nLine B.5 ADDED\nLine C\n"
+        "Line D\nLine E\nLine F MODIFIED\nLine G\nLine H\n"
     )
-    new_content_str = apply_diff_to_file(str(file_path), diff_content)
+    # Updated call
+    new_content_str = apply_diff_to_file(str(file_path), diff_content, False, str(file_path))
     assert new_content_str == expected_content_str
     assert file_path.read_text(encoding='utf-8') == expected_content_str
 
@@ -535,7 +521,8 @@ def test_parse_and_apply_binary_file_diff(tmp_path):
         f"+++ b/{file_rel_path}\n"
         "Binary files a/binary_file.dat and b/binary_file.dat differ\n"
     )
-    modified = parse_diff_and_apply(diff_text, str(target_dir))
+    # Updated call
+    modified = parse_diff_and_apply(diff_text, str(target_dir), False, False)
     assert modified == {}, "Should return empty dict for unsupported binary diff"
 
 def test_parse_and_apply_file_mode_change_only_diff(tmp_path):
@@ -551,7 +538,8 @@ def test_parse_and_apply_file_mode_change_only_diff(tmp_path):
         "old mode 100644\n"
         "new mode 100755\n"
     )
-    modified = parse_diff_and_apply(diff_text, str(target_dir))
+    # Updated call
+    modified = parse_diff_and_apply(diff_text, str(target_dir), False, False)
     assert modified == {}, "Should return empty dict for mode-change-only diff without content hunks"
 
 def test_parse_and_apply_symlink_diff(tmp_path):
@@ -568,7 +556,8 @@ def test_parse_and_apply_symlink_diff(tmp_path):
         "@@ -0,0 +1 @@\n" 
         "+../target_file\n" 
     )
-    modified = parse_diff_and_apply(diff_text, str(target_dir))
+    # Updated call
+    modified = parse_diff_and_apply(diff_text, str(target_dir), False, False)
     assert modified == {}, "Should return empty dict for symlink diff due to mode 120000"
 
 def test_parse_and_apply_rename_diff(tmp_path):
@@ -583,12 +572,167 @@ def test_parse_and_apply_rename_diff(tmp_path):
         f"rename to {new_file_rel_path}\n"
         f"--- a/{old_file_rel_path}\n" 
         f"+++ b/{new_file_rel_path}\n"
-        "@@ -1,1 +1,1 @@\n" # Include a dummy hunk to ensure it's the rename detection failing it
+        "@@ -1,1 +1,1 @@\n" 
         "-a\n"
         "+b\n"
     )
-    modified = parse_diff_and_apply(diff_text, str(target_dir))
+    # Updated call
+    modified = parse_diff_and_apply(diff_text, str(target_dir), False, False)
     assert modified == {}, "Should return empty dict for rename diff"
+
+# NEW TESTS FOR --dry-run and --output-copy
+def test_dry_run_does_not_modify_file(tmp_path):
+    """Test that --dry-run prevents file modification."""
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    file_rel_path = "dry_run_test.txt"
+    original_file_path = target_dir / file_rel_path
+    original_content = "Original line 1\nOriginal line 2\n"
+    original_file_path.write_text(original_content, encoding="utf-8")
+    diff_text = (
+        f"diff --git a/{file_rel_path} b/{file_rel_path}\n"
+        f"--- a/{file_rel_path}\n"
+        f"+++ b/{file_rel_path}\n"
+        "@@ -1,2 +1,2 @@\n"
+        " Original line 1\n"
+        "-Original line 2\n"
+        "+Modified line 2\n"
+    )
+    args = MockArgs(directory=str(target_dir), input=diff_text, dry_run=True, output_copy=False)
+    result = main_testable(args)
+    assert "modified_files" in result
+    assert file_rel_path in result["modified_files"]
+    assert result["modified_files"][file_rel_path] == "Original line 1\nModified line 2\n"
+    assert original_file_path.read_text(encoding="utf-8") == original_content
+
+def test_dry_run_new_file_not_created(tmp_path):
+    """Test that --dry-run prevents new file creation."""
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    file_rel_path = "new_dry_run_file.txt"
+    new_file_path = target_dir / file_rel_path
+    diff_text = (
+        f"diff --git a/{file_rel_path} b/{file_rel_path}\n"
+        f"--- /dev/null\n"
+        f"+++ b/{file_rel_path}\n"
+        "@@ -0,0 +1,1 @@\n"
+        "+This is a new file.\n"
+    )
+    args = MockArgs(directory=str(target_dir), input=diff_text, dry_run=True, output_copy=False)
+    result = main_testable(args)
+    assert "modified_files" in result
+    assert file_rel_path in result["modified_files"]
+    assert result["modified_files"][file_rel_path] == "This is a new file.\n"
+    assert not new_file_path.exists()
+
+def test_output_copy_existing_file(tmp_path):
+    """Test --output-copy when the target file exists."""
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    file_rel_path = "output_copy_test.txt"
+    original_file_path = target_dir / file_rel_path
+    original_content = "Line 1 original\nLine 2 to change\n"
+    original_file_path.write_text(original_content, encoding="utf-8")
+    diff_text = (
+        f"diff --git a/{file_rel_path} b/{file_rel_path}\n"
+        f"--- a/{file_rel_path}\n"
+        f"+++ b/{file_rel_path}\n"
+        "@@ -2,1 +2,1 @@\n"
+        "-Line 2 to change\n"
+        "+Line 2 MODIFIED\n"
+    )
+    args = MockArgs(directory=str(target_dir), input=diff_text, dry_run=False, output_copy=True)
+    result = main_testable(args)
+    expected_patched_content = "Line 1 original\nLine 2 MODIFIED\n"
+    assert "modified_files" in result
+    assert file_rel_path in result["modified_files"]
+    assert result["modified_files"][file_rel_path] == expected_patched_content
+    assert original_file_path.read_text(encoding="utf-8") == original_content
+    
+    name_part, ext_part = os.path.splitext(file_rel_path)
+    actual_name_for_suffix = name_part
+    if file_rel_path.startswith(".") and not ext_part: # Handles .filename
+        actual_name_for_suffix = file_rel_path
+        ext_part = ""
+    elif not ext_part and name_part == file_rel_path: # Handles filename_no_ext
+        actual_name_for_suffix = file_rel_path
+        # ext_part is already ""
+
+    expected_copy_filename = f"{actual_name_for_suffix}_applied_diff1{ext_part}"
+    copied_file_path = target_dir / expected_copy_filename
+    assert copied_file_path.exists(), f"Copied file '{expected_copy_filename}' should exist. Found: {list(target_dir.iterdir())}"
+    assert copied_file_path.read_text(encoding="utf-8") == expected_patched_content
+
+def test_output_copy_new_file(tmp_path):
+    """Test --output-copy when the target is a new file from the diff."""
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    file_rel_path = "new_output_copy.txt" 
+    original_file_path_if_not_copied = target_dir / file_rel_path
+    diff_text = (
+        f"diff --git a/{file_rel_path} b/{file_rel_path}\n"
+        f"--- /dev/null\n"
+        f"+++ b/{file_rel_path}\n"
+        "@@ -0,0 +1,2 @@\n"
+        "+New file line 1.\n"
+        "+New file line 2.\n"
+    )
+    args = MockArgs(directory=str(target_dir), input=diff_text, dry_run=False, output_copy=True)
+    result = main_testable(args)
+    expected_patched_content = "New file line 1.\nNew file line 2.\n"
+    assert "modified_files" in result
+    assert file_rel_path in result["modified_files"] 
+    assert result["modified_files"][file_rel_path] == expected_patched_content
+    assert not original_file_path_if_not_copied.exists()
+
+    name_part, ext_part = os.path.splitext(file_rel_path)
+    actual_name_for_suffix = name_part
+    if file_rel_path.startswith(".") and not ext_part: # Handles .filename
+        actual_name_for_suffix = file_rel_path
+        ext_part = ""
+    elif not ext_part and name_part == file_rel_path: # Handles filename_no_ext
+        actual_name_for_suffix = file_rel_path
+        # ext_part is already ""
+        
+    expected_copy_filename = f"{actual_name_for_suffix}_applied_diff1{ext_part}"
+    copied_file_path = target_dir / expected_copy_filename
+    assert copied_file_path.exists()
+    assert copied_file_path.read_text(encoding="utf-8") == expected_patched_content
+
+def test_output_copy_creates_sequential_names(tmp_path):
+    """Test that --output-copy creates _applied_diffN sequentially."""
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    file_rel_path = "sequential_test.txt"
+    original_file_path = target_dir / file_rel_path
+    original_file_path.write_text("original", encoding="utf-8")
+
+    name_part, ext_part = os.path.splitext(file_rel_path)
+    actual_name_for_suffix = name_part
+    if file_rel_path.startswith(".") and not ext_part:
+        actual_name_for_suffix = file_rel_path
+        ext_part = ""
+    elif not ext_part and name_part == file_rel_path:
+        actual_name_for_suffix = file_rel_path
+        
+    pre_existing_copy_path = target_dir / f"{actual_name_for_suffix}_applied_diff1{ext_part}"
+    pre_existing_copy_path.write_text("already here", encoding="utf-8")
+    diff_text = (
+        f"diff --git a/{file_rel_path} b/{file_rel_path}\n"
+        f"--- a/{file_rel_path}\n"
+        f"+++ b/{file_rel_path}\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-original\n"
+        "+modified\n"
+    )
+    args = MockArgs(directory=str(target_dir), input=diff_text, dry_run=False, output_copy=True)
+    main_testable(args) 
+    expected_copy2_filename = f"{actual_name_for_suffix}_applied_diff2{ext_part}"
+    copied_file2_path = target_dir / expected_copy2_filename
+    assert copied_file2_path.exists()
+    assert copied_file2_path.read_text(encoding="utf-8") == "modified\n"
+    assert original_file_path.read_text(encoding="utf-8") == "original"
+    assert pre_existing_copy_path.read_text(encoding="utf-8") == "already here"
 
 # -----------------------
 # Edge Case Tests
@@ -605,17 +749,16 @@ def test_apply_hunk_invalid_header():
     new_lines = apply_hunk(original_lines, hunk)
     assert new_lines == original_lines
 
-def test_apply_diff_to_file_invalid_diff(tmp_path): # Added tmp_path fixture
+def test_apply_diff_to_file_invalid_diff(tmp_path): 
     """Test apply_diff_to_file with diff input that does not contain hunks."""
-    file_path_obj = tmp_path / "invalid_diff_test.txt" # Use tmp_path for file creation
+    file_path_obj = tmp_path / "invalid_diff_test.txt" 
     original_file_content = "line1\nline2\n"
     file_path_obj.write_text(original_file_content, encoding="utf-8")
     
     filename = str(file_path_obj)
-    # No try/finally needed as tmp_path handles cleanup
-    
     diff_content_invalid = "Not a diff\nNo hunk info here\n" 
-    result_content = apply_diff_to_file(filename, diff_content_invalid)
+    # Updated call
+    result_content = apply_diff_to_file(filename, diff_content_invalid, False, filename)
     
     assert result_content == original_file_content
     content_on_disk = file_path_obj.read_text(encoding="utf-8")
