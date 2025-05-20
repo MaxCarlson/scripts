@@ -1,141 +1,175 @@
 #!/usr/bin/env python3
 import sys
 import difflib
-from cross_platform.clipboard_utils import get_clipboard # Assuming this is a custom module
+import argparse
+from pathlib import Path
+from cross_platform.clipboard_utils import get_clipboard
+from rich.console import Console
+from rich.table import Table
+from rich.text import Text
+
+console_stdout = Console()
+console_stderr = Console(stderr=True)
+
+parser = argparse.ArgumentParser(
+    description="Diff clipboard contents with a file, providing stats and warnings.",
+    formatter_class=argparse.RawTextHelpFormatter
+)
+parser.add_argument(
+    "file",
+    help="File path to compare against clipboard contents"
+)
+parser.add_argument(
+    "-c", "--context-lines",
+    type=int,
+    default=3,
+    help="Number of context lines to display (default: 3)"
+)
+parser.add_argument(
+    "-t", "--similarity-threshold",
+    type=float,
+    default=0.75,
+    help="Similarity threshold for dissimilarity note (range 0.0-1.0, default: 0.75)"
+)
+parser.add_argument(
+    "-L", "--loc-diff-warn",
+    type=int,
+    default=50,
+    help="Absolute LOC difference above which a warning is shown (default: 50)"
+)
+parser.add_argument(
+    "--no-stats",
+    action="store_true",
+    help="Suppress statistics output."
+)
 
 def diff_clipboard_with_file(
-    file_path: str,
-    context_lines: int = 3,
-    similarity_threshold: float = 0.75,
-    loc_diff_warning_threshold: int = 50
+    file_path_str: str,
+    context_lines: int,
+    similarity_threshold: float,
+    loc_diff_warning_threshold: int,
+    no_stats: bool
 ) -> None:
-    """
-    Compare current clipboard contents with the contents of a file and print a diff.
+    stats_data = {}
+    operation_successful = False
+    exit_code = 0
 
-    :param file_path: Path to the file to compare against clipboard contents.
-    :param context_lines: Number of context lines to show around changes.
-    :param similarity_threshold: Ratio below which contents are considered very dissimilar.
-    :param loc_diff_warning_threshold: Absolute LOC difference above which a warning is shown.
-    """
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            file_lines = f.read().splitlines()
-    except Exception as e:
-        print(f"\033[91m[ERROR] Could not read file '{file_path}': {e}\033[0m", file=sys.stderr)
-        sys.exit(1)
+        file_path_obj = Path(file_path_str)
+        stats_data["File Path"] = str(file_path_obj.resolve())
 
-    clipboard_text = get_clipboard()
-    if not clipboard_text or clipboard_text.isspace():
-        print("\033[91m[CRITICAL WARNING] Clipboard is empty or contains only whitespace!\033[0m", file=sys.stderr)
-        sys.exit(1) # Or handle as preferred, e.g., return
+        try:
+            with open(file_path_obj, 'r', encoding='utf-8') as f:
+                file_lines = f.read().splitlines()
+            stats_data["File Read"] = "Successful"
+            stats_data["File LOC"] = len(file_lines)
+        except Exception as e:
+            stats_data["File Read"] = f"Error: {e}"
+            console_stderr.print(f"[bold red][ERROR] Could not read file '{file_path_obj}': {e}[/]")
+            exit_code = 1
+            raise 
 
-    clipboard_lines = clipboard_text.splitlines()
+        try:
+            clipboard_text = get_clipboard()
+        except NotImplementedError as nie:
+            stats_data["Error"] = "Clipboard functionality (get_clipboard) not implemented."
+            console_stderr.print(f"[bold red][ERROR] {stats_data['Error']} Ensure clipboard utilities are installed and accessible.[/]")
+            exit_code = 1
+            raise
+        except Exception as e_get_clip:
+            stats_data["Error"] = f"Failed to get clipboard content: {e_get_clip}"
+            console_stderr.print(f"[bold red][ERROR] {stats_data['Error']}[/]")
+            exit_code = 1
+            raise
 
-    diff = difflib.unified_diff(
-        file_lines,
-        clipboard_lines,
-        fromfile=f"file: {file_path}",
-        tofile="clipboard",
-        lineterm="",
-        n=context_lines
-    )
-
-    has_diff = False
-    diff_output_lines = []
-    for line in diff:
-        has_diff = True
-        if line.startswith('---') or line.startswith('+++'):
-            diff_output_lines.append(line)
-        elif line.startswith('@@'):
-            # Hunk header in cyan
-            diff_output_lines.append(f"\033[36m{line}\033[0m")
-        elif line.startswith('-'):
-            # Removals in red
-            diff_output_lines.append(f"\033[31m{line}\033[0m")
-        elif line.startswith('+'):
-            # Additions in green
-            diff_output_lines.append(f"\033[32m{line}\033[0m")
+        if not clipboard_text or clipboard_text.isspace():
+            stats_data["Clipboard Status"] = "Empty or whitespace"
+            console_stderr.print("[bold red][CRITICAL WARNING] Clipboard is empty or contains only whitespace![/]")
+            exit_code = 1
+            # No need to raise custom error, just set exit_code and let finally handle
         else:
-            diff_output_lines.append(line)
+            stats_data["Clipboard Status"] = "Content retrieved"
+            clipboard_lines = clipboard_text.splitlines()
+            stats_data["Clipboard LOC"] = len(clipboard_lines)
 
-    if diff_output_lines: # Check if there's any diff content to print
-        for line_out in diff_output_lines:
-            print(line_out)
-    elif not has_diff: # This case might be redundant if diff_output_lines covers it
-        print("No differences found between file and clipboard.")
+            diff_gen = difflib.unified_diff(
+                file_lines,
+                clipboard_lines,
+                fromfile=f"file: {file_path_obj}",
+                tofile="clipboard",
+                lineterm="",
+                n=context_lines
+            )
+
+            has_diff = False
+            diff_output_lines_count = 0
+            for line in diff_gen:
+                has_diff = True
+                diff_output_lines_count +=1
+                if line.startswith('---') or line.startswith('+++'):
+                    console_stdout.print(line)
+                elif line.startswith('@@'):
+                    console_stdout.print(Text(line, style="cyan"))
+                elif line.startswith('-'):
+                    console_stdout.print(Text(line, style="red"))
+                elif line.startswith('+'):
+                    console_stdout.print(Text(line, style="green"))
+                else:
+                    console_stdout.print(line)
+            
+            stats_data["Diff Lines Generated"] = diff_output_lines_count
+            if not has_diff and diff_output_lines_count == 0:
+                console_stdout.print("No differences found between file and clipboard.")
+                stats_data["Differences Found"] = "No"
+            else:
+                stats_data["Differences Found"] = "Yes"
+            
+            operation_successful = True
+
+            loc_difference = abs(len(file_lines) - len(clipboard_lines))
+            stats_data["LOC Difference"] = loc_difference
+
+            if loc_difference > loc_diff_warning_threshold:
+                warning_msg = f"Large LOC difference detected ({loc_difference} lines). The sources may be significantly different in length."
+                console_stdout.print(f"[orange3]{warning_msg}[/]")
+                stats_data["LOC Difference Warning"] = "Issued"
+
+            seq = difflib.SequenceMatcher(None, "\n".join(file_lines), "\n".join(clipboard_lines))
+            ratio = seq.ratio()
+            stats_data["Similarity Ratio"] = f"{ratio:.2f}"
+
+            if ratio < similarity_threshold:
+                note_msg = f"The contents are very dissimilar (similarity ratio: {ratio:.2f}). They might not be the same source."
+                console_stdout.print(f"[yellow]Note: {note_msg}[/]")
+                stats_data["Dissimilarity Note"] = "Issued"
+        
+        if exit_code == 0 and not operation_successful :
+             stats_data.setdefault("Warning", "Operation did not complete as expected but no specific error caught.")
+             exit_code = 1
 
 
-    print("\n--- Stats ---")
-    file_loc = len(file_lines)
-    clipboard_loc = len(clipboard_lines)
-    loc_difference = abs(file_loc - clipboard_loc)
-
-    print(f"File LOC: {file_loc}")
-    print(f"Clipboard LOC: {clipboard_loc}")
-    print(f"LOC Difference: {loc_difference}")
-
-    if loc_difference > loc_diff_warning_threshold:
-        print(f"\033[33m[WARNING] Large LOC difference detected ({loc_difference} lines). "
-              "The sources may be significantly different in length.\033[0m")
-
-    # Similarity check
-    # Use join with newline to ensure original multiline structure is compared
-    seq = difflib.SequenceMatcher(None, "\n".join(file_lines), "\n".join(clipboard_lines))
-    ratio = seq.ratio()
-    if ratio < similarity_threshold:
-        print(f"\033[33mNote: The contents are very dissimilar (similarity ratio: {ratio:.2f}). "
-              "They might not be the same source.\033[0m")
-    else:
-        print(f"Similarity ratio: {ratio:.2f}")
-
+    except Exception:
+        if exit_code == 0: exit_code = 1
+        if "Error" not in stats_data and "File Read" not in stats_data: # Generic fallback
+            stats_data["Error"] = f"An unexpected error occurred during diff: {sys.exc_info()[1]}"
+    
+    finally:
+        if not no_stats:
+            table = Table(title="clipboard_diff.py Statistics")
+            table.add_column("Metric", style="cyan")
+            table.add_column("Value", overflow="fold")
+            for key, value in stats_data.items():
+                table.add_row(str(key), str(value))
+            console_stdout.print(table) # Diff output and stats go to stdout
+        
+        sys.exit(exit_code)
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        description="Diff clipboard contents with a file, providing stats and warnings.",
-        formatter_class=argparse.RawTextHelpFormatter # For better help text formatting
-    )
-    parser.add_argument(
-        "file",
-        help="File path to compare against clipboard contents"
-    )
-    parser.add_argument(
-        "-c", "--context-lines",  # Changed full name for clarity
-        type=int,
-        default=3,
-        help="Number of context lines to display (default: 3)"
-    )
-    parser.add_argument(
-        "-t", "--similarity-threshold", # Changed full name for clarity
-        type=float,
-        default=0.75,
-        help="Similarity threshold for dissimilarity note (range 0.0-1.0, default: 0.75)"
-    )
-    parser.add_argument(
-        "-L", "--loc-diff-warn", # New argument for LOC difference warning
-        type=int,
-        default=50,
-        help="Absolute LOC difference above which a warning is shown (default: 50)"
-    )
     args = parser.parse_args()
-
-    # A simple check for the clipboard utility, you might have this elsewhere
-    try:
-        get_clipboard()
-    except NameError:
-        print("\033[91m[ERROR] 'get_clipboard' function not found. "
-              "Ensure 'cross_platform.clipboard_utils' is installed and accessible.\033[0m", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"\033[91m[ERROR] Clipboard access failed: {e}. "
-              "Ensure clipboard utilities (e.g., xclip, pbcopy) are installed.\033[0m", file=sys.stderr)
-        sys.exit(1)
-
-
     diff_clipboard_with_file(
         args.file,
-        args.context_lines, # Updated arg name
-        args.similarity_threshold, # Updated arg name
-        args.loc_diff_warn # New arg
+        args.context_lines,
+        args.similarity_threshold,
+        args.loc_diff_warn,
+        args.no_stats
     )
