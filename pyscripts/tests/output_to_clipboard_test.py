@@ -1,351 +1,315 @@
-# tests/test_output_to_clipboard.py
+# tests/output_to_clipboard_test.py
 import sys
 import os
 import runpy
 import subprocess
 import importlib.util
 import types
-import builtins
+# import builtins # Not needed for rich.console.Console.input patching
 import pytest
 from pathlib import Path
+from unittest import mock
 
-# Path to the script under test
-SCRIPT_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), '..', 'output_to_clipboard.py')
-)
+# --- Path to the script under test ---
+PYSCRIPTS_DIR = Path(__file__).resolve().parent.parent
+SCRIPT_PATH = PYSCRIPTS_DIR / "output_to_clipboard.py"
 
-# Global variable to capture clipboard contents in tests
+if not SCRIPT_PATH.is_file():
+    pytest.fail(f"Test setup failed: SCRIPT_PATH not found: {SCRIPT_PATH}", pytrace=False)
+
+# --- Global variable for clipboard ---
 LAST_CLIP = None
 
+# --- Mocks (Clipboard and HistoryUtils) ---
+# This fixture will manage the clipboard mock for the loaded otc_module and sys.modules
 @pytest.fixture(autouse=True)
-def dummy_clipboard_module(monkeypatch):
-    """
-    Autouse fixture to stub out cross_platform.clipboard_utils.set_clipboard
-    and capture its input to LAST_CLIP.
-    """
+def manage_clipboard_mock(monkeypatch):
     global LAST_CLIP
     LAST_CLIP = None # Reset for each test
-    clipboard_mod = types.ModuleType('cross_platform.clipboard_utils')
-    def fake_set_clipboard(text):
+
+    # This function will be patched into otc_module and sys.modules
+    def new_fake_set_clipboard(text):
         global LAST_CLIP
         LAST_CLIP = text
-    clipboard_mod.set_clipboard = fake_set_clipboard # type: ignore
-    
-    # Ensure 'cross_platform' itself exists as a module in sys.modules
-    if 'cross_platform' not in sys.modules:
-        cross_pkg = types.ModuleType('cross_platform')
-        sys.modules['cross_platform'] = cross_pkg
-    else:
-        cross_pkg = sys.modules['cross_platform']
-        
-    cross_pkg.clipboard_utils = clipboard_mod # type: ignore
-    monkeypatch.setitem(sys.modules, 'cross_platform.clipboard_utils', clipboard_mod)
 
-# --- Mock HistoryUtils ---
-MOCKED_HISTORY_COMMANDS = [] # Stores commands with most recent at index 0
+    # Patch directly into the already loaded otc_module (for direct function calls)
+    # This ensures otc_module.set_clipboard uses this version of new_fake_set_clipboard
+    # which closes over the LAST_CLIP reset in this fixture invocation.
+    monkeypatch.setattr(otc_module, 'set_clipboard', new_fake_set_clipboard, raising=False)
 
+    # For completeness, also ensure sys.modules reflects this (for runpy executions)
+    # Create a mock clipboard_utils module if it doesn't exist in sys.modules yet
+    # (though it should due to script's own import guard)
+    mock_clipboard_utils_name = 'cross_platform.clipboard_utils'
+    if mock_clipboard_utils_name not in sys.modules:
+        # This case should ideally not be hit if script has import guards,
+        # but defensive programming for tests.
+        cl_mod = types.ModuleType(mock_clipboard_utils_name)
+        sys.modules[mock_clipboard_utils_name] = cl_mod
+        # Ensure cross_platform parent package exists
+        if 'cross_platform' not in sys.modules:
+             sys.modules['cross_platform'] = types.ModuleType('cross_platform')
+        setattr(sys.modules['cross_platform'], 'clipboard_utils', cl_mod)
+
+
+    # Now patch set_clipboard on the (potentially newly created) module in sys.modules
+    monkeypatch.setattr(sys.modules[mock_clipboard_utils_name], 'set_clipboard', new_fake_set_clipboard, raising=False)
+
+
+MOCKED_HISTORY_COMMANDS = []
 class FakeHistoryUtils:
-    def __init__(self):
-        self.shell_type = "mocked_shell" 
-        global MOCKED_HISTORY_COMMANDS
-        # This is just for internal state, get_nth_recent_command will re-read global
-        self._commands_on_init = list(MOCKED_HISTORY_COMMANDS) 
-        # Simulate write_debug if needed by tests, or just make it a no-op
-        self.write_debug_calls = []
-
+    def __init__(self): self.shell_type = "mocked_shell"
     def get_nth_recent_command(self, n: int):
         global MOCKED_HISTORY_COMMANDS
-        # N=1 is most recent, which is MOCKED_HISTORY_COMMANDS[0]
-        if 0 < n <= len(MOCKED_HISTORY_COMMANDS):
-            return MOCKED_HISTORY_COMMANDS[n-1] 
-        return None
-    
-    # Mocked write_debug for HistoryUtils if it were to use self.write_debug
-    def _write_debug(self, msg, channel): # Renamed to avoid conflict if real one is classmethod/static
-        self.write_debug_calls.append((msg, channel))
-
+        # Guard against MOCKED_HISTORY_COMMANDS being uninitialized if a test doesn't set it
+        if MOCKED_HISTORY_COMMANDS is None: return None 
+        return MOCKED_HISTORY_COMMANDS[n-1] if 0 < n <= len(MOCKED_HISTORY_COMMANDS) else None
 
 @pytest.fixture
 def mock_history_utils(monkeypatch):
-    """Fixture to mock cross_platform.history_utils.HistoryUtils."""
-    global MOCKED_HISTORY_COMMANDS
-    MOCKED_HISTORY_COMMANDS = [] # Reset for each test that uses this fixture
-
-    # Ensure 'cross_platform' module exists
-    if 'cross_platform' not in sys.modules:
-        sys.modules['cross_platform'] = types.ModuleType('cross_platform')
-
-    # Create a dummy module for history_utils to attach the FakeHistoryUtils to
-    # This ensures that `from cross_platform.history_utils import HistoryUtils` works
-    history_utils_mod_spec = importlib.util.spec_from_loader('cross_platform.history_utils', loader=None)
-    if history_utils_mod_spec is None:
-        history_utils_mod = types.ModuleType('cross_platform.history_utils')
-    else:
-        history_utils_mod = importlib.util.module_from_spec(history_utils_mod_spec)
+    global MOCKED_HISTORY_COMMANDS; MOCKED_HISTORY_COMMANDS = []
     
-    history_utils_mod.HistoryUtils = FakeHistoryUtils # type: ignore
-    sys.modules['cross_platform.history_utils'] = history_utils_mod
-    sys.modules['cross_platform'].history_utils = history_utils_mod # type: ignore
-
-    # Mock dependencies of the *real* HistoryUtils in case any part of it is called
-    # or if FakeHistoryUtils were to call super(). For now, FakeHistoryUtils is standalone.
-    if 'cross_platform.debug_utils' not in sys.modules:
-        debug_utils_mod = types.ModuleType('cross_platform.debug_utils')
-        debug_utils_mod.write_debug = lambda *args, **kwargs: None # type: ignore
-        debug_utils_mod.console = types.SimpleNamespace(print=lambda *args, **kwargs: None) # type: ignore
-        sys.modules['cross_platform.debug_utils'] = debug_utils_mod
-        sys.modules['cross_platform'].debug_utils = debug_utils_mod # type: ignore
-
-    if 'cross_platform.system_utils' not in sys.modules:
-        system_utils_mod = types.ModuleType('cross_platform.system_utils')
-        class MockSystemUtils:
-            def __init__(self): self.os_name = "linux"; self.is_admin = False
-            def run_command(self, cmd, **kwargs): return ""
-        system_utils_mod.SystemUtils = MockSystemUtils # type: ignore
-        sys.modules['cross_platform.system_utils'] = system_utils_mod
-        sys.modules['cross_platform'].system_utils = system_utils_mod # type: ignore
+    history_utils_mod_name = 'cross_platform.history_utils'
+    # Ensure cross_platform parent package exists in sys.modules
+    cross_pkg_name = 'cross_platform'
+    if cross_pkg_name not in sys.modules:
+        sys.modules[cross_pkg_name] = types.ModuleType(cross_pkg_name)
         
-    return FakeHistoryUtils # Not strictly needed to return, but can be useful
+    history_utils_mod = types.ModuleType(history_utils_mod_name)
+    history_utils_mod.HistoryUtils = FakeHistoryUtils
+    
+    monkeypatch.setitem(sys.modules, history_utils_mod_name, history_utils_mod)
+    monkeypatch.setattr(sys.modules[cross_pkg_name], 'history_utils', history_utils_mod, raising=False)
+    
+    # Also patch it directly onto the otc_module if it has already imported it
+    # (though script imports HistoryUtils inside a function, so sys.modules patching is key)
+    if hasattr(otc_module, 'HistoryUtils'):
+        monkeypatch.setattr(otc_module, 'HistoryUtils', FakeHistoryUtils, raising=False)
+    
+    return FakeHistoryUtils
 
-# --- Tests for output_to_clipboard.py ---
 
-def test_run_command_and_copy_success(monkeypatch, capsys, mock_history_utils):
-    class FakeResult:
-        stdout = "out\n"; stderr = ""; returncode = 0
+# --- Load the script under test ---
+try:
+    # Ensure cross_platform.clipboard_utils is pre-mocked before otc_module imports it
+    # This is implicitly handled by manage_clipboard_mock if it runs early enough,
+    # but explicit pre-population for clarity during module load can be safer.
+    _mock_cl_utils_name = 'cross_platform.clipboard_utils'
+    if _mock_cl_utils_name not in sys.modules:
+        _cl_mod_temp = types.ModuleType(_mock_cl_utils_name)
+        _cl_mod_temp.set_clipboard = lambda x: None # Placeholder
+        sys.modules[_mock_cl_utils_name] = _cl_mod_temp
+        if 'cross_platform' not in sys.modules:
+             sys.modules['cross_platform'] = types.ModuleType('cross_platform')
+        setattr(sys.modules['cross_platform'], 'clipboard_utils', _cl_mod_temp)
+
+
+    otc_module_spec = importlib.util.spec_from_file_location("otc_module", str(SCRIPT_PATH))
+    if otc_module_spec is None or otc_module_spec.loader is None:
+        raise ImportError(f"Could not create module spec for {SCRIPT_PATH}")
+    otc_module = importlib.util.module_from_spec(otc_module_spec)
+    sys.modules['otc_module'] = otc_module
+    otc_module_spec.loader.exec_module(otc_module)
+except FileNotFoundError as e_fnf:
+    pytest.fail(f"Importlib setup failed (FileNotFoundError): {e_fnf}\nSCRIPT_PATH was: {SCRIPT_PATH}", pytrace=False)
+except Exception as e_imp:
+    pytest.fail(f"Unexpected error during importlib setup: {e_imp}\nSCRIPT_PATH was: {SCRIPT_PATH}", pytrace=False)
+
+# --- Test Helper ---
+def run_otc_script_with_argv(argv_list, monkeypatch):
+    # `runpy` executes the script in a new module context. Mocks need to be in `sys.modules`
+    # or on builtin/global classes like rich.console.Console.
+    monkeypatch.setattr(sys, "argv", argv_list)
+    # The manage_clipboard_mock and mock_history_utils should ensure sys.modules are patched
+    # before runpy executes the script.
+    # mock_rich_console_input patches rich.console.Console.input which is global.
+    runpy.run_path(str(SCRIPT_PATH), run_name="__main__")
+
+@pytest.fixture
+def mock_rich_console_input(monkeypatch):
+    mock_input_method = mock.Mock()
+    # Patch rich.console.Console.input globally so instances created by runpy-executed script get it.
+    monkeypatch.setattr("rich.console.Console.input", mock_input_method)
+    return mock_input_method
+
+# --- Tests ---
+# Ensure manage_clipboard_mock (autouse) has run and patched otc_module.set_clipboard
+def test_direct_command_execution_success(monkeypatch, capsys, mock_rich_console_input): # mock_rich_console_input not used but good practice if it were
+    class FakeResult: stdout = "direct_out\n"; stderr = ""; returncode = 0
     monkeypatch.setattr(subprocess, 'run', lambda *args, **kwargs: FakeResult())
     
-    spec = importlib.util.spec_from_file_location("otc", SCRIPT_PATH)
-    otc = importlib.util.module_from_spec(spec) # type: ignore
-    sys.modules[spec.name] = otc # type: ignore # Make otc importable if it imports itself
-    spec.loader.exec_module(otc) # type: ignore
-
-    otc.run_command_and_copy(['echo', 'hello'])
-    out, err = capsys.readouterr()
-    assert "Copied command output to clipboard." in out
-    assert LAST_CLIP == "out"
-    assert err == ""
-
-def test_run_command_and_copy_failure(monkeypatch, capsys, mock_history_utils):
-    class FakeResult:
-        stdout = ""; stderr = "err"; returncode = 1
-    monkeypatch.setattr(subprocess, 'run', lambda *args, **kwargs: FakeResult())
-    spec = importlib.util.spec_from_file_location("otc", SCRIPT_PATH)
-    otc = importlib.util.module_from_spec(spec) #type: ignore
-    sys.modules[spec.name] = otc #type: ignore
-    spec.loader.exec_module(otc) #type: ignore
-    otc.run_command_and_copy(['cmd'])
-    out, err = capsys.readouterr()
-    assert "Copied command output to clipboard." in out
-    assert "Warning: Command 'cmd' exited with status 1" in err
-    assert LAST_CLIP == "err"
-
-def test_invalid_replay_history_negative_N(monkeypatch, capsys, mock_history_utils):
-    monkeypatch.setattr(sys, 'argv', ['output_to_clipboard.py', '-r', '-1'])
-    with pytest.raises(SystemExit) as e:
-        runpy.run_path(SCRIPT_PATH, run_name="__main__")
-    assert e.value.code == 1
-    _out, err = capsys.readouterr()
-    assert "[ERROR] Value for --replay-history (-r) must be positive." in err
-
-def test_invalid_replay_history_zero_N(monkeypatch, capsys, mock_history_utils):
-    monkeypatch.setattr(sys, 'argv', ['output_to_clipboard.py', '-r', '0'])
-    with pytest.raises(SystemExit) as e:
-        runpy.run_path(SCRIPT_PATH, run_name="__main__")
-    assert e.value.code == 1
-    _out, err = capsys.readouterr()
-    assert "[ERROR] Value for --replay-history (-r) must be positive." in err
-
-
-def test_replay_history_branch_explicit_N(monkeypatch, capsys, mock_history_utils):
-    global MOCKED_HISTORY_COMMANDS
-    MOCKED_HISTORY_COMMANDS = ["baz command", "bar command", "foo command"] # N=1: baz, N=2: bar
+    # This call uses the otc_module.set_clipboard, which should be patched by manage_clipboard_mock
+    _op_ok, _user_cancel, _has_err, exit_c = otc_module.run_command_and_copy_main(
+        command_parts=['echo', 'direct_hello'], replay_nth=None, no_stats=True
+    )
+    assert exit_c == 0
     
-    # Mock subprocess.run for the replayed command "bar command"
+    out_cap, err_cap = capsys.readouterr()
+    assert "Copied command output to clipboard." in out_cap
+    assert LAST_CLIP == "direct_out" # Check the global updated by the mock
+    assert err_cap == "" # No error messages expected
+
+def test_direct_command_execution_failure(monkeypatch, capsys, mock_rich_console_input):
+    class FakeResult: stdout = ""; stderr = "direct_err_msg"; returncode = 1
+    monkeypatch.setattr(subprocess, 'run', lambda *args, **kwargs: FakeResult())
+
+    _op_ok, _user_cancel, _has_err, exit_c = otc_module.run_command_and_copy_main(
+        command_parts=['cmd_direct_fail'], replay_nth=None, no_stats=True
+    )
+    # Script itself exits 0, but prints a warning for command failure.
+    # If output (even if error output) is copied, script considers its primary job done.
+    assert exit_c == 0 
+
+    out_cap, err_cap = capsys.readouterr()
+    assert "Copied command output to clipboard." in out_cap 
+    assert "Command 'cmd_direct_fail' exited with status 1" in err_cap
+    assert LAST_CLIP == "direct_err_msg"
+
+def test_replay_invalid_N_negative(monkeypatch, capsys, mock_history_utils):
+    with pytest.raises(SystemExit) as e:
+        # This uses runpy, so sys.modules patching for clipboard/history is key.
+        # Rich input patching is also key for runpy.
+        run_otc_script_with_argv([str(SCRIPT_PATH), '-r', '-1', '--no-stats'], monkeypatch)
+    assert e.value.code == 1
+    _out, err = capsys.readouterr()
+    assert "Value for --replay-history (-r) must be positive." in err
+
+def test_replay_invalid_N_zero(monkeypatch, capsys, mock_history_utils):
+    with pytest.raises(SystemExit) as e:
+        run_otc_script_with_argv([str(SCRIPT_PATH), '-r', '0', '--no-stats'], monkeypatch)
+    assert e.value.code == 1
+    _out, err = capsys.readouterr()
+    assert "Value for --replay-history (-r) must be positive." in err
+
+def test_replay_history_explicit_N_success(monkeypatch, capsys, mock_history_utils, mock_rich_console_input):
+    global MOCKED_HISTORY_COMMANDS; MOCKED_HISTORY_COMMANDS = ["baz", "bar", "foo"] # History: foo (N=3), bar (N=2), baz (N=1)
+    mock_rich_console_input.return_value = 'y' # Mock user confirmation
+    
     def fake_subprocess_run(cmd_str, shell, capture_output, text, check):
-        assert cmd_str == "bar command" # Ensure the correct command is run
+        assert cmd_str == "bar" # N=2 from MOCKED_HISTORY_COMMANDS
         return types.SimpleNamespace(stdout="val_from_bar\n", stderr="", returncode=0)
     monkeypatch.setattr(subprocess, 'run', fake_subprocess_run)
-    monkeypatch.setattr(builtins, 'input', lambda prompt: 'y')
-    monkeypatch.setattr(sys, 'argv', ['output_to_clipboard.py', '-r', '2'])
     
-    runpy.run_path(SCRIPT_PATH, run_name="__main__")
-    out, err = capsys.readouterr()
+    with pytest.raises(SystemExit) as e:
+        run_otc_script_with_argv([str(SCRIPT_PATH), '-r', '2', '--no-stats'], monkeypatch)
+    assert e.value.code == 0 # Expect script success
 
-    assert f"[INFO] Attempting to replay history entry N=2..." in err
-    assert f"[INFO] Found history command: 'bar command'" in err
-    assert "User approved. Re-running: bar command" in err
-    assert "Copied command output to clipboard." in out
-    assert LAST_CLIP == "val_from_bar"
+    out_cap, err_cap = capsys.readouterr()
+    # Check log messages (stderr for Rich info/prompts)
+    assert "Attempting to replay history entry N=2" in err_cap
+    assert "Found history command: 'bar'" in err_cap
+    assert "User approved. Re-running: bar" in err_cap
+    # Check actual output (stdout for Rich success messages)
+    assert "Copied command output to clipboard." in out_cap
+    assert LAST_CLIP == "val_from_bar" # Check clipboard content
 
-def test_history_branch_success_default_N_no_args(monkeypatch, capsys, mock_history_utils):
-    global MOCKED_HISTORY_COMMANDS
-    MOCKED_HISTORY_COMMANDS = ["echo hello default", "ls -la"] # N=1 is "echo hello default"
+def test_replay_default_N_no_args_success(monkeypatch, capsys, mock_history_utils, mock_rich_console_input):
+    global MOCKED_HISTORY_COMMANDS; MOCKED_HISTORY_COMMANDS = ["echo hello default", "ls -la"] # Default N=1 is "echo hello default"
+    mock_rich_console_input.return_value = 'y'
+    monkeypatch.setattr(subprocess, 'run', 
+                        lambda cmd_str, **kwargs: types.SimpleNamespace(stdout="output from echo default\n", stderr="", returncode=0) 
+                        if cmd_str == "echo hello default" else pytest.fail(f"Unexpected command: {cmd_str}"))
+    
+    with pytest.raises(SystemExit) as e:
+        # No command, no -r => defaults to -r 1
+        run_otc_script_with_argv([str(SCRIPT_PATH), '--no-stats'], monkeypatch) 
+    assert e.value.code == 0
 
-    monkeypatch.setattr(subprocess, 'run', lambda cmd_str, **kwargs: types.SimpleNamespace(stdout="output from echo default\n", stderr="", returncode=0) if cmd_str == "echo hello default" else None)
-    monkeypatch.setattr(builtins, 'input', lambda prompt: 'y')
-    # Script name can be anything, what matters is that no args follow.
-    # Using a generic name to ensure Path(sys.argv[0]) works.
-    monkeypatch.setattr(sys, 'argv', ['otc_script.py']) 
-
-    runpy.run_path(SCRIPT_PATH, run_name="__main__")
-    out, err = capsys.readouterr()
-
-    assert "[INFO] Attempting to replay history entry N=1..." in err
-    assert "[INFO] Found history command: 'echo hello default'" in err
-    assert "User approved. Re-running: echo hello default" in err
-    assert "Copied command output to clipboard." in out
+    out_cap, err_cap = capsys.readouterr()
+    assert "Attempting to replay history entry N=1" in err_cap
+    assert "Found history command: 'echo hello default'" in err_cap
+    assert "Copied command output to clipboard." in out_cap
     assert LAST_CLIP == "output from echo default"
 
-@pytest.mark.parametrize("script_invocation_name", ["output_to_clipboard.py", "otc"])
-@pytest.mark.parametrize("problematic_command_format", [
-    "{script_name} -r 2",              # e.g. output_to_clipboard.py -r 2
-    "python {script_name} --other-arg", # e.g. python output_to_clipboard.py --other-arg
-    "./{script_name}",                  # e.g. ./output_to_clipboard.py
-    "bash {script_name} run",           # e.g. bash output_to_clipboard.py run
+@pytest.mark.parametrize("problematic_command_in_history", [
+    f"{SCRIPT_PATH.name} -r 2", f"python {SCRIPT_PATH.name} --other-arg", f"./{SCRIPT_PATH.name}",
+    f"bash {SCRIPT_PATH.name} run", f"{SCRIPT_PATH.stem} -r 1", f"python {SCRIPT_PATH.stem} --arg"
 ])
-def test_history_loop_prevention(monkeypatch, capsys, mock_history_utils, script_invocation_name, problematic_command_format):
-    global MOCKED_HISTORY_COMMANDS
+def test_replay_loop_prevention(monkeypatch, capsys, mock_history_utils, problematic_command_in_history, mock_rich_console_input):
+    global MOCKED_HISTORY_COMMANDS; MOCKED_HISTORY_COMMANDS = [problematic_command_in_history, "other"]
+    # mock_rich_console_input is patched globally, but input should not be prompted due to loop detection.
+    # If it were prompted, mock_rich_console_input.side_effect would make it fail.
+    mock_rich_console_input.side_effect = lambda prompt: pytest.fail("Input should not be prompted due to loop detection.")
     
-    # Construct the command that would cause a loop
-    # Use a placeholder for the script name that will be formatted
-    # The actual sys.argv[0] will be SCRIPT_PATH for runpy
-    # So Path(sys.argv[0]).name will be 'output_to_clipboard.py'
-    # And Path(sys.argv[0]).stem will be 'output_to_clipboard'
-    
-    # If script_invocation_name is 'otc' (simulating an alias or stem call)
-    # and the history command is 'otc -r 1', loop should be caught.
-    # If script_invocation_name is 'output_to_clipboard.py' (actual script name)
-    # and history command is 'output_to_clipboard.py -r 1', loop should be caught.
-    
-    # For the test, sys.argv[0] when runpy.run_path is used is the SCRIPT_PATH.
-    # So Path(sys.argv[0]).name will be 'output_to_clipboard.py'.
-    # We need to ensure the loop prevention catches this.
-    
-    formatted_command = problematic_command_format.format(script_name=Path(SCRIPT_PATH).name)
-    if script_invocation_name == "otc" and "{script_name}" not in problematic_command_format:
-         # e.g. command is "otc -r 1", and script name is "output_to_clipboard.py", but might be aliased as otc
-         # The check `first_cmd_part == script_name_stem` should catch this if stem is 'otc'
-         # For testing, we ensure the history command uses a name that Path(SCRIPT_PATH).stem would match
-         # if the script were named 'otc.py'
-         if problematic_command_format.startswith("otc"): # like "otc -r 2"
-            formatted_command = problematic_command_format.replace("otc", Path(SCRIPT_PATH).stem)
-
-
-    MOCKED_HISTORY_COMMANDS = [formatted_command, "some other command"] 
-
-    # This input shouldn't be reached if loop prevention works
-    monkeypatch.setattr(builtins, 'input', lambda prompt: pytest.fail("Input should not be prompted if loop is detected."))
-    
-    # Simulate the script being called as `script_invocation_name` for its own sys.argv[0] perception
-    # However, runpy uses SCRIPT_PATH. The internal logic uses Path(sys.argv[0]).name/stem.
-    # So we set sys.argv for the script execution via runpy.
-    monkeypatch.setattr(sys, 'argv', [script_invocation_name, '-r', '1'])
-
-
     with pytest.raises(SystemExit) as e:
-        # When runpy executes SCRIPT_PATH, sys.argv inside the script will be what we set above.
-        # The Path(sys.argv[0]) inside the script will correctly use `script_invocation_name`.
-        # Wait, runpy.run_path sets sys.argv[0] to the path of the script being run.
-        # So, inside SCRIPT_PATH, sys.argv[0] will be SCRIPT_PATH.
-        # The loop prevention uses Path(sys.argv[0]).name and Path(sys.argv[0]).stem.
-        # Path(SCRIPT_PATH).name is 'output_to_clipboard.py'
-        # Path(SCRIPT_PATH).stem is 'output_to_clipboard'
-        
-        # Let's ensure the history command uses these values for the test.
-        # This means `script_name` in `problematic_command_format` should be 'output_to_clipboard.py'
-        # or 'output_to_clipboard' if it's a stem check.
-        
-        # Re-evaluate `formatted_command` based on actual SCRIPT_PATH name/stem
-        actual_script_name = Path(SCRIPT_PATH).name
-        actual_script_stem = Path(SCRIPT_PATH).stem
-
-        if "{script_name}" in problematic_command_format:
-             MOCKED_HISTORY_COMMANDS[0] = problematic_command_format.format(script_name=actual_script_name)
-        elif "otc" in problematic_command_format and problematic_command_format.startswith("otc"):
-             MOCKED_HISTORY_COMMANDS[0] = problematic_command_format.replace("otc", actual_script_stem)
-        # else: it's a command like "python something.py" that needs actual_script_name in it.
-        # This is covered by the first case.
-
-        runpy.run_path(SCRIPT_PATH, run_name="__main__") # sys.argv for this run is already set by monkeypatch
-    
-    assert e.value.code == 1, f"Script should exit with 1 on loop prevention. Failed for history: '{MOCKED_HISTORY_COMMANDS[0]}'"
+        run_otc_script_with_argv([str(SCRIPT_PATH), '-r', '1', '--no-stats'], monkeypatch)
+    assert e.value.code == 1 # Script exits with error on loop detection
     _out, err = capsys.readouterr()
-    assert f"appears to be an invocation of this script. Aborting to prevent a loop." in err
-    assert MOCKED_HISTORY_COMMANDS[0] in err # Ensure the problematic command is mentioned
+    normalized_err = " ".join(err.split()) 
+    assert "Loop detected" in normalized_err 
+    # The exact command string from history should be in the error message
+    assert problematic_command_in_history in err # Check raw error message for the command string
+    assert "is this script. Aborting." in normalized_err
 
-
-def test_replay_history_ignored_if_command_provided(monkeypatch, capsys, mock_history_utils):
-    global MOCKED_HISTORY_COMMANDS
-    MOCKED_HISTORY_COMMANDS = ["some history command"] # Should not be used
-
-    # Mock subprocess.run for the explicit command 'echo test command'
-    def fake_run(cmd_str, shell, capture_output, text, check):
-        assert cmd_str == "echo test command" 
+def test_replay_ignored_if_command_provided(monkeypatch, capsys, mock_history_utils, mock_rich_console_input):
+    global MOCKED_HISTORY_COMMANDS; MOCKED_HISTORY_COMMANDS = ["history_cmd"] # Should be ignored
+    
+    # Mock subprocess.run to check that the explicit command is run, not history_cmd
+    # The lambda now needs to match the full signature of subprocess.run if strict
+    def fake_run(cmd_parts_list_or_str, shell, capture_output, text, check):
+        # Command in script is " ".join(command_parts) if command_parts, so it's a string
+        assert "echo test command" in cmd_parts_list_or_str
         return types.SimpleNamespace(stdout="hello_explicit\n", stderr="", returncode=0)
     monkeypatch.setattr(subprocess, 'run', fake_run)
     
-    monkeypatch.setattr(sys, 'argv', ['output_to_clipboard.py', '-r', '1', 'echo', 'test', 'command'])
-    
-    runpy.run_path(SCRIPT_PATH, run_name="__main__")
-    out, err = capsys.readouterr()
-    assert "Copied command output to clipboard." in out
-    assert LAST_CLIP == "hello_explicit"
-    assert "[INFO] Attempting to replay history entry N=" not in err # History logic skipped
-
-def test_history_command_not_found(monkeypatch, capsys, mock_history_utils):
-    global MOCKED_HISTORY_COMMANDS
-    MOCKED_HISTORY_COMMANDS = ["only one command"]
-
-    monkeypatch.setattr(sys, 'argv', ['output_to_clipboard.py', '-r', '2']) # Request 2nd, but only 1 exists
-
     with pytest.raises(SystemExit) as e:
-        runpy.run_path(SCRIPT_PATH, run_name="__main__")
-    assert e.value.code == 1
-    _out, err = capsys.readouterr()
-    # Check for "2nd", "3rd", "Nth" etc.
-    expected_msg_part = "Failed to retrieve the 2nd command from history."
-    assert expected_msg_part in err
-
-def test_replay_history_user_cancel_N(monkeypatch, capsys, mock_history_utils):
-    global MOCKED_HISTORY_COMMANDS
-    MOCKED_HISTORY_COMMANDS = ["command to cancel with N"]
-    monkeypatch.setattr(subprocess, 'run', lambda *args, **kwargs: pytest.fail("subprocess.run should not be called if user cancels"))
-    monkeypatch.setattr(builtins, 'input', lambda prompt: 'n') # User says no
-    monkeypatch.setattr(sys, 'argv', ['output_to_clipboard.py', '-r', '1'])
-
-    with pytest.raises(SystemExit) as e:
-        runpy.run_path(SCRIPT_PATH, run_name="__main__")
-    assert e.value.code == 0 # Exits with 0 on user cancellation
-    _out, err = capsys.readouterr()
-    assert "[INFO] User cancelled re-run." in err
-    assert "Copied command output to clipboard." not in _out
-
-def test_replay_history_user_cancel_default(monkeypatch, capsys, mock_history_utils):
-    global MOCKED_HISTORY_COMMANDS
-    MOCKED_HISTORY_COMMANDS = ["command to cancel default"]
-    monkeypatch.setattr(subprocess, 'run', lambda *args, **kwargs: pytest.fail("subprocess.run should not be called"))
-    monkeypatch.setattr(builtins, 'input', lambda prompt: 'n')
-    monkeypatch.setattr(sys, 'argv', ['output_to_clipboard.py']) # No args, replay N=1
-
-    with pytest.raises(SystemExit) as e:
-        runpy.run_path(SCRIPT_PATH, run_name="__main__")
+        run_otc_script_with_argv([str(SCRIPT_PATH), '-r', '1', '--no-stats', '--', 'echo', 'test', 'command'], monkeypatch)
     assert e.value.code == 0
-    _out, err = capsys.readouterr()
-    assert "[INFO] User cancelled re-run." in err
 
-def test_eof_error_on_input_behaves_as_cancel(monkeypatch, capsys, mock_history_utils):
-    global MOCKED_HISTORY_COMMANDS
-    MOCKED_HISTORY_COMMANDS = ["command with eof input"]
-    monkeypatch.setattr(subprocess, 'run', lambda *args, **kwargs: pytest.fail("subprocess.run should not be called"))
+    out_cap, err_cap = capsys.readouterr()
+    assert "Copied command output to clipboard." in out_cap
+    assert LAST_CLIP == "hello_explicit"
+    # Verify that history replay was not attempted
+    assert "Attempting to replay history entry N=" not in err_cap
+    assert "Both command and --replay-history specified" in err_cap # Info message
+
+def test_replay_history_command_not_found(monkeypatch, capsys, mock_history_utils, mock_rich_console_input):
+    global MOCKED_HISTORY_COMMANDS; MOCKED_HISTORY_COMMANDS = ["one cmd"] # Only one command in history
     
-    def raise_eof(prompt):
-        raise EOFError
-    monkeypatch.setattr(builtins, 'input', raise_eof)
-    monkeypatch.setattr(sys, 'argv', ['output_to_clipboard.py', '-r', '1'])
+    with pytest.raises(SystemExit) as e:
+        run_otc_script_with_argv([str(SCRIPT_PATH), '-r', '2', '--no-stats'], monkeypatch) # Ask for 2nd
+    assert e.value.code == 1 # Error exit
+    _out, err = capsys.readouterr()
+    assert "Failed to retrieve the 2nd command from history." in err
+
+def test_replay_user_cancel_N_input(monkeypatch, capsys, mock_history_utils, mock_rich_console_input):
+    global MOCKED_HISTORY_COMMANDS; MOCKED_HISTORY_COMMANDS = ["cmd_to_cancel_N"]
+    monkeypatch.setattr(subprocess, 'run', lambda *a, **kw: pytest.fail("subprocess.run should not be called if user cancels"))
+    mock_rich_console_input.return_value = 'n' # User says no
+    
+    with pytest.raises(SystemExit) as e:
+        run_otc_script_with_argv([str(SCRIPT_PATH), '-r', '1', '--no-stats'], monkeypatch)
+    assert e.value.code == 0 # Clean exit on user cancel
+    
+    _out_cap, err_cap = capsys.readouterr() 
+    assert "User cancelled re-run." in err_cap
+    assert LAST_CLIP is None # Clipboard should not be set
+
+def test_replay_user_cancel_default_input(monkeypatch, capsys, mock_history_utils, mock_rich_console_input):
+    global MOCKED_HISTORY_COMMANDS; MOCKED_HISTORY_COMMANDS = ["cmd_to_cancel_def"]
+    monkeypatch.setattr(subprocess, 'run', lambda *a, **kw: pytest.fail("subprocess.run should not be called"))
+    mock_rich_console_input.return_value = 'n' # User says no
 
     with pytest.raises(SystemExit) as e:
-        runpy.run_path(SCRIPT_PATH, run_name="__main__")
-    assert e.value.code == 0 # Should exit gracefully, assuming 'no'
+        run_otc_script_with_argv([str(SCRIPT_PATH), '--no-stats'], monkeypatch) # Default -r 1
+    assert e.value.code == 0 # Clean exit
+    
     _out, err = capsys.readouterr()
-    assert "[WARNING] No input available for confirmation (EOFError). Assuming 'No'." in err
-    assert "[INFO] User cancelled re-run." in err # This follows the 'no' path
+    assert "User cancelled re-run." in err
+    assert LAST_CLIP is None
+
+def test_replay_eof_error_on_input(monkeypatch, capsys, mock_history_utils, mock_rich_console_input):
+    global MOCKED_HISTORY_COMMANDS; MOCKED_HISTORY_COMMANDS = ["cmd_eof"]
+    monkeypatch.setattr(subprocess, 'run', lambda *a, **kw: pytest.fail("subprocess.run should not be called"))
+    mock_rich_console_input.side_effect = EOFError # Simulate EOF on input
+
+    with pytest.raises(SystemExit) as e:
+        run_otc_script_with_argv([str(SCRIPT_PATH), '-r', '1', '--no-stats'], monkeypatch)
+    assert e.value.code == 0 # Clean exit, assumes 'No'
+    
+    _out, err = capsys.readouterr()
+    # Script behavior for EOFError on rich.input might be different than builtins.input
+    # The script currently catches EOFError and prints a specific message.
+    assert "No input for confirmation (EOFError). Assuming 'No'." in err # Check for specific message
+    assert "User cancelled re-run." in err # Consequence of assuming 'No'
+    assert LAST_CLIP is None
