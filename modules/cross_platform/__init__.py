@@ -22,6 +22,8 @@ from .privileges_manager import PrivilegesManager
 # History utilities
 from .history_utils import HistoryUtils # New Import
 
+from .tmux_utils import TmuxManager
+
 # Debugging and logging utilities
 from . import debug_utils
 
@@ -35,5 +37,6 @@ __all__ = [
     "ServiceManager",
     "PrivilegesManager",
     "HistoryUtils", # Added to __all__
+    "TmuxManager",
     "debug_utils",
 ]
