@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 import argparse
-import sys # Import sys for sys.exit
+import sys 
 from pathlib import Path
-from scripts_setup.alias_utils import parse_alias_file, write_aliases, write_pwsh_aliases # Added write_pwsh_aliases
+from scripts_setup.alias_utils import parse_alias_file, write_aliases, write_pwsh_aliases
 from scripts_setup.setup_utils import process_symlinks 
-from standard_ui.standard_ui import log_info, log_success, log_warning, log_error, section # Added log_error
+from standard_ui.standard_ui import log_info, log_success, log_warning, log_error, section
 
 def ensure_symlinks(scripts_dir: Path, bin_dir: Path, verbose: bool) -> None:
     """Ensures Python scripts from pyscripts_dir are symlinked into bin_dir."""
@@ -17,10 +17,6 @@ def ensure_symlinks(scripts_dir: Path, bin_dir: Path, verbose: bool) -> None:
             return
 
         try:
-            # Corrected call to process_symlinks:
-            # - Use 'glob_pattern' argument.
-            # - Use 'bin_dir' as the keyword for the target directory.
-            # - Expect two return values.
             created_count, existing_count = process_symlinks(
                 source_dir=pyscripts_dir_to_scan,
                 glob_pattern="*.py", 
@@ -32,11 +28,10 @@ def ensure_symlinks(scripts_dir: Path, bin_dir: Path, verbose: bool) -> None:
 
         except SystemExit: 
             log_error("Critical error during symlink processing for Python scripts (aborted by symlink utility).")
-            raise # Re-raise to stop this sub-script's execution
+            raise 
         except Exception as e:
             log_error(f"Unexpected error during symlink processing for Python scripts: {e}")
             log_warning("Symlink creation may be incomplete.")
-            # Depending on severity, you might want to raise e here too.
 
 
 def main(scripts_dir: Path, dotfiles_dir: Path, bin_dir: Path, verbose: bool) -> None:
@@ -50,14 +45,14 @@ def main(scripts_dir: Path, dotfiles_dir: Path, bin_dir: Path, verbose: bool) ->
                 bin_dir.mkdir(parents=True, exist_ok=True)
             except OSError as e:
                 log_error(f"Could not create bin directory {bin_dir}: {e}. Symlinks might fail.")
-                return # Stop if bin_dir cannot be created
+                return 
 
         try:
             ensure_symlinks(scripts_dir, bin_dir, verbose=verbose)
         except SystemExit: 
             log_error("Halting pyscripts setup due to critical symlink error from ensure_symlinks.")
             return 
-        except Exception: # Catch any other exception from ensure_symlinks
+        except Exception: 
             log_error("Halting pyscripts setup due to an unexpected error in ensure_symlinks.")
             return
 
@@ -109,15 +104,15 @@ if __name__ == "__main__":
                         help="Target directory for creating symlinks to scripts.")
     parser.add_argument("--verbose", "-v", action="store_true", 
                         help="Enable detailed output during the setup.")
+    # Add these arguments to avoid 'unrecognized arguments' error from master setup.py
+    parser.add_argument("--skip-reinstall", action="store_true", 
+                        help=argparse.SUPPRESS) # Suppress from help output as it's not directly used here
+    parser.add_argument("--production", action="store_true", 
+                        help=argparse.SUPPRESS) # Suppress from help output
     
     args = parser.parse_args()
     try:
         main(args.scripts_dir, args.dotfiles_dir, args.bin_dir, verbose=args.verbose)
     except Exception as e:
-        # This top-level catch ensures the script exits with an error if `main` itself raises an unhandled one.
-        # The master setup.py will log this based on return code.
-        # Using standard_ui.log_error if it's available and configured.
-        # For simplicity, just print to stderr which master setup should capture.
         print(f"FATAL ERROR in pyscripts/setup.py: {e}", file=sys.stderr)
         sys.exit(1)
-

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 import argparse
-import sys # Import sys for sys.exit
+import sys 
 from pathlib import Path
 from scripts_setup.alias_utils import parse_alias_file, write_aliases
 from scripts_setup.setup_utils import process_symlinks 
-from standard_ui.standard_ui import log_info, log_warning, log_success, log_error, section # Added log_error
+from standard_ui.standard_ui import log_info, log_warning, log_success, log_error, section
 
 def ensure_shell_script_symlinks(scripts_dir: Path, bin_dir: Path, verbose: bool) -> None:
     """Ensures shell scripts from shell-scripts/ are symlinked into bin_dir."""
@@ -37,8 +37,8 @@ def main(scripts_dir: Path, dotfiles_dir: Path, bin_dir: Path, verbose: bool) ->
     """Main setup routine for shell scripts."""
     with section("SHELL SCRIPTS SETUP"):
         shell_scripts_dir = scripts_dir / "shell-scripts"
-        alias_definitions_file = shell_scripts_dir / "alias_names.txt" # Was alias_file
-        alias_config_output_file = dotfiles_dir / "dynamic/setup_shell_scripts_aliases.zsh" # Was alias_config
+        alias_definitions_file = shell_scripts_dir / "alias_names.txt" 
+        alias_config_output_file = dotfiles_dir / "dynamic/setup_shell_scripts_aliases.zsh" 
 
         if not bin_dir.exists():
             log_info(f"Creating bin directory at: {bin_dir}")
@@ -73,9 +73,9 @@ def main(scripts_dir: Path, dotfiles_dir: Path, bin_dir: Path, verbose: bool) ->
                 write_aliases(
                     parsed_alias_definitions=parsed_shell_alias_definitions,
                     bin_dir=bin_dir,
-                    alias_config=alias_config_output_file, # Corrected variable name
+                    alias_config=alias_config_output_file, 
                     alias_file_path_for_header=str(alias_definitions_file),
-                    verbose=verbose # Correctly pass verbose from main's args
+                    verbose=verbose 
                 )
             except Exception as e:
                 log_error(f"Error writing aliases for shell scripts: {e}")
@@ -88,6 +88,11 @@ if __name__ == "__main__":
     parser.add_argument("--dotfiles-dir", type=Path, required=True, help="Path to the dotfiles directory")
     parser.add_argument("--bin-dir", type=Path, required=True, help="Path to the bin directory")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show detailed output")
+    # Add these arguments to avoid 'unrecognized arguments' error from master setup.py
+    parser.add_argument("--skip-reinstall", action="store_true", 
+                        help=argparse.SUPPRESS) # Suppress from help output as it's not directly used here
+    parser.add_argument("--production", action="store_true", 
+                        help=argparse.SUPPRESS) # Suppress from help output
     
     args = parser.parse_args()
     try:
