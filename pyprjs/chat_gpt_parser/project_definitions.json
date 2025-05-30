@@ -1,0 +1,22 @@
+{
+    "dotfiles": [
+        "Zsh Function Reorganization",
+        "Restore SSH Keys Termux",
+        "Pipe output with color",
+        "Zsh Widget Keybinding Fix",
+        "Zi Install on Termux"
+    ],
+    "Termux": [
+        "Termux session termination fix",
+        "Top-like Tools for Termux",
+        "Prevent Termux Kills"
+    ],
+    "LLM-interfacing": [
+        "Chat Summary Request",
+        "LLM Task Instructions",
+        "Python Scripting and Unit Testing Best Practices"
+    ],
+    "LLM-Information": [
+        "Context Window Sizes and Models"
+    ]
+}
