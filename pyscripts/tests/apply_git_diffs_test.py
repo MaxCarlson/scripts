@@ -1143,6 +1143,206 @@ def test_diff_block_splitting_robustness(tmp_path: Path):
         assert modified[file2_rel] == "modified B\n", f"Test variant {i}: fileB.txt content mismatch"
         assert (target_dir / file2_rel).read_text(encoding="utf-8") == "modified B\n", f"Test variant {i}: fileB.txt disk content mismatch"
 
+def test_parse_diff_and_apply_crlf_diff(tmp_path: Path):
+    """Ensure CRLF diff input is handled correctly."""
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    file_rel = "crlf.txt"
+    file_path = target_dir / file_rel
+    file_path.write_text("line1\nline2\n", encoding="utf-8")
+
+    diff_text = (
+        f"diff --git a/{file_rel} b/{file_rel}\r\n"
+        f"--- a/{file_rel}\r\n"
+        f"+++ b/{file_rel}\r\n"
+        "@@ -1,2 +1,2 @@\r\n"
+        "-line1\r\n"
+        "+LINE1\r\n"
+        " line2\r\n"
+    )
+
+    modified = parse_diff_and_apply(diff_text, str(target_dir), False, False)
+    assert file_rel in modified
+    assert modified[file_rel] == "LINE1\nline2\n"
+    assert file_path.read_text(encoding="utf-8") == "LINE1\nline2\n"
+
+
+def test_parse_diff_and_apply_filename_with_spaces(tmp_path: Path):
+    """Patch a file whose path contains spaces."""
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    file_rel = "file with space.txt"
+    file_path = target_dir / file_rel
+    file_path.write_text("foo\n", encoding="utf-8")
+
+    diff_text = (
+        f"diff --git a/{file_rel} b/{file_rel}\n"
+        f"--- a/{file_rel}\n"
+        f"+++ b/{file_rel}\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-foo\n"
+        "+bar\n"
+    )
+
+    modified = parse_diff_and_apply(diff_text, str(target_dir), False, False)
+    assert file_rel in modified
+    assert modified[file_rel] == "bar\n"
+    assert file_path.read_text(encoding="utf-8") == "bar\n"
+
+
+def test_parse_diff_and_apply_new_file_creates_missing_dirs(tmp_path: Path):
+    """New file diff should create necessary directories."""
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    file_rel = "new/sub/dir/file.txt"
+    diff_text = (
+        f"diff --git a/{file_rel} b/{file_rel}\n"
+        "new file mode 100644\n"
+        "--- /dev/null\n"
+        f"+++ b/{file_rel}\n"
+        "@@ -0,0 +1,1 @@\n"
+        "+hello\n"
+    )
+
+    modified = parse_diff_and_apply(diff_text, str(target_dir), False, False)
+    assert file_rel in modified
+    assert modified[file_rel] == "hello\n"
+    new_file_path = target_dir / file_rel
+    assert new_file_path.exists()
+    assert new_file_path.read_text(encoding="utf-8") == "hello\n"
+
+
+def test_parse_diff_and_apply_delete_nonexistent_file(tmp_path: Path):
+    """Deletion diff for missing file should log a warning and do nothing."""
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    file_rel = "missing.txt"
+    diff_text = (
+        f"diff --git a/{file_rel} b/{file_rel}\n"
+        f"--- a/{file_rel}\n"
+        "+++ /dev/null\n"
+        "@@ -1,1 +0,0 @@\n"
+        "-gone\n"
+    )
+    DummyDebugUtils.clear_logs()
+    modified = parse_diff_and_apply(diff_text, str(target_dir), False, False)
+    assert modified == {}
+    assert any("File deletion specified for non-existent file" in msg for msg in DummyDebugUtils.log_messages)
+
+
+def test_parse_diff_and_apply_no_prefix_headers(tmp_path: Path):
+    """Handle diffs produced with --no-prefix option."""
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    file_rel = "noprefix.txt"
+    file_path = target_dir / file_rel
+    file_path.write_text("orig\n", encoding="utf-8")
+
+    diff_text = (
+        "diff --git noprefix.txt noprefix.txt\n"
+        "--- noprefix.txt\n"
+        "+++ noprefix.txt\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-orig\n"
+        "+changed\n"
+    )
+
+    modified = parse_diff_and_apply(diff_text, str(target_dir), False, False)
+    assert file_rel in modified
+    assert modified[file_rel] == "changed\n"
+    assert file_path.read_text(encoding="utf-8") == "changed\n"
+
+
+def test_parse_diff_and_apply_absolute_path(tmp_path: Path):
+    """Applying a diff with absolute target paths should write outside the base dir."""
+    target_dir = tmp_path / "repo"
+    target_dir.mkdir()
+    abs_file = tmp_path / "abs.txt"
+    abs_file.write_text("start\n", encoding="utf-8")
+
+    diff_text = (
+        f"diff --git a/{abs_file} b/{abs_file}\n"
+        f"--- a/{abs_file}\n"
+        f"+++ b/{abs_file}\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-start\n"
+        "+finish\n"
+    )
+
+    modified = parse_diff_and_apply(diff_text, str(target_dir), False, False)
+    assert str(abs_file) in modified
+    assert abs_file.read_text(encoding="utf-8") == "finish\n"
+
+
+def test_parse_diff_and_apply_no_diff_git_header(tmp_path: Path):
+    """Diffs missing the diff --git header should be ignored with a warning."""
+    target_dir = tmp_path / "repo"
+    target_dir.mkdir()
+    file_rel = "nodiff.txt"
+    file_path = target_dir / file_rel
+    file_path.write_text("before\n", encoding="utf-8")
+
+    diff_text = (
+        f"--- a/{file_rel}\n"
+        f"+++ b/{file_rel}\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-before\n"
+        "+after\n"
+    )
+
+    DummyDebugUtils.clear_logs()
+    modified = parse_diff_and_apply(diff_text, str(target_dir), False, False)
+    assert modified == {}
+    assert any("No 'diff --git' blocks" in msg for msg in DummyDebugUtils.log_messages)
+
+
+def test_parse_diff_and_apply_mode_change_with_content(tmp_path: Path):
+    """Mode changes with content mods should still apply hunks."""
+    target_dir = tmp_path / "repo"
+    target_dir.mkdir()
+    file_rel = "script.sh"
+    file_path = target_dir / file_rel
+    file_path.write_text("echo hi\n", encoding="utf-8")
+
+    diff_text = (
+        f"diff --git a/{file_rel} b/{file_rel}\n"
+        "old mode 100644\n"
+        "new mode 100755\n"
+        f"--- a/{file_rel}\n"
+        f"+++ b/{file_rel}\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-echo hi\n"
+        "+echo bye\n"
+    )
+
+    modified = parse_diff_and_apply(diff_text, str(target_dir), False, False)
+    assert file_rel in modified
+    assert modified[file_rel] == "echo bye\n"
+    assert file_path.read_text(encoding="utf-8") == "echo bye\n"
+
+
+def test_parse_diff_and_apply_unicode_filename(tmp_path: Path):
+    """Paths with unicode characters should be handled."""
+    target_dir = tmp_path / "repo"
+    target_dir.mkdir()
+    file_rel = "unicodé.txt"
+    file_path = target_dir / file_rel
+    file_path.write_text("alpha\n", encoding="utf-8")
+
+    diff_text = (
+        f"diff --git a/{file_rel} b/{file_rel}\n"
+        f"--- a/{file_rel}\n"
+        f"+++ b/{file_rel}\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-alpha\n"
+        "+βéta\n"
+    )
+
+    modified = parse_diff_and_apply(diff_text, str(target_dir), False, False)
+    assert file_rel in modified
+    assert modified[file_rel] == "βéta\n"
+    assert file_path.read_text(encoding="utf-8") == "βéta\n"
+
 if __name__ == "__main__":
     pytest.main([__file__, "-s", "-v"])
 # End of File: tests/apply_git_diffs_test.py
