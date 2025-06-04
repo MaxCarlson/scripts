@@ -51,6 +51,8 @@ def get_path_from_diff_header_line(line_content, expected_prefix):
     if not line_content or not line_content.startswith(expected_prefix):
         return None
     path_part = line_content[len(expected_prefix):].strip()
+    # Normalize Windows style paths found in diffs
+    path_part = path_part.replace("\\", "/")
     if path_part == "/dev/null":
         return "dev/null"
     if (path_part.startswith("a/") or path_part.startswith("b/")) and len(path_part) > 2:
@@ -336,13 +338,21 @@ def parse_diff_and_apply(diff_text, target_directory, dry_run=False, output_copy
             is_new_file_marker = (current_path_from_a == "dev/null" and current_path_from_b != "dev/null")
             is_deleted_file_marker = (current_path_from_b == "dev/null" and current_path_from_a != "dev/null")
 
-            if is_new_file_marker: file_path_in_diff = current_path_from_b
-            elif is_deleted_file_marker: file_path_in_diff = current_path_from_a
-            elif current_path_from_b != "dev/null": file_path_in_diff = current_path_from_b
-            elif current_path_from_a != "dev/null": file_path_in_diff = current_path_from_a
-            if not file_path_in_diff: continue
+            if is_new_file_marker:
+                file_path_in_diff = current_path_from_b
+            elif is_deleted_file_marker:
+                file_path_in_diff = current_path_from_a
+            elif current_path_from_b != "dev/null":
+                file_path_in_diff = current_path_from_b
+            elif current_path_from_a != "dev/null":
+                file_path_in_diff = current_path_from_a
+            if not file_path_in_diff:
+                continue
 
-            original_target_filepath = os.path.join(target_directory, file_path_in_diff)
+            # Normalize any backslashes to forward slashes for cross-platform diffs
+            file_path_in_diff = file_path_in_diff.replace("\\", "/")
+
+            original_target_filepath = os.path.normpath(os.path.join(target_directory, file_path_in_diff))
             effective_write_filepath = original_target_filepath
             if output_copy and not is_deleted_file_marker:
                 effective_write_filepath = get_output_copy_path(original_target_filepath)
