@@ -1090,6 +1090,59 @@ def test_output_copy_new_dotfile_no_ext(tmp_path: Path):
     assert copied_file_path.exists(), f"Copied file '{copied_file_path}' should exist."
     assert copied_file_path.read_text(encoding="utf-8") == expected_patched_content
 
+def test_apply_diff_to_file_new_empty_no_hunks(tmp_path: Path):
+    """apply_diff_to_file should handle creation of an empty file when no hunks are provided."""
+    file_path = tmp_path / "empty_created.txt"
+    diff_content = (
+        "--- /dev/null\n"
+        "+++ b/empty_created.txt\n"
+    )
+    result = apply_diff_to_file(str(file_path), diff_content, False, str(file_path))
+    assert result == ""
+    assert file_path.exists() and file_path.read_text(encoding="utf-8") == ""
+
+def test_parse_diff_and_apply_with_no_diff_blocks(tmp_path: Path):
+    """parse_diff_and_apply should return empty dict when input lacks diff blocks."""
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    DummyDebugUtils.clear_logs()
+    diff_text = "Random text with no diff blocks\n"
+    modified = parse_diff_and_apply(diff_text, str(target_dir), False, False)
+    assert modified == {}
+    assert any("No 'diff --git' blocks found" in msg for msg in DummyDebugUtils.log_messages)
+
+def test_parse_diff_and_apply_delete_nonexistent_file(tmp_path: Path):
+    """Deletion diff for a non-existent file should be skipped with a warning."""
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    file_rel_path = "ghost.txt"
+    diff_text = (
+        f"diff --git a/{file_rel_path} b/{file_rel_path}\n"
+        f"--- a/{file_rel_path}\n"
+        "+++ /dev/null\n"
+        "@@ -1,1 +0,0 @@\n"
+        "-ghost\n"
+    )
+    DummyDebugUtils.clear_logs()
+    modified = parse_diff_and_apply(diff_text, str(target_dir), False, False)
+    assert modified == {}
+    assert not (target_dir / file_rel_path).exists()
+    assert any("File deletion specified for non-existent file" in msg for msg in DummyDebugUtils.log_messages)
+
+def test_apply_hunk_ignores_unexpected_lines():
+    """apply_hunk should ignore lines that do not start with expected diff markers."""
+    original = ["line1\n"]
+    hunk = [
+        "@@ -1,1 +1,2 @@",
+        " line1",
+        "?unexpected stuff",
+        "+line2",
+    ]
+    DummyDebugUtils.clear_logs()
+    patched = apply_hunk(original, hunk)
+    assert patched == ["line1\n", "line2\n"]
+    assert any("Unexpected line in hunk body" in msg and "?unexpected stuff" in msg for msg in DummyDebugUtils.log_messages)
+
 def test_diff_block_splitting_robustness(tmp_path: Path):
     """Test parsing of diff text with varying newlines between diff blocks."""
     target_dir = tmp_path / "target"
