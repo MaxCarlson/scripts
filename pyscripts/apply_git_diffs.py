@@ -142,11 +142,14 @@ def apply_hunk(original_lines, hunk):
     #     print(f"DEBUG apply_hunk: new_hunk_lines_content: {new_hunk_lines_content}")
 
     if old_start_line_num == 0:
-        if old_line_count == 0: 
+        if old_line_count == 0:
             return new_hunk_lines_content
         else:
-            debug_utils.write_debug(f"Invalid hunk for new file (old_line_count > 0 when old_start_line is 0): {header}", channel="Warning")
-            return list(original_lines)
+            debug_utils.write_debug(
+                f"Invalid hunk for new file (old_line_count > 0 when old_start_line is 0): {header}",
+                channel="Warning",
+            )
+            return None
 
     orig_slice_start_idx = old_start_line_num - 1
     
@@ -171,7 +174,10 @@ def apply_unified_diff(original_lines, diff_content):
     
     current_lines = list(original_lines)
     for hunk_data in reversed(hunks):
-        current_lines = apply_hunk(current_lines, hunk_data)
+        patched = apply_hunk(current_lines, hunk_data)
+        if patched is None:
+            return None
+        current_lines = patched
     return current_lines
 
 def apply_diff_to_file(filepath_to_read, diff_content_for_file, dry_run, effective_write_filepath):
@@ -209,6 +215,12 @@ def apply_diff_to_file(filepath_to_read, diff_content_for_file, dry_run, effecti
             return ''.join(original_lines)
 
         patched_lines = apply_unified_diff(original_lines, diff_content_for_file)
+        if patched_lines is None:
+            debug_utils.write_debug(
+                f"Skipping patch application for {log_source_path} due to invalid hunk(s).",
+                channel="Warning",
+            )
+            return None
         patched_content_str = ''.join(patched_lines)
         
         if not dry_run:
