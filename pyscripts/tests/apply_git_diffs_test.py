@@ -1212,6 +1212,27 @@ def test_parse_diff_and_apply_new_file_creates_missing_dirs(tmp_path: Path):
     assert new_file_path.read_text(encoding="utf-8") == "hello\n"
 
 
+def test_parse_diff_and_apply_new_file_invalid_hunk(tmp_path: Path):
+    """Invalid hunk for new file should cause block to be skipped."""
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    file_rel = "invalid_new.txt"
+    diff_text = (
+        f"diff --git a/{file_rel} b/{file_rel}\n"
+        "new file mode 100644\n"
+        "--- /dev/null\n"
+        f"+++ b/{file_rel}\n"
+        "@@ -0,1 +1,1 @@\n"
+        "+hello\n"
+    )
+
+    DummyDebugUtils.clear_logs()
+    modified = parse_diff_and_apply(diff_text, str(target_dir), False, False)
+    assert modified == {}
+    assert not (target_dir / file_rel).exists()
+    assert any("Invalid hunk for new file" in msg for msg in DummyDebugUtils.log_messages)
+
+
 def test_parse_diff_and_apply_delete_nonexistent_file(tmp_path: Path):
     """Deletion diff for missing file should log a warning and do nothing."""
     target_dir = tmp_path / "target"
