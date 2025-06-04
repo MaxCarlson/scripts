@@ -1343,6 +1343,17 @@ def test_parse_diff_and_apply_unicode_filename(tmp_path: Path):
     assert modified[file_rel] == "βéta\n"
     assert file_path.read_text(encoding="utf-8") == "βéta\n"
 
+
+def test_parse_diff_and_apply_empty_diff(tmp_path: Path):
+    """Calling parse_diff_and_apply with an empty diff should return an empty dict and emit no logs."""
+    target_dir = tmp_path / "repo"
+    target_dir.mkdir()
+
+    modified = parse_diff_and_apply("", str(target_dir), False, False)
+
+    assert modified == {}
+    assert DummyDebugUtils.log_messages == []
+
 if __name__ == "__main__":
     pytest.main([__file__, "-s", "-v"])
 # End of File: tests/apply_git_diffs_test.py
