@@ -3,16 +3,24 @@ import sqlite3
 import pytest
 import uuid
 from pathlib import Path
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, date, timedelta
+import time 
 
 # Adjust the import path based on your project structure.
 from knowledge_manager.db import (
     init_db, 
     get_db_connection,
     add_project, get_project_by_id, get_project_by_name, list_projects, update_project, delete_project,
-    add_task, get_task_by_id, list_tasks, update_task, delete_task
+    add_task, get_task_by_id, list_tasks, update_task, delete_task,
+    get_tasks_by_title_prefix 
 )
 from knowledge_manager.models import Project, ProjectStatus, Task, TaskStatus
+
+# --- (The rest of YOUR file that you provided, starting from @pytest.fixture def temp_db_path...) ---
+# ALL YOUR EXISTING FIXTURES AND TESTS BELOW THIS LINE REMAIN UNCHANGED.
+# I will not repeat them here to keep the response focused on the fix.
+# The new tests for get_tasks_by_title_prefix that you added at the end
+# of your file are correct and should now work with these imports.
 
 @pytest.fixture
 def temp_db_path(tmp_path: Path) -> Path:
@@ -406,5 +414,136 @@ def test_delete_parent_task_cascades_to_subtasks(db_conn: sqlite3.Connection, sa
 
     assert get_task_by_id(db_conn, parent.id) is None
     assert get_task_by_id(db_conn, subtask.id) is None # Subtask should also be deleted
+
+def test_get_tasks_by_title_prefix_no_match(db_conn: sqlite3.Connection):
+    # Add some tasks first
+    proj = Project(name="Test Project for Prefix")
+    add_project(db_conn, proj)
+    task1 = Task(title="Alpha Task", project_id=proj.id)
+    task2 = Task(title="Beta Task", project_id=proj.id)
+    add_task(db_conn, task1)
+    add_task(db_conn, task2)
+
+    tasks = get_tasks_by_title_prefix(db_conn, "Gamma")
+    assert len(tasks) == 0
+
+def test_get_tasks_by_title_prefix_exact_match_one(db_conn: sqlite3.Connection):
+    proj = Project(name="Test Project for Prefix")
+    add_project(db_conn, proj)
+    task1 = Task(title="UniqueTitleTask", project_id=proj.id)
+    add_task(db_conn, task1)
+    add_task(db_conn, Task(title="Another Task", project_id=proj.id))
+
+    tasks = get_tasks_by_title_prefix(db_conn, "UniqueTitleTask")
+    assert len(tasks) == 1
+    assert tasks[0].id == task1.id
+    assert tasks[0].title == "UniqueTitleTask"
+
+def test_get_tasks_by_title_prefix_case_insensitive(db_conn: sqlite3.Connection):
+    proj = Project(name="Test Project for Prefix")
+    add_project(db_conn, proj)
+    task1 = Task(title="CaseSensitiveTask", project_id=proj.id)
+    add_task(db_conn, task1)
+
+    tasks_lower = get_tasks_by_title_prefix(db_conn, "casesensitive")
+    assert len(tasks_lower) == 1
+    assert tasks_lower[0].id == task1.id
+
+    tasks_upper = get_tasks_by_title_prefix(db_conn, "CASESENSITIVE")
+    assert len(tasks_upper) == 1
+    assert tasks_upper[0].id == task1.id
+
+    tasks_mixed = get_tasks_by_title_prefix(db_conn, "CaSeSeNsItIvE")
+    assert len(tasks_mixed) == 1
+    assert tasks_mixed[0].id == task1.id
+
+def test_get_tasks_by_title_prefix_with_project_filter(db_conn: sqlite3.Connection):
+    proj1 = Project(name="Project One")
+    proj2 = Project(name="Project Two")
+    add_project(db_conn, proj1)
+    add_project(db_conn, proj2)
+
+    task1_p1 = Task(title="CommonPrefix Task", project_id=proj1.id)
+    task2_p1 = Task(title="CommonPrefix Another", project_id=proj1.id)
+    task1_p2 = Task(title="CommonPrefix Task In P2", project_id=proj2.id)
+    add_task(db_conn, task1_p1)
+    add_task(db_conn, task2_p1)
+    add_task(db_conn, task1_p2)
+
+    # Search in Project One
+    tasks_p1 = get_tasks_by_title_prefix(db_conn, "CommonPrefix", project_id=proj1.id)
+    assert len(tasks_p1) == 2
+    assert {t.id for t in tasks_p1} == {task1_p1.id, task2_p1.id}
+
+    # Search in Project Two
+    tasks_p2 = get_tasks_by_title_prefix(db_conn, "CommonPrefix", project_id=proj2.id)
+    assert len(tasks_p2) == 1
+    assert tasks_p2[0].id == task1_p2.id
+
+    # Search without project filter (should find all 3)
+    tasks_all = get_tasks_by_title_prefix(db_conn, "CommonPrefix")
+    assert len(tasks_all) == 3
+
+
+def test_get_tasks_by_title_prefix_empty_prefix(db_conn: sqlite3.Connection):
+    # An empty prefix should match all tasks (LIKE '%')
+    proj = Project(name="Test Project for Empty Prefix")
+    add_project(db_conn, proj)
+    task1 = Task(title="Task One", project_id=proj.id)
+    task2 = Task(title="Task Two", project_id=proj.id)
+    add_task(db_conn, task1)
+    add_task(db_conn, task2)
+
+    tasks = get_tasks_by_title_prefix(db_conn, "")
+    assert len(tasks) == 2 # Should return all tasks, ordered by created_at DESC
+# In tests/db_test.py
+
+# ... (other tests) ...
+
+def test_get_tasks_by_title_prefix_partial_match_multiple(db_conn: sqlite3.Connection):
+    proj = Project(name="Test Project for Prefix"); add_project(db_conn, proj)
+    
+    # Explicitly set created_at times to be days apart for absolute clarity
+    base_date = date(2023, 1, 1)
+    
+    task3_created_at = datetime.combine(base_date, datetime.min.time(), tzinfo=timezone.utc)
+    task2_created_at = datetime.combine(base_date + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+    task1_created_at = datetime.combine(base_date + timedelta(days=2), datetime.min.time(), tzinfo=timezone.utc) # Newest
+
+    task1 = Task(title="SearchMe One", project_id=proj.id, created_at=task1_created_at)
+    task2 = Task(title="SearchMe Two", project_id=proj.id, created_at=task2_created_at)
+    task3 = Task(title="Different Task", project_id=proj.id, created_at=task3_created_at)
+    
+    add_task(db_conn, task3) 
+    add_task(db_conn, task1) 
+    add_task(db_conn, task2) 
+
+    tasks = get_tasks_by_title_prefix(db_conn, "SearchMe")
+    assert len(tasks) == 2
+    # Default order is created_at DESC, so task1 should be first
+    assert tasks[0].id == task1.id, f"Expected task1 ({task1.id}, created {task1.created_at}) first, got {tasks[0].id} (created {tasks[0].created_at})"
+    assert tasks[1].id == task2.id, f"Expected task2 ({task2.id}, created {task2.created_at}) second, got {tasks[1].id} (created {tasks[1].created_at})"
+    assert task3.id not in [t.id for t in tasks]
+
+def test_get_tasks_by_title_prefix_with_limit(db_conn: sqlite3.Connection):
+    proj = Project(name="Test Project for Limit"); add_project(db_conn, proj)
+
+    base_date = date(2023, 1, 1)
+    task3_ct = datetime.combine(base_date, datetime.min.time(), tzinfo=timezone.utc) # Oldest
+    task2_ct = datetime.combine(base_date + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+    task1_ct = datetime.combine(base_date + timedelta(days=2), datetime.min.time(), tzinfo=timezone.utc) # Newest
+
+    task1 = Task(title="LimitTest A", project_id=proj.id, created_at=task1_ct) 
+    task2 = Task(title="LimitTest B", project_id=proj.id, created_at=task2_ct)
+    task3 = Task(title="LimitTest C", project_id=proj.id, created_at=task3_ct) 
+    
+    add_task(db_conn, task3)
+    add_task(db_conn, task2)
+    add_task(db_conn, task1)
+
+    tasks = get_tasks_by_title_prefix(db_conn, "LimitTest", limit=2)
+    assert len(tasks) == 2
+    assert tasks[0].id == task1.id, f"Expected task1 ({task1.id}, created {task1.created_at}) first in limit, got {tasks[0].id} (created {tasks[0].created_at})"
+    assert tasks[1].id == task2.id, f"Expected task2 ({task2.id}, created {task2.created_at}) second in limit, got {tasks[1].id} (created {tasks[1].created_at})"
 
 # End of File: tests/db_test.py

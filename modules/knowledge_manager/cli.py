@@ -38,7 +38,15 @@ def print_task(task: Task, include_details: bool = False, base_data_dir: Optiona
     print(f"Title     : {task.title}")
     print(f"Status    : {task.status.value}")
     if task.project_id:
-        print(f"Project ID: {task.project_id}")
+        project_name = str(task.project_id) 
+        try:
+            proj = project_ops.find_project(str(task.project_id), base_data_dir=base_data_dir)
+            if proj:
+                project_name = f"{proj.name} (ID: {task.project_id})"
+        except Exception:
+            pass 
+        print(f"Project   : {project_name}")
+
     if task.parent_task_id:
         print(f"Parent ID : {task.parent_task_id}")
     print(f"Priority  : {task.priority}")
@@ -77,17 +85,11 @@ def handle_init(args: argparse.Namespace):
 def handle_project_add(args: argparse.Namespace):
     try:
         project = project_ops.create_new_project(
-            name=args.name,
-            description=args.description,
-            base_data_dir=args.data_dir
+            name=args.name, description=args.description, base_data_dir=args.data_dir
         )
         print(f"Project '{project.name}' created successfully with ID: {project.id}")
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}", file=sys.stderr)
-        sys.exit(1)
+    except ValueError as e: print(f"Error: {e}", file=sys.stderr); sys.exit(1)
+    except Exception as e: print(f"An unexpected error occurred: {e}", file=sys.stderr); sys.exit(1)
 
 def handle_project_list(args: argparse.Namespace):
     status_filter = ProjectStatus(args.status) if args.status else None
@@ -97,118 +99,85 @@ def handle_project_list(args: argparse.Namespace):
             print("No projects found." if not status_filter else f"No projects found with status '{status_filter.value}'.")
             return
         print(f"\n--- Projects ({len(projects)}) ---")
-        for p in projects:
-            print_project(p, base_data_dir=args.data_dir)
-            print("---")
-    except Exception as e:
-        print(f"An error occurred while listing projects: {e}", file=sys.stderr)
-        sys.exit(1)
+        for p in projects: print_project(p, base_data_dir=args.data_dir); print("---")
+    except Exception as e: print(f"An error occurred while listing projects: {e}", file=sys.stderr); sys.exit(1)
 
 def handle_project_view(args: argparse.Namespace):
     try:
         result = project_ops.get_project_with_details(args.identifier, base_data_dir=args.data_dir)
-        if result:
-            project, _ = result
-            print_project(project, include_description=True, base_data_dir=args.data_dir)
-        else:
-            print(f"Project with identifier '{args.identifier}' not found.", file=sys.stderr)
-            sys.exit(1)
-    except Exception as e:
-        print(f"An error occurred: {e}", file=sys.stderr)
-        sys.exit(1)
+        if result: project, _ = result; print_project(project, include_description=True, base_data_dir=args.data_dir)
+        else: print(f"Project with identifier '{args.identifier}' not found.", file=sys.stderr); sys.exit(1)
+    except Exception as e: print(f"An error occurred: {e}", file=sys.stderr); sys.exit(1)
 
 # --- Task Command Handlers ---
 def handle_task_add(args: argparse.Namespace):
     try:
         task = task_ops.create_new_task(
-            title=args.title,
-            project_identifier=args.project_id,
-            parent_task_identifier=args.parent_id,
-            details=args.details,
-            priority=args.priority,
-            due_date_iso=args.due_date,
+            title=args.title, project_identifier=args.project_id, parent_task_identifier=args.parent_id,
+            details=args.details, priority=args.priority, due_date_iso=args.due_date,
             base_data_dir=args.data_dir
         )
         print(f"Task '{task.title}' created successfully with ID: {task.id}")
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}", file=sys.stderr)
-        sys.exit(1)
+    except ValueError as e: print(f"Error: {e}", file=sys.stderr); sys.exit(1)
+    except Exception as e: print(f"An unexpected error occurred: {e}", file=sys.stderr); sys.exit(1)
 
 def handle_task_list(args: argparse.Namespace):
     status_filter = TaskStatus(args.status) if args.status else None
     try:
         tasks = task_ops.list_all_tasks(
-            project_identifier=args.project_id,
-            status=status_filter,
-            parent_task_identifier=args.parent_id,
+            project_identifier=args.project_id, status=status_filter, parent_task_identifier=args.parent_id,
             include_subtasks_of_any_parent=args.all_subtasks if args.parent_id is None else False,
             base_data_dir=args.data_dir
         )
-        if not tasks:
-            print("No tasks found matching criteria.")
-            return
+        if not tasks: print("No tasks found matching criteria."); return
         print(f"\n--- Tasks ({len(tasks)}) ---")
-        for t in tasks:
-            print_task(t, base_data_dir=args.data_dir)
-            print("---")
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"An error occurred while listing tasks: {e}", file=sys.stderr)
-        sys.exit(1)
+        for t in tasks: print_task(t, base_data_dir=args.data_dir); print("---")
+    except ValueError as e: print(f"Error: {e}", file=sys.stderr); sys.exit(1)
+    except Exception as e: print(f"An error occurred while listing tasks: {e}", file=sys.stderr); sys.exit(1)
 
 def handle_task_view(args: argparse.Namespace):
     try:
-        task = task_ops.find_task(args.identifier, base_data_dir=args.data_dir)
-        if task:
-            print_task(task, include_details=True, base_data_dir=args.data_dir)
-        else:
-            print(f"Task with identifier '{args.identifier}' not found.", file=sys.stderr)
+        task = task_ops.find_task(
+            task_identifier=args.identifier, 
+            project_identifier=args.project_context, 
+            base_data_dir=args.data_dir
+        )
+        if task: print_task(task, include_details=True, base_data_dir=args.data_dir)
+        else: 
+            print(f"Task with identifier '{args.identifier}' not found {('in project context ' + args.project_context) if args.project_context else ''}.", file=sys.stderr)
             sys.exit(1)
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}", file=sys.stderr)
-        sys.exit(1)
+    except ValueError as e: print(f"Error: {e}", file=sys.stderr); sys.exit(1)
+    except Exception as e: print(f"An unexpected error occurred: {e}", file=sys.stderr); sys.exit(1)
 
 def handle_task_done(args: argparse.Namespace):
     try:
-        task = task_ops.mark_task_status(args.identifier, TaskStatus.DONE, base_data_dir=args.data_dir)
-        if task:
-            print(f"Task '{task.title}' (ID: {task.id}) marked as DONE.")
-        else:
+        task = task_ops.mark_task_status(
+            task_identifier=args.identifier, 
+            new_status=TaskStatus.DONE, 
+            project_identifier_context=args.project_context, 
+            base_data_dir=args.data_dir
+        )
+        if task: print(f"Task '{task.title}' (ID: {task.id}) marked as DONE.")
+        else: 
             print(f"Task with identifier '{args.identifier}' not found or could not be updated.", file=sys.stderr)
             sys.exit(1)
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}", file=sys.stderr)
-        sys.exit(1)
+    except ValueError as e: print(f"Error: {e}", file=sys.stderr); sys.exit(1)
+    except Exception as e: print(f"An unexpected error occurred: {e}", file=sys.stderr); sys.exit(1)
 
 def handle_task_getpath(args: argparse.Namespace):
     try:
         file_path = task_ops.get_task_file_path(
             task_identifier=args.identifier,
+            project_identifier_context=args.project_context, 
             base_data_dir=args.data_dir,
             create_if_missing_in_object=True
         )
-        if file_path:
-            print(file_path) 
-        else:
+        if file_path: print(file_path) 
+        else: 
             print(f"Error: Task with identifier '{args.identifier}' not found or path cannot be determined.", file=sys.stderr)
             sys.exit(1)
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}", file=sys.stderr)
-        sys.exit(1)
+    except ValueError as e: print(f"Error: {e}", file=sys.stderr); sys.exit(1)
+    except Exception as e: print(f"An unexpected error occurred: {e}", file=sys.stderr); sys.exit(1)
 
 def handle_task_update(args: argparse.Namespace):
     update_fields_provided = any([
@@ -216,11 +185,9 @@ def handle_task_update(args: argparse.Namespace):
         args.due_date is not None, args.details is not None,
         args.project_id is not None, args.clear_project
     ])
-
     if not update_fields_provided:
         print("Error: No update options provided. Use 'km task update <id> --help' for options.", file=sys.stderr)
         sys.exit(1)
-
     try:
         task = task_ops.update_task_details_and_status(
             task_identifier=args.identifier,
@@ -231,6 +198,7 @@ def handle_task_update(args: argparse.Namespace):
             new_details=args.details,
             new_project_identifier=args.project_id,
             clear_project=args.clear_project,
+            current_project_context_for_search=args.project_context, 
             base_data_dir=args.data_dir
         )
         if task:
@@ -239,14 +207,18 @@ def handle_task_update(args: argparse.Namespace):
         else:
             print(f"Error: Task with identifier '{args.identifier}' not found or no updates applied.", file=sys.stderr)
             sys.exit(1)
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}", file=sys.stderr)
-        sys.exit(1)
+    except ValueError as e: print(f"Error: {e}", file=sys.stderr); sys.exit(1)
+    except Exception as e: print(f"An unexpected error occurred: {e}", file=sys.stderr); sys.exit(1)
 
-# --- Main Parser Setup ---
+# --- Argument Parser Setup ---
+def add_common_task_identifier_args(parser: argparse.ArgumentParser):
+    """Adds common arguments for identifying a task, including project context."""
+    parser.add_argument("identifier", type=str, help="ID or title prefix of the task.")
+    parser.add_argument(
+        "-j", "--project-context", dest="project_context", type=str, default=None,
+        help="Optional project ID or name to scope title prefix search for the task."
+    )
+
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="km",
@@ -255,108 +227,68 @@ def create_parser() -> argparse.ArgumentParser:
         epilog="Use 'km <command> --help' for more information on a specific command."
     )
     parser.add_argument(
-        '-D', '--data-dir', dest='data_dir', type=Path, default=None, # Added short form -D
+        '-G', '--data-dir', dest='data_dir', type=Path, default=None, 
         help="Override the default base data directory for this command."
     )
 
     subparsers = parser.add_subparsers(title="Commands", dest="command", required=True, metavar="<command>")
 
-    # --- Init Command ---
-    init_parser = subparsers.add_parser("init", help="Initialize the knowledge base (database and directories)")
+    init_parser = subparsers.add_parser("init", help="Initialize the knowledge base")
     init_parser.set_defaults(func=handle_init)
 
-    # --- Project Subparser ---
     project_parser = subparsers.add_parser("project", help="Manage projects", aliases=['p'])
     project_subparsers = project_parser.add_subparsers(title="Project Actions", dest="project_action", required=True, metavar="<action>")
-
     proj_add_parser = project_subparsers.add_parser("add", help="Add a new project")
     proj_add_parser.add_argument("-n", "--name", dest="name", type=str, required=True, help="Name of the project")
-    proj_add_parser.add_argument("-d", "--description", dest="description", type=str, help="Markdown description for the project")
+    proj_add_parser.add_argument("-d", "--description", dest="description", type=str, help="Markdown description")
     proj_add_parser.set_defaults(func=handle_project_add)
-
     proj_list_parser = project_subparsers.add_parser("list", help="List projects")
-    proj_list_parser.add_argument(
-        "-s", "--status", dest="status", type=str, choices=[s.value for s in ProjectStatus],
-        help="Filter projects by status"
-    )
+    proj_list_parser.add_argument("-s", "--status", dest="status", type=str, choices=[s.value for s in ProjectStatus], help="Filter by status")
     proj_list_parser.set_defaults(func=handle_project_list)
-
-    proj_view_parser = project_subparsers.add_parser("view", help="View details of a specific project")
-    proj_view_parser.add_argument("identifier", type=str, help="ID or name of the project to view")
+    proj_view_parser = project_subparsers.add_parser("view", help="View a project")
+    proj_view_parser.add_argument("identifier", type=str, help="ID or name of the project")
     proj_view_parser.set_defaults(func=handle_project_view)
 
-
-    # --- Task Subparser ---
     task_parser = subparsers.add_parser("task", help="Manage tasks", aliases=['t'])
     task_subparsers = task_parser.add_subparsers(title="Task Actions", dest="task_action", required=True, metavar="<action>")
 
-    # km task add
     task_add_parser = task_subparsers.add_parser("add", help="Add a new task")
     task_add_parser.add_argument("-t", "--title", dest="title", type=str, required=True, help="Title of the task")
-    task_add_parser.add_argument("-p", "--project-id", dest="project_id", type=str, help="Project ID or name to associate the task with")
-    task_add_parser.add_argument("-P", "--parent-id", dest="parent_id", type=str, help="Parent task ID for creating a subtask")
-    task_add_parser.add_argument("-d", "--details", dest="details", type=str, help="Markdown details for the task")
-    task_add_parser.add_argument("-r", "--priority", dest="priority", type=int, default=3, choices=range(1,6), help="Priority (1-5, default 3)")
-    task_add_parser.add_argument("-D", "--due-date", dest="due_date", type=str, help="Due date in YYYY-MM-DD format") # Note: -D is also used for global --data-dir. This is a conflict.
+    task_add_parser.add_argument("-p", "--project-id", dest="project_id", type=str, help="Associate with project (ID or name)")
+    task_add_parser.add_argument("-P", "--parent-id", dest="parent_id", type=str, help="Parent task ID (for subtask)")
+    task_add_parser.add_argument("-d", "--details", dest="details", type=str, help="Markdown details")
+    task_add_parser.add_argument("-r", "--priority", dest="priority", type=int, default=3, choices=range(1,6), help="Priority (1-5)")
+    task_add_parser.add_argument("-U", "--due-date", dest="due_date", type=str, help="Due date (YYYY-MM-DD)")
     task_add_parser.set_defaults(func=handle_task_add)
 
-    # km task list
     task_list_parser = task_subparsers.add_parser("list", help="List tasks")
-    task_list_parser.add_argument("-p", "--project-id", dest="project_id", type=str, help="Filter tasks by project ID or name")
-    task_list_parser.add_argument(
-        "-s", "--status", dest="status", type=str, choices=[s.value for s in TaskStatus],
-        help="Filter tasks by status"
-    )
-    task_list_parser.add_argument("-P", "--parent-id", dest="parent_id", type=str, help="Filter tasks by parent task ID")
-    task_list_parser.add_argument(
-        "-a", "--all-subtasks", dest="all_subtasks", action="store_true",
-        help="When listing without --parent-id, include all subtasks (not just top-level)."
-    )
+    task_list_parser.add_argument("-p", "--project-id", dest="project_id", type=str, help="Filter by project (ID or name)")
+    task_list_parser.add_argument("-s", "--status", dest="status", type=str, choices=[s.value for s in TaskStatus], help="Filter by status")
+    task_list_parser.add_argument("-P", "--parent-id", dest="parent_id", type=str, help="Filter by parent task ID")
+    task_list_parser.add_argument("-a", "--all-subtasks", dest="all_subtasks", action="store_true", help="Include all subtasks (not just top-level)")
     task_list_parser.set_defaults(func=handle_task_list)
 
-    # km task view
-    task_view_parser = task_subparsers.add_parser("view", help="View details of a specific task")
-    task_view_parser.add_argument("identifier", type=str, help="ID of the task to view")
+    task_view_parser = task_subparsers.add_parser("view", help="View a task")
+    add_common_task_identifier_args(task_view_parser)
     task_view_parser.set_defaults(func=handle_task_view)
     
-    # km task done
     task_done_parser = task_subparsers.add_parser("done", help="Mark a task as done")
-    task_done_parser.add_argument("identifier", type=str, help="ID of the task to mark as done")
+    add_common_task_identifier_args(task_done_parser)
     task_done_parser.set_defaults(func=handle_task_done)
 
-    # km task getpath
-    task_getpath_parser = task_subparsers.add_parser("getpath", help="Get the filesystem path for a task's details file")
-    task_getpath_parser.add_argument("identifier", type=str, help="ID of the task")
+    task_getpath_parser = task_subparsers.add_parser("getpath", help="Get task's details file path")
+    add_common_task_identifier_args(task_getpath_parser)
     task_getpath_parser.set_defaults(func=handle_task_getpath)
 
-    # km task update
     task_update_parser = task_subparsers.add_parser("update", help="Update an existing task")
-    task_update_parser.add_argument("identifier", type=str, help="ID of the task to update")
-    task_update_parser.add_argument("-t", "--title", dest="title", type=str, default=None, help="New title for the task")
-    task_update_parser.add_argument(
-        "-s", "--status", dest="status", type=str, default=None, choices=[s.value for s in TaskStatus],
-        help="New status for the task"
-    )
-    task_update_parser.add_argument(
-        "-r", "--priority", dest="priority", type=int, default=None, choices=range(1,6),
-        help="New priority (1-5)"
-    )
-    task_update_parser.add_argument(
-        "-u", "--due-date", dest="due_date", type=str, default=None, # Changed short from -D to -u to avoid conflict
-        help="New due date (YYYY-MM-DD), or \"\" to clear"
-    )
-    task_update_parser.add_argument(
-        "-d", "--details", dest="details", type=str, default=None,
-        help="New Markdown details for the task, or \"\" to clear/empty file"
-    )
-    task_update_parser.add_argument(
-        "-p", "--project-id", dest="project_id", type=str, default=None,
-        help="New project ID or name to associate the task with"
-    )
-    task_update_parser.add_argument(
-        "-c", "--clear-project", dest="clear_project", action="store_true",
-        help="Remove task from any project (disassociate)"
-    )
+    add_common_task_identifier_args(task_update_parser) 
+    task_update_parser.add_argument("-t", "--title", dest="title", type=str, default=None, help="New title")
+    task_update_parser.add_argument("-s", "--status", dest="status", type=str, default=None, choices=[s.value for s in TaskStatus], help="New status")
+    task_update_parser.add_argument("-r", "--priority", dest="priority", type=int, default=None, choices=range(1,6), help="New priority")
+    task_update_parser.add_argument("-u", "--due-date", dest="due_date", type=str, default=None, help="New due date (YYYY-MM-DD), or \"\" to clear")
+    task_update_parser.add_argument("-d", "--details", dest="details", type=str, default=None, help="New Markdown details, or \"\" to clear")
+    task_update_parser.add_argument("-p", "--project-id", dest="project_id", type=str, default=None, help="Move to new project (ID or name)") # For assigning/moving
+    task_update_parser.add_argument("-c", "--clear-project", dest="clear_project", action="store_true", help="Disassociate from any project")
     task_update_parser.set_defaults(func=handle_task_update)
 
     return parser
@@ -365,20 +297,25 @@ def main(argv: Optional[List[str]] = None):
     parser = create_parser()
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
     
+    # The global BASE_DATA_DIR is less critical now as args.data_dir is passed
+    # directly to handlers and then to ops functions.
+    # However, it can be set if any top-level CLI logic needed it before dispatch.
     global BASE_DATA_DIR 
-    if hasattr(args, 'data_dir') and args.data_dir is not None: # Check if data_dir was actually provided
+    if hasattr(args, 'data_dir') and args.data_dir is not None:
         BASE_DATA_DIR = args.data_dir
     
     if hasattr(args, 'func'):
         try:
-            # Pass the specific data_dir for this command to the handler,
-            # which then passes it to ops functions.
-            # The ops functions will use their default if args.data_dir is None.
             args.func(args) 
         except Exception as e:
+            # Consider more specific error handling or logging here
             print(f"An unhandled error occurred: {e}", file=sys.stderr)
+            # For debugging, you might want to re-raise or print traceback
+            # import traceback
+            # traceback.print_exc()
             sys.exit(1)
     else:
+        # This case should ideally not be reached if subparsers are 'required=True'
         parser.print_help()
         sys.exit(1)
 
