@@ -1,0 +1,117 @@
+/* File: knowledge_manager/km_tui.css */
+
+Screen {
+    background: $panel; 
+    layout: vertical; 
+}
+
+Header {
+    dock: top;
+    height: 1; /* Keep header slim */
+    background: $primary-background;
+    color: $text;
+    text-style: bold;
+    padding: 0 1;
+}
+
+Footer {
+    dock: bottom;
+    height: 1; /* Keep footer slim */
+    background: $primary-background;
+    color: $text;
+    padding: 0 1;
+}
+
+/* Common container for main content of a screen */
+#projects_view_container, #tasks_view_container {
+    width: 100%;
+    height: 1fr; 
+    padding: 1;
+    layout: vertical; 
+}
+
+.view_header { 
+    width: 100%;
+    padding: 0 0 1 0; 
+    text-style: bold underline;
+    color: $text-accent; 
+    text-align: center; /* Center headers */
+}
+
+/* Scrollable areas for lists and details */
+#project_list_scroll, #task_list_scroll {
+    width: 100%;
+    height: 1fr; /* Takes up a flexible portion, e.g., 60% of parent */
+    border: round $primary-lighten-2;
+    background: $surface;
+    margin-bottom: 1; 
+}
+
+#project_detail_scroll, #task_detail_scroll {
+    width: 100%;
+    height: 1fr; /* Takes up a flexible portion, e.g., 40% of parent */
+    border: round $primary-lighten-1;
+    background: $surface-darken-1; 
+    padding: 1;
+}
+
+#project_detail_markdown, #task_detail_markdown {
+    width: 100%;
+    height: 100%; /* Markdown fills its scrollable container */
+}
+
+/* ListViews and ListItems */
+ProjectList, TaskList { }
+
+ListItem { 
+    padding: 0 1; 
+    height: auto; 
+}
+ListItem:hover { 
+    background: $primary-darken-1;
+}
+ListItem.--highlight { 
+    background: $accent;
+    color: $text; 
+}
+ListItem.--highlight > Label { 
+    color: $text;
+}
+
+/* For Labels used as messages within ListViews */
+ListView > ListItem > Label.message-label, 
+ListView > ListItem > Label { /* General styling for labels in list items if not specific message */
+    width: 100%;
+    color: $text-muted;
+}
+ListView > ListItem > Label { /* Override for actual item labels if needed */
+    color: $text; /* Default text color for items */
+}
+ListView > ListItem.--highlight > Label { /* Ensure highlighted item labels are readable */
+    color: $text;
+}
+
+/* Input Dialog Styling */
+InputDialog {
+    align: center middle;
+}
+InputDialog > Vertical { /* The main container of the dialog */
+    width: 80%;
+    max-width: 60;
+    height: auto;
+    border: thick $primary-background-darken-2;
+    background: $surface;
+    padding: 1 2;
+}
+InputDialog Input {
+    margin-bottom: 1;
+    border: tall $primary; /* Give input a border */
+}
+InputDialog .buttons { /* Container for OK/Cancel buttons */
+    width: 100%;
+    align-horizontal: right; /* Align buttons to the right */
+    padding-top: 1;
+}
+InputDialog Button {
+    margin-left: 1;
+}
