@@ -1295,6 +1295,30 @@ def test_parse_diff_and_apply_absolute_path(tmp_path: Path):
     assert abs_file.read_text(encoding="utf-8") == "finish\n"
 
 
+def test_parse_diff_and_apply_backslash_paths(tmp_path: Path):
+    """Diffs containing Windows-style backslash paths should be handled."""
+    target_dir = tmp_path / "repo"
+    target_dir.mkdir()
+    file_rel = "dir/file.txt"
+    file_path = target_dir / file_rel
+    file_path.parent.mkdir()
+    file_path.write_text("hello\n", encoding="utf-8")
+
+    diff_text = (
+        "diff --git a\\dir\\file.txt b\\dir\\file.txt\n"
+        "--- a\\dir\\file.txt\n"
+        "+++ b\\dir\\file.txt\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-hello\n"
+        "+goodbye\n"
+    )
+
+    modified = parse_diff_and_apply(diff_text, str(target_dir), False, False)
+    assert file_rel in modified
+    assert modified[file_rel] == "goodbye\n"
+    assert file_path.read_text(encoding="utf-8") == "goodbye\n"
+
+
 def test_parse_diff_and_apply_no_diff_git_header(tmp_path: Path):
     """Diffs missing the diff --git header should be ignored with a warning."""
     target_dir = tmp_path / "repo"
