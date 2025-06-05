@@ -1,6 +1,6 @@
 [submodule "W11-powershell"]
-	path = W11-powershell
-	url = https://github.com:MaxCarlson/W11-powershell.git
+        path = W11-powershell
+        url = https://github.com/MaxCarlson/W11-powershell.git
 [submodule "pscripts"]
-	path = pscripts
-	url = http://github.com:MaxCarlson/pscripts.git
+        path = pscripts
+        url = https://github.com/MaxCarlson/pscripts.git
