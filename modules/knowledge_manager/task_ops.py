@@ -7,7 +7,6 @@ from datetime import date, datetime, timezone
 from . import db
 from . import utils
 from .models import Task, TaskStatus, Project 
-# from textual import log # Uncomment if using log here
 
 def _resolve_project_id(conn: db.sqlite3.Connection, project_identifier: Optional[Union[str, uuid.UUID]]) -> Optional[uuid.UUID]:
     if not project_identifier: return None
@@ -79,7 +78,7 @@ def create_new_task(
                     raise ValueError("Parent task does not belong to the specified project for the new task.")
         task_id = uuid.uuid4(); current_time = utils.get_current_utc_timestamp()
         md_path: Optional[Path] = None
-        if details is not None: # If details string is provided (even empty), create file and path
+        if details is not None:
             md_path = utils.generate_markdown_file_path(task_id, "task", base_data_dir)
             utils.write_markdown_file(md_path, details)
         parsed_due_date: Optional[date] = None
@@ -134,7 +133,7 @@ def update_task_details_and_status(
     task_identifier: Union[str, uuid.UUID],
     new_title: Optional[str] = None, new_status: Optional[TaskStatus] = None,
     new_priority: Optional[int] = None, new_due_date_iso: Optional[str] = None, 
-    new_details: Optional[str] = None,    
+    new_details: Optional[str] = None, new_details_md_path: Optional[Path] = None, # <-- NEW ARGUMENT
     new_project_identifier: Optional[Union[str, uuid.UUID]] = None,
     clear_project: bool = False,
     current_project_context_for_search: Optional[Union[str, uuid.UUID]] = None,
@@ -165,13 +164,16 @@ def update_task_details_and_status(
                 except ValueError: raise ValueError(f"Invalid new_due_date format: '{new_due_date_iso}'. Expected YYYY-MM-DD.")
                 if task.due_date != parsed_due_date: task.due_date = parsed_due_date; updated = True
         
-        # Refined logic for details and details_md_path
-        if new_details is not None: # User explicitly wants to interact with details
-            if task.details_md_path is None: # If no path exists yet, generate it
+        if new_details is not None:
+            if task.details_md_path is None:
                 task.details_md_path = utils.generate_markdown_file_path(task.id, "task", base_data_dir)
-            # Now task.details_md_path is guaranteed to be set
-            utils.write_markdown_file(task.details_md_path, new_details) # Write content (even if empty string)
-            updated = True # Mark as updated to ensure DB save of path and modified_at
+            utils.write_markdown_file(task.details_md_path, new_details)
+            updated = True
+        
+        # New logic to handle explicit path updates
+        if new_details_md_path is not None and task.details_md_path != new_details_md_path:
+            task.details_md_path = new_details_md_path
+            updated = True
 
         if clear_project:
             if task.project_id is not None: task.project_id = None; updated = True
@@ -205,7 +207,6 @@ def get_task_file_path(
     if file_type != "details": pass 
     task = find_task(task_identifier, project_identifier=project_identifier_context, base_data_dir=base_data_dir)
     if not task:
-        # Re-call _resolve_task_id to get its specific error message if find_task returned None
         conn = db.get_db_connection(utils.get_db_path(base_data_dir))
         try: _resolve_task_id(conn, task_identifier, project_identifier=project_identifier_context)
         except ValueError as e: raise ValueError(f"For getpath: {e}") 
