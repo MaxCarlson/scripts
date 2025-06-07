@@ -7,13 +7,14 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Header, Footer, Static, Markdown, ListView
+from textual.widgets import Header, Static, Markdown, ListView
 from textual.reactive import reactive
 
 from ... import project_ops, task_ops, utils
 from ...models import Project, TaskStatus
 from ..widgets.lists import ProjectList, ProjectListItem
 from ..widgets.dialogs import InputDialog
+from ..widgets.footer import CustomFooter
 from .tasks import TasksScreen 
 
 log = logging.getLogger(__name__)
@@ -24,7 +25,8 @@ class ProjectsScreen(Screen):
         Binding("ctrl+p", "app.add_project_prompt", "Add", show=True),
         Binding("e", "edit_selected_project", "Edit", show=True),
         Binding("delete", "delete_selected_project", "Delete", show=True),
-        Binding("t", "toggle_detail_view", "Tasks/Desc", show=True),
+        Binding("v", "toggle_detail_view", "View", show=True),
+        Binding("q", "app.quit", "Quit", show=True),
     ]
 
     detail_view_mode: reactive[str] = reactive("tasks")
@@ -37,7 +39,7 @@ class ProjectsScreen(Screen):
             yield Static("Details:", classes="view_header", id="project_detail_header") 
             with VerticalScroll(id="project_detail_scroll"):
                 yield Markdown("Highlight a project for details.", id="project_detail_markdown")
-        yield Footer()
+        yield CustomFooter()
 
     async def on_mount(self) -> None: 
         await self.reload_projects_action()
@@ -48,14 +50,12 @@ class ProjectsScreen(Screen):
 
     async def reload_projects_action(self) -> None:
         plw = self.query_one(ProjectList)
-        # Store the currently highlighted project ID before reloading
         highlighted_project_id = self.app.selected_project.id if self.app.selected_project else None
         
         await plw.load_projects(self.app.base_data_dir)
         
-        # After loading, if there are projects, try to re-highlight the previous one, or default to first.
         if len(plw.children) > 0 and isinstance(plw.children[0], ProjectListItem):
-            new_index_to_highlight = 0 # Default to first item
+            new_index_to_highlight = 0
             if highlighted_project_id:
                 for idx, item_widget in enumerate(plw.children):
                     if isinstance(item_widget, ProjectListItem) and item_widget.project.id == highlighted_project_id:
@@ -63,7 +63,6 @@ class ProjectsScreen(Screen):
                         break
             plw.index = new_index_to_highlight
         else:
-            # If list is empty, clear the detail pane
             self.app.selected_project = None
             mdv = self.query_one("#project_detail_markdown", Markdown)
             mdv.update("No project selected.")
@@ -71,7 +70,6 @@ class ProjectsScreen(Screen):
         if hasattr(self.app, 'bell'): self.app.bell()
 
     async def _update_detail_view(self) -> None:
-        """Helper to refresh the detail view based on current mode and selection."""
         project = self.app.selected_project
         mdv = self.query_one("#project_detail_markdown", Markdown)
         detail_header = self.query_one("#project_detail_header", Static)
@@ -90,7 +88,7 @@ class ProjectsScreen(Screen):
                 except Exception as e: 
                     mdv.update(f"*Error loading description: {e}*")
             else:
-                mdv.update("*Project has no description file.*\n\n(Press 'T' to view tasks)")
+                mdv.update("*Project has no description file.*\n\n(Press 'V' to view tasks)")
         
         elif self.detail_view_mode == "tasks":
             detail_header.update("Top Tasks:")
@@ -111,7 +109,6 @@ class ProjectsScreen(Screen):
                 mdv.update(f"*Error loading tasks: {e}*")
 
     async def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        """This is the single source of truth. When highlight moves, update everything."""
         if event.list_view.id == "project_list_view":
             item = event.item
             if isinstance(item, ProjectListItem):
@@ -122,19 +119,14 @@ class ProjectsScreen(Screen):
                 await self._update_detail_view()
 
     async def watch_detail_view_mode(self, old_mode: str, new_mode: str) -> None:
-        """This watcher now just ensures a refresh when the mode is toggled by the 'T' key."""
         if self.app.screen is self:
             await self._update_detail_view()
 
     async def action_toggle_detail_view(self) -> None:
-        """Toggle between description and task list in the detail pane."""
         if self.app.selected_project is None:
             self.app.bell()
             return
-        if self.detail_view_mode == "description":
-            self.detail_view_mode = "tasks"
-        else:
-            self.detail_view_mode = "description"
+        self.detail_view_mode = "tasks" if self.detail_view_mode == "description" else "description"
 
     async def action_edit_selected_project(self) -> None:
         selected_project = self.app.selected_project

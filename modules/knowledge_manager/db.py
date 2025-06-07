@@ -69,12 +69,7 @@ def get_default_db_path(base_dir: Optional[Path] = None) -> Path:
     Uses ~/.local/share/knowledge_manager_data/ if base_dir is not provided
     (aligning with utils.py's DEFAULT_BASE_DATA_DIR_NAME).
     """
-    # This should align with utils.DEFAULT_BASE_DATA_DIR_NAME for consistency
-    # Assuming utils.py defines DEFAULT_BASE_DATA_DIR_NAME = "knowledge_manager_data"
-    # and utils.DB_FILE_NAME = "knowledge_manager.db"
     if base_dir:
-        # If base_dir is provided, it's assumed to be the root data dir
-        # e.g., ~/.local/share/knowledge_manager_data/
         km_data_dir = base_dir
     else:
         km_data_dir = Path.home() / ".local" / "share" / "knowledge_manager_data"
@@ -278,7 +273,7 @@ def get_tasks_by_title_prefix(
 
 def list_tasks(conn: sqlite3.Connection, 
                project_id: Optional[uuid.UUID] = None, 
-               status: Optional[TaskStatus] = None,
+               status_filter: Optional[List[TaskStatus]] = None,
                parent_task_id: Optional[uuid.UUID] = None,
                include_subtasks_of_any_parent: bool = False) -> List[Task]:
     base_sql = """
@@ -293,9 +288,12 @@ def list_tasks(conn: sqlite3.Connection,
     if project_id:
         conditions.append("project_id = ?")
         params.append(str(project_id))
-    if status:
-        conditions.append("status = ?")
-        params.append(status.value)
+    
+    if status_filter:
+        placeholders = ','.join('?' for _ in status_filter)
+        conditions.append(f"status IN ({placeholders})")
+        params.extend(s.value for s in status_filter)
+
     if parent_task_id is not None:
         conditions.append("parent_task_id = ?")
         params.append(str(parent_task_id))
@@ -304,7 +302,17 @@ def list_tasks(conn: sqlite3.Connection,
 
     if conditions:
         base_sql += " WHERE " + " AND ".join(conditions)
-    base_sql += " ORDER BY priority ASC, created_at ASC"
+    
+    base_sql += """
+    ORDER BY 
+        CASE status 
+            WHEN 'done' THEN 1
+            ELSE 0 
+        END, 
+        priority ASC, 
+        created_at ASC
+    """
+
     cursor = conn.cursor()
     cursor.execute(base_sql, params)
     rows = cursor.fetchall()
@@ -363,5 +371,3 @@ def delete_task(conn: sqlite3.Connection, task_id: uuid.UUID) -> bool:
     except sqlite3.Error as e:
         raise
     return cursor.rowcount > 0
-
-# End of File: knowledge_manager/db.py

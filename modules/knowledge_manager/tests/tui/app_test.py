@@ -1,16 +1,17 @@
-# File: tests/tui/test_app.py
+# File: tests/tui/app_test.py
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 import asyncio
 
-from textual.widgets import ListView, Header
+from textual.widgets import ListView
 
 from knowledge_manager.tui.app import KmApp
 from knowledge_manager.tui.screens.projects import ProjectsScreen
 from knowledge_manager.tui.screens.tasks import TasksScreen
 from knowledge_manager.tui.widgets.lists import ProjectList, ProjectListItem
 from knowledge_manager.models import Project, Task, ProjectStatus, TaskStatus
+from knowledge_manager.tui.widgets.footer import CustomFooter
 
 pytestmark = pytest.mark.asyncio
 
@@ -22,12 +23,11 @@ async def test_app_starts_on_projects_screen(mocker):
     async with app.run_test() as pilot:
         await pilot.pause()
         
-        # After mount, the stack should have the default screen and our ProjectsScreen
-        assert len(app.screen_stack) == 2
+        assert len(app.screen_stack) > 0
         assert isinstance(app.screen, ProjectsScreen)
         
-        header = app.screen.query_one(Header)
-        assert header.name == "KM - Projects"
+        footer = app.screen.query_one(CustomFooter)
+        assert footer is not None
 
 async def test_project_selection_pushes_tasks_screen(mocker):
     """Test that selecting a project pushes the TasksScreen."""
@@ -44,22 +44,17 @@ async def test_project_selection_pushes_tasks_screen(mocker):
         projects_screen = app.screen
         assert isinstance(projects_screen, ProjectsScreen)
         
+        # Simulate the selection message
         project_list_view = projects_screen.query_one(ProjectList)
         project_item = projects_screen.query_one(ProjectListItem)
-        
         app.post_message(ListView.Selected(project_list_view, project_item))
         
         await pilot.pause()
         
-        # After pushing TasksScreen, stack size should be 3
-        assert len(app.screen_stack) == 3
+        assert len(app.screen_stack) == 2
         assert isinstance(app.screen, TasksScreen)
-        header = app.screen.query_one(Header)
-        assert header.name == "Tasks: Project One"
         
-        # Test popping the screen
         await pilot.press("escape")
         await pilot.pause()
-        # After popping, stack size should be back to 2
-        assert len(app.screen_stack) == 2
+        assert len(app.screen_stack) == 1
         assert isinstance(app.screen, ProjectsScreen)

@@ -26,13 +26,11 @@ class KmApp(App[None]):
     selected_task: reactive[Optional[Task]] = reactive(None)     
     
     BINDINGS = [ 
-        Binding("q", "quit_or_pop_screen", "Back/Quit", show=True, priority=True),
+        Binding("q", "quit", "Quit", show=True, priority=True),
         Binding("ctrl+p", "add_project_prompt", "Add Proj", show=False), 
     ]
     def on_mount(self) -> None: self.push_screen("projects") 
-    def action_quit_or_pop_screen(self) -> None:
-        if len(self.screen_stack) > 1: self.pop_screen()
-        else: self.exit()
+
     async def on_list_view_selected(self, event: ListView.Selected) -> None:
         if event.list_view.id == "project_list_view":
             item = event.item

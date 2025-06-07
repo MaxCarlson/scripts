@@ -1,6 +1,6 @@
 # File: knowledge_manager/tui/widgets/lists.py
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 import logging
 import uuid
 
@@ -53,7 +53,7 @@ class ProjectList(ListView):
 
 class TaskList(ListView): 
     def compose(self) -> ComposeResult: yield from []
-    async def load_tasks(self, project: Optional[Project], base_data_dir: Optional[Path] = None) -> None:
+    async def load_tasks(self, project: Optional[Project], status_filter: Optional[List[TaskStatus]] = None, base_data_dir: Optional[Path] = None) -> None:
         await self.query("*").remove()
         self.clear()
         app = self.app
@@ -65,6 +65,7 @@ class TaskList(ListView):
         try:
             tasks = task_ops.list_all_tasks(
                 project.id, 
+                status_filter=status_filter,
                 include_subtasks_of_any_parent=True,
                 base_data_dir=base_data_dir
             )
@@ -73,16 +74,22 @@ class TaskList(ListView):
             else:
                 tasks_by_id = {task.id: task for task in tasks}
                 children_by_parent = {}
-                for task in tasks:
-                    children_by_parent.setdefault(task.parent_task_id, []).append(task)
-                
-                def add_items_recursively(parent_id: Optional[uuid.UUID], level: int):
-                    children = children_by_parent.get(parent_id, [])
-                    for task in children:
-                        self.append(TaskListItem(task, level=level))
-                        add_items_recursively(task.id, level + 1)
+                root_tasks = []
 
-                add_items_recursively(None, 0)
+                for task in tasks:
+                    if task.parent_task_id:
+                        children_by_parent.setdefault(task.parent_task_id, []).append(task)
+                    else:
+                        root_tasks.append(task)
+                
+                def add_items_recursively(tasks_to_add: List[Task], level: int):
+                    for task in tasks_to_add:
+                        self.append(TaskListItem(task, level=level))
+                        children = children_by_parent.get(task.id, [])
+                        if children:
+                            add_items_recursively(children, level + 1)
+
+                add_items_recursively(root_tasks, 0)
 
         except Exception as e: 
             log.exception(f"Failed to load tasks for project {project.id if project else 'None'}.")

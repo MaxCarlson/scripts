@@ -1,20 +1,13 @@
 # File: knowledge_manager/project_ops.py
 import uuid
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Union
 import sqlite3 # For type hinting and potential error catching
 
 from . import db # Relative import for db module in the same package
 from .models import Project, ProjectStatus
 # Use relative import for utils if it's consistently in the same package
 from . import utils 
-# from .utils import ( # Or specific imports if preferred
-#     get_db_path,
-#     generate_markdown_file_path,
-#     write_markdown_file,
-#     read_markdown_file,
-#     get_current_utc_timestamp
-# )
 
 def create_new_project(
     name: str,
@@ -53,18 +46,28 @@ def create_new_project(
         if conn: 
             conn.close()
 
-def find_project(identifier: str, base_data_dir: Optional[Path] = None) -> Optional[Project]:
+def find_project(identifier: Union[str, uuid.UUID], base_data_dir: Optional[Path] = None) -> Optional[Project]:
     db_p = utils.get_db_path(base_data_dir)
     conn = db.get_db_connection(db_p)
     try:
+        project: Optional[Project] = None
+        # If it's a UUID object, just use it.
+        if isinstance(identifier, uuid.UUID):
+            return db.get_project_by_id(conn, identifier)
+
+        # If it's a string, try to parse as UUID first.
         try:
             project_id = uuid.UUID(identifier)
             project = db.get_project_by_id(conn, project_id)
-            if project:
-                return project
-        except ValueError:
-            pass
-        return db.get_project_by_name(conn, identifier)
+        except (ValueError, TypeError):
+            # Not a valid UUID string, so it must be a name.
+            project = None
+        
+        # If found by UUID string, return. Otherwise, search by name.
+        if project:
+            return project
+        else:
+            return db.get_project_by_name(conn, str(identifier))
     finally:
         if conn:
             conn.close()
@@ -82,7 +85,7 @@ def list_all_projects(
             conn.close()
 
 def update_project_details(
-    project_identifier: str,
+    project_identifier: Union[str, uuid.UUID],
     new_name: Optional[str] = None,
     new_status: Optional[ProjectStatus] = None,
     new_description: Optional[str] = None,
@@ -114,8 +117,6 @@ def update_project_details(
             updated = True 
         
         if updated:
-            # REMOVED: project.modified_at = utils.get_current_utc_timestamp() 
-            # Let db.update_project handle setting the modified_at timestamp
             return db.update_project(conn, project) 
         else:
             return project # No changes made, return original found project
@@ -156,5 +157,3 @@ def delete_project_permanently(
     finally:
         if conn:
             conn.close()
-
-# End of File: knowledge_manager/project_ops.py
