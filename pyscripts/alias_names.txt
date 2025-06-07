@@ -10,6 +10,8 @@ copy_to_clipboard.py : c2cr : -r
 replace_with_clipboard.py : rwc :
 output_to_clipboard.py : otc :
 clipboard_diff.py : cld : 
+copy_buffer_to_clipboard.py : cb2c :
+copy_buffer_to_clipboard.py : cb2cf : -f
 folder_stats.py : fs :
 folder_stats.py : fs-all : -a
 
