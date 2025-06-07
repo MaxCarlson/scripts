@@ -40,6 +40,22 @@ def test_is_termux_false_wrong_shell(monkeypatch):
     sys_utils = SystemUtils()
     assert sys_utils.is_termux() is False
 
+def test_is_tmux_true(monkeypatch):
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,21396,0")
+    monkeypatch.setattr(platform, "system", fake_platform_system_linux)
+    sys_utils = SystemUtils()
+    assert sys_utils.is_tmux() is True
+
+def test_is_tmux_false(monkeypatch):
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.setattr(platform, "system", fake_platform_system_linux)
+    sys_utils = SystemUtils()
+    assert sys_utils.is_tmux() is False
+
+def test_run_command_success(monkeypatch):
+    # Mock subprocess.run to avoid actual command execution
+    mock_completed_process = subprocess.CompletedProcess(args="echo test", returncode=0, stdout="test\n", stderr="")
+
 def test_run_command_success(monkeypatch):
     # Mock subprocess.run to avoid actual command execution
     mock_completed_process = subprocess.CompletedProcess(args="echo test", returncode=0, stdout="test\n", stderr="")
