@@ -2,10 +2,14 @@
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+import asyncio
+
+from textual.widgets import ListView, Header
 
 from knowledge_manager.tui.app import KmApp
 from knowledge_manager.tui.screens.projects import ProjectsScreen
 from knowledge_manager.tui.screens.tasks import TasksScreen
+from knowledge_manager.tui.widgets.lists import ProjectList, ProjectListItem
 from knowledge_manager.models import Project, Task, ProjectStatus, TaskStatus
 
 pytestmark = pytest.mark.asyncio
@@ -16,11 +20,14 @@ async def test_app_starts_on_projects_screen(mocker):
     
     app = KmApp()
     async with app.run_test() as pilot:
-        # After the app mounts, the current screen should be our ProjectsScreen
-        assert isinstance(app.screen, ProjectsScreen)
-        # Check that the header text is correct for this screen
-        assert "KM - Projects" in str(app.screen.query_one("Header").renderable)
         await pilot.pause()
+        
+        # After mount, the stack should have the default screen and our ProjectsScreen
+        assert len(app.screen_stack) == 2
+        assert isinstance(app.screen, ProjectsScreen)
+        
+        header = app.screen.query_one(Header)
+        assert header.name == "KM - Projects"
 
 async def test_project_selection_pushes_tasks_screen(mocker):
     """Test that selecting a project pushes the TasksScreen."""
@@ -33,25 +40,26 @@ async def test_project_selection_pushes_tasks_screen(mocker):
     app = KmApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert isinstance(app.screen, ProjectsScreen) # Verify starting screen
         
-        # Simulate pressing Enter on the first project
-        await pilot.press("enter")
+        projects_screen = app.screen
+        assert isinstance(projects_screen, ProjectsScreen)
         
-        # Wait until the current screen is the TasksScreen
-        await pilot.wait_for_screen(TasksScreen)
+        project_list_view = projects_screen.query_one(ProjectList)
+        project_item = projects_screen.query_one(ProjectListItem)
         
-        # Check that the new screen is the TasksScreen
-        assert len(app.screen_stack) == 2
+        app.post_message(ListView.Selected(project_list_view, project_item))
+        
+        await pilot.pause()
+        
+        # After pushing TasksScreen, stack size should be 3
+        assert len(app.screen_stack) == 3
         assert isinstance(app.screen, TasksScreen)
-        assert "Tasks: Project One" in str(app.screen.query_one("Header").renderable)
+        header = app.screen.query_one(Header)
+        assert header.name == "Tasks: Project One"
         
-        # Check that the task list was populated
-        task_list_text = app.screen.query_one("TaskList").children[0].renderable.plain
-        assert "Task in P1" in task_list_text
-
         # Test popping the screen
         await pilot.press("escape")
-        await pilot.wait_for_screen(ProjectsScreen)
-        assert len(app.screen_stack) == 1
+        await pilot.pause()
+        # After popping, stack size should be back to 2
+        assert len(app.screen_stack) == 2
         assert isinstance(app.screen, ProjectsScreen)

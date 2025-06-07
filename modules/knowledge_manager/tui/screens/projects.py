@@ -9,9 +9,10 @@ from textual.containers import Vertical, VerticalScroll, HorizontalScroll
 from textual.screen import Screen
 from textual.widgets import Header, Footer, Static, Markdown, Button, ListView
 from textual.reactive import reactive
+from rich.text import Text
 
 from ... import project_ops, task_ops, utils
-from ...models import Project
+from ...models import Project, TaskStatus
 from ..widgets.lists import ProjectList, ProjectListItem
 from ..widgets.dialogs import InputDialog
 from .tasks import TasksScreen 
@@ -24,10 +25,9 @@ class ProjectsScreen(Screen):
         Binding("ctrl+p", "app.add_project_prompt", "Add Project", show=False),
         Binding("e", "edit_selected_project", "Edit Project", show=False),
         Binding("delete", "delete_selected_project", "Delete Project", show=False),
-        Binding("t", "toggle_detail_view", "Toggle Details", show=False), # For toggle button
+        Binding("t", "toggle_detail_view", "Tasks/Desc", show=True), 
     ]
 
-    # Reactive variable to control what's shown in the detail pane
     detail_view_mode: reactive[str] = reactive("description")
 
     def compose(self) -> ComposeResult:
@@ -37,7 +37,7 @@ class ProjectsScreen(Screen):
                 yield Button("Add (^P)", id="btn_add_project", variant="success")
                 yield Button("Edit (E)", id="btn_edit_project", variant="primary")
                 yield Button("Delete", id="btn_delete_project", variant="error")
-                yield Button("Tasks/Desc (T)", id="btn_toggle_details") # New Toggle Button
+                yield Button("Tasks/Desc (T)", id="btn_toggle_details") 
             yield Static("Projects:", classes="view_header")
             with VerticalScroll(id="project_list_scroll"): yield ProjectList(id="project_list_view")
             yield Static("Details:", classes="view_header", id="project_detail_header") 
@@ -55,23 +55,29 @@ class ProjectsScreen(Screen):
     async def reload_projects_action(self) -> None:
         plw = self.query_one(ProjectList)
         await plw.load_projects(self.app.base_data_dir)
-        self.query_one(Markdown).update("Highlight project for details.")
-        self.app.selected_project = None
+        
+        if len(plw.children) > 0 and isinstance(plw.children[0], ProjectListItem):
+            plw.index = 0 
+        else:
+            self.app.selected_project = None
+            await self._update_detail_view()
+
         if hasattr(self.app, 'bell'): self.app.bell()
 
     async def _update_detail_view(self) -> None:
         """Helper to refresh the detail view based on current mode and selection."""
         project = self.app.selected_project
-        mdv = self.query_one(Markdown)
+        mdv = self.query_one("#project_detail_markdown", Markdown)
+        detail_header = self.query_one("#project_detail_header", Static)
         
         if not project:
             mdv.update("No project selected.")
+            detail_header.update("Details:")
             return
 
-        # Show description if in that mode
         if self.detail_view_mode == "description":
-            self.query_one("#project_detail_header", Static).update("Project Details:")
-            if project.description_md_path:
+            detail_header.update("Project Details:")
+            if project.description_md_path and project.description_md_path.exists():
                 try: 
                     content = utils.read_markdown_file(project.description_md_path)
                     mdv.update(content or "*Description file is empty.*")
@@ -80,46 +86,48 @@ class ProjectsScreen(Screen):
             else:
                 mdv.update("*Project has no description file.*\n\n(Press 'T' to view tasks)")
         
-        # Show task list if in that mode
         elif self.detail_view_mode == "tasks":
-            self.query_one("#project_detail_header", Static).update("Top Tasks:")
+            detail_header.update("Top Tasks:")
             try:
                 tasks = task_ops.list_all_tasks(
                     project_identifier=project.id,
                     base_data_dir=self.app.base_data_dir,
-                    # For now, just get all tasks, could limit later
                 )
                 if not tasks:
                     mdv.update("*No tasks in this project.*")
                 else:
-                    # Format tasks as a markdown list
-                    task_list_md = "\n".join([f"* {t.title} `[{t.status.value}]`" for t in tasks])
-                    mdv.update(task_list_md)
+                    task_list_renderable = Text()
+                    for task in tasks:
+                        status_icon = "✓" if task.status == TaskStatus.DONE else ("…" if task.status == TaskStatus.IN_PROGRESS else "☐")
+                        task_list_renderable.append(f"{status_icon} {task.title} ", style="default")
+                        task_list_renderable.append(f"[{task.status.value}]\n", style="dim")
+                    mdv.update(task_list_renderable)
             except Exception as e:
                 mdv.update(f"*Error loading tasks: {e}*")
 
     async def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        """This is the key event handler. When an item is highlighted, update everything."""
         if event.list_view.id == "project_list_view":
             item = event.item
             if isinstance(item, ProjectListItem):
+                # Set the app-level selected project. This IS the selection logic.
                 self.app.selected_project = item.project
-                # If there's no description, default to showing tasks instead.
+                # When highlighting a new project, decide the default detail view mode.
                 if not item.project.description_md_path:
+                    # If the mode is already "tasks", we still need to refresh.
+                    # So we don't just set the mode, we directly call update.
                     self.detail_view_mode = "tasks"
                 else:
                     self.detail_view_mode = "description"
+                # Directly update the UI.
+                await self._update_detail_view()
             else:
+                # No valid item is highlighted (e.g., list is empty or message is highlighted)
                 self.app.selected_project = None
-                await self._update_detail_view() # Clear view if no project selected
+                await self._update_detail_view()
 
-    # This is a "watch" method that automatically runs when self.detail_view_mode changes
     async def watch_detail_view_mode(self, old_mode: str, new_mode: str) -> None:
-        await self._update_detail_view()
-
-    # This is a "watch" method for the app-level selected_project
-    async def watch_selected_project(self, old_project: Optional[Project], new_project: Optional[Project]) -> None:
-        # This is triggered from the main app when self.app.selected_project changes.
-        # We need to ensure this screen is active before updating its UI.
+        """This watcher now just ensures a refresh when the mode is toggled by the 'T' key."""
         if self.app.screen is self:
             await self._update_detail_view()
 
@@ -132,6 +140,9 @@ class ProjectsScreen(Screen):
 
     async def action_toggle_detail_view(self) -> None:
         """Toggle between description and task list in the detail pane."""
+        if self.app.selected_project is None:
+            self.app.bell() 
+            return
         if self.detail_view_mode == "description":
             self.detail_view_mode = "tasks"
         else:
