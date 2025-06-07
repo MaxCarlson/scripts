@@ -1,6 +1,6 @@
 # File: knowledge_manager/tui/screens/tasks.py
 from pathlib import Path
-from typing import Optional, cast, List
+from typing import Optional, cast, List as PyList
 import uuid
 import os
 import subprocess
@@ -26,11 +26,11 @@ from ..widgets.footer import CustomFooter
 log = logging.getLogger(__name__)
 
 class TaskViewFilter(Enum):
-    ALL = "All"
-    TODO = "Todo"
-    IN_PROGRESS = "In-Progress"
     ACTIVE = "Active (Todo/In-Progress)"
     DONE = "Done"
+    TODO = "Todo"
+    IN_PROGRESS = "In-Progress"
+    ALL = "All"
 
 class TasksScreen(Screen):
     BINDINGS = [
@@ -49,7 +49,7 @@ class TasksScreen(Screen):
     ]
     
     view_mode: reactive[str] = reactive("full")
-    task_filter: reactive[TaskViewFilter] = reactive(TaskViewFilter.ALL)
+    task_filter: reactive[TaskViewFilter] = reactive(TaskViewFilter.ACTIVE)
     reparenting_task: reactive[Optional[Task]] = reactive(None)
 
     def __init__(self, project: Project, **kwargs): 
@@ -127,7 +127,7 @@ class TasksScreen(Screen):
             TaskViewFilter.DONE: [TaskStatus.DONE],
             TaskViewFilter.ACTIVE: [TaskStatus.TODO, TaskStatus.IN_PROGRESS],
         }
-        active_filter: Optional[List[TaskStatus]] = status_map.get(self.task_filter)
+        active_filter: Optional[PyList[TaskStatus]] = status_map.get(self.task_filter)
 
         if self.current_project: 
             await task_list_widget.load_tasks(self.current_project, status_filter=active_filter, base_data_dir=self.app.base_data_dir)
