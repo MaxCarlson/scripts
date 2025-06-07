@@ -14,6 +14,10 @@ ListItem.--highlight > Label { color: $text; }
 ListView > ListItem > Label.message-label { width: 100%; content-align: center middle; color: $text-muted; }
 ListView > ListItem > Label { color: $text; }
 ListView > ListItem.--highlight > Label { color: $text; }
+.list-item-label {
+    width: 100%;
+    height: auto;
+}
 InputDialog { align: center middle; }
 InputDialog > Vertical { width: 80%; max-width: 60; height: auto; border: thick $primary-background-darken-2; background: $surface; padding: 1 2;}
 InputDialog Input { margin-bottom: 1; border: tall $primary;}

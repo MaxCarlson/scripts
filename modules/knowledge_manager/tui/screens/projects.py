@@ -1,6 +1,6 @@
 # File: knowledge_manager/tui/screens/projects.py
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List as PyList
 import logging
 
 from textual.app import ComposeResult
@@ -11,7 +11,7 @@ from textual.widgets import Header, Static, Markdown, ListView
 from textual.reactive import reactive
 
 from ... import project_ops, task_ops, utils
-from ...models import Project, TaskStatus
+from ...models import Project, Task, TaskStatus
 from ..widgets.lists import ProjectList, ProjectListItem
 from ..widgets.dialogs import InputDialog
 from ..widgets.footer import CustomFooter
@@ -21,11 +21,11 @@ log = logging.getLogger(__name__)
 
 class ProjectsScreen(Screen): 
     BINDINGS = [
-        Binding("ctrl+r", "reload_projects", "Reload", show=True),
-        Binding("ctrl+p", "app.add_project_prompt", "Add", show=True),
+        Binding("a", "add_project_prompt", "Add", show=True),
         Binding("e", "edit_selected_project", "Edit", show=True),
-        Binding("delete", "delete_selected_project", "Delete", show=True),
         Binding("v", "toggle_detail_view", "View", show=True),
+        Binding("ctrl+x", "delete_selected_project", "Delete", show=True),
+        Binding("ctrl+r", "reload_projects", "Reload", show=True),
         Binding("q", "app.quit", "Quit", show=True),
     ]
 
@@ -44,6 +44,10 @@ class ProjectsScreen(Screen):
     async def on_mount(self) -> None: 
         await self.reload_projects_action()
         self.query_one("#project_list_view").focus()
+
+    async def action_add_project_prompt(self) -> None:
+        """Callback for the 'Add' keybinding."""
+        await self.app.action_add_project_prompt()
 
     async def action_reload_projects(self) -> None: 
         await self.reload_projects_action()
@@ -91,20 +95,38 @@ class ProjectsScreen(Screen):
                 mdv.update("*Project has no description file.*\n\n(Press 'V' to view tasks)")
         
         elif self.detail_view_mode == "tasks":
-            detail_header.update("Top Tasks:")
+            detail_header.update("Project Tasks:")
             try:
                 tasks = task_ops.list_all_tasks(
                     project_identifier=project.id,
+                    include_subtasks_of_any_parent=True,
                     base_data_dir=self.app.base_data_dir,
                 )
                 if not tasks:
                     mdv.update("*No tasks in this project.*")
                 else:
-                    task_list_md = ""
+                    tasks_by_id = {task.id: task for task in tasks}
+                    children_by_parent = {}
+                    root_tasks = []
                     for task in tasks:
-                        status_icon = "✓" if task.status == TaskStatus.DONE else ("…" if task.status == TaskStatus.IN_PROGRESS else "☐")
-                        task_list_md += f"* {status_icon} {task.title} `[{task.status.value}]`\n"
-                    mdv.update(task_list_md)
+                        if task.parent_task_id:
+                            children_by_parent.setdefault(task.parent_task_id, []).append(task)
+                        else:
+                            root_tasks.append(task)
+
+                    md_lines = []
+                    def build_md_recursively(tasks_to_render: PyList[Task], level: int):
+                        for task in tasks_to_render:
+                            indent = "  " * level
+                            status_icon = "✓" if task.status == TaskStatus.DONE else ("…" if task.status == TaskStatus.IN_PROGRESS else "☐")
+                            md_lines.append(f"{indent}* {status_icon} {task.title} `[{task.status.value}]`")
+                            child_tasks = children_by_parent.get(task.id, [])
+                            if child_tasks:
+                                build_md_recursively(child_tasks, level + 1)
+                    
+                    build_md_recursively(root_tasks, 0)
+                    mdv.update("\n".join(md_lines))
+
             except Exception as e:
                 mdv.update(f"*Error loading tasks: {e}*")
 
@@ -144,10 +166,10 @@ class ProjectsScreen(Screen):
         selected_project = self.app.selected_project
         if not selected_project: self.notify(message="No project selected.", title="Delete Project", severity="warning"); return
         async def confirm_cb(name_check: str):
-            if name_check.lower() == selected_project.name.lower():
+            if name_check.lower() == "delete":
                 try:
                     project_ops.delete_project_permanently(selected_project.id, base_data_dir=self.app.base_data_dir)
                     self.notify(message=f"Project '{selected_project.name}' deleted.", title="Project Deleted")
                     await self.reload_projects_action()
                 except Exception as e: self.notify(message=f"Error: {e}", title="Error", severity="error")
-        await self.app.push_screen(InputDialog(prompt_text=f"This is permanent. Type '{selected_project.name}' to confirm:"), confirm_cb)
+        await self.app.push_screen(InputDialog(prompt_text=f"This is permanent. Type 'delete' to confirm:"), confirm_cb)

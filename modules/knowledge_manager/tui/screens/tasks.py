@@ -29,23 +29,26 @@ class TaskViewFilter(Enum):
     ALL = "All"
     TODO = "Todo"
     IN_PROGRESS = "In-Progress"
+    ACTIVE = "Active (Todo/In-Progress)"
     DONE = "Done"
 
 class TasksScreen(Screen):
     BINDINGS = [
         Binding("escape", "cancel_or_pop", "Back/Cancel", show=True, priority=True), 
-        Binding("ctrl+r", "reload_tasks", "Reload", show=True),
         Binding("a", "add_task_prompt", "Add Task", show=True), 
         Binding("s", "add_subtask_prompt", "Add Subtask", show=True),
         Binding("e", "edit_selected_task", "Edit Details", show=True), 
         Binding("d", "cycle_task_status", "Cycle Status", show=True),
         Binding("f", "cycle_filter", "Filter", show=True),
         Binding("m", "reparent_task", "Move", show=True),
-        Binding("delete", "delete_selected_task", "Delete", show=True),
         Binding("v", "toggle_view", "Toggle View", show=True),
+        Binding("ctrl+x", "delete_selected_task", "Delete", show=True),
+        Binding("ctrl+r", "reload_tasks", "Reload", show=True),
+        Binding("ctrl+d", "cycle_task_status_reverse", "Cycle Status Rev", show=False),
+        Binding("ctrl+f", "cycle_filter_reverse", "Filter Rev", show=False),
     ]
     
-    view_mode: reactive[str] = reactive("split")
+    view_mode: reactive[str] = reactive("full")
     task_filter: reactive[TaskViewFilter] = reactive(TaskViewFilter.ALL)
     reparenting_task: reactive[Optional[Task]] = reactive(None)
 
@@ -80,7 +83,6 @@ class TasksScreen(Screen):
         self.run_worker(self.reload_tasks_action)
 
     def watch_reparenting_task(self, old_task: Optional[Task], new_task: Optional[Task]) -> None:
-        """Update footer when entering/leaving reparenting mode."""
         footer = self.query_one(CustomFooter)
         if new_task:
             footer.update(f"[b]REPARENTING[/b] '{new_task.title}'. Select new parent and press [b]m[/b]. Press [b]escape[/b] to cancel.")
@@ -88,7 +90,6 @@ class TasksScreen(Screen):
             footer._update_bindings()
 
     async def action_cancel_or_pop(self) -> None:
-        """Custom escape handler to cancel reparenting mode or pop screen."""
         if self.reparenting_task:
             self.reparenting_task = None
         else:
@@ -97,11 +98,16 @@ class TasksScreen(Screen):
     async def action_toggle_view(self) -> None:
         self.view_mode = "full" if self.view_mode == "split" else "split"
 
-    async def action_cycle_filter(self) -> None:
-        current_idx = list(TaskViewFilter).index(self.task_filter)
-        next_idx = (current_idx + 1) % len(TaskViewFilter)
-        self.task_filter = list(TaskViewFilter)[next_idx]
+    async def action_cycle_filter(self, reverse: bool = False) -> None:
+        filters = list(TaskViewFilter)
+        current_idx = filters.index(self.task_filter)
+        direction = -1 if reverse else 1
+        next_idx = (current_idx + direction) % len(filters)
+        self.task_filter = filters[next_idx]
         self.notify(f"View filter set to: {self.task_filter.value}")
+
+    async def action_cycle_filter_reverse(self) -> None:
+        await self.action_cycle_filter(reverse=True)
 
     async def action_reload_tasks(self) -> None: await self.reload_tasks_action()
     async def reload_tasks_action(self, task_id_to_reselect: Optional[uuid.UUID] = None) -> None:
@@ -119,6 +125,7 @@ class TasksScreen(Screen):
             TaskViewFilter.TODO: [TaskStatus.TODO],
             TaskViewFilter.IN_PROGRESS: [TaskStatus.IN_PROGRESS],
             TaskViewFilter.DONE: [TaskStatus.DONE],
+            TaskViewFilter.ACTIVE: [TaskStatus.TODO, TaskStatus.IN_PROGRESS],
         }
         active_filter: Optional[List[TaskStatus]] = status_map.get(self.task_filter)
 
@@ -255,20 +262,18 @@ class TasksScreen(Screen):
         await self.reload_tasks_action(task_id_to_reselect=task_id_to_edit) 
         self.notify(message=f"Refreshed after editing '{original_title_for_notification}'.", title="Edit Complete")
 
-    async def action_cycle_task_status(self) -> None: 
+    async def action_cycle_task_status(self, reverse: bool = False) -> None: 
         selected_task = self.app.selected_task
         if not selected_task:
             self.notify(message="No task selected.", title="Task Status", severity="warning"); return
         
         task_id_to_reselect = selected_task.id 
-        current_status = selected_task.status
         
-        status_cycle = {
-            TaskStatus.TODO: TaskStatus.IN_PROGRESS,
-            TaskStatus.IN_PROGRESS: TaskStatus.DONE,
-            TaskStatus.DONE: TaskStatus.TODO,
-        }
-        new_status = status_cycle.get(current_status, TaskStatus.TODO)
+        status_cycle = [TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.DONE]
+        current_idx = status_cycle.index(selected_task.status)
+        direction = -1 if reverse else 1
+        new_idx = (current_idx + direction) % len(status_cycle)
+        new_status = status_cycle[new_idx]
 
         try: 
             updated_task = task_ops.mark_task_status(selected_task.id, new_status, base_data_dir=self.app.base_data_dir)
@@ -281,6 +286,9 @@ class TasksScreen(Screen):
         except Exception as e: 
             self.notify(message=f"Error updating status: {e}", title="Error", severity="error")
 
+    async def action_cycle_task_status_reverse(self) -> None:
+        await self.action_cycle_task_status(reverse=True)
+
     async def action_reparent_task(self) -> None:
         highlighted_task = self.app.selected_task
         if not highlighted_task:
@@ -289,7 +297,6 @@ class TasksScreen(Screen):
 
         if not self.reparenting_task:
             self.reparenting_task = highlighted_task
-            self.notify(f"Reparenting '{highlighted_task.title}'. Select a new parent and press 'm'.")
         else:
             child_task = self.reparenting_task
             parent_task = highlighted_task
