@@ -5,11 +5,10 @@ import logging
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll, HorizontalScroll
+from textual.containers import Vertical, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Header, Footer, Static, Markdown, Button, ListView
+from textual.widgets import Header, Footer, Static, Markdown, ListView
 from textual.reactive import reactive
-from rich.text import Text # This import is no longer needed here, but doesn't hurt
 
 from ... import project_ops, task_ops, utils
 from ...models import Project, TaskStatus
@@ -22,22 +21,17 @@ log = logging.getLogger(__name__)
 class ProjectsScreen(Screen): 
     BINDINGS = [
         Binding("ctrl+r", "reload_projects", "Reload", show=True),
-        Binding("ctrl+p", "app.add_project_prompt", "Add Project", show=False),
-        Binding("e", "edit_selected_project", "Edit Project", show=False),
-        Binding("delete", "delete_selected_project", "Delete Project", show=False),
-        Binding("t", "toggle_detail_view", "Tasks/Desc", show=True), 
+        Binding("ctrl+p", "app.add_project_prompt", "Add", show=True),
+        Binding("e", "edit_selected_project", "Edit", show=True),
+        Binding("delete", "delete_selected_project", "Delete", show=True),
+        Binding("t", "toggle_detail_view", "Tasks/Desc", show=True),
     ]
 
-    detail_view_mode: reactive[str] = reactive("description")
+    detail_view_mode: reactive[str] = reactive("tasks")
 
     def compose(self) -> ComposeResult:
         yield Header(name="KM - Projects")
         with Vertical(id="projects_view_container"):
-            with HorizontalScroll(id="project_actions_bar"):
-                yield Button("Add (^P)", id="btn_add_project", variant="success")
-                yield Button("Edit (E)", id="btn_edit_project", variant="primary")
-                yield Button("Delete", id="btn_delete_project", variant="error")
-                yield Button("Tasks/Desc (T)", id="btn_toggle_details") 
             yield Static("Projects:", classes="view_header")
             with VerticalScroll(id="project_list_scroll"): yield ProjectList(id="project_list_view")
             yield Static("Details:", classes="view_header", id="project_detail_header") 
@@ -108,11 +102,9 @@ class ProjectsScreen(Screen):
                 if not tasks:
                     mdv.update("*No tasks in this project.*")
                 else:
-                    # FIX: Build a Markdown STRING, not a Rich Text object
                     task_list_md = ""
                     for task in tasks:
                         status_icon = "✓" if task.status == TaskStatus.DONE else ("…" if task.status == TaskStatus.IN_PROGRESS else "☐")
-                        # Use Markdown list syntax
                         task_list_md += f"* {status_icon} {task.title} `[{task.status.value}]`\n"
                     mdv.update(task_list_md)
             except Exception as e:
@@ -123,11 +115,9 @@ class ProjectsScreen(Screen):
         if event.list_view.id == "project_list_view":
             item = event.item
             if isinstance(item, ProjectListItem):
-                # A valid project is highlighted. This IS the selection.
                 self.app.selected_project = item.project
                 await self._update_detail_view()
             else:
-                # No valid item is highlighted (e.g., list is empty or message is highlighted)
                 self.app.selected_project = None
                 await self._update_detail_view()
 
@@ -135,13 +125,6 @@ class ProjectsScreen(Screen):
         """This watcher now just ensures a refresh when the mode is toggled by the 'T' key."""
         if self.app.screen is self:
             await self._update_detail_view()
-
-    async def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn_add_project": await self.app.action_add_project_prompt()
-        elif event.button.id == "btn_edit_project": await self.action_edit_selected_project()
-        elif event.button.id == "btn_delete_project": await self.action_delete_selected_project()
-        elif event.button.id == "btn_toggle_details": await self.action_toggle_detail_view()
-        event.stop()
 
     async def action_toggle_detail_view(self) -> None:
         """Toggle between description and task list in the detail pane."""

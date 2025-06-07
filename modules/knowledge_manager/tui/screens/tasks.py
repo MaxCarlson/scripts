@@ -8,12 +8,12 @@ import logging
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll, HorizontalScroll
+from textual.containers import Vertical, VerticalScroll
 from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import (
     Header, Footer, Static, 
-    Markdown, Button, ListView, ListItem
+    Markdown, ListView, ListItem
 )
 
 from ... import task_ops, utils
@@ -27,9 +27,11 @@ class TasksScreen(Screen):
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Back", show=True, priority=True), 
         Binding("ctrl+r", "reload_tasks", "Reload", show=True),
-        Binding("a", "add_task_prompt", "Add Task", show=False), 
-        Binding("e", "edit_selected_task", "Edit Task", show=False), 
-        Binding("d", "toggle_selected_task_done", "Done/Todo", show=False), 
+        Binding("a", "add_task_prompt", "Add Task", show=True), 
+        Binding("e", "edit_selected_task", "Edit Details", show=True), 
+        Binding("d", "toggle_selected_task_done", "Done/Todo", show=True),
+        Binding("s", "add_subtask_prompt", "Add Subtask", show=True),
+        Binding("delete", "delete_selected_task", "Delete", show=True),
     ]
     
     def __init__(self, project: Project, **kwargs): 
@@ -40,10 +42,6 @@ class TasksScreen(Screen):
         project_name = self.current_project.name if self.current_project else "N/A"
         yield Header(name=f"Tasks: {project_name}")
         with Vertical(id="tasks_view_container"):
-            with HorizontalScroll(id="task_actions_bar"): 
-                yield Button("Add (A)", id="btn_add_task", variant="success")
-                yield Button("Edit (E)", id="btn_edit_task", variant="primary")
-                yield Button("Done/Todo (D)", id="btn_toggle_done", variant="default")
             yield Static(f"Tasks in '{project_name}':", classes="view_header")
             with VerticalScroll(id="task_list_scroll"): yield TaskList(id="task_list_view")
             yield Static("Details:", classes="view_header", id="task_detail_header") 
@@ -87,23 +85,62 @@ class TasksScreen(Screen):
                 else: md_viewer.update("*No details file.*")
             elif item is None: self.app.selected_task = None; md_viewer.update("No task selected.")
     
-    async def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn_add_task": await self.action_add_task_prompt()
-        elif event.button.id == "btn_edit_task": await self.action_edit_selected_task()
-        elif event.button.id == "btn_toggle_done": await self.action_toggle_selected_task_done()
-        event.stop()
-
     async def action_add_task_prompt(self) -> None: 
         if not self.current_project: self.notify(message="No project context.", title="Error", severity="error"); return
         async def cb(title:str):
             if title: 
                 try: 
-                    nt=task_ops.create_new_task(title,self.current_project.id if self.current_project else None ,self.app.base_data_dir)
+                    nt=task_ops.create_new_task(title,self.current_project.id if self.current_project else None , base_data_dir=self.app.base_data_dir)
                     await self.reload_tasks_action(task_id_to_reselect=nt.id)
                     self.notify(message=f"Task '{nt.title}' added.", title="Task Added")
                 except Exception as e: 
                     self.notify(message=f"Error: {e}", title="Error", severity="error")
         await self.app.push_screen(InputDialog(prompt_text="New task title:"), cb)
+
+    async def action_add_subtask_prompt(self) -> None:
+        parent_task = self.app.selected_task
+        if not parent_task:
+            self.notify("No parent task selected.", title="Add Subtask", severity="warning")
+            return
+        
+        async def cb(title: str):
+            if title:
+                try:
+                    new_task = task_ops.create_new_task(
+                        title=title,
+                        project_identifier=self.current_project.id if self.current_project else None,
+                        parent_task_identifier=parent_task.id,
+                        base_data_dir=self.app.base_data_dir
+                    )
+                    await self.reload_tasks_action(task_id_to_reselect=new_task.id)
+                    self.notify(f"Subtask '{new_task.title}' added to '{parent_task.title}'.")
+                except Exception as e:
+                    self.notify(f"Error: {e}", title="Error", severity="error")
+        
+        await self.app.push_screen(InputDialog(prompt_text=f"New subtask for '{parent_task.title}':"), cb)
+
+    async def action_delete_selected_task(self) -> None:
+        task_to_delete = self.app.selected_task
+        if not task_to_delete:
+            self.notify("No task selected to delete.", title="Delete Task", severity="warning")
+            return
+            
+        async def confirm_cb(confirm_str: str):
+            if confirm_str.lower() == "delete":
+                try:
+                    deleted = task_ops.delete_task_permanently(
+                        task_identifier=task_to_delete.id,
+                        base_data_dir=self.app.base_data_dir
+                    )
+                    if deleted:
+                        self.notify(f"Task '{task_to_delete.title}' deleted.")
+                        await self.reload_tasks_action()
+                    else:
+                        self.notify("Failed to delete task.", title="Error", severity="error")
+                except Exception as e:
+                    self.notify(f"Error: {e}", title="Error", severity="error")
+        
+        await self.app.push_screen(InputDialog(prompt_text=f"Type 'delete' to confirm deleting '{task_to_delete.title}':"), confirm_cb)
 
     async def action_edit_selected_task(self) -> None: 
         selected_task_obj = self.app.selected_task
