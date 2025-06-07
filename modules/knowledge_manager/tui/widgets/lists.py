@@ -2,6 +2,7 @@
 from pathlib import Path
 from typing import Optional
 import logging
+import uuid
 
 from textual.app import App, ComposeResult
 from textual.widgets import ListView, ListItem, Label
@@ -20,15 +21,17 @@ class ProjectListItem(ListItem):
         yield Label(f"{self.project.name} [{self.project.status.value}]")
 
 class TaskListItem(ListItem): 
-    def __init__(self, task_obj: Task) -> None: 
+    def __init__(self, task_obj: Task, level: int = 0) -> None: 
         super().__init__()
         self.task_data: Task = task_obj
+        self.level = level
         self.id = f"task-item-{task_obj.id}"
     def compose(self) -> ComposeResult: 
+        indent = "  " * self.level
         status_icon = "✓" if self.task_data.status == TaskStatus.DONE else ("…" if self.task_data.status == TaskStatus.IN_PROGRESS else "☐")
         due_str = f" (Due: {self.task_data.due_date.strftime('%b %d')})" if self.task_data.due_date else ""
         prio_str = f" P{self.task_data.priority}" if self.task_data.priority != 3 else "" 
-        display_string = f"{status_icon} {self.task_data.title}{prio_str}{due_str}"
+        display_string = f"{indent}{status_icon} {self.task_data.title}{prio_str}{due_str}"
         yield Label(display_string)
 
 class ProjectList(ListView):
@@ -40,7 +43,7 @@ class ProjectList(ListView):
         app.selected_project = None 
         try:
             projects = project_ops.list_all_projects(base_data_dir=base_data_dir)
-            if not projects: self.append(ListItem(Label("No projects. (Use buttons or ^P to Add)", classes="message-label")))
+            if not projects: self.append(ListItem(Label("No projects. (Use ^P to Add)", classes="message-label")))
             else:
                 for project in projects: self.append(ProjectListItem(project))
         except Exception as e: 
@@ -55,12 +58,32 @@ class TaskList(ListView):
         self.clear()
         app = self.app
         app.selected_task = None
-        if not project: self.append(ListItem(Label("No project selected.", classes="message-label"))); return
+        if not project:
+            self.append(ListItem(Label("No project selected.", classes="message-label")))
+            return
+        
         try:
-            tasks = task_ops.list_all_tasks(project.id, include_subtasks_of_any_parent=True, base_data_dir=base_data_dir)
-            if not tasks: self.append(ListItem(Label(f"No tasks in '{project.name}'. (Use 'Add' button)", classes="message-label")))
+            tasks = task_ops.list_all_tasks(
+                project.id, 
+                include_subtasks_of_any_parent=True,
+                base_data_dir=base_data_dir
+            )
+            if not tasks:
+                self.append(ListItem(Label(f"No tasks in '{project.name}'. (Use 'A' to Add)", classes="message-label")))
             else:
-                for task_obj in tasks: self.append(TaskListItem(task_obj))
+                tasks_by_id = {task.id: task for task in tasks}
+                children_by_parent = {}
+                for task in tasks:
+                    children_by_parent.setdefault(task.parent_task_id, []).append(task)
+                
+                def add_items_recursively(parent_id: Optional[uuid.UUID], level: int):
+                    children = children_by_parent.get(parent_id, [])
+                    for task in children:
+                        self.append(TaskListItem(task, level=level))
+                        add_items_recursively(task.id, level + 1)
+
+                add_items_recursively(None, 0)
+
         except Exception as e: 
             log.exception(f"Failed to load tasks for project {project.id if project else 'None'}.")
             self.append(ListItem(Label(f"Error: {str(e)[:100]}...", classes="message-label")))
