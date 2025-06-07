@@ -2,7 +2,7 @@ import os
 import glob
 import re
 import sys
-from debug_utils import write_debug  # Import the write_debug function from DebugUtils
+from cross_platform.debug_utils import write_debug
 
 
 def merge_files(base_folder, files=None, glob_pattern="*.txt", output_file=None, line_pattern=None,
