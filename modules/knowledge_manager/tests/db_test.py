@@ -276,13 +276,13 @@ def test_list_tasks(db_conn: sqlite3.Connection, sample_project: Project):
     # List all tasks for sample_project
     proj_tasks = list_tasks(db_conn, project_id=sample_project.id, include_subtasks_of_any_parent=True)
     assert len(proj_tasks) == 3
-    # Check order: priority then created_at (created_at is implicit here as they are added sequentially)
-    assert proj_tasks[0].title == task1.title # P1
-    assert proj_tasks[1].title == task3.title # P1
-    assert proj_tasks[2].title == task2.title # P2
+    # Check order: done is last, then priority, then created_at
+    assert proj_tasks[0].title == task1.title
+    assert proj_tasks[1].title == task3.title
+    assert proj_tasks[2].title == task2.title
 
     # List TODO tasks for sample_project
-    todo_proj_tasks = list_tasks(db_conn, project_id=sample_project.id, status=TaskStatus.TODO, include_subtasks_of_any_parent=True)
+    todo_proj_tasks = list_tasks(db_conn, project_id=sample_project.id, status_filter=[TaskStatus.TODO], include_subtasks_of_any_parent=True)
     assert len(todo_proj_tasks) == 1
     assert todo_proj_tasks[0].title == task1.title
 
@@ -496,14 +496,10 @@ def test_get_tasks_by_title_prefix_empty_prefix(db_conn: sqlite3.Connection):
 
     tasks = get_tasks_by_title_prefix(db_conn, "")
     assert len(tasks) == 2 # Should return all tasks, ordered by created_at DESC
-# In tests/db_test.py
-
-# ... (other tests) ...
 
 def test_get_tasks_by_title_prefix_partial_match_multiple(db_conn: sqlite3.Connection):
     proj = Project(name="Test Project for Prefix"); add_project(db_conn, proj)
     
-    # Explicitly set created_at times to be days apart for absolute clarity
     base_date = date(2023, 1, 1)
     
     task3_created_at = datetime.combine(base_date, datetime.min.time(), tzinfo=timezone.utc)
@@ -520,9 +516,8 @@ def test_get_tasks_by_title_prefix_partial_match_multiple(db_conn: sqlite3.Conne
 
     tasks = get_tasks_by_title_prefix(db_conn, "SearchMe")
     assert len(tasks) == 2
-    # Default order is created_at DESC, so task1 should be first
-    assert tasks[0].id == task1.id, f"Expected task1 ({task1.id}, created {task1.created_at}) first, got {tasks[0].id} (created {tasks[0].created_at})"
-    assert tasks[1].id == task2.id, f"Expected task2 ({task2.id}, created {task2.created_at}) second, got {tasks[1].id} (created {tasks[1].created_at})"
+    assert tasks[0].id == task1.id
+    assert tasks[1].id == task2.id
     assert task3.id not in [t.id for t in tasks]
 
 def test_get_tasks_by_title_prefix_with_limit(db_conn: sqlite3.Connection):
@@ -543,7 +538,5 @@ def test_get_tasks_by_title_prefix_with_limit(db_conn: sqlite3.Connection):
 
     tasks = get_tasks_by_title_prefix(db_conn, "LimitTest", limit=2)
     assert len(tasks) == 2
-    assert tasks[0].id == task1.id, f"Expected task1 ({task1.id}, created {task1.created_at}) first in limit, got {tasks[0].id} (created {tasks[0].created_at})"
-    assert tasks[1].id == task2.id, f"Expected task2 ({task2.id}, created {task2.created_at}) second in limit, got {tasks[1].id} (created {tasks[1].created_at})"
-
-# End of File: tests/db_test.py
+    assert tasks[0].id == task1.id
+    assert tasks[1].id == task2.id

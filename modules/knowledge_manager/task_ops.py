@@ -109,9 +109,11 @@ def find_task(
         if conn: conn.close()
 
 def list_all_tasks(
-    project_identifier: Optional[Union[str, uuid.UUID]] = None, status: Optional[TaskStatus] = None,
+    project_identifier: Optional[Union[str, uuid.UUID]] = None, 
+    status_filter: Optional[List[TaskStatus]] = None,
     parent_task_identifier: Optional[Union[str, uuid.UUID]] = None,
-    include_subtasks_of_any_parent: bool = False, base_data_dir: Optional[Path] = None
+    include_subtasks_of_any_parent: bool = False, 
+    base_data_dir: Optional[Path] = None
 ) -> List[Task]:
     db_p = utils.get_db_path(base_data_dir)
     conn = db.get_db_connection(db_p)
@@ -122,7 +124,7 @@ def list_all_tasks(
         if parent_task_identifier:
             resolved_parent_task_id = _resolve_task_id(conn, parent_task_identifier, project_identifier=resolved_project_id)
         return db.list_tasks(
-            conn, project_id=resolved_project_id, status=status,
+            conn, project_id=resolved_project_id, status_filter=status_filter,
             parent_task_id=resolved_parent_task_id,
             include_subtasks_of_any_parent=include_subtasks_of_any_parent
         )
@@ -133,8 +135,10 @@ def update_task_details_and_status(
     task_identifier: Union[str, uuid.UUID],
     new_title: Optional[str] = None, new_status: Optional[TaskStatus] = None,
     new_priority: Optional[int] = None, new_due_date_iso: Optional[str] = None, 
-    new_details: Optional[str] = None, new_details_md_path: Optional[Path] = None, # <-- NEW ARGUMENT
+    new_details: Optional[str] = None, new_details_md_path: Optional[Path] = None,
     new_project_identifier: Optional[Union[str, uuid.UUID]] = None,
+    new_parent_task_identifier: Optional[Union[str, uuid.UUID]] = None,
+    clear_parent: bool = False,
     clear_project: bool = False,
     current_project_context_for_search: Optional[Union[str, uuid.UUID]] = None,
     base_data_dir: Optional[Path] = None
@@ -170,7 +174,6 @@ def update_task_details_and_status(
             utils.write_markdown_file(task.details_md_path, new_details)
             updated = True
         
-        # New logic to handle explicit path updates
         if new_details_md_path is not None and task.details_md_path != new_details_md_path:
             task.details_md_path = new_details_md_path
             updated = True
@@ -182,6 +185,18 @@ def update_task_details_and_status(
             if task.project_id != resolved_new_project_id:
                 task.project_id = resolved_new_project_id; updated = True
         
+        if clear_parent:
+            if task.parent_task_id is not None:
+                task.parent_task_id = None
+                updated = True
+        elif new_parent_task_identifier is not None:
+            if str(new_parent_task_identifier) == str(task.id):
+                 raise ValueError("A task cannot be its own parent.")
+            resolved_new_parent_id = _resolve_task_id(conn, new_parent_task_identifier, project_identifier=task.project_id)
+            if task.parent_task_id != resolved_new_parent_id:
+                task.parent_task_id = resolved_new_parent_id
+                updated = True
+
         if updated: return db.update_task(conn, task)
         else: return task
     except ValueError as e: raise e 

@@ -1,10 +1,11 @@
 # File: knowledge_manager/tui/screens/tasks.py
 from pathlib import Path
-from typing import Optional, cast
+from typing import Optional, cast, List
 import uuid
 import os
 import subprocess
 import logging
+from enum import Enum
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -12,28 +13,42 @@ from textual.containers import Vertical, VerticalScroll
 from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import (
-    Header, Footer, Static, 
+    Header, Static, 
     Markdown, ListView, ListItem
 )
 
 from ... import task_ops, utils
 from ...models import Project, Task, TaskStatus
-from ..widgets.lists import TaskList, TaskListItem # Import custom widgets
+from ..widgets.lists import TaskList, TaskListItem
 from ..widgets.dialogs import InputDialog
+from ..widgets.footer import CustomFooter
 
 log = logging.getLogger(__name__)
 
+class TaskViewFilter(Enum):
+    ALL = "All"
+    TODO = "Todo"
+    IN_PROGRESS = "In-Progress"
+    DONE = "Done"
+
 class TasksScreen(Screen):
     BINDINGS = [
-        Binding("escape", "app.pop_screen", "Back", show=True, priority=True), 
+        Binding("escape", "cancel_or_pop", "Back/Cancel", show=True, priority=True), 
         Binding("ctrl+r", "reload_tasks", "Reload", show=True),
         Binding("a", "add_task_prompt", "Add Task", show=True), 
-        Binding("e", "edit_selected_task", "Edit Details", show=True), 
-        Binding("d", "toggle_selected_task_done", "Done/Todo", show=True),
         Binding("s", "add_subtask_prompt", "Add Subtask", show=True),
+        Binding("e", "edit_selected_task", "Edit Details", show=True), 
+        Binding("d", "cycle_task_status", "Cycle Status", show=True),
+        Binding("f", "cycle_filter", "Filter", show=True),
+        Binding("m", "reparent_task", "Move", show=True),
         Binding("delete", "delete_selected_task", "Delete", show=True),
+        Binding("v", "toggle_view", "Toggle View", show=True),
     ]
     
+    view_mode: reactive[str] = reactive("split")
+    task_filter: reactive[TaskViewFilter] = reactive(TaskViewFilter.ALL)
+    reparenting_task: reactive[Optional[Task]] = reactive(None)
+
     def __init__(self, project: Project, **kwargs): 
         super().__init__(**kwargs)
         self.current_project = project
@@ -42,25 +57,75 @@ class TasksScreen(Screen):
         project_name = self.current_project.name if self.current_project else "N/A"
         yield Header(name=f"Tasks: {project_name}")
         with Vertical(id="tasks_view_container"):
-            yield Static(f"Tasks in '{project_name}':", classes="view_header")
+            yield Static(f"Tasks in '{project_name}':", classes="view_header", id="task_list_header")
             with VerticalScroll(id="task_list_scroll"): yield TaskList(id="task_list_view")
             yield Static("Details:", classes="view_header", id="task_detail_header") 
             with VerticalScroll(id="task_detail_scroll"):
                 yield Markdown("Select a task to see its details.", id="task_detail_markdown")
-        yield Footer()
+        yield CustomFooter()
 
     async def on_mount(self) -> None:
         self.app.selected_project = self.current_project
         await self.reload_tasks_action()
         self.query_one("#task_list_view", TaskList).focus()
     
+    def watch_view_mode(self, old_mode: str, new_mode: str) -> None:
+        detail_pane = self.query_one("#task_detail_scroll")
+        detail_header = self.query_one("#task_detail_header")
+        is_split = new_mode == "split"
+        detail_pane.display = is_split
+        detail_header.display = is_split
+
+    def watch_task_filter(self, old_filter: TaskViewFilter, new_filter: TaskViewFilter) -> None:
+        self.run_worker(self.reload_tasks_action)
+
+    def watch_reparenting_task(self, old_task: Optional[Task], new_task: Optional[Task]) -> None:
+        """Update footer when entering/leaving reparenting mode."""
+        footer = self.query_one(CustomFooter)
+        if new_task:
+            footer.update(f"[b]REPARENTING[/b] '{new_task.title}'. Select new parent and press [b]m[/b]. Press [b]escape[/b] to cancel.")
+        else:
+            footer._update_bindings()
+
+    async def action_cancel_or_pop(self) -> None:
+        """Custom escape handler to cancel reparenting mode or pop screen."""
+        if self.reparenting_task:
+            self.reparenting_task = None
+        else:
+            await self.app.pop_screen()
+
+    async def action_toggle_view(self) -> None:
+        self.view_mode = "full" if self.view_mode == "split" else "split"
+
+    async def action_cycle_filter(self) -> None:
+        current_idx = list(TaskViewFilter).index(self.task_filter)
+        next_idx = (current_idx + 1) % len(TaskViewFilter)
+        self.task_filter = list(TaskViewFilter)[next_idx]
+        self.notify(f"View filter set to: {self.task_filter.value}")
+
     async def action_reload_tasks(self) -> None: await self.reload_tasks_action()
     async def reload_tasks_action(self, task_id_to_reselect: Optional[uuid.UUID] = None) -> None:
         task_list_widget: TaskList = self.query_one("#task_list_view", TaskList)
+        task_list_header = self.query_one("#task_list_header", Static)
+
+        project_name = self.current_project.name if self.current_project else "N/A"
+        filter_text = f" ({self.task_filter.value})" if self.task_filter != TaskViewFilter.ALL else ""
+        task_list_header.update(f"Tasks in '{project_name}':{filter_text}")
+
         self.app.selected_task = None 
         self.query_one("#task_detail_markdown", Markdown).update("Select a task to see its details.")
-        if self.current_project: await task_list_widget.load_tasks(self.current_project, base_data_dir=self.app.base_data_dir)
-        else: await task_list_widget.load_tasks(None, base_data_dir=self.app.base_data_dir) 
+        
+        status_map = {
+            TaskViewFilter.TODO: [TaskStatus.TODO],
+            TaskViewFilter.IN_PROGRESS: [TaskStatus.IN_PROGRESS],
+            TaskViewFilter.DONE: [TaskStatus.DONE],
+        }
+        active_filter: Optional[List[TaskStatus]] = status_map.get(self.task_filter)
+
+        if self.current_project: 
+            await task_list_widget.load_tasks(self.current_project, status_filter=active_filter, base_data_dir=self.app.base_data_dir)
+        else: 
+            await task_list_widget.load_tasks(None, status_filter=active_filter, base_data_dir=self.app.base_data_dir) 
         
         if task_id_to_reselect:
             new_index_to_highlight: Optional[int] = None
@@ -79,7 +144,7 @@ class TasksScreen(Screen):
             item = event.item 
             if isinstance(item, TaskListItem) and item.task_data:
                 self.app.selected_task = item.task_data; task = item.task_data
-                if task.details_md_path:
+                if task.details_md_path and task.details_md_path.exists():
                     try: content = utils.read_markdown_file(task.details_md_path); md_viewer.update(content or "*No details.*")
                     except Exception as e: md_viewer.update(f"*Error: {e}*")
                 else: md_viewer.update("*No details file.*")
@@ -190,12 +255,21 @@ class TasksScreen(Screen):
         await self.reload_tasks_action(task_id_to_reselect=task_id_to_edit) 
         self.notify(message=f"Refreshed after editing '{original_title_for_notification}'.", title="Edit Complete")
 
-    async def action_toggle_selected_task_done(self) -> None: 
+    async def action_cycle_task_status(self) -> None: 
         selected_task = self.app.selected_task
         if not selected_task:
             self.notify(message="No task selected.", title="Task Status", severity="warning"); return
+        
         task_id_to_reselect = selected_task.id 
-        new_status = TaskStatus.TODO if selected_task.status == TaskStatus.DONE else TaskStatus.DONE
+        current_status = selected_task.status
+        
+        status_cycle = {
+            TaskStatus.TODO: TaskStatus.IN_PROGRESS,
+            TaskStatus.IN_PROGRESS: TaskStatus.DONE,
+            TaskStatus.DONE: TaskStatus.TODO,
+        }
+        new_status = status_cycle.get(current_status, TaskStatus.TODO)
+
         try: 
             updated_task = task_ops.mark_task_status(selected_task.id, new_status, base_data_dir=self.app.base_data_dir)
             if updated_task: 
@@ -206,3 +280,35 @@ class TasksScreen(Screen):
                 self.notify(message="Failed to update task status.", title="Error", severity="error")
         except Exception as e: 
             self.notify(message=f"Error updating status: {e}", title="Error", severity="error")
+
+    async def action_reparent_task(self) -> None:
+        highlighted_task = self.app.selected_task
+        if not highlighted_task:
+            self.app.bell()
+            return
+
+        if not self.reparenting_task:
+            self.reparenting_task = highlighted_task
+            self.notify(f"Reparenting '{highlighted_task.title}'. Select a new parent and press 'm'.")
+        else:
+            child_task = self.reparenting_task
+            parent_task = highlighted_task
+
+            if child_task.id == parent_task.id:
+                self.notify("A task cannot be its own parent.", title="Error", severity="error")
+                self.reparenting_task = None
+                return
+
+            try:
+                task_ops.update_task_details_and_status(
+                    task_identifier=child_task.id,
+                    new_parent_task_identifier=parent_task.id,
+                    base_data_dir=self.app.base_data_dir
+                )
+                self.notify(f"Moved '{child_task.title}' under '{parent_task.title}'.")
+            except Exception as e:
+                self.notify(f"Error: {e}", title="Reparenting Error", severity="error")
+            finally:
+                child_id_to_reselect = child_task.id
+                self.reparenting_task = None
+                await self.reload_tasks_action(task_id_to_reselect=child_id_to_reselect)
