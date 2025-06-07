@@ -132,7 +132,7 @@ def list_projects(conn: sqlite3.Connection, status: Optional[ProjectStatus] = No
         params.append(status.value)
     if conditions:
         base_sql += " WHERE " + " AND ".join(conditions)
-    base_sql += " ORDER BY name ASC"
+    base_sql += " ORDER BY modified_at DESC"
     cursor = conn.cursor()
     cursor.execute(base_sql, params)
     rows = cursor.fetchall()
@@ -309,8 +309,7 @@ def list_tasks(conn: sqlite3.Connection,
             WHEN 'done' THEN 1
             ELSE 0 
         END, 
-        priority ASC, 
-        created_at ASC
+        modified_at DESC
     """
 
     cursor = conn.cursor()

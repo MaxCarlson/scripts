@@ -23,7 +23,8 @@ async def test_app_starts_on_projects_screen(mocker):
     async with app.run_test() as pilot:
         await pilot.pause()
         
-        assert len(app.screen_stack) > 0
+        # After mount, the first screen pushed is ProjectsScreen
+        assert len(app.screen_stack) == 2 # [_default, ProjectsScreen]
         assert isinstance(app.screen, ProjectsScreen)
         
         footer = app.screen.query_one(CustomFooter)
@@ -51,10 +52,12 @@ async def test_project_selection_pushes_tasks_screen(mocker):
         
         await pilot.pause()
         
-        assert len(app.screen_stack) == 2
+        # After pushing TasksScreen, stack size should be 3
+        assert len(app.screen_stack) == 3 # [_default, ProjectsScreen, TasksScreen]
         assert isinstance(app.screen, TasksScreen)
         
+        # Pop back to projects screen
         await pilot.press("escape")
         await pilot.pause()
-        assert len(app.screen_stack) == 1
+        assert len(app.screen_stack) == 2 # [_default, ProjectsScreen]
         assert isinstance(app.screen, ProjectsScreen)
