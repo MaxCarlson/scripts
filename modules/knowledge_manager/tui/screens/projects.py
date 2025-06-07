@@ -105,7 +105,6 @@ class ProjectsScreen(Screen):
                 if not tasks:
                     mdv.update("*No tasks in this project.*")
                 else:
-                    tasks_by_id = {task.id: task for task in tasks}
                     children_by_parent = {}
                     root_tasks = []
                     for task in tasks:
