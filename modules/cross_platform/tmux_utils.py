@@ -75,6 +75,40 @@ class TmuxManager: # Inherit from SystemUtils if common methods are needed
 
         else:
             print(out)
+    def capture_pane(self, start_line: str = '-', end_line: str = '-') -> str | None:
+        """
+        Captures the content of the current tmux pane, including scrollback history.
+        Args:
+            start_line: The start line to capture from. See tmux capture-pane -S.
+                        '-' means start of history. A negative number like '-1000'
+                        captures the last 1000 lines from history.
+            end_line: The end line to capture to. See tmux capture-pane -E.
+                      '-' means end of history (bottom of pane).
+        Returns:
+            The captured pane content as a string, or None on error.
+        """
+        # The '-J' flag joins wrapped lines, which is useful for copying commands.
+        rc, out, err = self._run_tmux_command(['capture-pane', '-pS', start_line, '-E', end_line, '-J'])
+        if rc == 0:
+            return out
+        else:
+            write_debug(f"Failed to capture pane. RC: {rc}, Error: {err}", channel="Error")
+            return None
+
+    def list_sessions_pretty(self):
+        rc, out, err = self._run_tmux_command(['list-sessions'])
+        if rc != 0:
+            # Tmux list-sessions returns non-zero with "no server running on /tmp/tmux-1000/default"
+            # or similar if no sessions, which is not an error for "ls" itself.
+            if "no server" in err.lower() or "no sessions" in err.lower(): # Check common messages
+                 print("No tmux sessions.")
+            elif err:
+                 print(f"Error listing sessions: {err}")
+            else: # Fallback if no specific error message but non-zero RC
+                 print("No tmux sessions or server not running.")
+
+        else:
+            print(out)
 
 
     def session_exists(self, session_name):
