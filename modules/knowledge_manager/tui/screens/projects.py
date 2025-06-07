@@ -9,7 +9,7 @@ from textual.containers import Vertical, VerticalScroll, HorizontalScroll
 from textual.screen import Screen
 from textual.widgets import Header, Footer, Static, Markdown, Button, ListView
 from textual.reactive import reactive
-from rich.text import Text
+from rich.text import Text # This import is no longer needed here, but doesn't hurt
 
 from ... import project_ops, task_ops, utils
 from ...models import Project, TaskStatus
@@ -54,13 +54,25 @@ class ProjectsScreen(Screen):
 
     async def reload_projects_action(self) -> None:
         plw = self.query_one(ProjectList)
+        # Store the currently highlighted project ID before reloading
+        highlighted_project_id = self.app.selected_project.id if self.app.selected_project else None
+        
         await plw.load_projects(self.app.base_data_dir)
         
+        # After loading, if there are projects, try to re-highlight the previous one, or default to first.
         if len(plw.children) > 0 and isinstance(plw.children[0], ProjectListItem):
-            plw.index = 0 
+            new_index_to_highlight = 0 # Default to first item
+            if highlighted_project_id:
+                for idx, item_widget in enumerate(plw.children):
+                    if isinstance(item_widget, ProjectListItem) and item_widget.project.id == highlighted_project_id:
+                        new_index_to_highlight = idx
+                        break
+            plw.index = new_index_to_highlight
         else:
+            # If list is empty, clear the detail pane
             self.app.selected_project = None
-            await self._update_detail_view()
+            mdv = self.query_one("#project_detail_markdown", Markdown)
+            mdv.update("No project selected.")
 
         if hasattr(self.app, 'bell'): self.app.bell()
 
@@ -96,30 +108,23 @@ class ProjectsScreen(Screen):
                 if not tasks:
                     mdv.update("*No tasks in this project.*")
                 else:
-                    task_list_renderable = Text()
+                    # FIX: Build a Markdown STRING, not a Rich Text object
+                    task_list_md = ""
                     for task in tasks:
                         status_icon = "✓" if task.status == TaskStatus.DONE else ("…" if task.status == TaskStatus.IN_PROGRESS else "☐")
-                        task_list_renderable.append(f"{status_icon} {task.title} ", style="default")
-                        task_list_renderable.append(f"[{task.status.value}]\n", style="dim")
-                    mdv.update(task_list_renderable)
+                        # Use Markdown list syntax
+                        task_list_md += f"* {status_icon} {task.title} `[{task.status.value}]`\n"
+                    mdv.update(task_list_md)
             except Exception as e:
                 mdv.update(f"*Error loading tasks: {e}*")
 
     async def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        """This is the key event handler. When an item is highlighted, update everything."""
+        """This is the single source of truth. When highlight moves, update everything."""
         if event.list_view.id == "project_list_view":
             item = event.item
             if isinstance(item, ProjectListItem):
-                # Set the app-level selected project. This IS the selection logic.
+                # A valid project is highlighted. This IS the selection.
                 self.app.selected_project = item.project
-                # When highlighting a new project, decide the default detail view mode.
-                if not item.project.description_md_path:
-                    # If the mode is already "tasks", we still need to refresh.
-                    # So we don't just set the mode, we directly call update.
-                    self.detail_view_mode = "tasks"
-                else:
-                    self.detail_view_mode = "description"
-                # Directly update the UI.
                 await self._update_detail_view()
             else:
                 # No valid item is highlighted (e.g., list is empty or message is highlighted)
@@ -141,7 +146,7 @@ class ProjectsScreen(Screen):
     async def action_toggle_detail_view(self) -> None:
         """Toggle between description and task list in the detail pane."""
         if self.app.selected_project is None:
-            self.app.bell() 
+            self.app.bell()
             return
         if self.detail_view_mode == "description":
             self.detail_view_mode = "tasks"
