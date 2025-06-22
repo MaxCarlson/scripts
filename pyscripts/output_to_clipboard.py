@@ -24,7 +24,7 @@ except ImportError:
     sys.exit(1)
 
 console_stdout = Console()
-console_stderr = Console(stderr=True) # For info, warnings, errors
+console_stderr = Console(stderr=True) # For info, warnings, errors, AND STATS TABLE
 
 # Define parser at module level
 parser = argparse.ArgumentParser(
@@ -39,6 +39,7 @@ parser = argparse.ArgumentParser(
         "  %(prog)s -- ls -l /tmp\n"
         "  %(prog)s -r 1\n"
         "  %(prog)s\n"
+        "  %(prog)s -w -- git status\n"
         "  %(prog)s --no-stats -- date\n\n"
         "Note: Use '--' before a command if it might be mistaken for an option."
     )
@@ -46,6 +47,10 @@ parser = argparse.ArgumentParser(
 parser.add_argument(
     '-r', '--replay-history', type=int, dest='replay_nth_command', metavar='N', default=None,
     help="Re-run from Nth most recent history command. Defaults to N=1 if no command given."
+)
+parser.add_argument(
+    "-w", "--wrap", action="store_true",
+    help="Wrap the command output in a code block with the command string as a header."
 )
 parser.add_argument(
     "--no-stats", action="store_true", help="Suppress statistics output."
@@ -56,9 +61,9 @@ parser.add_argument(
 )
 
 
-def run_command_and_copy_main(command_parts: list[str] | None, replay_nth: int | None, no_stats: bool):
+def run_command_and_copy_main(command_parts: list[str] | None, replay_nth: int | None, no_stats: bool, wrap: bool):
     stats_data = {}
-    operation_successful = False 
+    operation_successful = False
     user_cancelled_operation = False
     command_to_execute_str = ""
     exit_code = 0 # Default success
@@ -70,7 +75,7 @@ def run_command_and_copy_main(command_parts: list[str] | None, replay_nth: int |
             stats_data["Provided Command"] = command_to_execute_str
         elif replay_nth is not None:
             stats_data["Mode"] = f"Replay History (N={replay_nth})"
-            
+
             if replay_nth <= 0:
                 error_msg = "Value for --replay-history (-r) must be positive."
                 stats_data["Error"] = error_msg
@@ -79,8 +84,9 @@ def run_command_and_copy_main(command_parts: list[str] | None, replay_nth: int |
                 raise ValueError(error_msg)
 
             console_stderr.print(f"[INFO] Attempting to replay history entry N={replay_nth}...")
-            history_util = HistoryUtils()
-            
+            # Instantiate HistoryUtils only when needed
+            history_util = HistoryUtils() # This is where the error 'NoneType' was happening if HistoryUtils wasn't mocked.
+
             last_cmd_from_hist = history_util.get_nth_recent_command(replay_nth)
             stats_data["History Fetch Attempted For N"] = replay_nth
 
@@ -93,13 +99,13 @@ def run_command_and_copy_main(command_parts: list[str] | None, replay_nth: int |
                      console_stderr.print("[INFO] Shell type could not be determined. History fetching may be unreliable.")
                 exit_code = 1
                 raise ValueError(error_msg)
-            
+
             stats_data["History Command Found"] = last_cmd_from_hist
             console_stderr.print(f"[INFO] Found history command: '{last_cmd_from_hist}'")
 
             script_name = Path(sys.argv[0]).name
             script_name_stem = Path(sys.argv[0]).stem
-            
+
             cmd_parts_from_history = last_cmd_from_hist.split()
             is_self_call = False
             if cmd_parts_from_history:
@@ -127,8 +133,6 @@ def run_command_and_copy_main(command_parts: list[str] | None, replay_nth: int |
                 stats_data["User Confirmation"] = "Cancelled (KeyboardInterrupt)"
                 user_cancelled_operation = True
                 exit_code = 0 # Clean exit for user cancel
-                # Must return here to allow finally to print stats before sys.exit in __main__
-                # Returning exit_code as well
                 return operation_successful, user_cancelled_operation, "Error" in stats_data, exit_code
 
 
@@ -143,26 +147,23 @@ def run_command_and_copy_main(command_parts: list[str] | None, replay_nth: int |
                 exit_code = 0 # Clean exit
                 return operation_successful, user_cancelled_operation, "Error" in stats_data, exit_code
         else:
-            # This path should ideally not be reached if argparse logic in __main__ is correct
             stats_data["Error"] = "No command provided and no replay triggered."
             console_stderr.print("[bold red][ERROR] Internal Error: No command to execute.[/]")
             exit_code = 1
-            raise ValueError("No command to execute.") # Should be caught by __main__
+            raise ValueError("No command to execute.")
 
         # Execute the command if one was determined and not cancelled
         if not command_to_execute_str and not user_cancelled_operation:
-            # Should not happen if logic above is correct, but as a safeguard
             stats_data.setdefault("Error", "Command to execute was empty unexpectedly.")
             exit_code = 1
-            # No raise here, let finally block run, exit_code will be 1
-        elif command_to_execute_str : # Only run if there is a command string
+        elif command_to_execute_str :
             stats_data["Command Executed"] = command_to_execute_str
-            
+
             result = subprocess.run(
                 command_to_execute_str, shell=True, capture_output=True, text=True, check=False
             )
             stats_data["Command Exit Status"] = result.returncode
-            
+
             combined_output = result.stdout + result.stderr
             output_to_copy = combined_output.strip()
 
@@ -175,8 +176,15 @@ def run_command_and_copy_main(command_parts: list[str] | None, replay_nth: int |
                 stats_data["Lines Copied"] = 0
                 stats_data["Characters Copied"] = 0
             else:
+                if wrap:
+                    header = f"$ {command_to_execute_str}"
+                    output_to_copy = f"{header}\n```\n{output_to_copy}\n```"
+                    stats_data["Wrapping Mode"] = "Wrapped (command + code block)"
+                else:
+                    stats_data["Wrapping Mode"] = "Raw"
+
                 try:
-                    set_clipboard(output_to_copy) # CRITICAL CALL
+                    set_clipboard(output_to_copy)
                     console_stdout.print("Copied command output to clipboard.")
                     stats_data["Output Status"] = "Copied"
                     stats_data["Lines Copied"] = len(output_to_copy.splitlines())
@@ -186,79 +194,70 @@ def run_command_and_copy_main(command_parts: list[str] | None, replay_nth: int |
                     error_msg = "set_clipboard is not implemented. Cannot copy output."
                     stats_data["Error"] = error_msg
                     console_stderr.print(f"[bold red][ERROR] {error_msg}[/]")
-                    exit_code = 1 # Critical failure
-                    # No raise, let finally print stats
+                    exit_code = 1
                 except Exception as e_set:
                     error_msg = f"Failed to set clipboard: {e_set}"
                     stats_data["Error"] = error_msg
                     console_stderr.print(f"[bold red][ERROR] {error_msg}[/]")
-                    exit_code = 1 # Critical failure
-                    # No raise
+                    exit_code = 1
 
-            if result.returncode != 0 and exit_code == 0: # If command failed but clipboard op didn't set error
+            if result.returncode != 0 and exit_code == 0:
                 warning_msg = f"Command '{command_to_execute_str}' exited with status {result.returncode}"
                 console_stderr.print(f"[yellow][WARNING] {warning_msg}[/]")
                 stats_data["Command Warning"] = warning_msg
-                # Non-zero exit of command is a warning, not necessarily a script failure if output was copied.
-                # If we want script to exit with command's code, set exit_code = result.returncode here.
 
-    except ValueError as ve: # Handles known errors from this function's logic
-        # Error message printed by the raiser, exit_code should be set.
-        # If exit_code wasn't set by the raiser, set it here.
+    except ValueError as ve:
         if exit_code == 0: exit_code = 1
-    except Exception as e: # For truly unexpected errors within this function
+    except Exception as e:
         if exit_code == 0: exit_code = 1
         error_detail = f"An unexpected error occurred: {e}"
         stats_data.setdefault("Error", error_detail)
         console_stderr.print(f"[bold red]{error_detail}[/]")
-        # No raise, let finally handle stats. exit_code is now 1.
 
     finally:
         if not no_stats:
             table = Table(title="output_to_clipboard.py Statistics")
             table.add_column("Metric", style="cyan", overflow="fold")
             table.add_column("Value", overflow="fold")
-            if not stats_data : # If error before stats_data populated
+            if not stats_data :
                 stats_data["Status"] = "Operation incomplete due to early error."
             for key, value in stats_data.items():
                 table.add_row(str(key), str(value))
-            console_stdout.print(table) # Stats to stdout
-    
+            # Direct stats output to console_stderr
+            console_stderr.print(table) # <--- THIS IS THE KEY CHANGE HERE
+
     return operation_successful, user_cancelled_operation, "Error" in stats_data, exit_code
 
 
 if __name__ == "__main__":
-    args = parser.parse_args() # Use module-level parser
+    args = parser.parse_args()
 
     command_to_run_parts = None
     replay_n_value = args.replay_nth_command
 
     if args.command_and_args:
-        if not (args.command_and_args == ['--'] and len(args.command_and_args) == 1) :
+        if not (len(args.command_and_args) == 1 and args.command_and_args[0] == '--'):
             command_to_run_parts = args.command_and_args
             if replay_n_value is not None:
                 console_stderr.print("[INFO] Both command and --replay-history specified. Executing provided command.")
                 replay_n_value = None
-    
+
     if not command_to_run_parts:
         if replay_n_value is None:
             replay_n_value = 1
-    
-    final_exit_code = 1 # Default to error
+
+    final_exit_code = 1
     try:
         op_ok, user_cancel, has_err, func_exit_code = run_command_and_copy_main(
-            command_to_run_parts, replay_n_value, args.no_stats
+            command_to_run_parts, replay_n_value, args.no_stats, args.wrap
         )
-        final_exit_code = func_exit_code # Use exit code determined by the main logic function
-            
-    except ValueError: 
-        # This catches ValueError re-raised from run_command_and_copy_main
-        # Stats should have been printed by its finally block.
-        final_exit_code = 1 
+        final_exit_code = func_exit_code
+
+    except ValueError:
+        final_exit_code = 1
     except Exception as e_main_unexpected:
-        # Fallback for truly unexpected issues not caught by run_command_and_copy_main's try/except
-        if not args.no_stats: # Attempt to print a last-ditch error if stats are on
+        if not args.no_stats:
             console_stderr.print(f"[bold red][CRITICAL SCRIPT ERROR] Unhandled exception in __main__: {e_main_unexpected}[/]")
         final_exit_code = 1
-    
+
     sys.exit(final_exit_code)
