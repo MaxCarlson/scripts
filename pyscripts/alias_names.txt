@@ -7,6 +7,7 @@ clipboard_replace.py : crx :
 copy_to_clipboard.py : c2cd: 
 copy_to_clipboard.py : c2c : -w
 copy_to_clipboard.py : c2cr : -r
+copy_to_clipboard.py : c2ca : -w -a
 replace_with_clipboard.py : rwc :
 output_to_clipboard.py : otc :
 clipboard_diff.py : cld : 
