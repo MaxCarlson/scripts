@@ -213,11 +213,10 @@ def run_external_command_and_resume_tui(stdscr, command_list):
 
 def get_repo_details(full_name, detail_type, path="", ref=None):
     """Fetches specific details like logs, branches, or file tree for a repo."""
-    api_path = f"/repos/{full_name}/contents/{path}"
     query_params = f"?ref={ref}" if ref else ""
     
     if detail_type == "log":
-        api_path = f"/repos/{full_name}/commits"
+        api_path = f"/repos/{full_name}/commits{query_params}"
     elif detail_type == "branches":
         api_path = f"/repos/{full_name}/branches"
     elif detail_type == "file":
@@ -238,7 +237,7 @@ def get_repo_details(full_name, detail_type, path="", ref=None):
     
     return data if data else []
 
-def view_file(stdscr, repo, item, ref):
+def view_file_in_editor(stdscr, repo, item, ref):
     """Downloads a file to a temp location and opens it in nvim."""
     file_content_data = get_repo_details(repo['full_name'], 'file', item['path'], ref=ref)
     if file_content_data and 'content' in file_content_data:
@@ -254,17 +253,45 @@ def view_file(stdscr, repo, item, ref):
 
 def draw_details_ui(stdscr, repo, clone_dir):
     """Draws the detailed view for a single repository."""
-    panes, active_pane_idx = ["tree", "log", "branches"], 0
-    cursors, tops, current_path = {"log": 0, "branches": 0, "tree": 0}, {"log": 0, "branches": 0, "tree": 0}, ""
+    view_mode = 'standard'
+    panes, active_pane_idx = [], 0
+    cursors = {"log": 0, "branches": 0, "tree": 0, "preview": 0}
+    tops = {"log": 0, "branches": 0, "tree": 0, "preview": 0}
+    current_path = ""
     
     current_ref = get_repo_details(repo['full_name'], 'default_branch')
-    repo_log = get_repo_details(repo['full_name'], 'log')
+    repo_log = get_repo_details(repo['full_name'], 'log', ref=current_ref)
     repo_branches = get_repo_details(repo['full_name'], 'branches')
+    if current_ref not in repo_branches:
+        repo_branches.insert(0, current_ref)
+
     repo_tree = sorted(get_repo_details(repo['full_name'], 'tree', current_path, ref=current_ref), key=lambda x: x['type'], reverse=True)
     data = {"log": repo_log, "branches": repo_branches, "tree": repo_tree}
 
+    preview_content = ["Select a file to preview its content."]
+    last_previewed_item = None
+
     while True:
         h, w = stdscr.getmaxyx()
+        
+        selected_item_in_tree = data['tree'][cursors['tree']] if cursors['tree'] < len(data['tree']) else None
+        if view_mode == 'preview' and selected_item_in_tree != last_previewed_item:
+            if selected_item_in_tree and selected_item_in_tree['type'] == 'file':
+                content_data = get_repo_details(repo['full_name'], 'file', selected_item_in_tree['path'], ref=current_ref)
+                if content_data and 'content' in content_data:
+                    import base64
+                    try:
+                        decoded_content = base64.b64decode(content_data['content']).decode('utf-8')
+                        preview_content = decoded_content.splitlines()
+                    except (UnicodeDecodeError, TypeError):
+                        preview_content = ["[Binary file or content not displayable]"]
+                else:
+                    preview_content = ["[Could not load file content]"]
+            else:
+                preview_content = ["Select a file to preview its content."]
+            last_previewed_item = selected_item_in_tree
+            cursors['preview'] = tops['preview'] = 0
+
         stdscr.clear()
         stdscr.refresh()
         
@@ -273,28 +300,42 @@ def draw_details_ui(stdscr, repo, clone_dir):
         top_pane_h = h // 2
         bottom_pane_h = h - top_pane_h - 1 
 
-        log_win = curses.newwin(top_pane_h - 1, w // 2 - 2, 1, 1)
-        branch_win = curses.newwin(top_pane_h - 1, w - (w // 2), 1, w // 2)
-        tree_win = curses.newwin(bottom_pane_h, w - 2, top_pane_h, 1)
-        
-        pane_map = {"log": log_win, "branches": branch_win, "tree": tree_win}
-        
+        if view_mode == 'standard':
+            panes = ['tree', 'log', 'branches']
+            if active_pane_idx >= len(panes): active_pane_idx = 0
+            log_win = curses.newwin(top_pane_h - 1, w // 2 - 2, 1, 1)
+            branch_win = curses.newwin(top_pane_h - 1, w - (w // 2), 1, w // 2)
+            tree_win = curses.newwin(bottom_pane_h, w - 2, top_pane_h, 1)
+            pane_map = {"log": log_win, "branches": branch_win, "tree": tree_win}
+        else: # preview mode
+            panes = ['tree', 'preview']
+            if active_pane_idx >= len(panes): active_pane_idx = 0
+            preview_win = curses.newwin(top_pane_h - 1, w - 2, 1, 1)
+            tree_win = curses.newwin(bottom_pane_h, w - 2, top_pane_h, 1)
+            pane_map = {"preview": preview_win, "tree": tree_win}
+
         for pane_name, win in pane_map.items():
             win.erase()
             is_active = panes[active_pane_idx] == pane_name
             win.box()
-            win.addstr(0, 2, f" {pane_name.capitalize()} ", curses.A_BOLD if is_active else 0)
+            title = pane_name.capitalize()
+            if pane_name == 'preview' and selected_item_in_tree and selected_item_in_tree['type'] == 'file':
+                title = f"Preview: {selected_item_in_tree['name']}"
+            win.addstr(0, 2, f" {title} ", curses.A_BOLD if is_active else 0)
             
             content_h, content_w = win.getmaxyx()
             content_h -= 2
             
-            if cursors[pane_name] < tops[pane_name]: tops[pane_name] = cursors[pane_name]
-            if cursors[pane_name] >= tops[pane_name] + content_h: tops[pane_name] = cursors[pane_name] - content_h + 1
+            current_cursor = cursors[pane_name]
+            current_top = tops[pane_name]
+            if current_cursor < current_top: tops[pane_name] = current_cursor
+            if current_cursor >= current_top + content_h: tops[pane_name] = current_cursor - content_h + 1
 
+            pane_data = data.get(pane_name, preview_content)
             for i in range(content_h):
                 item_idx = tops[pane_name] + i
-                if item_idx >= len(data[pane_name]): break
-                item = data[pane_name][item_idx]
+                if item_idx >= len(pane_data): break
+                item = pane_data[item_idx]
                 
                 display_str = item
                 if pane_name == 'tree':
@@ -308,8 +349,8 @@ def draw_details_ui(stdscr, repo, clone_dir):
             win.noutrefresh()
         
         footer_path = f"/{current_path}" if current_path else "/"
-        footer_ref = f"@{current_ref}" if current_ref else ""
-        footer = f"[q]back [tab]pane | [c]lone [e]xplore [v]iew [bksp]up | Path: {footer_path}{footer_ref}"
+        footer_ref = f"@{current_ref}"
+        footer = f"[q]back [tab]pane [v]iew toggle [bksp]up | Path: {footer_path}{footer_ref}"
         stdscr.addstr(h - 1, 0, footer[:w-1], curses.A_REVERSE)
         
         curses.doupdate()
@@ -319,14 +360,18 @@ def draw_details_ui(stdscr, repo, clone_dir):
         
         action_taken = False
         if key == ord('q'): break
+        elif key == ord('v'):
+            view_mode = 'preview' if view_mode == 'standard' else 'standard'
+            action_taken = True
         elif key == 9: active_pane_idx = (active_pane_idx + 1) % len(panes)
         elif key == curses.KEY_UP: cursors[active_pane] = max(0, cursors[active_pane] - 1)
-        elif key == curses.KEY_DOWN: cursors[active_pane] = min(len(data[active_pane]) - 1, cursors[active_pane] + 1)
+        elif key == curses.KEY_DOWN:
+            max_val = len(data.get(active_pane, preview_content)) - 1
+            cursors[active_pane] = min(max_val, cursors[active_pane] + 1)
         elif key == curses.KEY_BACKSPACE and active_pane == 'tree' and current_path:
             leaving_dir_name = os.path.basename(current_path)
             current_path = os.path.dirname(current_path) if os.path.dirname(current_path) != current_path else ""
             data['tree'] = sorted(get_repo_details(repo['full_name'], 'tree', current_path, ref=current_ref), key=lambda x: x['type'], reverse=True)
-            
             try:
                 new_cursor_pos = [item['name'] for item in data['tree']].index(leaving_dir_name)
                 cursors['tree'] = new_cursor_pos
@@ -335,15 +380,14 @@ def draw_details_ui(stdscr, repo, clone_dir):
             tops['tree'] = 0
             action_taken = True
         elif key in [curses.KEY_ENTER, 10, 13]:
-            if active_pane == 'tree' and data['tree']:
-                selected_item = data['tree'][cursors['tree']]
-                if selected_item['type'] == 'dir':
-                    current_path = selected_item['path']
+            if active_pane == 'tree' and selected_item_in_tree:
+                if selected_item_in_tree['type'] == 'dir':
+                    current_path = selected_item_in_tree['path']
                     data['tree'] = sorted(get_repo_details(repo['full_name'], 'tree', current_path, ref=current_ref), key=lambda x: x['type'], reverse=True)
                     cursors['tree'] = tops['tree'] = 0
                     action_taken = True
-                elif selected_item['type'] == 'file':
-                    action_taken = view_file(stdscr, repo, selected_item, current_ref)
+                elif selected_item_in_tree['type'] == 'file':
+                    action_taken = view_file_in_editor(stdscr, repo, selected_item_in_tree, current_ref)
             elif active_pane == 'branches' and data['branches']:
                 new_ref = data['branches'][cursors['branches']]
                 if new_ref != current_ref:
@@ -351,24 +395,8 @@ def draw_details_ui(stdscr, repo, clone_dir):
                     current_path = ""
                     cursors['tree'] = tops['tree'] = 0
                     data['tree'] = sorted(get_repo_details(repo['full_name'], 'tree', current_path, ref=current_ref), key=lambda x: x['type'], reverse=True)
+                    data['log'] = get_repo_details(repo['full_name'], 'log', ref=current_ref)
                     action_taken = True
-        elif key == ord('c'):
-            run_external_command_and_resume_tui(stdscr, ["gh", "repo", "clone", repo['full_name']])
-            action_taken = True
-        elif key == ord('e'):
-            repo_clone_path = os.path.join(clone_dir, repo['short_name'])
-            if os.path.exists(repo_clone_path):
-                print_verbose(f"Repository already cloned. Pulling latest changes for {repo['full_name']}")
-                run_external_command_and_resume_tui(stdscr, ["git", "-C", repo_clone_path, "pull"])
-            else:
-                print_verbose(f"Cloning {repo['full_name']} for exploration.")
-                run_external_command_and_resume_tui(stdscr, ["gh", "repo", "clone", repo['full_name'], repo_clone_path])
-            run_external_command_and_resume_tui(stdscr, ["nvim", repo_clone_path])
-            action_taken = True
-        elif key == ord('v') and active_pane == 'tree' and data['tree']:
-            selected_item = data['tree'][cursors['tree']]
-            if selected_item['type'] == 'file':
-                action_taken = view_file(stdscr, repo, selected_item, current_ref)
         
         if action_taken:
             continue
