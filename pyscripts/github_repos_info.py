@@ -203,26 +203,15 @@ def fetch_all_repo_data(args):
 
 def run_external_command_and_resume_tui(stdscr, command_list):
     """Suspends curses, runs a command, and properly resumes by redrawing the screen."""
-    # Save the current "program" mode terminal attributes
     curses.def_prog_mode()
-    # Restore the terminal to "shell" mode
     curses.endwin()
-
-    # Run the external command. This will happen in the normal shell screen.
     subprocess.run(command_list)
-
-    # The external command has finished. We need to go back to "program" mode.
-    # This restores the terminal attributes saved by def_prog_mode().
     curses.reset_prog_mode()
-
-    # The screen content is now whatever the external command left.
-    # We need to tell curses that its internal buffer (stdscr) should be
-    # forcefully copied back to the physical screen.
     stdscr.touchwin()
     stdscr.refresh()
 
 
-def get_repo_details(full_name, detail_type, path=""):
+def get_repo_details(full_name, detail_type, path="", ref=None):
     """Fetches specific details like logs, branches, or file tree for a repo."""
     if detail_type == "log":
         api_path = f"/repos/{full_name}/commits?per_page=30"
@@ -234,33 +223,36 @@ def get_repo_details(full_name, detail_type, path=""):
         return [b['name'] for b in data] if data else ["No branches found."]
     elif detail_type == "tree":
         api_path = f"/repos/{full_name}/contents/{path}"
+        if ref:
+            api_path += f"?ref={ref}"
         data = run_gh_command(["api", api_path], f"Failed to get contents of {path}", json_output=True, check_error_string="404")
         return data if data else []
     elif detail_type == "file":
         api_path = f"/repos/{full_name}/contents/{path}"
+        if ref:
+            api_path += f"?ref={ref}"
         data = run_gh_command(["api", api_path], f"Failed to get file {path}", json_output=True)
-        return data # Expects dict with 'content'
+        return data
     return []
 
 def draw_details_ui(stdscr, repo, clone_dir):
     """Draws the detailed view for a single repository."""
     panes, active_pane_idx = ["tree", "log", "branches"], 0
     cursors, tops, current_path = {"log": 0, "branches": 0, "tree": 0}, {"log": 0, "branches": 0, "tree": 0}, ""
+    current_ref = None
 
     repo_log = get_repo_details(repo['full_name'], 'log')
     repo_branches = get_repo_details(repo['full_name'], 'branches')
-    repo_tree = sorted(get_repo_details(repo['full_name'], 'tree', current_path), key=lambda x: x['type'], reverse=True)
+    repo_tree = sorted(get_repo_details(repo['full_name'], 'tree', current_path, ref=current_ref), key=lambda x: x['type'], reverse=True)
     data = {"log": repo_log, "branches": repo_branches, "tree": repo_tree}
 
     while True:
         h, w = stdscr.getmaxyx()
-        # Force a clear and refresh to prevent artifacts from previous screen
         stdscr.clear()
         stdscr.refresh()
         
         stdscr.addstr(0, 1, f"Details for {repo['full_name']}", curses.A_BOLD)
         
-        # --- Define Pane Layout and Create Windows INSIDE the loop ---
         top_pane_h = h // 2
         bottom_pane_h = h - top_pane_h - 1 
 
@@ -270,7 +262,6 @@ def draw_details_ui(stdscr, repo, clone_dir):
         
         pane_map = {"log": log_win, "branches": branch_win, "tree": tree_win}
         
-        # --- Draw Panes ---
         for pane_name, win in pane_map.items():
             win.erase()
             is_active = panes[active_pane_idx] == pane_name
@@ -293,7 +284,9 @@ def draw_details_ui(stdscr, repo, clone_dir):
             
             win.noutrefresh()
         
-        footer = "[q]back [tab]pane | [c]lone [e]xplore [v]iew | Path: /" + current_path
+        footer_path = f"/{current_path}" if current_path else "/"
+        footer_ref = f"@{current_ref}" if current_ref else ""
+        footer = f"[q]back [tab]pane | [c]lone [e]xplore [v]iew [bksp]up | Path: {footer_path}{footer_ref}"
         stdscr.addstr(h - 1, 0, footer[:w-1], curses.A_REVERSE)
         
         curses.doupdate()
@@ -308,16 +301,27 @@ def draw_details_ui(stdscr, repo, clone_dir):
         elif key == curses.KEY_DOWN: cursors[active_pane] = min(len(data[active_pane]) - 1, cursors[active_pane] + 1)
         elif key == curses.KEY_BACKSPACE and active_pane == 'tree' and current_path:
             current_path = os.path.dirname(current_path) if os.path.dirname(current_path) != current_path else ""
-            data['tree'] = sorted(get_repo_details(repo['full_name'], 'tree', current_path), key=lambda x: x['type'], reverse=True)
+            data['tree'] = sorted(get_repo_details(repo['full_name'], 'tree', current_path, ref=current_ref), key=lambda x: x['type'], reverse=True)
             cursors['tree'] = tops['tree'] = 0
             action_taken = True
-        elif key in [curses.KEY_ENTER, 10, 13] and active_pane == 'tree' and data['tree']:
-            selected_item = data['tree'][cursors['tree']]
-            if selected_item['type'] == 'dir':
-                current_path = selected_item['path']
-                data['tree'] = sorted(get_repo_details(repo['full_name'], 'tree', current_path), key=lambda x: x['type'], reverse=True)
-                cursors['tree'] = tops['tree'] = 0
-                action_taken = True
+        elif key in [curses.KEY_ENTER, 10, 13]:
+            if active_pane == 'tree' and data['tree']:
+                selected_item = data['tree'][cursors['tree']]
+                if selected_item['type'] == 'dir':
+                    current_path = selected_item['path']
+                    data['tree'] = sorted(get_repo_details(repo['full_name'], 'tree', current_path, ref=current_ref), key=lambda x: x['type'], reverse=True)
+                    cursors['tree'] = tops['tree'] = 0
+                    action_taken = True
+            elif active_pane == 'branches' and data['branches']:
+                repo_clone_path = os.path.join(clone_dir, repo['short_name'])
+                if os.path.exists(repo_clone_path):
+                    branch_to_checkout = data['branches'][cursors['branches']]
+                    if branch_to_checkout != current_ref:
+                        run_external_command_and_resume_tui(stdscr, ["git", "-C", repo_clone_path, "checkout", branch_to_checkout])
+                        current_ref = branch_to_checkout
+                        data['tree'] = sorted(get_repo_details(repo['full_name'], 'tree', current_path, ref=current_ref), key=lambda x: x['type'], reverse=True)
+                        cursors['tree'] = tops['tree'] = 0
+                        action_taken = True
         elif key == ord('c'):
             run_external_command_and_resume_tui(stdscr, ["gh", "repo", "clone", repo['full_name']])
             action_taken = True
@@ -334,7 +338,7 @@ def draw_details_ui(stdscr, repo, clone_dir):
         elif key == ord('v') and active_pane == 'tree' and data['tree']:
             selected_item = data['tree'][cursors['tree']]
             if selected_item['type'] == 'file':
-                file_content = get_repo_details(repo['full_name'], 'file', selected_item['path'])
+                file_content = get_repo_details(repo['full_name'], 'file', selected_item['path'], ref=current_ref)
                 if file_content and 'content' in file_content:
                     import base64
                     decoded_content = base64.b64decode(file_content['content'])
@@ -346,7 +350,6 @@ def draw_details_ui(stdscr, repo, clone_dir):
                     action_taken = True
         
         if action_taken:
-            # After an action, the screen might be dirty, so we loop to redraw.
             continue
 
 def draw_main_list_ui(stdscr, repo_data, owner_name, column_widths, clone_dir):
