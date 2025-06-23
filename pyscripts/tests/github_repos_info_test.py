@@ -250,3 +250,48 @@ def test_main_verbose_flag_deep_mock(mock_subprocess_run, mock_get_commits, mock
     assert "VERBOSE: Running command: gh repo list" in err
     assert "VERBOSE: [1/4] Processing user/repo-c..." in err
     assert "VERBOSE:   Getting commit count for user/repo-c..." in err
+
+# --- Tests for Progress Bar ---
+
+@patch('sys.stdout.isatty', return_value=True)
+def test_main_uses_tqdm_in_interactive_mode(mock_isatty, mock_data_funcs, sample_repo_data):
+    mock_tqdm_class = MagicMock()
+    # When tqdm() is called, it returns an instance which is also an iterator.
+    mock_tqdm_instance = MagicMock()
+    mock_tqdm_instance.__iter__.return_value = enumerate(sample_repo_data)
+    mock_tqdm_class.return_value = mock_tqdm_instance
+
+    # Place the mock into sys.modules so 'from tqdm import tqdm' finds it
+    with patch.dict('sys.modules', {'tqdm': MagicMock(tqdm=mock_tqdm_class)}):
+        run_main_with_args([], mock_data_funcs, sample_repo_data)
+        mock_tqdm_class.assert_called_once()
+
+@patch('sys.stdout.isatty', return_value=True)
+def test_main_no_tqdm_in_verbose_mode(mock_isatty, mock_data_funcs, sample_repo_data):
+    mock_tqdm_class = MagicMock()
+    with patch.dict('sys.modules', {'tqdm': MagicMock(tqdm=mock_tqdm_class)}):
+        run_main_with_args(['-v'], mock_data_funcs, sample_repo_data)
+        mock_tqdm_class.assert_not_called()
+
+@patch('sys.stdout.isatty', return_value=False)
+def test_main_no_tqdm_in_non_interactive_mode(mock_isatty, mock_data_funcs, sample_repo_data):
+    mock_tqdm_class = MagicMock()
+    with patch.dict('sys.modules', {'tqdm': MagicMock(tqdm=mock_tqdm_class)}):
+        run_main_with_args([], mock_data_funcs, sample_repo_data)
+        mock_tqdm_class.assert_not_called()
+
+@patch('sys.stdout.isatty', return_value=True)
+@patch('builtins.__import__')
+def test_main_tqdm_import_error_fallback(mock_import, mock_isatty, mock_data_funcs, sample_repo_data, capsys):
+    # This mock simulates 'tqdm' not being installed
+    original_import = __import__
+    def import_side_effect(name, *args, **kwargs):
+        if name == 'tqdm':
+            raise ImportError("No module named 'tqdm'")
+        return original_import(name, *args, **kwargs)
+    mock_import.side_effect = import_side_effect
+
+    run_main_with_args([], mock_data_funcs, sample_repo_data)
+    
+    err = capsys.readouterr().err
+    assert "Warning: `tqdm` is not installed." in err
