@@ -7,6 +7,8 @@ import textwrap
 from datetime import datetime, timezone
 import os
 import tempfile
+import time
+import shutil
 
 # Conditionally import curses
 try:
@@ -120,10 +122,33 @@ def get_submodule_dependencies(owner, repo_name, all_repos_full_names):
     return submodules
 
 def fetch_all_repo_data(args):
-    """Fetches and processes data for all repositories, showing a progress bar."""
+    """Fetches and processes data for all repositories, using a cache if available."""
     owner_name = args.user or run_gh_command(["api", "/user", "--jq", ".login"], "Failed to get authenticated user.").strip()
-    repos = get_github_repos(args.user)
 
+    # --- Caching Logic ---
+    cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "github-repos-info")
+    cache_file = os.path.join(cache_dir, f"{owner_name}.json")
+
+    if not args.no_cache:
+        if os.path.exists(cache_file):
+            try:
+                mtime = os.path.getmtime(cache_file)
+                if (time.time() - mtime) < args.cache_ttl:
+                    print_verbose(f"Loading data from cache file: {cache_file}")
+                    with open(cache_file, 'r') as f:
+                        cached_data = json.load(f)
+                        # Re-parse date objects from strings
+                        for repo in cached_data['data']:
+                            if repo['last_commit_date_str'] != "N/A":
+                                repo['last_commit_date_obj'] = datetime.strptime(repo['last_commit_date_str'], '%Y-%m-%d %H:%M').replace(tzinfo=timezone.utc)
+                            else:
+                                repo['last_commit_date_obj'] = None
+                        return cached_data['data'], owner_name, cached_data['column_widths']
+            except (json.JSONDecodeError, KeyError) as e:
+                print_verbose(f"Cache file is corrupted, re-fetching. Error: {e}")
+
+    # --- Fetching Logic ---
+    repos = get_github_repos(args.user)
     if not repos:
         print(f"No repositories found for '{owner_name}'.", file=sys.stderr)
         return [], owner_name, {}
@@ -161,23 +186,41 @@ def fetch_all_repo_data(args):
         repo_data.append(current_repo_info)
 
     column_widths = {"name": max(len(r["short_name"]) for r in repo_data) if repo_data else 20, "commits": max(len(str(r.get("commits", "N/A"))) for r in repo_data) if repo_data else 0, "date": 16, "size": max(len(str(r.get("size_kb", "N/A"))) for r in repo_data) if repo_data else 0}
+    
+    # Save to cache
+    if not args.no_cache:
+        os.makedirs(cache_dir, exist_ok=True)
+        data_to_cache = [r.copy() for r in repo_data]
+        for r in data_to_cache:
+            del r['last_commit_date_obj']
+        with open(cache_file, 'w') as f:
+            json.dump({"data": data_to_cache, "column_widths": column_widths}, f)
+        print_verbose(f"Saved data to cache file: {cache_file}")
+
     return repo_data, owner_name, column_widths
 
 # --- TUI and Details View Functions ---
 
 def run_external_command_and_resume_tui(stdscr, command_list):
-    """Suspends curses, runs a command, and resumes."""
+    """Suspends curses, runs a command, and properly resumes by redrawing the screen."""
+    # Save the current "program" mode terminal attributes
     curses.def_prog_mode()
+    # Restore the terminal to "shell" mode
     curses.endwin()
-    print(f"\n> Running: {' '.join(command_list)}")
+
+    # Run the external command. This will happen in the normal shell screen.
     subprocess.run(command_list)
-    print("\n> Command finished. Press any key to return to the application.")
-    # Resume curses
-    newscr = curses.initscr()
-    newscr.keypad(True)
-    curses.noecho()
-    curses.cbreak()
+
+    # The external command has finished. We need to go back to "program" mode.
+    # This restores the terminal attributes saved by def_prog_mode().
+    curses.reset_prog_mode()
+
+    # The screen content is now whatever the external command left.
+    # We need to tell curses that its internal buffer (stdscr) should be
+    # forcefully copied back to the physical screen.
+    stdscr.touchwin()
     stdscr.refresh()
+
 
 def get_repo_details(full_name, detail_type, path=""):
     """Fetches specific details like logs, branches, or file tree for a repo."""
@@ -199,9 +242,8 @@ def get_repo_details(full_name, detail_type, path=""):
         return data # Expects dict with 'content'
     return []
 
-def draw_details_ui(stdscr, repo):
+def draw_details_ui(stdscr, repo, clone_dir):
     """Draws the detailed view for a single repository."""
-    h, w = stdscr.getmaxyx()
     panes, active_pane_idx = ["tree", "log", "branches"], 0
     cursors, tops, current_path = {"log": 0, "branches": 0, "tree": 0}, {"log": 0, "branches": 0, "tree": 0}, ""
 
@@ -211,19 +253,28 @@ def draw_details_ui(stdscr, repo):
     data = {"log": repo_log, "branches": repo_branches, "tree": repo_tree}
 
     while True:
+        h, w = stdscr.getmaxyx()
+        # Force a clear and refresh to prevent artifacts from previous screen
         stdscr.clear()
+        stdscr.refresh()
+        
         stdscr.addstr(0, 1, f"Details for {repo['full_name']}", curses.A_BOLD)
         
-        # --- Draw Panes ---
-        log_win = curses.newwin(h - 4, w // 2 - 1, 1, 1)
-        branch_win = curses.newwin(h // 2 - 2, w // 2 - 2, 1, w // 2 + 1)
-        tree_win = curses.newwin(h - (h // 2) - 1, w - 2, h // 2 - 1, 1)
+        # --- Define Pane Layout and Create Windows INSIDE the loop ---
+        top_pane_h = h // 2
+        bottom_pane_h = h - top_pane_h - 1 
+
+        log_win = curses.newwin(top_pane_h - 1, w // 2 - 2, 1, 1)
+        branch_win = curses.newwin(top_pane_h - 1, w - (w // 2), 1, w // 2)
+        tree_win = curses.newwin(bottom_pane_h, w - 2, top_pane_h, 1)
+        
         pane_map = {"log": log_win, "branches": branch_win, "tree": tree_win}
         
+        # --- Draw Panes ---
         for pane_name, win in pane_map.items():
             win.erase()
             is_active = panes[active_pane_idx] == pane_name
-            win.box(0, 0)
+            win.box()
             win.addstr(0, 2, f" {pane_name.capitalize()} ", curses.A_BOLD if is_active else 0)
             
             content_h, content_w = win.getmaxyx()
@@ -239,15 +290,18 @@ def draw_details_ui(stdscr, repo):
                 display_str = f"📁 {item['name']}" if pane_name == 'tree' and item['type'] == 'dir' else (f"📄 {item['name']}" if pane_name == 'tree' else item)
                 attr = curses.color_pair(1) if is_active and item_idx == cursors[pane_name] else 0
                 win.addstr(i + 1, 1, display_str[:content_w-2], attr)
-            win.refresh()
+            
+            win.noutrefresh()
         
         footer = "[q]back [tab]pane | [c]lone [e]xplore [v]iew | Path: /" + current_path
         stdscr.addstr(h - 1, 0, footer[:w-1], curses.A_REVERSE)
-        stdscr.refresh()
+        
+        curses.doupdate()
 
         key = stdscr.getch()
         active_pane = panes[active_pane_idx]
-
+        
+        action_taken = False
         if key == ord('q'): break
         elif key == 9: active_pane_idx = (active_pane_idx + 1) % len(panes)
         elif key == curses.KEY_UP: cursors[active_pane] = max(0, cursors[active_pane] - 1)
@@ -256,18 +310,27 @@ def draw_details_ui(stdscr, repo):
             current_path = os.path.dirname(current_path) if os.path.dirname(current_path) != current_path else ""
             data['tree'] = sorted(get_repo_details(repo['full_name'], 'tree', current_path), key=lambda x: x['type'], reverse=True)
             cursors['tree'] = tops['tree'] = 0
+            action_taken = True
         elif key in [curses.KEY_ENTER, 10, 13] and active_pane == 'tree' and data['tree']:
             selected_item = data['tree'][cursors['tree']]
             if selected_item['type'] == 'dir':
                 current_path = selected_item['path']
                 data['tree'] = sorted(get_repo_details(repo['full_name'], 'tree', current_path), key=lambda x: x['type'], reverse=True)
                 cursors['tree'] = tops['tree'] = 0
-        elif key == ord('c'): run_external_command_and_resume_tui(stdscr, ["gh", "repo", "clone", repo['full_name']])
+                action_taken = True
+        elif key == ord('c'):
+            run_external_command_and_resume_tui(stdscr, ["gh", "repo", "clone", repo['full_name']])
+            action_taken = True
         elif key == ord('e'):
-            with tempfile.TemporaryDirectory() as tmpdir:
-                clone_path = os.path.join(tmpdir, repo['short_name'])
-                run_external_command_and_resume_tui(stdscr, ["gh", "repo", "clone", repo['full_name'], clone_path])
-                run_external_command_and_resume_tui(stdscr, ["nvim", clone_path])
+            repo_clone_path = os.path.join(clone_dir, repo['short_name'])
+            if os.path.exists(repo_clone_path):
+                print_verbose(f"Repository already cloned. Pulling latest changes for {repo['full_name']}")
+                run_external_command_and_resume_tui(stdscr, ["git", "-C", repo_clone_path, "pull"])
+            else:
+                print_verbose(f"Cloning {repo['full_name']} for exploration.")
+                run_external_command_and_resume_tui(stdscr, ["gh", "repo", "clone", repo['full_name'], repo_clone_path])
+            run_external_command_and_resume_tui(stdscr, ["nvim", repo_clone_path])
+            action_taken = True
         elif key == ord('v') and active_pane == 'tree' and data['tree']:
             selected_item = data['tree'][cursors['tree']]
             if selected_item['type'] == 'file':
@@ -280,8 +343,13 @@ def draw_details_ui(stdscr, repo):
                         tmpfile.write(decoded_content)
                     run_external_command_and_resume_tui(stdscr, ["nvim", tmp_path])
                     os.unlink(tmp_path)
+                    action_taken = True
+        
+        if action_taken:
+            # After an action, the screen might be dirty, so we loop to redraw.
+            continue
 
-def draw_main_list_ui(stdscr, repo_data, owner_name, column_widths):
+def draw_main_list_ui(stdscr, repo_data, owner_name, column_widths, clone_dir):
     """The main list view TUI."""
     cursor_y, top_of_view, sort_key, sort_reverse = 0, 0, 'commits', True
     sorted_repos = repo_data
@@ -337,7 +405,8 @@ def draw_main_list_ui(stdscr, repo_data, owner_name, column_widths):
                 else: sort_key, sort_reverse = new_sort_key, True
             cursor_y, top_of_view = 0, 0
             sort_data()
-        elif key in [curses.KEY_ENTER, 10, 13]: draw_details_ui(stdscr, sorted_repos[cursor_y])
+        elif key in [curses.KEY_ENTER, 10, 13]:
+            draw_details_ui(stdscr, sorted_repos[cursor_y], clone_dir)
 
 
 def main():
@@ -347,6 +416,11 @@ def main():
     parser.add_argument("-c", "--commits", action="store_true", help="Include commit counts and last commit date. (Default for static mode if no other flags)")
     parser.add_argument("-s", "--size", action="store_true", help="Include repository size (in KB).")
     parser.add_argument("-d", "--dependencies", action="store_true", help=textwrap.dedent("Identify submodules that are also owned by the target user.\nNOTE: This is slower as it makes additional API calls per repo."))
+    
+    cache_group = parser.add_argument_group('caching arguments')
+    cache_group.add_argument("--no-cache", action="store_true", help="Force a refresh and ignore any cached data.")
+    cache_group.add_argument("--cache-ttl", type=int, default=3600, help="Time-to-live for cache in seconds. Default: 3600 (1 hour).")
+
     sort_group = parser.add_mutually_exclusive_group()
     sort_group.add_argument("-A", "--sort-date-asc", action="store_true", help="Sort repositories by last commit date in ascending order (oldest first).")
     sort_group.add_argument("-D", "--sort-date-desc", action="store_true", help="Sort repositories by last commit date in descending order (newest first).")
@@ -354,53 +428,61 @@ def main():
     args = parser.parse_args()
     
     print_verbose("Starting script.")
+    clone_dir = None
 
-    if args.interactive:
-        if curses is None: sys.exit(1)
-        args.commits, args.size = True, True
-    
-    global VERBOSE
-    VERBOSE = args.verbose
+    try:
+        if args.interactive:
+            if curses is None: sys.exit(1)
+            args.commits, args.size = True, True
+            clone_dir = os.path.join(os.path.expanduser("~"), ".cache", "github-repos-info", "clones")
+            os.makedirs(clone_dir, exist_ok=True)
+        
+        global VERBOSE
+        VERBOSE = args.verbose
 
-    if not (args.commits or args.size or args.dependencies or args.sort_date_asc or args.sort_date_desc or args.interactive):
-        args.commits = True
+        if not (args.commits or args.size or args.dependencies or args.sort_date_asc or args.sort_date_desc or args.interactive):
+            args.commits = True
 
-    repo_data, owner_name, column_widths = fetch_all_repo_data(args)
-    if not repo_data: return
+        repo_data, owner_name, column_widths = fetch_all_repo_data(args)
+        if not repo_data: return
 
-    if args.interactive:
-        curses.wrapper(draw_main_list_ui, repo_data, owner_name, column_widths)
-        return
+        if args.interactive:
+            curses.wrapper(draw_main_list_ui, repo_data, owner_name, column_widths, clone_dir)
+            return
 
-    # Standard Static Display Logic
-    if args.sort_date_asc: sorted_repos = sorted(repo_data, key=lambda r: r['last_commit_date_obj'] or datetime.max.replace(tzinfo=timezone.utc))
-    elif args.sort_date_desc: sorted_repos = sorted(repo_data, key=lambda r: r['last_commit_date_obj'] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
-    elif args.commits: sorted_repos = sorted(repo_data, key=lambda r: r.get("commits", 0) if isinstance(r.get("commits"), int) else -1, reverse=True)
-    else: sorted_repos = sorted(repo_data, key=lambda r: r["short_name"])
+        # Standard Static Display Logic
+        if args.sort_date_asc: sorted_repos = sorted(repo_data, key=lambda r: r['last_commit_date_obj'] or datetime.max.replace(tzinfo=timezone.utc))
+        elif args.sort_date_desc: sorted_repos = sorted(repo_data, key=lambda r: r['last_commit_date_obj'] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        elif args.commits: sorted_repos = sorted(repo_data, key=lambda r: r.get("commits", 0) if isinstance(r.get("commits"), int) else -1, reverse=True)
+        else: sorted_repos = sorted(repo_data, key=lambda r: r["short_name"])
 
-    print(f"\n--- GitHub Repositories for {owner_name} ---")
-    if not sorted_repos:
-        print("No data to display.")
-        return
+        print(f"\n--- GitHub Repositories for {owner_name} ---")
+        if not sorted_repos:
+            print("No data to display.")
+            return
 
-    header_parts = [f'{"Repository":<{column_widths["name"]}}']
-    if args.commits or args.sort_date_asc or args.sort_date_desc:
-        header_parts.append(f'{"Commits":>{column_widths["commits"]}}')
-        header_parts.append(f'{"Last Commit":<{column_widths["date"]}}')
-    if args.size: header_parts.append(f'{"Size (KB)":>{column_widths["size"]}}')
-    if args.dependencies: header_parts.append("Dependencies")
-    header = " | ".join(header_parts)
-    print(header); print("-" * len(header))
-
-    for repo in sorted_repos:
-        line_parts = [f'{repo["short_name"]:<{column_widths["name"]}}']
+        header_parts = [f'{"Repository":<{column_widths["name"]}}']
         if args.commits or args.sort_date_asc or args.sort_date_desc:
-            line_parts.append(f'{str(repo.get("commits", "N/A")):>{column_widths["commits"]}}')
-            line_parts.append(f'{repo["last_commit_date_str"]:<{column_widths["date"]}}')
-        if args.size: line_parts.append(f'{str(repo.get("size_kb", "N/A")):>{column_widths["size"]}}')
-        line = " | ".join(line_parts)
-        if args.dependencies and repo.get("dependencies"): line += f" -> {', '.join(repo['dependencies'])}"
-        print(line)
+            header_parts.append(f'{"Commits":>{column_widths["commits"]}}')
+            header_parts.append(f'{"Last Commit":<{column_widths["date"]}}')
+        if args.size: header_parts.append(f'{"Size (KB)":>{column_widths["size"]}}')
+        if args.dependencies: header_parts.append("Dependencies")
+        header = " | ".join(header_parts)
+        print(header); print("-" * len(header))
+
+        for repo in sorted_repos:
+            line_parts = [f'{repo["short_name"]:<{column_widths["name"]}}']
+            if args.commits or args.sort_date_asc or args.sort_date_desc:
+                line_parts.append(f'{str(repo.get("commits", "N/A")):>{column_widths["commits"]}}')
+                line_parts.append(f'{repo["last_commit_date_str"]:<{column_widths["date"]}}')
+            if args.size: line_parts.append(f'{str(repo.get("size_kb", "N/A")):>{column_widths["size"]}}')
+            line = " | ".join(line_parts)
+            if args.dependencies and repo.get("dependencies"): line += f" -> {', '.join(repo['dependencies'])}"
+            print(line)
+    finally:
+        if clone_dir and os.path.exists(clone_dir):
+            shutil.rmtree(clone_dir)
+            print_verbose(f"Cleaned up clone directory: {clone_dir}")
 
 if __name__ == "__main__":
     main()
