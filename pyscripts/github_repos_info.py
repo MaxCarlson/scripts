@@ -213,34 +213,51 @@ def run_external_command_and_resume_tui(stdscr, command_list):
 
 def get_repo_details(full_name, detail_type, path="", ref=None):
     """Fetches specific details like logs, branches, or file tree for a repo."""
+    api_path = f"/repos/{full_name}/contents/{path}"
+    query_params = f"?ref={ref}" if ref else ""
+    
     if detail_type == "log":
-        api_path = f"/repos/{full_name}/commits?per_page=30"
-        data = run_gh_command(["api", api_path], "Failed to get commit log.", json_output=True)
-        return [f"{c['sha'][:7]} - {c['commit']['message'].splitlines()[0]}" for c in data] if data else ["No commits found."]
+        api_path = f"/repos/{full_name}/commits"
     elif detail_type == "branches":
         api_path = f"/repos/{full_name}/branches"
-        data = run_gh_command(["api", api_path], "Failed to get branches.", json_output=True)
-        return [b['name'] for b in data] if data else ["No branches found."]
-    elif detail_type == "tree":
-        api_path = f"/repos/{full_name}/contents/{path}"
-        if ref:
-            api_path += f"?ref={ref}"
-        data = run_gh_command(["api", api_path], f"Failed to get contents of {path}", json_output=True, check_error_string="404")
-        return data if data else []
     elif detail_type == "file":
-        api_path = f"/repos/{full_name}/contents/{path}"
-        if ref:
-            api_path += f"?ref={ref}"
-        data = run_gh_command(["api", api_path], f"Failed to get file {path}", json_output=True)
-        return data
-    return []
+        api_path = f"/repos/{full_name}/contents/{path}{query_params}"
+    elif detail_type == "tree":
+        api_path = f"/repos/{full_name}/contents/{path}{query_params}"
+    elif detail_type == "default_branch":
+        api_path = f"/repos/{full_name}"
+        data = run_gh_command(["api", api_path, "--jq", ".default_branch"], "Failed to get default branch.")
+        return data.strip() if data else "main"
+
+    data = run_gh_command(["api", api_path], f"Failed to get {detail_type}", json_output=True, check_error_string="404")
+
+    if detail_type == "log":
+        return [f"{c['sha'][:7]} - {c['commit']['message'].splitlines()[0]}" for c in data] if data else ["No commits found."]
+    if detail_type == "branches":
+        return [b['name'] for b in data] if data else ["No branches found."]
+    
+    return data if data else []
+
+def view_file(stdscr, repo, item, ref):
+    """Downloads a file to a temp location and opens it in nvim."""
+    file_content_data = get_repo_details(repo['full_name'], 'file', item['path'], ref=ref)
+    if file_content_data and 'content' in file_content_data:
+        import base64
+        decoded_content = base64.b64decode(file_content_data['content'])
+        with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix=f"_{item['name']}") as tmpfile:
+            tmp_path = tmpfile.name
+            tmpfile.write(decoded_content)
+        run_external_command_and_resume_tui(stdscr, ["nvim", tmp_path])
+        os.unlink(tmp_path)
+        return True
+    return False
 
 def draw_details_ui(stdscr, repo, clone_dir):
     """Draws the detailed view for a single repository."""
     panes, active_pane_idx = ["tree", "log", "branches"], 0
     cursors, tops, current_path = {"log": 0, "branches": 0, "tree": 0}, {"log": 0, "branches": 0, "tree": 0}, ""
-    current_ref = None
-
+    
+    current_ref = get_repo_details(repo['full_name'], 'default_branch')
     repo_log = get_repo_details(repo['full_name'], 'log')
     repo_branches = get_repo_details(repo['full_name'], 'branches')
     repo_tree = sorted(get_repo_details(repo['full_name'], 'tree', current_path, ref=current_ref), key=lambda x: x['type'], reverse=True)
@@ -278,7 +295,13 @@ def draw_details_ui(stdscr, repo, clone_dir):
                 item_idx = tops[pane_name] + i
                 if item_idx >= len(data[pane_name]): break
                 item = data[pane_name][item_idx]
-                display_str = f"📁 {item['name']}" if pane_name == 'tree' and item['type'] == 'dir' else (f"📄 {item['name']}" if pane_name == 'tree' else item)
+                
+                display_str = item
+                if pane_name == 'tree':
+                    display_str = f"📁 {item['name']}" if item['type'] == 'dir' else f"📄 {item['name']}"
+                elif pane_name == 'branches':
+                    display_str = f"* {item}" if item == current_ref else f"  {item}"
+
                 attr = curses.color_pair(1) if is_active and item_idx == cursors[pane_name] else 0
                 win.addstr(i + 1, 1, display_str[:content_w-2], attr)
             
@@ -300,9 +323,16 @@ def draw_details_ui(stdscr, repo, clone_dir):
         elif key == curses.KEY_UP: cursors[active_pane] = max(0, cursors[active_pane] - 1)
         elif key == curses.KEY_DOWN: cursors[active_pane] = min(len(data[active_pane]) - 1, cursors[active_pane] + 1)
         elif key == curses.KEY_BACKSPACE and active_pane == 'tree' and current_path:
+            leaving_dir_name = os.path.basename(current_path)
             current_path = os.path.dirname(current_path) if os.path.dirname(current_path) != current_path else ""
             data['tree'] = sorted(get_repo_details(repo['full_name'], 'tree', current_path, ref=current_ref), key=lambda x: x['type'], reverse=True)
-            cursors['tree'] = tops['tree'] = 0
+            
+            try:
+                new_cursor_pos = [item['name'] for item in data['tree']].index(leaving_dir_name)
+                cursors['tree'] = new_cursor_pos
+            except ValueError:
+                cursors['tree'] = 0
+            tops['tree'] = 0
             action_taken = True
         elif key in [curses.KEY_ENTER, 10, 13]:
             if active_pane == 'tree' and data['tree']:
@@ -312,16 +342,16 @@ def draw_details_ui(stdscr, repo, clone_dir):
                     data['tree'] = sorted(get_repo_details(repo['full_name'], 'tree', current_path, ref=current_ref), key=lambda x: x['type'], reverse=True)
                     cursors['tree'] = tops['tree'] = 0
                     action_taken = True
+                elif selected_item['type'] == 'file':
+                    action_taken = view_file(stdscr, repo, selected_item, current_ref)
             elif active_pane == 'branches' and data['branches']:
-                repo_clone_path = os.path.join(clone_dir, repo['short_name'])
-                if os.path.exists(repo_clone_path):
-                    branch_to_checkout = data['branches'][cursors['branches']]
-                    if branch_to_checkout != current_ref:
-                        run_external_command_and_resume_tui(stdscr, ["git", "-C", repo_clone_path, "checkout", branch_to_checkout])
-                        current_ref = branch_to_checkout
-                        data['tree'] = sorted(get_repo_details(repo['full_name'], 'tree', current_path, ref=current_ref), key=lambda x: x['type'], reverse=True)
-                        cursors['tree'] = tops['tree'] = 0
-                        action_taken = True
+                new_ref = data['branches'][cursors['branches']]
+                if new_ref != current_ref:
+                    current_ref = new_ref
+                    current_path = ""
+                    cursors['tree'] = tops['tree'] = 0
+                    data['tree'] = sorted(get_repo_details(repo['full_name'], 'tree', current_path, ref=current_ref), key=lambda x: x['type'], reverse=True)
+                    action_taken = True
         elif key == ord('c'):
             run_external_command_and_resume_tui(stdscr, ["gh", "repo", "clone", repo['full_name']])
             action_taken = True
@@ -338,16 +368,7 @@ def draw_details_ui(stdscr, repo, clone_dir):
         elif key == ord('v') and active_pane == 'tree' and data['tree']:
             selected_item = data['tree'][cursors['tree']]
             if selected_item['type'] == 'file':
-                file_content = get_repo_details(repo['full_name'], 'file', selected_item['path'], ref=current_ref)
-                if file_content and 'content' in file_content:
-                    import base64
-                    decoded_content = base64.b64decode(file_content['content'])
-                    with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix=f"_{selected_item['name']}") as tmpfile:
-                        tmp_path = tmpfile.name
-                        tmpfile.write(decoded_content)
-                    run_external_command_and_resume_tui(stdscr, ["nvim", tmp_path])
-                    os.unlink(tmp_path)
-                    action_taken = True
+                action_taken = view_file(stdscr, repo, selected_item, current_ref)
         
         if action_taken:
             continue
