@@ -124,46 +124,62 @@ def get_submodule_dependencies(owner, repo_name, all_repos_full_names):
         print_verbose(f"An unexpected error occurred while parsing submodules for {owner}/{repo_name}: {e}")
     return submodules
 
-def manage_repo_clone(full_name, clone_dir, bare=False):
+def get_gh_token():
+    """Retrieves the GitHub token from gh."""
+    try:
+        return subprocess.check_output(["gh", "auth", "token"], text=True).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+def manage_repo_clone(full_name, clone_dir, keep_clones=False, bare=False):
     """
-    Manages a persistent repository clone. Clones if it doesn't exist,
-    fetches updates if it does. Returns the path to the repo.
+    Manages repository clones. By default, uses a temporary directory.
+    If keep_clones is True, uses a persistent directory.
+    Returns the path to the repo and a boolean indicating if it's temporary.
     """
-    repo_path = os.path.join(clone_dir, full_name.replace('/', '_'))
-    
-    if os.path.exists(repo_path):
+    if keep_clones:
+        repo_path = os.path.join(clone_dir, full_name.replace('/', '_'))
+        is_temp = False
+        temp_dir_obj = None
+    else:
+        # Use a temporary directory that will be cleaned up automatically
+        temp_dir_obj = tempfile.TemporaryDirectory()
+        repo_path = temp_dir_obj.name
+        is_temp = True
+
+    if os.path.exists(repo_path) and not is_temp:
         print_verbose(f"Fetching updates for {full_name} in {repo_path}...")
         try:
             fetch_cmd = ["git", "fetch", "--all", "--prune"]
-            if bare:
-                # In a bare repo, we can't use 'pull', just fetch.
-                pass
-            else:
-                # For non-bare repos, attempt to reset to remote state
-                # This is a simple way to handle updates without complex merge logic
-                subprocess.run(["git", "reset", "--hard", "origin/HEAD"], cwd=repo_path, check=True, capture_output=True, text=True)
-
             subprocess.run(fetch_cmd, cwd=repo_path, check=True, capture_output=True, text=True)
-            return repo_path
+            return repo_path, None
         except subprocess.CalledProcessError as e:
             print(f"Failed to update {full_name}. Error: {e.stderr.strip()}", file=sys.stderr)
-            return None # Indicate failure
+            return None, None # Indicate failure
     else:
         print_verbose(f"Cloning {full_name} into {repo_path}...")
-        repo_url = f"https://github.com/{full_name}.git"
+        token = get_gh_token()
+        if token:
+            repo_url = f"https://{token}@github.com/{full_name}.git"
+        else:
+            repo_url = f"https://github.com/{full_name}.git"
+            print_verbose("No gh token found, cloning via standard HTTPS. May require interactive auth.")
+
         clone_cmd = ["git", "clone", "--progress", repo_url, repo_path]
         if bare:
             clone_cmd.insert(2, "--bare")
         
         try:
-            subprocess.run(clone_cmd, check=True, text=True, stderr=subprocess.STDOUT)
-            return repo_path
+            # Use stderr=subprocess.STDOUT to capture git's progress output in stdout
+            result = subprocess.run(clone_cmd, check=True, text=True, capture_output=True)
+            print_verbose(result.stdout)
+            return repo_path, temp_dir_obj if is_temp else None
         except subprocess.CalledProcessError as e:
             if "repository not found" in str(e.stdout) or "does not appear to be a git repository" in str(e.stdout):
                 print_verbose(f"Skipping {full_name} (likely empty or not found).")
             else:
                 print(f"Failed to clone {full_name}. Error: {e.stdout.strip()}", file=sys.stderr)
-            return None # Indicate failure
+            return None, None
 
 def get_loc_stats(full_name, clone_dir, use_latest_branch=False):
     """Clones/updates a repo and runs 'tokei' to get LOC stats."""
@@ -680,12 +696,74 @@ def print_loc_summary(repo_data):
     print_table("Lines of Code Summary (All Repos)", total_stats)
 
 
-def analyze_commit_history(repos, owner_name, clone_dir, max_repos=None):
+def print_commit_history_summary(all_commits, owner_name):
+    """Analyzes and prints the summary of all commits."""
+    if not all_commits:
+        print("\nNo commits found to analyze.")
+        return
+
+    print(f"\n--- Commit History Summary for {owner_name} ---")
+
+    # Sort commits by timestamp
+    all_commits.sort(key=lambda x: x['timestamp'])
+
+    total_commits = len(all_commits)
+    total_insertions = sum(c['insertions'] for c in all_commits)
+    total_deletions = sum(c['deletions'] for c in all_commits)
+    
+    first_commit_date = datetime.fromtimestamp(all_commits[0]['timestamp'], timezone.utc)
+    last_commit_date = datetime.fromtimestamp(all_commits[-1]['timestamp'], timezone.utc)
+    
+    # Overall Summary
+    print("\nOverall Summary:")
+    print(f"  - Total Commits: {total_commits:,}")
+    print(f"  - Total Insertions: {total_insertions:,}")
+    print(f"  - Total Deletions: {total_deletions:,}")
+    print(f"  - First Commit: {first_commit_date.strftime('%Y-%m-%d')}")
+    print(f"  - Last Commit: {last_commit_date.strftime('%Y-%m-%d')}")
+
+    # Commit activity by day of the week
+    day_of_week_commits = defaultdict(int)
+    for commit in all_commits:
+        day = datetime.fromtimestamp(commit['timestamp'], timezone.utc).strftime('%A')
+        day_of_week_commits[day] += 1
+    
+    if day_of_week_commits:
+        most_active_day = max(day_of_week_commits, key=day_of_week_commits.get)
+        print(f"  - Most Active Day: {most_active_day} ({day_of_week_commits[most_active_day]:,} commits)")
+
+    # Commit Velocity
+    total_days = (last_commit_date - first_commit_date).days
+    if total_days > 0:
+        print("\nCommit Velocity:")
+        print(f"  - Average Commits per Day: {total_commits / total_days:.2f}")
+        print(f"  - Average Commits per Month: {total_commits / (total_days / 30.44):.2f}")
+
+    # Yearly Breakdown
+    yearly_stats = defaultdict(lambda: {'commits': 0, 'insertions': 0, 'deletions': 0})
+    for commit in all_commits:
+        year = datetime.fromtimestamp(commit['timestamp'], timezone.utc).year
+        yearly_stats[year]['commits'] += 1
+        yearly_stats[year]['insertions'] += commit['insertions']
+        yearly_stats[year]['deletions'] += commit['deletions']
+
+    if yearly_stats:
+        print("\nYearly Breakdown:")
+        header = f'{"Year":<6} {"Commits":>10} {"Insertions":>12} {"Deletions":>12}'
+        print(header)
+        print("-" * len(header))
+        for year in sorted(yearly_stats.keys()):
+            stats = yearly_stats[year]
+            print(f"{year:<6} {stats['commits']:>10,} {stats['insertions']:>12,} {stats['deletions']:>12,}")
+
+
+def analyze_commit_history(repos, owner_name, clone_dir, keep_clones=False, max_repos=None):
     """
-    Clones/updates all repositories in a persistent cache and analyzes their commit history.
+    Clones/updates repositories and analyzes their commit history.
     """
     print(f"--- Starting Full Commit History Analysis for {owner_name} ---")
-    print(f"Using clone directory: {clone_dir}")
+    if keep_clones:
+        print(f"Using persistent clone directory: {clone_dir}")
 
     if max_repos is not None:
         repos = repos[:max_repos]
@@ -707,21 +785,21 @@ def analyze_commit_history(repos, owner_name, clone_dir, max_repos=None):
         print(f"--- History Analysis {size_str} ---")
         print(f"Processing {i + 1}/{total_repos}: {full_name}")
 
-        repo_path = manage_repo_clone(full_name, clone_dir, bare=True)
+        repo_path, temp_dir_obj = manage_repo_clone(full_name, clone_dir, keep_clones)
         if not repo_path:
             processed_size_kb += repo_disk_usage
             continue
-
-        processed_size_kb += repo_disk_usage
-        
-        log_cmd = [
-            "git", "log",
-            f"--author={owner_name}",
-            "--pretty=format:%H|%at",
-            "--shortstat"
-        ]
         
         try:
+            processed_size_kb += repo_disk_usage
+            
+            log_cmd = [
+                "git", "log",
+                f"--author={owner_name}",
+                "--pretty=format:%H|%at",
+                "--shortstat"
+            ]
+            
             log_output = subprocess.check_output(log_cmd, cwd=repo_path, text=True, stderr=subprocess.PIPE)
             
             commit_hash = None
@@ -742,65 +820,17 @@ def analyze_commit_history(repos, owner_name, clone_dir, max_repos=None):
                     commit_hash = None
 
         except subprocess.CalledProcessError as e:
-            print(f"Could not analyze log for {full_name}. Error: {e.stderr.strip()}", file=sys.stderr)
-            continue
+            if "does not have any commits yet" in e.stderr:
+                print_verbose(f"Skipping {full_name} as it has no commits.")
+            else:
+                print(f"Could not analyze log for {full_name}. Error: {e.stderr.strip()}", file=sys.stderr)
         except Exception as e:
-            print(f"An unexpected error occurred during log analysis for {full_name}: {e}", file=sys.stderr)
-
-    if not all_commits:
-        print("No commits found for this user.")
-        return
-
-    if sys.stdout.isatty() and not VERBOSE:
-        sys.stdout.write("\033[H\033[J")
-        sys.stdout.flush()
-    print("\n--- Historical Commit Analysis Complete ---")
-
-    total_commits = len(all_commits)
-    first_commit_date = datetime.fromtimestamp(min(c['timestamp'] for c in all_commits), tz=timezone.utc)
-    last_commit_date = datetime.fromtimestamp(max(c['timestamp'] for c in all_commits), tz=timezone.utc)
-    active_days = (last_commit_date - first_commit_date).days if last_commit_date > first_commit_date else 1
+            print(f"An unexpected error occurred during log analysis for {full_name}: {e}")
+        finally:
+            if temp_dir_obj:
+                temp_dir_obj.cleanup()
     
-    commits_per_year = defaultdict(lambda: defaultdict(int))
-    commits_per_month = defaultdict(int)
-    commits_per_day = defaultdict(int)
-
-    for commit in all_commits:
-        dt = datetime.fromtimestamp(commit['timestamp'], tz=timezone.utc)
-        year = dt.year
-        month_key = dt.strftime('%Y-%m')
-        day_key = dt.strftime('%Y-%m-%d')
-        
-        commits_per_year[year]['commits'] += 1
-        commits_per_year[year]['insertions'] += commit['insertions']
-        commits_per_year[year]['deletions'] += commit['deletions']
-        commits_per_month[month_key] += 1
-        commits_per_day[day_key] += 1
-
-    most_active_day = max(commits_per_day, key=commits_per_day.get) if commits_per_day else "N/A"
-    most_active_day_count = commits_per_day.get(most_active_day, 0)
-
-    print("\n--- Overall Summary ---")
-    print(f"Total commits: {total_commits:,}")
-    print(f"First commit: {first_commit_date.strftime('%Y-%m-%d')}")
-    print(f"Last commit: {last_commit_date.strftime('%Y-%m-%d')}")
-    print(f"Most active day: {most_active_day} ({most_active_day_count:,} commits)")
-
-    print("\n--- Commit Velocity ---")
-    if active_days > 0:
-        print(f"Avg. commits per day (over active period): {total_commits / active_days:.2f}")
-    if len(commits_per_month) > 0:
-        print(f"Avg. commits per month: {total_commits / len(commits_per_month):.2f}")
-
-    print("\n--- Yearly Breakdown ---")
-    header = f'{"Year":<10} {"Commits":>12} {"Insertions (+)":>18} {"Deletions (-)":>18}'
-    print(header)
-    print("-" * len(header))
-    
-    sorted_years = sorted(commits_per_year.keys())
-    for year in sorted_years:
-        stats = commits_per_year[year]
-        print(f"{year:<10} {stats['commits']:>12,} {stats['insertions']:>18,} {stats['deletions']:>18,}")
+    return all_commits
 
 
 def main():
@@ -809,7 +839,7 @@ def main():
     parser.add_argument("-u", "--user", help="Specify a GitHub username or organization (defaults to the authenticated user).")
     parser.add_argument("-c", "--commits", action="store_true", help="Include commit counts and last commit date. (Default for static mode if no other flags)")
     parser.add_argument("-s", "--size", action="store_true", help="Include repository size (in KB).")
-    parser.add_argument("-d", "--dependencies", action="store_true", help=textwrap.dedent("""\
+    parser.add_argument("-d", "--dependencies", action="store_true", help=textwrap.dedent("""
         Identify submodules that are also owned by the target user.
         NOTE: This is slower as it makes additional API calls per repo."""))
     
@@ -818,13 +848,14 @@ def main():
     loc_group.add_argument("--use-latest-branch", action="store_true", help="For LOC analysis, check out the branch with the most recent commit instead of the default branch.")
 
     history_group = parser.add_argument_group('historical stats arguments')
-    history_group.add_argument("--history", action="store_true", help=textwrap.dedent("""
-        Analyze the entire commit history to generate stats like commits per year and daily averages.
+    history_group.add_argument("--history", action="store_true", help=textwrap.dedent("""\\
+        Analyze the entire commit history to generate stats like commits per year and daily averages.\\
         WARNING: This is a very slow operation that clones every repository."""))
 
     clone_group = parser.add_argument_group('cloning arguments')
-    clone_group.add_argument("--clone-dir", help="Specify a persistent directory for repository clones. Defaults to ~/.cache/github-repos-info/clones.")
-    clone_group.add_argument("--clear-clone-cache", action="store_true", help="Delete the cached repositories in the clone directory.")
+    clone_group.add_argument("--keep-clones", action="store_true", help="Keep repository clones in a persistent directory for faster subsequent runs.")
+    clone_group.add_argument("--clone-dir", help="Specify a persistent directory for clones. Requires --keep-clones. Defaults to ~/.cache/github-repos-info/clones.")
+    clone_group.add_argument("--clear-clone-cache", action="store_true", help="Delete the cached repositories in the persistent clone directory.")
     clone_group.add_argument("--max-repos", type=int, help="Stop processing after N repositories (for --loc and --history). Useful for testing.")
     
     cache_group = parser.add_argument_group('caching arguments')
@@ -838,13 +869,18 @@ def main():
     args = parser.parse_args()
     
     print_verbose("Starting script.")
+    
     clone_dir = args.clone_dir or os.path.join(os.path.expanduser("~"), ".cache", "github-repos-info", "clones")
-    os.makedirs(clone_dir, exist_ok=True)
+    if args.keep_clones or args.clone_dir:
+        os.makedirs(clone_dir, exist_ok=True)
 
     if args.clear_clone_cache:
-        print(f"Clearing clone cache at: {clone_dir}")
-        shutil.rmtree(clone_dir)
-        print("Cache cleared.")
+        if os.path.exists(clone_dir):
+            print(f"Clearing clone cache at: {clone_dir}")
+            shutil.rmtree(clone_dir)
+            print("Cache cleared.")
+        else:
+            print("Clone cache directory does not exist.")
         return
 
     try:
@@ -864,7 +900,8 @@ def main():
                 print(f"No repositories found for '{args.user or 'authenticated user'}'.", file=sys.stderr)
                 return
             owner_name = args.user or run_gh_command(["api", "/user", "--jq", ".login"], "Failed to get authenticated user.").strip()
-            analyze_commit_history(repos, owner_name, clone_dir, args.max_repos)
+            all_commits = analyze_commit_history(repos, owner_name, clone_dir, args.keep_clones, args.max_repos)
+            print_commit_history_summary(all_commits, owner_name)
             return
 
         repo_data, owner_name, column_widths = fetch_all_repo_data(args)
@@ -875,10 +912,8 @@ def main():
             return
 
         if args.loc:
-            # The live summary was printed during the fetch.
-            # Now print the final, detailed summary.
             if sys.stdout.isatty() and not VERBOSE:
-                sys.stdout.write("\033[H\033[J") # Clear screen
+                sys.stdout.write("\033[H\033[J")
                 sys.stdout.flush()
             print(f"--- Final LOC Analysis for {owner_name} ---")
             print(f"Processed {len(repo_data)}/{len(repo_data)} repositories.")
@@ -915,9 +950,8 @@ def main():
             if args.dependencies and repo.get("dependencies"): line += f" -> {', '.join(repo['dependencies'])}"
             print(line)
     finally:
-        if clone_dir and os.path.exists(clone_dir):
-            shutil.rmtree(clone_dir)
-            print_verbose(f"Cleaned up clone directory: {clone_dir}")
+        # No automatic cleanup of a persistent clone_dir
+        pass
 
 if __name__ == "__main__":
     main()
