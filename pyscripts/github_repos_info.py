@@ -9,6 +9,7 @@ import os
 import tempfile
 import time
 import shutil
+from collections import defaultdict
 
 # Conditionally import curses
 try:
@@ -22,6 +23,8 @@ except ImportError:
 
 # Global flag for verbose output
 VERBOSE = False
+# Global flag to ensure the 'tokei not found' warning is only printed once.
+_tokei_warning_issued = False
 
 def print_verbose(message):
     """Prints a message only if VERBOSE is True."""
@@ -72,7 +75,7 @@ def run_gh_command(cmd_args, error_message, json_output=False, check_error_strin
 def get_github_repos(user=None):
     """Retrieves a list of GitHub repositories for the authenticated user or a specified user."""
     print_verbose(f"Fetching repository list for '{user or 'authenticated user'}'...")
-    cmd = ["repo", "list", "--json", "owner,name,diskUsage,pushedAt", "--limit", "1000"]
+    cmd = ["repo", "list", "--json", "owner,name,diskUsage,pushedAt,isPrivate", "--limit", "1000"]
     if user:
         cmd.insert(2, user)
     return run_gh_command(cmd, "Failed to list repositories.", json_output=True)
@@ -121,6 +124,80 @@ def get_submodule_dependencies(owner, repo_name, all_repos_full_names):
         print_verbose(f"An unexpected error occurred while parsing submodules for {owner}/{repo_name}: {e}")
     return submodules
 
+def get_loc_stats(full_name, use_latest_branch=False):
+    """Clones a repo to a temporary directory and runs 'tokei' to get LOC stats."""
+    global _tokei_warning_issued
+    if not shutil.which("tokei"):
+        if not _tokei_warning_issued:
+            print("Warning: 'tokei' command not found, skipping LOC analysis. Install from https://github.com/XAMPPRocky/tokei", file=sys.stderr)
+            _tokei_warning_issued = True
+        return None
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        repo_url = f"https://github.com/{full_name}.git"
+        print_verbose(f"Cloning {full_name} into {tmpdir} for LOC analysis...")
+        
+        # Use git clone directly to show progress
+        clone_cmd = ["git", "clone", "--progress", repo_url, tmpdir]
+        try:
+            # We don't capture output so the user can see git's progress
+            subprocess.run(clone_cmd, check=True, text=True, stderr=subprocess.STDOUT)
+        except subprocess.CalledProcessError as e:
+            # Check for empty repository specifically
+            if "remote end hung up unexpectedly" in str(e.stdout) or \
+               "does not appear to be a git repository" in str(e.stdout) or \
+               "repository not found" in str(e.stdout):
+                 # A more reliable way to check if a repo is empty is to query the API
+                api_path = f"/repos/{full_name}"
+                repo_info = run_gh_command(["api", api_path], f"Failed to get repo info for {full_name}", json_output=True)
+                if repo_info and repo_info.get("size") == 0:
+                    print_verbose(f"Repo {full_name} is empty, skipping LOC analysis.")
+                    return {}
+            
+            print(f"Error executing '{' '.join(clone_cmd)}': Failed to clone {full_name}.", file=sys.stderr)
+            if e.stdout:
+                print(f"Output: {e.stdout.strip()}", file=sys.stderr)
+            return None
+
+        if use_latest_branch:
+            print_verbose(f"Finding and checking out the latest branch for {full_name}...")
+            try:
+                # Get all remote branches and their last commit date
+                branches_raw = subprocess.check_output(
+                    ["git", "for-each-ref", "--sort=-committerdate", "refs/remotes", "--format=%(committerdate:iso8601)|%(refname:short)"],
+                    cwd=tmpdir, text=True
+                ).strip().split('\n')
+                
+                if branches_raw and branches_raw[0]:
+                    latest_branch_name = branches_raw[0].split('|')[1].split('/', 1)[1]
+                    print_verbose(f"Latest branch is '{latest_branch_name}'. Checking it out...")
+                    subprocess.run(["git", "checkout", latest_branch_name], cwd=tmpdir, check=True, capture_output=True)
+                else:
+                    print_verbose(f"Could not determine latest branch for {full_name}, using default.")
+            except subprocess.CalledProcessError as e:
+                print(f"Error switching to latest branch for {full_name}: {e.stderr.strip()}", file=sys.stderr)
+                # Proceed with default branch
+            except Exception as e:
+                print(f"An unexpected error occurred while finding the latest branch for {full_name}: {e}", file=sys.stderr)
+
+
+        print_verbose(f"Running 'tokei' on {tmpdir}...")
+        tokei_cmd = ["tokei", "--output", "json", tmpdir]
+        try:
+            process = subprocess.run(tokei_cmd, capture_output=True, text=True, check=True, encoding='utf-8')
+            return json.loads(process.stdout)
+        except FileNotFoundError:
+            if not _tokei_warning_issued:
+                print("Error: 'tokei' command not found during execution.", file=sys.stderr)
+                _tokei_warning_issued = True
+            return None
+        except subprocess.CalledProcessError as e:
+            print(f"Error running 'tokei' on {full_name}: {e.stderr.strip()}", file=sys.stderr)
+            return None
+        except json.JSONDecodeError:
+            print(f"Error parsing 'tokei' JSON output for {full_name}.", file=sys.stderr)
+            return None
+
 def fetch_all_repo_data(args):
     """Fetches and processes data for all repositories, using a cache if available."""
     owner_name = args.user or run_gh_command(["api", "/user", "--jq", ".login"], "Failed to get authenticated user.").strip()
@@ -137,15 +214,26 @@ def fetch_all_repo_data(args):
                     print_verbose(f"Loading data from cache file: {cache_file}")
                     with open(cache_file, 'r') as f:
                         cached_data = json.load(f)
-                        # Re-parse date objects from strings
-                        for repo in cached_data['data']:
-                            if repo['last_commit_date_str'] != "N/A":
-                                repo['last_commit_date_obj'] = datetime.strptime(repo['last_commit_date_str'], '%Y-%m-%d %H:%M').replace(tzinfo=timezone.utc)
-                            else:
-                                repo['last_commit_date_obj'] = None
-                        return cached_data['data'], owner_name, cached_data['column_widths']
-            except (json.JSONDecodeError, KeyError) as e:
-                print_verbose(f"Cache file is corrupted, re-fetching. Error: {e}")
+                        
+                        is_cache_sufficient = True
+                        # If LOC is requested, check if the cached data has it and is valid.
+                        if args.loc:
+                            first_repo = cached_data.get("data", [{}])[0]
+                            loc_stats = first_repo.get("loc_stats") # Will be None or {} if invalid/missing
+                            if not loc_stats:
+                                print_verbose("Cache does not contain valid LOC data, re-fetching.")
+                                is_cache_sufficient = False
+
+                        if is_cache_sufficient:
+                            # Re-parse date objects from strings
+                            for repo in cached_data['data']:
+                                if repo['last_commit_date_str'] != "N/A":
+                                    repo['last_commit_date_obj'] = datetime.strptime(repo['last_commit_date_str'], '%Y-%m-%d %H:%M').replace(tzinfo=timezone.utc)
+                                else:
+                                    repo['last_commit_date_obj'] = None
+                            return cached_data['data'], owner_name, cached_data['column_widths']
+            except (json.JSONDecodeError, KeyError, IndexError) as e:
+                print_verbose(f"Cache file is corrupted or outdated, re-fetching. Error: {e}")
 
     # --- Fetching Logic ---
     repos = get_github_repos(args.user)
@@ -155,19 +243,28 @@ def fetch_all_repo_data(args):
 
     repo_data = []
     all_repos_full_names = {f"{r['owner']['login']}/{r['name']}" for r in repos}
+    
     repo_iterator = enumerate(repos)
+    progress_bar_desc = f"Processing {owner_name}'s repositories"
+    if args.loc:
+        progress_bar_desc += " (with LOC)"
 
-    if not VERBOSE and sys.stdout.isatty():
+    if not VERBOSE and sys.stdout.isatty() and not args.loc: # Don't use tqdm for loc mode
         try:
             from tqdm import tqdm
-            repo_iterator = tqdm(enumerate(repos), desc=f"Processing {owner_name}'s repositories", unit=" repo", total=len(repos), dynamic_ncols=True, ascii=True, leave=False, file=sys.stdout)
+            repo_iterator = tqdm(enumerate(repos), desc=progress_bar_desc, unit=" repo", total=len(repos), dynamic_ncols=True, ascii=True, leave=False, file=sys.stdout)
         except ImportError:
             print("Warning: `tqdm` is not installed. No progress bar will be shown.", file=sys.stderr)
 
     is_sort_flag_set = args.sort_date_asc or args.sort_date_desc
     for i, repo in repo_iterator:
         owner, name = repo["owner"]["login"], repo["name"]
-        print_verbose(f"[{i+1}/{len(repos)}] Processing {owner}/{name}...")
+        full_name = f"{owner}/{name}"
+        if 'tqdm' in sys.modules and isinstance(repo_iterator, sys.modules['tqdm'].tqdm):
+            repo_iterator.set_description(f"Processing {full_name}", refresh=True)
+
+        if not args.loc: # Don't print verbose status if we are doing the live summary
+            print_verbose(f"[{i+1}/{len(repos)}] Processing {full_name}...")
 
         date_str = repo.get("pushedAt")
         date_obj, date_display = None, "N/A"
@@ -176,14 +273,37 @@ def fetch_all_repo_data(args):
                 date_obj = datetime.strptime(date_str, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
                 date_display = date_obj.strftime('%Y-%m-%d %H:%M')
             except (ValueError, TypeError):
-                print_verbose(f"Could not parse date '{date_str}' for {owner}/{name}")
+                print_verbose(f"Could not parse date '{date_str}' for {full_name}")
 
-        current_repo_info = {"full_name": f"{owner}/{name}", "short_name": name, "size_kb": repo.get("diskUsage", 0), "last_commit_date_obj": date_obj, "last_commit_date_str": date_display, "commits": "N/A", "dependencies": []}
+        current_repo_info = {
+            "full_name": full_name,
+            "short_name": name,
+            "isPrivate": repo.get("isPrivate", False),
+            "size_kb": repo.get("diskUsage", 0),
+            "last_commit_date_obj": date_obj,
+            "last_commit_date_str": date_display,
+            "commits": "N/A",
+            "dependencies": [],
+            "loc_stats": None
+        }
         if args.commits or is_sort_flag_set or args.interactive:
             current_repo_info["commits"] = get_commit_count(owner, name)
         if args.dependencies:
             current_repo_info["dependencies"] = get_submodule_dependencies(owner, name, all_repos_full_names)
+        if args.loc:
+            current_repo_info["loc_stats"] = get_loc_stats(full_name, args.use_latest_branch)
+        
         repo_data.append(current_repo_info)
+
+        if args.loc:
+            if sys.stdout.isatty() and not VERBOSE:
+                sys.stdout.write("\033[H\033[J") # Clear screen
+                sys.stdout.flush()
+            
+            print(f"--- LOC Analysis for {owner_name} ---")
+            print(f"Processed {i + 1}/{len(repos)}: {full_name}")
+            print_loc_live_summary(repo_data)
+
 
     column_widths = {"name": max(len(r["short_name"]) for r in repo_data) if repo_data else 20, "commits": max(len(str(r.get("commits", "N/A"))) for r in repo_data) if repo_data else 0, "date": 16, "size": max(len(str(r.get("size_kb", "N/A"))) for r in repo_data) if repo_data else 0}
     
@@ -192,7 +312,8 @@ def fetch_all_repo_data(args):
         os.makedirs(cache_dir, exist_ok=True)
         data_to_cache = [r.copy() for r in repo_data]
         for r in data_to_cache:
-            del r['last_commit_date_obj']
+            if 'last_commit_date_obj' in r:
+                del r['last_commit_date_obj']
         with open(cache_file, 'w') as f:
             json.dump({"data": data_to_cache, "column_widths": column_widths}, f)
         print_verbose(f"Saved data to cache file: {cache_file}")
@@ -460,6 +581,86 @@ def draw_main_list_ui(stdscr, repo_data, owner_name, column_widths, clone_dir):
         elif key in [curses.KEY_ENTER, 10, 13]:
             draw_details_ui(stdscr, sorted_repos[cursor_y], clone_dir)
 
+def get_terminal_height():
+    """Gets the terminal height, returns a default if not available."""
+    try:
+        return os.get_terminal_size().lines
+    except OSError:
+        return 24 # Default height
+
+def print_table(title, stats, is_live=False):
+    """Prints a formatted table for LOC stats."""
+    if not stats:
+        if not is_live:
+            print(f"\n--- {title} ---")
+            print("No data to display.")
+        return
+
+    print(f"\n--- {title} ---")
+    header = f'{"Language":<20} {"Files":>10} {"Lines":>12} {"Code":>12} {"Comments":>12} {"Blanks":>12}'
+    print(header)
+    print("-" * len(header))
+
+    total = defaultdict(int)
+    sorted_langs = sorted(stats.items(), key=lambda item: item[1]['lines'], reverse=True)
+    
+    # Sticky header logic
+    max_rows_to_print = len(sorted_langs)
+    if is_live:
+        # Title (2) + Header (2) + Footer (2) + Progress (2) = 8 lines of chrome
+        # The rest can be used for the language list
+        available_height = get_terminal_height() - 8
+        max_rows_to_print = min(len(sorted_langs), available_height)
+
+
+    for i, (lang, data) in enumerate(sorted_langs):
+        if i >= max_rows_to_print:
+            print(f"... and {len(sorted_langs) - max_rows_to_print} more ...")
+            break
+        print(f'{lang:<20} {data.get("files", 0):>10,} {data.get("lines", 0):>12,} {data.get("code", 0):>12,} {data.get("comments", 0):>12,} {data.get("blanks", 0):>12,}')
+        for key, value in data.items():
+            total[key] += value
+    
+    print("-" * len(header))
+    print(f'{"Total":<20} {total.get("files", 0):>10,} {total.get("lines", 0):>12,} {total.get("code", 0):>12,} {total.get("comments", 0):>12,} {total.get("blanks", 0):>12,}')
+
+def print_loc_live_summary(repo_data):
+    """Aggregates and prints a simple, combined summary of LOC for live updates."""
+    total_stats = defaultdict(lambda: defaultdict(int))
+    for repo in repo_data:
+        if not repo.get('loc_stats'):
+            continue
+        for lang, stats in repo['loc_stats'].items():
+            if lang == "Total": continue
+            total_stats[lang]['lines'] += stats.get('lines', 0)
+            total_stats[lang]['code'] += stats.get('code', 0)
+            total_stats[lang]['comments'] += stats.get('comments', 0)
+            total_stats[lang]['blanks'] += stats.get('blanks', 0)
+            total_stats[lang]['files'] += len(stats.get('reports', []))
+    print_table("Live LOC Summary (All Repos)", total_stats, is_live=True)
+
+def print_loc_summary(repo_data):
+    """Aggregates and prints a final, detailed summary of lines of code."""
+    public_stats = defaultdict(lambda: defaultdict(int))
+    private_stats = defaultdict(lambda: defaultdict(int))
+
+    for repo in repo_data:
+        if not repo.get('loc_stats'):
+            continue
+        
+        target_stats = private_stats if repo.get('isPrivate') else public_stats
+        
+        for lang, stats in repo['loc_stats'].items():
+            if lang == "Total": continue
+            target_stats[lang]['lines'] += stats.get('lines', 0)
+            target_stats[lang]['code'] += stats.get('code', 0)
+            target_stats[lang]['comments'] += stats.get('comments', 0)
+            target_stats[lang]['blanks'] += stats.get('blanks', 0)
+            target_stats[lang]['files'] += len(stats.get('reports', []))
+
+    print_table("Lines of Code Summary (Public Repos)", public_stats)
+    print_table("Lines of Code Summary (Private Repos)", private_stats)
+
 
 def main():
     parser = argparse.ArgumentParser(description="List GitHub repositories with various statistics.", formatter_class=argparse.RawTextHelpFormatter)
@@ -468,6 +669,8 @@ def main():
     parser.add_argument("-c", "--commits", action="store_true", help="Include commit counts and last commit date. (Default for static mode if no other flags)")
     parser.add_argument("-s", "--size", action="store_true", help="Include repository size (in KB).")
     parser.add_argument("-d", "--dependencies", action="store_true", help=textwrap.dedent("Identify submodules that are also owned by the target user.\nNOTE: This is slower as it makes additional API calls per repo."))
+    parser.add_argument("--loc", action="store_true", help="Include Lines-of-Code analysis for each repository (requires 'tokei' to be installed).")
+    parser.add_argument("--use-latest-branch", action="store_true", help="For LOC analysis, check out the branch with the most recent commit instead of the default branch.")
     
     cache_group = parser.add_argument_group('caching arguments')
     cache_group.add_argument("--no-cache", action="store_true", help="Force a refresh and ignore any cached data.")
@@ -492,7 +695,7 @@ def main():
         global VERBOSE
         VERBOSE = args.verbose
 
-        if not (args.commits or args.size or args.dependencies or args.sort_date_asc or args.sort_date_desc or args.interactive):
+        if not (args.commits or args.size or args.dependencies or args.sort_date_asc or args.sort_date_desc or args.interactive or args.loc):
             args.commits = True
 
         repo_data, owner_name, column_widths = fetch_all_repo_data(args)
@@ -500,6 +703,17 @@ def main():
 
         if args.interactive:
             curses.wrapper(draw_main_list_ui, repo_data, owner_name, column_widths, clone_dir)
+            return
+
+        if args.loc:
+            # The live summary was printed during the fetch.
+            # Now print the final, detailed summary.
+            if sys.stdout.isatty() and not VERBOSE:
+                sys.stdout.write("\033[H\033[J") # Clear screen
+                sys.stdout.flush()
+            print(f"--- Final LOC Analysis for {owner_name} ---")
+            print(f"Processed {len(repo_data)}/{len(repo_data)} repositories.")
+            print_loc_summary(repo_data)
             return
 
         # Standard Static Display Logic
