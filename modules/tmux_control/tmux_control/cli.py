@@ -1,7 +1,10 @@
+import datetime
+import json
 import os
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import List
 
@@ -10,8 +13,9 @@ import typer
 
 # --- Configuration ---
 APP_NAME = "tmux-control"
-# Use a runtime directory for pid files and command sockets
 RUNTIME_DIR = Path(os.environ.get("TMPDIR", "/tmp")) / APP_NAME
+JOBS_DIR = RUNTIME_DIR / "jobs"
+DONE_DIR = RUNTIME_DIR / "done"
 PID_FILE = RUNTIME_DIR / "daemon.pid"
 DAEMON_SCRIPT_PATH = Path(__file__).parent / "daemon.py"
 
@@ -28,9 +32,7 @@ def is_daemon_running() -> bool:
         return False
     try:
         pid = int(PID_FILE.read_text())
-        # Check if a process with the PID exists and has the same name
         proc = psutil.Process(pid)
-        # Check if the process is running the daemon script
         return DAEMON_SCRIPT_PATH.name in " ".join(proc.cmdline())
     except (psutil.NoSuchProcess, ValueError, FileNotFoundError):
         return False
@@ -44,18 +46,22 @@ def daemon_start():
         raise typer.Exit()
 
     RUNTIME_DIR.mkdir(exist_ok=True)
-    
-    # Use Popen to launch the daemon in the background
+    JOBS_DIR.mkdir(exist_ok=True)
+    DONE_DIR.mkdir(exist_ok=True)
+
+    # THE FIX IS HERE: We pass `env=os.environ` to ensure the daemon
+    # inherits the necessary TMUX environment variables.
     process = subprocess.Popen(
         [sys.executable, str(DAEMON_SCRIPT_PATH)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True, # Detach from the current terminal
+        start_new_session=True,
+        env=os.environ,  # <-- THIS IS THE FIX
     )
-    
+
     PID_FILE.write_text(str(process.pid))
     typer.echo(f"Daemon started with PID: {process.pid}")
-    time.sleep(0.5) # Give it a moment to start up
+    time.sleep(0.5)
     if not is_daemon_running():
         typer.secho("Daemon failed to start.", fg=typer.colors.RED)
         raise typer.Exit(code=1)
@@ -71,7 +77,7 @@ def daemon_stop():
     try:
         pid = int(PID_FILE.read_text())
         proc = psutil.Process(pid)
-        proc.terminate() # Send SIGTERM
+        proc.terminate()
         typer.echo(f"Sent stop signal to daemon (PID: {pid}).")
         PID_FILE.unlink()
     except (psutil.NoSuchProcess, ValueError, FileNotFoundError):
@@ -101,13 +107,25 @@ def run_command(
     if not is_daemon_running():
         typer.secho("Daemon is not running. Please start it with 'tmux-control daemon start'", fg=typer.colors.RED)
         raise typer.Exit(code=1)
-    
-    # This is where we would communicate with the daemon.
-    # For now, we'll just print a message.
-    # In the future, this will write a command file or use a socket.
-    typer.echo(f"Requesting daemon to run and monitor command: {' '.join(command)}")
-    # TODO: Implement communication with the daemon
-    
+
+    job_id = str(uuid.uuid4())
+    job_file_path = JOBS_DIR / f"{job_id}.json"
+
+    job_data = {
+        "job_id": job_id,
+        "job_type": "run_command",
+        "command": command,
+        "metadata": {
+            "request_time": datetime.datetime.utcnow().isoformat(),
+        },
+    }
+
+    with open(job_file_path, "w") as f:
+        json.dump(job_data, f)
+
+    typer.echo(f"✅ Job '{job_id}' submitted to daemon.")
+    typer.echo(f"Command: {' '.join(command)}")
+
 
 if __name__ == "__main__":
     app()
