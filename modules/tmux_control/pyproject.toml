@@ -1,0 +1,22 @@
+[project]
+name = "tmux-control"
+version = "0.1.0"
+description = "A utility to control and automate tmux sessions."
+dependencies = [
+    "typer[all]",
+    "libtmux",
+    "psutil",
+]
+
+[project.scripts]
+tmux-control = "tmux_control.cli:app"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+# --- ADD THIS SECTION ---
+# This explicitly tells setuptools where to find the package,
+# disabling the problematic auto-discovery.
+[tool.setuptools]
+packages = ["tmux_control"]
