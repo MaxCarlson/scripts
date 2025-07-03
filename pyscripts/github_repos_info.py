@@ -597,66 +597,75 @@ def print_table(title, stats, is_live=False):
         return
 
     print(f"\n--- {title} ---")
-    header = f'{"Language":<20} {"Files":>10} {"Lines":>12} {"Code":>12} {"Comments":>12} {"Blanks":>12}'
+    # Shorter padding to fit more terminals
+    header = f'{"Language":<18} {"Files":>8} {"Lines":>10} {"Code":>10} {"Comments":>10} {"Blanks":>10}'
     print(header)
     print("-" * len(header))
 
     total = defaultdict(int)
     sorted_langs = sorted(stats.items(), key=lambda item: item[1]['lines'], reverse=True)
     
-    # Sticky header logic
     max_rows_to_print = len(sorted_langs)
     if is_live:
-        # Title (2) + Header (2) + Footer (2) + Progress (2) = 8 lines of chrome
-        # The rest can be used for the language list
-        available_height = get_terminal_height() - 8
-        max_rows_to_print = min(len(sorted_langs), available_height)
-
+        # Reserve lines for: Title(2), Header(2), Footer(2), Progress(2), Git(4)
+        reserved_lines = 12
+        available_height = get_terminal_height() - reserved_lines
+        max_rows_to_print = max(0, min(len(sorted_langs), available_height))
 
     for i, (lang, data) in enumerate(sorted_langs):
         if i >= max_rows_to_print:
             print(f"... and {len(sorted_langs) - max_rows_to_print} more ...")
             break
-        print(f'{lang:<20} {data.get("files", 0):>10,} {data.get("lines", 0):>12,} {data.get("code", 0):>12,} {data.get("comments", 0):>12,} {data.get("blanks", 0):>12,}')
-        for key, value in data.items():
-            total[key] += value
+        
+        files = data.get("files", 0)
+        lines = data.get("lines", 0)
+        code = data.get("code", 0)
+        comments = data.get("comments", 0)
+        blanks = data.get("blanks", 0)
+
+        print(f'{lang:<18} {files:>8,} {lines:>10,} {code:>10,} {comments:>10,} {blanks:>10,}')
+        
+        total["files"] += files
+        total["lines"] += lines
+        total["code"] += code
+        total["comments"] += comments
+        total["blanks"] += blanks
     
     print("-" * len(header))
-    print(f'{"Total":<20} {total.get("files", 0):>10,} {total.get("lines", 0):>12,} {total.get("code", 0):>12,} {total.get("comments", 0):>12,} {total.get("blanks", 0):>12,}')
+    print(f'{"Total":<18} {total.get("files", 0):>8,} {total.get("lines", 0):>10,} {total.get("code", 0):>10,} {total.get("comments", 0):>10,} {total.get("blanks", 0):>10,}')
 
-def print_loc_live_summary(repo_data):
-    """Aggregates and prints a simple, combined summary of LOC for live updates."""
-    total_stats = defaultdict(lambda: defaultdict(int))
+def aggregate_loc_stats(repo_data):
+    """Helper to aggregate LOC stats from a list of repo data."""
+    stats = defaultdict(lambda: defaultdict(int))
     for repo in repo_data:
         if not repo.get('loc_stats'):
             continue
-        for lang, stats in repo['loc_stats'].items():
+        for lang, lang_stats in repo['loc_stats'].items():
             if lang == "Total": continue
-            total_stats[lang]['lines'] += stats.get('lines', 0)
-            total_stats[lang]['code'] += stats.get('code', 0)
-            total_stats[lang]['comments'] += stats.get('comments', 0)
-            total_stats[lang]['blanks'] += stats.get('blanks', 0)
-            total_stats[lang]['files'] += len(stats.get('reports', []))
+            
+            code = lang_stats.get('code', 0)
+            comments = lang_stats.get('comments', 0)
+            blanks = lang_stats.get('blanks', 0)
+
+            stats[lang]['code'] += code
+            stats[lang]['comments'] += comments
+            stats[lang]['blanks'] += blanks
+            stats[lang]['lines'] += code + comments + blanks # Manually calculate lines
+            stats[lang]['files'] += len(lang_stats.get('reports', []))
+    return stats
+
+def print_loc_live_summary(repo_data):
+    """Aggregates and prints a simple, combined summary of LOC for live updates."""
+    total_stats = aggregate_loc_stats(repo_data)
     print_table("Live LOC Summary (All Repos)", total_stats, is_live=True)
 
 def print_loc_summary(repo_data):
     """Aggregates and prints a final, detailed summary of lines of code."""
-    public_stats = defaultdict(lambda: defaultdict(int))
-    private_stats = defaultdict(lambda: defaultdict(int))
+    public_data = [r for r in repo_data if not r.get('isPrivate')]
+    private_data = [r for r in repo_data if r.get('isPrivate')]
 
-    for repo in repo_data:
-        if not repo.get('loc_stats'):
-            continue
-        
-        target_stats = private_stats if repo.get('isPrivate') else public_stats
-        
-        for lang, stats in repo['loc_stats'].items():
-            if lang == "Total": continue
-            target_stats[lang]['lines'] += stats.get('lines', 0)
-            target_stats[lang]['code'] += stats.get('code', 0)
-            target_stats[lang]['comments'] += stats.get('comments', 0)
-            target_stats[lang]['blanks'] += stats.get('blanks', 0)
-            target_stats[lang]['files'] += len(stats.get('reports', []))
+    public_stats = aggregate_loc_stats(public_data)
+    private_stats = aggregate_loc_stats(private_data)
 
     print_table("Lines of Code Summary (Public Repos)", public_stats)
     print_table("Lines of Code Summary (Private Repos)", private_stats)
