@@ -137,12 +137,23 @@ def manage_repo_clone(full_name, clone_dir, keep_clones=False, bare=False):
     If keep_clones is True, uses a persistent directory.
     Returns the path to the repo and a boolean indicating if it's temporary.
     """
+    token = get_gh_token()
+    git_env = os.environ.copy()
+    if token:
+        # This environment variable tells Git to use the gh token.
+        # It's more reliable than embedding the token in the URL, especially for fetch.
+        git_env["GIT_ASKPASS"] = "echo" # Disable prompts
+        git_env["GH_TOKEN"] = token
+        repo_url = f"https://oauth2:{token}@github.com/{full_name}.git"
+    else:
+        repo_url = f"https://github.com/{full_name}.git"
+        print_verbose("No gh token found, cloning via standard HTTPS. May require interactive auth.")
+
     if keep_clones:
         repo_path = os.path.join(clone_dir, full_name.replace('/', '_'))
         is_temp = False
         temp_dir_obj = None
     else:
-        # Use a temporary directory that will be cleaned up automatically
         temp_dir_obj = tempfile.TemporaryDirectory()
         repo_path = temp_dir_obj.name
         is_temp = True
@@ -150,35 +161,30 @@ def manage_repo_clone(full_name, clone_dir, keep_clones=False, bare=False):
     if os.path.exists(repo_path) and not is_temp:
         print_verbose(f"Fetching updates for {full_name} in {repo_path}...")
         try:
+            # Configure the remote URL to include the token for this fetch operation
+            subprocess.run(["git", "remote", "set-url", "origin", repo_url], cwd=repo_path, check=True, capture_output=True, text=True, env=git_env)
             fetch_cmd = ["git", "fetch", "--all", "--prune"]
-            subprocess.run(fetch_cmd, cwd=repo_path, check=True, capture_output=True, text=True)
+            subprocess.run(fetch_cmd, cwd=repo_path, check=True, capture_output=True, text=True, env=git_env)
             return repo_path, None
         except subprocess.CalledProcessError as e:
             print(f"Failed to update {full_name}. Error: {e.stderr.strip()}", file=sys.stderr)
-            return None, None # Indicate failure
+            return None, None
     else:
         print_verbose(f"Cloning {full_name} into {repo_path}...")
-        token = get_gh_token()
-        if token:
-            repo_url = f"https://{token}@github.com/{full_name}.git"
-        else:
-            repo_url = f"https://github.com/{full_name}.git"
-            print_verbose("No gh token found, cloning via standard HTTPS. May require interactive auth.")
-
         clone_cmd = ["git", "clone", "--progress", repo_url, repo_path]
         if bare:
             clone_cmd.insert(2, "--bare")
         
         try:
-            # Use stderr=subprocess.STDOUT to capture git's progress output in stdout
-            result = subprocess.run(clone_cmd, check=True, text=True, capture_output=True)
+            result = subprocess.run(clone_cmd, check=True, text=True, capture_output=True, env=git_env)
             print_verbose(result.stdout)
             return repo_path, temp_dir_obj if is_temp else None
         except subprocess.CalledProcessError as e:
-            if "repository not found" in str(e.stdout) or "does not appear to be a git repository" in str(e.stdout):
+            error_output = e.stderr.strip()
+            if "repository not found" in error_output or "does not appear to be a git repository" in error_output:
                 print_verbose(f"Skipping {full_name} (likely empty or not found).")
             else:
-                print(f"Failed to clone {full_name}. Error: {e.stdout.strip()}", file=sys.stderr)
+                print(f"Failed to clone {full_name}. Error: {error_output}", file=sys.stderr)
             return None, None
 
 def get_loc_stats(full_name, clone_dir, use_latest_branch=False):
@@ -222,39 +228,40 @@ def fetch_all_repo_data(args):
     """Fetches and processes data for all repositories, using a cache if available."""
     owner_name = args.user or run_gh_command(["api", "/user", "--jq", ".login"], "Failed to get authenticated user.").strip()
     clone_dir = args.clone_dir or os.path.join(os.path.expanduser("~"), ".cache", "github-repos-info", "clones")
-    os.makedirs(clone_dir, exist_ok=True)
+    if args.keep_clones:
+        os.makedirs(clone_dir, exist_ok=True)
 
-    # --- Caching Logic ---
     cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "github-repos-info")
     cache_file = os.path.join(cache_dir, f"{owner_name}.json")
 
-    if not args.no_cache:
-        if os.path.exists(cache_file):
-            try:
-                mtime = os.path.getmtime(cache_file)
-                if (time.time() - mtime) < args.cache_ttl:
-                    print_verbose(f"Loading data from cache file: {cache_file}")
-                    with open(cache_file, 'r') as f:
-                        cached_data = json.load(f)
-                        
-                        is_cache_sufficient = True
-                        if args.loc:
-                            first_repo = cached_data.get("data", [{}])[0]
-                            if "loc_stats" not in first_repo:
-                                print_verbose("Cache does not contain LOC data, re-fetching.")
-                                is_cache_sufficient = False
+    if not args.no_cache and os.path.exists(cache_file):
+        try:
+            mtime = os.path.getmtime(cache_file)
+            if (time.time() - mtime) < args.cache_ttl:
+                print_verbose(f"Loading data from cache file: {cache_file}")
+                with open(cache_file, 'r') as f:
+                    cached_data = json.load(f)
+                
+                # Check if the cache is sufficient for the current request
+                is_cache_sufficient = True
+                first_repo = cached_data.get("data", [{}])[0]
+                if args.loc and "loc_stats" not in first_repo:
+                    is_cache_sufficient = False
+                if args.dependencies and "dependencies" not in first_repo:
+                    is_cache_sufficient = False
+                if (args.commits or args.interactive) and "commits" not in first_repo:
+                    is_cache_sufficient = False
 
-                        if is_cache_sufficient:
-                            for repo in cached_data['data']:
-                                if repo.get('last_commit_date_str') != "N/A":
-                                    repo['last_commit_date_obj'] = datetime.strptime(repo['last_commit_date_str'], '%Y-%m-%d %H:%M').replace(tzinfo=timezone.utc)
-                                else:
-                                    repo['last_commit_date_obj'] = None
-                            return cached_data['data'], owner_name, cached_data['column_widths']
-            except (json.JSONDecodeError, KeyError, IndexError) as e:
-                print_verbose(f"Cache file is corrupted or outdated, re-fetching. Error: {e}")
+                if is_cache_sufficient:
+                    for repo in cached_data['data']:
+                        if repo.get('last_commit_date_str') != "N/A":
+                            repo['last_commit_date_obj'] = datetime.strptime(repo['last_commit_date_str'], '%Y-%m-%d %H:%M').replace(tzinfo=timezone.utc)
+                        else:
+                            repo['last_commit_date_obj'] = None
+                    return cached_data['data'], owner_name, cached_data['column_widths']
+        except (json.JSONDecodeError, KeyError, IndexError) as e:
+            print_verbose(f"Cache file is corrupted or outdated, re-fetching. Error: {e}")
 
-    # --- Fetching Logic ---
     repos = get_github_repos(args.user)
     if not repos:
         print(f"No repositories found for '{owner_name}'.", file=sys.stderr)
@@ -313,7 +320,7 @@ def fetch_all_repo_data(args):
             print(f"Processing {i + 1}/{len(repos)}: {full_name}")
             current_repo_info["loc_stats"] = get_loc_stats(full_name, clone_dir, args.use_latest_branch)
         
-        if args.commits or args.sort_date_asc or args.sort_date_desc or args.interactive:
+        if args.commits or args.interactive:
             current_repo_info["commits"] = get_commit_count(owner, name)
         if args.dependencies:
             current_repo_info["dependencies"] = get_submodule_dependencies(owner, name, all_repos_full_names)
@@ -329,14 +336,19 @@ def fetch_all_repo_data(args):
             print(f"Processed {i + 1}/{len(repos)}: {full_name}")
             print_loc_live_summary(repo_data)
 
-    column_widths = {"name": max(len(r["short_name"]) for r in repo_data) if repo_data else 20, "commits": max(len(str(r.get("commits", "N/A"))) for r in repo_data) if repo_data else 0, "date": 16, "size": max(len(str(r.get("size_kb", "N/A"))) for r in repo_data) if repo_data else 0}
+    column_widths = {
+        "name": max((len(r["short_name"]) for r in repo_data), default=20),
+        "commits": max((len(str(r.get("commits", "N/A"))) for r in repo_data), default=0),
+        "date": 16,
+        "size": max((len(str(r.get("size_kb", "N/A"))) for r in repo_data), default=0)
+    }
     
     if not args.no_cache:
         os.makedirs(cache_dir, exist_ok=True)
+        # Create a serializable version of the data
         data_to_cache = [r.copy() for r in repo_data]
         for r in data_to_cache:
-            if 'last_commit_date_obj' in r:
-                del r['last_commit_date_obj']
+            r.pop('last_commit_date_obj', None) # Remove non-serializable datetime object
         with open(cache_file, 'w') as f:
             json.dump({"data": data_to_cache, "column_widths": column_widths}, f)
         print_verbose(f"Saved data to cache file: {cache_file}")
@@ -834,44 +846,61 @@ def analyze_commit_history(repos, owner_name, clone_dir, keep_clones=False, max_
 
 
 def main():
-    parser = argparse.ArgumentParser(description="List GitHub repositories with various statistics.", formatter_class=argparse.RawTextHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description="List GitHub repositories with various statistics.",
+        formatter_class=argparse.RawTextHelpFormatter
+    )
+    
+    # Behavior Flags
     parser.add_argument("-i", "--interactive", action="store_true", help="Run the script in an interactive TUI mode.")
     parser.add_argument("-u", "--user", help="Specify a GitHub username or organization (defaults to the authenticated user).")
-    parser.add_argument("-c", "--commits", action="store_true", help="Include commit counts and last commit date. (Default for static mode if no other flags)")
-    parser.add_argument("-s", "--size", action="store_true", help="Include repository size (in KB).")
-    parser.add_argument("-d", "--dependencies", action="store_true", help=textwrap.dedent("""
-        Identify submodules that are also owned by the target user.
-        NOTE: This is slower as it makes additional API calls per repo."""))
     
+    # Content Flags
+    parser.add_argument("-c", "--commits", action="store_true", help="Include commit counts (implies --date).")
+    parser.add_argument("--date", action="store_true", help="Include last commit date.")
+    parser.add_argument("-s", "--size", action="store_true", help="Include repository size (in KB).")
+    parser.add_argument("-d", "--dependencies", action="store_true", help="Identify submodules owned by the user (slower).")
+
+    # Analysis Modes
     loc_group = parser.add_argument_group('lines-of-code arguments')
-    loc_group.add_argument("--loc", action="store_true", help="Include Lines-of-Code analysis for each repository (requires 'tokei' to be installed).")
-    loc_group.add_argument("--use-latest-branch", action="store_true", help="For LOC analysis, check out the branch with the most recent commit instead of the default branch.")
+    loc_group.add_argument("--loc", action="store_true", help="Analyze and display lines of code (requires 'tokei').")
+    loc_group.add_argument("--use-latest-branch", action="store_true", help="For LOC, use the most recently updated branch.")
 
     history_group = parser.add_argument_group('historical stats arguments')
-    history_group.add_argument("--history", action="store_true", help=textwrap.dedent("""\\
-        Analyze the entire commit history to generate stats like commits per year and daily averages.\\
-        WARNING: This is a very slow operation that clones every repository."""))
+    history_group.add_argument("--history", action="store_true", help="Analyze full commit history (very slow).")
 
-    clone_group = parser.add_argument_group('cloning arguments')
-    clone_group.add_argument("--keep-clones", action="store_true", help="Keep repository clones in a persistent directory for faster subsequent runs.")
-    clone_group.add_argument("--clone-dir", help="Specify a persistent directory for clones. Requires --keep-clones. Defaults to ~/.cache/github-repos-info/clones.")
-    clone_group.add_argument("--clear-clone-cache", action="store_true", help="Delete the cached repositories in the persistent clone directory.")
-    clone_group.add_argument("--max-repos", type=int, help="Stop processing after N repositories (for --loc and --history). Useful for testing.")
+    # Cloning and Caching
+    clone_group = parser.add_argument_group('cloning and caching arguments')
+    clone_group.add_argument("--keep-clones", action="store_true", help="Keep repo clones in a persistent cache.")
+    clone_group.add_argument("--clone-dir", help="Specify a custom clone directory (implies --keep-clones).")
+    clone_group.add_argument("--clear-clone-cache", action="store_true", help="Clear the persistent clone cache.")
+    clone_group.add_argument("--max-repos", type=int, help="Limit processing to N repos (for --loc/--history).")
     
     cache_group = parser.add_argument_group('caching arguments')
-    cache_group.add_argument("--no-cache", action="store_true", help="Force a refresh and ignore any cached data.")
-    cache_group.add_argument("--cache-ttl", type=int, default=3600, help="Time-to-live for cache in seconds. Default: 3600 (1 hour).")
+    cache_group.add_argument("--no-cache", action="store_true", help="Ignore and overwrite cached data.")
+    cache_group.add_argument("--cache-ttl", type=int, default=3600, help="Cache time-to-live in seconds (default: 1 hour).")
 
+    # Sorting
     sort_group = parser.add_mutually_exclusive_group()
-    sort_group.add_argument("-A", "--sort-date-asc", action="store_true", help="Sort repositories by last commit date in ascending order (oldest first).")
-    sort_group.add_argument("-D", "--sort-date-desc", action="store_true", help="Sort repositories by last commit date in descending order (newest first).")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output for debugging and progress.")
+    sort_group.add_argument("-A", "--sort-date-asc", action="store_true", help="Sort by date ascending.")
+    sort_group.add_argument("-D", "--sort-date-desc", action="store_true", help="Sort by date descending (default for date sort).")
+    
+    # Other
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output for debugging.")
+    
     args = parser.parse_args()
     
+    global VERBOSE
+    VERBOSE = args.verbose
     print_verbose("Starting script.")
-    
+
+    # Argument validation and dependency handling
+    if args.clone_dir and not args.keep_clones:
+        print_verbose("--clone-dir implies --keep-clones. Enabling it.")
+        args.keep_clones = True
+
     clone_dir = args.clone_dir or os.path.join(os.path.expanduser("~"), ".cache", "github-repos-info", "clones")
-    if args.keep_clones or args.clone_dir:
+    if args.keep_clones:
         os.makedirs(clone_dir, exist_ok=True)
 
     if args.clear_clone_cache:
@@ -883,17 +912,19 @@ def main():
             print("Clone cache directory does not exist.")
         return
 
+    # Set implicit arguments
+    if args.sort_date_asc or args.sort_date_desc:
+        args.date = True
+    if args.commits:
+        args.date = True
+    
+    # Default behavior if no specific mode is chosen
+    is_specific_mode = args.interactive or args.loc or args.history or args.dependencies
+    if not is_specific_mode and not (args.commits or args.date or args.size):
+        print_verbose("No specific mode or content flags set. Applying default static view.")
+        args.commits, args.date, args.size = True, True, True
+
     try:
-        if args.interactive:
-            if curses is None: sys.exit(1)
-            args.commits, args.size = True, True
-        
-        global VERBOSE
-        VERBOSE = args.verbose
-
-        if not (args.commits or args.size or args.dependencies or args.sort_date_asc or args.sort_date_desc or args.interactive or args.loc or args.history):
-            args.commits = True
-
         if args.history:
             repos = get_github_repos(args.user)
             if not repos:
@@ -904,10 +935,14 @@ def main():
             print_commit_history_summary(all_commits, owner_name)
             return
 
+        # For interactive, loc, or default static mode, we need repo data
         repo_data, owner_name, column_widths = fetch_all_repo_data(args)
         if not repo_data: return
 
         if args.interactive:
+            if curses is None:
+                print("Error: The 'curses' module is not available on this system, so interactive mode is disabled.", file=sys.stderr)
+                sys.exit(1)
             curses.wrapper(draw_main_list_ui, repo_data, owner_name, column_widths, clone_dir)
             return
 
@@ -920,36 +955,43 @@ def main():
             print_loc_summary(repo_data)
             return
 
-        # Standard Static Display Logic
-        if args.sort_date_asc: sorted_repos = sorted(repo_data, key=lambda r: r['last_commit_date_obj'] or datetime.max.replace(tzinfo=timezone.utc))
-        elif args.sort_date_desc: sorted_repos = sorted(repo_data, key=lambda r: r['last_commit_date_obj'] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
-        elif args.commits: sorted_repos = sorted(repo_data, key=lambda r: r.get("commits", 0) if isinstance(r.get("commits"), int) else -1, reverse=True)
-        else: sorted_repos = sorted(repo_data, key=lambda r: r["short_name"])
+        # --- Default Static Display Logic ---
+        if args.sort_date_asc:
+            sorted_repos = sorted(repo_data, key=lambda r: r['last_commit_date_obj'] or datetime.max.replace(tzinfo=timezone.utc))
+        elif args.sort_date_desc:
+            sorted_repos = sorted(repo_data, key=lambda r: r['last_commit_date_obj'] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        elif args.commits:
+            sorted_repos = sorted(repo_data, key=lambda r: r.get("commits", 0) if isinstance(r.get("commits"), int) else -1, reverse=True)
+        else:
+            sorted_repos = sorted(repo_data, key=lambda r: r["short_name"].lower())
 
         print(f"\n--- GitHub Repositories for {owner_name} ---")
         if not sorted_repos:
             print("No data to display.")
             return
 
+        # Build header based on requested columns
         header_parts = [f'{"Repository":<{column_widths["name"]}}']
-        if args.commits or args.sort_date_asc or args.sort_date_desc:
-            header_parts.append(f'{"Commits":>{column_widths["commits"]}}')
-            header_parts.append(f'{"Last Commit":<{column_widths["date"]}}')
+        if args.commits: header_parts.append(f'{"Commits":>{column_widths["commits"]}}')
+        if args.date: header_parts.append(f'{"Last Commit":<{column_widths["date"]}}')
         if args.size: header_parts.append(f'{"Size (KB)":>{column_widths["size"]}}')
         if args.dependencies: header_parts.append("Dependencies")
         header = " | ".join(header_parts)
-        print(header); print("-" * len(header))
+        print(header)
+        print("-" * len(header))
 
         for repo in sorted_repos:
             line_parts = [f'{repo["short_name"]:<{column_widths["name"]}}']
-            if args.commits or args.sort_date_asc or args.sort_date_desc:
-                line_parts.append(f'{str(repo.get("commits", "N/A")):>{column_widths["commits"]}}')
-                line_parts.append(f'{repo["last_commit_date_str"]:<{column_widths["date"]}}')
+            if args.commits: line_parts.append(f'{str(repo.get("commits", "N/A")):>{column_widths["commits"]}}')
+            if args.date: line_parts.append(f'{repo["last_commit_date_str"]:<{column_widths["date"]}}')
             if args.size: line_parts.append(f'{str(repo.get("size_kb", "N/A")):>{column_widths["size"]}}')
             line = " | ".join(line_parts)
-            if args.dependencies and repo.get("dependencies"): line += f" -> {', '.join(repo['dependencies'])}"
+            if args.dependencies and repo.get("dependencies"):
+                line += f" -> {', '.join(repo['dependencies'])}"
             print(line)
+
     finally:
+        print_verbose("Script finished.")
         # No automatic cleanup of a persistent clone_dir
         pass
 
