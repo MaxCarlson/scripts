@@ -689,160 +689,192 @@ def aggregate_loc_stats(repo_data):
             stats[lang]['files'] += len(lang_stats.get('reports', []))
     return stats
 
-def print_loc_live_summary(repo_data):
-    """Aggregates and prints a simple, combined summary of LOC for live updates."""
-    total_stats = aggregate_loc_stats(repo_data)
-    print_table("Live LOC Summary (All Repos)", total_stats, is_live=True)
-
-def print_loc_summary(repo_data):
-    """Aggregates and prints a final, detailed summary of lines of code."""
-    public_data = [r for r in repo_data if not r.get('isPrivate')]
-    private_data = [r for r in repo_data if r.get('isPrivate')]
-
-    public_stats = aggregate_loc_stats(public_data)
-    private_stats = aggregate_loc_stats(private_data)
-    total_stats = aggregate_loc_stats(repo_data)
-
-    print_table("Lines of Code Summary (Public Repos)", public_stats)
-    print_table("Lines of Code Summary (Private Repos)", private_stats)
-    print_table("Lines of Code Summary (All Repos)", total_stats)
-
-
-def print_commit_history_summary(all_commits, owner_name):
-    """Analyzes and prints the summary of all commits."""
-    if not all_commits:
-        print("\nNo commits found to analyze.")
-        return
-
-    print(f"\n--- Commit History Summary for {owner_name} ---")
-
-    # Sort commits by timestamp
-    all_commits.sort(key=lambda x: x['timestamp'])
-
-    total_commits = len(all_commits)
-    total_insertions = sum(c['insertions'] for c in all_commits)
-    total_deletions = sum(c['deletions'] for c in all_commits)
-    
-    first_commit_date = datetime.fromtimestamp(all_commits[0]['timestamp'], timezone.utc)
-    last_commit_date = datetime.fromtimestamp(all_commits[-1]['timestamp'], timezone.utc)
-    
-    # Overall Summary
-    print("\nOverall Summary:")
-    print(f"  - Total Commits: {total_commits:,}")
-    print(f"  - Total Insertions: {total_insertions:,}")
-    print(f"  - Total Deletions: {total_deletions:,}")
-    print(f"  - First Commit: {first_commit_date.strftime('%Y-%m-%d')}")
-    print(f"  - Last Commit: {last_commit_date.strftime('%Y-%m-%d')}")
-
-    # Commit activity by day of the week
-    day_of_week_commits = defaultdict(int)
-    for commit in all_commits:
-        day = datetime.fromtimestamp(commit['timestamp'], timezone.utc).strftime('%A')
-        day_of_week_commits[day] += 1
-    
-    if day_of_week_commits:
-        most_active_day = max(day_of_week_commits, key=day_of_week_commits.get)
-        print(f"  - Most Active Day: {most_active_day} ({day_of_week_commits[most_active_day]:,} commits)")
-
-    # Commit Velocity
-    total_days = (last_commit_date - first_commit_date).days
-    if total_days > 0:
-        print("\nCommit Velocity:")
-        print(f"  - Average Commits per Day: {total_commits / total_days:.2f}")
-        print(f"  - Average Commits per Month: {total_commits / (total_days / 30.44):.2f}")
-
-    # Yearly Breakdown
-    yearly_stats = defaultdict(lambda: {'commits': 0, 'insertions': 0, 'deletions': 0})
-    for commit in all_commits:
-        year = datetime.fromtimestamp(commit['timestamp'], timezone.utc).year
-        yearly_stats[year]['commits'] += 1
-        yearly_stats[year]['insertions'] += commit['insertions']
-        yearly_stats[year]['deletions'] += commit['deletions']
-
-    if yearly_stats:
-        print("\nYearly Breakdown:")
-        header = f'{"Year":<6} {"Commits":>10} {"Insertions":>12} {"Deletions":>12}'
-        print(header)
-        print("-" * len(header))
-        for year in sorted(yearly_stats.keys()):
-            stats = yearly_stats[year]
-            print(f"{year:<6} {stats['commits']:>10,} {stats['insertions']:>12,} {stats['deletions']:>12,}")
-
-
-def analyze_commit_history(repos, owner_name, clone_dir, keep_clones=False, max_repos=None):
+def run_analysis_ui(repos, owner_name, clone_dir, keep_clones, max_repos, analysis_type):
     """
-    Clones/updates repositories and analyzes their commit history.
+    Generic UI for running analysis (--loc or --history) on repositories.
+    `analysis_type` can be 'loc' or 'history'.
     """
-    print(f"--- Starting Full Commit History Analysis for {owner_name} ---")
-    if keep_clones:
-        print(f"Using persistent clone directory: {clone_dir}")
+    title = "LOC Analysis" if analysis_type == 'loc' else "Commit History Analysis"
+    
+    def draw_ui(progress_str, summary_lines):
+        if sys.stdout.isatty() and not VERBOSE:
+            sys.stdout.write("\033[H\033[J") # Clear screen
+            sys.stdout.write(progress_str)
+            for line in summary_lines:
+                sys.stdout.write(line + '\n')
+            sys.stdout.flush()
+        else:
+            # For non-interactive, just print the progress
+            print(progress_str.strip())
 
     if max_repos is not None:
         repos = repos[:max_repos]
 
-    all_commits = []
+    analysis_results = []
     total_repos = len(repos)
-    total_size_kb = sum(r.get('diskUsage', 0) for r in repos)
-    processed_size_kb = 0
+    
+    # Initial UI draw
+    draw_ui(f"--- {title} for {owner_name} ---\nStarting...", [])
 
     for i, repo in enumerate(repos):
         full_name = f"{repo['owner']['login']}/{repo['name']}"
-        repo_disk_usage = repo.get('diskUsage', 0)
-        
-        if sys.stdout.isatty() and not VERBOSE:
-            sys.stdout.write("\033[H\033[J")
-            sys.stdout.flush()
-        
-        size_str = f"({processed_size_kb/1024:.1f} / {total_size_kb/1024:.1f} MB)"
-        print(f"--- History Analysis {size_str} ---")
-        print(f"Processing {i + 1}/{total_repos}: {full_name}")
+        progress_header = f"--- {title} for {owner_name} ---\nProcessing {i + 1}/{total_repos}: {full_name}\n"
 
-        repo_path, temp_dir_obj = manage_repo_clone(full_name, clone_dir, keep_clones)
+        # --- Cloning ---
+        repo_path, temp_dir_obj = manage_repo_clone(full_name, clone_dir, keep_clones, bare=(analysis_type == 'history'))
         if not repo_path:
-            processed_size_kb += repo_disk_usage
             continue
         
+        # --- Analysis ---
+        summary_output = []
         try:
-            processed_size_kb += repo_disk_usage
+            if analysis_type == 'loc':
+                result = get_loc_stats(repo_path, full_name)
+                if result:
+                    analysis_results.append({'loc_stats': result, 'isPrivate': repo['isPrivate']})
+                
+                total_stats = aggregate_loc_stats(analysis_results)
+                summary_output = format_table_to_lines("Live LOC Summary (All Repos)", total_stats, is_live=True)
             
-            log_cmd = [
-                "git", "log",
-                f"--author={owner_name}",
-                "--pretty=format:%H|%at",
-                "--shortstat"
-            ]
+            elif analysis_type == 'history':
+                result = get_history_stats(repo_path, owner_name, full_name)
+                if result:
+                    analysis_results.extend(result)
+                summary_output = format_history_live_summary(analysis_results)
             
-            log_output = subprocess.check_output(log_cmd, cwd=repo_path, text=True, stderr=subprocess.PIPE)
-            
-            commit_hash = None
-            for line in log_output.splitlines():
-                if '|' in line and len(line.split('|')) == 2:
-                    commit_hash, commit_timestamp = line.split('|')
-                    all_commits.append({
-                        "timestamp": int(commit_timestamp),
-                        "insertions": 0,
-                        "deletions": 0
-                    })
-                elif "changed" in line and commit_hash:
-                    insertions = re.search(r'(\d+) insertion', line)
-                    deletions = re.search(r'(\d+) deletion', line)
-                    if all_commits:
-                        all_commits[-1]["insertions"] = int(insertions.group(1)) if insertions else 0
-                        all_commits[-1]["deletions"] = int(deletions.group(1)) if deletions else 0
-                    commit_hash = None
+            draw_ui(progress_header, summary_output)
 
-        except subprocess.CalledProcessError as e:
-            if "does not have any commits yet" in e.stderr:
-                print_verbose(f"Skipping {full_name} as it has no commits.")
-            else:
-                print(f"Could not analyze log for {full_name}. Error: {e.stderr.strip()}", file=sys.stderr)
-        except Exception as e:
-            print(f"An unexpected error occurred during log analysis for {full_name}: {e}")
         finally:
             if temp_dir_obj:
                 temp_dir_obj.cleanup()
+
+    return analysis_results
+
+def format_table_to_lines(title, stats, is_live=False):
+    """Formats a table and returns it as a list of strings."""
+    lines = []
+    if not stats:
+        if not is_live:
+            lines.append(f"\n--- {title} ---")
+            lines.append("No data to display.")
+        return lines
+
+    lines.append(f"\n--- {title} ---")
+    header = f'{"Language":<18} {"Files":>8} {"Lines":>10} {"Code":>10} {"Comments":>10} {"Blanks":>10}'
+    lines.append(header)
+    lines.append("-" * len(header))
+
+    total = defaultdict(int)
+    sorted_langs = sorted(stats.items(), key=lambda item: item[1]['lines'], reverse=True)
     
-    return all_commits
+    max_rows_to_print = len(sorted_langs)
+    if is_live:
+        reserved_lines = 12
+        available_height = get_terminal_height() - reserved_lines
+        max_rows_to_print = max(0, min(len(sorted_langs), available_height))
+
+    for i, (lang, data) in enumerate(sorted_langs):
+        if i >= max_rows_to_print:
+            lines.append(f"... and {len(sorted_langs) - max_rows_to_print} more ...")
+            break
+        
+        files, l, code, comments, blanks = (data.get(k, 0) for k in ["files", "lines", "code", "comments", "blanks"])
+        lines.append(f'{lang:<18} {files:>8,} {l:>10,} {code:>10,} {comments:>10,} {blanks:>10,}')
+        for k, v in data.items(): total[k] += v
+    
+    lines.append("-" * len(header))
+    lines.append(f'{"Total":<18} {total.get("files", 0):>8,} {total.get("lines", 0):>10,} {total.get("code", 0):>10,} {total.get("comments", 0):>10,} {total.get("blanks", 0):>10,}')
+    return lines
+
+def format_history_live_summary(all_commits):
+    """Formats the live history summary and returns it as a list of strings."""
+    if not all_commits:
+        return []
+    
+    total_commits = len(all_commits)
+    total_insertions = sum(c['insertions'] for c in all_commits)
+    total_deletions = sum(c['deletions'] for c in all_commits)
+
+    return [
+        "\n--- Live Commit Summary ---",
+        f"  - Total Commits: {total_commits:,}",
+        f"  - Total Insertions: {total_insertions:,}",
+        f"  - Total Deletions: {total_deletions:,}"
+    ]
+
+
+def get_loc_stats(repo_path, full_name):
+    """Runs 'tokei' to get LOC stats from a given path."""
+    global _tokei_warning_issued
+    if not shutil.which("tokei"):
+        if not _tokei_warning_issued:
+            print("Warning: 'tokei' command not found. Install from https://github.com/XAMPPRocky/tokei", file=sys.stderr)
+            _tokei_warning_issued = True
+        return None
+    
+    print_verbose(f"Running 'tokei' on {repo_path}...")
+    tokei_cmd = ["tokei", "--output", "json", repo_path]
+    try:
+        process = subprocess.run(tokei_cmd, capture_output=True, text=True, check=True, encoding='utf-8')
+        return json.loads(process.stdout)
+    except Exception as e:
+        print(f"Error running or parsing 'tokei' on {full_name}: {e}", file=sys.stderr)
+        return None
+
+def get_history_stats(repo_path, owner_name, full_name):
+    """Runs 'git log' to get commit history stats from a given path."""
+    print_verbose(f"Running 'git log' on {repo_path}...")
+    try:
+        log_cmd = [
+            "git", "log",
+            f"--author={owner_name}",
+            "--pretty=format:%H|%at",
+            "--shortstat"
+        ]
+        log_output = subprocess.check_output(log_cmd, cwd=repo_path, text=True, stderr=subprocess.PIPE)
+        
+        repo_commits = []
+        commit_hash = None
+        for line in log_output.splitlines():
+            if '|' in line and len(line.split('|')) == 2:
+                commit_hash, commit_timestamp = line.split('|')
+                repo_commits.append({
+                    "timestamp": int(commit_timestamp),
+                    "insertions": 0,
+                    "deletions": 0
+                })
+            elif "changed" in line and commit_hash:
+                insertions = re.search(r'(\d+) insertion', line)
+                deletions = re.search(r'(\d+) deletion', line)
+                if repo_commits:
+                    repo_commits[-1]["insertions"] = int(insertions.group(1)) if insertions else 0
+                    repo_commits[-1]["deletions"] = int(deletions.group(1)) if deletions else 0
+                commit_hash = None
+        return repo_commits
+    except subprocess.CalledProcessError as e:
+        if "does not have any commits yet" in e.stderr:
+            print_verbose(f"Skipping {full_name} as it has no commits.")
+        else:
+            print(f"Could not analyze log for {full_name}. Error: {e.stderr.strip()}", file=sys.stderr)
+        return []
+    except Exception as e:
+        print(f"An unexpected error occurred during log analysis for {full_name}: {e}")
+        return []
+
+def print_history_live_summary(all_commits):
+    """Prints a live, simple summary of commit history."""
+    if not all_commits:
+        return
+    
+    total_commits = len(all_commits)
+    total_insertions = sum(c['insertions'] for c in all_commits)
+    total_deletions = sum(c['deletions'] for c in all_commits)
+
+    print("\n--- Live Commit Summary ---")
+    print(f"  - Total Commits: {total_commits:,}")
+    print(f"  - Total Insertions: {total_insertions:,}")
+    print(f"  - Total Deletions: {total_deletions:,}")
+
 
 
 def main():
@@ -894,49 +926,82 @@ def main():
     VERBOSE = args.verbose
     print_verbose("Starting script.")
 
-    # Argument validation and dependency handling
     if args.clone_dir and not args.keep_clones:
         print_verbose("--clone-dir implies --keep-clones. Enabling it.")
         args.keep_clones = True
 
-    clone_dir = args.clone_dir or os.path.join(os.path.expanduser("~"), ".cache", "github-repos-info", "clones")
-    if args.keep_clones:
-        os.makedirs(clone_dir, exist_ok=True)
-
+    clone_base_dir = args.clone_dir or os.path.join(os.path.expanduser("~"), ".cache", "github-repos-info")
+    
     if args.clear_clone_cache:
-        if os.path.exists(clone_dir):
-            print(f"Clearing clone cache at: {clone_dir}")
-            shutil.rmtree(clone_dir)
+        if os.path.exists(clone_base_dir):
+            print(f"Clearing all clone caches at: {clone_base_dir}")
+            shutil.rmtree(clone_base_dir)
             print("Cache cleared.")
         else:
             print("Clone cache directory does not exist.")
         return
 
-    # Set implicit arguments
-    if args.sort_date_asc or args.sort_date_desc:
-        args.date = True
-    if args.commits:
+    if args.keep_clones:
+        os.makedirs(os.path.join(clone_base_dir, 'full'), exist_ok=True)
+        os.makedirs(os.path.join(clone_base_dir, 'bare'), exist_ok=True)
+
+    # Set implicit arguments for data fetching
+    if args.sort_date_asc or args.sort_date_desc or args.commits:
         args.date = True
     
-    # Default behavior if no specific mode is chosen
-    is_specific_mode = args.interactive or args.loc or args.history or args.dependencies
-    if not is_specific_mode and not (args.commits or args.date or args.size):
-        print_verbose("No specific mode or content flags set. Applying default static view.")
+    is_static_mode = not (args.interactive or args.loc or args.history)
+    if is_static_mode and not (args.commits or args.date or args.size or args.dependencies):
+        print_verbose("No content flags set for static mode. Applying defaults.")
         args.commits, args.date, args.size = True, True, True
 
     try:
-        if args.history:
+        owner_name = args.user or run_gh_command(["api", "/user", "--jq", ".login"], "Failed to get authenticated user.").strip()
+        
+        if args.loc or args.history:
+            analysis_type = 'loc' if args.loc else 'history'
+            clone_dir = os.path.join(clone_base_dir, 'full' if analysis_type == 'loc' else 'bare')
+
             repos = get_github_repos(args.user)
             if not repos:
-                print(f"No repositories found for '{args.user or 'authenticated user'}'.", file=sys.stderr)
+                print(f"No repositories found for '{owner_name}'.", file=sys.stderr)
                 return
-            owner_name = args.user or run_gh_command(["api", "/user", "--jq", ".login"], "Failed to get authenticated user.").strip()
-            all_commits = analyze_commit_history(repos, owner_name, clone_dir, args.keep_clones, args.max_repos)
-            print_commit_history_summary(all_commits, owner_name)
+            
+            results = run_analysis_ui(repos, owner_name, clone_dir, args.keep_clones, args.max_repos, analysis_type)
+            
+            # Final summary after live updates
+            if sys.stdout.isatty() and not VERBOSE:
+                sys.stdout.write("\033[H\033[J")
+                sys.stdout.flush()
+
+            if analysis_type == 'loc':
+                # Re-create the final summary for LOC
+                public_data = [r for r in results if not r.get('isPrivate')]
+                private_data = [r for r in results if r.get('isPrivate')]
+                
+                public_stats = aggregate_loc_stats(public_data)
+                private_stats = aggregate_loc_stats(private_data)
+                total_stats = aggregate_loc_stats(results)
+
+                print_table("Lines of Code Summary (Public Repos)", public_stats)
+                print_table("Lines of Code Summary (Private Repos)", private_stats)
+                print_table("Lines of Code Summary (All Repos)", total_stats)
+            else:
+                # The history summary function was removed, but we can recreate a simple one
+                if results:
+                    total_commits = len(results)
+                    total_insertions = sum(c['insertions'] for c in results)
+                    total_deletions = sum(c['deletions'] for c in results)
+                    print(f"\n--- Final Commit History Summary for {owner_name} ---")
+                    print(f"  - Total Repositories Analyzed: {len(repos)}")
+                    print(f"  - Total Commits Found: {total_commits:,}")
+                    print(f"  - Total Insertions: {total_insertions:,}")
+                    print(f"  - Total Deletions: {total_deletions:,}")
+                else:
+                    print("\nNo commit history found to summarize.")
             return
 
-        # For interactive, loc, or default static mode, we need repo data
-        repo_data, owner_name, column_widths = fetch_all_repo_data(args)
+        # --- Static and Interactive Modes ---
+        repo_data, _, column_widths = fetch_all_repo_data(args)
         if not repo_data: return
 
         if args.interactive:
@@ -945,16 +1010,7 @@ def main():
                 sys.exit(1)
             curses.wrapper(draw_main_list_ui, repo_data, owner_name, column_widths, clone_dir)
             return
-
-        if args.loc:
-            if sys.stdout.isatty() and not VERBOSE:
-                sys.stdout.write("\033[H\033[J")
-                sys.stdout.flush()
-            print(f"--- Final LOC Analysis for {owner_name} ---")
-            print(f"Processed {len(repo_data)}/{len(repo_data)} repositories.")
-            print_loc_summary(repo_data)
-            return
-
+        
         # --- Default Static Display Logic ---
         if args.sort_date_asc:
             sorted_repos = sorted(repo_data, key=lambda r: r['last_commit_date_obj'] or datetime.max.replace(tzinfo=timezone.utc))
@@ -970,15 +1026,13 @@ def main():
             print("No data to display.")
             return
 
-        # Build header based on requested columns
         header_parts = [f'{"Repository":<{column_widths["name"]}}']
         if args.commits: header_parts.append(f'{"Commits":>{column_widths["commits"]}}')
         if args.date: header_parts.append(f'{"Last Commit":<{column_widths["date"]}}')
         if args.size: header_parts.append(f'{"Size (KB)":>{column_widths["size"]}}')
         if args.dependencies: header_parts.append("Dependencies")
         header = " | ".join(header_parts)
-        print(header)
-        print("-" * len(header))
+        print(header); print("-" * len(header))
 
         for repo in sorted_repos:
             line_parts = [f'{repo["short_name"]:<{column_widths["name"]}}']
@@ -992,8 +1046,7 @@ def main():
 
     finally:
         print_verbose("Script finished.")
-        # No automatic cleanup of a persistent clone_dir
-        pass
+
 
 if __name__ == "__main__":
     main()
