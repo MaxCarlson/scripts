@@ -266,6 +266,7 @@ def create_parser() -> argparse.ArgumentParser:
     task_list_parser.add_argument("-s", "--status", dest="status", type=str, choices=[s.value for s in TaskStatus], help="Filter by status")
     task_list_parser.add_argument("-P", "--parent-id", dest="parent_id", type=str, help="Filter by parent task ID")
     task_list_parser.add_argument("-a", "--all-subtasks", dest="all_subtasks", action="store_true", help="Include all subtasks (not just top-level)")
+    task_list_parser.add_argument("-d", "--details", dest="include_details", action="store_true", help="Include full task details (markdown content)")
     task_list_parser.set_defaults(func=handle_task_list)
 
     task_view_parser = task_subparsers.add_parser("view", help="View a task")
