@@ -203,16 +203,22 @@ class TermDash:
             except Exception:
                 pass
         
+        # Robustly restore the terminal to a normal state
         try:
-            cols, lines = os.get_terminal_size()
+            _, lines = os.get_terminal_size()
+            # Reset scroll region to be the entire terminal
+            sys.stdout.write(f"{CSI}1;{lines}r")
+            # Move cursor to the bottom of the screen before clearing
+            sys.stdout.write(f"{CSI}{lines};1H")
+            sys.stdout.write(CLEAR_SCREEN)
+            sys.stdout.write(MOVE_TO_TOP_LEFT)
+            sys.stdout.write(SHOW_CURSOR)
+            sys.stdout.flush()
         except OSError:
-            cols, lines = 80, 24 # Fallback for non-terminal environments
-        sys.stdout.write(f"{CSI}1;{lines}r")
-        sys.stdout.write(f"{CLEAR_SCREEN}{MOVE_TO_TOP_LEFT}")
-        sys.stdout.write(SHOW_CURSOR)
-        sys.stdout.flush()
+            # This can happen if the script is not run in a real terminal
+            pass
         
         if self.logger:
-            if exc_type:
+            if exc_type and exc_type is not KeyboardInterrupt:
                 self.log(f"Dashboard exited with exception: {exc_val}", level='error')
             self.log("Dashboard stopped.", level='info')
