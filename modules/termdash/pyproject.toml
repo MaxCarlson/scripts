@@ -9,8 +9,10 @@ authors = [
 license = "MIT"
 requires-python = ">=3.8"
 
+# This section tells the installer how to find your code.
+# By leaving it empty, it defaults to looking in the current directory ("."),
+# which is correct for your new flat layout.
 [tool.setuptools.packages.find]
-where = ["termdash"]
 
 [project.urls]
 Homepage = "https://github.com/yourname/termdash"
