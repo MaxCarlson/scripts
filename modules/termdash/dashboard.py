@@ -15,8 +15,6 @@ from .components import Line, Stat
 CSI = "\x1b["
 HIDE_CURSOR = f"{CSI}?25l"
 SHOW_CURSOR = f"{CSI}?25h"
-SAVE_CURSOR = f"{CSI}s"
-RESTORE_CURSOR = f"{CSI}u"
 CLEAR_LINE = f"{CSI}2K"
 CLEAR_SCREEN = f"{CSI}2J"
 MOVE_TO_TOP_LEFT = f"{CSI}1;1H"
@@ -97,32 +95,30 @@ class TermDash:
         
         if level in ['info', 'warning', 'error']:
             with self._lock_context("log_screen"):
-                sys.stdout.write(SAVE_CURSOR)
                 try:
                     cols, lines = os.get_terminal_size()
+                    # Save cursor, move to the very last line, print, and restore.
+                    sys.stdout.write(f"{CSI}s{CSI}{lines};1H\r{CLEAR_LINE}{message}\n{CSI}u")
+                    sys.stdout.flush()
                 except OSError:
-                    cols, lines = 80, 24 # Fallback for non-terminal environments
-                sys.stdout.write(f"{CSI}{lines};1H")
-                sys.stdout.write(f"\r{CLEAR_LINE}{message}\n")
-                sys.stdout.write(RESTORE_CURSOR)
-                sys.stdout.flush()
+                    pass
 
     def _setup_screen(self):
         try:
             cols, lines = os.get_terminal_size()
+            dashboard_height = len(self._line_order) + (1 if self.has_status_line else 0)
+            if dashboard_height >= lines - 1:
+                self._running = False
+                sys.stdout.write(SHOW_CURSOR)
+                sys.exit(f"Error: Dashboard height ({dashboard_height}) is too large for terminal ({lines}).")
+            
+            sys.stdout.write(f"{CLEAR_SCREEN}{MOVE_TO_TOP_LEFT}")
+            # Set the scroll region to be below the dashboard area
+            sys.stdout.write(f"{CSI}{dashboard_height + 1};{lines}r")
+            sys.stdout.write(MOVE_TO_TOP_LEFT)
+            sys.stdout.flush()
         except OSError:
-            cols, lines = 80, 24 # Fallback for non-terminal environments
-
-        dashboard_height = len(self._line_order) + (1 if self.has_status_line else 0)
-        if dashboard_height >= lines - 1:
-            self._running = False
-            sys.stdout.write(SHOW_CURSOR)
-            sys.exit(f"Error: Dashboard height ({dashboard_height}) is too large for terminal ({lines}).")
-        
-        sys.stdout.write(f"{CLEAR_SCREEN}{MOVE_TO_TOP_LEFT}")
-        sys.stdout.write(f"{CSI}{dashboard_height + 1};{lines}r")
-        sys.stdout.write(MOVE_TO_TOP_LEFT)
-        sys.stdout.flush()
+            pass
 
     def _render_loop(self):
         while self._running:
@@ -132,22 +128,26 @@ class TermDash:
                     self._resize_pending.clear()
 
             with self._lock_context("render_loop"):
-                sys.stdout.write(SAVE_CURSOR)
-                sys.stdout.write(MOVE_TO_TOP_LEFT)
                 try:
                     cols, _ = os.get_terminal_size()
                 except OSError:
-                    cols, _ = 80, 24 # Fallback for non-terminal environments
+                    cols, _ = 80, 24
                 
-                output = []
+                output_buffer = []
                 render_logger = self.logger if self._debug_rendering else None
-                for name in self._line_order:
-                    line_obj = self._lines[name]
-                    rendered_line = line_obj.render(cols, logger=render_logger)
-                    output.append(f"\r{CLEAR_LINE}{rendered_line[:cols]}")
-                sys.stdout.write("\n".join(output))
 
+                # Draw each main content line with explicit, absolute cursor positioning.
+                for i, name in enumerate(self._line_order):
+                    line_num = i + 1  # Terminal rows are 1-indexed
+                    move_cursor = f"{CSI}{line_num};1H"
+                    rendered_line = self._lines[name].render(cols, logger=render_logger)
+                    output_buffer.append(f"{move_cursor}{CLEAR_LINE}{rendered_line[:cols]}")
+
+                # Draw the status line with explicit, absolute cursor positioning.
                 if self.has_status_line:
+                    status_line_num = len(self._line_order) + 1
+                    move_cursor = f"{CSI}{status_line_num};1H"
+                    
                     stale_stats_names = []
                     now = time.time()
                     for line in self._lines.values():
@@ -157,21 +157,20 @@ class TermDash:
                                 is_in_grace = now < stat._grace_period_until
                                 if is_stale and not is_in_grace:
                                     stale_stats_names.append(f"{line.name}.{stat.name}")
-
+                    
                     status_text = ""
                     if stale_stats_names:
                         status_text = f"\033[0;33mWARNING: Stale data for {', '.join(stale_stats_names)}\033[0m"
                     
-                    # THE FIX: Removed the leading '\n' which caused scrolling.
-                    # The '\r' correctly returns the cursor to the start of the current line.
-                    sys.stdout.write(f"\r{CLEAR_LINE}{status_text[:cols]}")
-
-                sys.stdout.write(RESTORE_CURSOR)
+                    output_buffer.append(f"{move_cursor}{CLEAR_LINE}{status_text[:cols]}")
+                
+                # Write the entire buffer in a single, atomic call to prevent flicker and scrolling.
+                sys.stdout.write("".join(output_buffer))
                 sys.stdout.flush()
+
             time.sleep(self._refresh_rate)
 
     def __enter__(self):
-        # Install SIGWINCH handler only on platforms that support it
         sig = getattr(signal, "SIGWINCH", None)
         if sig is not None:
             try:
@@ -197,7 +196,6 @@ class TermDash:
         if self._render_thread:
             self._render_thread.join(timeout=1)
 
-        # Restore original SIGWINCH handler if we set one
         sig = getattr(signal, "SIGWINCH", None)
         if sig is not None and self.original_sigwinch_handler is not None:
             try:
@@ -205,19 +203,16 @@ class TermDash:
             except Exception:
                 pass
         
-        # Robustly restore the terminal to a normal state
         try:
             _, lines = os.get_terminal_size()
             # Reset scroll region to be the entire terminal
             sys.stdout.write(f"{CSI}1;{lines}r")
-            # Move cursor to the bottom of the screen before clearing
             sys.stdout.write(f"{CSI}{lines};1H")
             sys.stdout.write(CLEAR_SCREEN)
             sys.stdout.write(MOVE_TO_TOP_LEFT)
             sys.stdout.write(SHOW_CURSOR)
             sys.stdout.flush()
         except OSError:
-            # This can happen if the script is not run in a real terminal
             pass
         
         if self.logger:
