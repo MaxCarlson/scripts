@@ -112,3 +112,31 @@ class Line:
         if self.style == 'header':
             return f"\033[1;36m{content}{RESET}"
         return content
+
+class AggregatedLine(Line):
+    """
+    A special Line that calculates its stats by aggregating from other lines.
+    This aggregation is performed safely during the render call.
+    """
+    def __init__(self, name, source_lines, stats=None, style='default'):
+        super().__init__(name, stats, style)
+        self.source_lines = source_lines
+
+    def render(self, width, logger=None):
+        """
+        Overrides the default render to first aggregate data from source lines
+        and then render itself. This is thread-safe because it happens inside
+        the main render loop's lock.
+        """
+        # Aggregate the values from all source lines
+        for stat_name in self._stats:
+            # Sum up the value of the stat with the same name from all source lines
+            aggregated_value = sum(
+                source_line._stats.get(stat_name).value
+                for source_line in self.source_lines.values()
+                if source_line._stats.get(stat_name) is not None
+            )
+            self.update_stat(stat_name, aggregated_value)
+
+        # Now that this line's stats are updated, call the parent render method
+        return super().render(width, logger)
