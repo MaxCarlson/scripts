@@ -53,16 +53,16 @@ class TermDash:
     @contextmanager
     def _lock_context(self, name: str):
         """A context manager for the RLock that provides verbose logging if enabled."""
-        if self._debug_locks:
-            self.log(f"LOCK: Waiting for '{name}'", level='debug')
+        if self._debug_locks and self.logger:
+            self.logger.debug(f"LOCK: Waiting for '{name}'")
         self._lock.acquire()
         try:
-            if self._debug_locks:
-                self.log(f"LOCK: Acquired '{name}'", level='debug')
+            if self._debug_locks and self.logger:
+                self.logger.debug(f"LOCK: Acquired '{name}'")
             yield
         finally:
-            if self._debug_locks:
-                self.log(f"LOCK: Releasing '{name}'", level='debug')
+            if self._debug_locks and self.logger:
+                self.logger.debug(f"LOCK: Releasing '{name}'")
             self._lock.release()
 
     def _handle_resize(self, signum, frame):
@@ -95,13 +95,15 @@ class TermDash:
             log_func = getattr(self.logger, level, self.logger.info)
             log_func(message)
         
+        # This part of the function scrolls the screen. It should only be called
+        # for explicit logging, not for status updates.
         if level in ['info', 'warning', 'error']:
             with self._lock_context("log_screen"):
                 sys.stdout.write(SAVE_CURSOR)
                 try:
                     cols, lines = os.get_terminal_size()
                 except OSError:
-                    cols, lines = 80, 24 # Fallback for non-terminal environments
+                    cols, lines = 80, 24
                 sys.stdout.write(f"{CSI}{lines};1H")
                 sys.stdout.write(f"\r{CLEAR_LINE}{message}\n")
                 sys.stdout.write(RESTORE_CURSOR)
@@ -111,8 +113,7 @@ class TermDash:
         try:
             cols, lines = os.get_terminal_size()
         except OSError:
-            cols, lines = 80, 24 # Fallback for non-terminal environments
-
+            cols, lines = 80, 24
         dashboard_height = len(self._line_order) + (1 if self.has_status_line else 0)
         if dashboard_height >= lines - 1:
             self._running = False
@@ -137,7 +138,7 @@ class TermDash:
                 try:
                     cols, _ = os.get_terminal_size()
                 except OSError:
-                    cols, _ = 80, 24 # Fallback for non-terminal environments
+                    cols, _ = 80, 24
                 
                 output = []
                 render_logger = self.logger if self._debug_rendering else None
@@ -152,16 +153,13 @@ class TermDash:
                     now = time.time()
                     for line in self._lines.values():
                         for stat in line._stats.values():
-                            # FIX: The check for warn_if_stale_s must be > 0
                             if stat.warn_if_stale_s > 0:
                                 is_stale = (now - stat.last_updated) > stat.warn_if_stale_s
-                                is_in_grace = now < stat._grace_period_until
+                                is_in_grace = now < getattr(stat, '_grace_period_until', 0)
                                 if is_stale and not is_in_grace:
                                     stale_stats_names.append(f"{line.name}.{stat.name}")
-
                     status_text = ""
                     if stale_stats_names:
-                        # FIX: Display the warning in the status line, not via the scrolling logger.
                         status_text = f"\033[0;33mWARNING: Stale data for {', '.join(stale_stats_names)}\033[0m"
                     
                     sys.stdout.write(f"\n\r{CLEAR_LINE}{status_text[:cols]}")
@@ -171,13 +169,12 @@ class TermDash:
             time.sleep(self._refresh_rate)
 
     def __enter__(self):
-        # Install SIGWINCH handler only on platforms that support it
         sig = getattr(signal, "SIGWINCH", None)
         if sig is not None:
             try:
                 self.original_sigwinch_handler = signal.getsignal(sig)
                 signal.signal(sig, self._handle_resize)
-            except Exception:
+            except (ValueError, TypeError, AttributeError):
                 self.original_sigwinch_handler = None
         else:
             self.original_sigwinch_handler = None
@@ -197,30 +194,25 @@ class TermDash:
         if self._render_thread:
             self._render_thread.join(timeout=1)
 
-        # Restore original SIGWINCH handler if we set one
         sig = getattr(signal, "SIGWINCH", None)
         if sig is not None and self.original_sigwinch_handler is not None:
             try:
                 signal.signal(sig, self.original_sigwinch_handler)
-            except Exception:
+            except (ValueError, TypeError, AttributeError):
                 pass
         
-        # Robustly restore the terminal to a normal state
         try:
             _, lines = os.get_terminal_size()
-            # Reset scroll region to be the entire terminal
             sys.stdout.write(f"{CSI}1;{lines}r")
-            # Move cursor to the bottom of the screen before clearing
             sys.stdout.write(f"{CSI}{lines};1H")
             sys.stdout.write(CLEAR_SCREEN)
             sys.stdout.write(MOVE_TO_TOP_LEFT)
             sys.stdout.write(SHOW_CURSOR)
             sys.stdout.flush()
         except OSError:
-            # This can happen if the script is not run in a real terminal
             pass
         
         if self.logger:
             if exc_type and exc_type is not KeyboardInterrupt:
-                self.log(f"Dashboard exited with exception: {exc_val}", level='error')
-            self.log("Dashboard stopped.", level='info')
+                self.logger.error(f"Dashboard exited with exception: {exc_val}")
+            self.logger.info("Dashboard stopped.")
