@@ -152,16 +152,18 @@ class TermDash:
                     now = time.time()
                     for line in self._lines.values():
                         for stat in line._stats.values():
-                            is_stale = (now - stat.last_updated) > stat.warn_if_stale_s
-                            is_in_grace = now < stat._grace_period_until
-                            if stat.warn_if_stale_s > 0 and is_stale and not is_in_grace:
-                                stale_stats_names.append(f"{line.name}.{stat.name}")
-                                if not stat.is_warning_active:
-                                    stat.is_warning_active = True
-                                    self.log(f"Stale data detected for {line.name}.{stat.name}", level='warning')
+                            # FIX: The check for warn_if_stale_s must be > 0
+                            if stat.warn_if_stale_s > 0:
+                                is_stale = (now - stat.last_updated) > stat.warn_if_stale_s
+                                is_in_grace = now < stat._grace_period_until
+                                if is_stale and not is_in_grace:
+                                    stale_stats_names.append(f"{line.name}.{stat.name}")
+
                     status_text = ""
                     if stale_stats_names:
+                        # FIX: Display the warning in the status line, not via the scrolling logger.
                         status_text = f"\033[0;33mWARNING: Stale data for {', '.join(stale_stats_names)}\033[0m"
+                    
                     sys.stdout.write(f"\n\r{CLEAR_LINE}{status_text[:cols]}")
 
                 sys.stdout.write(RESTORE_CURSOR)
