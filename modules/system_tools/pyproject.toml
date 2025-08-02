@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "system_tools"
+version = "0.1.0" # You can adjust this
+description = "A cross-platform system utilities package for file system, network, process management, privileges, and detailed system information."
+authors = [
+  { name="Maxwell Carlson", email="carlsonamax@gmail.com" }
+]
+# Ensure README.md and LICENSE files exist in the same directory as this pyproject.toml
+# or update these fields. For example, use license = { text = "MIT" } if you prefer.
+readme = "README.md"
+license = { file="LICENSE" }
+requires-python = ">=3.7" # Adjust if necessary
+
+dependencies = [
+    "rich>=12.0",   # For core/debug_utils.py (and potentially standard_ui if it's a dep)
+    "GitPython>=3.1" # For core/debug_utils.py
+    # Add other direct PyPI dependencies that system_tools itself uses.
+    # Local dependencies like 'cross_platform' and 'standard_ui' are assumed to be
+    # installed by your main setup script in the development environment.
+    # If 'cross_platform' uses 'psutil' and 'pyperclip', those should be dependencies
+    # of 'cross_platform' itself.
+]
+
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    # Add other relevant classifiers
+]
+
+[project.scripts]
+# This makes the `system_tools` command available after installation.
+# It points to the `main` function in the `cli.py` module,
+# which is part of the `system_tools` package.
+system_tools = "system_tools.cli:main"
+
+# Use setuptools' package discovery.
+# This tells setuptools to look for packages in the current directory (".").
+# Because `scripts/modules/system_tools/__init__.py` exists, this directory
+# itself is treated as the root of the 'system_tools' package.
+# It will automatically find all sub-packages (like core, file_system, etc.)
+# that contain an __init__.py and also include top-level modules like cli.py.
+[tool.setuptools.packages.find]
+where = ["."]
+# No 'include' or 'exclude' is strictly necessary here if you want to include all found packages
+# and modules within the 'system_tools' directory structure.
+# This should resolve the "flat-layout" ambiguity by clearly defining that
+# everything found in '.' (relative to this pyproject.toml) under the package
+# structure initiated by the root __init__.py belongs to this distribution.
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "--strict-markers"
+testpaths = [
+    "tests",
+]

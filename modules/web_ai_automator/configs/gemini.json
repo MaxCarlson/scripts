@@ -1,0 +1,36 @@
+{
+    "url": "https://aistudio.google.com/prompts/new_chat",
+    "login_required": true,
+    "login_method": "manual",
+    "elements": {
+        "input_field": {
+            "by": "xpath",
+            "value": "//textarea[@id='prompt-input']"
+        },
+        "submit_button": {
+            "by": "id",
+            "value": "send-button"
+        },
+        "response_area": {
+            "by": "class",
+            "value": "response-text"
+        }
+    },
+    "parameters": {
+        "temperature": {
+            "by": "xpath",
+            "value": "//input[@type='range' and @name='temperature']",
+            "type": "slider"
+        },
+        "output_length": {
+            "by": "id",
+            "value": "output-length",
+            "type": "input"
+        },
+        "grounding": {
+            "by": "xpath",
+            "value": "//input[@type='checkbox' and @name='grounding']",
+            "type": "checkbox"
+        }
+    }
+}

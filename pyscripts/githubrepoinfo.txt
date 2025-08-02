@@ -1,0 +1,144 @@
+--- Final LOC Analysis for MaxCarlson ---
+Processed 106/106 repositories.
+
+--- Lines of Code Summary (Public Repos) ---
+Language              Files      Lines       Code   Comments     Blanks
+-----------------------------------------------------------------------
+Plain Text               70    373,951          0    282,619     91,332
+Python                  619    201,326    161,182     15,497     24,647
+C++                     416    114,783     87,944     11,003     15,836
+C Header                552     69,628     45,231     14,383     10,014
+C++ Header               85     33,435     21,005      8,568      3,862
+PowerShell              117     15,673      9,729      3,841      2,103
+Objective-C              97     12,771     11,537          9      1,225
+Markdown                 69      6,151          0      4,371      1,780
+Visual Studio Project       15      3,386      3,386          0          0
+Makefile                 43      3,349      1,574      1,106        669
+SVG                      24      2,692      2,644         24         24
+CMake                    12      2,233      1,503        377        353
+YAML                      7      1,864      1,476         27        361
+Lua                      19      1,829      1,517         62        250
+XML                      29      1,322      1,321          1          0
+Visual Studio Solution       35      1,068      1,033          0         35
+BASH                     14      1,064        742        210        112
+Rust                     11        955        715         74        166
+C                         7        525        231        280         14
+Jupyter Notebooks         1        467        122        229        116
+HTML                      3        377        329          5         43
+Zsh                       1        239        145         31         63
+Objective-C++             4        186        131         24         31
+INI                       3        179        144          1         34
+Prolog                    5        170        135          0         35
+D                        24        125         80          0         45
+Batch                     9        120         95          3         22
+Shell                     3         95         72         12         11
+AutoHotKey                2         94         65         13         16
+JavaScript                4         91         74          9          8
+Forge Config              2         87         75          4          8
+TeX                       1         51         43          1          7
+JSON                      2         39         37          0          2
+RPM Specfile              1         38         31          1          6
+TOML                      1         27         21          1          5
+Autoconf                  2         17         11          2          4
+Templ                     2          9          9          0          0
+CSS                       1          6          6          0          0
+-----------------------------------------------------------------------
+Total                 2,312    850,422    354,395    342,788    153,239
+
+--- Lines of Code Summary (Private Repos) ---
+Language              Files      Lines       Code   Comments     Blanks
+-----------------------------------------------------------------------
+HTML                    232    224,233    210,260        607     13,366
+Markdown              1,022     90,090          0     62,492     27,598
+Python                  318     52,852     41,670      3,713      7,469
+C Header                182     32,308     22,249      5,808      4,251
+C++                     163     25,901     19,168      2,817      3,916
+C                        91     16,833     12,469      1,804      2,560
+Objective-C              90     11,016      9,897          0      1,119
+Vim Script               14     10,632     10,632          0          0
+Plain Text               87      9,638          0      8,185      1,453
+Shell                    84      5,530      3,774        947        809
+Zsh                      25      5,062      2,732      1,641        689
+CSS                       9      3,669      3,292        121        256
+JSON                     79      2,534      2,526          0          8
+TeX                       3      1,445      1,235         30        180
+Visual Studio Project        5        997        997          0          0
+PowerShell               17        976        578        286        112
+Lua                      11        794        541        164         89
+CMake                     8        741        418        207        116
+Makefile                 33        664        460         55        149
+GNU Style Assembly        8        611        556          2         53
+TOML                     16        420        296         76         48
+Visual Studio Solution       13        316        304          0         12
+Perl                      5        258        189         38         31
+Swift                    10        218        130         47         41
+YAML                      4        196         48        125         23
+Dockerfile                6        173         99         36         38
+Dart                      2        155         74         64         17
+Prolog                    1        134         71         52         11
+XML                       7        119         66         51          2
+RPM Specfile              1        102         24         63         15
+C++ Header                2         89         34         37         18
+LD Script                 1         64         37         13         14
+SVG                       2         61         61          0          0
+Jupyter Notebooks         1         39         22          9          8
+Xcode Config              8         35         24          8          3
+BASH                      3         27         11          7          9
+Autoconf                  1         15          0         15          0
+Kotlin                    1          5          3          0          2
+INI                       1          4          3          0          1
+-----------------------------------------------------------------------
+Total                 2,566    498,956    344,950     89,520     64,486
+
+--- Lines of Code Summary (All Repos) ---
+Language              Files      Lines       Code   Comments     Blanks
+-----------------------------------------------------------------------
+Plain Text              157    383,589          0    290,804     92,785
+Python                  937    254,178    202,852     19,210     32,116
+HTML                    235    224,610    210,589        612     13,409
+C++                     579    140,684    107,112     13,820     19,752
+C Header                734    101,936     67,480     20,191     14,265
+Markdown              1,091     96,241          0     66,863     29,378
+C++ Header               87     33,524     21,039      8,605      3,880
+Objective-C             187     23,787     21,434          9      2,344
+C                        98     17,358     12,700      2,084      2,574
+PowerShell              134     16,649     10,307      4,127      2,215
+Vim Script               14     10,632     10,632          0          0
+Shell                    87      5,625      3,846        959        820
+Zsh                      26      5,301      2,877      1,672        752
+Visual Studio Project       20      4,383      4,383          0          0
+Makefile                 76      4,013      2,034      1,161        818
+CSS                      10      3,675      3,298        121        256
+CMake                    20      2,974      1,921        584        469
+SVG                      26      2,753      2,705         24         24
+Lua                      30      2,623      2,058        226        339
+JSON                     81      2,573      2,563          0         10
+YAML                     11      2,060      1,524        152        384
+TeX                       4      1,496      1,278         31        187
+XML                      36      1,441      1,387         52          2
+Visual Studio Solution       48      1,384      1,337          0         47
+BASH                     17      1,091        753        217        121
+Rust                     11        955        715         74        166
+GNU Style Assembly        8        611        556          2         53
+Jupyter Notebooks         2        506        144        238        124
+TOML                     17        447        317         77         53
+Prolog                    6        304        206         52         46
+Perl                      5        258        189         38         31
+Swift                    10        218        130         47         41
+Objective-C++             4        186        131         24         31
+INI                       4        183        147          1         35
+Dockerfile                6        173         99         36         38
+Dart                      2        155         74         64         17
+RPM Specfile              2        140         55         64         21
+D                        24        125         80          0         45
+Batch                     9        120         95          3         22
+AutoHotKey                2         94         65         13         16
+JavaScript                4         91         74          9          8
+Forge Config              2         87         75          4          8
+LD Script                 1         64         37         13         14
+Xcode Config              8         35         24          8          3
+Autoconf                  3         32         11         17          4
+Templ                     2          9          9          0          0
+Kotlin                    1          5          3          0          2
+-----------------------------------------------------------------------
+Total                 4,878  1,349,378    699,345    432,308    217,725

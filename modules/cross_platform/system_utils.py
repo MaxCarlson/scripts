@@ -15,6 +15,12 @@ class SystemUtils:
         write_debug(f"is_termux: {is_termux}", channel="Debug")
         return is_termux
 
+    def is_tmux(self) -> bool:
+        """Check if running inside a tmux session."""
+        is_tmux_session = "TMUX" in os.environ
+        write_debug(f"is_tmux: {is_tmux_session}", channel="Debug")
+        return is_tmux_session
+
     def is_wsl2(self) -> bool:
         """
         Detect if running under WSL2.

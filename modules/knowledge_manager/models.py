@@ -1,0 +1,70 @@
+# File: knowledge_manager/models.py
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone, date
+from enum import Enum
+from pathlib import Path
+from typing import Optional
+
+class ProjectStatus(Enum):
+    ACTIVE = "active"
+    BACKLOG = "backlog"
+    COMPLETED = "completed"
+
+class TaskStatus(Enum):
+    TODO = "todo"
+    IN_PROGRESS = "in-progress"
+    DONE = "done"
+
+@dataclass
+class Project:
+    id: uuid.UUID = field(default_factory=uuid.uuid4)
+    name: str = ""
+    status: ProjectStatus = ProjectStatus.ACTIVE
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    modified_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    description_md_path: Optional[Path] = None
+
+    def __post_init__(self):
+        if isinstance(self.status, str):
+            self.status = ProjectStatus(self.status)
+        if isinstance(self.created_at, str):
+            self.created_at = datetime.fromisoformat(self.created_at)
+        if isinstance(self.modified_at, str):
+            self.modified_at = datetime.fromisoformat(self.modified_at)
+        if isinstance(self.description_md_path, str):
+            self.description_md_path = Path(self.description_md_path) if self.description_md_path else None
+
+@dataclass
+class Task:
+    id: uuid.UUID = field(default_factory=uuid.uuid4)
+    title: str = ""
+    status: TaskStatus = TaskStatus.TODO
+    project_id: Optional[uuid.UUID] = None
+    parent_task_id: Optional[uuid.UUID] = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    modified_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    completed_at: Optional[datetime] = None
+    priority: int = 3  # Assuming 1-5, with 3 as a neutral default
+    due_date: Optional[date] = None
+    details_md_path: Optional[Path] = None
+
+    def __post_init__(self):
+        if isinstance(self.status, str):
+            self.status = TaskStatus(self.status)
+        if isinstance(self.project_id, str):
+            self.project_id = uuid.UUID(self.project_id) if self.project_id else None
+        if isinstance(self.parent_task_id, str):
+            self.parent_task_id = uuid.UUID(self.parent_task_id) if self.parent_task_id else None
+        if isinstance(self.created_at, str):
+            self.created_at = datetime.fromisoformat(self.created_at)
+        if isinstance(self.modified_at, str):
+            self.modified_at = datetime.fromisoformat(self.modified_at)
+        if isinstance(self.completed_at, str):
+            self.completed_at = datetime.fromisoformat(self.completed_at) if self.completed_at else None
+        if isinstance(self.due_date, str):
+            self.due_date = date.fromisoformat(self.due_date) if self.due_date else None
+        if isinstance(self.details_md_path, str):
+            self.details_md_path = Path(self.details_md_path) if self.details_md_path else None
+
+# End of File: knowledge_manager/models.py

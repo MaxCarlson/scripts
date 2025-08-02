@@ -1,0 +1,16 @@
+# pyproject.toml
+
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "folder_util"
+version = "0.1.0"
+description = "A comprehensive folder and file utilities tool with rich CLI output"
+authors = [
+    { name="Your Name", email="your.email@example.com" }
+]
+dependencies = [
+    "rich>=10.0.0",
+]

@@ -1,0 +1,20 @@
+# pyproject.toml
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zsh-history-watcher"
+version = "0.1.0"
+description = "Watch Zsh history and remind about banghist usage"
+authors = [
+  { name = "Your Name", email = "you@example.com" }
+]
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+  "rich"
+]
+
+[project.scripts]
+banghist-reminder = "history_watcher.actors.banghist_reminder:main"

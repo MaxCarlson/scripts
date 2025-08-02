@@ -19,6 +19,11 @@ from .file_system_manager import FileSystemManager
 from .service_manager import ServiceManager
 from .privileges_manager import PrivilegesManager
 
+# History utilities
+from .history_utils import HistoryUtils # New Import
+
+from .tmux_utils import TmuxManager
+
 # Debugging and logging utilities
 from . import debug_utils
 
@@ -31,6 +36,7 @@ __all__ = [
     "FileSystemManager",
     "ServiceManager",
     "PrivilegesManager",
+    "HistoryUtils", # Added to __all__
+    "TmuxManager",
     "debug_utils",
 ]
-

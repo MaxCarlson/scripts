@@ -1,0 +1,141 @@
+import os
+import sys
+import time
+import pytest
+from pathlib import Path
+from folder_stats import gather_stats, print_stats, traverse, main
+
+# Helper to create a file of a given size and optionally set atime/mtime
+def make_file(path: Path, size: int, atime: float = None, mtime: float = None):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(b"x" * size)
+    if atime or mtime:
+        now = time.time()
+        os.utime(path, (atime or now, mtime or now))
+
+@pytest.fixture
+def sample_tree(tmp_path):
+    # root/
+    #   a.txt       (3 bytes)
+    #   b.TXT       (5 bytes)
+    #   noext       (2 bytes)
+    #   sub/
+    #     c.jpg     (4 bytes)
+    #     nested/
+    #       d.png   (1 byte)
+    root = tmp_path / "root"
+    make_file(root / "a.txt", 3)
+    make_file(root / "b.TXT", 5)
+    make_file(root / "noext", 2)
+    make_file(root / "sub" / "c.jpg", 4)
+    make_file(root / "sub" / "nested" / "d.png", 1)
+    return root
+
+def test_gather_stats_full(sample_tree):
+    stats = gather_stats(sample_tree, maxdepth=-1)
+    assert stats[".txt"]["count"] == 2
+    assert stats[".txt"]["total"] == 8
+    assert stats[".jpg"]["count"] == 1
+    assert stats[".jpg"]["total"] == 4
+    assert stats[".png"]["count"] == 1
+    assert stats[".png"]["total"] == 1
+    assert stats["[no extension]"]["count"] == 1
+    assert stats["[no extension]"]["total"] == 2
+
+def test_gather_stats_depth_zero(sample_tree):
+    stats = gather_stats(sample_tree, maxdepth=0)
+    assert set(stats.keys()) == {".txt", "[no extension]"}
+    assert stats[".txt"]["count"] == 2
+    assert stats[".txt"]["total"] == 8
+
+def test_gather_stats_depth_one(sample_tree):
+    stats = gather_stats(sample_tree, maxdepth=1)
+    assert ".png" not in stats
+    assert ".jpg" in stats
+
+def test_symlink_and_hardlink(tmp_path):
+    root = tmp_path / "d"
+    make_file(root / "orig.txt", 10)
+    os.symlink(root / "orig.txt", root / "link.txt")
+    if not hasattr(os, "link"):
+        pytest.skip("os.link not available on this platform")
+    os.link(root / "orig.txt", root / "hard.txt")
+    stats = gather_stats(root, maxdepth=0)
+    assert stats.get("[symlink]")["count"] == 1
+    assert stats.get(".txt")["count"] == 3
+    assert stats.get("[hardlink]")["count"] >= 1
+
+def test_date_flag(sample_tree, capsys):
+    now = time.time()
+    old = now - 10000
+    os.utime(sample_tree / "a.txt", (old, old))
+    stats = gather_stats(sample_tree, maxdepth=-1)
+    class Args:
+        auto_units = False
+        dates = "mtime"
+        tree = False
+        depth = -1
+    print_stats(stats, indent=0, dir_name="X", args=Args(), header_note=None)
+    out = capsys.readouterr().out
+    assert "Oldest" in out and "Newest" in out
+
+def test_auto_units_and_switch(sample_tree, capsys, monkeypatch):
+    big = sample_tree / "big.bin"
+    make_file(big, 1)
+    orig_stat = Path.stat
+    fake_size = 11 * 1024 * 1024 * 1024
+    def fake_stat(self, *args, **kwargs):
+        st = orig_stat(self, *args, **kwargs)
+        if self.name == "big.bin":
+            data = list(st)
+            fields = list(getattr(type(st), "_fields", []))
+            idx = fields.index("st_size") if "st_size" in fields else 6
+            data[idx] = fake_size
+            return type(st)(tuple(data))
+        return st
+    monkeypatch.setattr(Path, "stat", fake_stat)
+
+    class Args1:
+        auto_units = False
+        dates = None
+        tree = False
+        depth = 0
+    stats = gather_stats(sample_tree, maxdepth=0)
+    print_stats(stats, args=Args1())
+    out1 = capsys.readouterr().out
+    assert "MB" in out1
+
+    class Args2:
+        auto_units = False
+        dates = None
+        tree = True
+        depth = 0
+    traverse(sample_tree, Args2(), current_depth=0)
+    out2 = capsys.readouterr().out.lower()
+    assert "switching to auto-units" in out2
+    assert any(unit in out2 for unit in ("kb", "mb", "gb"))
+
+def test_tree_flag_cli(tmp_path, capsys, monkeypatch):
+    root = tmp_path / "d"
+    make_file(root / "x.py", 4)
+    sub = root / "d2"
+    make_file(sub / "y.txt", 2)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["prog", "d", "-t"])
+    main()
+    out = capsys.readouterr().out
+    assert root.name in out
+    assert sub.name in out
+
+def test_main_max_depth(tmp_path, capsys, monkeypatch):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["prog", "empty"])
+    main()
+    out = capsys.readouterr().out
+    assert "Max depth:" in out
+
+if __name__ == "__main__":
+    pytest.main()

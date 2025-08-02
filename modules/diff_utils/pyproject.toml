@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "directory-diff" # Distribution name
+version = "0.1.0"
+description = "A robust, cross-platform directory diff tool." # Keep it simple
+authors = [
+    { name = "Your Name", email = "you@example.com" } # Update this
+]
+license = { text = "MIT" }
+readme = "README.md" # Make sure README.md exists in the diff_utils directory
+requires-python = ">=3.7"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent"
+]
+dependencies = [
+    # If standard_ui and cross_platform are required and are separate local packages,
+    # this setup assumes they are already installed or available in the environment.
+    # For a more robust setup, you might explore local path dependencies if your
+    # build backend (setuptools) supports them easily, or treat them as install_requires
+    # if they will be on PyPI.
+]
+
+[project.scripts]
+# Points to the main function in the diff module within the diff_utils package
+diff = "diff_utils.diff:main"
+
+# Tell setuptools to find all packages in the current directory (".")
+# This will find the "diff_utils" package (because pyproject.toml is inside the diff_utils/ folder,
+# which also contains __init__.py, making diff_utils/ the root of the diff_utils package)
+# and automatically include all its modules (dir_diff.py, python_diff.py, diff.py).
+[tool.setuptools.packages.find]
+where = ["."] # Look in the current directory (where this pyproject.toml is)
+# No 'include' or 'exclude' is needed if all modules within diff_utils/ are part of the package.
