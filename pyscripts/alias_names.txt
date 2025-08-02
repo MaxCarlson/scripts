@@ -1,13 +1,24 @@
-# File of aliases for these scriots once theyve been syml8nked to bin
-# syntax
-# name_of_script.py : alias_name
+# pyscripts/alias_names.txt
+# Format: script_filename.py : desired_full_alias_name : [arguments_for_script]
 
-append_clipboard.py : apc
-clipboard_replace.py : crx
-copy_to_clipboard.py : c2c
-replace_with_clipboard.py : rwc
-output_to_clipboard.py : otc
-run_pattern.py : rpt
-delete_files.py : ddf
-git_sync.py : gsy
-deduplicator.py% : ddd
+apply_git_diffs.py : agd : 
+append_clipboard.py : apc :
+clipboard_replace.py : crx :
+copy_to_clipboard.py : c2cd: 
+copy_to_clipboard.py : c2c : -w
+copy_to_clipboard.py : c2cr : -r
+copy_to_clipboard.py : c2ca : -w -a
+replace_with_clipboard.py : rwc :
+output_to_clipboard.py : otc :
+output_to_clipboard.py : otcw : -w
+clipboard_diff.py : cld : 
+copy_buffer_to_clipboard.py : cb2c :
+copy_buffer_to_clipboard.py : cb2cf : -f
+folder_stats.py : fs :
+folder_stats.py : fs-all : -a
+
+# Old and unused
+#run_pattern.py : rpt :
+#delete_files.py : ddf :
+#git_sync.py : gsy :
+#deduplicator.py : ddd : # Assuming source script is deduplicator.py

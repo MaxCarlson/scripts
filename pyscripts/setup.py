@@ -1,168 +1,118 @@
-import os
-import re
-import stat
-import subprocess
+#!/usr/bin/env python3
+import argparse
+import sys 
 from pathlib import Path
-from cross_platform import SystemUtils
+from scripts_setup.alias_utils import parse_alias_file, write_aliases, write_pwsh_aliases
+from scripts_setup.setup_utils import process_symlinks 
+from standard_ui.standard_ui import log_info, log_success, log_warning, log_error, section
 
-RED = "\033[91m"
-YELLOW = "\033[93m"
-GREEN = "\033[92m"
-RESET = "\033[0m"
+def ensure_symlinks(scripts_dir: Path, bin_dir: Path, verbose: bool) -> None:
+    """Ensures Python scripts from pyscripts_dir are symlinked into bin_dir."""
+    with section("PY SCRIPTS SYMLINKS"):
+        pyscripts_dir_to_scan = scripts_dir / "pyscripts" 
+        log_info(f"Ensuring Python scripts are symlinked from '{pyscripts_dir_to_scan}' to '{bin_dir}' and executable...")
+        
+        if not pyscripts_dir_to_scan.exists():
+            log_warning(f"Source pyscripts directory not found at '{pyscripts_dir_to_scan}'. Skipping symlink creation.")
+            return
 
+        try:
+            created_count, existing_count = process_symlinks(
+                source_dir=pyscripts_dir_to_scan,
+                glob_pattern="*.py", 
+                bin_dir=bin_dir,     
+                verbose=verbose,
+                skip_names=["setup.py"] 
+            )
+            log_info(f"Python script symlinks: {created_count} created/updated, {existing_count} already correct.")
 
-def command_exists(command):
-    """Check if a command, alias, or function exists in zsh."""
-    try:
-        result = subprocess.run(
-            ["zsh", "-c", f"command -v {command}"],
-            capture_output=True, text=True, check=False
-        )
-        return result.returncode == 0
-    except Exception as e:
-        print(f"⚠️ Warning: Could not check command existence for `{command}`: {e}")
-        return False
-
-def parse_alias_file(alias_file):
-    """Parse the alias_names.txt file and return a dictionary of script-to-alias mappings."""
-    aliases = {}
-
-    if not alias_file.exists():
-        print(f"{YELLOW}⚠️ Alias file not found: {alias_file}. Skipping alias setup.{RESET}")
-        return aliases
-
-    with open(alias_file, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-
-            # Skip comments and empty lines
-            if not line or line.startswith("#"):
-                continue
-
-            match = re.match(r"^(.+?)\s*:\s*(.+?)$", line)
-            if match:
-                script, alias = match.groups()
-                aliases[script.strip()] = alias.strip()
-            else:
-                print(f"{YELLOW}⚠️ Invalid alias format in {alias_file}: {line}{RESET}")
-
-    return aliases
+        except SystemExit: 
+            log_error("Critical error during symlink processing for Python scripts (aborted by symlink utility).")
+            raise 
+        except Exception as e:
+            log_error(f"Unexpected error during symlink processing for Python scripts: {e}")
+            log_warning("Symlink creation may be incomplete.")
 
 
-def get_existing_aliases_from_file(alias_file):
-    """Retrieve aliases already written in the alias config file."""
-    aliases = {}
+def main(scripts_dir: Path, dotfiles_dir: Path, bin_dir: Path, verbose: bool) -> None:
+    """Main setup routine for pyscripts."""
+    with section("PY SCRIPTS SETUP"):
+        alias_definitions_file = scripts_dir / "pyscripts/alias_names.txt"
+        
+        if not bin_dir.exists():
+            log_info(f"Creating bin directory at: {bin_dir}")
+            try:
+                bin_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                log_error(f"Could not create bin directory {bin_dir}: {e}. Symlinks might fail.")
+                return 
 
-    if alias_file.exists():
-        with open(alias_file, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith("alias "):
-                    alias_name, alias_value = line.split("=", 1)
-                    alias_name = alias_name.replace("alias ", "").strip()
-                    alias_value = alias_value.strip().strip('"')
-                    aliases[alias_name] = alias_value
-    return aliases
+        try:
+            ensure_symlinks(scripts_dir, bin_dir, verbose=verbose)
+        except SystemExit: 
+            log_error("Halting pyscripts setup due to critical symlink error from ensure_symlinks.")
+            return 
+        except Exception: 
+            log_error("Halting pyscripts setup due to an unexpected error in ensure_symlinks.")
+            return
 
-def write_aliases(bin_dir, alias_file, dotfiles_dir):
-    """Write aliases to the dynamic shell config file and ensure no conflicts."""
-    aliases = parse_alias_file(alias_file)
-    shell_config = dotfiles_dir / "dynamic/setup_pyscripts.zsh"
-    temp_aliases = []
-    warnings_raised = False
-
-    existing_aliases = get_existing_aliases_from_file(shell_config)
-
-    for script, alias in aliases.items():
-        bin_script_path = bin_dir / script.replace(".py", "")
-
-        # ✅ Check if alias is an existing command/function
-        if command_exists(alias):
-            if alias not in existing_aliases:
-                print(f"{RED}❌ Alias conflict: `{alias}` is already an existing command/function. Skipping.{RESET}")
-                warnings_raised = True
-                continue
-            else:
-                print(f"🔹 Alias `{alias}` already exists and is correctly set.")
-
-        # ✅ Add to new alias list
-        temp_aliases.append(f'alias {alias}="{bin_script_path}"')
-
-    if warnings_raised:
-        print(f"{YELLOW}⚠️ Warning: Some aliases were skipped due to conflicts. Please resolve them manually.{RESET}")
-
-    if temp_aliases:
-        with open(shell_config, "w", encoding="utf-8") as f:
-            f.write("\n".join(temp_aliases) + "\n")
-
-        print(f"{GREEN}✅ Aliases updated in {shell_config}.{RESET}")
-
-        # ✅ Source the file to apply changes automatically (if supported)
-        sys_utils = SystemUtils()
-        if sys_utils.source_file(str(shell_config)):
-            print(f"{GREEN}✅ Aliases have been applied. You can now use them immediately.{RESET}")
+        parsed_alias_definitions = parse_alias_file(alias_definitions_file)
+        if not parsed_alias_definitions:
+            log_warning(f"No alias definitions found or parsed from '{alias_definitions_file}'. Skipping alias generation.")
         else:
-            print(f"{YELLOW}⚠️ Automatic sourcing of aliases is not supported on your system. Please source {shell_config} manually.{RESET}")
-    else:
-        print(f"{YELLOW}🔹 No new aliases to write. {shell_config} remains unchanged.{RESET}")
+            log_info(f"Found {len(parsed_alias_definitions)} alias definitions to process from '{alias_definitions_file}'.")
 
-def ensure_symlinks(scripts_dir, bin_dir):
-    """Ensure all Python scripts in pyscripts/ are symlinked to bin/ with executable permissions."""
-    print("🔄 Ensuring Python scripts are symlinked and executable...")
+            # --- Zsh/Bash Aliases ---
+            with section("Aliases for Python scripts (Zsh/Bash)"):
+                alias_config_output_file_zsh = dotfiles_dir / "dynamic/setup_pyscripts_aliases.zsh"
+                log_info(f"Zsh/Bash aliases will be written to: {alias_config_output_file_zsh}")
+                try:
+                    write_aliases(
+                        parsed_alias_definitions=parsed_alias_definitions,
+                        bin_dir=bin_dir, 
+                        alias_config=alias_config_output_file_zsh,
+                        alias_file_path_for_header=str(alias_definitions_file),
+                        verbose=verbose
+                    )
+                except Exception as e:
+                    log_error(f"Error writing Zsh/Bash aliases for Python scripts: {e}")
 
-    pyscripts_dir = scripts_dir / "pyscripts"
+            # --- PowerShell Aliases ---
+            with section("Aliases for Python scripts (PowerShell)"):
+                alias_config_output_file_ps1 = dotfiles_dir / "dynamic/setup_pyscripts_aliases.ps1"
+                log_info(f"PowerShell aliases will be written to: {alias_config_output_file_ps1}")
+                try:
+                    write_pwsh_aliases(
+                        parsed_alias_definitions=parsed_alias_definitions,
+                        bin_dir=bin_dir,
+                        alias_config_ps1=alias_config_output_file_ps1,
+                        alias_file_path_for_header=str(alias_definitions_file),
+                        verbose=verbose
+                    )
+                except Exception as e:
+                    log_error(f"Error writing PowerShell aliases for Python scripts: {e}")
 
-    if not pyscripts_dir.exists():
-        print(f"⚠️ No pyscripts directory found at {pyscripts_dir}. Skipping symlink creation.")
-        return
-
-    for script in pyscripts_dir.glob("*.py"):
-        if script.name == "setup.py":
-            continue  # Skip setup.py itself
-
-        symlink_path = bin_dir / script.stem  # Strip .py extension
-
-        # Ensure the script itself is executable
-        script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-
-        if symlink_path.exists():
-            if symlink_path.is_symlink() and symlink_path.resolve() == script.resolve():
-                print(f"🔹 Symlink already exists: {symlink_path} -> {script}")
-                continue  # Correct symlink exists, skip
-
-            # ❌ Conflict: A symlink with the same name exists but points elsewhere
-            print(f"{RED}❌ Symlink conflict: `{symlink_path}` exists but does not point to `{script}`!{RESET}")
-            continue
-
-        symlink_path.symlink_to(script)
-        print(f"✅ Created symlink: {symlink_path} -> {script}")
-
-        # Ensure the symlink is also executable
-        symlink_path.chmod(symlink_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-
-def main(scripts_dir, dotfiles_dir, bin_dir):
-    """Main function to set up Python scripts, aliases, and symlinks."""
-    print("\n🔄 Running pyscripts/setup.py ...")
-
-    alias_file = scripts_dir / "pyscripts/alias_names.txt"
-
-    if not bin_dir.exists():
-        bin_dir.mkdir(parents=True, exist_ok=True)
-
-    # ✅ Ensure symlinks exist
-    ensure_symlinks(scripts_dir, bin_dir)
-
-    # ✅ Write aliases and check conflicts
-    write_aliases(bin_dir, alias_file, dotfiles_dir)
-
+        log_success("Finished PY SCRIPTS SETUP.")
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Setup pyscripts and manage aliases.")
-    parser.add_argument("--scripts-dir", type=Path, required=True, help="Path to the scripts/ directory")
-    parser.add_argument("--dotfiles-dir", type=Path, required=True, help="Path to the dotfiles/ directory")
-    parser.add_argument("--bin-dir", type=Path, required=True, help="Path to the bin/ directory where symlinks are stored")
-
+    parser = argparse.ArgumentParser(description="Setup for Python scripts: symlinks and aliases.")
+    parser.add_argument("--scripts-dir", type=Path, required=True, 
+                        help="Base directory where all scripts (including pyscripts/) are located.")
+    parser.add_argument("--dotfiles-dir", type=Path, required=True, 
+                        help="Root directory of dotfiles, for placing generated alias configurations.")
+    parser.add_argument("--bin-dir", type=Path, required=True, 
+                        help="Target directory for creating symlinks to scripts.")
+    parser.add_argument("--verbose", "-v", action="store_true", 
+                        help="Enable detailed output during the setup.")
+    # Add these arguments to avoid 'unrecognized arguments' error from master setup.py
+    parser.add_argument("--skip-reinstall", action="store_true", 
+                        help=argparse.SUPPRESS) # Suppress from help output as it's not directly used here
+    parser.add_argument("--production", action="store_true", 
+                        help=argparse.SUPPRESS) # Suppress from help output
+    
     args = parser.parse_args()
-    main(args.scripts_dir, args.dotfiles_dir, args.bin_dir)
+    try:
+        main(args.scripts_dir, args.dotfiles_dir, args.bin_dir, verbose=args.verbose)
+    except Exception as e:
+        print(f"FATAL ERROR in pyscripts/setup.py: {e}", file=sys.stderr)
+        sys.exit(1)

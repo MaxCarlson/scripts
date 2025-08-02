@@ -1,0 +1,26 @@
+{
+    "url": "https://chat.openai.com/",
+    "login_required": true,
+    "login_method": "manual",
+    "elements": {
+        "input_field": {
+            "by": "id",
+            "value": "prompt-textarea"
+        },
+        "submit_button": {
+            "by": "xpath",
+            "value": "//button[@type='submit']"
+        },
+        "response_area": {
+            "by": "class",
+            "value": "chat-response"
+        }
+    },
+    "parameters": {
+        "model": {
+            "by": "xpath",
+            "value": "//select[@name='model']",
+            "type": "dropdown"
+        }
+    }
+}

@@ -1,0 +1,323 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.10, pytest-8.3.4, pluggy-1.5.0
+rootdir: /data/data/com.termux/files/home/scripts/modules/code_tools
+configfile: pyproject.toml
+collected 38 items
+
+tests/test_func_replacer.py ...F..F.                                     [ 21%]
+tests/test_rgcodeblock_cli.py ....FFFF...F.                              [ 55%]
+tests/test_rgcodeblock_lib_extractors.py ....F....F.FFFss.               [100%]
+
+=================================== FAILURES ===================================
+_________________________ test_replace_using_line_hint _________________________
+
+mock_clipboard = <function mock_clipboard.<locals>.set_clipboard_content at 0x6f1fd36160>
+temp_target_file = '/data/data/com.termux/files/usr/tmp/tmp3h990fx6.py'
+capsys = <_pytest.capture.CaptureFixture object at 0x6f21ead4f0>
+
+    def test_replace_using_line_hint(mock_clipboard, temp_target_file, capsys):
+        mock_clipboard(NEW_FUNC_FROM_CLIPBOARD_FOR_OLD_NAME)
+        target_lines_local = PYTHON_TARGET_CONTENT_ORIGINAL.splitlines(True)
+        with open(temp_target_file, 'w', encoding='utf-8') as f: f.write(PYTHON_TARGET_CONTENT_ORIGINAL)
+        def mock_py_extractor_for_line_hint(lines_arg, content_arg, target_entity_name=None, target_line_1idx=None):
+            if target_entity_name == "old_function_name" and target_line_1idx == 3:
+                 return target_lines_local[2:6], 2, 5 # Block for 'old_function_name'
+            return None, -1, -1
+        # Patch where it's used within func_replacer.py
+        with patch('func_replacer.rgc_lib.EXTRACTOR_DISPATCH_MAP',
+                   {"python": mock_py_extractor_for_line_hint, **rgc_lib.EXTRACTOR_DISPATCH_MAP}) as mock_dispatch_map, \
+             patch('func_replacer.rgc_lib.extract_python_block_ast', side_effect=mock_py_extractor_for_line_hint) as mock_direct_call:
+            # The above patches ensure that whether func_replacer uses the dispatch map
+            # or calls extract_python_block_ast directly, our mock is used.
+            out, err, code = run_func_replacer([str(temp_target_file), "--name", "old_function_name", "--line", "3", "--yes"], capsys)
+    
+        assert code == 0, f"[LINE HINT] Exit:{code}, Err:{err}, Out:{out}" # <<< VERIFY
+        # Check if either of the patched methods was called (depending on func_replacer's internal logic)
+        called_correctly = False
+        if mock_direct_call.called:
+            call_args, call_kwargs = mock_direct_call.call_args
+            if call_kwargs.get('target_line_1idx') == 3 and call_kwargs.get('target_entity_name') == "old_function_name":
+                called_correctly = True
+        # (Checking calls to dispatch map is more complex if needed)
+>       assert called_correctly, "Mocked Python extractor was not called with expected line/name arguments."
+E       AssertionError: Mocked Python extractor was not called with expected line/name arguments.
+E       assert False
+
+tests/test_func_replacer.py:120: AssertionError
+_______________________ test_replace_ruby_method_by_name _______________________
+
+mock_clipboard = <function mock_clipboard.<locals>.set_clipboard_content at 0x6f1fd37420>
+temp_target_file = '/data/data/com.termux/files/usr/tmp/tmpkyqv_57l.py'
+capsys = <_pytest.capture.CaptureFixture object at 0x6f1fd5b770>
+
+    def test_replace_ruby_method_by_name(mock_clipboard, temp_target_file, capsys):
+        mock_clipboard(NEW_RUBY_METHOD_CLIPBOARD)
+        ruby_target_path = temp_target_file.replace(".py", ".rb")
+        target_lines_local = RUBY_TARGET_CONTENT_ORIGINAL.splitlines(True)
+        with open(ruby_target_path, 'w', encoding='utf-8') as f: f.write(RUBY_TARGET_CONTENT_ORIGINAL)
+        def mock_ruby_extractor(lines_arg, target_line_0idx_arg, target_entity_name=None): # <<< Corrected signature
+            if target_entity_name == "method_to_replace": return target_lines_local[2:5], 2, 4
+            return None, -1, -1
+        # Patch where used
+        with patch('func_replacer.rgc_lib.EXTRACTOR_DISPATCH_MAP', {"ruby": mock_ruby_extractor, **rgc_lib.EXTRACTOR_DISPATCH_MAP}):
+             out, err, code = run_func_replacer([ruby_target_path, "--name", "method_to_replace", "--yes"], capsys)
+>       assert code == 0, f"[RUBY] Failed with code {code}. Err: {err}"
+E       AssertionError: [RUBY] Failed with code 1. Err: Error: Could not find or extract block for 'method_to_replace'  in '/data/data/com.termux/files/usr/tmp/tmpkyqv_57l.rb'. Lang: ruby
+E         
+E       assert 1 == 0
+
+tests/test_func_replacer.py:156: AssertionError
+_________________________ test_cli_stats_output_format _________________________
+
+mock_rg_subprocess = <function mock_rg_subprocess.<locals>.side_effect_func at 0x6f1fd36200>
+mock_file_content = {'file1.py': 'term1 = 1\n#...\nterm3 = 3', 'file2.c': '//...\nint term2 = 2;'}
+capsys = <_pytest.capture.CaptureFixture object at 0x6f1fd5dfa0>
+
+    def test_cli_stats_output_format(mock_rg_subprocess, mock_file_content, capsys):
+        rg_output = [
+            {"type": "match", "data": {"path": {"text": "file1.py"}, "line_number": 1, "submatches": [{"match": {"text": "term1"}}]}},
+            {"type": "match", "data": {"path": {"text": "file2.c"}, "line_number": 2, "submatches": [{"match": {"text": "term2"}}]}},
+            {"type": "match", "data": {"path": {"text": "file1.py"}, "line_number": 3, "submatches": [{"match": {"text": "term3"}}]}} ]
+        mock_rg_subprocess.stdout_val = "\n".join(json.dumps(m) for m in rg_output) + "\n"
+        mock_file_content["file1.py"] = "term1 = 1\n#...\nterm3 = 3"
+        mock_file_content["file2.c"] = "//...\nint term2 = 2;"
+        # Ensure mocks cause successful extraction for stats
+        with patch.object(rgc_lib, 'extract_python_block_ast', side_effect=[(["term1 = 1\n"], 0, 0), (["term3 = 3\n"], 2, 2)]), \
+             patch.object(rgc_lib, 'extract_brace_block', return_value=(["int term2 = 2;\n"], 1, 1)):
+            out, err, code = run_cli_main_with_args(["term", ".", "--stats"], capsys)
+        assert code == 0; assert "Run Statistics" in out
+>       assert re.search(r"Total Ripgrep Matches Found:\s*3", out), f"Stat mismatch: Total RG Matches\n{out}" # <<< CORRECTED
+E       AssertionError: Stat mismatch: Total RG Matches
+E         
+E         [1;34m╠══════════════════ Match ═══════════════════╣[0m
+E         [0;32mFile:[0m file1.py:1
+E         [0;32mHighlight(s) (1):[0m "term1"
+E         [1;34m────────────────────[0m
+E         [1;34m────────────────────[0mFallback: Context for 'python' file.
+E         [1;31mterm1[0m = 1
+E         #...
+E         term3 = 3
+E         [1;34m╚════════════════════════════════════════════╝[0m
+E         
+E         [1;34m╠══════════════════ Match ═══════════════════╣[0m
+E         [0;32mFile:[0m file1.py:3
+E         [0;32mHighlight(s) (1):[0m "term3"
+E         [1;34m────────────────────[0m
+E         [1;34m────────────────────[0mFallback: Context for 'python' file.
+E         term1 = 1
+E         #...
+E         [1;31mterm3[0m = 3
+E         [1;34m╚════════════════════════════════════════════╝[0m
+E         
+E         [1;34m╠══════════════════ Match ═══════════════════╣[0m
+E         [0;32mFile:[0m file2.c:2
+E         [0;32mHighlight(s) (1):[0m "term2"
+E         [1;34m────────────────────[0m
+E         [1;34m────────────────────[0mFallback: Context for 'brace' file.
+E         //...
+E         int [1;31mterm2[0m = 2;
+E         [1;34m╚════════════════════════════════════════════╝[0m
+E         
+E         [1;34m╠══════════════ Run Statistics ══════════════╣[0m
+E         [0;32mTotal Ripgrep Matches Found:[0m 3
+E         [0;32mUnique Code Blocks Processed:[0m 0
+E         [0;32mUnique Files Containing Matches:[0m 2
+E         [0;32mBlocks Successfully Extracted:[0m 0
+E         [0;32mFell Back to Context View:[0m 3
+E         [1;34m╚════════════════════════════════════════════╝[0m
+E         
+E       assert None
+E        +  where None = <function search at 0x6f2479aca0>('Total Ripgrep Matches Found:\\s*3', '\n\x1b[1;34m╠══════════════════ Match ═══════════════════╣\x1b[0m\n\x1b[0;32mFile:\x1b[0m file1.py:1\n\x1b[0;32mHighl...0m 0\n\x1b[0;32mFell Back to Context View:\x1b[0m 3\n\x1b[1;34m╚════════════════════════════════════════════╝\x1b[0m\n')
+E        +    where <function search at 0x6f2479aca0> = re.search
+
+tests/test_rgcodeblock_cli.py:150: AssertionError
+____________________________ test_cli_line_numbers _____________________________
+
+mock_rg_subprocess = <function mock_rg_subprocess.<locals>.side_effect_func at 0x6f1fbf0860>
+mock_file_content = {'ln.py': 'a=1 # line 1\nb=2 # line 2\nc=3 # line 3'}
+capsys = <_pytest.capture.CaptureFixture object at 0x6f1fbc4ce0>
+
+    def test_cli_line_numbers(mock_rg_subprocess, mock_file_content, capsys):
+        rg_json_output_line = json.dumps({"type": "match", "data": {"path": {"text": "ln.py"}, "line_number": 2, "submatches": [{"match": {"text": "b"}}]}}) + "\n"
+        mock_rg_subprocess.stdout_val = rg_json_output_line
+        mock_file_content["ln.py"] = "a=1 # line 1\nb=2 # line 2\nc=3 # line 3"
+        with patch.object(rgc_lib, 'extract_python_block_ast', return_value=(["a=1 # line 1\n", "b=2 # line 2\n"], 0, 1)):
+             out, err, code = run_cli_main_with_args(["b", "ln.py", "--line-numbers"], capsys)
+        assert code == 0
+>       assert "Fallback: Context" not in out, f"Should have printed block, not fallback.\nOutput:\n{out}"
+E       AssertionError: Should have printed block, not fallback.
+E         Output:
+E         
+E         [1;34m╠══════════════════ Match ═══════════════════╣[0m
+E         [0;32mFile:[0m ln.py:2
+E         [0;32mHighlight(s) (1):[0m "b"
+E         [1;34m────────────────────[0m
+E         [1;34m────────────────────[0mFallback: Context for 'python' file.
+E         [0;36m   1[0m | a=1 # line 1
+E         [0;36m   2[0m | [1;31mb[0m=2 # line 2
+E         [0;36m   3[0m | c=3 # line 3
+E         [1;34m╚════════════════════════════════════════════╝[0m
+E         
+E       assert 'Fallback: Context' not in '\n\x1b[1;34...══╝\x1b[0m\n'
+E         
+E         'Fallback: Context' is contained here:
+E           ──────[0mFallback: Context for 'python' file.
+E         ?           +++++++++++++++++
+E           [0;36m   1[0m | a=1 # line 1
+E           [0;36m   2[0m | [1;31mb[0m=2 # line 2
+E           [0;36m   3[0m | c=3 # line 3
+E           [1;34m╚════════════════════════════════════════════╝[0m
+
+tests/test_rgcodeblock_cli.py:162: AssertionError
+___________________________ test_cli_ruby_extraction ___________________________
+
+mock_rg_subprocess = <function mock_rg_subprocess.<locals>.side_effect_func at 0x6f1fbf0cc0>
+mock_file_content = {'greeter.rb': '\nclass Greeter\n  def initialize(name)\n    @name = name\n  end\n\n  def greet\n    puts "Hello, #{@name}!"\n  end\nend\n'}
+capsys = <_pytest.capture.CaptureFixture object at 0x6f1fc23c80>
+
+    def test_cli_ruby_extraction(mock_rg_subprocess, mock_file_content, capsys):
+        rg_json_output_line = json.dumps({"type": "match", "data": {"path": {"text": "greeter.rb"}, "line_number": 7, "submatches": [{"match": {"text": "@name"}}]} }) + "\n"
+        mock_rg_subprocess.stdout_val = rg_json_output_line
+        mock_file_content["greeter.rb"] = RUBY_SAMPLE_FOR_CLI
+        expected_block = [(l + '\n') for l in RUBY_SAMPLE_FOR_CLI.splitlines()][5:8]; expected_start_0idx = 5; expected_end_0idx = 7
+        with patch.object(rgc_lib, 'extract_ruby_block', return_value=(expected_block, expected_start_0idx, expected_end_0idx)):
+            out, err, code = run_cli_main_with_args(["@name", "greeter.rb"], capsys)
+        assert code == 0; assert "╠══" in out
+        assert re.search(r"File:.*?greeter\.rb:7", out); assert re.search(r"Highlight\(s\)\s*\(1\):.*?\"@name\"", out)
+        assert "def greet" in out; assert re.search(r"\033\[1;31m@name\033\[0m", out)
+        # Filter out separators and header for checking last content line
+        content_lines = [l.strip() for l in out.splitlines() if l.strip() and not l.startswith("╠") and not l.startswith("╚") and not l.startswith(rgcb_cli.COLOR_STATS_KEY+"File:") and not l.startswith(rgcb_cli.COLOR_STATS_KEY+"Highlight(s):") and not l.startswith(rgcb_cli.COLOR_SEPARATOR_FANCY+"─")]
+>       assert content_lines[-1].startswith("end"), f"Last content line was '{content_lines[-1]}'\nBlock lines:\n{content_lines}"
+E       AssertionError: Last content line was '[1;34m╚════════════════════════════════════════════╝[0m'
+E         Block lines:
+E         ['\x1b[1;34m╠══════════════════ Match ═══════════════════╣\x1b[0m', '\x1b[0;32mHighlight(s) (1):\x1b[0m "@name"', 'def greet', 'puts "Hello, #{\x1b[1;31m@name\x1b[0m}!"', 'end', '\x1b[1;34m╚════════════════════════════════════════════╝\x1b[0m']
+E       assert False
+E        +  where False = <built-in method startswith of str object at 0x6f1fd46c30>('end')
+E        +    where <built-in method startswith of str object at 0x6f1fd46c30> = '\x1b[1;34m╚════════════════════════════════════════════╝\x1b[0m'.startswith
+
+tests/test_rgcodeblock_cli.py:178: AssertionError
+___________________________ test_cli_lua_extraction ____________________________
+
+mock_rg_subprocess = <function mock_rg_subprocess.<locals>.side_effect_func at 0x6f1fbf1c60>
+mock_file_content = {'math.lua': '\nlocal M = {}\n\nfunction M.calculate(a, b)\n  local sum = a + b\n  local product = a * b\n  return sum, product\nend\n\nreturn M\n'}
+capsys = <_pytest.capture.CaptureFixture object at 0x6f1fc27e90>
+
+    def test_cli_lua_extraction(mock_rg_subprocess, mock_file_content, capsys):
+        rg_json_output_line = json.dumps({"type": "match", "data": {"path": {"text": "math.lua"}, "line_number": 5, "submatches": [{"match": {"text": "product"}}]} }) + "\n"
+        mock_rg_subprocess.stdout_val = rg_json_output_line
+        mock_file_content["math.lua"] = LUA_SAMPLE_FOR_CLI
+        expected_block = [(l + '\n') for l in LUA_SAMPLE_FOR_CLI.splitlines()][2:7]; expected_start_0idx = 2; expected_end_0idx = 6
+        with patch.object(rgc_lib, 'extract_lua_block', return_value=(expected_block, expected_start_0idx, expected_end_0idx)):
+            out, err, code = run_cli_main_with_args(["product", "math.lua"], capsys)
+        assert code == 0; assert "╠══" in out
+        assert re.search(r"File:.*?math\.lua:5", out); assert re.search(r"Highlight\(s\)\s*\(1\):.*?\"product\"", out)
+        assert "function M.calculate" in out; assert re.search(r"local \033\[1;31mproduct\033\[0m", out)
+        content_lines = [l.strip() for l in out.splitlines() if l.strip() and not l.startswith("╠") and not l.startswith("╚") and not l.startswith(rgcb_cli.COLOR_STATS_KEY+"File:") and not l.startswith(rgcb_cli.COLOR_STATS_KEY+"Highlight(s):") and not l.startswith(rgcb_cli.COLOR_SEPARATOR_FANCY+"─")]
+>       assert content_lines[-1] == "end", f"Last content line was '{content_lines[-1]}'"
+E       AssertionError: Last content line was '[1;34m╚════════════════════════════════════════════╝[0m'
+E       assert '\x1b[1;34m╚═...═════╝\x1b[0m' == 'end'
+E         
+E         - end
+E         + [1;34m╚════════════════════════════════════════════╝[0m
+
+tests/test_rgcodeblock_cli.py:191: AssertionError
+_____________________ test_cli_max_block_lines_truncation ______________________
+
+mock_rg_subprocess = <function mock_rg_subprocess.<locals>.side_effect_func at 0x6f1fbf2de0>
+mock_file_content = {'large.py': 'def func():\n  l2\n  hit\n  l4\n  l5\n  l6\npass # line 7'}
+capsys = <_pytest.capture.CaptureFixture object at 0x6f1fc4be30>
+
+    def test_cli_max_block_lines_truncation(mock_rg_subprocess, mock_file_content, capsys):
+        rg_json_output = json.dumps({"type": "match", "data": {"path": {"text": "large.py"}, "line_number": 3, "submatches": [{"match": {"text": "hit"}}]}}) + "\n"
+        mock_rg_subprocess.stdout_val = rg_json_output
+        long_code = "def func():\n  l2\n  hit\n  l4\n  l5\n  l6\npass # line 7" # 7 lines
+        mock_file_content["large.py"] = long_code
+        block = [(l + '\n') for l in long_code.splitlines()]
+        with patch.object(rgc_lib, 'extract_python_block_ast', return_value=(block, 0, 6)):
+            out, err, code = run_cli_main_with_args(["hit", "large.py", "-M", "4"], capsys)
+        assert code == 0; assert "def func()" in out; assert "l2" in out
+        # Max 4 -> show_start=ceil((4-1)/2)=2, show_end=floor((4-1)/2)=1. total shown from orig = 2+1 = 3.
+        # num_original_block_lines_not_shown = 7 - (2+1) = 4
+>       assert re.search(r"\.\.\. \(4 lines truncated\) \.\.\.", out), f"Truncation msg mismatch.\nOut:\n{out}"
+E       AssertionError: Truncation msg mismatch.
+E         Out:
+E         
+E         [1;34m╠══════════════════ Match ═══════════════════╣[0m
+E         [0;32mFile:[0m large.py:3
+E         [0;32mHighlight(s) (1):[0m "hit"
+E         [1;34m────────────────────[0m
+E         def func():
+E           l2
+E         ... (3 lines truncated) ...
+E           l6
+E         [1;34m╚════════════════════════════════════════════╝[0m
+E         
+E       assert None
+E        +  where None = <function search at 0x6f2479aca0>('\\.\\.\\. \\(4 lines truncated\\) \\.\\.\\.', '\n\x1b[1;34m╠══════════════════ Match ═══════════════════╣\x1b[0m\n\x1b[0;32mFile:\x1b[0m large.py:3\n\x1b[0;32mHighl...ef func():\n  l2\n... (3 lines truncated) ...\n  l6\n\x1b[1;34m╚════════════════════════════════════════════╝\x1b[0m\n')
+E        +    where <function search at 0x6f2479aca0> = re.search
+
+tests/test_rgcodeblock_cli.py:221: AssertionError
+________________________ test_extract_brace_inner_scope ________________________
+
+    def test_extract_brace_inner_scope():
+        block, start, end = extract_brace_block(BRACE_LINES_1, target_line_0idx=5)
+>       assert block is not None; assert start == 4; assert end == 6
+E       assert 8 == 6
+
+tests/test_rgcodeblock_lib_extractors.py:27: AssertionError
+_______________________ test_extract_ruby_method_by_name _______________________
+
+    def test_extract_ruby_method_by_name():
+        # Target line 5 (idx 4), name "method_one"
+        block, start, end = extract_ruby_block(RUBY_LINES_1, target_line_0idx=4, target_entity_name="method_one")
+>       assert block is not None
+E       assert None is not None
+
+tests/test_rgcodeblock_lib_extractors.py:53: AssertionError
+_______________________ test_extract_lua_function_outer ________________________
+
+    def test_extract_lua_function_outer():
+        # Target line 4 (idx 3: 'local sum')
+        block, start, end = extract_lua_block(LUA_LINES_1, target_line_0idx=3)
+        assert block is not None
+>       assert start == 2, f"Expected start index 2 (function M.calculate), got {start}"
+E       AssertionError: Expected start index 2 (function M.calculate), got 3
+E       assert 3 == 2
+
+tests/test_rgcodeblock_lib_extractors.py:72: AssertionError
+_____________________ test_extract_lua_if_block_heuristic ______________________
+
+    def test_extract_lua_if_block_heuristic():
+        # Target line 6 (idx 5: 'print("Large")')
+        block, start, end = extract_lua_block(LUA_LINES_1, target_line_0idx=5)
+        assert block is not None
+>       assert start == 4, f"Expected start index 4 (if), got {start}"
+E       AssertionError: Expected start index 4 (if), got 5
+E       assert 5 == 4
+
+tests/test_rgcodeblock_lib_extractors.py:80: AssertionError
+___________________ test_extract_lua_outer_function_by_name ____________________
+
+    def test_extract_lua_outer_function_by_name():
+        # Target line 4 (idx 3), name "M.calculate"
+        block, start, end = extract_lua_block(LUA_LINES_1, target_line_0idx=3, target_entity_name="M.calculate")
+        assert block is not None
+>       assert start == 2, f"Expected start index 2 (function M.calculate), got {start}"
+E       AssertionError: Expected start index 2 (function M.calculate), got 3
+E       assert 3 == 2
+
+tests/test_rgcodeblock_lib_extractors.py:89: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_func_replacer.py::test_replace_using_line_hint - AssertionE...
+FAILED tests/test_func_replacer.py::test_replace_ruby_method_by_name - Assert...
+FAILED tests/test_rgcodeblock_cli.py::test_cli_stats_output_format - Assertio...
+FAILED tests/test_rgcodeblock_cli.py::test_cli_line_numbers - AssertionError:...
+FAILED tests/test_rgcodeblock_cli.py::test_cli_ruby_extraction - AssertionError: Last content line was '[1;34m╚════════════════════════════════════════════╝[0m'
+FAILED tests/test_rgcodeblock_cli.py::test_cli_lua_extraction - AssertionError: Last content line was '[1;34m╚════════════════════════════════════════════╝[0m'
+FAILED tests/test_rgcodeblock_cli.py::test_cli_max_block_lines_truncation - A...
+FAILED tests/test_rgcodeblock_lib_extractors.py::test_extract_brace_inner_scope
+FAILED tests/test_rgcodeblock_lib_extractors.py::test_extract_ruby_method_by_name
+FAILED tests/test_rgcodeblock_lib_extractors.py::test_extract_lua_function_outer
+FAILED tests/test_rgcodeblock_lib_extractors.py::test_extract_lua_if_block_heuristic
+FAILED tests/test_rgcodeblock_lib_extractors.py::test_extract_lua_outer_function_by_name
+=================== 12 failed, 24 passed, 2 skipped in 0.54s ===================

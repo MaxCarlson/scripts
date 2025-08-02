@@ -1,0 +1,68 @@
+# File: knowledge_manager/pyproject.toml
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "knowledge_manager"
+version = "0.1.0"
+description = "A Python CLI application for managing personal knowledge, projects, tasks, and LLM assets."
+readme = "README.md" # You'll want to create this file later
+requires-python = ">=3.8" # Specify your minimum Python version
+license = {text = "MIT"} # Or choose another license
+
+authors = [
+    {name = "Your Name", email = "your.email@example.com"} # Replace with your details
+]
+
+# Add dependencies here as your project grows
+# For now, it mostly uses the standard library.
+# Example: dependencies = ["requests", "pydantic>2.0"]
+dependencies = [
+    # "fastapi", # For future API
+    # "uvicorn[standard]", # For future API
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov", # For coverage reports
+    "ruff",       # For linting and formatting (optional, but good)
+]
+
+# This section defines the command-line script 'km'
+[project.scripts]
+km = "knowledge_manager.cli:main" # Assumes you'll have cli.py with a main() function
+
+[tool.setuptools.packages.find]
+# This will automatically find your 'knowledge_manager' package
+# and sub-packages like 'tests' if you structure them as such.
+# If your tests are not meant to be an importable part of the package,
+# you might exclude them or handle them differently.
+# For now, this is a common setup.
+# By default, it looks in the current directory.
+# If you had a 'src' layout, you'd add: where = ["src"]
+namespaces = false # Important if you're not using namespace packages
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+# Pytest will look for tests in the 'tests' directory relative to pyproject.toml
+testpaths = [
+    "tests"
+]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+# Add other pytest configurations here if needed, e.g., markers, plugins.
+# addopts = "--cov=knowledge_manager --cov-report=term-missing" # Example for coverage
+
+# Optional: Ruff linter/formatter configuration (highly recommended)
+# [tool.ruff]
+# line-length = 88
+# select = ["E", "W", "F", "I", "UP", "C4", "B", "A", "RUF"] # Common rule sets
+# ignore = []
+
+# [tool.ruff.format]
+# quote-style = "double"
+
+# End of File: knowledge_manager/pyproject.toml
