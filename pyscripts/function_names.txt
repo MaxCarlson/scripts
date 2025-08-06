@@ -1,0 +1,22 @@
+# pyscripts/function_names.txt
+# Format: script_filename.py : function_name : "description" : [optional_arguments]
+
+apply_git_diffs.py : agd : "Applies git diffs to files or projects. Accepts standard git diff format." :
+
+
+append_clipboard.py : apc : "Appends the current clipboard contents to the end of the target file." :
+clipboard_replace.py : crx :
+
+copy_to_clipboard.py : c2cd : "Copies file(s) to clipboard with default settings (no code blocks)." :
+copy_to_clipboard.py : c2c : "Copies file(s) to clipboard, wrapping content in code blocks with filenames." : -w
+copy_to_clipboard.py : c2cr : -r
+copy_to_clipboard.py : c2ca : "Copies file(s) to clipboard, wrapping content and appending to existing clipboard." : -w -a
+replace_with_clipboard.py : rwc : "Replaces the contents of a file with the contents of the clipboard." :
+
+output_to_clipboard.py : otc :
+output_to_clipboard.py : otcw : -w
+
+clipboard_diff.py : cld : 
+
+copy_buffer_to_clipboard.py : cb2c :
+copy_buffer_to_clipboard.py : cb2cf : -f
