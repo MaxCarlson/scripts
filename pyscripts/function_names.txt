@@ -3,9 +3,8 @@
 
 apply_git_diffs.py : agd : "Applies git diffs to files or projects. Accepts standard git diff format." :
 
-
 append_clipboard.py : apc : "Appends the current clipboard contents to the end of the target file." :
-clipboard_replace.py : crx :
+clipboard_replace.py : crx : "Replaces a Python function or class in a file with the clipboard content." :
 
 copy_to_clipboard.py : c2cd : "Copies file(s) to clipboard with default settings (no code blocks)." :
 copy_to_clipboard.py : c2c : "Copies file(s) to clipboard, wrapping content in code blocks with filenames." : -w
@@ -13,10 +12,10 @@ copy_to_clipboard.py : c2cr : -r
 copy_to_clipboard.py : c2ca : "Copies file(s) to clipboard, wrapping content and appending to existing clipboard." : -w -a
 replace_with_clipboard.py : rwc : "Replaces the contents of a file with the contents of the clipboard." :
 
-output_to_clipboard.py : otc :
-output_to_clipboard.py : otcw : -w
+output_to_clipboard.py : otc : "Runs a command and copies its output to the clipboard." :
+output_to_clipboard.py : otcw : "Runs a command and copies its output to the clipboard, wrapped in a code block." : -w
 
-clipboard_diff.py : cld : 
+clipboard_diff.py : cld : "Diffs the clipboard contents with a file." :
 
-copy_buffer_to_clipboard.py : cb2c :
-copy_buffer_to_clipboard.py : cb2cf : -f
+copy_buffer_to_clipboard.py : cb2c : "Copies the terminal scrollback buffer to the clipboard." :
+copy_buffer_to_clipboard.py : cb2cf : "Copies the entire terminal scrollback buffer to the clipboard." : -f
