@@ -3,6 +3,7 @@ import argparse
 import sys 
 from pathlib import Path
 from scripts_setup.alias_utils import parse_alias_file, write_aliases, write_pwsh_aliases
+from scripts_setup.function_utils import parse_functions_file, write_functions
 from scripts_setup.setup_utils import process_symlinks 
 from standard_ui.standard_ui import log_info, log_success, log_warning, log_error, section
 
@@ -35,71 +36,71 @@ def ensure_symlinks(scripts_dir: Path, bin_dir: Path, verbose: bool) -> None:
 
 
 def main(scripts_dir: Path, dotfiles_dir: Path, bin_dir: Path, verbose: bool) -> None:
-    """Main setup routine for pyscripts."""
+    """Main setup routine for pyscripts, handling symlinks, aliases, and functions."""
     with section("PY SCRIPTS SETUP"):
-        alias_definitions_file = scripts_dir / "pyscripts/alias_names.txt"
-        
         if not bin_dir.exists():
             log_info(f"Creating bin directory at: {bin_dir}")
             try:
                 bin_dir.mkdir(parents=True, exist_ok=True)
             except OSError as e:
-                log_error(f"Could not create bin directory {bin_dir}: {e}. Symlinks might fail.")
+                log_error(f"Could not create bin directory {bin_dir}: {e}. Sub-tasks might fail.")
                 return 
 
         try:
             ensure_symlinks(scripts_dir, bin_dir, verbose=verbose)
         except SystemExit: 
-            log_error("Halting pyscripts setup due to critical symlink error from ensure_symlinks.")
+            log_error("Halting pyscripts setup due to critical symlink error.")
             return 
         except Exception: 
             log_error("Halting pyscripts setup due to an unexpected error in ensure_symlinks.")
             return
 
+        # --- Process Aliases ---
+        alias_definitions_file = scripts_dir / "pyscripts/alias_names.txt"
         parsed_alias_definitions = parse_alias_file(alias_definitions_file)
         if not parsed_alias_definitions:
             log_warning(f"No alias definitions found or parsed from '{alias_definitions_file}'. Skipping alias generation.")
         else:
-            log_info(f"Found {len(parsed_alias_definitions)} alias definitions to process from '{alias_definitions_file}'.")
-
-            # --- Zsh/Bash Aliases ---
-            with section("Aliases for Python scripts (Zsh/Bash)"):
-                alias_config_output_file_zsh = dotfiles_dir / "dynamic/setup_pyscripts_aliases.zsh"
-                log_info(f"Zsh/Bash aliases will be written to: {alias_config_output_file_zsh}")
+            log_info(f"Found {len(parsed_alias_definitions)} alias definitions to process.")
+            with section("ALIASES FOR PYTHON SCRIPTS (ZSH/BASH)"):
+                alias_config_zsh = dotfiles_dir / "dynamic/setup_pyscripts_aliases.zsh"
+                log_info(f"Zsh/Bash aliases will be written to: {alias_config_zsh}")
                 try:
-                    write_aliases(
-                        parsed_alias_definitions=parsed_alias_definitions,
-                        bin_dir=bin_dir, 
-                        alias_config=alias_config_output_file_zsh,
-                        alias_file_path_for_header=str(alias_definitions_file),
-                        verbose=verbose
-                    )
+                    write_aliases(parsed_alias_definitions, bin_dir, alias_config_zsh, str(alias_definitions_file), verbose)
                 except Exception as e:
-                    log_error(f"Error writing Zsh/Bash aliases for Python scripts: {e}")
+                    log_error(f"Error writing Zsh/Bash aliases: {e}")
 
-            # --- PowerShell Aliases ---
-            with section("Aliases for Python scripts (PowerShell)"):
-                alias_config_output_file_ps1 = dotfiles_dir / "dynamic/setup_pyscripts_aliases.ps1"
-                log_info(f"PowerShell aliases will be written to: {alias_config_output_file_ps1}")
+            with section("ALIASES FOR PYTHON SCRIPTS (POWERSHELL)"):
+                alias_config_ps1 = dotfiles_dir / "dynamic/setup_pyscripts_aliases.ps1"
+                log_info(f"PowerShell aliases will be written to: {alias_config_ps1}")
                 try:
-                    write_pwsh_aliases(
-                        parsed_alias_definitions=parsed_alias_definitions,
-                        bin_dir=bin_dir,
-                        alias_config_ps1=alias_config_output_file_ps1,
-                        alias_file_path_for_header=str(alias_definitions_file),
-                        verbose=verbose
-                    )
+                    write_pwsh_aliases(parsed_alias_definitions, bin_dir, alias_config_ps1, str(alias_definitions_file), verbose)
                 except Exception as e:
-                    log_error(f"Error writing PowerShell aliases for Python scripts: {e}")
+                    log_error(f"Error writing PowerShell aliases: {e}")
+
+        # --- Process Functions ---
+        function_definitions_file = scripts_dir / "pyscripts/function_names.txt"
+        parsed_functions = parse_functions_file(function_definitions_file)
+        if not parsed_functions:
+            log_warning(f"No function definitions found or parsed from '{function_definitions_file}'. Skipping function generation.")
+        else:
+            log_info(f"Found {len(parsed_functions)} function definitions to process.")
+            with section("SHELL FUNCTIONS (ZSH/BASH)"):
+                functions_output_file = dotfiles_dir / "dynamic/setup_pyscripts_functions.zsh"
+                log_info(f"Shell functions will be written to: {functions_output_file}")
+                try:
+                    write_functions(parsed_functions, bin_dir, functions_output_file, str(function_definitions_file), verbose)
+                except Exception as e:
+                    log_error(f"Error writing shell functions: {e}")
 
         log_success("Finished PY SCRIPTS SETUP.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Setup for Python scripts: symlinks and aliases.")
+    parser = argparse.ArgumentParser(description="Setup for Python scripts: symlinks, aliases, and functions.")
     parser.add_argument("--scripts-dir", type=Path, required=True, 
                         help="Base directory where all scripts (including pyscripts/) are located.")
     parser.add_argument("--dotfiles-dir", type=Path, required=True, 
-                        help="Root directory of dotfiles, for placing generated alias configurations.")
+                        help="Root directory of dotfiles, for placing generated alias/function configurations.")
     parser.add_argument("--bin-dir", type=Path, required=True, 
                         help="Target directory for creating symlinks to scripts.")
     parser.add_argument("--verbose", "-v", action="store_true", 
