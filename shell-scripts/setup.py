@@ -2,7 +2,7 @@
 import argparse
 import sys 
 from pathlib import Path
-from scripts_setup.alias_utils import parse_alias_file, write_aliases
+from scripts_setup.definition_utils import parse_definitions_file, write_definitions
 from scripts_setup.setup_utils import process_symlinks 
 from standard_ui.standard_ui import log_info, log_warning, log_success, log_error, section
 
@@ -22,7 +22,7 @@ def ensure_shell_script_symlinks(scripts_dir: Path, bin_dir: Path, verbose: bool
                 glob_pattern="*.sh", 
                 bin_dir=bin_dir,
                 verbose=verbose,
-                skip_names=["setup.py", "alias_names.txt"] 
+                skip_names=["setup.py"] 
             )
             log_info(f"Shell script symlinks: {created_count} created/updated, {existing_count} already correct.")
         except SystemExit:
@@ -36,8 +36,7 @@ def ensure_shell_script_symlinks(scripts_dir: Path, bin_dir: Path, verbose: bool
 def main(scripts_dir: Path, dotfiles_dir: Path, bin_dir: Path, verbose: bool) -> None:
     """Main setup routine for shell scripts."""
     with section("SHELL SCRIPTS SETUP"):
-        shell_scripts_dir = scripts_dir / "shell-scripts"
-        alias_definitions_file = shell_scripts_dir / "alias_names.txt" 
+        definitions_file = scripts_dir / "pyscripts/alias_and_func_defs.txt"
         alias_config_output_file = dotfiles_dir / "dynamic/setup_shell_scripts_aliases.zsh" 
 
         if not bin_dir.exists():
@@ -59,22 +58,24 @@ def main(scripts_dir: Path, dotfiles_dir: Path, bin_dir: Path, verbose: bool) ->
 
 
         with section("Aliases for Shell Scripts"):
-            log_info(f"Processing alias definitions from: {alias_definitions_file}")
+            log_info(f"Processing alias definitions from: {definitions_file}")
             log_info(f"Aliases will be written to: {alias_config_output_file}")
 
-            parsed_shell_alias_definitions = parse_alias_file(alias_definitions_file)
+            aliases, _ = parse_definitions_file(definitions_file)
+            shell_aliases = [d for d in aliases if d['script'].endswith('.sh')]
 
-            if not parsed_shell_alias_definitions:
-                log_warning(f"No alias definitions found or parsed from '{alias_definitions_file}'.")
+            if not shell_aliases:
+                log_warning(f"No shell script alias definitions found or parsed from '{definitions_file}'.")
             else:
-                log_info(f"Found {len(parsed_shell_alias_definitions)} shell alias definitions to process.")
+                log_info(f"Found {len(shell_aliases)} shell alias definitions to process.")
             
             try:
-                write_aliases(
-                    parsed_alias_definitions=parsed_shell_alias_definitions,
+                write_definitions(
+                    definitions=shell_aliases,
                     bin_dir=bin_dir,
-                    alias_config=alias_config_output_file, 
-                    alias_file_path_for_header=str(alias_definitions_file),
+                    output_file=alias_config_output_file, 
+                    source_file_path=str(definitions_file),
+                    def_type='alias',
                     verbose=verbose 
                 )
             except Exception as e:
