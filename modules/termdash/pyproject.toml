@@ -1,6 +1,6 @@
 [project]
 name = "termdash"
-version = "0.2.0"
+version = "0.3.0"
 description = "A robust, thread-safe library for persistent terminal dashboards"
 readme = "README.md"
 authors = [
