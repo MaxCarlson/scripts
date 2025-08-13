@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TermDash dashboard — in-place renderer with optional column alignment and helpers.
+TermDash dashboard — in-place renderer with column alignment, separators, and helpers.
 """
 
 import sys
@@ -40,10 +40,20 @@ class TermDash:
       min_col_pad:   spaces placed on both sides of column_sep.
       max_col_width: int or None. If set, columns wider than this are left-truncated
                      keeping the rightmost chars (with a leading '…').
-
-      reserve_extra_rows: pre-reserve extra rows in scroll region to tolerate wrapped
-                          lines/separators without flicker (default 6).
+      enable_separators: when True, `add_separator()` inserts a horizontal rule.
+      separator_style: preset name ('rule','dash','dot','tilde','wave','hash').
+      separator_custom: custom pattern string (overrides preset).
+      reserve_extra_rows: pre-reserve rows below the dashboard (avoid scroll flicker).
     """
+    _SEP_PRESETS = {
+        "rule": "─",
+        "dash": "-",
+        "dot": ".",
+        "tilde": "~",
+        "wave": "~-",
+        "hash": "#",
+    }
+
     def __init__(
         self,
         refresh_rate=0.1,
@@ -56,6 +66,9 @@ class TermDash:
         column_sep="|",
         min_col_pad=2,
         max_col_width=None,
+        enable_separators=False,
+        separator_style: str = "rule",
+        separator_custom: str | None = None,
         reserve_extra_rows: int = 6,
     ):
         self._lock = threading.RLock()
@@ -72,6 +85,12 @@ class TermDash:
         self.min_col_pad = int(min_col_pad)
         self.max_col_width = int(max_col_width) if (max_col_width is not None and max_col_width > 0) else None
         self._reserve_extra_rows = max(0, int(reserve_extra_rows))
+        self._effective_reserve_rows = self._reserve_extra_rows
+
+        # separators
+        self.enable_separators = bool(enable_separators)
+        self._separator_pattern = (separator_custom if separator_custom
+                                   else self._SEP_PRESETS.get(separator_style, "─"))
 
         self._lines = {}
         self._line_order = []
@@ -117,6 +136,16 @@ class TermDash:
                 self._line_order.insert(0, name)
             else:
                 self._line_order.append(name)
+
+    def add_separator(self):
+        """Insert a separator line if separators are enabled."""
+        if not self.enable_separators:
+            return
+        with self._lock_context("add_separator"):
+            idx = sum(1 for n in self._line_order if n.startswith("sep"))
+            name = f"sep{idx+1}"
+            self._lines[name] = Line(name, style="separator", sep_pattern=self._separator_pattern)
+            self._line_order.append(name)
 
     def update_stat(self, line_name, stat_name, value):
         with self._lock_context("update_stat"):
@@ -174,19 +203,25 @@ class TermDash:
     # Rendering
     # -----------------------------
     def _setup_screen(self):
+        """Auto-fit reserved rows instead of failing when terminal is snug."""
         try:
             cols, lines = os.get_terminal_size()
-            dashboard_height = len(self._line_order) + self._reserve_extra_rows
-            if self.has_status_line:
-                dashboard_height += 1
-            if dashboard_height >= max(1, lines - 1):
-                self._running = False
-                sys.stdout.write(SHOW_CURSOR)
-                raise RuntimeError(
-                    f"Dashboard too tall for terminal: height {dashboard_height}, terminal {lines}."
-                )
+            # visible lines = number of dashboard lines (+status if enabled)
+            visible = len(self._line_order) + (1 if self.has_status_line else 0)
+            allowed = max(1, lines - 1)  # keep at least one free row for scroll region
+
+            # shrink reserve if needed to fit
+            self._effective_reserve_rows = max(0, min(self._reserve_extra_rows, allowed - visible))
+            dashboard_height = visible + self._effective_reserve_rows
+
+            # If still over (extremely snug), clamp further (no exception)
+            if dashboard_height > lines:
+                self._effective_reserve_rows = max(0, lines - visible)
+                dashboard_height = visible + self._effective_reserve_rows
+
             sys.stdout.write(f"{CLEAR_SCREEN}{MOVE_TO_TOP_LEFT}")
-            top_scroll = dashboard_height + 1
+            top_scroll = min(lines, dashboard_height + 1)
+            # only set a custom scroll region when there is room below
             if top_scroll < lines:
                 sys.stdout.write(f"{CSI}{top_scroll};{lines}r")
             sys.stdout.write(MOVE_TO_TOP_LEFT)
@@ -208,7 +243,7 @@ class TermDash:
                 split_lines.append(None)
                 continue
             plain = _strip_ansi(s)
-            # Pass through 'separator'-looking lines: single repeating char (e.g. ───)
+            # Pass through obvious rules (e.g. ───, ~~~~~, etc.)
             if plain and len(set(plain.strip())) == 1:
                 split_lines.append(None)
                 continue
