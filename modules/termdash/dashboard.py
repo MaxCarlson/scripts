@@ -24,6 +24,7 @@ CLEAR_SCREEN = f"{CSI}2J"
 MOVE_TO_TOP_LEFT = f"{CSI}1;1H"
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_ANSI_PREFIX_RE = re.compile(r"^(?:\x1b\[[0-9;]*m)+")  # leading color/style codes
 
 # Non-printing markers used by Stat(no_expand=True)
 NOEXPAND_L = "\x1e"
@@ -247,14 +248,18 @@ class TermDash:
             pass
 
     def _align_rendered_lines(self, rendered_lines: list[str], cols: int) -> list[str]:
-        """Return new list with columns aligned and optionally truncated."""
+        """Return new list with columns aligned and optionally truncated.
+
+        Preserves ANSI coloring while measuring/aligning by the visible text only.
+        Cells wrapped with NOEXPAND markers never contribute to width.
+        """
         sep = self.column_sep
         pad = " " * self.min_col_pad
         joiner = f"{pad}{sep}{pad}"
 
-        # Split and collect column widths (ANSI stripped for measuring)
-        split_lines = []
-        max_per_col = []
+        # Split and collect column widths (ANSI/markers stripped for measuring)
+        split_lines: list[Optional[tuple[list[str], list[str]]]] = []
+        max_per_col: list[int] = []
         for s in rendered_lines:
             if s is None:
                 split_lines.append(None)
@@ -264,16 +269,15 @@ class TermDash:
             if plain and len(set(plain.strip())) == 1:
                 split_lines.append(None)
                 continue
-            cols_parts = [p.strip() for p in plain.split(sep)]
-            # We also need the raw (w/ markers) to decide if a cell is no_expand
+            cols_plain = [p.strip() for p in plain.split(sep)]
             raw_parts = [p.strip() for p in _strip_ansi(s).split(sep)]
-            split_lines.append((cols_parts, raw_parts))
+            split_lines.append((cols_plain, raw_parts))
 
-            if len(cols_parts) > len(max_per_col):
-                max_per_col.extend([0] * (len(cols_parts) - len(max_per_col)))
+            if len(cols_plain) > len(max_per_col):
+                max_per_col.extend([0] * (len(cols_plain) - len(max_per_col)))
 
-            for i, (part_plain, part_raw) in enumerate(zip(cols_parts, raw_parts)):
-                # If this cell is marked no_expand, it contributes *zero* width
+            for i, (part_plain, part_raw) in enumerate(zip(cols_plain, raw_parts)):
+                # If this cell is marked no_expand, it contributes zero width
                 if NOEXPAND_L in part_raw and NOEXPAND_R in part_raw:
                     continue
                 w = len(part_plain)
@@ -282,22 +286,27 @@ class TermDash:
                 if w > max_per_col[i]:
                     max_per_col[i] = w
 
-        # Build aligned strings (right-hand clip with …)
-        aligned = []
+        # Build aligned strings (right-hand clip with …) while keeping ANSI
+        aligned: list[str] = []
         for original, packed in zip(rendered_lines, split_lines):
             if packed is None:
                 aligned.append((original or "")[:cols])
                 continue
             parts_plain, parts_raw = packed
-            fixed_cols = []
+            fixed_cols: list[str] = []
             for i, (text_plain, text_raw) in enumerate(zip(parts_plain, parts_raw)):
                 width = max_per_col[i]
-                # clip to width (right-side ellipsis)
-                cell = text_plain
-                if len(cell) > width and width > 0:
-                    cell = cell[:max(1, width - 1)] + "…"
+                # Prepare a colored wrapper from raw (keep leading ANSI, drop markers)
+                m = _ANSI_PREFIX_RE.match(text_raw)
+                prefix = m.group(0) if m else ""
+                # compute clipped/padded visible text
+                visible = text_plain
+                if len(visible) > width and width > 0:
+                    visible = visible[:max(1, width - 1)] + "…"
                 else:
-                    cell = cell.ljust(width)
+                    visible = visible.ljust(width)
+                # wrap back with color and reset; markers intentionally not reinserted
+                cell = f"{prefix}{visible}\x1b[0m" if prefix else visible
                 fixed_cols.append(cell)
             aligned_line = joiner.join(fixed_cols)
             aligned.append(aligned_line[:cols])
