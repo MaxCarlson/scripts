@@ -48,7 +48,10 @@ class Stat:
                     formatted = self.format_string.format(self.value)
             except Exception as e:
                 if logger:
-                    logger.error(f"Stat.render error for '{self.name}': {e} (value={self.value!r}, fmt={self.format_string!r})")
+                    logger.error(
+                        f"Stat.render error for '{self.name}': {e} "
+                        f"(value={self.value!r}, fmt={self.format_string!r})"
+                    )
                 formatted = "FMT_ERR"
             text = f"{self.prefix}{formatted}{self.unit}"
             self._last_text = text
@@ -95,9 +98,7 @@ class Line:
             # repeat pattern across width; slice exact width
             return (pat * ((width // max(1, len(pat))) + 2))[:width]
 
-        rendered = []
-        for n in self._stat_order:
-            rendered.append(self._stats[n].render(logger=logger))
+        rendered = [self._stats[n].render(logger=logger) for n in self._stat_order]
         content = " ".join(rendered)
         if self.style == 'header':
             return f"\033[1;36m{content}{RESET}"
@@ -106,8 +107,7 @@ class Line:
 
 class AggregatedLine(Line):
     """
-    A line whose stat values are computed by *summing* the same-named stats
-    from a dict of source Line objects (e.g., to build an 'Overall' line).
+    Aggregates numeric stats from a dict of source Line objects.
     Non-numeric values are treated as 0. Aggregation happens during render().
     """
     def __init__(self, name, source_lines, stats=None, style='default', sep_pattern: str = "-"):
