@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Components for the TermDash module (Line, Stat).
+Components for the TermDash module (Line, Stat, AggregatedLine).
 """
+
 import time
 from collections.abc import Callable
 
 # ANSI escape sequences
 RESET = "\033[0m"
 DEFAULT_COLOR = "0;37"  # white
+
 
 class Stat:
     """Represents a single, named piece of data within a Line."""
@@ -38,7 +40,10 @@ class Stat:
 
     def render(self, logger=None):
         if logger:
-            logger.debug(f"DEBUG: Stat Name: {self.name}, Value: {self.value}, Format String: {self.format_string}, Type of Value: {type(self.value)}") # DEBUG
+            logger.debug(
+                f"DEBUG: Stat Name: {self.name}, Value: {self.value}, "
+                f"Format String: {self.format_string}, Type of Value: {type(self.value)}"
+            )
 
         # Decide which text to show:
         if self.value is None:
@@ -72,6 +77,7 @@ class Stat:
             logger.debug(f"Rendering stat '{self.name}': {repr(rendered)}")
 
         return rendered
+
 
 class Line:
     """Represents one line in the dashboard, containing one or more Stat objects."""
@@ -113,6 +119,7 @@ class Line:
             return f"\033[1;36m{content}{RESET}"
         return content
 
+
 class AggregatedLine(Line):
     """
     A special Line that calculates its stats by aggregating from other lines.
@@ -122,21 +129,30 @@ class AggregatedLine(Line):
         super().__init__(name, stats, style)
         self.source_lines = source_lines
 
+    @staticmethod
+    def _to_number(value):
+        """Coerce value to a number for aggregation; non-numerics/None => 0."""
+        try:
+            if value is None:
+                return 0
+            if isinstance(value, (int, float)):
+                return value
+            # Try to parse strings that look like numbers
+            return float(value)
+        except Exception:
+            return 0
+
     def render(self, width, logger=None):
         """
         Overrides the default render to first aggregate data from source lines
-        and then render itself. This is thread-safe because it happens inside
-        the main render loop's lock.
+        and then render itself. Only numeric values are summed; others are ignored.
         """
-        # Aggregate the values from all source lines
         for stat_name in self._stats:
-            # Sum up the value of the stat with the same name from all source lines
-            aggregated_value = sum(
-                source_line._stats.get(stat_name).value
-                for source_line in self.source_lines.values()
-                if source_line._stats.get(stat_name) is not None
-            )
+            aggregated_value = 0
+            for source_line in self.source_lines.values():
+                src_stat = source_line._stats.get(stat_name)
+                if src_stat is not None:
+                    aggregated_value += self._to_number(src_stat.value)
             self.update_stat(stat_name, aggregated_value)
 
-        # Now that this line's stats are updated, call the parent render method
         return super().render(width, logger)
