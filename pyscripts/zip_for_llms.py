@@ -51,8 +51,18 @@ DEFAULT_EXCLUDE_FILES = {
     "package-lock.json", "yarn.lock", "Pipfile.lock"
 }
 
+PRESETS = {
+    "python": {
+        "dirs": {".venv", "build", "dist", "htmlcov"},
+        "patterns": ["*.egg-info", "__pycache__", ".pytest_cache"],
+        "exts": {".pyd"},
+        "files": {".coverage"},
+    }
+}
+
+
 def get_directory_size(directory: Path) -> int:
-    """Returns total size (bytes) of files under `directory`."""
+    """Returns total size (bytes) of files under `directory`. """
     return sum(
         f.stat().st_size
         for f in directory.rglob('*')
@@ -122,7 +132,7 @@ def flatten_directory(source_dir: Path, name_by_path: bool, verbose: bool) -> Pa
                 # if verbose: rprint(f"  [dim]Moved:[/dim] {original_file_path.name} -> {new_name}")
 
 
-    rprint(f"[green]Flattened {moved_count} files into {flat_dest_path}.[/green]")
+    rprint(f"[green]Flattened {moved_count} files into {flat_dest_path}.[green]")
     return flat_dest_path
 
 def delete_files_to_fit_size(directory_to_prune: Path,
@@ -200,7 +210,7 @@ def zip_folder(source_dir_str: str,
         if verbose: rprint(f"Max size set and not flattening. Using temp copy for zipping: [cyan]{temp_source_copy_for_pruning}[/cyan]")
         shutil.copytree(src_path, temp_source_copy_for_pruning, dirs_exist_ok=True)
         working_dir_for_zip = temp_source_copy_for_pruning
-    else: 
+    else:
         working_dir_for_zip = src_path
     
     if not working_dir_for_zip.exists():
@@ -462,6 +472,10 @@ if __name__ == "__main__":
         "-k", "--keep-patterns", nargs="*", default=[],
         help="Glob patterns for filenames/dirnames to keep (overrides remove-patterns)."
     )
+    filter_group.add_argument(
+        "-P", "--preset", choices=PRESETS.keys(),
+        help="Use a preset for language-specific defaults (e.g., 'python')."
+    )
 
     zip_options_group = parser.add_argument_group(title="Zip Mode Options")
     zip_options_group.add_argument(
@@ -494,9 +508,21 @@ if __name__ == "__main__":
     if not run_file_mode and not run_zip_mode:
         run_zip_mode = True 
 
+    # --- Apply presets and finalize exclusion/removal lists ---
     final_exclude_files = set(args.exclude_file) - set(args.include_file)
     final_exclude_dirs = set(args.exclude_dir)
     final_exclude_exts = set(args.exclude_ext)
+    final_remove_patterns = list(args.remove_patterns)
+
+    if args.preset:
+        preset = PRESETS[args.preset]
+        final_exclude_dirs.update(preset.get("dirs", set()))
+        final_exclude_exts.update(preset.get("exts", set()))
+        final_exclude_files.update(preset.get("files", set()))
+        final_remove_patterns.extend(preset.get("patterns", []))
+        if args.verbose:
+            rprint(f"[bold cyan]Applied preset '{args.preset}'[/bold cyan]")
+
 
     output_path_arg = Path(args.output)
     output_dir = output_path_arg.parent
@@ -546,7 +572,7 @@ if __name__ == "__main__":
         text_file_mode(
             args.source, str(actual_text_output_path),
             final_exclude_dirs, final_exclude_exts, final_exclude_files,
-            args.remove_patterns, args.keep_patterns,
+            final_remove_patterns, args.keep_patterns,
             args.flatten, args.name_by_path, args.verbose
         )
 
@@ -555,7 +581,7 @@ if __name__ == "__main__":
         zip_folder(
             args.source, str(actual_zip_output_path),
             final_exclude_dirs, final_exclude_exts, final_exclude_files,
-            args.remove_patterns, args.keep_patterns,
+            final_remove_patterns, args.keep_patterns,
             args.max_size, args.preferences,
             args.flatten, args.name_by_path, args.verbose
         )
