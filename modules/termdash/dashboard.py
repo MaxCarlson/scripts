@@ -25,9 +25,17 @@ MOVE_TO_TOP_LEFT = f"{CSI}1;1H"
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
+# Non-printing markers used by Stat(no_expand=True)
+NOEXPAND_L = "\x1e"
+NOEXPAND_R = "\x1f"
+
 
 def _strip_ansi(s: str) -> str:
     return _ANSI_RE.sub("", s or "")
+
+
+def _strip_markers(s: str) -> str:
+    return (s or "").replace(NOEXPAND_L, "").replace(NOEXPAND_R, "")
 
 
 class TermDash:
@@ -38,8 +46,8 @@ class TermDash:
       align_columns: align columns split by `column_sep` across all lines.
       column_sep:    visual separator between columns (default '|').
       min_col_pad:   spaces placed on both sides of column_sep.
-      max_col_width: int or None. If set, columns wider than this are left-truncated
-                     keeping the rightmost chars (with a leading '…').
+      max_col_width: int or None. If set, columns wider than this are truncated
+                     (right-side ellipsis).
       enable_separators: when True, `add_separator()` inserts a horizontal rule.
       separator_style: preset name ('rule','dash','dot','tilde','wave','hash').
       separator_custom: custom pattern string (overrides preset).
@@ -157,6 +165,15 @@ class TermDash:
             if line_name in self._lines:
                 self._lines[line_name].reset_stat(stat_name, grace_period_s)
 
+    def read_stat(self, line_name, stat_name):
+        """NEW: safe read of a stat’s current value (or None)."""
+        with self._lock_context("read_stat"):
+            ln = self._lines.get(line_name)
+            if not ln:
+                return None
+            st = getattr(ln, "_stats", {}).get(stat_name)
+            return None if st is None else st.value
+
     # Aggregation helpers (for script-level convenience)
     def sum_stats(self, stat_name: str, line_names: Optional[Iterable[str]] = None) -> float:
         with self._lock_context("sum_stats"):
@@ -235,44 +252,53 @@ class TermDash:
         pad = " " * self.min_col_pad
         joiner = f"{pad}{sep}{pad}"
 
-        # Split and collect column widths (ANSI-stripped for measuring)
+        # Split and collect column widths (ANSI stripped for measuring)
         split_lines = []
         max_per_col = []
         for s in rendered_lines:
             if s is None:
                 split_lines.append(None)
                 continue
-            plain = _strip_ansi(s)
+            plain = _strip_markers(_strip_ansi(s))
             # Pass through obvious rules (e.g. ───, ~~~~~, etc.)
             if plain and len(set(plain.strip())) == 1:
                 split_lines.append(None)
                 continue
             cols_parts = [p.strip() for p in plain.split(sep)]
-            split_lines.append(cols_parts)
+            # We also need the raw (w/ markers) to decide if a cell is no_expand
+            raw_parts = [p.strip() for p in _strip_ansi(s).split(sep)]
+            split_lines.append((cols_parts, raw_parts))
+
             if len(cols_parts) > len(max_per_col):
                 max_per_col.extend([0] * (len(cols_parts) - len(max_per_col)))
-            for i, part in enumerate(cols_parts):
-                w = len(part)
+
+            for i, (part_plain, part_raw) in enumerate(zip(cols_parts, raw_parts)):
+                # If this cell is marked no_expand, it contributes *zero* width
+                if NOEXPAND_L in part_raw and NOEXPAND_R in part_raw:
+                    continue
+                w = len(part_plain)
                 if self.max_col_width is not None:
                     w = min(w, self.max_col_width)
                 if w > max_per_col[i]:
                     max_per_col[i] = w
 
-        # Build aligned strings
+        # Build aligned strings (right-hand clip with …)
         aligned = []
-        for original, parts in zip(rendered_lines, split_lines):
-            if parts is None:
+        for original, packed in zip(rendered_lines, split_lines):
+            if packed is None:
                 aligned.append((original or "")[:cols])
                 continue
+            parts_plain, parts_raw = packed
             fixed_cols = []
-            for i, text in enumerate(parts):
+            for i, (text_plain, text_raw) in enumerate(zip(parts_plain, parts_raw)):
                 width = max_per_col[i]
-                # truncate LEFT to keep rightmost chars (values)
-                if len(text) > width:
-                    fixed = "…" if width <= 1 else ("…" + text[-(width - 1):])
+                # clip to width (right-side ellipsis)
+                cell = text_plain
+                if len(cell) > width and width > 0:
+                    cell = cell[:max(1, width - 1)] + "…"
                 else:
-                    fixed = text.ljust(width)
-                fixed_cols.append(fixed)
+                    cell = cell.ljust(width)
+                fixed_cols.append(cell)
             aligned_line = joiner.join(fixed_cols)
             aligned.append(aligned_line[:cols])
         return aligned
