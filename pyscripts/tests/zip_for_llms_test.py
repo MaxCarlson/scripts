@@ -345,9 +345,11 @@ def mock_args(tmp_path: Path, temp_test_dir: Path):
         flatten = False
         name_by_path = False
         verbose = False
+        preset = None
     return Args()
 
 def run_main_logic_simulation(args_instance: mock_args, tmp_path: Path): 
+    from zip_for_llms import PRESETS
     run_file_mode = args_instance.file_mode
     run_zip_mode = args_instance.zip_mode
     if not run_file_mode and not run_zip_mode:
@@ -384,13 +386,21 @@ def run_main_logic_simulation(args_instance: mock_args, tmp_path: Path):
     final_exclude_files = set(args_instance.exclude_file) - set(args_instance.include_file)
     final_exclude_dirs = set(args_instance.exclude_dir) 
     final_exclude_exts = set(args_instance.exclude_ext)
+    final_remove_patterns = list(args_instance.remove_patterns)
+
+    if args_instance.preset:
+        preset = PRESETS[args_instance.preset]
+        final_exclude_dirs.update(preset.get("dirs", set()))
+        final_exclude_exts.update(preset.get("exts", set()))
+        final_exclude_files.update(preset.get("files", set()))
+        final_remove_patterns.extend(preset.get("patterns", []))
 
     if actual_text_output_path:
         text_file_mode(args_instance.source, str(actual_text_output_path), final_exclude_dirs, final_exclude_exts, final_exclude_files, 
-                       args_instance.remove_patterns, args_instance.keep_patterns, args_instance.flatten, args_instance.name_by_path, args_instance.verbose)
+                       final_remove_patterns, args_instance.keep_patterns, args_instance.flatten, args_instance.name_by_path, args_instance.verbose)
     if actual_zip_output_path:
         zip_folder(args_instance.source, str(actual_zip_output_path), final_exclude_dirs, final_exclude_exts, final_exclude_files,
-                   args_instance.remove_patterns, args_instance.keep_patterns, args_instance.max_size, args_instance.preferences,
+                   final_remove_patterns, args_instance.keep_patterns, args_instance.max_size, args_instance.preferences,
                    args_instance.flatten, args_instance.name_by_path, args_instance.verbose)
     return actual_text_output_path, actual_zip_output_path
 
@@ -444,3 +454,27 @@ def test_mode_f_and_z_output_ext_other(mock_args: mock_args, tmp_path: Path, cap
     txt_path, zip_path = run_main_logic_simulation(mock_args, tmp_path)
     assert txt_path is not None and txt_path.exists() and txt_path.name == "custom_out.txt"
     assert zip_path is not None and zip_path.exists() and zip_path.name == "custom_out.zip"
+
+def test_preset_python_applied_correctly(mock_args: mock_args, tmp_path: Path, temp_test_dir: Path):
+    (temp_test_dir / ".venv").mkdir()
+    (temp_test_dir / ".venv" / "pyvenv.cfg").write_text("config")
+    (temp_test_dir / "myproject.egg-info").mkdir()
+    (temp_test_dir / "myproject.egg-info" / "top_level.txt").write_text("myproject")
+    (temp_test_dir / ".coverage").write_text("coverage data")
+    
+    mock_args.preset = "python"
+    mock_args.zip_mode = True
+    mock_args.file_mode = False
+    mock_args.output = str(tmp_path / "preset_test.zip")
+
+    _, zip_path = run_main_logic_simulation(mock_args, tmp_path)
+    
+    assert zip_path is not None and zip_path.exists()
+    with zipfile.ZipFile(zip_path, 'r') as z:
+        namelist = z.namelist()
+        assert "src/script.py" in namelist
+        assert not any(name.startswith(".venv/") for name in namelist)
+        assert not any(name.startswith("myproject.egg-info/") for name in namelist)
+        assert ".coverage" not in namelist
+        # Default exclusion from fixture
+        assert not any(name.startswith("src/__pycache__/") for name in namelist)
