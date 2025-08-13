@@ -39,9 +39,6 @@ Recognized events (returned as dicts; keys present depend on event):
 - "error":
     ERROR: <message>
     keys: message
-
-All numeric sizes are returned in BYTES (ints). Speed is BYTES PER SECOND (float).
-ETA is seconds (int) or None if not present.
 """
 
 from __future__ import annotations
@@ -63,7 +60,6 @@ __all__ = [
 ]
 
 # ---------- helpers ----------
-
 _UNIT = {
     "B": 1,
     "KB": 1000, "MB": 1000**2, "GB": 1000**3, "TB": 1000**4,
@@ -71,7 +67,6 @@ _UNIT = {
 }
 
 def human_to_bytes(num_str: str, unit_str: str) -> int:
-    """Convert '12.3' + 'MiB' to integer bytes."""
     try:
         n = float((num_str or "").replace(",", ""))
     except Exception:
@@ -80,7 +75,6 @@ def human_to_bytes(num_str: str, unit_str: str) -> int:
     return int(n * _UNIT.get(u, 1))
 
 def hms_to_seconds(s: str) -> Optional[int]:
-    """Convert 'MM:SS' or 'HH:MM:SS' to seconds."""
     if not s or s == "N/A":
         return None
     parts = s.split(":")
@@ -97,39 +91,23 @@ def hms_to_seconds(s: str) -> Optional[int]:
     return None
 
 # ---------- regex ----------
-
-# our injected metadata print (added via: --print "TDMETA\t%(id)s\t%(title)s")
 _RE_META = re.compile(r'^TDMETA\t(?P<id>[^\t]+)\t(?P<title>.*)\s*$')
-
 _RE_DEST = re.compile(r'^\[download\]\s+Destination:\s+(?P<path>.+?)\s*$')
-
 _RE_ALREADY_1 = re.compile(r'^\[download\]\s+(?P<path>.+?)\s+has already been downloaded\s*$', re.IGNORECASE)
 _RE_ALREADY_2 = re.compile(r'^\[download\]\s+File is already downloaded\s*$', re.IGNORECASE)
-# looser catch-all seen in some builds/loggers
 _RE_ALREADY_3 = re.compile(r'^\[download\].*already.*downloaded.*$', re.IGNORECASE)
-
 _RE_RESUME = re.compile(r'^\[download\]\s+Resuming download at byte\s+(?P<byte>\d+)\s*$')
-
-# typical progress with optional speed and ETA; allow optional '~' before total size
 _RE_PROGRESS = re.compile(
     r'^\[download\]\s+'
     r'(?P<pct>\d{1,3}(?:\.\d+)?)%\s+of\s+~?(?P<total_num>[\d\.,]+)\s*(?P<total_unit>[KMGT]?i?B)\s+'
     r'(?:at\s+(?P<spd_num>[\d\.,]+)\s*(?P<spd_unit>[KMGT]?i?B)/s\s+)?'
     r'(?:ETA\s+(?P<eta>(?:\d{1,2}:)?\d{2}:\d{2}|N/A))?\s*$'
 )
-
-# completion line (100%) – sometimes no speed/ETA, sometimes "in 00:12"
-_RE_COMPLETE = re.compile(
-    r'^\[download\]\s+100%.*?(?:\s+in\s+(?P<in>(?:\d{1,2}:)?\d{2}:\d{2}))?\s*$'
-)
-
-# site banner when starting a URL
+_RE_COMPLETE = re.compile(r'^\[download\]\s+100%.*?(?:\s+in\s+(?P<in>(?:\d{1,2}:)?\d{2}:\d{2}))?\s*$')
 _RE_EXTRACT = re.compile(r'^\[[^\]]+\]\s+Extracting URL:\s+(?P<url>\S+)\s*$')
-
 _RE_ERROR = re.compile(r'^\s*ERROR:\s*(?P<msg>.+?)\s*$')
 
 # ---------- parsers ----------
-
 def parse_meta(line: str) -> Optional[Dict]:
     m = _RE_META.match(line)
     if m:
