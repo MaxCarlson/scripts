@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-The main Dashboard class for the TermDash module.
+TermDash dashboard — in-place renderer with optional column alignment.
 """
 
 import sys
@@ -9,11 +9,12 @@ import time
 import threading
 import logging
 import signal
+import re
 from contextlib import contextmanager
 
-from .components import Line, Stat
+from .components import Line
 
-# ANSI escape codes
+# ANSI
 CSI = "\x1b["
 HIDE_CURSOR = f"{CSI}?25l"
 SHOW_CURSOR = f"{CSI}?25h"
@@ -21,11 +22,23 @@ CLEAR_LINE = f"{CSI}2K"
 CLEAR_SCREEN = f"{CSI}2J"
 MOVE_TO_TOP_LEFT = f"{CSI}1;1H"
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(s: str) -> str:
+    return _ANSI_RE.sub("", s or "")
+
 
 class TermDash:
     """
-    A thread-safe, in-place terminal dashboard with a scrolling log region.
-    Manages the entire screen, redrawing on a schedule and handling terminal resizes.
+    Thread-safe, in-place terminal dashboard.
+
+    New options:
+      align_columns: if True, align columns split by `column_sep` across all lines.
+      column_sep:    a string used as the visual separator between columns (default '|').
+      min_col_pad:   spaces placed on both sides of column_sep.
+      max_col_width: optional int. If set and a column exceeds it, it will be left-truncated
+                     keeping the rightmost characters (with a leading '…').
     """
     def __init__(
         self,
@@ -33,7 +46,12 @@ class TermDash:
         log_file=None,
         status_line=True,
         debug_locks=False,
-        debug_rendering=False
+        debug_rendering=False,
+        *,
+        align_columns=False,
+        column_sep="|",
+        min_col_pad=2,
+        max_col_width=None,
     ):
         self._lock = threading.RLock()
         self._render_thread = None
@@ -43,6 +61,11 @@ class TermDash:
         self.has_status_line = status_line
         self._debug_locks = debug_locks
         self._debug_rendering = debug_rendering
+
+        self.align_columns = bool(align_columns)
+        self.column_sep = str(column_sep)
+        self.min_col_pad = int(min_col_pad)
+        self.max_col_width = int(max_col_width) if (max_col_width is not None and max_col_width > 0) else None
 
         self._lines = {}
         self._line_order = []
@@ -60,7 +83,6 @@ class TermDash:
 
     @contextmanager
     def _lock_context(self, name: str):
-        """Context manager for the RLock with optional verbose logging."""
         if self._debug_locks and self.logger:
             self.logger.debug(f"LOCK: Waiting for '{name}'")
         self._lock.acquire()
@@ -77,23 +99,10 @@ class TermDash:
         self._resize_pending.set()
 
     def add_line(self, name, line_obj, at_top: bool = False):
-        """
-        Register a line for rendering.
-
-        Parameters
-        ----------
-        name : str
-            Unique name for the line.
-        line_obj : Line
-            The line instance to render.
-        at_top : bool
-            If True, insert this line at the very top of the dashboard.
-            If False (default), append at the bottom (previous behavior).
-        """
+        """Add a line; if at_top=True, insert at the top."""
         with self._lock_context("add_line"):
             self._lines[name] = line_obj
             if name in self._line_order:
-                # keep order stable if re-adding
                 return
             if at_top:
                 self._line_order.insert(0, name)
@@ -110,42 +119,28 @@ class TermDash:
             if line_name in self._lines:
                 self._lines[line_name].reset_stat(stat_name, grace_period_s)
 
-    def update_text(self, line_name, text):
-        with self._lock_context("update_text"):
-            if line_name in self._lines and self._lines[line_name]._stat_order:
-                stat_name = self._lines[line_name]._stat_order[0]
-                self._lines[line_name].update_stat(stat_name, text)
-
     def log(self, message, level='info'):
-        # Optional scrolling-log helper; not used by the main script during rendering.
         if self.logger:
-            log_func = getattr(self.logger, level, self.logger.info)
-            log_func(message)
-
-        if level in ['info', 'warning', 'error']:
-            with self._lock_context("log_screen"):
-                try:
-                    cols, lines = os.get_terminal_size()
-                    # Save cursor, move to the very last line, print, and restore.
-                    sys.stdout.write(f"{CSI}s{CSI}{lines};1H\r{CLEAR_LINE}{message}\n{CSI}u")
-                    sys.stdout.flush()
-                except OSError:
-                    pass
+            getattr(self.logger, level, self.logger.info)(message)
+        with self._lock_context("log_screen"):
+            try:
+                cols, lines = os.get_terminal_size()
+                sys.stdout.write(f"{CSI}s{CSI}{lines};1H\r{CLEAR_LINE}{message}\n{CSI}u")
+                sys.stdout.flush()
+            except OSError:
+                pass
 
     def _setup_screen(self):
         try:
             cols, lines = os.get_terminal_size()
             dashboard_height = len(self._line_order) + (1 if self.has_status_line else 0)
-            # Require at least 1 free line below for safety (avoid zero-height scroll region).
             if dashboard_height >= max(1, lines - 1):
                 self._running = False
                 sys.stdout.write(SHOW_CURSOR)
                 raise RuntimeError(
                     f"Dashboard too tall for terminal: height {dashboard_height}, terminal {lines}."
                 )
-
             sys.stdout.write(f"{CLEAR_SCREEN}{MOVE_TO_TOP_LEFT}")
-            # Set the scroll region to be below the dashboard area
             top_scroll = dashboard_height + 1
             if top_scroll < lines:
                 sys.stdout.write(f"{CSI}{top_scroll};{lines}r")
@@ -153,6 +148,58 @@ class TermDash:
             sys.stdout.flush()
         except OSError:
             pass
+
+    # --- alignment helpers ---
+    def _align_rendered_lines(self, rendered_lines: list[str], cols: int) -> list[str]:
+        """Return new list with columns aligned and optionally truncated."""
+        sep = self.column_sep
+        pad = " " * self.min_col_pad
+        joiner = f"{pad}{sep}{pad}"
+
+        def strip_ansi(s: str) -> str:
+            return _strip_ansi(s)
+
+        # Split and collect max widths
+        split_lines = []
+        max_per_col = []
+        for s in rendered_lines:
+            if s is None:
+                split_lines.append(None)
+                continue
+            plain = strip_ansi(s)
+            # if it's a separator line (repeated single chars), pass through
+            if plain and len(set(plain.strip())) == 1:
+                split_lines.append(None)
+                continue
+            cols_parts = [p.strip() for p in plain.split(sep)]
+            split_lines.append(cols_parts)
+            if len(cols_parts) > len(max_per_col):
+                max_per_col.extend([0] * (len(cols_parts) - len(max_per_col)))
+            for i, part in enumerate(cols_parts):
+                w = len(part)
+                if self.max_col_width is not None:
+                    w = min(w, self.max_col_width)
+                if w > max_per_col[i]:
+                    max_per_col[i] = w
+
+        # Compose aligned
+        aligned = []
+        for original, parts in zip(rendered_lines, split_lines):
+            if parts is None:
+                aligned.append((original or "")[:cols])
+                continue
+            fixed_cols = []
+            for i, text in enumerate(parts):
+                width = max_per_col[i]
+                # left-truncate so the RIGHT side (values) survive
+                if len(text) > width:
+                    fixed = "…" if width <= 1 else ("…" + text[-(width - 1):])
+                else:
+                    fixed = text.ljust(width)
+                fixed_cols.append(fixed)
+            aligned_line = joiner.join(fixed_cols)
+            aligned.append(aligned_line[:cols])
+        return aligned
 
     def _render_loop(self):
         while self._running:
@@ -167,39 +214,25 @@ class TermDash:
                 except OSError:
                     cols, _ = 80, 24
 
-                output_buffer = []
-                render_logger = self.logger if self._debug_rendering else None
+                # First render all lines to strings
+                raw_lines = []
+                for name in self._line_order:
+                    line = self._lines[name]
+                    raw = line.render(cols, logger=self.logger if self._debug_rendering else None)
+                    raw_lines.append(raw)
 
-                # Draw each main content line with explicit, absolute cursor positioning.
-                for i, name in enumerate(self._line_order):
-                    line_num = i + 1  # Terminal rows are 1-indexed
-                    move_cursor = f"{CSI}{line_num};1H"
-                    rendered_line = self._lines[name].render(cols, logger=render_logger)
-                    output_buffer.append(f"{move_cursor}{CLEAR_LINE}{rendered_line[:cols]}")
+                # Optionally align columns
+                final_lines = self._align_rendered_lines(raw_lines, cols) if self.align_columns \
+                              else [s[:cols] for s in raw_lines]
 
-                # Draw the status line with explicit, absolute cursor positioning.
+                # Emit all lines at absolute positions
+                out = []
+                for i, text in enumerate(final_lines, start=1):
+                    out.append(f"{CSI}{i};1H{CLEAR_LINE}{text}")
                 if self.has_status_line:
-                    status_line_num = len(self._line_order) + 1
-                    move_cursor = f"{CSI}{status_line_num};1H"
-
-                    stale_stats_names = []
-                    now = time.time()
-                    for line in self._lines.values():
-                        for stat in line._stats.values():
-                            if stat.warn_if_stale_s > 0:
-                                is_stale = (now - stat.last_updated) > stat.warn_if_stale_s
-                                is_in_grace = now < stat._grace_period_until
-                                if is_stale and not is_in_grace:
-                                    stale_stats_names.append(f"{line.name}.{stat.name}")
-
-                    status_text = ""
-                    if stale_stats_names:
-                        status_text = f"\033[0;33mWARNING: Stale data for {', '.join(stale_stats_names)}\033[0m"
-
-                    output_buffer.append(f"{move_cursor}{CLEAR_LINE}{status_text[:cols]}")
-
-                # Write the entire buffer in a single, atomic call to prevent flicker and scrolling.
-                sys.stdout.write("".join(output_buffer))
+                    status_line_num = len(final_lines) + 1
+                    out.append(f"{CSI}{status_line_num};1H{CLEAR_LINE}")
+                sys.stdout.write("".join(out))
                 sys.stdout.flush()
 
             time.sleep(self._refresh_rate)
@@ -239,7 +272,6 @@ class TermDash:
 
         try:
             _, lines = os.get_terminal_size()
-            # Reset scroll region to be the entire terminal
             sys.stdout.write(f"{CSI}1;{lines}r")
             sys.stdout.write(f"{CSI}{lines};1H")
             sys.stdout.write(CLEAR_SCREEN)
