@@ -110,11 +110,12 @@ class Line:
             return (pat * ((width // max(1, len(pat))) + 2))[:width]
 
         rendered = [self._stats[n].render(logger=logger) for n in self._stat_order]
-        content = " ".join(rendered)
+        # Use a literal '|' between stats so the dashboard aligner sees columns.
+# Padding is applied later by the aligner; here we only emit the separators.
+        content = " | ".join(rendered)
         if self.style == 'header':
             return f"\033[1;36m{content}{RESET}"
         return content
-
 
 class AggregatedLine(Line):
     """
