@@ -76,11 +76,29 @@ class TermDash:
     def _handle_resize(self, signum, frame):
         self._resize_pending.set()
 
-    def add_line(self, name, line_obj):
+    def add_line(self, name, line_obj, at_top: bool = False):
+        """
+        Register a line for rendering.
+
+        Parameters
+        ----------
+        name : str
+            Unique name for the line.
+        line_obj : Line
+            The line instance to render.
+        at_top : bool
+            If True, insert this line at the very top of the dashboard.
+            If False (default), append at the bottom (previous behavior).
+        """
         with self._lock_context("add_line"):
-            if name not in self._lines:
-                self._line_order.append(name)
             self._lines[name] = line_obj
+            if name in self._line_order:
+                # keep order stable if re-adding
+                return
+            if at_top:
+                self._line_order.insert(0, name)
+            else:
+                self._line_order.append(name)
 
     def update_stat(self, line_name, stat_name, value):
         with self._lock_context("update_stat"):
@@ -99,6 +117,7 @@ class TermDash:
                 self._lines[line_name].update_stat(stat_name, text)
 
     def log(self, message, level='info'):
+        # Optional scrolling-log helper; not used by the main script during rendering.
         if self.logger:
             log_func = getattr(self.logger, level, self.logger.info)
             log_func(message)
