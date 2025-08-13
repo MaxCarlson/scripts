@@ -10,6 +10,10 @@ from collections.abc import Callable
 RESET = "\033[0m"
 DEFAULT_COLOR = "0;37"  # white
 
+# Non-printing markers to tag cells that should NOT expand columns
+NOEXPAND_L = "\x1e"  # Record Separator
+NOEXPAND_R = "\x1f"  # Unit Separator
+
 
 class Stat:
     """A single named metric rendered inside a Line."""
@@ -22,6 +26,8 @@ class Stat:
         unit="",
         color="",
         warn_if_stale_s=0,
+        *,
+        no_expand: bool = False,   # NEW: when True, this cell won't affect column width
     ):
         self.name = name
         self.initial_value = value
@@ -36,6 +42,7 @@ class Stat:
         self.is_warning_active = False
         self._grace_period_until = 0
         self._last_text = None  # last rendered plain text (for value=None fallback)
+        self.no_expand = bool(no_expand)
 
     def render(self, logger=None) -> str:
         if self.value is None:
@@ -55,6 +62,10 @@ class Stat:
                 formatted = "FMT_ERR"
             text = f"{self.prefix}{formatted}{self.unit}"
             self._last_text = text
+
+        if self.no_expand:
+            # Wrap with invisible markers so the aligner can ignore this cell’s width
+            text = f"{NOEXPAND_L}{text}{NOEXPAND_R}"
 
         color_code = self.color_provider(self.value) or DEFAULT_COLOR
         return f"\033[{color_code}m{text}{RESET}"
