@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TermDash dashboard — in-place renderer with optional column alignment.
+TermDash dashboard — in-place renderer with optional column alignment and helpers.
 """
 
 import sys
@@ -11,6 +11,7 @@ import logging
 import signal
 import re
 from contextlib import contextmanager
+from typing import Iterable, Optional
 
 from .components import Line
 
@@ -33,12 +34,15 @@ class TermDash:
     """
     Thread-safe, in-place terminal dashboard.
 
-    New options:
-      align_columns: if True, align columns split by `column_sep` across all lines.
-      column_sep:    a string used as the visual separator between columns (default '|').
+    Options:
+      align_columns: align columns split by `column_sep` across all lines.
+      column_sep:    visual separator between columns (default '|').
       min_col_pad:   spaces placed on both sides of column_sep.
-      max_col_width: optional int. If set and a column exceeds it, it will be left-truncated
-                     keeping the rightmost characters (with a leading '…').
+      max_col_width: int or None. If set, columns wider than this are left-truncated
+                     keeping the rightmost chars (with a leading '…').
+
+      reserve_extra_rows: pre-reserve extra rows in scroll region to tolerate wrapped
+                          lines/separators without flicker (default 6).
     """
     def __init__(
         self,
@@ -52,6 +56,7 @@ class TermDash:
         column_sep="|",
         min_col_pad=2,
         max_col_width=None,
+        reserve_extra_rows: int = 6,
     ):
         self._lock = threading.RLock()
         self._render_thread = None
@@ -66,6 +71,7 @@ class TermDash:
         self.column_sep = str(column_sep)
         self.min_col_pad = int(min_col_pad)
         self.max_col_width = int(max_col_width) if (max_col_width is not None and max_col_width > 0) else None
+        self._reserve_extra_rows = max(0, int(reserve_extra_rows))
 
         self._lines = {}
         self._line_order = []
@@ -98,6 +104,9 @@ class TermDash:
     def _handle_resize(self, signum, frame):
         self._resize_pending.set()
 
+    # -----------------------------
+    # Public API
+    # -----------------------------
     def add_line(self, name, line_obj, at_top: bool = False):
         """Add a line; if at_top=True, insert at the top."""
         with self._lock_context("add_line"):
@@ -119,6 +128,37 @@ class TermDash:
             if line_name in self._lines:
                 self._lines[line_name].reset_stat(stat_name, grace_period_s)
 
+    # Aggregation helpers (for script-level convenience)
+    def sum_stats(self, stat_name: str, line_names: Optional[Iterable[str]] = None) -> float:
+        with self._lock_context("sum_stats"):
+            names = list(line_names) if line_names is not None else list(self._line_order)
+            s = 0.0
+            for nm in names:
+                ln = self._lines.get(nm)
+                if not ln: continue
+                st = getattr(ln, "_stats", {}).get(stat_name)
+                if not st: continue
+                try:
+                    s += float(st.value)
+                except Exception:
+                    pass
+            return s
+
+    def avg_stats(self, stat_name: str, line_names: Optional[Iterable[str]] = None) -> float:
+        with self._lock_context("avg_stats"):
+            names = list(line_names) if line_names is not None else list(self._line_order)
+            vals = []
+            for nm in names:
+                ln = self._lines.get(nm)
+                if not ln: continue
+                st = getattr(ln, "_stats", {}).get(stat_name)
+                if not st: continue
+                try:
+                    vals.append(float(st.value))
+                except Exception:
+                    pass
+            return (sum(vals) / len(vals)) if vals else 0.0
+
     def log(self, message, level='info'):
         if self.logger:
             getattr(self.logger, level, self.logger.info)(message)
@@ -130,10 +170,15 @@ class TermDash:
             except OSError:
                 pass
 
+    # -----------------------------
+    # Rendering
+    # -----------------------------
     def _setup_screen(self):
         try:
             cols, lines = os.get_terminal_size()
-            dashboard_height = len(self._line_order) + (1 if self.has_status_line else 0)
+            dashboard_height = len(self._line_order) + self._reserve_extra_rows
+            if self.has_status_line:
+                dashboard_height += 1
             if dashboard_height >= max(1, lines - 1):
                 self._running = False
                 sys.stdout.write(SHOW_CURSOR)
@@ -149,25 +194,21 @@ class TermDash:
         except OSError:
             pass
 
-    # --- alignment helpers ---
     def _align_rendered_lines(self, rendered_lines: list[str], cols: int) -> list[str]:
         """Return new list with columns aligned and optionally truncated."""
         sep = self.column_sep
         pad = " " * self.min_col_pad
         joiner = f"{pad}{sep}{pad}"
 
-        def strip_ansi(s: str) -> str:
-            return _strip_ansi(s)
-
-        # Split and collect max widths
+        # Split and collect column widths (ANSI-stripped for measuring)
         split_lines = []
         max_per_col = []
         for s in rendered_lines:
             if s is None:
                 split_lines.append(None)
                 continue
-            plain = strip_ansi(s)
-            # if it's a separator line (repeated single chars), pass through
+            plain = _strip_ansi(s)
+            # Pass through 'separator'-looking lines: single repeating char (e.g. ───)
             if plain and len(set(plain.strip())) == 1:
                 split_lines.append(None)
                 continue
@@ -182,7 +223,7 @@ class TermDash:
                 if w > max_per_col[i]:
                     max_per_col[i] = w
 
-        # Compose aligned
+        # Build aligned strings
         aligned = []
         for original, parts in zip(rendered_lines, split_lines):
             if parts is None:
@@ -191,7 +232,7 @@ class TermDash:
             fixed_cols = []
             for i, text in enumerate(parts):
                 width = max_per_col[i]
-                # left-truncate so the RIGHT side (values) survive
+                # truncate LEFT to keep rightmost chars (values)
                 if len(text) > width:
                     fixed = "…" if width <= 1 else ("…" + text[-(width - 1):])
                 else:
@@ -214,16 +255,18 @@ class TermDash:
                 except OSError:
                     cols, _ = 80, 24
 
-                # First render all lines to strings
+                # Render all lines to strings
                 raw_lines = []
                 for name in self._line_order:
                     line = self._lines[name]
                     raw = line.render(cols, logger=self.logger if self._debug_rendering else None)
                     raw_lines.append(raw)
 
-                # Optionally align columns
-                final_lines = self._align_rendered_lines(raw_lines, cols) if self.align_columns \
-                              else [s[:cols] for s in raw_lines]
+                # Optionally align columns (ANSI removed for measurements)
+                if self.align_columns:
+                    final_lines = self._align_rendered_lines(raw_lines, cols)
+                else:
+                    final_lines = [s[:cols] for s in raw_lines]
 
                 # Emit all lines at absolute positions
                 out = []
