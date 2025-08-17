@@ -34,7 +34,8 @@ Recognized events (returned as dicts; keys present depend on event):
 
 - "extract" (one per URL before work starts on it):
     [SomethingSite] Extracting URL: https://example/...
-    keys: url
+    [SomethingSite] Downloading webpage
+    keys: url (may be "" for 'Downloading webpage')
 
 - "error":
     ERROR: <message>
@@ -104,7 +105,9 @@ _RE_PROGRESS = re.compile(
     r'(?:ETA\s+(?P<eta>(?:\d{1,2}:)?\d{2}:\d{2}|N/A))?\s*$'
 )
 _RE_COMPLETE = re.compile(r'^\[download\]\s+100%.*?(?:\s+in\s+(?P<in>(?:\d{1,2}:)?\d{2}:\d{2}))?\s*$')
+# Treat either of these as "start of attempt"
 _RE_EXTRACT = re.compile(r'^\[[^\]]+\]\s+Extracting URL:\s+(?P<url>\S+)\s*$')
+_RE_WEBPAGE = re.compile(r'^\[[^\]]+\]\s+Downloading webpage', re.IGNORECASE)
 _RE_ERROR = re.compile(r'^\s*ERROR:\s*(?P<msg>.+?)\s*$')
 
 # ---------- parsers ----------
@@ -169,6 +172,8 @@ def parse_extract(line: str) -> Optional[Dict]:
     m = _RE_EXTRACT.match(line)
     if m:
         return {"event": "extract", "url": m.group("url")}
+    if _RE_WEBPAGE.match(line):
+        return {"event": "extract", "url": ""}
     return None
 
 def parse_error(line: str) -> Optional[Dict]:
