@@ -4,6 +4,7 @@ TermDash components: Stat, Line (supports custom separators), AggregatedLine.
 """
 
 import time
+import sys
 from collections.abc import Callable
 
 # ANSI

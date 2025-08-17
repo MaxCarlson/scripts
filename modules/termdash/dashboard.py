@@ -253,79 +253,71 @@ class TermDash:
         pad = " " * self.min_col_pad
         joiner = f"{pad}{sep}{pad}"
 
-        # 1. Split lines into columns
-        split_lines = []
+        # 1. Prepare lines
+        lines_data = []
         for s in rendered_lines:
             if s is None:
-                split_lines.append(None)
-                continue
-            # Don't split separator lines
-            plain_for_check = _strip_ansi(s)
-            if plain_for_check and len(set(plain_for_check.strip())) == 1:
-                split_lines.append(None)
+                lines_data.append(None)
                 continue
             
-            raw_parts = [p.strip() for p in s.split(sep)]
-            plain_parts = [_strip_markers(_strip_ansi(p)) for p in raw_parts]
-            split_lines.append(list(zip(raw_parts, plain_parts)))
+            plain_for_check = _strip_ansi(s)
+            if plain_for_check and len(set(plain_for_check.strip())) == 1:
+                lines_data.append(None) # Separator line
+                continue
 
-        # 2. Calculate max column widths
+            raw_parts = [p for p in s.split(sep)]
+            plain_parts = [_strip_markers(_strip_ansi(p)) for p in raw_parts]
+            lines_data.append(list(zip(raw_parts, plain_parts)))
+
+        # 2. Calculate column widths
         num_cols = 0
-        for line in split_lines:
+        for line in lines_data:
             if line:
                 num_cols = max(num_cols, len(line))
         
         max_widths = [0] * num_cols
-        for line in split_lines:
+        for line in lines_data:
             if line:
                 for i, (raw, plain) in enumerate(line):
                     if NOEXPAND_L not in raw:
-                        width = len(plain)
-                        if self.max_col_width:
-                            width = min(width, self.max_col_width)
-                        max_widths[i] = max(max_widths[i], width)
+                        max_widths[i] = max(max_widths[i], len(plain))
 
-        # 3. Build aligned lines
-        aligned_lines = []
-        for line in split_lines:
-            if line is None:
-                aligned_lines.append(None)
+        if self.max_col_width:
+            max_widths = [min(w, self.max_col_width) for w in max_widths]
+
+        # 3. Align and render
+        final_lines = []
+        for i, line_data in enumerate(lines_data):
+            if line_data is None:
+                final_lines.append(rendered_lines[i][:cols] if rendered_lines[i] else "")
                 continue
 
-            fixed_cols = []
-            for i, (raw, plain) in enumerate(line):
+            aligned_parts = []
+            for j, (raw, plain) in enumerate(line_data):
                 is_no_expand = NOEXPAND_L in raw
                 
                 if is_no_expand:
-                    width = self.max_col_width or len(plain)
+                    width = self.max_col_width if self.max_col_width is not None else 40
                 else:
-                    width = max_widths[i]
+                    width = max_widths[j]
 
-                # Truncate
+                print(f"DEBUG ALIGN: raw='{raw!r}', plain='{plain!r}', is_no_expand={is_no_expand}, width={width}, len(plain)={len(plain)}", file=sys.stderr) # ADD THIS LINE
+
                 if len(plain) > width:
                     visible = plain[:width - 1] + "…"
                 else:
                     visible = plain
                 
-                # Pad
                 padded = visible.ljust(width)
-
+                
                 # Colorize
                 m = _ANSI_PREFIX_RE.match(raw)
                 prefix = m.group(0) if m else ""
                 cell = f"{prefix}{padded}\x1b[0m" if prefix else padded
-                fixed_cols.append(cell)
-            
-            aligned_lines.append(joiner.join(fixed_cols))
+                aligned_parts.append(cell)
 
-        # Final truncation to terminal width
-        final_lines = []
-        for i, line in enumerate(aligned_lines):
-            if line is None:
-                final_lines.append(rendered_lines[i][:cols] if rendered_lines[i] else "")
-            else:
-                final_lines.append(line[:cols])
-                
+            final_lines.append(joiner.join(aligned_parts)[:cols])
+            
         return final_lines
 
     def _render_loop(self):
