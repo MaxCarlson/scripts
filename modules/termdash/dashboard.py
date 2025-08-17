@@ -71,7 +71,7 @@ class TermDash:
         debug_locks=False,
         debug_rendering=False,
         *,
-        align_columns=False,
+        align_columns=True,
         column_sep="|",
         min_col_pad=2,
         max_col_width=None,
@@ -248,69 +248,85 @@ class TermDash:
             pass
 
     def _align_rendered_lines(self, rendered_lines: list[str], cols: int) -> list[str]:
-        """Return new list with columns aligned and optionally truncated.
-
-        Preserves ANSI coloring while measuring/aligning by the visible text only.
-        Cells wrapped with NOEXPAND markers never contribute to width.
-        """
+        """Return new list with columns aligned and optionally truncated."""
         sep = self.column_sep
         pad = " " * self.min_col_pad
         joiner = f"{pad}{sep}{pad}"
 
-        # Split and collect column widths (ANSI/markers stripped for measuring)
-        split_lines: list[Optional[tuple[list[str], list[str]]]] = []
-        max_per_col: list[int] = []
+        # 1. Split lines into columns
+        split_lines = []
         for s in rendered_lines:
             if s is None:
                 split_lines.append(None)
                 continue
-            plain = _strip_markers(_strip_ansi(s))
-            # Pass through obvious rules (e.g. ───, ~~~~~, etc.)
-            if plain and len(set(plain.strip())) == 1:
+            # Don't split separator lines
+            plain_for_check = _strip_ansi(s)
+            if plain_for_check and len(set(plain_for_check.strip())) == 1:
                 split_lines.append(None)
                 continue
-            cols_plain = [p.strip() for p in plain.split(sep)]
-            raw_parts = [p.strip() for p in _strip_ansi(s).split(sep)]
-            split_lines.append((cols_plain, raw_parts))
+            
+            raw_parts = [p.strip() for p in s.split(sep)]
+            plain_parts = [_strip_markers(_strip_ansi(p)) for p in raw_parts]
+            split_lines.append(list(zip(raw_parts, plain_parts)))
 
-            if len(cols_plain) > len(max_per_col):
-                max_per_col.extend([0] * (len(cols_plain) - len(max_per_col)))
+        # 2. Calculate max column widths
+        num_cols = 0
+        for line in split_lines:
+            if line:
+                num_cols = max(num_cols, len(line))
+        
+        max_widths = [0] * num_cols
+        for line in split_lines:
+            if line:
+                for i, (raw, plain) in enumerate(line):
+                    if NOEXPAND_L not in raw:
+                        width = len(plain)
+                        if self.max_col_width:
+                            width = min(width, self.max_col_width)
+                        max_widths[i] = max(max_widths[i], width)
 
-            for i, (part_plain, part_raw) in enumerate(zip(cols_plain, raw_parts)):
-                # If this cell is marked no_expand, it contributes zero width
-                if NOEXPAND_L in part_raw and NOEXPAND_R in part_raw:
-                    continue
-                w = len(part_plain)
-                if self.max_col_width is not None:
-                    w = min(w, self.max_col_width)
-                if w > max_per_col[i]:
-                    max_per_col[i] = w
-
-        # Build aligned strings (right-hand clip with …) while keeping ANSI
-        aligned: list[str] = []
-        for original, packed in zip(rendered_lines, split_lines):
-            if packed is None:
-                aligned.append((original or "")[:cols])
+        # 3. Build aligned lines
+        aligned_lines = []
+        for line in split_lines:
+            if line is None:
+                aligned_lines.append(None)
                 continue
-            parts_plain, parts_raw = packed
-            fixed_cols: list[str] = []
-            for i, (text_plain, text_raw) in enumerate(zip(parts_plain, parts_raw)):
-                width = max_per_col[i]
-                # Prepare a colored wrapper from raw (keep leading ANSI, drop markers)
-                m = _ANSI_PREFIX_RE.match(text_raw)
-                prefix = m.group(0) if m else ""
-                # compute clipped/padded visible text
-                visible = text_plain
-                if len(visible) > width and width > 0:
-                    visible = visible[:max(1, width - 1)] + "…"
+
+            fixed_cols = []
+            for i, (raw, plain) in enumerate(line):
+                is_no_expand = NOEXPAND_L in raw
+                
+                if is_no_expand:
+                    width = self.max_col_width or len(plain)
                 else:
-                    visible = visible.ljust(width)
-                # wrap back with color and reset; markers intentionally not reinserted
-                cell = f"{prefix}{visible}\x1b[0m" if prefix else visible
+                    width = max_widths[i]
+
+                # Truncate
+                if len(plain) > width:
+                    visible = plain[:width - 1] + "…"
+                else:
+                    visible = plain
+                
+                # Pad
+                padded = visible.ljust(width)
+
+                # Colorize
+                m = _ANSI_PREFIX_RE.match(raw)
+                prefix = m.group(0) if m else ""
+                cell = f"{prefix}{padded}\x1b[0m" if prefix else padded
                 fixed_cols.append(cell)
-            aligned_line = joiner.join(fixed_cols)
-            aligned.append(aligned_line[:cols])
-        return aligned
+            
+            aligned_lines.append(joiner.join(fixed_cols))
+
+        # Final truncation to terminal width
+        final_lines = []
+        for i, line in enumerate(aligned_lines):
+            if line is None:
+                final_lines.append(rendered_lines[i][:cols] if rendered_lines[i] else "")
+            else:
+                final_lines.append(line[:cols])
+                
+        return final_lines
 
     def _render_loop(self):
         while self._running:
