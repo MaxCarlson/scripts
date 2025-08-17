@@ -29,6 +29,7 @@ _ANSI_PREFIX_RE = re.compile(r"^(?:\x1b\[[0-9;]*m)+")  # leading color/style cod
 # Non-printing markers used by Stat(no_expand=True)
 NOEXPAND_L = "\x1e"
 NOEXPAND_R = "\x1f"
+WIDTH_HINT_RE = re.compile(r"\[W(\d{1,4})\]")  # e.g., [W60]
 
 
 def _strip_ansi(s: str) -> str:
@@ -257,6 +258,7 @@ class TermDash:
         - Measurements ignore ANSI and NOEXPAND markers and trim surrounding spaces.
         - NOEXPAND cells never contribute to max column widths; they are capped
           to self.max_col_width if provided, else to 40 characters.
+        - A width hint [WNN] inside NOEXPAND markers overrides the cap for that cell.
         - Cells longer than their width are hard-clipped with a single-character ellipsis.
         """
         sep = self.column_sep
@@ -270,16 +272,14 @@ class TermDash:
                 lines_data.append(None)
                 continue
 
-            # Treat dedicated separator lines (e.g., rules) specially
+            # Separator (rule) line detection
             plain_for_check = _strip_ansi(s)
             if plain_for_check and len(set(plain_for_check.replace(" ", ""))) == 1:
-                # A line of one repeated non-space char (e.g., "-----")
                 lines_data.append(None)
                 continue
 
             raw_parts = s.split(sep)
-            # Pair: (raw_cell_including_ansi, plain_trimmed_for_measure)
-            parts = []
+            parts: list[tuple[str, str]] = []
             for p in raw_parts:
                 plain = _strip_markers(_strip_ansi(p)).strip()
                 parts.append((p, plain))
@@ -296,18 +296,16 @@ class TermDash:
             if not line:
                 continue
             for i, (raw, plain) in enumerate(line):
-                # Skip no-expand cells in measuring global widths
                 if NOEXPAND_L in raw:
-                    continue
+                    continue  # no_expand cells do not influence global widths
                 max_widths[i] = max(max_widths[i], len(plain))
 
         if self.max_col_width:
             max_widths = [min(w, self.max_col_width) for w in max_widths]
 
-        # 3) Produce aligned, clipped, and padded cells
+        # 3) Render aligned, clipped, and padded cells
         final_lines: list[str] = []
         for idx, line_data in enumerate(lines_data):
-            # Separator or raw passthrough line
             if line_data is None:
                 final_lines.append((rendered_lines[idx] or "")[:cols])
                 continue
@@ -315,8 +313,18 @@ class TermDash:
             aligned_parts = []
             for j, (raw, plain) in enumerate(line_data):
                 is_no_expand = (NOEXPAND_L in raw)
+
+                width_hint = None
                 if is_no_expand:
-                    width = self.max_col_width if self.max_col_width is not None else 40
+                    m = WIDTH_HINT_RE.search(raw)
+                    if m:
+                        try:
+                            width_hint = max(1, int(m.group(1)))
+                        except Exception:
+                            width_hint = None
+
+                if is_no_expand:
+                    width = width_hint if width_hint is not None else (self.max_col_width if self.max_col_width is not None else 40)
                 else:
                     width = max_widths[j] if j < len(max_widths) else 0
 
@@ -329,12 +337,16 @@ class TermDash:
                 padded = visible.ljust(max(width, 0))
 
                 # Preserve leading ANSI prefix (color), reset at end
-                m = _ANSI_PREFIX_RE.match(raw)
-                ansi_prefix = m.group(0) if m else ""
+                mansi = _ANSI_PREFIX_RE.match(raw)
+                ansi_prefix = mansi.group(0) if mansi else ""
                 cell = f"{ansi_prefix}{padded}\x1b[0m" if ansi_prefix else padded
                 aligned_parts.append(cell)
 
-            final_lines.append(joiner.join(aligned_parts)[:cols])
+            line_text = joiner.join(aligned_parts)[:cols]
+            if self._debug_rendering and self.logger:
+                self.logger.debug(f"ALIGN parts={[(p[1], 'noexp' if NOEXPAND_L in p[0] else 'exp') for p in line_data]}")
+                self.logger.debug(f"ALIGN widths={max_widths} -> line='{_strip_ansi(line_text)}'")
+            final_lines.append(line_text)
 
         return final_lines
 

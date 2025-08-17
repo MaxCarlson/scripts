@@ -28,7 +28,8 @@ class Stat:
         color="",
         warn_if_stale_s=0,
         *,
-        no_expand: bool = False,   # NEW: when True, this cell won't affect column width
+        no_expand: bool = False,
+        display_width: int | None = None,  # NEW: soft width hint for no_expand columns
     ):
         self.name = name
         self.initial_value = value
@@ -44,6 +45,7 @@ class Stat:
         self._grace_period_until = 0
         self._last_text = None  # last rendered plain text (for value=None fallback)
         self.no_expand = bool(no_expand)
+        self.display_width = display_width if (isinstance(display_width, int) and display_width > 0) else None
 
     def render(self, logger=None) -> str:
         if self.value is None:
@@ -65,8 +67,11 @@ class Stat:
             self._last_text = text
 
         if self.no_expand:
-            # Wrap with invisible markers so the aligner can ignore this cell’s width
-            text = f"{NOEXPAND_L}{text}{NOEXPAND_R}"
+            # Inject an optional width hint the aligner can read: [WNN]
+            if self.display_width:
+                text = f"{NOEXPAND_L}[W{self.display_width}]{text}{NOEXPAND_R}"
+            else:
+                text = f"{NOEXPAND_L}{text}{NOEXPAND_R}"
 
         color_code = self.color_provider(self.value) or DEFAULT_COLOR
         return f"\033[{color_code}m{text}{RESET}"
@@ -112,11 +117,11 @@ class Line:
 
         rendered = [self._stats[n].render(logger=logger) for n in self._stat_order]
         # Use a literal '|' between stats so the dashboard aligner sees columns.
-# Padding is applied later by the aligner; here we only emit the separators.
         content = " | ".join(rendered)
         if self.style == 'header':
             return f"\033[1;36m{content}{RESET}"
         return content
+
 
 class AggregatedLine(Line):
     """
