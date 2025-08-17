@@ -182,9 +182,11 @@ class TermDash:
             s = 0.0
             for nm in names:
                 ln = self._lines.get(nm)
-                if not ln: continue
+                if not ln:
+                    continue
                 st = getattr(ln, "_stats", {}).get(stat_name)
-                if not st: continue
+                if not st:
+                    continue
                 try:
                     s += float(st.value)
                 except Exception:
@@ -197,9 +199,11 @@ class TermDash:
             vals = []
             for nm in names:
                 ln = self._lines.get(nm)
-                if not ln: continue
+                if not ln:
+                    continue
                 st = getattr(ln, "_stats", {}).get(stat_name)
-                if not st: continue
+                if not st:
+                    continue
                 try:
                     vals.append(float(st.value))
                 except Exception:
@@ -248,76 +252,90 @@ class TermDash:
             pass
 
     def _align_rendered_lines(self, rendered_lines: list[str], cols: int) -> list[str]:
-        """Return new list with columns aligned and optionally truncated."""
+        """
+        Align columns split by self.column_sep across all lines.
+        - Measurements ignore ANSI and NOEXPAND markers and trim surrounding spaces.
+        - NOEXPAND cells never contribute to max column widths; they are capped
+          to self.max_col_width if provided, else to 40 characters.
+        - Cells longer than their width are hard-clipped with a single-character ellipsis.
+        """
         sep = self.column_sep
         pad = " " * self.min_col_pad
         joiner = f"{pad}{sep}{pad}"
 
-        # 1. Prepare lines
-        lines_data = []
+        # 1) Prepare structured data per line
+        lines_data: list[Optional[list[tuple[str, str]]]] = []
         for s in rendered_lines:
             if s is None:
                 lines_data.append(None)
                 continue
-            
+
+            # Treat dedicated separator lines (e.g., rules) specially
             plain_for_check = _strip_ansi(s)
-            if plain_for_check and len(set(plain_for_check.strip())) == 1:
-                lines_data.append(None) # Separator line
+            if plain_for_check and len(set(plain_for_check.replace(" ", ""))) == 1:
+                # A line of one repeated non-space char (e.g., "-----")
+                lines_data.append(None)
                 continue
 
-            raw_parts = [p for p in s.split(sep)]
-            plain_parts = [_strip_markers(_strip_ansi(p)) for p in raw_parts]
-            lines_data.append(list(zip(raw_parts, plain_parts)))
+            raw_parts = s.split(sep)
+            # Pair: (raw_cell_including_ansi, plain_trimmed_for_measure)
+            parts = []
+            for p in raw_parts:
+                plain = _strip_markers(_strip_ansi(p)).strip()
+                parts.append((p, plain))
+            lines_data.append(parts)
 
-        # 2. Calculate column widths
+        # 2) Compute max widths for expandable columns
         num_cols = 0
         for line in lines_data:
             if line:
                 num_cols = max(num_cols, len(line))
-        
+
         max_widths = [0] * num_cols
         for line in lines_data:
-            if line:
-                for i, (raw, plain) in enumerate(line):
-                    if NOEXPAND_L not in raw:
-                        max_widths[i] = max(max_widths[i], len(plain))
+            if not line:
+                continue
+            for i, (raw, plain) in enumerate(line):
+                # Skip no-expand cells in measuring global widths
+                if NOEXPAND_L in raw:
+                    continue
+                max_widths[i] = max(max_widths[i], len(plain))
 
         if self.max_col_width:
             max_widths = [min(w, self.max_col_width) for w in max_widths]
 
-        # 3. Align and render
-        final_lines = []
-        for i, line_data in enumerate(lines_data):
+        # 3) Produce aligned, clipped, and padded cells
+        final_lines: list[str] = []
+        for idx, line_data in enumerate(lines_data):
+            # Separator or raw passthrough line
             if line_data is None:
-                final_lines.append(rendered_lines[i][:cols] if rendered_lines[i] else "")
+                final_lines.append((rendered_lines[idx] or "")[:cols])
                 continue
 
             aligned_parts = []
             for j, (raw, plain) in enumerate(line_data):
-                is_no_expand = NOEXPAND_L in raw
-                
+                is_no_expand = (NOEXPAND_L in raw)
                 if is_no_expand:
                     width = self.max_col_width if self.max_col_width is not None else 40
                 else:
-                    width = max_widths[j]
+                    width = max_widths[j] if j < len(max_widths) else 0
 
-                print(f"DEBUG ALIGN: raw='{raw!r}', plain='{plain!r}', is_no_expand={is_no_expand}, width={width}, len(plain)={len(plain)}", file=sys.stderr) # ADD THIS LINE
-
-                if len(plain) > width:
-                    visible = plain[:width - 1] + "…"
+                # Hard-clip w/ ellipsis when needed
+                if width > 0 and len(plain) > width:
+                    visible = plain[: max(1, width - 1)] + "…"
                 else:
                     visible = plain
-                
-                padded = visible.ljust(width)
-                
-                # Colorize
+
+                padded = visible.ljust(max(width, 0))
+
+                # Preserve leading ANSI prefix (color), reset at end
                 m = _ANSI_PREFIX_RE.match(raw)
-                prefix = m.group(0) if m else ""
-                cell = f"{prefix}{padded}\x1b[0m" if prefix else padded
+                ansi_prefix = m.group(0) if m else ""
+                cell = f"{ansi_prefix}{padded}\x1b[0m" if ansi_prefix else padded
                 aligned_parts.append(cell)
 
             final_lines.append(joiner.join(aligned_parts)[:cols])
-            
+
         return final_lines
 
     def _render_loop(self):
