@@ -3,7 +3,10 @@ import sys
 import time
 import pytest
 from pathlib import Path
-from folder_stats import gather_stats, print_stats, traverse, main
+from folder_stats import (
+    gather_stats, print_stats, traverse, main,
+    gather_dir_totals, _normalize_exts, print_hotspots
+)
 
 def make_file(path: Path, size: int, atime: float = None, mtime: float = None):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -78,6 +81,9 @@ def test_date_flag(sample_tree, capsys):
         depth = -1
         sort = "size"
         reverse = False
+        # new flags defaults
+        exclude = []
+        follow_symlinks = False
     print_stats(stats, indent=0, dir_name="X", args=Args(), header_note=None)
     out = capsys.readouterr().out
     assert "Oldest" in out and "Newest" in out
@@ -113,6 +119,8 @@ def test_auto_units_and_switch(sample_tree, capsys, monkeypatch):
         depth = 0
         sort = "size"
         reverse = False
+        exclude = []
+        follow_symlinks = False
     stats = gather_stats(sample_tree, maxdepth=0)
     print_stats(stats, args=Args1())
     out1 = capsys.readouterr().out
@@ -124,6 +132,9 @@ def test_auto_units_and_switch(sample_tree, capsys, monkeypatch):
         depth = 0
         sort = "size"
         reverse = False
+        exclude = []
+        follow_symlinks = False
+        hotspots = 0
     traverse(sample_tree, Args2(), current_depth=0)
     out2 = capsys.readouterr().out.lower()
     assert "switching to auto-units" in out2
@@ -150,5 +161,18 @@ def test_main_max_depth(tmp_path, capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "Max depth:" in out
 
-if __name__ == "__main__":
-    pytest.main()
+# ------------------ NEW: hotspots --------------------------------------------
+
+def test_hotspots_focus_ext(sample_tree, capsys):
+    # Focus on .png should point to root/sub/nested as top folder
+    focus = _normalize_exts(["png"])
+    dir_map, c, b = gather_dir_totals(sample_tree, maxdepth=-1, focus_exts=focus)
+    print_hotspots(sample_tree, dir_map, top_n=3, base_total=b, base_count=c, auto_units=True, sort="size")
+    out = capsys.readouterr().out
+    assert "sub" in out and "nested" in out
+
+def test_hotspots_all(sample_tree, capsys):
+    dir_map, c, b = gather_dir_totals(sample_tree, maxdepth=-1, focus_exts=None)
+    print_hotspots(sample_tree, dir_map, top_n=2, base_total=b, base_count=c, auto_units=False, sort="size")
+    out = capsys.readouterr().out
+    assert "Files" in out and "Size" in out

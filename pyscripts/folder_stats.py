@@ -38,7 +38,7 @@ def parse_args():
     parser.add_argument("-r", "--reverse", action="store_true", help="Reverse sort order")
     parser.add_argument("--follow-symlinks", action="store_true",
                         help="Follow symlinks (default: do not follow). Symlinks counted as [symlink].")
-    # NEW: hotspots mode
+    # Hotspots mode
     parser.add_argument("-E", "--ext", action="append", default=[],
                         help="Focus on these extensions for hotspot analysis. "
                              "Comma-separated or repeat (-E jpg -E png).")
@@ -278,8 +278,12 @@ def _format_size(bytes_size: int, auto_units: bool) -> str:
     return humanize_size(bytes_size) if auto_units else f"{to_mb(bytes_size):.2f}MB"
 
 def _auto_compact(width: int, want_dates: Optional[str]) -> Tuple[bool, bool]:
-    """Decide whether to hide [% of total] and [date] columns based on terminal width."""
-    show_dates = bool(want_dates) and width >= 110
+    """
+    Decide whether to hide [% of total] and [date] columns.
+    IMPORTANT: If dates are requested, we ALWAYS show them (tests expect this),
+    while % may still be hidden on very narrow terminals.
+    """
+    show_dates = bool(want_dates)  # always show when requested
     show_pct = width >= 70
     return show_pct, show_dates
 
@@ -316,7 +320,7 @@ def print_stats(
     )
 
     width = shutil.get_terminal_size((100, 24)).columns
-    show_pct, show_dates = _auto_compact(width, args.dates)
+    show_pct, show_dates = _auto_compact(width, getattr(args, "dates", None))
 
     table = Table(box=box.SIMPLE, expand=True, show_header=True, header_style="bold cyan")
     table.add_column("Extension", style="white", no_wrap=True, overflow="ellipsis", min_width=8, max_width=24)
@@ -325,20 +329,21 @@ def print_stats(
     if show_pct:
         table.add_column("% of total", justify="right", no_wrap=True, min_width=7)
     if show_dates:
-        table.add_column("Oldest", justify="right", no_wrap=True)
-        table.add_column("Newest", justify="right", no_wrap=True)
+        table.add_column("Oldest", justify="right", no_wrap=True, min_width=16)
+        table.add_column("Newest", justify="right", no_wrap=True, min_width=16)
 
     for ext, d in rows_sorted:
         count = d["count"]
         size_bytes = d["total"]
-        size = _format_size(size_bytes, args.auto_units)
+        size = _format_size(size_bytes, getattr(args, "auto_units", False))
         row = [ext, str(count), size]
         if show_pct:
             pct = f"{(size_bytes / total_bytes * 100.0):.1f}%" if total_bytes > 0 else "0.0%"
             row.append(pct)
         if show_dates:
-            mn = d.get(f"{args.dates}_min") if args.dates else None
-            mx = d.get(f"{args.dates}_max") if args.dates else None
+            dates_key = getattr(args, "dates", None)
+            mn = d.get(f"{dates_key}_min") if dates_key else None
+            mx = d.get(f"{dates_key}_max") if dates_key else None
             row += [
                 datetime.fromtimestamp(mn).isoformat(timespec="seconds") if isinstance(mn, (int, float)) else "-",
                 datetime.fromtimestamp(mx).isoformat(timespec="seconds") if isinstance(mx, (int, float)) else "-",
@@ -350,7 +355,8 @@ def print_stats(
     footer.add_column(justify="right")
     footer.add_row(
         "[dim]Totals[/]",
-        f"[bold]{_format_size(total_bytes, args.auto_units)}[/] across {sum(d['count'] for d in stats.values())} files, {len(stats)} extensions"
+        f"[bold]{_format_size(total_bytes, getattr(args, 'auto_units', False))}[/] "
+        f"across {sum(d['count'] for d in stats.values())} files, {len(stats)} extensions"
     )
 
     console.print(table)
@@ -381,11 +387,9 @@ def print_hotspots(
     if show_bar:
         table.add_column("Bar", justify="left", no_wrap=True)
 
-    # rank
     items = [(p, v["count"], v["total"]) for p, v in dir_map.items()]
     items.sort(key=(lambda t: t[2] if sort == "size" else t[1]), reverse=True)
 
-    # compute max for bar
     max_total = max((t[2] for t in items), default=0) or 1
 
     for idx, (p, cnt, tot) in enumerate(items[:top_n], 1):
@@ -409,42 +413,41 @@ def print_hotspots(
 
 def traverse(path: Path, args: argparse.Namespace, current_depth: int = 0):
     stats = gather_stats(
-        path, args.depth, current_depth,
-        exclude=args.exclude, follow_symlinks=args.follow_symlinks
+        path, getattr(args, "depth", -1), current_depth,
+        exclude=getattr(args, "exclude", []),
+        follow_symlinks=getattr(args, "follow_symlinks", False),
     )
     note = None
-    if not args.auto_units:
+    if not getattr(args, "auto_units", False):
         for d in stats.values():
             if to_mb(d["total"]) > 9999:
                 note = "Large sizes detected: switching to auto-units"
                 args.auto_units = True
                 break
 
-    # Extensions table
     console.print(f"[bold]Extensions in:[/] {path.resolve()}\n")
     print_stats(stats, indent=current_depth, dir_name=None, args=args, header_note=note)
 
-    # Optional hotspots
-    if args.hotspots and args.hotspots > 0:
-        focus = _normalize_exts(args.ext)
+    if getattr(args, "hotspots", 0):
+        focus = _normalize_exts(getattr(args, "ext", []))
         focus_label = ", ".join(sorted(focus)) if focus else "ALL extensions"
         console.print(f"[bold magenta]Top {args.hotspots} folders[/] — focus: {focus_label}\n")
         dir_map, c, b = gather_dir_totals(
-            path, args.depth, current_depth,
+            path, getattr(args, "depth", -1), current_depth,
             focus_exts=(focus if focus else None),
-            exclude=args.exclude,
-            follow_symlinks=args.follow_symlinks,
+            exclude=getattr(args, "exclude", []),
+            follow_symlinks=getattr(args, "follow_symlinks", False),
         )
         print_hotspots(
             path, dir_map,
             top_n=args.hotspots,
             base_total=b,
             base_count=c,
-            auto_units=args.auto_units,
-            sort=args.hotspots_sort,
+            auto_units=getattr(args, "auto_units", False),
+            sort=getattr(args, "hotspots_sort", "size"),
         )
 
-    if args.tree and (args.depth < 0 or current_depth < args.depth):
+    if getattr(args, "tree", False) and (getattr(args, "depth", -1) < 0 or current_depth < getattr(args, "depth", -1)):
         try:
             subs = sorted(p for p in path.iterdir() if p.is_dir())
         except Exception:
@@ -466,14 +469,12 @@ def main():
     if args.tree:
         traverse(root, args, 0)
     else:
-        # Single run (extensions table)
         stats = gather_stats(
             root, args.depth, 0,
             exclude=args.exclude, follow_symlinks=args.follow_symlinks
         )
         print_stats(stats, args=args)
 
-        # Optional hotspots
         if args.hotspots and args.hotspots > 0:
             focus = _normalize_exts(args.ext)
             focus_label = ", ".join(sorted(focus)) if focus else "ALL extensions"
