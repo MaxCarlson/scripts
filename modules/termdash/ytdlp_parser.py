@@ -92,20 +92,20 @@ def hms_to_seconds(s: str) -> Optional[int]:
 
 # ---------- regex ----------
 _RE_META = re.compile(r'^TDMETA\t(?P<id>[^\t]+)\t(?P<title>.*)\s*$')
-_RE_DEST = re.compile(r'^\[download\]\s+Destination:\s+(?P<path>.+?)\s*$')
-_RE_ALREADY_1 = re.compile(r'^\[download\]\s+(?P<path>.+?)\s+has already been downloaded\s*$', re.IGNORECASE)
-_RE_ALREADY_2 = re.compile(r'^\[download\]\s+File is already downloaded\s*$', re.IGNORECASE)
-_RE_ALREADY_3 = re.compile(r'^\[download\].*already.*downloaded.*$', re.IGNORECASE)
-_RE_RESUME = re.compile(r'^\[download\]\s+Resuming download at byte\s+(?P<byte>\d+)\s*$')
+_RE_DEST = re.compile(r'^\\[download]\\s+Destination:\\s+(?P<path>.+?)\\s*$')
+_RE_ALREADY_1 = re.compile(r'^\\[download]\\s+(?P<path>.+?)\\s+has already been downloaded\\s*$', re.IGNORECASE)
+_RE_ALREADY_2 = re.compile(r'^\\[download]\\s+File is already downloaded\\s*$')
+_RE_ALREADY_3 = re.compile(r'^\\[download].*already.*downloaded.*$')
+_RE_RESUME = re.compile(r'^\\[download]\\s+Resuming download at byte\\s+(?P<byte>\\d+)\\s*$')
 _RE_PROGRESS = re.compile(
-    r'^\[download\]\s+'
-    r'(?P<pct>\d{1,3}(?:\.\d+)?)%\s+of\s+~?(?P<total_num>[\d\.,]+)\s*(?P<total_unit>[KMGT]?i?B)\s+'
-    r'(?:at\s+(?P<spd_num>[\d\.,]+)\s*(?P<spd_unit>[KMGT]?i?B)/s\s+)?'
-    r'(?:ETA\s+(?P<eta>(?:\d{1,2}:)?\d{2}:\d{2}|N/A))?\s*$'
+    r'^\\[download]\\s+'
+    r'(?P<pct>\\d{1,3}(?:\\.\\d+)?)%\\s+of\\s+~?(?P<total_num>[\\d\\.,]+)\\s*(?P<total_unit>[KMGT]?i?B)\\s+'
+    r'(?:at\\s+(?P<spd_num>[\\d\\.,]+)\\s*(?P<spd_unit>[KMGT]?i?B)/s\\s+)?'
+    r'(?:ETA\\s+(?P<eta>(?:\\d{1,2}:)?\\d{2}:\\d{2}|N/A))?\\s*$'
 )
-_RE_COMPLETE = re.compile(r'^\[download\]\s+100%.*?(?:\s+in\s+(?P<in>(?:\d{1,2}:)?\d{2}:\d{2}))?\s*$')
-_RE_EXTRACT = re.compile(r'^\[[^\]]+\]\s+Extracting URL:\s+(?P<url>\S+)\s*$')
-_RE_ERROR = re.compile(r'^\s*ERROR:\s*(?P<msg>.+?)\s*$')
+_RE_COMPLETE = re.compile(r'^\\[download]\\s+100%.*?(?:\\s+in\\s+(?P<in>(?:\\d{1,2}:)?\\d{2}:\\d{2}))?\\s*$')
+_RE_EXTRACT = re.compile(r'^\\[[^\\]]+\]\\s+Extracting URL:\\s+(?P<url>\\S+)\\s*$')
+_RE_ERROR = re.compile(r'^\\s*ERROR:\\s*(?P<msg>.+?)\\s*$')
 
 # ---------- parsers ----------
 def parse_meta(line: str) -> Optional[Dict]:
