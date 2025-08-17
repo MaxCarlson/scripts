@@ -36,8 +36,13 @@ def _strip_ansi(s: str) -> str:
     return _ANSI_RE.sub("", s or "")
 
 
-def _strip_markers(s: str) -> str:
-    return (s or "").replace(NOEXPAND_L, "").replace(NOEXPAND_R, "")
+def _strip_markers_and_hints(s: str) -> str:
+    """Remove NOEXPAND markers and embedded [WNN] width hints."""
+    if not s:
+        return ""
+    s = s.replace(NOEXPAND_L, "").replace(NOEXPAND_R, "")
+    s = WIDTH_HINT_RE.sub("", s)
+    return s
 
 
 class TermDash:
@@ -168,7 +173,7 @@ class TermDash:
                 self._lines[line_name].reset_stat(stat_name, grace_period_s)
 
     def read_stat(self, line_name, stat_name):
-        """NEW: safe read of a stat’s current value (or None)."""
+        """Safe read of a stat’s current value (or None)."""
         with self._lock_context("read_stat"):
             ln = self._lines.get(line_name)
             if not ln:
@@ -176,18 +181,16 @@ class TermDash:
             st = getattr(ln, "_stats", {}).get(stat_name)
             return None if st is None else st.value
 
-    # Aggregation helpers (for script-level convenience)
+    # Aggregation helpers
     def sum_stats(self, stat_name: str, line_names: Optional[Iterable[str]] = None) -> float:
         with self._lock_context("sum_stats"):
             names = list(line_names) if line_names is not None else list(self._line_order)
             s = 0.0
             for nm in names:
                 ln = self._lines.get(nm)
-                if not ln:
-                    continue
+                if not ln: continue
                 st = getattr(ln, "_stats", {}).get(stat_name)
-                if not st:
-                    continue
+                if not st: continue
                 try:
                     s += float(st.value)
                 except Exception:
@@ -200,11 +203,9 @@ class TermDash:
             vals = []
             for nm in names:
                 ln = self._lines.get(nm)
-                if not ln:
-                    continue
+                if not ln: continue
                 st = getattr(ln, "_stats", {}).get(stat_name)
-                if not st:
-                    continue
+                if not st: continue
                 try:
                     vals.append(float(st.value))
                 except Exception:
@@ -229,22 +230,18 @@ class TermDash:
         """Auto-fit reserved rows instead of failing when terminal is snug."""
         try:
             cols, lines = os.get_terminal_size()
-            # visible lines = number of dashboard lines (+status if enabled)
             visible = len(self._line_order) + (1 if self.has_status_line else 0)
-            allowed = max(1, lines - 1)  # keep at least one free row for scroll region
+            allowed = max(1, lines - 1)
 
-            # shrink reserve if needed to fit
             self._effective_reserve_rows = max(0, min(self._reserve_extra_rows, allowed - visible))
             dashboard_height = visible + self._effective_reserve_rows
 
-            # If still over (extremely snug), clamp further (no exception)
             if dashboard_height > lines:
                 self._effective_reserve_rows = max(0, lines - visible)
                 dashboard_height = visible + self._effective_reserve_rows
 
             sys.stdout.write(f"{CLEAR_SCREEN}{MOVE_TO_TOP_LEFT}")
             top_scroll = min(lines, dashboard_height + 1)
-            # only set a custom scroll region when there is room below
             if top_scroll < lines:
                 sys.stdout.write(f"{CSI}{top_scroll};{lines}r")
             sys.stdout.write(MOVE_TO_TOP_LEFT)
@@ -255,17 +252,17 @@ class TermDash:
     def _align_rendered_lines(self, rendered_lines: list[str], cols: int) -> list[str]:
         """
         Align columns split by self.column_sep across all lines.
-        - Measurements ignore ANSI and NOEXPAND markers and trim surrounding spaces.
-        - NOEXPAND cells never contribute to max column widths; they are capped
-          to self.max_col_width if provided, else to 40 characters.
-        - A width hint [WNN] inside NOEXPAND markers overrides the cap for that cell.
+        - Measurements ignore ANSI codes and NOEXPAND markers, and trim spaces.
+        - NOEXPAND cells never contribute to global widths.
+        - NOEXPAND width = min(width_hint or (max_col_width or 40), global_width_if_present)
+        - Every line is padded to the global column count, so the vertical separators line up.
         - Cells longer than their width are hard-clipped with a single-character ellipsis.
         """
         sep = self.column_sep
         pad = " " * self.min_col_pad
         joiner = f"{pad}{sep}{pad}"
 
-        # 1) Prepare structured data per line
+        # 1) Parse each line into columns
         lines_data: list[Optional[list[tuple[str, str]]]] = []
         for s in rendered_lines:
             if s is None:
@@ -281,11 +278,11 @@ class TermDash:
             raw_parts = s.split(sep)
             parts: list[tuple[str, str]] = []
             for p in raw_parts:
-                plain = _strip_markers(_strip_ansi(p)).strip()
+                plain = _strip_markers_and_hints(_strip_ansi(p)).strip()
                 parts.append((p, plain))
             lines_data.append(parts)
 
-        # 2) Compute max widths for expandable columns
+        # 2) Compute global grid width for expandable columns
         num_cols = 0
         for line in lines_data:
             if line:
@@ -297,23 +294,28 @@ class TermDash:
                 continue
             for i, (raw, plain) in enumerate(line):
                 if NOEXPAND_L in raw:
-                    continue  # no_expand cells do not influence global widths
+                    continue
                 max_widths[i] = max(max_widths[i], len(plain))
 
         if self.max_col_width:
             max_widths = [min(w, self.max_col_width) for w in max_widths]
 
-        # 3) Render aligned, clipped, and padded cells
+        # 3) Render each line against the global grid
         final_lines: list[str] = []
         for idx, line_data in enumerate(lines_data):
             if line_data is None:
                 final_lines.append((rendered_lines[idx] or "")[:cols])
                 continue
 
+            # pad missing columns so all lines have the same number of separators
+            if len(line_data) < num_cols:
+                line_data = line_data + [("", "")] * (num_cols - len(line_data))
+
             aligned_parts = []
             for j, (raw, plain) in enumerate(line_data):
                 is_no_expand = (NOEXPAND_L in raw)
 
+                # read width hint (if any)
                 width_hint = None
                 if is_no_expand:
                     m = WIDTH_HINT_RE.search(raw)
@@ -323,17 +325,20 @@ class TermDash:
                         except Exception:
                             width_hint = None
 
-                if is_no_expand:
-                    width = width_hint if width_hint is not None else (self.max_col_width if self.max_col_width is not None else 40)
-                else:
-                    width = max_widths[j] if j < len(max_widths) else 0
+                # global width for this column from expandable cells (may be 0)
+                global_w = max_widths[j] if j < len(max_widths) else 0
 
-                # Hard-clip w/ ellipsis when needed
+                if is_no_expand:
+                    base = width_hint if width_hint is not None else (self.max_col_width if self.max_col_width is not None else 40)
+                    width = min(base, global_w) if global_w > 0 else base
+                else:
+                    width = global_w
+
+                # Hard-clip w/ ellipsis if needed
                 if width > 0 and len(plain) > width:
                     visible = plain[: max(1, width - 1)] + "…"
                 else:
                     visible = plain
-
                 padded = visible.ljust(max(width, 0))
 
                 # Preserve leading ANSI prefix (color), reset at end
@@ -344,7 +349,8 @@ class TermDash:
 
             line_text = joiner.join(aligned_parts)[:cols]
             if self._debug_rendering and self.logger:
-                self.logger.debug(f"ALIGN parts={[(p[1], 'noexp' if NOEXPAND_L in p[0] else 'exp') for p in line_data]}")
+                dbg_parts = [(p[1], 'noexp' if NOEXPAND_L in p[0] else 'exp') for p in line_data]
+                self.logger.debug(f"ALIGN parts={dbg_parts}")
                 self.logger.debug(f"ALIGN widths={max_widths} -> line='{_strip_ansi(line_text)}'")
             final_lines.append(line_text)
 
@@ -370,7 +376,7 @@ class TermDash:
                     raw = line.render(cols, logger=self.logger if self._debug_rendering else None)
                     raw_lines.append(raw)
 
-                # Optionally align columns (ANSI removed for measurements)
+                # Optionally align columns
                 if self.align_columns:
                     final_lines = self._align_rendered_lines(raw_lines, cols)
                 else:

@@ -4,7 +4,6 @@ TermDash components: Stat, Line (supports custom separators), AggregatedLine.
 """
 
 import time
-import sys
 from collections.abc import Callable
 
 # ANSI
@@ -29,7 +28,7 @@ class Stat:
         warn_if_stale_s=0,
         *,
         no_expand: bool = False,
-        display_width: int | None = None,  # NEW: soft width hint for no_expand columns
+        display_width: int | None = None,  # soft width hint for no_expand columns
     ):
         self.name = name
         self.initial_value = value
@@ -67,11 +66,9 @@ class Stat:
             self._last_text = text
 
         if self.no_expand:
-            # Inject an optional width hint the aligner can read: [WNN]
-            if self.display_width:
-                text = f"{NOEXPAND_L}[W{self.display_width}]{text}{NOEXPAND_R}"
-            else:
-                text = f"{NOEXPAND_L}{text}{NOEXPAND_R}"
+            # Width hint stays invisible, the aligner reads it and strips it.
+            hint = f"[W{self.display_width}]" if self.display_width else ""
+            text = f"{NOEXPAND_L}{hint}{text}{NOEXPAND_R}"
 
         color_code = self.color_provider(self.value) or DEFAULT_COLOR
         return f"\033[{color_code}m{text}{RESET}"
