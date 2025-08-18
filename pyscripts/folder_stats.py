@@ -34,6 +34,34 @@ console = _make_console()
 
 # ---------------------------- CLI --------------------------------------------
 
+def _parse_size_to_bytes(text: str) -> int:
+    """
+    Parse a human size like '500KB', '2mb', '1.5GB', '0', '1024' (bytes).
+    Uses binary (KiB=1024) units. Returns integer bytes.
+    """
+    if text is None:
+        return 0
+    s = str(text).strip()
+    if not s:
+        return 0
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([kmgt]?b)?\s*", s, flags=re.IGNORECASE)
+    if not m:
+        # Fallback: try int(bytes)
+        try:
+            return max(0, int(float(s)))
+        except Exception:
+            return 0
+    num = float(m.group(1))
+    unit = (m.group(2) or "b").lower()
+    mult = {
+        "b": 1,
+        "kb": 1024,
+        "mb": 1024**2,
+        "gb": 1024**3,
+        "tb": 1024**4,
+    }.get(unit, 1)
+    return int(num * mult)
+
 def parse_args():
     """
     All options follow the standard:
@@ -85,9 +113,11 @@ def parse_args():
     p.add_argument("-z", "--hotspots-zero-limit", type=int, default=2,
                    help="(tree) Max consecutive zero-size nodes to display per branch before stopping (default 2).")
 
-    # Top files (NEW)
+    # Top files
     p.add_argument("-f", "--top-files", type=int, default=0,
                    help="Show the top N largest FILES that match the focus and excludes (0=off).")
+    p.add_argument("-F", "--top-files-scope", choices=["root", "per-dir"], default="root",
+                   help="Scope for --top-files: 'root' (one global list) or 'per-dir' (each folder in -t).")
 
     # Collapsing of special suffix patterns
     p.add_argument("-n", "--no-frag-collapse", action="store_true",
@@ -99,11 +129,19 @@ def parse_args():
     p.add_argument("-i", "--progress-min-interval", type=float, default=0.05,
                    help="Minimum seconds between progress updates (default 0.05).")
 
-    # Output noise control (NEW)
+    # Output noise control
     p.add_argument("-y", "--skip-empty", action="store_true", default=True,
                    help="Skip printing sections that contain zero matched files (default on).")
 
-    return p.parse_args()
+    # NEW: minimum size cutoff for printing in tree mode
+    p.add_argument("-g", "--min-size", default="0",
+                   help="Tree mode only: do not print/expand a folder unless the *matched* size in that folder "
+                        "reaches this minimum (e.g. 500MB, 2GB). 0 disables.")
+
+    args = p.parse_args()
+    # Precompute bytes to avoid repeating parsing
+    args.min_size_bytes = _parse_size_to_bytes(args.min_size)
+    return args
 
 
 # ---------------------------- Helpers ----------------------------------------
@@ -405,7 +443,7 @@ def gather_dir_totals(
     return dir_map, files_count, bytes_total
 
 
-# ---------------------------- Top files (NEW) --------------------------------
+# ---------------------------- Top files --------------------------------------
 
 def gather_top_files(
     root: Path,
@@ -462,7 +500,10 @@ def print_top_files(root: Path, items: List[Tuple[int, Path]], *, auto_units: bo
     table.add_column("Size", justify="right", no_wrap=True, min_width=9)
 
     for i, (sz, p) in enumerate(items, 1):
-        rel = str(p.relative_to(root)) if p.is_relative_to(root) else str(p)
+        try:
+            rel = str(p.relative_to(root))
+        except Exception:
+            rel = str(p)
         table.add_row(str(i), rel, _format_size(sz, auto_units))
 
     console.print(table)
@@ -736,6 +777,10 @@ def traverse(path: Path, args: argparse.Namespace, current_depth: int = 0):
         frag_collapse=not getattr(args, "no_frag_collapse", False),
     )
 
+    # Compute matched bytes for this folder (used by min-size tree gating)
+    matched_bytes = sum(d["total"] for d in stats.values())
+    min_bytes = int(getattr(args, "min_size_bytes", 0) or 0)
+
     note = None
     if not getattr(args, "auto_units", False):
         for d in stats.values():
@@ -747,58 +792,62 @@ def traverse(path: Path, args: argparse.Namespace, current_depth: int = 0):
     heading = f"[bold]Extensions in:[/] {path.resolve()}"
     if getattr(args, "ext", []):
         heading += "  [dim](focus applied)[/]"
-    # Only print heading/stats if not skipping empty or there is content
-    if not (getattr(args, "skip_empty", False) and sum(v["count"] for v in stats.values()) == 0):
+
+    should_print = matched_bytes >= min_bytes
+    has_content = sum(v["count"] for v in stats.values()) > 0
+    if should_print and not (getattr(args, "skip_empty", False) and not has_content):
         console.print(heading + "\n")
         print_stats(stats, indent=current_depth, dir_name=None, args=args, header_note=note)
 
-    # Top files (optional)
-    if getattr(args, "top_files", 0) > 0:
-        items = gather_top_files(
-            path,
-            maxdepth=getattr(args, "depth", -1),
-            exclude=getattr(args, "exclude", []),
-            follow_symlinks=getattr(args, "follow_symlinks", False),
-            focus_exts=getattr(args, "ext", []),
-            frag_collapse=not getattr(args, "no_frag_collapse", False),
-            limit=getattr(args, "top_files", 0),
-        )
-        print_top_files(path, items, auto_units=getattr(args, "auto_units", False))
+        # Top files (optional, per-dir mode)
+        if getattr(args, "top_files", 0) > 0 and getattr(args, "top_files_scope", "root") == "per-dir":
+            items = gather_top_files(
+                path,
+                maxdepth=getattr(args, "depth", -1),
+                exclude=getattr(args, "exclude", []),
+                follow_symlinks=getattr(args, "follow_symlinks", False),
+                focus_exts=getattr(args, "ext", []),
+                frag_collapse=not getattr(args, "no_frag_collapse", False),
+                limit=getattr(args, "top_files", 0),
+            )
+            print_top_files(path, items, auto_units=getattr(args, "auto_units", False))
 
-    if getattr(args, "hotspots", 0):
-        focus = _normalize_exts_raw(getattr(args, "ext", []))
-        focus_label = ", ".join(sorted(set(focus))) if focus else "ALL extensions"
-        console.print(f"[bold magenta]Top {args.hotspots} folders[/] — focus: {focus_label}\n")
+        # Hotspots (optional) — only when we actually print the folder block
+        if getattr(args, "hotspots", 0):
+            focus = _normalize_exts_raw(getattr(args, "ext", []))
+            focus_label = ", ".join(sorted(set(focus))) if focus else "ALL extensions"
+            console.print(f"[bold magenta]Top {args.hotspots} folders[/] — focus: {focus_label}\n")
 
-        dir_map, c, b = gather_dir_totals(
-            path, getattr(args, "depth", -1), current_depth,
-            focus_exts=(focus if focus else None),
-            exclude=getattr(args, "exclude", []),
-            follow_symlinks=getattr(args, "follow_symlinks", False),
-            progress=None, progress_task=None,
-            progress_min_interval=getattr(args, "progress_min_interval", 0.05),
-            frag_collapse=not getattr(args, "no_frag_collapse", False),
-        )
-
-        print_hotspots(
-            path, dir_map,
-            top_n=args.hotspots,
-            base_total=b,
-            base_count=c,
-            auto_units=getattr(args, "auto_units", False),
-            sort=getattr(args, "hotspots_sort", "size"),
-        )
-
-        if getattr(args, "hotspots_tree", False):
-            print_hotspots_tree(
-                path, dir_map,
-                children_per_node=getattr(args, "hotspots_children", 5),
-                max_depth=getattr(args, "hotspots_depth", 2),
-                auto_units=getattr(args, "auto_units", False),
-                zero_limit=getattr(args, "hotspots_zero_limit", 2),
+            dir_map, c, b = gather_dir_totals(
+                path, getattr(args, "depth", -1), current_depth,
+                focus_exts=(focus if focus else None),
+                exclude=getattr(args, "exclude", []),
+                follow_symlinks=getattr(args, "follow_symlinks", False),
+                progress=None, progress_task=None,
+                progress_min_interval=getattr(args, "progress_min_interval", 0.05),
+                frag_collapse=not getattr(args, "no_frag_collapse", False),
             )
 
-    # Recurse (respect excludes!)
+            print_hotspots(
+                path, dir_map,
+                top_n=args.hotspots,
+                base_total=b,
+                base_count=c,
+                auto_units=getattr(args, "auto_units", False),
+                sort=getattr(args, "hotspots_sort", "size"),
+            )
+
+            if getattr(args, "hotspots_tree", False):
+                print_hotspots_tree(
+                    path, dir_map,
+                    children_per_node=getattr(args, "hotspots_children", 5),
+                    max_depth=getattr(args, "hotspots_depth", 2),
+                    auto_units=getattr(args, "auto_units", False),
+                    zero_limit=getattr(args, "hotspots_zero_limit", 2),
+                )
+
+    # Recurse — even if current folder didn't meet the min-size gate,
+    # children might (we still respect -x excludes here).
     if getattr(args, "tree", False) and (getattr(args, "depth", -1) < 0 or current_depth < getattr(args, "depth", -1)):
         try:
             subs = sorted(
@@ -823,6 +872,18 @@ def main():
 
     if args.tree:
         traverse(root, args, 0)
+        # Global top-files list once (root scope)
+        if args.top_files and args.top_files > 0 and args.top_files_scope == "root":
+            items = gather_top_files(
+                root,
+                maxdepth=args.depth,
+                exclude=args.exclude,
+                follow_symlinks=args.follow_symlinks,
+                focus_exts=args.ext,
+                frag_collapse=not args.no_frag_collapse,
+                limit=args.top_files,
+            )
+            print_top_files(root, items, auto_units=args.auto_units)
     else:
         # Optional progress
         prog = None
