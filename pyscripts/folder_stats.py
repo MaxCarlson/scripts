@@ -36,10 +36,10 @@ console = _make_console()
 
 def parse_args():
     """
-    All options follow the user's standard:
-      - single-letter, lowercase short flag (e.g. -a)
+    All options follow the standard:
+      - lowercase, single-letter short flag (e.g. -a)
       - full-length double-dash name (e.g. --auto-units)
-    Backwards-compatibility: the legacy -E and -H flags are accepted as aliases.
+    Back-compat: legacy -E and -H are accepted as aliases.
     """
     p = argparse.ArgumentParser(
         description="Scan a directory and report file-type statistics."
@@ -55,7 +55,6 @@ def parse_args():
                    help="Print stats per-subdirectory (indented) instead of aggregate")
     p.add_argument("-a", "--auto-units", action="store_true",
                    help="Auto-select best size unit (KB/MB/GB/TB). Default shows MB")
-    # dates picker (mtime/atime/ctime)
     p.add_argument("-o", "--dates", choices=["atime", "mtime", "ctime"], default=None,
                    help="Include oldest/newest access/modify/create dates per category")
     p.add_argument("-x", "--exclude", action="append", default=[],
@@ -67,14 +66,12 @@ def parse_args():
     p.add_argument("-l", "--follow-symlinks", action="store_true",
                    help="Follow symlinks (default: do not follow). Symlinks counted as [symlink].")
 
-    # Focus (extensions) — applies to BOTH the main table and hotspots.
-    # Accept both new '-e' and legacy '-E'.
+    # Focus (extensions) — applies to BOTH the main table and hotspots/top-files.
     p.add_argument("-e", "-E", "--ext", dest="ext", action="append", default=[],
                    help="Focus on these extensions. Comma-separated or repeat (e.g. -e mp4 -e jpg,png). "
                         "Supports wildcards like .part-frag* and matches collapsed pseudo-extensions.")
 
     # Hotspots (flat and tree)
-    # Accept both new '-k' (top k) and legacy '-H'.
     p.add_argument("-k", "-H", "--hotspots", type=int, default=0,
                    help="Show top K folders by size within the focused set (or ALL if none).")
     p.add_argument("-q", "--hotspots-sort", choices=["size", "count"], default="size",
@@ -86,7 +83,11 @@ def parse_args():
     p.add_argument("-m", "--hotspots-depth", type=int, default=2,
                    help="(tree) Depth of children to expand under each heavy root (default 2).")
     p.add_argument("-z", "--hotspots-zero-limit", type=int, default=2,
-                   help="(tree) Max consecutive zero-size nodes to display before stopping (default 2).")
+                   help="(tree) Max consecutive zero-size nodes to display per branch before stopping (default 2).")
+
+    # Top files (NEW)
+    p.add_argument("-f", "--top-files", type=int, default=0,
+                   help="Show the top N largest FILES that match the focus and excludes (0=off).")
 
     # Collapsing of special suffix patterns
     p.add_argument("-n", "--no-frag-collapse", action="store_true",
@@ -97,6 +98,10 @@ def parse_args():
                    help="Show a progress bar while scanning.")
     p.add_argument("-i", "--progress-min-interval", type=float, default=0.05,
                    help="Minimum seconds between progress updates (default 0.05).")
+
+    # Output noise control (NEW)
+    p.add_argument("-y", "--skip-empty", action="store_true", default=True,
+                   help="Skip printing sections that contain zero matched files (default on).")
 
     return p.parse_args()
 
@@ -343,7 +348,6 @@ def gather_dir_totals(
     If 'focus_exts' is provided, only files with those extensions are included.
     focus_exts supports wildcards and collapsed pseudo-extensions (.part-frag*, .mp4-frag*).
     """
-    # Normalize patterns once (keep wildcards).
     patterns = _normalize_exts_raw(focus_exts or [])
 
     dir_map: Dict[Path, Dict[str, int]] = {}
@@ -401,6 +405,70 @@ def gather_dir_totals(
     return dir_map, files_count, bytes_total
 
 
+# ---------------------------- Top files (NEW) --------------------------------
+
+def gather_top_files(
+    root: Path,
+    *,
+    maxdepth: int,
+    exclude: Iterable[str],
+    follow_symlinks: bool,
+    focus_exts: Optional[Iterable[str]],
+    frag_collapse: bool,
+    limit: int,
+) -> List[Tuple[int, Path]]:
+    """
+    Return a list [(size_bytes, path), ...] for the largest matching files under root.
+    """
+    patterns = _normalize_exts_raw(focus_exts or [])
+    results: List[Tuple[int, Path]] = []
+
+    def walk(cur: Path, depth: int):
+        try:
+            with os.scandir(cur) as it:
+                for entry in it:
+                    name = entry.name
+                    if _should_exclude(name, exclude):
+                        continue
+                    p = Path(entry.path)
+                    try:
+                        if entry.is_file(follow_symlinks=follow_symlinks):
+                            ext = p.suffix.lower() or "[no extension]"
+                            ext = _collapse_frag_suffix(ext, frag_collapse)
+                            if patterns and not _ext_matches(ext, patterns):
+                                continue
+                            st = _file_stat(p, follow_symlinks)
+                            if st is None:
+                                continue
+                            results.append((int(st.st_size), p))
+                        elif entry.is_dir(follow_symlinks=follow_symlinks) and (maxdepth < 0 or depth < maxdepth):
+                            walk(p, depth + 1)
+                    except (PermissionError, FileNotFoundError):
+                        continue
+        except (PermissionError, FileNotFoundError):
+            return
+
+    walk(root, 0)
+    results.sort(key=lambda t: t[0], reverse=True)
+    return results[: max(0, limit) ]
+
+
+def print_top_files(root: Path, items: List[Tuple[int, Path]], *, auto_units: bool):
+    if not items:
+        return
+    table = Table(box=box.SIMPLE, expand=True, show_header=True, header_style="bold green")
+    table.add_column("#", justify="right", no_wrap=True, min_width=2)
+    table.add_column("File", style="white", overflow="fold")
+    table.add_column("Size", justify="right", no_wrap=True, min_width=9)
+
+    for i, (sz, p) in enumerate(items, 1):
+        rel = str(p.relative_to(root)) if p.is_relative_to(root) else str(p)
+        table.add_row(str(i), rel, _format_size(sz, auto_units))
+
+    console.print(table)
+    console.print()
+
+
 # ---------------------------- Presentation -----------------------------------
 
 def _format_size(bytes_size: int, auto_units: bool) -> str:
@@ -440,13 +508,18 @@ def print_stats(
     args: argparse.Namespace = None,
     header_note: Optional[str] = None,
 ):
+    # Skip empty blocks if requested
+    total_bytes = sum(d["total"] for d in stats.values())
+    total_files = sum(d["count"] for d in stats.values())
+    if getattr(args, "skip_empty", False) and total_files == 0:
+        return
+
     pad = "    " * indent
     if header_note:
         console.print(f"{pad}[bold yellow]{header_note}[/]")
     if dir_name:
         console.print(f"{pad}[bold underline]{dir_name}[/]")
 
-    total_bytes = sum(d["total"] for d in stats.values())
     if args.sort == "size":
         sortkey = lambda kv: kv[1]["total"]
     elif args.sort == "count":
@@ -513,6 +586,9 @@ def print_hotspots(
     auto_units: bool,
     sort: str = "size",
 ):
+    if top_n <= 0:
+        return
+
     width = _term_width()
     show_pct, show_bar = _auto_compact_hotspots(width)
 
@@ -532,6 +608,8 @@ def print_hotspots(
     max_total = max((t[2] for t in items), default=0) or 1
 
     for idx, (p, cnt, tot) in enumerate(items[:top_n], 1):
+        if cnt == 0 and tot == 0 and idx > 2:
+            break  # early stop on long zero tails
         pct = (tot / base_total * 100.0) if base_total > 0 else 0.0
         row = [
             str(idx),
@@ -542,7 +620,7 @@ def print_hotspots(
         if show_pct:
             row.append(f"{pct:.1f}%")
         if show_bar:
-            bar_len = max(1, int(20 * (tot / max_total)))
+            bar_len = max(1, int(20 * (tot / max_total))) if tot else 1
             row.append("█" * bar_len)
         table.add_row(*row)
 
@@ -604,10 +682,9 @@ def print_hotspots_tree(
                     break
             show_node(child, depth + 1)
 
-    # When no direct children, show only the root.
     if not level1:
         show_node(root, 0)
-        console.print()  # single trailing newline
+        console.print()
         return
 
     zeros_seen_top = 0
@@ -617,7 +694,7 @@ def print_hotspots_tree(
             if zeros_seen_top > max(0, zero_limit):
                 break
         show_node(p, 0)
-    console.print()  # single trailing newline (no blank lines between groups)
+    console.print()
 
 
 # ---------------------------- Traverse / Main --------------------------------
@@ -667,48 +744,41 @@ def traverse(path: Path, args: argparse.Namespace, current_depth: int = 0):
                 args.auto_units = True
                 break
 
-    # Optional focus label on the heading line
-    focus_label = ", ".join(sorted(_normalize_exts(stats.keys()))) if getattr(args, "ext", []) else None
     heading = f"[bold]Extensions in:[/] {path.resolve()}"
     if getattr(args, "ext", []):
         heading += "  [dim](focus applied)[/]"
-    console.print(heading + "\n")
+    # Only print heading/stats if not skipping empty or there is content
+    if not (getattr(args, "skip_empty", False) and sum(v["count"] for v in stats.values()) == 0):
+        console.print(heading + "\n")
+        print_stats(stats, indent=current_depth, dir_name=None, args=args, header_note=note)
 
-    print_stats(stats, indent=current_depth, dir_name=None, args=args, header_note=note)
+    # Top files (optional)
+    if getattr(args, "top_files", 0) > 0:
+        items = gather_top_files(
+            path,
+            maxdepth=getattr(args, "depth", -1),
+            exclude=getattr(args, "exclude", []),
+            follow_symlinks=getattr(args, "follow_symlinks", False),
+            focus_exts=getattr(args, "ext", []),
+            frag_collapse=not getattr(args, "no_frag_collapse", False),
+            limit=getattr(args, "top_files", 0),
+        )
+        print_top_files(path, items, auto_units=getattr(args, "auto_units", False))
 
     if getattr(args, "hotspots", 0):
         focus = _normalize_exts_raw(getattr(args, "ext", []))
         focus_label = ", ".join(sorted(set(focus))) if focus else "ALL extensions"
         console.print(f"[bold magenta]Top {args.hotspots} folders[/] — focus: {focus_label}\n")
 
-        prog2 = None
-        task2 = None
-        if getattr(args, "progress", False) and sys.stdout.isatty():
-            prog2 = Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                MofNCompleteColumn(),
-                TimeElapsedColumn(),
-                transient=True,
-                console=console,
-            )
-            prog2.start()
-            task2 = prog2.add_task("Aggregating…", total=None)
-
-        try:
-            dir_map, c, b = gather_dir_totals(
-                path, getattr(args, "depth", -1), current_depth,
-                focus_exts=(focus if focus else None),
-                exclude=getattr(args, "exclude", []),
-                follow_symlinks=getattr(args, "follow_symlinks", False),
-                progress=prog2, progress_task=task2,
-                progress_min_interval=getattr(args, "progress_min_interval", 0.05),
-                frag_collapse=not getattr(args, "no_frag_collapse", False),
-            )
-        finally:
-            if prog2:
-                prog2.stop()
+        dir_map, c, b = gather_dir_totals(
+            path, getattr(args, "depth", -1), current_depth,
+            focus_exts=(focus if focus else None),
+            exclude=getattr(args, "exclude", []),
+            follow_symlinks=getattr(args, "follow_symlinks", False),
+            progress=None, progress_task=None,
+            progress_min_interval=getattr(args, "progress_min_interval", 0.05),
+            frag_collapse=not getattr(args, "no_frag_collapse", False),
+        )
 
         print_hotspots(
             path, dir_map,
@@ -728,9 +798,13 @@ def traverse(path: Path, args: argparse.Namespace, current_depth: int = 0):
                 zero_limit=getattr(args, "hotspots_zero_limit", 2),
             )
 
+    # Recurse (respect excludes!)
     if getattr(args, "tree", False) and (getattr(args, "depth", -1) < 0 or current_depth < getattr(args, "depth", -1)):
         try:
-            subs = sorted(p for p in path.iterdir() if p.is_dir())
+            subs = sorted(
+                p for p in path.iterdir()
+                if p.is_dir() and not _should_exclude(p.name, getattr(args, "exclude", []))
+            )
         except Exception:
             subs = []
         for sub in subs:
@@ -783,39 +857,33 @@ def main():
 
         print_stats(stats, args=args)
 
+        # Top files (optional)
+        if args.top_files and args.top_files > 0:
+            items = gather_top_files(
+                root,
+                maxdepth=args.depth,
+                exclude=args.exclude,
+                follow_symlinks=args.follow_symlinks,
+                focus_exts=args.ext,
+                frag_collapse=not args.no_frag_collapse,
+                limit=args.top_files,
+            )
+            print_top_files(root, items, auto_units=args.auto_units)
+
         if args.hotspots and args.hotspots > 0:
             focus = _normalize_exts_raw(args.ext)
             focus_label = ", ".join(sorted(set(focus))) if focus else "ALL extensions"
             console.print(f"[bold magenta]Top {args.hotspots} folders[/] — focus: {focus_label}\n")
 
-            prog2 = None
-            task2 = None
-            if getattr(args, "progress", False) and sys.stdout.isatty():
-                prog2 = Progress(
-                    SpinnerColumn(),
-                    TextColumn("[progress.description]{task.description}"),
-                    BarColumn(),
-                    MofNCompleteColumn(),
-                    TimeElapsedColumn(),
-                    transient=True,
-                    console=console,
-                )
-                prog2.start()
-                task2 = prog2.add_task("Aggregating…", total=None)
-
-            try:
-                dir_map, c, b = gather_dir_totals(
-                    root, args.depth, 0,
-                    focus_exts=(focus if focus else None),
-                    exclude=args.exclude,
-                    follow_symlinks=args.follow_symlinks,
-                    progress=prog2, progress_task=task2,
-                    progress_min_interval=args.progress_min_interval,
-                    frag_collapse=not args.no_frag_collapse,
-                )
-            finally:
-                if prog2:
-                    prog2.stop()
+            dir_map, c, b = gather_dir_totals(
+                root, args.depth, 0,
+                focus_exts=(focus if focus else None),
+                exclude=args.exclude,
+                follow_symlinks=args.follow_symlinks,
+                progress=None, progress_task=None,
+                progress_min_interval=args.progress_min_interval,
+                frag_collapse=not args.no_frag_collapse,
+            )
 
             print_hotspots(
                 root, dir_map,
