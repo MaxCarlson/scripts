@@ -1,3 +1,4 @@
+# file: folder_stats.py
 #!/usr/bin/env python3
 # folder_stats.py
 # Totals space by file extension under a target directory (cross-platform, pwsh7 friendly).
@@ -34,52 +35,70 @@ console = _make_console()
 # ---------------------------- CLI --------------------------------------------
 
 def parse_args():
-    parser = argparse.ArgumentParser(
+    """
+    All options follow the user's standard:
+      - single-letter, lowercase short flag (e.g. -a)
+      - full-length double-dash name (e.g. --auto-units)
+    Backwards-compatibility: the legacy -E and -H flags are accepted as aliases.
+    """
+    p = argparse.ArgumentParser(
         description="Scan a directory and report file-type statistics."
     )
-    parser.add_argument("directory", metavar="DIR", help="Target directory to scan")
-    parser.add_argument("-d", "--depth", metavar="N", type=int, default=-1,
-                        help="Max recursion depth (-1 = infinite)")
-    parser.add_argument("-t", "--tree", action="store_true",
-                        help="Print stats per-subdirectory (indented) instead of aggregate")
-    parser.add_argument("-a", "--auto-units", action="store_true",
-                        help="Auto-select best size unit (KB/MB/GB/TB). Default shows MB")
-    parser.add_argument("--dates", choices=["atime", "mtime", "ctime"], default=None,
-                        help="Include oldest/newest access/modify/create dates per category")
-    parser.add_argument("-x", "--exclude", action="append", default=[],
-                        help="Glob(s) to exclude (match against file or folder name). Repeatable.")
-    parser.add_argument("-s", "--sort", choices=["size", "count", "ext"], default="size",
-                        help="Sort extension rows by total size, file count, or extension (default: size)")
-    parser.add_argument("-r", "--reverse", action="store_true", help="Reverse sort order")
-    parser.add_argument("--follow-symlinks", action="store_true",
-                        help="Follow symlinks (default: do not follow). Symlinks counted as [symlink].")
+
+    # Positional
+    p.add_argument("directory", metavar="DIR", help="Target directory to scan")
+
+    # General scan / presentation
+    p.add_argument("-d", "--depth", metavar="N", type=int, default=-1,
+                   help="Max recursion depth (-1 = infinite)")
+    p.add_argument("-t", "--tree", action="store_true",
+                   help="Print stats per-subdirectory (indented) instead of aggregate")
+    p.add_argument("-a", "--auto-units", action="store_true",
+                   help="Auto-select best size unit (KB/MB/GB/TB). Default shows MB")
+    # dates picker (mtime/atime/ctime)
+    p.add_argument("-o", "--dates", choices=["atime", "mtime", "ctime"], default=None,
+                   help="Include oldest/newest access/modify/create dates per category")
+    p.add_argument("-x", "--exclude", action="append", default=[],
+                   help="Glob(s) to exclude (match against file or folder name). Repeatable.")
+    p.add_argument("-s", "--sort", choices=["size", "count", "ext"], default="size",
+                   help="Sort extension rows by total size, file count, or extension (default: size)")
+    p.add_argument("-r", "--reverse", action="store_true",
+                   help="Reverse sort order")
+    p.add_argument("-l", "--follow-symlinks", action="store_true",
+                   help="Follow symlinks (default: do not follow). Symlinks counted as [symlink].")
+
+    # Focus (extensions) — applies to BOTH the main table and hotspots.
+    # Accept both new '-e' and legacy '-E'.
+    p.add_argument("-e", "-E", "--ext", dest="ext", action="append", default=[],
+                   help="Focus on these extensions. Comma-separated or repeat (e.g. -e mp4 -e jpg,png). "
+                        "Supports wildcards like .part-frag* and matches collapsed pseudo-extensions.")
 
     # Hotspots (flat and tree)
-    parser.add_argument("-E", "--ext", action="append", default=[],
-                        help="Focus on these extensions for hotspot analysis. "
-                             "Comma-separated or repeat (-E jpg -E png).")
-    parser.add_argument("-H", "--hotspots", type=int, default=0,
-                        help="Show top N folders by size within focused extensions (or all if none).")
-    parser.add_argument("--hotspots-sort", choices=["size", "count"], default="size",
-                        help="Rank hotspots by size or by file count (default: size)")
-    parser.add_argument("--hotspots-tree", action="store_true",
-                        help="Show hierarchical hotspots: heavy root folders and top children per level.")
-    parser.add_argument("--hotspots-children", type=int, default=5,
-                        help="(tree) Number of children to show per folder (default 5).")
-    parser.add_argument("--hotspots-depth", type=int, default=2,
-        help="(tree) Depth of children to expand under each heavy root (default 2).")
+    # Accept both new '-k' (top k) and legacy '-H'.
+    p.add_argument("-k", "-H", "--hotspots", type=int, default=0,
+                   help="Show top K folders by size within the focused set (or ALL if none).")
+    p.add_argument("-q", "--hotspots-sort", choices=["size", "count"], default="size",
+                   help="Rank hotspots by 'size' or by 'count' (default: size)")
+    p.add_argument("-w", "--hotspots-tree", action="store_true",
+                   help="Show hierarchical hotspots: heavy root folders and top children per level.")
+    p.add_argument("-c", "--hotspots-children", type=int, default=5,
+                   help="(tree) Number of children to show per folder (default 5).")
+    p.add_argument("-m", "--hotspots-depth", type=int, default=2,
+                   help="(tree) Depth of children to expand under each heavy root (default 2).")
+    p.add_argument("-z", "--hotspots-zero-limit", type=int, default=2,
+                   help="(tree) Max consecutive zero-size nodes to display before stopping (default 2).")
 
     # Collapsing of special suffix patterns
-    parser.add_argument("--no-frag-collapse", action="store_true",
-                        help="Do not collapse .mp4-frag* / .part-frag* into grouped pseudo-extensions.")
+    p.add_argument("-n", "--no-frag-collapse", action="store_true",
+                   help="Do NOT collapse .mp4-frag* / .part-frag* into grouped pseudo-extensions.")
 
     # Progress (opt-in to keep tests and redirection clean)
-    parser.add_argument("--progress", action="store_true",
-                        help="Show a progress bar while scanning.")
-    parser.add_argument("--progress-min-interval", type=float, default=0.05,
-                        help="Minimum seconds between progress updates (default 0.05).")
+    p.add_argument("-p", "--progress", action="store_true",
+                   help="Show a progress bar while scanning.")
+    p.add_argument("-i", "--progress-min-interval", type=float, default=0.05,
+                   help="Minimum seconds between progress updates (default 0.05).")
 
-    return parser.parse_args()
+    return p.parse_args()
 
 
 # ---------------------------- Helpers ----------------------------------------
@@ -104,8 +123,12 @@ def _should_exclude(name: str, patterns: Iterable[str]) -> bool:
             return True
     return False
 
-def _normalize_exts(exts: Iterable[str]) -> Set[str]:
-    out: Set[str] = set()
+def _normalize_exts_raw(exts: Iterable[str]) -> List[str]:
+    """
+    Normalize to lowercase string patterns, ensuring a leading '.' when appropriate.
+    Do NOT remove wildcards. Keep order stable.
+    """
+    out: List[str] = []
     for e in exts:
         if not e:
             continue
@@ -113,10 +136,14 @@ def _normalize_exts(exts: Iterable[str]) -> Set[str]:
             p = part.strip().lower()
             if not p:
                 continue
-            if not p.startswith("."):
+            if not p.startswith(".") and not p.startswith("["):  # allow "[no extension]" literal
                 p = "." + p
-            out.add(p)
+            out.append(p)
     return out
+
+def _normalize_exts(exts: Iterable[str]) -> Set[str]:
+    # Set version (legacy callers/test use); no wildcard info needed there.
+    return set(_normalize_exts_raw(exts))
 
 def _term_width() -> int:
     try:
@@ -125,6 +152,19 @@ def _term_width() -> int:
     except Exception:
         pass
     return 200  # wide for non-tty (tests / piping)
+
+def _ext_matches(ext: str, patterns: Optional[Iterable[str]]) -> bool:
+    """
+    ext is the canonical key we use in stats (e.g., '.mp4', '.mp4-frag*', '[no extension]').
+    patterns can contain literal extensions ('.mp4'), or wildcards ('.part-frag*').
+    """
+    if not patterns:
+        return True
+    import fnmatch
+    for pat in patterns:
+        if fnmatch.fnmatchcase(ext, pat):
+            return True
+    return False
 
 
 # ---------------------------- Core stats (by extension) -----------------------
@@ -289,18 +329,23 @@ def gather_dir_totals(
     maxdepth: int,
     current_depth: int = 0,
     *,
-    focus_exts: Optional[Set[str]] = None,
+    focus_exts: Optional[Iterable[str]] = None,
     exclude: Iterable[str] = (),
     follow_symlinks: bool = False,
     progress: Optional[Progress] = None,
     progress_task: Optional[int] = None,
     progress_min_interval: float = 0.05,
+    frag_collapse: bool = True,
 ) -> Tuple[Dict[Path, Dict[str, int]], int, int]:
     """
     Recursively aggregate totals per directory.
     Returns (dir_map, total_count, total_bytes) where dir_map[path] = {'count','total'}.
     If 'focus_exts' is provided, only files with those extensions are included.
+    focus_exts supports wildcards and collapsed pseudo-extensions (.part-frag*, .mp4-frag*).
     """
+    # Normalize patterns once (keep wildcards).
+    patterns = _normalize_exts_raw(focus_exts or [])
+
     dir_map: Dict[Path, Dict[str, int]] = {}
     files_count = 0
     bytes_total = 0
@@ -326,8 +371,9 @@ def gather_dir_totals(
 
         try:
             if entry.is_file(follow_symlinks=follow_symlinks):
-                ext = p.suffix.lower()
-                if focus_exts and ext not in focus_exts:
+                ext = p.suffix.lower() or "[no extension]"
+                ext = _collapse_frag_suffix(ext, frag_collapse)
+                if patterns and not _ext_matches(ext, patterns):
                     continue
                 st = _file_stat(p, follow_symlinks)
                 if st is None:
@@ -337,9 +383,10 @@ def gather_dir_totals(
             elif entry.is_dir(follow_symlinks=follow_symlinks) and (maxdepth < 0 or current_depth < maxdepth):
                 sub_map, c, b = gather_dir_totals(
                     p, maxdepth, current_depth + 1,
-                    focus_exts=focus_exts, exclude=exclude, follow_symlinks=follow_symlinks,
+                    focus_exts=patterns, exclude=exclude, follow_symlinks=follow_symlinks,
                     progress=progress, progress_task=progress_task,
                     progress_min_interval=progress_min_interval,
+                    frag_collapse=frag_collapse,
                 )
                 for k, v in sub_map.items():
                     acc = dir_map.setdefault(k, {"count": 0, "total": 0})
@@ -362,7 +409,7 @@ def _format_size(bytes_size: int, auto_units: bool) -> str:
 def _auto_compact(width: int, want_dates: Optional[str]) -> Tuple[bool, bool]:
     """
     Decide whether to hide [% of total] and [date] columns.
-    IMPORTANT: If dates are requested, we ALWAYS show them (tests expect this),
+    IMPORTANT: If dates are requested, we ALWAYS show them,
     while % may still be hidden on very narrow terminals.
     """
     show_dates = bool(want_dates)  # always show when requested
@@ -374,6 +421,17 @@ def _auto_compact_hotspots(width: int) -> Tuple[bool, bool]:
     show_pct = width >= 70
     show_bar = width >= 85
     return show_pct, show_bar
+
+def _filter_stats_for_focus(stats: Dict[str, Dict[str, Any]], patterns: Iterable[str], frag_collapse: bool) -> Dict[str, Dict[str, Any]]:
+    pats = _normalize_exts_raw(patterns)
+    if not pats:
+        return stats
+    out: Dict[str, Dict[str, Any]] = {}
+    for ext, row in stats.items():
+        canon = _collapse_frag_suffix(ext, frag_collapse)
+        if _ext_matches(canon, pats):
+            out[ext] = row
+    return out
 
 def print_stats(
     stats: Dict[str, Dict[str, Any]],
@@ -505,6 +563,7 @@ def print_hotspots_tree(
     children_per_node: int,
     max_depth: int,
     auto_units: bool,
+    zero_limit: int = 2,
 ):
     # pick heavy "root children" first (level-1 under root).
     level1 = []
@@ -516,7 +575,7 @@ def print_hotspots_tree(
             level1.append((p, v["total"]))
     level1.sort(key=lambda t: t[1], reverse=True)
 
-    console.print("[bold magenta]Heavy folders (tree view)[/]\n")
+    console.print("[bold magenta]Heavy folders (tree view)[/]")
 
     def show_node(node: Path, depth: int):
         info = dir_map.get(node, {"count": 0, "total": 0})
@@ -536,18 +595,29 @@ def print_hotspots_tree(
             except Exception:
                 continue
         children.sort(key=lambda t: t[1], reverse=True)
-        for child, _ in children[:children_per_node]:
+
+        zeros_seen = 0
+        for child, total in children[:children_per_node]:
+            if total == 0:
+                zeros_seen += 1
+                if zeros_seen > max(0, zero_limit):
+                    break
             show_node(child, depth + 1)
 
+    # When no direct children, show only the root.
     if not level1:
         show_node(root, 0)
-        console.print()
+        console.print()  # single trailing newline
         return
 
-    for p, _ in level1:
+    zeros_seen_top = 0
+    for p, total in level1:
+        if total == 0:
+            zeros_seen_top += 1
+            if zeros_seen_top > max(0, zero_limit):
+                break
         show_node(p, 0)
-        console.print()
-    console.print()
+    console.print()  # single trailing newline (no blank lines between groups)
 
 
 # ---------------------------- Traverse / Main --------------------------------
@@ -582,6 +652,13 @@ def traverse(path: Path, args: argparse.Namespace, current_depth: int = 0):
         if prog:
             prog.stop()
 
+    # Focus filter applies to the main table as well.
+    stats = _filter_stats_for_focus(
+        stats,
+        getattr(args, "ext", []),
+        frag_collapse=not getattr(args, "no_frag_collapse", False),
+    )
+
     note = None
     if not getattr(args, "auto_units", False):
         for d in stats.values():
@@ -590,12 +667,18 @@ def traverse(path: Path, args: argparse.Namespace, current_depth: int = 0):
                 args.auto_units = True
                 break
 
-    console.print(f"[bold]Extensions in:[/] {path.resolve()}\n")
+    # Optional focus label on the heading line
+    focus_label = ", ".join(sorted(_normalize_exts(stats.keys()))) if getattr(args, "ext", []) else None
+    heading = f"[bold]Extensions in:[/] {path.resolve()}"
+    if getattr(args, "ext", []):
+        heading += "  [dim](focus applied)[/]"
+    console.print(heading + "\n")
+
     print_stats(stats, indent=current_depth, dir_name=None, args=args, header_note=note)
 
     if getattr(args, "hotspots", 0):
-        focus = _normalize_exts(getattr(args, "ext", []))
-        focus_label = ", ".join(sorted(focus)) if focus else "ALL extensions"
+        focus = _normalize_exts_raw(getattr(args, "ext", []))
+        focus_label = ", ".join(sorted(set(focus))) if focus else "ALL extensions"
         console.print(f"[bold magenta]Top {args.hotspots} folders[/] — focus: {focus_label}\n")
 
         prog2 = None
@@ -621,6 +704,7 @@ def traverse(path: Path, args: argparse.Namespace, current_depth: int = 0):
                 follow_symlinks=getattr(args, "follow_symlinks", False),
                 progress=prog2, progress_task=task2,
                 progress_min_interval=getattr(args, "progress_min_interval", 0.05),
+                frag_collapse=not getattr(args, "no_frag_collapse", False),
             )
         finally:
             if prog2:
@@ -641,6 +725,7 @@ def traverse(path: Path, args: argparse.Namespace, current_depth: int = 0):
                 children_per_node=getattr(args, "hotspots_children", 5),
                 max_depth=getattr(args, "hotspots_depth", 2),
                 auto_units=getattr(args, "auto_units", False),
+                zero_limit=getattr(args, "hotspots_zero_limit", 2),
             )
 
     if getattr(args, "tree", False) and (getattr(args, "depth", -1) < 0 or current_depth < getattr(args, "depth", -1)):
@@ -693,11 +778,14 @@ def main():
             if prog:
                 prog.stop()
 
+        # Apply focus filter to the main table
+        stats = _filter_stats_for_focus(stats, args.ext, frag_collapse=not args.no_frag_collapse)
+
         print_stats(stats, args=args)
 
         if args.hotspots and args.hotspots > 0:
-            focus = _normalize_exts(args.ext)
-            focus_label = ", ".join(sorted(focus)) if focus else "ALL extensions"
+            focus = _normalize_exts_raw(args.ext)
+            focus_label = ", ".join(sorted(set(focus))) if focus else "ALL extensions"
             console.print(f"[bold magenta]Top {args.hotspots} folders[/] — focus: {focus_label}\n")
 
             prog2 = None
@@ -723,6 +811,7 @@ def main():
                     follow_symlinks=args.follow_symlinks,
                     progress=prog2, progress_task=task2,
                     progress_min_interval=args.progress_min_interval,
+                    frag_collapse=not args.no_frag_collapse,
                 )
             finally:
                 if prog2:
@@ -743,6 +832,7 @@ def main():
                     children_per_node=args.hotspots_children,
                     max_depth=args.hotspots_depth,
                     auto_units=args.auto_units,
+                    zero_limit=args.hotspots_zero_limit,
                 )
 
 if __name__ == "__main__":
