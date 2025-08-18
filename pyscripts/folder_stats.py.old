@@ -17,19 +17,7 @@ from rich.table import Table
 from rich import box
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn, MofNCompleteColumn
 
-# --- Console: make non-TTY wide so tests / redirection keep ALL columns -----
-def _make_console() -> Console:
-    try:
-        if sys.stdout.isatty():
-            # Normal interactive terminal
-            return Console()
-        # Captured or redirected output: widen and disable styling to avoid ANSI
-        return Console(width=200, force_terminal=False, no_color=True, highlight=False, soft_wrap=False)
-    except Exception:
-        # Safe fallback
-        return Console(width=200, force_terminal=False, no_color=True, highlight=False, soft_wrap=False)
-
-console = _make_console()
+console = Console()
 
 # ---------------------------- CLI --------------------------------------------
 
@@ -67,7 +55,7 @@ def parse_args():
     parser.add_argument("--hotspots-children", type=int, default=5,
                         help="(tree) Number of children to show per folder (default 5).")
     parser.add_argument("--hotspots-depth", type=int, default=2,
-        help="(tree) Depth of children to expand under each heavy root (default 2).")
+                        help="(tree) Depth of children to expand under each heavy root (default 2).")
 
     # Collapsing of special suffix patterns
     parser.add_argument("--no-frag-collapse", action="store_true",
@@ -161,7 +149,6 @@ def _merge_into(dst: Dict[str, Any], src: Dict[str, Any]) -> None:
             dst[mx] = src[mx] if dst[mx] is None else max(dst[mx], src[mx])
 
 def _file_stat(path_like: Path, follow_symlinks: bool):
-    """Use Path.stat so tests can monkeypatch it. Avoid following symlinks unless asked."""
     try:
         return path_like.stat() if follow_symlinks else path_like.stat(follow_symlinks=False)
     except Exception:
@@ -337,7 +324,8 @@ def gather_dir_totals(
             elif entry.is_dir(follow_symlinks=follow_symlinks) and (maxdepth < 0 or current_depth < maxdepth):
                 sub_map, c, b = gather_dir_totals(
                     p, maxdepth, current_depth + 1,
-                    focus_exts=focus_exts, exclude=exclude, follow_symlinks=follow_symlinks,
+                    focus_exts=focus_exts, exclude=exclude,
+                    follow_symlinks=follow_symlinks,
                     progress=progress, progress_task=progress_task,
                     progress_min_interval=progress_min_interval,
                 )
@@ -360,17 +348,11 @@ def _format_size(bytes_size: int, auto_units: bool) -> str:
     return humanize_size(bytes_size) if auto_units else f"{to_mb(bytes_size):.2f}MB"
 
 def _auto_compact(width: int, want_dates: Optional[str]) -> Tuple[bool, bool]:
-    """
-    Decide whether to hide [% of total] and [date] columns.
-    IMPORTANT: If dates are requested, we ALWAYS show them (tests expect this),
-    while % may still be hidden on very narrow terminals.
-    """
     show_dates = bool(want_dates)  # always show when requested
     show_pct = width >= 70
     return show_pct, show_dates
 
 def _auto_compact_hotspots(width: int) -> Tuple[bool, bool]:
-    """Decide whether to show % and a simple bar for hotspots table."""
     show_pct = width >= 70
     show_bar = width >= 85
     return show_pct, show_bar
@@ -506,7 +488,8 @@ def print_hotspots_tree(
     max_depth: int,
     auto_units: bool,
 ):
-    # pick heavy "root children" first (level-1 under root).
+    # pick heavy "root children" first (level-1 under root). If the root itself is heaviest,
+    # we still display heavy direct children.
     level1 = []
     for p, v in dir_map.items():
         if p == root:
@@ -539,11 +522,13 @@ def print_hotspots_tree(
         for child, _ in children[:children_per_node]:
             show_node(child, depth + 1)
 
+    # If no direct children found (tiny tree), just show root
     if not level1:
         show_node(root, 0)
         console.print()
         return
 
+    # Show each heavy level-1 folder and expand into top descendants
     for p, _ in level1:
         show_node(p, 0)
         console.print()
