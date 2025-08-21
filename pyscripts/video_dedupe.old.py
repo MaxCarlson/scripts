@@ -25,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -37,7 +38,6 @@ except Exception:
     RICH_AVAILABLE = False
 
 console = Console() if RICH_AVAILABLE else None
-
 
 # ----------------------------
 # Data Models
@@ -60,7 +60,8 @@ class VideoMeta(FileMeta):
     acodec: Optional[str] = None
     overall_bitrate: Optional[int] = None      # bps
     video_bitrate: Optional[int] = None        # bps
-    phash_signature: Optional[Tuple[int, ...]] = None  # perceptual hash signature
+    # Optional visual signature
+    phash_signature: Optional[Tuple[int, ...]] = None  # packed phash bits across sampled frames
 
     @property
     def resolution_area(self) -> int:
@@ -171,7 +172,6 @@ def compute_phash_signature(path: Path, frames: int = 5) -> Optional[Tuple[int, 
     try:
         from PIL import Image
         import imagehash
-        import io
     except Exception:
         return None
 
@@ -194,7 +194,7 @@ def compute_phash_signature(path: Path, frames: int = 5) -> Optional[Tuple[int, 
                 "pipe:1",
             ]
             raw = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
-            img = Image.open(io.BytesIO(raw))
+            img = Image.open(io_bytes := __import__("io").BytesIO(raw))
             img.load()
             h = imagehash.phash(img)  # 64-bit
             sig.append(int(str(h), 16))
@@ -275,7 +275,7 @@ class Grouper:
         if want_phash:
             sig = compute_phash_signature(path, frames=self.phash_frames)
             if sig:
-                object.__setattr__(vm, "phash_signature", sig)  # dataclass is frozen
+                object.__setattr__(vm, "phash_signature", sig)
         return vm
 
     def collect(self, files: List[Path]) -> Dict[str, List[VideoMeta | FileMeta]]:
@@ -301,7 +301,7 @@ class Grouper:
         with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
             list(ex.map(worker, files))
 
-        # --- Exact hash grouping (first pass) ---
+        # Exact hash grouping
         if self.mode in ("hash", "all"):
             by_hash: Dict[str, List[VideoMeta | FileMeta]] = defaultdict(list)
 
@@ -309,8 +309,10 @@ class Grouper:
                 if m.sha256 is None:
                     h = sha256_file(m.path)
                     if h:
-                        # Both FileMeta and VideoMeta are frozen; use object.__setattr__
-                        object.__setattr__(m, "sha256", h)
+                        if isinstance(m, VideoMeta):
+                            object.__setattr__(m, "sha256", h)
+                        else:
+                            setattr(m, "sha256", h)
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
                 list(ex.map(ensure_hash, metas))
@@ -323,20 +325,22 @@ class Grouper:
                 if len(lst) > 1:
                     groups[f"hash:{h}"] = lst
 
-        # --- Metadata grouping (second pass): single union-find across all videos ---
+        # Metadata grouping
         if self.mode in ("meta", "all"):
             vids = [m for m in metas if isinstance(m, VideoMeta)]
-            if vids:
-                tol = max(0.0, float(self.duration_tolerance))
-                bucket_size = max(1.0, tol)
-                buckets: Dict[int, List[VideoMeta]] = defaultdict(list)
-                for vm in vids:
-                    dur = vm.duration if vm.duration is not None else -1.0
-                    key = int(dur // bucket_size)
-                    buckets[key].append(vm)
+            buckets: Dict[int, List[VideoMeta]] = defaultdict(list)
+            tol = max(0.0, float(self.duration_tolerance))
+            bucket_size = max(1.0, tol)
+            for vm in vids:
+                dur = vm.duration if vm.duration is not None else -1.0
+                key = int(dur // bucket_size)
+                buckets[key].append(vm)
 
-                # Union-Find over ALL videos
-                parent = {id(v): id(v) for v in vids}
+            gid = 0
+            for bkey, vlist in buckets.items():
+                candidates = vlist + buckets.get(bkey - 1, []) + buckets.get(bkey + 1, [])
+                candidates = list(set(candidates))
+                parent = {id(v): id(v) for v in candidates}
 
                 def find(x):
                     while parent[x] != x:
@@ -362,34 +366,20 @@ class Grouper:
                         return False
                     return True
 
-                # Compare within each bucket and with the NEXT bucket only (avoid duplicate work)
-                for bkey in sorted(buckets.keys()):
-                    curr = buckets[bkey]
-                    nxt = buckets.get(bkey + 1, [])
+                for i in range(len(candidates)):
+                    for j in range(i + 1, len(candidates)):
+                        if similar(candidates[i], candidates[j]):
+                            union(candidates[i], candidates[j])
 
-                    # within current bucket
-                    for i in range(len(curr)):
-                        for j in range(i + 1, len(curr)):
-                            if similar(curr[i], curr[j]):
-                                union(curr[i], curr[j])
-
-                    # cross with next bucket
-                    for a in curr:
-                        for b in nxt:
-                            if similar(a, b):
-                                union(a, b)
-
-                # Build components once, yielding unique meta groups
                 comps: Dict[int, List[VideoMeta]] = defaultdict(list)
-                for v in vids:
+                for v in candidates:
                     comps[find(id(v))].append(v)
-                gid = 0
                 for comp in comps.values():
                     if len(comp) > 1:
                         groups[f"meta:{gid}"] = comp
                         gid += 1
 
-        # --- Perceptual hashing grouping (third pass) ---
+        # Perceptual hashing grouping
         if self.mode in ("phash", "all"):
             vids = [m for m in metas if isinstance(m, VideoMeta) and m.phash_signature]
             visited = set()
@@ -431,7 +421,7 @@ def make_keep_key(order: Sequence[str]):
         res = m.resolution_area if isinstance(m, VideoMeta) else 0
         vbr = m.video_bitrate if isinstance(m, VideoMeta) and m.video_bitrate else 0
         newer = m.mtime
-        smaller = -m.size  # negative so smaller ranks higher in descending sort
+        smaller = -m.size
         depth = len(m.path.parts)
 
         mapping = {
@@ -480,12 +470,12 @@ def delete_or_backup(losers: Iterable[FileMeta | VideoMeta], *, dry_run: bool, f
     count = 0
     total = 0
     for m in losers:
-        size = m.size if isinstance(m.size, int) else 0
+        try:
+            size = m.size
+        except Exception:
+            size = 0
         if dry_run:
-            if console:
-                console.print(f"[cyan][DRY-RUN][/cyan] Would remove: {m.path}")
-            else:
-                print(f"[DRY-RUN] Would remove: {m.path}")
+            _print(f"[DRY-RUN] Would remove: {m.path}")
             count += 1
             total += size
             continue
@@ -502,15 +492,9 @@ def delete_or_backup(losers: Iterable[FileMeta | VideoMeta], *, dry_run: bool, f
                 m.path.unlink(missing_ok=True)
             count += 1
             total += size
-            if console:
-                console.print(f"[green]Removed:[/] {m.path}")
-            else:
-                print(f"Removed: {m.path}")
+            _print(f"Removed: {m.path}")
         except Exception as e:
-            if console:
-                console.print(f"[red][ERROR][/red] Could not remove {m.path}: {e}")
-            else:
-                print(f"[ERROR] Could not remove {m.path}: {e}")
+            _print(f"[ERROR] Could not remove {m.path}: {e}")
     return count, total
 
 
