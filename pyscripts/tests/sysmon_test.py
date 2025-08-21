@@ -3,6 +3,39 @@ import sysmon
 import builtins
 
 
+def test_disk_columns_for_width():
+    assert sysmon.disk_columns_for_width(50) == ["PID", "Name", "D MB/s"]
+    assert sysmon.disk_columns_for_width(70) == ["PID", "Name", "R MB/s", "W MB/s"]
+    assert sysmon.disk_columns_for_width(120) == [
+        "PID",
+        "Name",
+        "R MB/s",
+        "W MB/s",
+        "D MB/s",
+    ]
+
+
+def test_sort_disk_rows_modes():
+    rows = [
+        {"pid": 1, "name": "b", "r_mb_s": 1.0, "w_mb_s": 2.0, "d_mb_s": 3.0},
+        {"pid": 2, "name": "a", "r_mb_s": 3.0, "w_mb_s": 0.5, "d_mb_s": 3.5},
+    ]
+    sysmon.sort_disk_rows(rows, "read")
+    assert rows[0]["pid"] == 2
+    sysmon.sort_disk_rows(rows, "write")
+    assert rows[0]["pid"] == 1
+    sysmon.sort_disk_rows(rows, "total")
+    assert rows[0]["pid"] == 2
+    sysmon.sort_disk_rows(rows, "name")
+    assert rows[0]["pid"] == 2  # 'a' first
+
+
+def test_parse_args_new_flags():
+    ns = sysmon.parse_args(["--net-procs", "--low-prio", "-w", "disk", "-S", "total"])
+    assert ns.net_procs and ns.low_prio
+    assert ns.view == "disk" and ns.sort == "total"
+
+
 # --- sparkline ---------------------------------------------------------------
 def test_sparkline_basic():
     s = sysmon.sparkline([0, 1, 2, 3, 4, 5, 6, 7], width=8)
