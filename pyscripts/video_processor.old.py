@@ -1,4 +1,3 @@
-# file: video_processor.py
 #!/usr/bin/env python3
 """
 A multi-threaded video processing and analysis tool with a real-time dashboard.
@@ -8,7 +7,6 @@ them based on user-defined criteria like resolution, bitrate, and file size,
 with support for both CPU (libx264/libx265) and NVIDIA GPU (NVENC) encoding.
 """
 import argparse
-import atexit
 import concurrent.futures
 import json
 import os
@@ -16,14 +14,10 @@ import pathlib
 import queue
 import re
 import shutil
-import socket
-import socketserver
 import subprocess
 import sys
 import threading
 import time
-import signal
-import platform
 from collections import deque
 from typing import IO, Any, Dict, Iterable, List, Optional, Tuple
 
@@ -43,7 +37,7 @@ except ImportError:
 # --- Constants ---
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm"}
 BAR_WIDTH = 12
-COMPACT_OUTPUT_THRESHOLD = 120  # Terminal width to switch to multi-line stats output
+COMPACT_OUTPUT_THRESHOLD = 120 # Terminal width to switch to multi-line stats output
 
 # --- Helper Functions ---
 
@@ -87,84 +81,6 @@ def check_dependencies():
     if not shutil.which("ffprobe"):
         print("Error: 'ffprobe' not found. Please install it and ensure it's in your PATH.", file=sys.stderr)
         sys.exit(1)
-
-# --- Progress Server (decouples ffmpeg progress from stdout/stderr) ---
-
-class _ProgressHandler(socketserver.StreamRequestHandler):
-    """Reads key=value progress lines sent by ffmpeg -progress tcp://..."""
-    def handle(self):
-        server = self.server  # type: ignore[attr-defined]
-        try:
-            while True:
-                line = self.rfile.readline()
-                if not line:
-                    break
-                try:
-                    text = line.decode('utf-8', 'ignore').strip()
-                except AttributeError:
-                    text = line.strip()  # already str
-                if not text or '=' not in text:
-                    continue
-                k, v = text.split('=', 1)
-                with server.lock:  # type: ignore[attr-defined]
-                    server.progress[k] = v  # type: ignore[attr-defined]
-                    server.last_update = time.time()  # type: ignore[attr-defined]
-        finally:
-            with server.lock:  # type: ignore[attr-defined]
-                server.closed = True  # type: ignore[attr-defined]
-
-class ProgressTCPServer(socketserver.ThreadingTCPServer):
-    allow_reuse_address = True
-
-    def __init__(self):
-        super().__init__(('127.0.0.1', 0), _ProgressHandler, bind_and_activate=True)
-        self.progress: Dict[str, str] = {}
-        self.last_update: float = 0.0
-        self.closed: bool = False
-        self.lock = threading.Lock()
-        self._thread = threading.Thread(target=self.serve_forever, daemon=True)
-        self._thread.start()
-
-    @property
-    def url(self) -> str:
-        host, port = self.server_address
-        return f"tcp://{host}:{port}"
-
-    def snapshot(self) -> Tuple[Dict[str, str], float, bool]:
-        with self.lock:
-            return dict(self.progress), self.last_update, self.closed
-
-    def close(self):
-        try:
-            self.shutdown()
-        finally:
-            self.server_close()
-
-# --- Child process lifecycle helpers ---
-
-def _terminate_proc_tree(proc: subprocess.Popen):
-    """Best-effort termination of a process and its children."""
-    if proc.poll() is not None:
-        return
-    try:
-        if os.name == 'nt':
-            # Kill the process tree on Windows
-            subprocess.run(
-                ['taskkill', '/PID', str(proc.pid), '/T', '/F'],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False
-            )
-        else:
-            # Send SIGTERM to the whole process group on POSIX
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except PermissionError:
-                proc.terminate()
-    except Exception:
-        # Fall back to direct terminate
-        try:
-            proc.terminate()
-        except Exception:
-            pass
 
 # --- Core Classes ---
 
@@ -290,7 +206,7 @@ def run_stats_command(args: argparse.Namespace):
             br = f"{v.bitrate / 1000:.0f}k" if v.bitrate else "N/A"
             vbr = f"{v.video_bitrate / 1000:.0f}k" if v.video_bitrate else "N/A"
             abr = f"{v.audio_bitrate / 1000:.0f}k" if v.audio_bitrate else "N/A"
-
+            
             print(f"{fname}")
             print(f"  Size: {size:<12} | Res: {res:<12} | Dur: {duration:<10} | Codec: {codec}")
             print(f"  Bitrates (T/V/A): {br} / {vbr} / {abr}")
@@ -300,7 +216,7 @@ def run_stats_command(args: argparse.Namespace):
 def generate_ffmpeg_args(video: VideoInfo, args: argparse.Namespace) -> List[str]:
     """Generates the dynamic part of the ffmpeg command."""
     ffmpeg_args = []
-
+    
     # Video stream encoder and preset
     ffmpeg_args.extend(["-c:v", args.video_encoder, "-preset", args.preset])
 
@@ -334,25 +250,7 @@ def _reader_thread(pipe: Optional[IO[str]], q: queue.Queue):
             for line in iter(pipe.readline, ''):
                 q.put(line)
     finally:
-        q.put(None)  # Sentinel to indicate the pipe has closed
-
-def _stderr_logger_thread(pipe: Optional[IO[str]], dashboard: TermDash, file_label: str):
-    """Reads stderr lines and logs warnings/errors to the dashboard."""
-    try:
-        if not pipe:
-            return
-        for line in iter(pipe.readline, ''):
-            txt = line.strip()
-            if txt:
-                dashboard.log(f"[{file_label}] {txt}", level='warning')
-    except Exception:
-        pass  # Best effort
-    finally:
-        try:
-            if pipe:
-                pipe.close()
-        except Exception:
-            pass
+        q.put(None) # Sentinel to indicate the pipe has closed
 
 def process_video_worker(
     video: VideoInfo, output_path: pathlib.Path, ffmpeg_args: List[str],
@@ -362,115 +260,73 @@ def process_video_worker(
     dashboard.update_stat(line_name, "file", video.path.name)
     dashboard.update_stat(line_name, "status", "Processing")
 
-    # Start progress server BEFORE launching ffmpeg
-    progress_srv = ProgressTCPServer()
-
-    # Base command: decouple progress from stdio; suppress stats spam on stderr
-    command = [
-        "ffmpeg", "-y",
-        "-hide_banner",
-        "-nostats",
-        "-i", str(video.path),
-        *ffmpeg_args,
-        "-progress", progress_srv.url,
-        str(output_path)
-    ]
-
-    # Create process in its own group so we can terminate children reliably
-    creationflags = 0
-    preexec_fn = None
-    if os.name == 'nt':
-        creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP  # for CTRL handling / taskkill
-    else:
-        preexec_fn = os.setsid  # new session/process group
-
-    # Launch ffmpeg with stdout detached from the terminal; collect stderr only
+    command = ["ffmpeg", "-y", "-i", str(video.path), *ffmpeg_args, "-progress", "pipe:1", str(output_path)]
+    
     proc = subprocess.Popen(
-        command,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        universal_newlines=True,
-        encoding='utf-8',
-        errors='ignore',
-        creationflags=creationflags,
-        preexec_fn=preexec_fn
+        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        universal_newlines=True, encoding='utf-8', errors='ignore'
     )
 
-    # Ensure we don't leave orphans on abnormal exits
-    atexit.register(_terminate_proc_tree, proc)
+    q_stdout = queue.Queue()
+    q_stderr = queue.Queue()
 
-    # Background logger for stderr
-    t_stderr = threading.Thread(target=_stderr_logger_thread, args=(proc.stderr, dashboard, video.path.name), daemon=True)
+    t_stdout = threading.Thread(target=_reader_thread, args=(proc.stdout, q_stdout))
+    t_stderr = threading.Thread(target=_reader_thread, args=(proc.stderr, q_stderr))
+    t_stdout.start()
     t_stderr.start()
 
+    progress, last_update_time = {}, time.time()
     speed_deque = deque(maxlen=10)
-    last_dash_update = 0.0
-
+    
     try:
         while proc.poll() is None:
-            # Pull a snapshot of progress received via TCP
-            prog, _, _ = progress_srv.snapshot()
-
-            # Compute and update UI if we have useful fields
+            # Process stdout for progress
             try:
-                if "out_time_ms" in prog and video.duration > 0:
-                    processed_ms = int(prog["out_time_ms"])
-                    percent = max(0.0, min(100.0, (processed_ms / 1_000_000) / video.duration * 100.0))
+                line = q_stdout.get(timeout=0.1)
+                if line is None: break
+                key, value = line.strip().split("=", 1)
+                progress[key] = value
+            except (queue.Empty, ValueError):
+                pass # Ignore empty queue or malformed lines
 
-                    # Average speed smoothing
-                    spd = prog.get("speed", "0.0x").strip().lower().replace("x", "")
-                    speed_val = float(spd) if spd not in ("", "nan") else 0.0
-                    if speed_val > 0:
-                        speed_deque.append(speed_val)
-                    avg_speed = sum(speed_deque) / len(speed_deque) if speed_deque else 0.0
-
-                    # ETA
-                    elapsed_s = (processed_ms / 1_000_000)
-                    remaining = max(0.0, video.duration - elapsed_s)
-                    eta_s = (remaining / avg_speed) if avg_speed > 0 else None
-
-                    # Render bar ~2x/sec
-                    now = time.time()
-                    if (now - last_dash_update) >= 0.5:
-                        filled = int(percent / 100 * BAR_WIDTH)
-                        bar = '█' * filled + '░' * (BAR_WIDTH - filled)
-                        dashboard.update_stat(line_name, "progress", percent)
-                        dashboard.update_stat(line_name, "bar", bar)
-                        dashboard.update_stat(line_name, "speed", avg_speed)
-                        dashboard.update_stat(line_name, "eta", fmt_hms(eta_s))
-                        last_dash_update = now
-            except Exception:
-                # Never let parsing hiccups kill the worker loop
+            # Log any stderr output
+            try:
+                err_line = q_stderr.get_nowait()
+                if err_line is not None and err_line.strip():
+                    dashboard.log(f"[{video.path.name}] {err_line.strip()}", level='warning')
+            except queue.Empty:
                 pass
 
-            time.sleep(0.05)  # light polling, progress is pushed by ffmpeg
-
-        # Process finished; wait logger
-        t_stderr.join(timeout=1.0)
-
+            if "out_time_ms" in progress and video.duration > 0:
+                processed_ms = int(progress["out_time_ms"])
+                percent = (processed_ms / 1_000_000) / video.duration * 100
+                
+                if (time.time() - last_update_time) > 0.5:
+                    speed_val = float(progress.get("speed", "0.0x").replace("x", ""))
+                    speed_deque.append(speed_val)
+                    avg_speed = sum(speed_deque) / len(speed_deque) if speed_deque else 0.0
+                    eta_s = (video.duration - (processed_ms / 1_000_000)) / avg_speed if avg_speed > 0 else None
+                    bar = '█' * int(percent / 100 * BAR_WIDTH) + '░' * (BAR_WIDTH - int(percent / 100 * BAR_WIDTH))
+                    
+                    dashboard.update_stat(line_name, "progress", percent)
+                    dashboard.update_stat(line_name, "bar", bar)
+                    dashboard.update_stat(line_name, "speed", avg_speed)
+                    dashboard.update_stat(line_name, "eta", fmt_hms(eta_s))
+                    last_update_time = time.time()
     finally:
-        # Ensure process is reaped and server shut down
-        try:
-            proc.wait(timeout=5)
-        except Exception:
-            _terminate_proc_tree(proc)
-        try:
-            progress_srv.close()
-        except Exception:
-            pass
+        proc.wait(timeout=5)
+        t_stdout.join()
+        t_stderr.join()
 
-    if proc.returncode == 0 and output_path.exists():
+    if proc.returncode == 0:
         dashboard.update_stat(line_name, "status", "Done")
         dashboard.update_stat(line_name, "progress", 100.0)
         dashboard.update_stat(line_name, "bar", '█' * BAR_WIDTH)
         final_size = output_path.stat().st_size
         if shared_state.get("preserve_timestamps"):
-            try:
-                source_stat = video.path.stat()
-                os.utime(output_path, (source_stat.st_atime, source_stat.st_mtime))
-            except Exception as e:
-                dashboard.log(f"[{video.path.name}] timestamp copy failed: {e}", level='warning')
-
+            source_stat = video.path.stat()
+            os.utime(output_path, (source_stat.st_atime, source_stat.st_mtime))
+        
         with shared_state["lock"]:
             shared_state["processed_count"] += 1
             shared_state["bytes_processed"] += video.size
@@ -478,7 +334,7 @@ def process_video_worker(
     else:
         dashboard.update_stat(line_name, "status", "Failed")
         dashboard.log(f"ERROR: ffmpeg failed for {video.path.name} (code: {proc.returncode})", level='error')
-
+    
     time.sleep(1)
     dashboard.reset_stat(line_name, "file", grace_period_s=1)
     dashboard.reset_stat(line_name, "status", grace_period_s=1)
@@ -501,7 +357,7 @@ def run_process_command(args: argparse.Namespace):
     with concurrent.futures.ThreadPoolExecutor() as executor:
         futures = [executor.submit(VideoInfo.get_video_info, path) for path in video_paths]
         videos = [f.result() for f in concurrent.futures.as_completed(futures)]
-
+    
     videos = [v for v in videos if not v.error]
 
     # Filter videos
@@ -520,7 +376,7 @@ def run_process_command(args: argparse.Namespace):
     if not videos:
         print(f"All {initial_count} videos were filtered out. Nothing to process.")
         return
-
+    
     print(f"Filtered down to {len(videos)} videos to process.")
     total_process_size = sum(v.size for v in videos)
 
@@ -546,7 +402,7 @@ def run_process_command(args: argparse.Namespace):
         "total_output_size": 0, "start_time": time.time(),
         "preserve_timestamps": args.preserve_timestamps,
     }
-
+    
     with TermDash(log_file="video_processor.log", align_columns=True) as dash:
         dash.add_line("header", Line("header", [
             Stat("Worker", "Worker", no_expand=True, display_width=8),
@@ -557,7 +413,7 @@ def run_process_command(args: argparse.Namespace):
             Stat("Speed", "Speed", no_expand=True, display_width=10),
             Stat("ETA", "ETA", no_expand=True, display_width=10),
         ], style='header'))
-
+        
         for i in range(args.threads):
             line_name = f"worker_{i}"
             dash.add_line(line_name, Line(line_name, [
@@ -569,7 +425,7 @@ def run_process_command(args: argparse.Namespace):
                 Stat("speed", 0.0, format_string="{:.2f}x", no_expand=True, display_width=10),
                 Stat("eta", "--:--:--", format_string="{}", no_expand=True, display_width=10),
             ]))
-
+        
         dash.add_separator()
         dash.add_line("total", Line("total", [
             Stat("total_files", (0, len(videos)), format_string="{}/{}", unit=" Videos"),
@@ -578,40 +434,30 @@ def run_process_command(args: argparse.Namespace):
             Stat("total_eta", "--:--:--", format_string="Total ETA: {}"),
         ]))
 
-        # Submit all jobs and track dashboard totals while workers run
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
             futures = [executor.submit(
                 process_video_worker, video, output_dir / video.path.name,
                 generate_ffmpeg_args(video, args), dash, f"worker_{i % args.threads}", shared_state
             ) for i, video in enumerate(videos)]
-
-            # Update totals until all workers complete
+            
             while any(f.running() for f in futures):
                 with shared_state["lock"]:
                     bytes_done = shared_state["bytes_processed"]
-                    processed_count = shared_state["processed_count"]
                 elapsed = time.time() - shared_state["start_time"]
                 bytes_per_sec = bytes_done / elapsed if elapsed > 0 else 0
                 total_eta_s = (total_process_size - bytes_done) / bytes_per_sec if bytes_per_sec > 0 else None
-                dash.update_stat("total", "total_files", (processed_count, len(videos)))
+                dash.update_stat("total", "total_files", (shared_state["processed_count"], len(videos)))
                 dash.update_stat("total", "total_size", (format_bytes(bytes_to_mib(bytes_done)), format_bytes(bytes_to_mib(total_process_size))))
                 dash.update_stat("total", "elapsed", fmt_hms(elapsed))
                 dash.update_stat("total", "total_eta", fmt_hms(total_eta_s))
                 time.sleep(1)
-
-            # Surface exceptions if any
-            for f in futures:
-                try:
-                    f.result()
-                except Exception as e:
-                    dash.log(f"Worker exception: {e}", level='error')
-
+        
         dash.update_stat("total", "total_files", (shared_state["processed_count"], len(videos)))
         dash.update_stat("total", "elapsed", fmt_hms(time.time() - shared_state["start_time"]))
         dash.update_stat("total", "total_eta", "Done")
         dash.log("All processing complete.")
         time.sleep(2)
-
+    
     print("\n--- Processing Complete ---")
     original_size = shared_state["bytes_processed"]
     new_size = shared_state["total_output_size"]
@@ -639,13 +485,13 @@ def create_parser() -> argparse.ArgumentParser:
     parser_process.add_argument("-o", "--output-dir", type=pathlib.Path, required=True, help="Directory to save processed videos.")
     parser_process.add_argument("-r", "--recursive", action="store_true", help="Recursively search for videos in subdirectories.")
     parser_process.add_argument("-t", "--threads", type=int, default=os.cpu_count() or 1, help="Number of concurrent processing threads.")
-
+    
     group_encode = parser_process.add_argument_group("Re-encoding Options")
     group_encode.add_argument("-ve", "--video-encoder", choices=["libx264", "libx265", "h264_nvenc", "hevc_nvenc"], default="libx264", help="Video encoder. 'libx...' are software (CPU). '..._nvenc' are NVIDIA hardware (GPU).")
     group_encode.add_argument("--preset", type=str, default="medium", help="FFmpeg preset. For libx*: ultrafast, medium, slow. For NVENC: p1-p7 (p5 is a good default).")
     group_encode.add_argument("-res", "--resolution", type=parse_resolution, help="Target resolution (e.g., '1280x720'). Videos will not be upscaled.")
     group_encode.add_argument("-ab", "--audio-bitrate", type=str, help="Target audio bitrate (e.g., '128k'). If omitted, audio is copied.")
-
+    
     quality_group = group_encode.add_mutually_exclusive_group()
     quality_group.add_argument("--crf", type=int, help="Constant Rate Factor for libx264/libx265 (quality-based). Lower is better. Recommended: 18-28.")
     quality_group.add_argument("--cq", type=int, help="Constant Quality for NVENC encoders (quality-based). Lower is better. Recommended: 19-25.")
@@ -670,17 +516,17 @@ def main():
     check_dependencies()
     parser = create_parser()
     args = parser.parse_args()
-
+    
     if getattr(args, 'func', None) is None:
         parser.print_help()
         sys.exit(1)
-
+    
     if args.command == "process":
         is_nvenc = 'nvenc' in args.video_encoder
         if args.crf is not None and is_nvenc:
             parser.error("argument --crf: can only be used with libx264 or libx265 encoders.")
         if args.cq is not None and not is_nvenc:
-            parser.error("argument --cq: can only be used with NVENC encoders (h264_nvenc, hevc_nvenc).")
+            parser.error("argument --cq: can only be used with NVENC encoders (h24_nvenc, hevc_nvenc).")
         if all(arg is None for arg in [args.resolution, args.crf, args.cq, args.video_bitrate, args.audio_bitrate]):
             parser.error("at least one processing option (--resolution, --crf, --cq, --video-bitrate, --audio-bitrate) must be specified.")
 
