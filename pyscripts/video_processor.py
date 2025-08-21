@@ -208,8 +208,8 @@ def generate_ffmpeg_args(video: VideoInfo, args: argparse.Namespace) -> List[str
     # Resolution scaling (no upscale)
     if args.resolution:
         target_w, target_h = args.resolution
-        source_w, _ = video.resolution
-        if source_w > target_w:
+        source_w, source_h = video.resolution
+        if source_w > target_w or source_h > target_h:
             ffmpeg_args.extend(["-vf", f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2"])
 
     return ffmpeg_args
@@ -398,10 +398,8 @@ def run_process_command(args: argparse.Namespace):
     print(f"Total new size:      {format_bytes(bytes_to_mib(new_size))}")
     print(f"Total space saved:   {format_bytes(bytes_to_mib(space_saved))} ({reduction:.1f}% reduction)")
 
-# --- Main Execution ---
-
-def main():
-    check_dependencies()
+def create_parser() -> argparse.ArgumentParser:
+    """Creates and returns the argparse parser."""
     parser = argparse.ArgumentParser(description="A multi-threaded video processing and analysis tool.", formatter_class=argparse.RawTextHelpFormatter)
     subparsers = parser.add_subparsers(dest="command", required=True, help="Available commands")
 
@@ -441,8 +439,14 @@ def main():
     group_workflow.add_argument("--dry-run", action="store_true", help="Show what would be processed without running ffmpeg.")
     group_workflow.add_argument("--preserve-timestamps", action="store_true", help="Copy modification timestamp from source to destination file.")
     parser_process.set_defaults(func=run_process_command)
+    return parser
 
+def main():
+    """Main function to parse arguments and dispatch commands."""
+    check_dependencies()
+    parser = create_parser()
     args = parser.parse_args()
+    
     if getattr(args, 'func', None) is None:
         parser.print_help()
         sys.exit(1)
@@ -452,8 +456,8 @@ def main():
         if args.crf is not None and is_nvenc:
             parser.error("argument --crf: can only be used with libx264 or libx265 encoders.")
         if args.cq is not None and not is_nvenc:
-            parser.error("argument --cq: can only be used with NVENC encoders (h264_nvenc, hevc_nvenc).")
-        if args.resolution is None and args.crf is None and args.cq is None and args.video_bitrate is None and args.audio_bitrate is None:
+            parser.error("argument --cq: can only be used with NVENC encoders (h24_nvenc, hevc_nvenc).")
+        if all(arg is None for arg in [args.resolution, args.crf, args.cq, args.video_bitrate, args.audio_bitrate]):
             parser.error("at least one processing option (--resolution, --crf, --cq, --video-bitrate, --audio-bitrate) must be specified.")
 
     args.func(args)
