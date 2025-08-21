@@ -253,12 +253,23 @@ class ProgressReporter:
         self.dup_losers_count = 0
         self.dup_losers_bytes = 0
 
+        # Stage text
+        self.stage_text = "starting"
+
         # Dashboard plumbing
         self.dash: Optional[TermDash] = None  # type: ignore
         self._ticker: Optional[threading.Thread] = None
         self._stop_evt = threading.Event()
         self._lines_present: set[str] = set()
 
+    # ----- stage -----
+    def set_stage(self, text: str):
+        with self.lock:
+            self.stage_text = str(text)
+        if self.enable_dash and self.dash and "stage" in self._lines_present:
+            self.dash.update_stat("stage", "stage", self.stage_text)
+
+    # ----- layout helpers -----
     def _add_line(self, name: str, line_obj):
         self.dash.add_line(name, line_obj)  # type: ignore
         self._lines_present.add(name)
@@ -267,73 +278,67 @@ class ProgressReporter:
         if not self.enable_dash:
             return
 
-        # Detect terminal width to choose a compact layout for small screens.
-        try:
-            cols, _ = os.get_terminal_size()
-        except OSError:
-            cols = 80
-        small = cols < 100  # <100 cols => compact, otherwise wide
-
-        # Build dashboard
+        # Build dashboard (compact-first: single-stat lines, then 2-column lines)
         self.dash = TermDash(
             refresh_rate=self.refresh_rate,
             enable_separators=True,
             reserve_extra_rows=2,
-            min_col_pad=1,
+            min_col_pad=2,
             max_col_width=None,
         )
         self.dash.__enter__()  # context-like start
 
-        # Header
+        # Header (single)
         self._add_line("hdr", Line("hdr",
             stats=[Stat("title", "Video Deduper — Live", format_string="{}")],
             style="header",
         ))
 
-        if not small:
-            # WIDE layout
-            self._add_line("scan", Line("scan", stats=[
-                Stat("elapsed", "--:--:--", prefix="Elapsed: ", no_expand=True, display_width=9),
-                Stat("files", (0, 0), prefix="Files: ", format_string="{}/{}", no_expand=True, display_width=18),
-                Stat("videos", 0, prefix="Videos: ", format_string="{}", no_expand=True, display_width=12),
-                Stat("hashed", 0, prefix="Hashed: ", format_string="{}", no_expand=True, display_width=12),
-                Stat("scanned_mb", 0, prefix="Scanned: ", format_string="{} MiB", no_expand=True, display_width=16),
-            ]))
-            self._add_line("groups", Line("groups", stats=[
-                Stat("g_hash", 0, prefix="Hash groups: ", format_string="{}", no_expand=True, display_width=16),
-                Stat("g_meta", 0, prefix="Meta groups: ", format_string="{}", no_expand=True, display_width=16),
-                Stat("g_phash", 0, prefix="pHash groups: ", format_string="{}", no_expand=True, display_width=16),
-                Stat("g_total", 0, prefix="Dup groups: ", format_string="{}", no_expand=True, display_width=16),
-            ]))
-            self._add_line("results", Line("results", stats=[
-                Stat("losers", 0, prefix="Dup files: ", format_string="{}", no_expand=True, display_width=16),
-                Stat("bytes_del", 0, prefix="To remove: ", format_string="{} MiB", no_expand=True, display_width=16),
-            ]))
-        else:
-            # COMPACT layout (<=2 stats per line)
-            self._add_line("scan1", Line("scan1", stats=[
-                Stat("elapsed", "--:--:--", prefix="Elapsed: ", no_expand=True, display_width=9),
-                Stat("files", (0, 0), prefix="Files: ", format_string="{}/{}", no_expand=True, display_width=18),
-            ]))
-            self._add_line("scan2", Line("scan2", stats=[
-                Stat("videos", 0, prefix="Videos: ", format_string="{}", no_expand=True, display_width=12),
-                Stat("hashed", 0, prefix="Hashed: ", format_string="{}", no_expand=True, display_width=12),
-            ]))
-            self._add_line("scan3", Line("scan3", stats=[
-                Stat("scanned_mb", 0, prefix="Scanned: ", format_string="{} MiB", no_expand=True, display_width=16),
-            ]))
-            self._add_line("groups1", Line("groups1", stats=[
-                Stat("g_hash", 0, prefix="Hash groups: ", format_string="{}", no_expand=True, display_width=16),
-                Stat("g_meta", 0, prefix="Meta groups: ", format_string="{}", no_expand=True, display_width=16),
-            ]))
-            self._add_line("groups2", Line("groups2", stats=[
-                Stat("g_phash", 0, prefix="pHash groups: ", format_string="{}", no_expand=True, display_width=16),
-                Stat("g_total", 0, prefix="Dup groups: ", format_string="{}", no_expand=True, display_width=16),
-            ]))
-            self._add_line("results", Line("results", stats=[
-                Stat("losers", 0, prefix="Dup files: ", format_string="{}", no_expand=True, display_width=14),
-                Stat("bytes_del", 0, prefix="To remove: ", format_string="{} MiB", no_expand=True, display_width=16),
-            ]))
+        # Stage (single)
+        self._add_line("stage", Line("stage", stats=[
+            Stat("stage", "starting", prefix="Stage: ", no_expand=True, display_width=24),
+        ]))
+
+        # Elapsed (single)
+        self._add_line("elapsed", Line("elapsed", stats=[
+            Stat("elapsed", "--:--:--", prefix="Elapsed: ", no_expand=True, display_width=9),
+        ]))
+
+        # Files (single)
+        self._add_line("files", Line("files", stats=[
+            Stat("files", (0, 0), prefix="Files: ", format_string="{}/{}", no_expand=True, display_width=24),
+        ]))
+
+        # Videos (single)
+        self._add_line("videos", Line("videos", stats=[
+            Stat("videos", 0, prefix="Videos: ", format_string="{}", no_expand=True, display_width=14),
+        ]))
+
+        # Hashed (single)
+        self._add_line("hashed", Line("hashed", stats=[
+            Stat("hashed", 0, prefix="Hashed: ", format_string="{}", no_expand=True, display_width=14),
+        ]))
+
+        # Scanned MiB (single)
+        self._add_line("scanned", Line("scanned", stats=[
+            Stat("scanned_mb", 0, prefix="Scanned: ", format_string="{} MiB", no_expand=True, display_width=24),
+        ]))
+
+        # Group lines (two columns, aligned)
+        self._add_line("groups1", Line("groups1", stats=[
+            Stat("g_hash", 0, prefix="Hash groups: ", format_string="{}", no_expand=True, display_width=18),
+            Stat("g_meta", 0, prefix="Meta groups: ", format_string="{}", no_expand=True, display_width=18),
+        ]))
+        self._add_line("groups2", Line("groups2", stats=[
+            Stat("g_phash", 0, prefix="pHash groups: ", format_string="{}", no_expand=True, display_width=18),
+            Stat("g_total", 0, prefix="Dup groups: ", format_string="{}", no_expand=True, display_width=18),
+        ]))
+
+        # Results (two columns)
+        self._add_line("results", Line("results", stats=[
+            Stat("losers", 0, prefix="Dup files: ", format_string="{}", no_expand=True, display_width=18),
+            Stat("bytes_del", 0, prefix="To remove: ", format_string="{} MiB", no_expand=True, display_width=18),
+        ]))
 
         # background ticker to update elapsed
         self._ticker = threading.Thread(target=self._tick_loop, daemon=True)
@@ -362,39 +367,27 @@ class ProgressReporter:
         if not self.enable_dash or not self.dash:
             return
         elapsed = int(time.time() - self.start_ts)
-        for ln in ("scan", "scan1"):
-            if ln in self._lines_present:
-                self.dash.update_stat(ln, "elapsed", f"{elapsed//3600:02d}:{(elapsed%3600)//60:02d}:{elapsed%60:02d}")
+        self.dash.update_stat("elapsed", "elapsed", f"{elapsed//3600:02d}:{(elapsed%3600)//60:02d}:{elapsed%60:02d}")
 
     def _update_scanned_mib(self):
         mib = int(self.bytes_seen / (1024*1024))
-        for ln in ("scan", "scan3"):
-            if ln in self._lines_present:
-                self.dash.update_stat(ln, "scanned_mb", mib)
+        self.dash.update_stat("scanned", "scanned_mb", mib)
 
     def flush(self):
         if not self.enable_dash or not self.dash:
             return
         with self.lock:
             self._set_elapsed()
-            for ln in ("scan", "scan1"):
-                if ln in self._lines_present:
-                    self.dash.update_stat(ln, "files", (self.scanned_files, self.total_files))
-            for ln in ("scan", "scan2"):
-                if ln in self._lines_present:
-                    self.dash.update_stat(ln, "videos", self.video_files)
-                    self.dash.update_stat(ln, "hashed", self.hash_done)
+            self.dash.update_stat("files", "files", (self.scanned_files, self.total_files))
+            self.dash.update_stat("videos", "videos", self.video_files)
+            self.dash.update_stat("hashed", "hashed", self.hash_done)
             self._update_scanned_mib()
 
             total_groups = self.groups_hash + self.groups_meta + self.groups_phash
-            for ln in ("groups", "groups1"):
-                if ln in self._lines_present:
-                    self.dash.update_stat(ln, "g_hash", self.groups_hash)
-                    self.dash.update_stat(ln, "g_meta", self.groups_meta)
-            for ln in ("groups", "groups2"):
-                if ln in self._lines_present:
-                    self.dash.update_stat(ln, "g_phash", self.groups_phash)
-                    self.dash.update_stat(ln, "g_total", total_groups)
+            self.dash.update_stat("groups1", "g_hash", self.groups_hash)
+            self.dash.update_stat("groups1", "g_meta", self.groups_meta)
+            self.dash.update_stat("groups2", "g_phash", self.groups_phash)
+            self.dash.update_stat("groups2", "g_total", total_groups)
 
             # Results (if already known)
             self.dash.update_stat("results", "losers", int(self.dup_losers_count))
@@ -542,6 +535,9 @@ class Grouper:
         Returns groups keyed by an opaque ID; each group is a list of FileMeta/VideoMeta to consider duplicates.
         """
         self._reporter = reporter
+        if self._reporter:
+            self._reporter.set_stage("scanning")
+
         groups: Dict[str, List[VideoMeta | FileMeta]] = {}
         want_meta = self.mode in ("meta", "phash", "all")
         want_phash = self.mode in ("phash", "all")
@@ -572,6 +568,8 @@ class Grouper:
 
         # Exact hash
         if self.mode in ("hash", "all"):
+            if self._reporter:
+                self._reporter.set_stage("hashing")
             by_hash: Dict[str, List[VideoMeta | FileMeta]] = defaultdict(list)
 
             def ensure_hash(m: VideoMeta | FileMeta):
@@ -596,6 +594,8 @@ class Grouper:
 
         # Metadata (union-find across videos)
         if self.mode in ("meta", "all"):
+            if self._reporter:
+                self._reporter.set_stage("grouping(meta)")
             vids = [m for m in metas if isinstance(m, VideoMeta)]
             if vids:
                 tol = max(0.0, float(self.duration_tolerance))
@@ -639,7 +639,7 @@ class Grouper:
                         for j in range(i + 1, len(curr)):
                             if similar(curr[i], curr[j]):
                                 union(curr[i], curr[j])
-                    # cross with next bucket (±1 bucket handles tolerance bleed)
+                    # cross with next bucket
                     if idx + 1 < len(keys_sorted):
                         nxt = buckets[keys_sorted[idx + 1]]
                         for a in curr:
@@ -660,6 +660,8 @@ class Grouper:
 
         # Perceptual hashing
         if self.mode in ("phash", "all"):
+            if self._reporter:
+                self._reporter.set_stage("grouping(phash)")
             vids = [m for m in metas if isinstance(m, VideoMeta) and m.phash_signature]
             visited = set()
             gid = 0
@@ -994,11 +996,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if not report_path.exists():
             print(f"video_dedupe.py: error: report not found: {report_path}", file=sys.stderr)
             return 2
+        reporter = ProgressReporter(enable_dash=bool(args.live), refresh_rate=args.refresh_rate)
+        reporter.start()
+        reporter.set_stage("applying")
         base_root: Optional[Path] = None
         if args.directory or args.dir_opt:
             base_root = Path(args.directory or args.dir_opt).expanduser().resolve()
         backup = Path(args.backup).expanduser().resolve() if args.backup else None
         c, s = apply_report(report_path, dry_run=args.dry_run, force=args.force, backup=backup, base_root=base_root)
+        reporter.set_results(c, s)
+        reporter.set_stage("done")
+        reporter.stop()
         _print(f"Report applied: removed/moved={c}; size={s/1_048_576:.2f} MiB")
         return 0
 
@@ -1031,6 +1039,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         files = list(iter_files(root, max_depth=max_depth, patterns=patterns))
         if not files:
             _print("No files matched.")
+            reporter.set_stage("done")
             return 0
 
         g = Grouper(
@@ -1045,14 +1054,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
 
         groups = g.collect(files, reporter=reporter)
-        if not groups:
-            _print("No duplicate groups found.")
-            return 0
-
+        reporter.set_stage("planning")
         keep_order = [t.strip() for t in args.keep.split(",") if t.strip()]
         winners = choose_winners(groups, keep_order)
 
-        # Compute losers + bytes now so UI shows live “Dup files” and “To remove”
         losers = [l for (_, ls) in winners.values() for l in ls]
         losers_bytes = sum(l.size for l in losers)
         reporter.set_results(len(losers), losers_bytes)
@@ -1072,8 +1077,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             total_deleted += c
             total_bytes += s
 
-        # Final numbers to dashboard (already set via set_results, but keep for safety)
-        reporter.set_results(len(losers), sum(l.size for l in losers))
+        reporter.set_stage("done")
         _print(f"Candidates processed: {len(losers)}; removed/moved: {total_deleted}; size={total_bytes/1_048_576:.2f} MiB")
         return 0
     finally:
