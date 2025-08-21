@@ -11,6 +11,7 @@ import concurrent.futures
 import json
 import os
 import pathlib
+import queue
 import re
 import shutil
 import subprocess
@@ -18,7 +19,7 @@ import sys
 import threading
 import time
 from collections import deque
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import IO, Any, Dict, Iterable, List, Optional, Tuple
 
 # --- Module Setup ---
 # Add the parent directory to sys.path to make the 'modules' directory importable.
@@ -242,49 +243,81 @@ def generate_ffmpeg_args(video: VideoInfo, args: argparse.Namespace) -> List[str
 
     return ffmpeg_args
 
+def _reader_thread(pipe: Optional[IO[str]], q: queue.Queue):
+    """Reads lines from a pipe and puts them into a queue."""
+    try:
+        if pipe:
+            for line in iter(pipe.readline, ''):
+                q.put(line)
+    finally:
+        q.put(None) # Sentinel to indicate the pipe has closed
+
 def process_video_worker(
     video: VideoInfo, output_path: pathlib.Path, ffmpeg_args: List[str],
     dashboard: TermDash, line_name: str, shared_state: Dict[str, Any]
 ):
-    """Worker function to process a single video using ffmpeg."""
+    """Worker function to process a single video using ffmpeg with robust I/O handling."""
     dashboard.update_stat(line_name, "file", video.path.name)
     dashboard.update_stat(line_name, "status", "Processing")
 
     command = ["ffmpeg", "-y", "-i", str(video.path), *ffmpeg_args, "-progress", "pipe:1", str(output_path)]
+    
     proc = subprocess.Popen(
-        command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         universal_newlines=True, encoding='utf-8', errors='ignore'
     )
 
+    q_stdout = queue.Queue()
+    q_stderr = queue.Queue()
+
+    t_stdout = threading.Thread(target=_reader_thread, args=(proc.stdout, q_stdout))
+    t_stderr = threading.Thread(target=_reader_thread, args=(proc.stderr, q_stderr))
+    t_stdout.start()
+    t_stderr.start()
+
     progress, last_update_time = {}, time.time()
     speed_deque = deque(maxlen=10)
-
-    for line in proc.stdout:
-        try:
-            key, value = line.strip().split("=", 1)
-            progress[key] = value
-        except ValueError:
-            continue
-
-        if "out_time_ms" in progress and video.duration > 0:
-            processed_ms = int(progress["out_time_ms"])
-            percent = (processed_ms / 1_000_000) / video.duration * 100
-            
-            if (time.time() - last_update_time) > 0.5:
-                speed_val = float(progress.get("speed", "0.0x").replace("x", ""))
-                speed_deque.append(speed_val)
-                avg_speed = sum(speed_deque) / len(speed_deque) if speed_deque else 0.0
-                eta_s = (video.duration - (processed_ms / 1_000_000)) / avg_speed if avg_speed > 0 else None
-                bar = '█' * int(percent / 100 * BAR_WIDTH) + '░' * (BAR_WIDTH - int(percent / 100 * BAR_WIDTH))
-                
-                dashboard.update_stat(line_name, "progress", percent)
-                dashboard.update_stat(line_name, "bar", bar)
-                dashboard.update_stat(line_name, "speed", avg_speed)
-                dashboard.update_stat(line_name, "eta", fmt_hms(eta_s))
-                last_update_time = time.time()
-
-    proc.wait()
     
+    try:
+        while proc.poll() is None:
+            # Process stdout for progress
+            try:
+                line = q_stdout.get(timeout=0.1)
+                if line is None: break
+                key, value = line.strip().split("=", 1)
+                progress[key] = value
+            except (queue.Empty, ValueError):
+                pass # Ignore empty queue or malformed lines
+
+            # Log any stderr output
+            try:
+                err_line = q_stderr.get_nowait()
+                if err_line is not None and err_line.strip():
+                    dashboard.log(f"[{video.path.name}] {err_line.strip()}", level='warning')
+            except queue.Empty:
+                pass
+
+            if "out_time_ms" in progress and video.duration > 0:
+                processed_ms = int(progress["out_time_ms"])
+                percent = (processed_ms / 1_000_000) / video.duration * 100
+                
+                if (time.time() - last_update_time) > 0.5:
+                    speed_val = float(progress.get("speed", "0.0x").replace("x", ""))
+                    speed_deque.append(speed_val)
+                    avg_speed = sum(speed_deque) / len(speed_deque) if speed_deque else 0.0
+                    eta_s = (video.duration - (processed_ms / 1_000_000)) / avg_speed if avg_speed > 0 else None
+                    bar = '█' * int(percent / 100 * BAR_WIDTH) + '░' * (BAR_WIDTH - int(percent / 100 * BAR_WIDTH))
+                    
+                    dashboard.update_stat(line_name, "progress", percent)
+                    dashboard.update_stat(line_name, "bar", bar)
+                    dashboard.update_stat(line_name, "speed", avg_speed)
+                    dashboard.update_stat(line_name, "eta", fmt_hms(eta_s))
+                    last_update_time = time.time()
+    finally:
+        proc.wait(timeout=5)
+        t_stdout.join()
+        t_stderr.join()
+
     if proc.returncode == 0:
         dashboard.update_stat(line_name, "status", "Done")
         dashboard.update_stat(line_name, "progress", 100.0)
@@ -308,6 +341,12 @@ def process_video_worker(
 
 def run_process_command(args: argparse.Namespace):
     """Execute the 'process' command."""
+    # Validate output directory
+    if any(args.output_dir.suffix.lower() == ext for ext in VIDEO_EXTENSIONS):
+        print(f"Error: The output path '-o' must be a directory, not a file.", file=sys.stderr)
+        print(f"You provided: {args.output_dir}", file=sys.stderr)
+        sys.exit(1)
+
     print("Searching for videos...")
     video_paths = list(VideoFinder.find(args.input, args.recursive))
     if not video_paths:
