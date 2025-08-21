@@ -98,18 +98,44 @@ def handle_find_recent(args):
         print("No matching files found.")
         return
 
-    print(f"\n{'Name':<50} {'Size':>10} {'Last Accessed':>25}")
-    print(f"{'-'*50:<50} {'-'*10:>10} {'-'*25:>25}")
+    # Dynamic column formatting
+    try:
+        console_width = shutil.get_terminal_size().columns
+    except OSError:
+        console_width = 80
+    
+    SIZE_WIDTH = 10
+    DATE_WIDTH = 25
+    SPACING = 2
+    name_width = console_width - SIZE_WIDTH - DATE_WIDTH - SPACING
+    if name_width < 20: name_width = 20
+
+    header_name = "Name"
+    header_date = "Last Accessed"
+    print(f"\n{header_name:<{name_width}} {'Size':>{SIZE_WIDTH}} {header_date:>{DATE_WIDTH}}")
+    print(f"{'-'*name_width:<{name_width}} {'-'*SIZE_WIDTH:>{SIZE_WIDTH}} {'-'*DATE_WIDTH:>{DATE_WIDTH}}")
+    
     for path_obj, stats in recent_files:
         size_str = format_bytes(stats.st_size)
         access_time = datetime.fromtimestamp(stats.st_atime).strftime('%Y-%m-%d %H:%M:%S')
-        print(f"{path_obj.name:<50} {size_str:>10} {access_time:>25}")
+        
+        filename = path_obj.name
+        if len(filename) > name_width:
+            filename = filename[:name_width - 3] + '...'
+
+        print(f"{filename:<{name_width}} {size_str:>{SIZE_WIDTH}} {access_time:>{DATE_WIDTH}}")
 
 def handle_find_old(args):
     """
     Finds the largest files that are older than a specified cutoff date.
     """
-    print(f"Searching in '{args.path}' for top {args.top} '{args.filter}' files not {args.date_type} since {args.cutoff_days} days ago...")
+    # Normalize date_type abbreviation
+    date_type_full = args.date_type
+    if date_type_full in ('a', 'm', 'c'):
+        mapper = {'a': 'accessed', 'm': 'modified', 'c': 'created'}
+        date_type_full = mapper[date_type_full]
+
+    print(f"Searching in '{args.path}' for top {args.top} '{args.filter}' files not {date_type_full} since {args.cutoff_days} days ago...")
 
     cutoff_datetime = datetime.now() - timedelta(days=args.cutoff_days)
     cutoff_timestamp = cutoff_datetime.timestamp()
@@ -119,7 +145,7 @@ def handle_find_old(args):
         'modified': 'st_mtime',
         'created': 'st_ctime'
     }
-    date_attr = date_type_map[args.date_type]
+    date_attr = date_type_map[date_type_full]
 
     old_files = []
     for path_obj, stats in get_files_from_path(args.path, args.filter):
@@ -134,12 +160,32 @@ def handle_find_old(args):
         print("No matching files found.")
         return
 
-    print(f"\n{'Name':<50} {'Size':>10} {args.date_type.capitalize() + ' Date':>25}")
-    print(f"{'-'*50:<50} {'-'*10:>10} {'-'*25:>25}")
+    # Dynamic column formatting
+    try:
+        console_width = shutil.get_terminal_size().columns
+    except OSError:
+        console_width = 80
+    
+    SIZE_WIDTH = 10
+    DATE_WIDTH = 25
+    SPACING = 2
+    name_width = console_width - SIZE_WIDTH - DATE_WIDTH - SPACING
+    if name_width < 20: name_width = 20
+    
+    header_name = "Name"
+    header_date = f"{date_type_full.capitalize()} Date"
+    print(f"\n{header_name:<{name_width}} {'Size':>{SIZE_WIDTH}} {header_date:>{DATE_WIDTH}}")
+    print(f"{'-'*name_width:<{name_width}} {'-'*SIZE_WIDTH:>{SIZE_WIDTH}} {'-'*DATE_WIDTH:>{DATE_WIDTH}}")
+
     for path_obj, stats in old_files[:args.top]:
         size_str = format_bytes(stats.st_size)
         date_str = datetime.fromtimestamp(getattr(stats, date_attr)).strftime('%Y-%m-%d %H:%M:%S')
-        print(f"{path_obj.name:<50} {size_str:>10} {date_str:>25}")
+
+        filename = path_obj.name
+        if len(filename) > name_width:
+            filename = filename[:name_width - 3] + '...'
+        
+        print(f"{filename:<{name_width}} {size_str:>{SIZE_WIDTH}} {date_str:>{DATE_WIDTH}}")
 
 
 def main():
@@ -177,7 +223,14 @@ def main():
     parser_old.add_argument('-p', '--path', default='.', help='The directory to search (default: current directory).')
     parser_old.add_argument('-c', '--cutoff-days', type=int, default=30, help='The number of days ago for the cutoff (default: 30).')
     parser_old.add_argument('-t', '--top', type=int, default=10, help='The number of files to list (default: 10).')
-    parser_old.add_argument('-d', '--date-type', choices=['accessed', 'modified', 'created'], default='accessed', help='The date timestamp to check (default: accessed).')
+    parser_old.add_argument(
+        '-d', '--date-type', 
+        choices=['accessed', 'a', 'modified', 'm', 'created', 'c'], 
+        default='accessed', 
+        help='''The date timestamp to check.
+Can be abbreviated: a=accessed, m=modified, c=created.
+(default: accessed)'''
+    )
     parser_old.add_argument('-f', '--filter', default='*.*', help='The file filter/pattern to use (default: "*.*").')
 
     args = parser.parse_args()
