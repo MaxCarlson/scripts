@@ -5,13 +5,13 @@
 file_kit.py
 A command-line utility for finding and listing files by size/date and related tasks.
 
-Improvements vs. original:
-- UTF-8 stdout to avoid UnicodeEncodeError on Windows when redirecting output
-- Memory-efficient top-N selection for largest files (heap-based)
-- Faster duplicate detection with optional fast prehash + threaded hashing
-- New global output options: --absolute, --output, --encoding
-- New 'du' subcommand for directory size summaries with depth limiting
-- Consistent formatting, robust error handling, and deterministic ordering
+Key points:
+- Fixes Windows cp1252 UnicodeEncodeError by forcing UTF-8 stdout/stderr.
+- Memory-efficient top-N selection (heap) for largest files.
+- Fast duplicate detection: optional prehash + threaded full hashing; selectable hash algo.
+- New global output options: --absolute, --output, --encoding.
+- New 'du' command (directory usage) with --max-depth and sort controls.
+- Console output shows filenames by default; full paths when --absolute or --output.
 """
 
 from __future__ import annotations
@@ -20,15 +20,15 @@ import argparse
 import concurrent.futures
 import hashlib
 import heapq
+import io
 import os
 import re
 import shutil
 import sys
 from collections import defaultdict
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Generator, Iterable, List, Optional, Tuple
+from typing import Dict, Generator, List, Optional, Tuple
 
 # ----------------------------
 # Utility & Formatting Helpers
@@ -41,17 +41,14 @@ def parse_size(size_str: str) -> int:
     if not m:
         raise argparse.ArgumentTypeError(f"Invalid size format: '{size_str}'")
     num, unit, _ = m.groups()
-    num = float(num)
+    numf = float(num)
     powers = {'': 0, 'k': 1, 'm': 2, 'g': 3, 't': 4, 'p': 5}
-    power = powers.get(unit, None)
-    if power is None:
+    if unit not in powers:
         raise argparse.ArgumentTypeError(f"Unknown size unit in '{size_str}'")
-    return int(num * (1024 ** power))
+    return int(numf * (1024 ** powers[unit]))
 
 def format_bytes(n: int) -> str:
-    """Format bytes as human string."""
-    if n < 0:
-        return f"{n}B"
+    """Format bytes as human-readable string."""
     units = ['B', 'K', 'M', 'G', 'T', 'P']
     i = 0
     v = float(n)
@@ -61,39 +58,32 @@ def format_bytes(n: int) -> str:
     return f"{v:.2f}{units[i]}B"
 
 def configure_stdout(encoding: str = "utf-8") -> None:
-    """Force stdout/stderr to chosen encoding to avoid Windows codepage issues."""
-    # Python 3.7+ provides reconfigure
-    for stream in (sys.stdout, sys.stderr):
+    """Force stdout/stderr encoding to avoid Windows codepage issues."""
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name)
         try:
-            stream.reconfigure(encoding=encoding, errors="backslashreplace")
+            stream.reconfigure(encoding=encoding, errors="backslashreplace")  # type: ignore[attr-defined]
         except Exception:
-            # Fallback: wrap via TextIOWrapper if .reconfigure not available
+            # Fallback: wrap via TextIOWrapper if .reconfigure is not available and buffer exists
             try:
-                import io  # local import for fallback path
-                wrapped = io.TextIOWrapper(stream.buffer, encoding=encoding, errors="backslashreplace")
-                if stream is sys.stdout:
-                    sys.stdout = wrapped  # type: ignore[assignment]
-                else:
-                    sys.stderr = wrapped  # type: ignore[assignment]
+                wrapped = io.TextIOWrapper(stream.buffer, encoding=encoding, errors="backslashreplace")  # type: ignore[attr-defined]
+                setattr(sys, stream_name, wrapped)
             except Exception:
-                # As a last resort, continue with whatever encoding exists.
+                # As a last resort, keep whatever encoding exists.
                 pass
 
 def safe_path_display(p: Path, absolute: bool) -> str:
+    """Return a printable path (absolute when requested)."""
     try:
-        # Avoid resolving symlinks to keep user-visible path; absolute just prefixes root.
-        s = str(p if not absolute else p.resolve())
+        return str(p.resolve() if absolute else p)
     except Exception:
-        s = str(p)
-    return s
+        return str(p)
 
-@dataclass
 class TeeWriter:
-    """Prints to stdout and optional file with consistent encoding."""
-    file_path: Optional[Path] = None
-    encoding: str = "utf-8"
-
-    def __post_init__(self):
+    """Print to stdout and optional file (with consistent encoding)."""
+    def __init__(self, file_path: Optional[Path] = None, encoding: str = "utf-8"):
+        self.file_path = file_path
+        self.encoding = encoding
         self._fp = None
         if self.file_path:
             self._fp = open(self.file_path, "w", encoding=self.encoding, newline="")
@@ -120,61 +110,57 @@ class TeeWriter:
 
 def get_files_from_path(search_path: str, file_filter: str, recursive: bool) -> Generator[Tuple[Path, os.stat_result], None, None]:
     """Yield (Path, stat) for files matching pattern under search_path."""
-    path_obj = Path(search_path)
-    if not path_obj.is_dir():
+    base = Path(search_path)
+    if not base.is_dir():
         print(f"Error: Path '{search_path}' is not a valid directory.", file=sys.stderr)
         sys.exit(1)
-
-    # Choose iterator
-    iterator = path_obj.rglob(file_filter) if recursive else path_obj.glob(file_filter)
-
+    iterator = base.rglob(file_filter) if recursive else base.glob(file_filter)
     for file_path in iterator:
         try:
             if file_path.is_file():
                 try:
                     yield file_path, file_path.stat()
                 except FileNotFoundError:
-                    # Deleted between listing and stat
                     continue
         except PermissionError:
-            # Skip directories/files we can't access
             continue
 
 # ----------------------------
 # Subcommand Handlers
 # ----------------------------
 
+def _name_for_console(p: Path, args) -> str:
+    """Use filename for interactive console; full path if --absolute or writing to file."""
+    if args.absolute or args.output:
+        return safe_path_display(p, args.absolute)
+    return p.name  # keeps tests stable and readable in terminals
+
 def handle_top_size(args: argparse.Namespace) -> None:
-    """Find top N largest files (memory-efficient)."""
+    """Find top N largest files (heap-based)."""
     search_type = "recursively" if args.recursive else "in the top-level directory"
     with TeeWriter(Path(args.output) if args.output else None, args.encoding) as w:
         w.write(f"Searching for the {args.top} largest '{args.filter}' files {search_type} of '{args.path}'...")
 
-        # Use a bounded min-heap to keep only top N
-        heap: List[Tuple[int, str, Path]] = []  # (size, name, path) for stable ordering
+        heap: List[Tuple[int, str, Path]] = []  # (size, name, path)
         for p, st in get_files_from_path(args.path, args.filter, args.recursive):
-            t = (st.st_size, p.name, p)
+            item = (st.st_size, p.name, p)
             if len(heap) < args.top:
-                heapq.heappush(heap, t)
+                heapq.heappush(heap, item)
             else:
-                # Replace smallest if current is larger
-                if t > heap[0]:
-                    heapq.heapreplace(heap, t)
+                if item > heap[0]:
+                    heapq.heapreplace(heap, item)
 
-        # Sort descending by size, then by name for determinism
-        top_items = sorted(heap, key=lambda x: (x[0], x[1]), reverse=True)
+        items = sorted(heap, key=lambda x: (x[0], x[1]), reverse=True)
 
-        # Console width for pretty alignment (when not redirected)
         try:
             console_width = shutil.get_terminal_size().columns
         except OSError:
             console_width = 120
 
         w.write("-" * console_width)
-        for size, _, path_obj in top_items:
+        for size, _, path_obj in items:
             size_str = f"{format_bytes(size):>10} "
-            name_str = safe_path_display(path_obj if not args.absolute else path_obj.resolve(), args.absolute)
-            # If going to a file OR absolute paths requested, don't truncate names.
+            name_str = _name_for_console(path_obj, args)
             if not args.output and not args.absolute:
                 remaining = max(10, console_width - len(size_str) - 1)
                 if len(name_str) > remaining:
@@ -192,7 +178,7 @@ def handle_find_recent(args: argparse.Namespace) -> None:
         )
 
         cutoff_ts = (datetime.now() - timedelta(days=args.days)).timestamp()
-        matches: List[Tuple[int, float, Path]] = []  # (size, atime, path)
+        matches: List[Tuple[int, float, Path]] = []
         for p, st in get_files_from_path(args.path, args.filter, args.recursive):
             if st.st_size > args.size and st.st_atime > cutoff_ts:
                 matches.append((st.st_size, st.st_atime, p))
@@ -216,7 +202,7 @@ def handle_find_recent(args: argparse.Namespace) -> None:
         for size, atime, p in matches:
             size_str = format_bytes(size)
             date_str = datetime.fromtimestamp(atime).strftime('%Y-%m-%d %H:%M:%S')
-            name_str = safe_path_display(p if not args.absolute else p.resolve(), args.absolute)
+            name_str = _name_for_console(p, args)
             if not args.output and not args.absolute and len(name_str) > name_w:
                 name_str = name_str[: name_w - 3] + "..."
             w.write(f"{name_str:<{name_w}} {size_str:>{SIZE_W}} {date_str:>{DATE_W}}")
@@ -224,9 +210,8 @@ def handle_find_recent(args: argparse.Namespace) -> None:
 def handle_find_old(args: argparse.Namespace) -> None:
     """Find largest files not accessed/modified/created since cutoff-days ago."""
     mapper = {'a': 'accessed', 'm': 'modified', 'c': 'created'}
-    date_type_full = mapper.get(args.date_type, args.date_type)  # normalize
+    date_type_full = mapper.get(args.date_type, args.date_type)
     date_map = {'accessed': 'st_atime', 'modified': 'st_mtime', 'created': 'st_ctime'}
-
     if date_type_full not in date_map:
         print(f"Invalid date type: {args.date_type}", file=sys.stderr)
         sys.exit(2)
@@ -267,7 +252,7 @@ def handle_find_old(args: argparse.Namespace) -> None:
         for size, ts, p in top:
             size_str = format_bytes(size)
             date_str = datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
-            name_str = safe_path_display(p if not args.absolute else p.resolve(), args.absolute)
+            name_str = _name_for_console(p, args)
             if not args.output and not args.absolute and len(name_str) > name_w:
                 name_str = name_str[: name_w - 3] + "..."
             w.write(f"{name_str:<{name_w}} {size_str:>{SIZE_W}} {date_str:>{DATE_W}}")
@@ -286,8 +271,7 @@ def _hash_file(path: Path, algo_name: str, full: bool, chunk_size: int = 1024 * 
         hasher = HASH_ALGOS[algo_name]()  # type: ignore[call-arg]
         with open(path, "rb") as f:
             if not full:
-                data = f.read(chunk_size)
-                hasher.update(data)
+                hasher.update(f.read(chunk_size))
             else:
                 while True:
                     chunk = f.read(chunk_size)
@@ -313,13 +297,12 @@ def handle_find_dupes(args: argparse.Namespace) -> None:
             if st.st_size >= args.min_size:
                 by_size[st.st_size].append(p)
 
-        # Filter to candidates with more than one file
         candidate_groups = [paths for paths in by_size.values() if len(paths) > 1]
         if not candidate_groups:
             w.write("No potential duplicates found.")
             return
 
-        # Step 2: optional quick prehash (first 1 MiB)
+        # Step 2: prehash (first 1MiB) to prune
         prehash_groups: Dict[bytes, List[Path]] = defaultdict(list)
         if args.quick:
             with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as ex:
@@ -330,12 +313,11 @@ def handle_find_dupes(args: argparse.Namespace) -> None:
                     if digest is not None:
                         prehash_groups[digest].append(p)
         else:
-            # No prehash: treat each size-group as a prehash bucket
+            # Without prehash, just treat each size-bucket as a group keyed by size bytes marker
             for paths in candidate_groups:
-                # Use a sentinel for bucket key; different sizes will have different lists
-                prehash_groups[os.urandom(8)] = list(paths)
+                prehash_groups[bytes(os.urandom(8))] = list(paths)
 
-        # Step 3: full hash within each prehash bucket where >1 file
+        # Step 3: full hash within each prehash bucket
         fullhash_groups: Dict[bytes, List[Path]] = defaultdict(list)
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as ex:
             future_map = {}
@@ -351,7 +333,6 @@ def handle_find_dupes(args: argparse.Namespace) -> None:
                 if digest is not None:
                     fullhash_groups[digest].append(p)
 
-        # Keep only true dupes (>=2 with same full hash)
         dupes = {h: sorted(ps, key=lambda x: x.name) for h, ps in fullhash_groups.items() if len(ps) > 1}
         if not dupes:
             w.write("No duplicate files found.")
@@ -365,7 +346,7 @@ def handle_find_dupes(args: argparse.Namespace) -> None:
                 size_str = "?"
             w.write(f"\nHash: {h.hex()[:16]}... ({len(paths)} files, size: {size_str})")
             for p in paths:
-                w.write(f"  - {safe_path_display(p if not args.absolute else p.resolve(), args.absolute)}")
+                w.write(f"  - {safe_path_display(p, args.absolute)}")
 
 # -------- Directory Usage (du) --------
 
@@ -379,12 +360,9 @@ def handle_du(args: argparse.Namespace) -> None:
     with TeeWriter(Path(args.output) if args.output else None, args.encoding) as w:
         w.write(f"Summarizing sizes under '{args.path}' (max-depth={args.max_depth}, recursive={args.recursive})...")
 
-        # Accumulate sizes per directory up to max depth
         sizes: Dict[Path, int] = defaultdict(int)
-        cutoff_depth = base.resolve().parts if args.absolute else base.parts
         base_depth = len(base.parts)
 
-        # Walk using os.scandir for speed
         stack: List[Path] = [base]
         while stack:
             cur = stack.pop()
@@ -394,10 +372,9 @@ def handle_du(args: argparse.Namespace) -> None:
                         try:
                             if entry.is_file(follow_symlinks=False):
                                 st = entry.stat(follow_symlinks=False)
-                                # Bubble size up to all ancestors within depth
                                 p = Path(entry.path)
-                                # Only attribute to ancestors within max_depth
-                                for d in range(base_depth, min(len(p.parents), base_depth + args.max_depth) + 1):
+                                # Attribute file size to ancestors within depth
+                                for d in range(base_depth, min(len(p.parts), base_depth + args.max_depth + 1)):
                                     sizes[Path(*p.parts[:d])] += st.st_size
                             elif entry.is_dir(follow_symlinks=False) and args.recursive:
                                 stack.append(Path(entry.path))
@@ -406,7 +383,6 @@ def handle_du(args: argparse.Namespace) -> None:
             except (PermissionError, FileNotFoundError):
                 continue
 
-        # Prepare rows: only directories within max-depth from base
         rows: List[Tuple[int, Path]] = []
         for d, sz in sizes.items():
             depth = len(d.parts) - base_depth
@@ -417,11 +393,7 @@ def handle_du(args: argparse.Namespace) -> None:
             w.write("No data to summarize.")
             return
 
-        # Sort
-        key = {
-            "size": lambda x: (x[0], x[1].name),
-            "name": lambda x: (x[1].name,),
-        }[args.sort]
+        key = {"size": lambda x: (x[0], x[1].name), "name": lambda x: (x[1].name,)}[args.sort]
         rows.sort(key=key, reverse=(args.sort == "size"))
 
         try:
@@ -434,7 +406,7 @@ def handle_du(args: argparse.Namespace) -> None:
         w.write(f"\n{'Directory':<{name_w}} {'Total Size':>{SIZE_W}}")
         w.write(f"{'-'*name_w:<{name_w}} {'-'*SIZE_W:>{SIZE_W}}")
         for sz, d in rows[: args.top]:
-            name = safe_path_display(d if args.absolute else d, args.absolute)
+            name = safe_path_display(d, args.absolute) if (args.absolute or args.output) else d.name
             if not args.output and not args.absolute and len(name) > name_w:
                 name = name[: name_w - 3] + "..."
             w.write(f"{name:<{name_w}} {format_bytes(sz):>{SIZE_W}}")
@@ -537,10 +509,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
-
-    # Ensure UTF-8 output unless user says otherwise (fixes Windows cp1252 errors on redirection)
     configure_stdout(args.encoding)
-
     handler_map = {
         "top-size": handle_top_size,
         "find-recent": handle_find_recent,
