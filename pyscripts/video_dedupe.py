@@ -9,6 +9,7 @@ Video & File Deduplicator
 - Safe actions: dry-run, backup/quarantine, prompts
 - Presets: --preset {low,medium,high}
 - Optional live dashboard via --live (uses TermDash module provided by user)
+- Apply an existing JSON report via --apply-report to delete/move listed losers
 
 Cross-platform: Windows 11 (PowerShell), WSL2, Termux
 """
@@ -248,35 +249,43 @@ class ProgressReporter:
         self._ticker: Optional[threading.Thread] = None
         self._stop_evt = threading.Event()
 
+        # Pre-built lines (created in start())
+        self._line_hdr = None
+        self._line_scan = None
+        self._line_groups = None
+        self._line_results = None
+
     def start(self):
         if not self.enable_dash:
             return
         self.dash = TermDash(refresh_rate=self.refresh_rate, enable_separators=True, reserve_extra_rows=2)
+
         # Build lines
-        header = Line("hdr", stats=[Stat("title", "Video Deduper — Live", format_string="{}")], style="header")
-        scan = Line("scan", stats=[
+        self._line_hdr = Line("hdr", stats=[Stat("title", "Video Deduper — Live", format_string="{}")], style="header")
+        self._line_scan = Line("scan", stats=[
             Stat("elapsed", "--:--:--", prefix="Elapsed: ", no_expand=True, display_width=9),
             Stat("files", (0, 0), prefix="Files: ", format_string="{}/{}", no_expand=True, display_width=13),
             Stat("videos", 0, prefix="Videos: ", format_string="{}", no_expand=True, display_width=12),
             Stat("hashed", 0, prefix="Hashed: ", format_string="{}", no_expand=True, display_width=12),
             Stat("phsig", 0, prefix="pHash sigs: ", format_string="{}", no_expand=True, display_width=14),
         ])
-        groups = Line("groups", stats=[
+        self._line_groups = Line("groups", stats=[
             Stat("g_hash", 0, prefix="Hash groups: ", format_string="{}", no_expand=True, display_width=16),
             Stat("g_meta", 0, prefix="Meta groups: ", format_string="{}", no_expand=True, display_width=16),
             Stat("g_phash", 0, prefix="pHash groups: ", format_string="{}", no_expand=True, display_width=16),
             Stat("g_total", 0, prefix="Total groups: ", format_string="{}", no_expand=True, display_width=16),
         ])
-        results = Line("results", stats=[
+        self._line_results = Line("results", stats=[
             Stat("losers", 0, prefix="Losers: ", format_string="{}", no_expand=True, display_width=12),
             Stat("bytes", 0, prefix="Bytes: ", format_string="{}", no_expand=True, display_width=12),
         ])
 
+        # Start dashboard
         self.dash.__enter__()  # context-like start
-        self.dash.add_line("hdr", header, at_top=True)
-        self.dash.add_line("scan")
-        self.dash.add_line("groups")
-        self.dash.add_line("results")
+        self.dash.add_line("hdr", self._line_hdr, at_top=True)
+        self.dash.add_line("scan", self._line_scan)
+        self.dash.add_line("groups", self._line_groups)
+        self.dash.add_line("results", self._line_results)
 
         # background ticker to update elapsed
         self._ticker = threading.Thread(target=self._tick_loop, daemon=True)
@@ -641,6 +650,7 @@ def choose_winners(groups: Dict[str, List[FileMeta | VideoMeta]], keep_order: Se
     return out
 
 def ensure_backup_move(path: Path, backup_root: Path, base_root: Path) -> Path:
+    # Preserve folder layout relative to base_root (auto-handles Windows paths)
     rel = path.resolve().relative_to(base_root.resolve())
     dest = backup_root.joinpath(rel)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -717,6 +727,68 @@ def write_report(path: Path, winners: Dict[str, Tuple[FileMeta | VideoMeta, List
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 # ----------------------------
+# Apply report (new)
+# ----------------------------
+
+def apply_report(report_path: Path, *, dry_run: bool, force: bool, backup: Optional[Path], base_root: Optional[Path] = None) -> Tuple[int, int]:
+    """
+    Read a report JSON (from -R/--report) and delete/move all listed losers.
+    Returns (count, total_bytes).
+    """
+    data = json.loads(Path(report_path).read_text(encoding="utf-8"))
+    groups = data.get("groups") or {}
+    loser_paths: List[Path] = []
+    for g in groups.values():
+        for p in g.get("losers", []):
+            try:
+                loser_paths.append(Path(p))
+            except Exception:
+                continue
+
+    if not loser_paths:
+        _print("Report contains no losers to process.")
+        return (0, 0)
+
+    # Derive base_root if not provided, so backup preserves structure sanely
+    if base_root is None:
+        try:
+            # os.path.commonpath handles Windows/Posix uniformly for strings
+            base_root = Path(os.path.commonpath([str(p) for p in loser_paths]))
+        except Exception:
+            base_root = Path("/")
+
+    # Build synthetic FileMeta list with current sizes/mtimes
+    metas: List[FileMeta] = []
+    for p in loser_paths:
+        try:
+            st = p.stat()
+            metas.append(FileMeta(path=p, size=st.st_size, mtime=st.st_mtime))
+        except FileNotFoundError:
+            # Skip missing files silently (already removed)
+            continue
+        except Exception:
+            metas.append(FileMeta(path=p, size=0, mtime=0))
+
+    if not metas:
+        _print("All losers from report are missing; nothing to do.")
+        return (0, 0)
+
+    count = total = 0
+    if dry_run:
+        for m in metas:
+            _print(f"[cyan][DRY-RUN][/cyan] Would remove: {m.path}")
+            count += 1
+            total += m.size
+        return (count, total)
+
+    # Real delete/move
+    if backup:
+        backup = backup.expanduser().resolve()
+        backup.mkdir(parents=True, exist_ok=True)
+    count, total = delete_or_backup(metas, dry_run=False, force=force, backup_dir=backup, base_root=base_root)
+    return (count, total)
+
+# ----------------------------
 # CLI
 # ----------------------------
 
@@ -730,6 +802,9 @@ Examples (PowerShell):
   # All modes, MP4 only, recurse fully, write report:
   python .\video_dedupe.py "D:\Pictures\Saved" -M all -p *.mp4 -r -x -R D:\report.json
 
+  # Apply a previously generated report (delete/move losers listed in it):
+  python .\video_dedupe.py --apply-report D:\report.json -f -b D:\Quarantine
+
   # Live dashboard:
   python .\video_dedupe.py "D:\Videos" -M all -p *.mp4 -r -x --live
 
@@ -740,12 +815,12 @@ Examples (PowerShell):
   python .\video_dedupe.py "D:\Videos" --preset high -b D:\quarantine -f
 """
     p = argparse.ArgumentParser(
-        description="Find and remove duplicate/similar videos & files.",
+        description="Find and remove duplicate/similar videos & files, or apply a saved report.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=epilog
     )
 
-    # Directory (positional or optional)
+    # Directory (positional or optional) — optional if --apply-report is used
     p.add_argument("directory", nargs="?", help="Root directory to scan")
     p.add_argument("-D", "--dir", "--directory", dest="dir_opt", help="Root directory (alternative to positional)")
 
@@ -786,6 +861,7 @@ Examples (PowerShell):
     p.add_argument("-f", "--force", action="store_true", help="Do not prompt for deletion")
     p.add_argument("-b", "--backup", type=str, help="Move losers to this folder instead of deleting")
     p.add_argument("-R", "--report", type=str, help="Write JSON report to this path")
+    p.add_argument("-A", "--apply-report", type=str, help="Read a JSON report and delete/move all listed losers")
 
     # Live dashboard
     p.add_argument("--live", action="store_true", help="Show live, in-place progress with TermDash")
@@ -826,7 +902,22 @@ def _apply_preset(args: argparse.Namespace):
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
 
-    # Accept positional or --dir
+    # If applying a report, we don't need a scan directory.
+    if args.apply_report:
+        report_path = Path(args.apply_report).expanduser().resolve()
+        if not report_path.exists():
+            print(f"video_dedupe.py: error: report not found: {report_path}", file=sys.stderr)
+            return 2
+        base_root: Optional[Path] = None
+        # If user passed a directory, use it as base for backup path preservation
+        if args.directory or args.dir_opt:
+            base_root = Path(args.directory or args.dir_opt).expanduser().resolve()
+        backup = Path(args.backup).expanduser().resolve() if args.backup else None
+        c, s = apply_report(report_path, dry_run=args.dry_run, force=args.force, backup=backup, base_root=base_root)
+        _print(f"Report applied: removed/moved={c}; size={s/1_048_576:.2f} MiB")
+        return 0
+
+    # Accept positional or --dir for scanning mode
     root_str = args.directory or args.dir_opt
     if not root_str:
         print("video_dedupe.py: error: the following arguments are required: directory (positional) or --dir", file=sys.stderr)
