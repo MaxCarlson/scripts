@@ -3,14 +3,13 @@
 """
 Video & File Deduplicator
 
-Features:
-- Exact duplicates by SHA-256 (any file type).
-- Metadata-aware video duplicates (duration tolerance, resolution, codec/container, bitrates).
-- Optional visual similarity via perceptual hashing (sampled frames with ffmpeg + Pillow + ImageHash).
-- Flexible "keep" policy: choose which copy to keep (e.g., longest, highest resolution, highest bitrate, newest).
-- Dry-run, JSON report, backup/quarantine moves, and confirmation prompts.
+- Exact duplicates by SHA-256 (any file type)
+- Metadata-aware video duplicates (duration tolerance, resolution, codec/container, bitrates)
+- Optional perceptual hashing (phash) for visually-similar videos
+- Safe actions: dry-run, backup/quarantine, prompts
+- Presets: --preset {low,medium,high}
 
-Cross-platform: Windows 11, WSL2 (Ubuntu), Termux (Android).
+Cross-platform: Windows 11 (PowerShell), WSL2, Termux
 """
 
 from __future__ import annotations
@@ -38,9 +37,8 @@ except Exception:
 
 console = Console() if RICH_AVAILABLE else None
 
-
 # ----------------------------
-# Data Models
+# Models
 # ----------------------------
 
 @dataclasses.dataclass(frozen=True)
@@ -52,15 +50,15 @@ class FileMeta:
 
 @dataclasses.dataclass(frozen=True)
 class VideoMeta(FileMeta):
-    duration: Optional[float] = None           # seconds
+    duration: Optional[float] = None
     width: Optional[int] = None
     height: Optional[int] = None
     container: Optional[str] = None
     vcodec: Optional[str] = None
     acodec: Optional[str] = None
-    overall_bitrate: Optional[int] = None      # bps
-    video_bitrate: Optional[int] = None        # bps
-    phash_signature: Optional[Tuple[int, ...]] = None  # perceptual hash signature
+    overall_bitrate: Optional[int] = None
+    video_bitrate: Optional[int] = None
+    phash_signature: Optional[Tuple[int, ...]] = None
 
     @property
     def resolution_area(self) -> int:
@@ -68,13 +66,17 @@ class VideoMeta(FileMeta):
             return self.width * self.height
         return 0
 
+# ----------------------------
+# Utilities
+# ----------------------------
 
-# ----------------------------
-# Hashing / Probing Utilities
-# ----------------------------
+def _print(msg: str):
+    if console:
+        console.print(msg)
+    else:
+        print(msg)
 
 def sha256_file(path: Path, block_size: int = 1 << 18) -> Optional[str]:
-    """Compute SHA-256; returns None on any error (permission, transient I/O)."""
     h = hashlib.sha256()
     try:
         with path.open("rb") as f:
@@ -84,9 +86,7 @@ def sha256_file(path: Path, block_size: int = 1 << 18) -> Optional[str]:
     except Exception:
         return None
 
-
 def _run_ffprobe_json(path: Path) -> Optional[dict]:
-    """Invoke ffprobe and return parsed JSON or None if ffprobe missing/fails."""
     try:
         cmd = [
             "ffprobe",
@@ -101,9 +101,7 @@ def _run_ffprobe_json(path: Path) -> Optional[dict]:
     except Exception:
         return None
 
-
 def probe_video(path: Path) -> VideoMeta:
-    """Return VideoMeta using ffprobe when available; otherwise basic FileMeta."""
     try:
         st = path.stat()
         size = st.st_size
@@ -162,12 +160,7 @@ def probe_video(path: Path) -> VideoMeta:
         video_bitrate=video_bitrate,
     )
 
-
 def compute_phash_signature(path: Path, frames: int = 5) -> Optional[Tuple[int, ...]]:
-    """
-    Compute a compact perceptual signature by sampling N frames with ffmpeg and hashing via ImageHash.
-    Returns a tuple of ints (one per frame; each int packs the phash bits) or None if unavailable.
-    """
     try:
         from PIL import Image
         import imagehash
@@ -181,7 +174,6 @@ def compute_phash_signature(path: Path, frames: int = 5) -> Optional[Tuple[int, 
 
     sig: List[int] = []
     fractions = [(i + 1) / (frames + 1) for i in range(frames)]
-
     for frac in fractions:
         ts = max(0.0, min(vm.duration * frac, max(0.0, vm.duration - 0.1)))
         try:
@@ -205,25 +197,34 @@ def compute_phash_signature(path: Path, frames: int = 5) -> Optional[Tuple[int, 
         return None
     return tuple(sig)
 
-
 def phash_distance(sig_a: Sequence[int], sig_b: Sequence[int]) -> int:
-    """Cumulative Hamming distance across corresponding 64-bit phash ints."""
     dist = 0
     for a, b in zip(sig_a, sig_b):
         x = a ^ b
         dist += x.bit_count() if hasattr(int, "bit_count") else bin(x).count("1")
     return dist
 
-
 # ----------------------------
-# File Enumeration
+# File enumeration
 # ----------------------------
 
-def iter_files(root: Path, pattern: Optional[str], max_depth: Optional[int]) -> Iterable[Path]:
-    """
-    Yield all files under root respecting optional glob pattern and max_depth.
-    max_depth: None means unlimited; 0 means only root.
-    """
+def _normalize_patterns(patts: Optional[List[str]]) -> Optional[List[str]]:
+    if not patts:
+        return None
+    out = []
+    for p in patts:
+        p = (p or "").strip()
+        if not p:
+            continue
+        # If user passed ".mp4" or "mp4", turn into "*.mp4"
+        has_wild = any(ch in p for ch in "*?[")
+        if not has_wild:
+            ext = p.lstrip(".")
+            p = f"*.{ext}"
+        out.append(p)
+    return out or None
+
+def iter_files(root: Path, patterns: Optional[List[str]], max_depth: Optional[int]) -> Iterable[Path]:
     root = Path(root).resolve()
     for dirpath, dirnames, filenames in os.walk(root):
         if max_depth is not None:
@@ -233,18 +234,15 @@ def iter_files(root: Path, pattern: Optional[str], max_depth: Optional[int]) -> 
                 dirnames[:] = []
                 continue
         for name in filenames:
-            if pattern and not Path(name).match(pattern):
+            if patterns and not any(Path(name).match(p) for p in patterns):
                 continue
             yield Path(dirpath) / name
 
-
 # ----------------------------
-# Grouping Strategies
+# Grouping
 # ----------------------------
 
 class Grouper:
-    """Collect duplicate groups according to selected mode(s)."""
-
     def __init__(
         self,
         mode: str,
@@ -275,13 +273,10 @@ class Grouper:
         if want_phash:
             sig = compute_phash_signature(path, frames=self.phash_frames)
             if sig:
-                object.__setattr__(vm, "phash_signature", sig)  # dataclass is frozen
+                object.__setattr__(vm, "phash_signature", sig)  # frozen dataclass
         return vm
 
     def collect(self, files: List[Path]) -> Dict[str, List[VideoMeta | FileMeta]]:
-        """
-        Returns groups keyed by an opaque ID; each group is a list of FileMeta/VideoMeta to consider duplicates.
-        """
         groups: Dict[str, List[VideoMeta | FileMeta]] = {}
         want_meta = self.mode in ("meta", "phash", "all")
         want_phash = self.mode in ("phash", "all")
@@ -291,17 +286,14 @@ class Grouper:
 
         def worker(p: Path):
             is_video = p.suffix.lower() in {".mp4", ".mkv", ".mov", ".avi", ".wmv", ".flv", ".webm", ".m4v"}
-            if want_meta and is_video:
-                m = self._collect_videometa(p, want_phash=want_phash)
-            else:
-                m = self._collect_filemeta(p)
+            m = self._collect_videometa(p, want_phash) if (want_meta and is_video) else self._collect_filemeta(p)
             with lock:
                 metas.append(m)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
             list(ex.map(worker, files))
 
-        # --- Exact hash grouping (first pass) ---
+        # Exact hash
         if self.mode in ("hash", "all"):
             by_hash: Dict[str, List[VideoMeta | FileMeta]] = defaultdict(list)
 
@@ -309,7 +301,6 @@ class Grouper:
                 if m.sha256 is None:
                     h = sha256_file(m.path)
                     if h:
-                        # Both FileMeta and VideoMeta are frozen; use object.__setattr__
                         object.__setattr__(m, "sha256", h)
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
@@ -318,12 +309,11 @@ class Grouper:
             for m in metas:
                 if m.sha256:
                     by_hash[m.sha256].append(m)
-
             for h, lst in by_hash.items():
                 if len(lst) > 1:
                     groups[f"hash:{h}"] = lst
 
-        # --- Metadata grouping (second pass): single union-find across all videos ---
+        # Metadata (single union-find across all videos)
         if self.mode in ("meta", "all"):
             vids = [m for m in metas if isinstance(m, VideoMeta)]
             if vids:
@@ -332,10 +322,8 @@ class Grouper:
                 buckets: Dict[int, List[VideoMeta]] = defaultdict(list)
                 for vm in vids:
                     dur = vm.duration if vm.duration is not None else -1.0
-                    key = int(dur // bucket_size)
-                    buckets[key].append(vm)
+                    buckets[int(dur // bucket_size)].append(vm)
 
-                # Union-Find over ALL videos
                 parent = {id(v): id(v) for v in vids}
 
                 def find(x):
@@ -362,24 +350,20 @@ class Grouper:
                         return False
                     return True
 
-                # Compare within each bucket and with the NEXT bucket only (avoid duplicate work)
                 for bkey in sorted(buckets.keys()):
                     curr = buckets[bkey]
                     nxt = buckets.get(bkey + 1, [])
-
-                    # within current bucket
+                    # within bucket
                     for i in range(len(curr)):
                         for j in range(i + 1, len(curr)):
                             if similar(curr[i], curr[j]):
                                 union(curr[i], curr[j])
-
                     # cross with next bucket
                     for a in curr:
                         for b in nxt:
                             if similar(a, b):
                                 union(a, b)
 
-                # Build components once, yielding unique meta groups
                 comps: Dict[int, List[VideoMeta]] = defaultdict(list)
                 for v in vids:
                     comps[find(id(v))].append(v)
@@ -389,7 +373,7 @@ class Grouper:
                         groups[f"meta:{gid}"] = comp
                         gid += 1
 
-        # --- Perceptual hashing grouping (third pass) ---
+        # Perceptual hashing
         if self.mode in ("phash", "all"):
             vids = [m for m in metas if isinstance(m, VideoMeta) and m.phash_signature]
             visited = set()
@@ -416,24 +400,18 @@ class Grouper:
 
         return groups
 
-
 # ----------------------------
-# Keep/Deletion Policy
+# Keep policy / actions
 # ----------------------------
 
 def make_keep_key(order: Sequence[str]):
-    """
-    Build a key function returning a tuple for sorting *descending by desirability*.
-    Supported fields: longer, resolution, video_bitrate, newer, smaller, deeper
-    """
     def key(m: FileMeta | VideoMeta):
         duration = m.duration if isinstance(m, VideoMeta) and m.duration is not None else -1.0
         res = m.resolution_area if isinstance(m, VideoMeta) else 0
         vbr = m.video_bitrate if isinstance(m, VideoMeta) and m.video_bitrate else 0
         newer = m.mtime
-        smaller = -m.size  # negative so smaller ranks higher in descending sort
+        smaller = -m.size  # negative so "smaller" ranks higher in descending order
         depth = len(m.path.parts)
-
         mapping = {
             "longer": duration,
             "resolution": res,
@@ -445,56 +423,35 @@ def make_keep_key(order: Sequence[str]):
         return tuple(mapping.get(k, 0) for k in order)
     return key
 
-
 def choose_winners(groups: Dict[str, List[FileMeta | VideoMeta]], keep_order: Sequence[str]) -> Dict[str, Tuple[FileMeta | VideoMeta, List[FileMeta | VideoMeta]]]:
-    """
-    For each group, pick the single 'winner' to keep; return mapping group_id -> (keep, losers)
-    """
     keep_key = make_keep_key(keep_order)
     out = {}
     for gid, members in groups.items():
         sorted_members = sorted(members, key=lambda m: (keep_key(m), -len(m.path.as_posix())), reverse=True)
-        keep = sorted_members[0]
-        losers = sorted_members[1:]
-        out[gid] = (keep, losers)
+        out[gid] = (sorted_members[0], sorted_members[1:])
     return out
 
-
-# ----------------------------
-# I/O Operations
-# ----------------------------
-
 def ensure_backup_move(path: Path, backup_root: Path, base_root: Path) -> Path:
-    """Move file under backup_root mirroring its relative path from base_root."""
     rel = path.resolve().relative_to(base_root.resolve())
     dest = backup_root.joinpath(rel)
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(path), str(dest))
     return dest
 
-
 def delete_or_backup(losers: Iterable[FileMeta | VideoMeta], *, dry_run: bool, force: bool, backup_dir: Optional[Path], base_root: Path) -> Tuple[int, int]:
-    """
-    Returns (count, total_bytes)
-    """
     count = 0
     total = 0
     for m in losers:
         size = m.size if isinstance(m.size, int) else 0
         if dry_run:
-            if console:
-                console.print(f"[cyan][DRY-RUN][/cyan] Would remove: {m.path}")
-            else:
-                print(f"[DRY-RUN] Would remove: {m.path}")
+            _print(f"[cyan][DRY-RUN][/cyan] Would remove: {m.path}")
             count += 1
             total += size
             continue
-
         if not force:
             ans = input(f"Delete '{m.path}'? [y/N]: ").strip().lower()
             if ans != "y":
                 continue
-
         try:
             if backup_dir:
                 ensure_backup_move(m.path, backup_dir, base_root)
@@ -502,34 +459,15 @@ def delete_or_backup(losers: Iterable[FileMeta | VideoMeta], *, dry_run: bool, f
                 m.path.unlink(missing_ok=True)
             count += 1
             total += size
-            if console:
-                console.print(f"[green]Removed:[/] {m.path}")
-            else:
-                print(f"Removed: {m.path}")
+            _print(f"[green]Removed:[/] {m.path}" if console else f"Removed: {m.path}")
         except Exception as e:
-            if console:
-                console.print(f"[red][ERROR][/red] Could not remove {m.path}: {e}")
-            else:
-                print(f"[ERROR] Could not remove {m.path}: {e}")
+            _print(f"[red]ERROR:[/] {m.path} -> {e}" if console else f"[ERROR] {m.path}: {e}")
     return count, total
-
-
-# ----------------------------
-# Reporting / Output
-# ----------------------------
-
-def _print(msg: str):
-    if console:
-        console.print(msg)
-    else:
-        print(msg)
-
 
 def print_groups(groups: Dict[str, List[FileMeta | VideoMeta]], winners: Optional[Dict[str, Tuple[FileMeta | VideoMeta, List[FileMeta | VideoMeta]]]] = None):
     if not groups:
         _print("[green]No duplicates detected.[/green]" if console else "No duplicates detected.")
         return
-
     if console:
         table = Table(title="Duplicate Groups", show_lines=True)
         table.add_column("Group", style="cyan", no_wrap=True)
@@ -557,58 +495,79 @@ def print_groups(groups: Dict[str, List[FileMeta | VideoMeta]], winners: Optiona
                     print(f"  {m.path}")
             print("-")
 
-
 def write_report(path: Path, winners: Dict[str, Tuple[FileMeta | VideoMeta, List[FileMeta | VideoMeta]]]):
     out = {}
     total_size = 0
     total_candidates = 0
     for gid, (keep, losers) in winners.items():
-        out[gid] = {
-            "keep": str(keep.path),
-            "losers": [str(l.path) for l in losers],
-        }
+        out[gid] = {"keep": str(keep.path), "losers": [str(l.path) for l in losers]}
         total_candidates += len(losers)
         total_size += sum(l.size for l in losers)
-    payload = {
-        "summary": {
-            "groups": len(winners),
-            "losers": total_candidates,
-            "size_bytes": total_size,
-        },
-        "groups": out,
-    }
+    payload = {"summary": {"groups": len(winners), "losers": total_candidates, "size_bytes": total_size}, "groups": out}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
 
 # ----------------------------
 # CLI
 # ----------------------------
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Find and remove duplicate/similar videos & files.")
-    p.add_argument("directory", help="Root directory to scan")
+    epilog = r"""
+Examples (PowerShell):
+
+  # Exact duplicates (fast), dry-run, all files:
+  python .\video_dedupe.py "D:\Pictures\Saved" -M hash -x
+
+  # All modes, MP4 only, recurse fully, write report:
+  python .\video_dedupe.py "D:\Pictures\Saved" -M all -p *.mp4 -r -x -R D:\report.json
+
+  # Using --dir instead of positional, two patterns:
+  python .\video_dedupe.py --dir "D:\Videos" -p *.mp4 -p *.mkv -M meta -u 3 -x
+
+  # Preset high tolerance, back up losers:
+  python .\video_dedupe.py "D:\Videos" --preset high -b D:\quarantine -f
+"""
+    p = argparse.ArgumentParser(
+        description="Find and remove duplicate/similar videos & files.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=epilog
+    )
+
+    # Directory (positional or optional)
+    p.add_argument("directory", nargs="?", help="Root directory to scan")
+    p.add_argument("-D", "--dir", "--directory", dest="dir_opt", help="Root directory (alternative to positional)")
+
+    # Presets
+    p.add_argument("--preset", choices=["low", "medium", "high"], help="Low/Medium/High tolerance presets")
 
     # Mode
     p.add_argument("-M", "--mode", choices=["hash", "meta", "phash", "all"], default="hash",
-                   help="Duplicate detection mode")
-    p.add_argument("-p", "--pattern", help="Glob pattern to include (e.g. *.mp4)")
+                   help="Duplicate detection mode (default: hash)")
+
+    # Patterns (repeatable). Accepts '*.mp4' or '.mp4' or 'mp4'
+    p.add_argument("-p", "--pattern", action="append",
+                   help="Glob pattern to include (repeatable). Example: -p *.mp4 -p *.mkv")
+
+    # Recursion
     p.add_argument("-r", "--recursive", nargs="?", const=-1, type=int,
-                   help="Recurse: omit for none; use -1 for unlimited; or give a depth integer")
+                   help="Recurse: omit for none; -r for unlimited; -r N for depth N")
 
     # Metadata rules
-    p.add_argument("--duration_tolerance", "-u", type=float, default=2.0, help="Duration tolerance in seconds")
-    p.add_argument("--same_res", "-Rz", action="store_true", help="Require same resolution")
-    p.add_argument("--same_codec", "-Rc", action="store_true", help="Require same video codec")
-    p.add_argument("--same_container", "-RcN", action="store_true", help="Require same container/format")
+    p.add_argument("--duration_tolerance", "-u", type=float, default=2.0,
+                   help="Duration tolerance in seconds (default: 2.0)")
+    p.add_argument("--same_res", action="store_true", help="Require same resolution")
+    p.add_argument("--same_codec", action="store_true", help="Require same video codec")
+    p.add_argument("--same_container", action="store_true", help="Require same container/format")
 
     # Perceptual hashing
-    p.add_argument("--phash_frames", "-F", type=int, default=5, help="Frames to sample for perceptual hashing")
-    p.add_argument("--phash_threshold", "-T", type=int, default=12, help="Per-frame Hamming distance threshold (64-bit)")
+    p.add_argument("--phash_frames", "-F", type=int, default=5, help="Frames to sample for phash (default: 5)")
+    p.add_argument("--phash_threshold", "-T", type=int, default=12,
+                   help="Per-frame Hamming distance threshold (64-bit, default: 12)")
 
     # Keep policy
-    p.add_argument("--keep", "-k", type=str, default="longer,resolution,video_bitrate,newer,smaller,deeper",
-                   help="Comma list: longer,resolution,video_bitrate,newer,smaller,deeper")
+    p.add_argument("--keep", "-k", type=str,
+                   default="longer,resolution,video_bitrate,newer,smaller,deeper",
+                   help="Order to keep best copy (comma list). Default: longer,resolution,video_bitrate,newer,smaller,deeper")
 
     # Actions & outputs
     p.add_argument("-x", "--dry-run", action="store_true", help="No changes; just print")
@@ -618,14 +577,57 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
     return p.parse_args(argv)
 
+def _apply_preset(args: argparse.Namespace):
+    """
+    Apply --preset defaults unless the user already overrode them.
+    'low'    -> exact hashes only (strict)
+    'medium' -> metadata duration match, same resolution, moderate tolerance
+    'high'   -> all modes + phash, lenient tolerance
+    """
+    if not args.preset:
+        return
+
+    # Helper to detect "user changed" loosely by comparing to current defaults
+    def if_default(curr, default, new):
+        return new if curr == default else curr
+
+    if args.preset == "low":
+        args.mode = "hash"
+        # keep rest as defaults; fast & strict
+
+    elif args.preset == "medium":
+        # Prefer metadata grouping, stricter-ish
+        args.mode = if_default(args.mode, "hash", "meta")
+        args.duration_tolerance = if_default(args.duration_tolerance, 2.0, 3.0)
+        args.same_res = True if not args.same_res else args.same_res
+        # phash stays off unless user enabled -M phash/all
+
+    elif args.preset == "high":
+        args.mode = "all"
+        # Looser duration + stronger phash sampling
+        if args.duration_tolerance == 2.0:
+            args.duration_tolerance = 8.0
+        if args.phash_frames == 5:
+            args.phash_frames = 7
+        if args.phash_threshold == 12:
+            args.phash_threshold = 14
+        # Do not require same_res/codec/container
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
-    root = Path(args.directory).expanduser().resolve()
+
+    # Accept positional or --dir
+    root_str = args.directory or args.dir_opt
+    if not root_str:
+        # mimic argparse's style
+        print("video_dedupe.py: error: the following arguments are required: directory (positional) or --dir", file=sys.stderr)
+        return 2
+    root = Path(root_str).expanduser().resolve()
     if not root.exists():
         _print(f"[ERROR] Directory not found: {root}")
         return 2
 
+    # Determine depth
     if args.recursive is None:
         max_depth: Optional[int] = 0
     elif args.recursive == -1:
@@ -633,7 +635,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     else:
         max_depth = max(0, int(args.recursive))
 
-    files = list(iter_files(root, args.pattern, max_depth))
+    # Normalize patterns
+    patterns = _normalize_patterns(args.pattern)
+
+    # Apply preset (after we have args)
+    _apply_preset(args)
+
+    files = list(iter_files(root, patterns, max_depth))
     if not files:
         _print("No files matched.")
         return 0
@@ -661,9 +669,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         write_report(Path(args.report), winners)
         _print(f"Wrote report to: {args.report}")
 
-    total_deleted = 0
-    total_bytes = 0
     losers = [l for (_, ls) in winners.values() for l in ls]
+    total_deleted = total_bytes = 0
     if losers:
         backup = Path(args.backup).expanduser().resolve() if args.backup else None
         c, s = delete_or_backup(losers, dry_run=args.dry_run, force=args.force, backup_dir=backup, base_root=root)
@@ -672,7 +679,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     _print(f"Candidates processed: {len(losers)}; removed/moved: {total_deleted}; size={total_bytes/1_048_576:.2f} MiB")
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
