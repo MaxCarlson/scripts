@@ -18,6 +18,8 @@ def mock_video_info():
     info = vp.VideoInfo(pathlib.Path("test.mp4"))
     info.resolution = (1920, 1080)
     info.duration = 120.0
+    info.size = 500 * 1024 * 1024 # 500 MiB
+    info.bitrate = 3500 * 1000 # 3500 kbps
     return info
 
 
@@ -48,6 +50,11 @@ class TestHelperFunctions:
     def test_parse_resolution_invalid(self):
         with pytest.raises(ValueError):
             vp.parse_resolution("1920-1080")
+
+    @patch('video_processor.shutil.which', return_value=None)
+    def test_check_dependencies_missing(self, mock_which):
+        with pytest.raises(SystemExit):
+            vp.check_dependencies()
 
 
 class TestVideoFinder:
@@ -159,3 +166,51 @@ class TestArgParsing:
         monkeypatch.setattr(sys, 'argv', ['video_processor.py'] + invalid_args)
         with pytest.raises(SystemExit):
             vp.main()
+
+class TestProcessCommandFiltering:
+    @pytest.fixture
+    def mock_videos(self):
+        """Create a list of mock VideoInfo objects for filtering tests."""
+        v1 = vp.VideoInfo(pathlib.Path("small_low_res.mp4"))
+        v1.size = 100 * 1024**2
+        v1.resolution = (1280, 720)
+        v1.bitrate = 1000 * 1000
+
+        v2 = vp.VideoInfo(pathlib.Path("medium_hd.mp4"))
+        v2.size = 800 * 1024**2
+        v2.resolution = (1920, 1080)
+        v2.bitrate = 5000 * 1000
+
+        v3 = vp.VideoInfo(pathlib.Path("large_4k.mkv"))
+        v3.size = 2 * 1024**3
+        v3.resolution = (3840, 2160)
+        v3.bitrate = 20000 * 1000
+        return [v1, v2, v3]
+
+    @patch('video_processor.VideoFinder.find')
+    @patch('video_processor.VideoInfo.get_video_info')
+    def test_dry_run_filtering(self, mock_get_info, mock_find, mock_videos, capsys):
+        """Test that dry-run filtering correctly selects videos and prints output."""
+        mock_find.return_value = [v.path for v in mock_videos]
+        # This makes get_video_info return the corresponding mock object
+        mock_get_info.side_effect = mock_videos
+
+        args = argparse.Namespace(
+            input=[pathlib.Path(".")], output_dir=pathlib.Path("out"), recursive=False,
+            dry_run=True,
+            min_size=vp.parse_size("500M"),
+            max_size=vp.parse_size("1G"),
+            min_bitrate=None, max_bitrate=None,
+            min_resolution=None, max_resolution=None,
+            # Dummy encoding args
+            video_encoder="libx264", preset="medium", crf=22, cq=None, video_bitrate=None, audio_bitrate=None, resolution=None
+        )
+
+        vp.run_process_command(args)
+        captured = capsys.readouterr()
+
+        # Assert that only the medium video was selected
+        assert "Filtered down to 1 videos to process." in captured.out
+        assert "medium_hd.mp4" in captured.out
+        assert "small_low_res.mp4" not in captured.out
+        assert "large_4k.mkv" not in captured.out
