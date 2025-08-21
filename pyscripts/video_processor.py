@@ -36,6 +36,7 @@ except ImportError:
 # --- Constants ---
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm"}
 BAR_WIDTH = 12
+COMPACT_OUTPUT_THRESHOLD = 120 # Terminal width to switch to multi-line stats output
 
 # --- Helper Functions ---
 
@@ -108,7 +109,10 @@ class VideoInfo:
                 "ffprobe", "-v", "quiet", "-print_format", "json",
                 "-show_format", "-show_streams", str(video_path)
             ]
-            result = subprocess.run(command, capture_output=True, text=True, check=True)
+            result = subprocess.run(
+                command, capture_output=True, text=True, check=True,
+                encoding='utf-8', errors='ignore'
+            )
             data = json.loads(result.stdout)
 
             fmt = data.get("format", {})
@@ -169,20 +173,44 @@ def run_stats_command(args: argparse.Namespace):
     if args.top:
         videos = videos[:args.top]
 
+    try:
+        terminal_width, _ = os.get_terminal_size()
+    except OSError:
+        terminal_width = 80
+
     print("\n--- Video Statistics ---")
-    headers = ["Filename", "Size", "Duration", "Resolution", "Codec", "Total Bitrate", "Video Bitrate", "Audio Bitrate"]
-    print(f"{headers[0]:<40} {headers[1]:>10} {headers[2]:>10} {headers[3]:>12} {headers[4]:>8} {headers[5]:>15} {headers[6]:>15} {headers[7]:>15}")
-    print("-" * 140)
-    for v in videos:
-        fname = clip_ellipsis(v.path.name, 38)
-        size = format_bytes(bytes_to_mib(v.size))
-        duration = fmt_hms(v.duration)
-        res = v.resolution_str
-        codec = v.codec_name
-        br = f"{v.bitrate / 1000:.0f} kbps" if v.bitrate else "N/A"
-        vbr = f"{v.video_bitrate / 1000:.0f} kbps" if v.video_bitrate else "N/A"
-        abr = f"{v.audio_bitrate / 1000:.0f} kbps" if v.audio_bitrate else "N/A"
-        print(f"{fname:<40} {size:>10} {duration:>10} {res:>12} {codec:>8} {br:>15} {vbr:>15} {abr:>15}")
+    if terminal_width >= COMPACT_OUTPUT_THRESHOLD:
+        # Wide format
+        headers = ["Filename", "Size", "Duration", "Resolution", "Codec", "Total Bitrate", "Video Bitrate", "Audio Bitrate"]
+        print(f"{headers[0]:<40} {headers[1]:>10} {headers[2]:>10} {headers[3]:>12} {headers[4]:>8} {headers[5]:>15} {headers[6]:>15} {headers[7]:>15}")
+        print("-" * 140)
+        for v in videos:
+            fname = clip_ellipsis(v.path.name, 38)
+            size = format_bytes(bytes_to_mib(v.size))
+            duration = fmt_hms(v.duration)
+            res = v.resolution_str
+            codec = v.codec_name
+            br = f"{v.bitrate / 1000:.0f} kbps" if v.bitrate else "N/A"
+            vbr = f"{v.video_bitrate / 1000:.0f} kbps" if v.video_bitrate else "N/A"
+            abr = f"{v.audio_bitrate / 1000:.0f} kbps" if v.audio_bitrate else "N/A"
+            print(f"{fname:<40} {size:>10} {duration:>10} {res:>12} {codec:>8} {br:>15} {vbr:>15} {abr:>15}")
+    else:
+        # Compact format
+        for v in videos:
+            fname = clip_ellipsis(v.path.name, terminal_width - 2)
+            size = format_bytes(bytes_to_mib(v.size))
+            duration = fmt_hms(v.duration)
+            res = v.resolution_str
+            codec = v.codec_name
+            br = f"{v.bitrate / 1000:.0f}k" if v.bitrate else "N/A"
+            vbr = f"{v.video_bitrate / 1000:.0f}k" if v.video_bitrate else "N/A"
+            abr = f"{v.audio_bitrate / 1000:.0f}k" if v.audio_bitrate else "N/A"
+            
+            print(f"{fname}")
+            print(f"  Size: {size:<12} | Res: {res:<12} | Dur: {duration:<10} | Codec: {codec}")
+            print(f"  Bitrates (T/V/A): {br} / {vbr} / {abr}")
+            print("-" * terminal_width)
+
 
 def generate_ffmpeg_args(video: VideoInfo, args: argparse.Namespace) -> List[str]:
     """Generates the dynamic part of the ffmpeg command."""
@@ -223,7 +251,10 @@ def process_video_worker(
     dashboard.update_stat(line_name, "status", "Processing")
 
     command = ["ffmpeg", "-y", "-i", str(video.path), *ffmpeg_args, "-progress", "pipe:1", str(output_path)]
-    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, universal_newlines=True)
+    proc = subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        universal_newlines=True, encoding='utf-8', errors='ignore'
+    )
 
     progress, last_update_time = {}, time.time()
     speed_deque = deque(maxlen=10)

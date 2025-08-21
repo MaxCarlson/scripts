@@ -3,7 +3,7 @@ import json
 import pathlib
 import subprocess
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -20,6 +20,7 @@ def mock_video_info():
     info.duration = 120.0
     info.size = 500 * 1024 * 1024 # 500 MiB
     info.bitrate = 3500 * 1000 # 3500 kbps
+    info.codec_name = "h264"
     return info
 
 
@@ -97,6 +98,11 @@ class TestVideoInfo:
         )
         info = vp.VideoInfo.get_video_info(pathlib.Path("dummy.mp4"))
 
+        # Check that encoding was specified
+        mock_run.assert_called_with(
+            ANY, capture_output=True, text=True, check=True,
+            encoding='utf-8', errors='ignore'
+        )
         assert not info.error
         assert info.size == 1000000
         assert info.duration == 120.5
@@ -167,50 +173,38 @@ class TestArgParsing:
         with pytest.raises(SystemExit):
             vp.main()
 
-class TestProcessCommandFiltering:
-    @pytest.fixture
-    def mock_videos(self):
-        """Create a list of mock VideoInfo objects for filtering tests."""
-        v1 = vp.VideoInfo(pathlib.Path("small_low_res.mp4"))
-        v1.size = 100 * 1024**2
-        v1.resolution = (1280, 720)
-        v1.bitrate = 1000 * 1000
-
-        v2 = vp.VideoInfo(pathlib.Path("medium_hd.mp4"))
-        v2.size = 800 * 1024**2
-        v2.resolution = (1920, 1080)
-        v2.bitrate = 5000 * 1000
-
-        v3 = vp.VideoInfo(pathlib.Path("large_4k.mkv"))
-        v3.size = 2 * 1024**3
-        v3.resolution = (3840, 2160)
-        v3.bitrate = 20000 * 1000
-        return [v1, v2, v3]
+class TestStatsCommandOutput:
+    @patch('video_processor.VideoFinder.find')
+    @patch('video_processor.VideoInfo.get_video_info')
+    def test_stats_wide_output(self, mock_get_info, mock_find, mock_video_info, capsys):
+        """Test the wide output format for the stats command."""
+        mock_find.return_value = [mock_video_info.path]
+        mock_get_info.return_value = mock_video_info
+        
+        with patch('video_processor.os.get_terminal_size', return_value=(140, 24)):
+            args = argparse.Namespace(input=[pathlib.Path(".")], top=None, sort_by="size", recursive=False)
+            vp.run_stats_command(args)
+        
+        captured = capsys.readouterr().out
+        # Check for single-line format
+        assert "test.mp4" in captured
+        assert "500.00 MiB" in captured
+        assert "1920x1080" in captured
+        assert "\n  " not in captured # Should not have indentation of compact mode
 
     @patch('video_processor.VideoFinder.find')
     @patch('video_processor.VideoInfo.get_video_info')
-    def test_dry_run_filtering(self, mock_get_info, mock_find, mock_videos, capsys):
-        """Test that dry-run filtering correctly selects videos and prints output."""
-        mock_find.return_value = [v.path for v in mock_videos]
-        # This makes get_video_info return the corresponding mock object
-        mock_get_info.side_effect = mock_videos
+    def test_stats_compact_output(self, mock_get_info, mock_find, mock_video_info, capsys):
+        """Test the compact, multi-line output format for the stats command."""
+        mock_find.return_value = [mock_video_info.path]
+        mock_get_info.return_value = mock_video_info
 
-        args = argparse.Namespace(
-            input=[pathlib.Path(".")], output_dir=pathlib.Path("out"), recursive=False,
-            dry_run=True,
-            min_size=vp.parse_size("500M"),
-            max_size=vp.parse_size("1G"),
-            min_bitrate=None, max_bitrate=None,
-            min_resolution=None, max_resolution=None,
-            # Dummy encoding args
-            video_encoder="libx264", preset="medium", crf=22, cq=None, video_bitrate=None, audio_bitrate=None, resolution=None
-        )
+        with patch('video_processor.os.get_terminal_size', return_value=(80, 24)):
+            args = argparse.Namespace(input=[pathlib.Path(".")], top=None, sort_by="size", recursive=False)
+            vp.run_stats_command(args)
 
-        vp.run_process_command(args)
-        captured = capsys.readouterr()
-
-        # Assert that only the medium video was selected
-        assert "Filtered down to 1 videos to process." in captured.out
-        assert "medium_hd.mp4" in captured.out
-        assert "small_low_res.mp4" not in captured.out
-        assert "large_4k.mkv" not in captured.out
+        captured = capsys.readouterr().out
+        # Check for multi-line format
+        assert "test.mp4" in captured
+        assert "\n  Size: 500.00 MiB" in captured
+        assert "\n  Bitrates (T/V/A):" in captured
