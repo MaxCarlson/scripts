@@ -10,8 +10,8 @@ Video & File Deduplicator
 - Presets: --preset {low,medium,high}
 - Optional live dashboard via --live (uses TermDash module provided by user)
 - Apply an existing JSON report via --apply-report to delete/move listed losers
-- NEW: Persistent hash cache (-C/--hash-cache) with live "cache hits" stat
-- NEW: "Hashed: N/T" progress (N = hashed done, T = total items to hash)
+- Persistent hash cache (-C/--hash-cache) with live "cache hits" stat
+- “Hashed: N/T” progress (N = ready via compute or cache; T = total to hash)
 
 Cross-platform: Windows 11 (PowerShell), WSL2, Termux
 """
@@ -304,6 +304,8 @@ def _bytes_to_mib(n: Union[int, float]) -> float:
 
 class ProgressReporter:
     """Thread-safe counters + optional TermDash updates, small-screen friendly."""
+    COLW = 22  # fixed width across all columns to line up separators
+
     def __init__(self, enable_dash: bool, refresh_rate: float = 0.2):
         self.enable_dash = enable_dash and TERMDASH_AVAILABLE and sys.stdout.isatty()
         self.refresh_rate = max(0.05, float(refresh_rate))
@@ -333,11 +335,6 @@ class ProgressReporter:
         self._ticker: Optional[threading.Thread] = None
         self._stop_evt = threading.Event()
 
-        # Lines
-        self._line_hdr = None
-        self._line_l1 = self._line_l2 = self._line_l3 = None
-        self._line_l4 = self._line_l5 = self._line_l6 = None
-
     def start(self):
         if not self.enable_dash:
             return
@@ -349,59 +346,55 @@ class ProgressReporter:
             min_col_pad=2,
             max_col_width=None,
         )
-
         self.dash.__enter__()  # start renderer
 
-        # Header: left=Title, right=Stage
-        self._line_hdr = Line("hdr", stats=[
-            Stat("title", "Video Deduper — Live", format_string="{}", no_expand=True, display_width=28),
-            Stat("stage", "scanning", prefix="Stage: ", format_string="{}", no_expand=True, display_width=18),
-        ], style="header")
-        self.dash.add_line("hdr", self._line_hdr, at_top=True)
+        # Title line (single-stat)
+        self.dash.add_line("hdr", Line("hdr", stats=[
+            Stat("title", "Video Deduper — Live", format_string="{}", no_expand=True, display_width=self.COLW)
+        ], style="header"), at_top=True)
 
-        # Line 1: Elapsed | Files x/y
-        self._line_l1 = Line("l1", stats=[
-            Stat("elapsed", "00:00:00", prefix="Elapsed: ", format_string="{}", no_expand=True, display_width=18),
-            Stat("files", (0, 0), prefix="Files: ", format_string="{}/{}", no_expand=True, display_width=18),
-        ])
-        self.dash.add_line("l1", self._line_l1)
+        # Stage line (single-stat to avoid truncation)
+        self.dash.add_line("stage", Line("stage", stats=[
+            Stat("stage", "scanning", prefix="Stage: ", format_string="{}", no_expand=True, display_width=self.COLW)
+        ]))
 
-        # Line 2: Videos | Hashed N/T
-        self._line_l2 = Line("l2", stats=[
-            Stat("videos", 0, prefix="Videos: ", format_string="{}", no_expand=True, display_width=18),
-            Stat("hashed", (0, 0), prefix="Hashed: ", format_string="{}/{}", no_expand=True, display_width=18),
-        ])
-        self.dash.add_line("l2", self._line_l2)
+        # Elapsed | Files
+        self.dash.add_line("l1", Line("l1", stats=[
+            Stat("elapsed", "00:00:00", prefix="Elapsed: ", format_string="{}", no_expand=True, display_width=self.COLW),
+            Stat("files", (0, 0), prefix="Files: ", format_string="{}/{}", no_expand=True, display_width=self.COLW),
+        ]))
 
-        # Line 3: Scanned bytes | Cache hits
-        self._line_l3 = Line("l3", stats=[
-            Stat("scanned", "0 MiB", prefix="Scanned: ", format_string="{}", no_expand=True, display_width=20),
-            Stat("cache_hits", 0, prefix="Cache hits: ", format_string="{}", no_expand=True, display_width=18),
-        ])
-        self.dash.add_line("l3", self._line_l3)
+        # Videos | Hashed N/T
+        self.dash.add_line("l2", Line("l2", stats=[
+            Stat("videos", 0, prefix="Videos: ", format_string="{}", no_expand=True, display_width=self.COLW),
+            Stat("hashed", (0, 0), prefix="Hashed: ", format_string="{}/{}", no_expand=True, display_width=self.COLW),
+        ]))
 
-        # Line 4: Hash groups | Meta groups
-        self._line_l4 = Line("l4", stats=[
-            Stat("g_hash", 0, prefix="Hash groups: ", format_string="{}", no_expand=True, display_width=18),
-            Stat("g_meta", 0, prefix="Meta groups: ", format_string="{}", no_expand=True, display_width=18),
-        ])
-        self.dash.add_line("l4", self._line_l4)
+        # Scanned MiB | Cache hits
+        self.dash.add_line("l3", Line("l3", stats=[
+            Stat("scanned", "0 MiB", prefix="Scanned: ", format_string="{}", no_expand=True, display_width=self.COLW),
+            Stat("cache_hits", 0, prefix="Cache hits: ", format_string="{}", no_expand=True, display_width=self.COLW),
+        ]))
 
-        # Line 5: pHash groups | Dup groups (total)
-        self._line_l5 = Line("l5", stats=[
-            Stat("g_phash", 0, prefix="pHash groups: ", format_string="{}", no_expand=True, display_width=18),
-            Stat("dup_groups", 0, prefix="Dup groups: ", format_string="{}", no_expand=True, display_width=18),
-        ])
-        self.dash.add_line("l5", self._line_l5)
+        # Hash groups | Meta groups
+        self.dash.add_line("l4", Line("l4", stats=[
+            Stat("g_hash", 0, prefix="Hash groups: ", format_string="{}", no_expand=True, display_width=self.COLW),
+            Stat("g_meta", 0, prefix="Meta groups: ", format_string="{}", no_expand=True, display_width=self.COLW),
+        ]))
 
-        # Line 6: Dup files | To remove
-        self._line_l6 = Line("l6", stats=[
-            Stat("dup_files", 0, prefix="Dup files: ", format_string="{}", no_expand=True, display_width=18),
-            Stat("dup_bytes", "0 MiB", prefix="To remove: ", format_string="{}", no_expand=True, display_width=18),
-        ])
-        self.dash.add_line("l6", self._line_l6)
+        # pHash groups | Dup groups
+        self.dash.add_line("l5", Line("l5", stats=[
+            Stat("g_phash", 0, prefix="pHash groups: ", format_string="{}", no_expand=True, display_width=self.COLW),
+            Stat("dup_groups", 0, prefix="Dup groups: ", format_string="{}", no_expand=True, display_width=self.COLW),
+        ]))
 
-        # background ticker to update elapsed time
+        # Dup files | To remove
+        self.dash.add_line("l6", Line("l6", stats=[
+            Stat("dup_files", 0, prefix="Dup files: ", format_string="{}", no_expand=True, display_width=self.COLW),
+            Stat("dup_bytes", "0 MiB", prefix="To remove: ", format_string="{}", no_expand=True, display_width=self.COLW),
+        ]))
+
+        # background ticker to update elapsed
         self._ticker = threading.Thread(target=self._tick_loop, daemon=True)
         self._ticker.start()
         self.flush()  # initial paint
@@ -419,54 +412,46 @@ class ProgressReporter:
                 pass
 
     def set_stage(self, stage: str):
-        with self.lock:
-            self.stage = stage
+        self.stage = stage
         if self.enable_dash and self.dash:
-            self.dash.update_stat("hdr", "stage", stage)
+            self.dash.update_stat("stage", "stage", stage)
 
     def set_total_files(self, n: int):
-        with self.lock:
-            self.total_files = int(n)
+        self.total_files = int(n)
         self.flush()
 
     def set_hash_plan(self, total: int):
-        with self.lock:
-            self.hash_plan_total = max(0, int(total))
+        self.hash_plan_total = max(0, int(total))
         self.flush()
 
     def inc_scanned(self, n: int = 1, *, bytes_added: int = 0, is_video: bool = False):
-        with self.lock:
-            self.scanned_files += n
-            self.bytes_seen += int(bytes_added)
-            if is_video:
-                self.video_files += n
+        self.scanned_files += n
+        self.bytes_seen += int(bytes_added)
+        if is_video:
+            self.video_files += n
         self.flush()
 
     def inc_hashed(self, n: int = 1):
-        with self.lock:
-            self.hash_done += n
+        self.hash_done += n
         self.flush()
 
     def inc_cache_hit(self, n: int = 1):
-        with self.lock:
-            self.hash_cache_hits += n
+        self.hash_cache_hits += n
         self.flush()
 
     def inc_group(self, mode: str, n: int = 1):
-        with self.lock:
-            if mode == "hash":
-                self.groups_hash += n
-            elif mode == "meta":
-                self.groups_meta += n
-            elif mode == "phash":
-                self.groups_phash += n
-            self.dup_groups = self.groups_hash + self.groups_meta + self.groups_phash
+        if mode == "hash":
+            self.groups_hash += n
+        elif mode == "meta":
+            self.groups_meta += n
+        elif mode == "phash":
+            self.groups_phash += n
+        self.dup_groups = self.groups_hash + self.groups_meta + self.groups_phash
         self.flush()
 
     def set_dup_summary(self, dup_files: int, dup_bytes: int):
-        with self.lock:
-            self.dup_files = dup_files
-            self.dup_bytes = dup_bytes
+        self.dup_files = dup_files
+        self.dup_bytes = dup_bytes
         self.flush()
 
     # ---- internal ticking & paint ----
@@ -484,19 +469,18 @@ class ProgressReporter:
     def flush(self):
         if not self.enable_dash or not self.dash:
             return
-        with self.lock:
-            self._update_elapsed()
-            self.dash.update_stat("l1", "files", (self.scanned_files, self.total_files))
-            self.dash.update_stat("l2", "videos", self.video_files)
-            self.dash.update_stat("l2", "hashed", (self.hash_done, self.hash_plan_total))
-            self.dash.update_stat("l3", "scanned", f"{_bytes_to_mib(self.bytes_seen):.0f} MiB")
-            self.dash.update_stat("l3", "cache_hits", self.hash_cache_hits)
-            self.dash.update_stat("l4", "g_hash", self.groups_hash)
-            self.dash.update_stat("l4", "g_meta", self.groups_meta)
-            self.dash.update_stat("l5", "g_phash", self.groups_phash)
-            self.dash.update_stat("l5", "dup_groups", self.dup_groups)
-            self.dash.update_stat("l6", "dup_files", self.dup_files)
-            self.dash.update_stat("l6", "dup_bytes", f"{_bytes_to_mib(self.dup_bytes):.0f} MiB")
+        self._update_elapsed()
+        self.dash.update_stat("l1", "files", (self.scanned_files, self.total_files))
+        self.dash.update_stat("l2", "videos", self.video_files)
+        self.dash.update_stat("l2", "hashed", (self.hash_done, self.hash_plan_total))
+        self.dash.update_stat("l3", "scanned", f"{_bytes_to_mib(self.bytes_seen):.0f} MiB")
+        self.dash.update_stat("l3", "cache_hits", self.hash_cache_hits)
+        self.dash.update_stat("l4", "g_hash", self.groups_hash)
+        self.dash.update_stat("l4", "g_meta", self.groups_meta)
+        self.dash.update_stat("l5", "g_phash", self.groups_phash)
+        self.dash.update_stat("l5", "dup_groups", self.dup_groups)
+        self.dash.update_stat("l6", "dup_files", self.dup_files)
+        self.dash.update_stat("l6", "dup_bytes", f"{_bytes_to_mib(self.dup_bytes):.0f} MiB")
 
 # ----------------------------
 # File enumeration
@@ -510,7 +494,6 @@ def _normalize_patterns(patts: Optional[List[str]]) -> Optional[List[str]]:
         p = (p or "").strip()
         if not p:
             continue
-        # If user passed ".mp4" or "mp4", turn into "*.mp4"
         has_wild = any(ch in p for ch in "*?[")
         if not has_wild:
             ext = p.lstrip(".")
@@ -525,14 +508,6 @@ def iter_files(
     *,
     patterns: Optional[List[str]] = None,
 ) -> Iterable[Path]:
-    """
-    Backward-compatible iterator.
-
-    - Old style: iter_files(root, pattern="*.mp4", max_depth=None)
-    - New style: iter_files(root, patterns=["*.mp4", "*.mkv"], max_depth=None)
-    - Both can be used together; they'll be merged.
-    """
-    # Merge pattern + patterns
     merged: List[str] = []
     if patterns:
         merged.extend(patterns)
@@ -596,11 +571,8 @@ class Grouper:
         self,
         files: List[Path],
         reporter: Optional[ProgressReporter] = None,
-        hash_cache: Optional[HashCache] = None,   # NEW: optional cache
+        hash_cache: Optional[HashCache] = None,
     ) -> Dict[str, List[VideoMeta | FileMeta]]:
-        """
-        Returns groups keyed by an opaque ID; each group is a list of FileMeta/VideoMeta to consider duplicates.
-        """
         self._reporter = reporter
         if self._reporter:
             self._reporter.set_stage("scanning")
@@ -617,7 +589,6 @@ class Grouper:
             try:
                 st = p.stat()
                 bytes_added = int(st.st_size)
-                mt = st.st_mtime
             except Exception:
                 bytes_added = 0
             is_video = p.suffix.lower() in {".mp4", ".mkv", ".mov", ".avi", ".wmv", ".flv", ".webm", ".m4v"}
@@ -633,7 +604,6 @@ class Grouper:
         with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
             list(ex.map(worker, files))
 
-        # How many items will we hash?
         total_hash_targets = len(metas) if self.mode in ("hash", "all") else 0
         if self._reporter:
             self._reporter.set_hash_plan(total_hash_targets)
@@ -645,7 +615,7 @@ class Grouper:
             by_hash: Dict[str, List[VideoMeta | FileMeta]] = defaultdict(list)
 
             def ensure_hash(m: VideoMeta | FileMeta):
-                # Use cache first
+                # cache first
                 if m.sha256 is None and hash_cache is not None:
                     cached = hash_cache.get(m.path, m.size, m.mtime)
                     if cached:
@@ -654,7 +624,7 @@ class Grouper:
                             self._reporter.inc_cache_hit(1)
                             self._reporter.inc_hashed(1)
                         return
-                # Compute
+                # compute
                 if m.sha256 is None:
                     h = sha256_file(m.path)
                     if h:
@@ -676,7 +646,7 @@ class Grouper:
                     if self._reporter:
                         self._reporter.inc_group("hash", 1)
 
-        # Metadata (single union-find across all videos)
+        # Metadata grouping
         if self.mode in ("meta", "all"):
             if self._reporter:
                 self._reporter.set_stage("grouping(meta)")
@@ -718,12 +688,10 @@ class Grouper:
                 for bkey in sorted(buckets.keys()):
                     curr = buckets[bkey]
                     nxt = buckets.get(bkey + 1, [])
-                    # within bucket
                     for i in range(len(curr)):
                         for j in range(i + 1, len(curr)):
                             if similar(curr[i], curr[j]):
                                 union(curr[i], curr[j])
-                    # cross with next bucket
                     for a in curr:
                         for b in nxt:
                             if similar(a, b):
@@ -740,7 +708,7 @@ class Grouper:
                         if self._reporter:
                             self._reporter.inc_group("meta", 1)
 
-        # Perceptual hashing
+        # Perceptual hashing grouping
         if self.mode in ("phash", "all"):
             if self._reporter:
                 self._reporter.set_stage("grouping(phash)")
@@ -783,7 +751,7 @@ def make_keep_key(order: Sequence[str]):
         res = m.resolution_area if isinstance(m, VideoMeta) else 0
         vbr = m.video_bitrate if isinstance(m, VideoMeta) and m.video_bitrate else 0
         newer = m.mtime
-        smaller = -m.size  # negative so "smaller" ranks higher in descending order
+        smaller = -m.size
         depth = len(m.path.parts)
         mapping = {
             "longer": duration,
@@ -938,31 +906,34 @@ def apply_report(report_path: Path, *, dry_run: bool, force: bool, backup: Optio
 # CLI
 # ----------------------------
 
+class _NiceFormatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter):
+    pass
+
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     epilog = r"""
-Examples (PowerShell):
+Examples (PowerShell)
 
-  # Exact duplicates (fast), dry-run, all files:
-  python .\video_dedupe.py "D:\Pictures\Saved" -M hash -x
+  Exact duplicates (fast), dry-run, all files:
+    python .\video_dedupe.py "D:\Pictures\Saved" -M hash -x
 
-  # All modes, MP4 only, recurse fully, write report:
-  python .\video_dedupe.py "D:\Pictures\Saved" -M all -p *.mp4 -r -x -R D:\report.json
+  All modes, MP4 only, recurse fully, write report:
+    python .\video_dedupe.py "D:\Pictures\Saved" -M all -p *.mp4 -r -x -R D:\report.json
 
-  # Apply a previously generated report (delete/move losers listed in it):
-  python .\video_dedupe.py --apply-report D:\report.json -f -b D:\Quarantine
+  Apply a previously generated report (delete/move losers listed in it):
+    python .\video_dedupe.py --apply-report D:\report.json -f -b D:\Quarantine
 
-  # Live dashboard:
-  python .\video_dedupe.py "D:\Videos" -M all -p *.mp4 -r -x --live
+  Live dashboard:
+    python .\video_dedupe.py "D:\Videos" -M all -p *.mp4 -r -x --live
 
-  # Using --dir instead of positional, two patterns:
-  python .\video_dedupe.py --dir "D:\Videos" -p *.mp4 -p *.mkv -M meta -u 3 -x
+  Using --dir instead of positional, two patterns:
+    python .\video_dedupe.py --dir "D:\Videos" -p *.mp4 -p *.mkv -M meta -u 3 -x
 
-  # Preset high tolerance, back up losers:
-  python .\video_dedupe.py "D:\Videos" --preset high -b D:\quarantine -f
+  Preset high tolerance, back up losers:
+    python .\video_dedupe.py "D:\Videos" --preset high -b D:\quarantine -f
 """
     p = argparse.ArgumentParser(
         description="Find and remove duplicate/similar videos & files, or apply a saved report.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        formatter_class=_NiceFormatter,
         epilog=epilog
     )
 
@@ -975,7 +946,7 @@ Examples (PowerShell):
 
     # Mode
     p.add_argument("-M", "--mode", choices=["hash", "meta", "phash", "all"], default="hash",
-                   help="Duplicate detection mode (default: hash)")
+                   help="Duplicate detection mode")
 
     # Patterns (repeatable). Accepts '*.mp4' or '.mp4' or 'mp4'
     p.add_argument("-p", "--pattern", action="append",
@@ -987,20 +958,20 @@ Examples (PowerShell):
 
     # Metadata rules
     p.add_argument("--duration_tolerance", "-u", type=float, default=2.0,
-                   help="Duration tolerance in seconds (default: 2.0)")
+                   help="Duration tolerance in seconds")
     p.add_argument("--same_res", action="store_true", help="Require same resolution")
     p.add_argument("--same_codec", action="store_true", help="Require same video codec")
     p.add_argument("--same_container", action="store_true", help="Require same container/format")
 
     # Perceptual hashing
-    p.add_argument("--phash_frames", "-F", type=int, default=5, help="Frames to sample for phash (default: 5)")
+    p.add_argument("--phash_frames", "-F", type=int, default=5, help="Frames to sample for phash")
     p.add_argument("--phash_threshold", "-T", type=int, default=12,
-                   help="Per-frame Hamming distance threshold (64-bit, default: 12)")
+                   help="Per-frame Hamming distance threshold (64-bit)")
 
     # Keep policy
     p.add_argument("--keep", "-k", type=str,
                    default="longer,resolution,video_bitrate,newer,smaller,deeper",
-                   help="Order to keep best copy (comma list). Default: longer,resolution,video_bitrate,newer,smaller,deeper")
+                   help="Order to keep best copy (comma list)")
 
     # Actions & outputs
     p.add_argument("-x", "--dry-run", action="store_true", help="No changes; just print")
@@ -1011,7 +982,7 @@ Examples (PowerShell):
 
     # Live dashboard
     p.add_argument("-L", "--live", action="store_true", help="Show live, in-place progress with TermDash")
-    p.add_argument("--refresh-rate", type=float, default=0.2, help="Dashboard refresh rate in seconds (default: 0.2)")
+    p.add_argument("--refresh-rate", type=float, default=0.2, help="Dashboard refresh rate in seconds")
 
     # Hash cache
     p.add_argument("-C", "--hash-cache", type=str,
@@ -1022,7 +993,6 @@ Examples (PowerShell):
 
 def _apply_preset(args: argparse.Namespace):
     """
-    Apply --preset defaults unless the user already overrode them.
     'low'    -> exact hashes only (strict)
     'medium' -> metadata duration match, same resolution, moderate tolerance
     'high'   -> all modes + phash, lenient tolerance
@@ -1038,8 +1008,10 @@ def _apply_preset(args: argparse.Namespace):
 
     elif args.preset == "medium":
         args.mode = if_default(args.mode, "hash", "meta")
-        args.duration_tolerance = if_default(args.duration_tolerance, 2.0, 3.0)
-        args.same_res = True if not args.same_res else args.same_res
+        if args.duration_tolerance == 2.0:
+            args.duration_tolerance = 3.0
+        if not args.same_res:
+            args.same_res = True
 
     elif args.preset == "high":
         args.mode = "all"
@@ -1101,6 +1073,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if not args.no_cache:
             cache_path = Path(args.hash_cache).expanduser().resolve() if args.hash_cache else root / ".vdhashcache.jsonl"
             cache = HashCache(cache_path, enabled=True)
+            _print(f"[cyan]Hash cache:[/] {cache_path}")  # answer: where it's saved
     except Exception:
         cache = None
 
