@@ -5,19 +5,22 @@ import time
 from pathlib import Path
 
 import pytest
+
 import file_kit
 
 
-def make_file(path: Path, size: int, data: bytes = b"x") -> Path:
+def make_file(path: Path, size: int, fill_byte: bytes = b"A") -> Path:
+    """
+    Fast file creator: writes in large blocks for speed.
+    Ensures deterministic content for duplicate testing.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
+    block = fill_byte * 65536  # 64 KiB block
+    remaining = size
     with open(path, "wb") as f:
-        if size <= 0:
-            return path
-        chunk = data * max(1, min(1024, len(data)))
-        remaining = size
         while remaining > 0:
-            w = min(remaining, len(chunk))
-            f.write(chunk[:w])
+            w = min(remaining, len(block))
+            f.write(block[:w])
             remaining -= w
     return path
 
@@ -33,37 +36,24 @@ def test_parse_size():
 
 
 def test_format_bytes_roundtrip():
-    # Sanity spot checks
     assert file_kit.format_bytes(0).endswith("B")
     assert "KB" in file_kit.format_bytes(1024)
     assert "MB" in file_kit.format_bytes(5 * 1024**2)
 
 
 def test_top_size_unicode_and_absolute(tmp_path: Path, monkeypatch):
-    # Create files, including one with unicode that would fail on cp1252
-    f1 = make_file(tmp_path / "aaa.bin", 5 * 1024**2)
-    f2 = make_file(tmp_path / "café-文件.mp4", 10 * 1024**2)  # unicode-heavy
-    f3 = make_file(tmp_path / "bbb.bin", 1 * 1024**2)
+    # Create files, including one with unicode-heavy name
+    make_file(tmp_path / "aaa.bin", 2 * 1024**2)
+    make_file(tmp_path / "café-文件.mp4", 3 * 1024**2)
+    make_file(tmp_path / "bbb.bin", 1 * 1024**2)
 
-    # Capture stdout safely
     buf = io.StringIO()
     monkeypatch.setattr(sys, "stdout", buf)
 
-    args = [
-        "top-size",
-        "-p",
-        str(tmp_path),
-        "-t",
-        "2",
-        "-A",  # absolute
-        "-e",
-        "utf-8",
-    ]
+    args = ["top-size", "-p", str(tmp_path), "-t", "2", "-A", "-e", "utf-8"]
     file_kit.main(args)
     out = buf.getvalue()
-    # Should include Unicode filename and not crash
     assert "café-文件.mp4" in out
-    # Two results plus header/footer lines
     assert "Searching for the 2 largest" in out
 
 
@@ -71,46 +61,32 @@ def test_find_recent_and_old(tmp_path: Path, monkeypatch):
     recent = make_file(tmp_path / "recent.bin", 2048)
     old = make_file(tmp_path / "old.bin", 4096)
 
-    # Set times: 'recent' accessed now, 'old' much older
+    # Access times: 'recent' accessed now, 'old' ~90 days ago
     now = time.time()
     os.utime(recent, (now, now))
-    os.utime(old, (now - 60 * 60 * 24 * 90, now - 60 * 60 * 24 * 90))  # 90 days ago
+    old_time = now - 60 * 60 * 24 * 90
+    os.utime(old, (old_time, old_time))
 
-    # ---- find-recent
+    # ---- find-recent (uses just filename in console mode)
     buf = io.StringIO()
     monkeypatch.setattr(sys, "stdout", buf)
-    file_kit.main(
-        ["find-recent", "-p", str(tmp_path), "-s", "1kb", "-d", "30", "-e", "utf-8"]
-    )
+    file_kit.main(["find-recent", "-p", str(tmp_path), "-s", "1kb", "-d", "30", "-e", "utf-8"])
     out = buf.getvalue()
     assert "recent.bin" in out
 
     # ---- find-old (by modified)
     buf2 = io.StringIO()
     monkeypatch.setattr(sys, "stdout", buf2)
-    file_kit.main(
-        [
-            "find-old",
-            "-p",
-            str(tmp_path),
-            "-c",
-            "60",
-            "-t",
-            "5",
-            "-d",
-            "m",
-            "-e",
-            "utf-8",
-        ]
-    )
+    file_kit.main(["find-old", "-p", str(tmp_path), "-c", "60", "-t", "5", "-d", "m", "-e", "utf-8"])
     out2 = buf2.getvalue()
     assert "old.bin" in out2
 
 
-def test_find_dupes_threaded(tmp_path: Path, monkeypatch):
-    a = make_file(tmp_path / "a.txt", 10_000, b"A")
-    b = make_file(tmp_path / "sub" / "b.txt", 10_000, b"A")
-    c = make_file(tmp_path / "c.txt", 10_000, b"C")
+def test_find_dupes_threaded_quick(tmp_path: Path, monkeypatch):
+    # Two duplicates in different dirs + one different
+    a = make_file(tmp_path / "a.txt", 4096, b"A")
+    b = make_file(tmp_path / "sub" / "b.txt", 4096, b"A")
+    c = make_file(tmp_path / "c.txt", 4096, b"C")
 
     buf = io.StringIO()
     monkeypatch.setattr(sys, "stdout", buf)
@@ -119,10 +95,11 @@ def test_find_dupes_threaded(tmp_path: Path, monkeypatch):
             "find-dupes",
             "-p",
             str(tmp_path),
+            "-r",  # include subdir so b.txt is discovered
             "-m",
             "1kb",
             "-w",
-            "4",
+            "2",  # few workers is enough and fast
             "-H",
             "blake2b",
             "-e",
@@ -130,16 +107,61 @@ def test_find_dupes_threaded(tmp_path: Path, monkeypatch):
         ]
     )
     out = buf.getvalue()
-    # Should find a/b as duplicates; c is different
     assert "--- Found Duplicate Sets ---" in out
-    assert str(a.name) in out and str(b.name) in out
-    assert str(c.name) not in out
+    assert "a.txt" in out and "b.txt" in out
+    assert "c.txt" not in out
+
+
+def test_find_dupes_no_quick(tmp_path: Path, monkeypatch):
+    # Same as above, but ensure correctness with --no-quick
+    make_file(tmp_path / "x1.bin", 4096, b"Q")
+    make_file(tmp_path / "sub" / "x2.bin", 4096, b"Q")
+    make_file(tmp_path / "y.bin", 4096, b"Z")
+
+    buf = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", buf)
+    file_kit.main(
+        [
+            "find-dupes",
+            "-p",
+            str(tmp_path),
+            "-r",
+            "--no-quick",  # disable prehash path
+            "-w",
+            "1",
+            "-H",
+            "sha256",
+            "-e",
+            "utf-8",
+        ]
+    )
+    out = buf.getvalue()
+    assert "--- Found Duplicate Sets ---" in out
+    assert "x1.bin" in out and "x2.bin" in out
+    assert "y.bin" not in out
+
+
+def test_output_file_and_encoding(tmp_path: Path):
+    # Verify --output writes UTF-8 and preserves full paths
+    uni = "naïve-路径.txt"
+    target = tmp_path / uni
+    make_file(target, 1234, b"Z")
+    out_file = tmp_path / "out.txt"
+
+    file_kit.main(["top-size", "-p", str(tmp_path), "-t", "1", "-o", str(out_file), "-e", "utf-8"])
+    text = out_file.read_text(encoding="utf-8")
+    assert uni in text  # ensure unicode and full path made it into the file
 
 
 def test_summarize_and_du(tmp_path: Path, monkeypatch):
+    # Data
     make_file(tmp_path / "x.bin", 3 * 1024**2)
     make_file(tmp_path / "y.txt", 1024)
     make_file(tmp_path / "z.TXT", 5 * 1024)
+    (tmp_path / "dirA").mkdir()
+    (tmp_path / "dirB").mkdir()
+    make_file(tmp_path / "dirA" / "a.bin", 2048)
+    make_file(tmp_path / "dirB" / "b.bin", 4096)
 
     # summarize
     buf = io.StringIO()
@@ -148,11 +170,13 @@ def test_summarize_and_du(tmp_path: Path, monkeypatch):
     out = buf.getvalue()
     assert "Extension" in out and ".txt" in out.lower()
 
-    # du (depth 1)
+    # du sort by name (ensures --sort=name path works; also fast)
     buf2 = io.StringIO()
     monkeypatch.setattr(sys, "stdout", buf2)
     file_kit.main(
-        ["du", "-p", str(tmp_path), "--max-depth", "1", "-t", "10", "-e", "utf-8"]
+        ["du", "-p", str(tmp_path), "--max-depth", "1", "-t", "10", "--sort", "name", "-e", "utf-8"]
     )
     out2 = buf2.getvalue()
-    assert "Directory" in out2
+    # Ensure both dirs listed and in name order (dirA before dirB)
+    assert "Directory" in out2 and "dirA" in out2 and "dirB" in out2
+    assert out2.find("dirA") < out2.find("dirB")
