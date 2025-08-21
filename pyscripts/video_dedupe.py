@@ -9,9 +9,9 @@ Video & File Deduplicator
 - Safe actions: dry-run, backup/quarantine, prompts
 - Presets: --preset {low,medium,high}
 - Optional live dashboard via --live (uses TermDash module provided by user)
+- Hash cache: JSONL cache for SHA-256 results (-C / --cache)
 - Apply an existing JSON report via --apply-report to delete/move listed losers
-- Persistent hash cache (-C/--hash-cache) with live "cache hits" stat
-- “Hashed: N/T” progress (N = ready via compute or cache; T = total to hash)
+- ETA for each stage (scanning, hashing)
 
 Cross-platform: Windows 11 (PowerShell), WSL2, Termux
 """
@@ -31,7 +31,7 @@ import threading
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 # ----------------------------
 # Optional UI libs
@@ -94,6 +94,18 @@ def _print(msg: str):
         console.print(msg)
     else:
         print(msg)
+
+def _fmt_hms(seconds: Optional[float]) -> str:
+    if seconds is None or seconds < 0:
+        return "--:--:--"
+    s = int(seconds)
+    return f"{s//3600:02d}:{(s%3600)//60:02d}:{s%60:02d}"
+
+def _bytes_to_mib(n: int) -> float:
+    try:
+        return float(n) / (1024.0 * 1024.0)
+    except Exception:
+        return 0.0
 
 def sha256_file(path: Path, block_size: int = 1 << 18) -> Optional[str]:
     h = hashlib.sha256()
@@ -224,177 +236,199 @@ def phash_distance(sig_a: Sequence[int], sig_b: Sequence[int]) -> int:
     return dist
 
 # ----------------------------
-# Hash cache (JSONL, append-only)
+# Hash cache (JSONL)
 # ----------------------------
 
 class HashCache:
     """
-    Simple JSONL cache: one object per line
-    { "path": "...", "size": int, "mtime": float, "sha256": "..." }
-    We validate entries by exact size+mtime match.
+    Simple JSONL cache: each line -> {"path": "...", "size": int, "mtime": float, "sha256": "..."}
+    Lookup key is (path, size, mtime). Appends new results as they are computed.
     """
-    def __init__(self, path: Path, enabled: bool = True):
-        self.enabled = bool(enabled)
+    def __init__(self, path: Optional[Path]):
         self.path = path
-        self._map: Dict[str, Tuple[int, float, str]] = {}
-        self._lock = threading.Lock()
+        self._map: dict[tuple[str, int, float], str] = {}
         self._fh = None
+        if path:
+            self._load()
 
-        if not self.enabled:
+    def _load(self):
+        p = Path(self.path).expanduser()
+        if not p.exists():
+            p.parent.mkdir(parents=True, exist_ok=True)
             return
         try:
-            if self.path.exists():
-                with self.path.open("r", encoding="utf-8", errors="ignore") as fh:
-                    for line in fh:
-                        try:
-                            rec = json.loads(line)
-                            p = rec.get("path")
-                            sz = int(rec.get("size", -1))
-                            mt = float(rec.get("mtime", -1.0))
-                            hs = rec.get("sha256")
-                            if isinstance(p, str) and isinstance(hs, str) and sz >= 0:
-                                self._map[p] = (sz, mt, hs)
-                        except Exception:
-                            continue
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self._fh = self.path.open("a", encoding="utf-8")
-        except Exception:
-            self.enabled = False
-            self._fh = None
-
-    def close(self):
-        try:
-            if self._fh:
-                self._fh.close()
+            with p.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                        k = (rec.get("path", ""), int(rec.get("size", 0)), float(rec.get("mtime", 0.0)))
+                        v = rec.get("sha256")
+                        if k[0] and v:
+                            self._map[k] = str(v)
+                    except Exception:
+                        continue
         except Exception:
             pass
 
-    def get(self, p: Path, size: int, mtime: float) -> Optional[str]:
-        if not self.enabled:
-            return None
-        rec = self._map.get(str(p))
-        if not rec:
-            return None
-        sz, mt, hs = rec
-        if sz == size and abs(mt - mtime) < 1e-6:
-            return hs
-        return None
-
-    def put(self, p: Path, size: int, mtime: float, sha: str):
-        if not self.enabled or not sha:
+    def open_append(self):
+        if not self.path:
             return
-        with self._lock:
-            self._map[str(p)] = (size, mtime, sha)
-            if self._fh:
-                try:
-                    self._fh.write(json.dumps({"path": str(p), "size": size, "mtime": mtime, "sha256": sha}) + "\n")
-                    self._fh.flush()
-                except Exception:
-                    pass
+        p = Path(self.path).expanduser()
+        self._fh = p.open("a", encoding="utf-8")
+
+    def close(self):
+        if self._fh:
+            try:
+                self._fh.close()
+            except Exception:
+                pass
+            self._fh = None
+
+    def get(self, path: Path, size: int, mtime: float) -> Optional[str]:
+        return self._map.get((str(path), size, mtime))
+
+    def put(self, path: Path, size: int, mtime: float, sha256: str):
+        key = (str(path), size, mtime)
+        self._map[key] = sha256
+        if self._fh:
+            try:
+                rec = {"path": str(path), "size": size, "mtime": mtime, "sha256": sha256}
+                self._fh.write(json.dumps(rec) + "\n")
+                self._fh.flush()
+            except Exception:
+                pass
 
 # ----------------------------
 # Live progress (optional)
 # ----------------------------
 
-def _bytes_to_mib(n: Union[int, float]) -> float:
-    try:
-        return float(n) / (1024.0 * 1024.0)
-    except Exception:
-        return 0.0
-
 class ProgressReporter:
-    """Thread-safe counters + optional TermDash updates, small-screen friendly."""
-    COLW = 22  # fixed width across all columns to line up separators
-
+    """Thread-safe counters + optional TermDash updates, with per-stage ETA."""
     def __init__(self, enable_dash: bool, refresh_rate: float = 0.2):
         self.enable_dash = enable_dash and TERMDASH_AVAILABLE and sys.stdout.isatty()
         self.refresh_rate = max(0.05, float(refresh_rate))
         self.lock = threading.Lock()
         self.start_ts = time.time()
 
-        # Stage and counters
-        self.stage = "scanning"
+        # High-level counters
         self.total_files = 0
         self.scanned_files = 0
         self.video_files = 0
         self.bytes_seen = 0
 
+        # Hashing
+        self.hash_total = 0
         self.hash_done = 0
-        self.hash_plan_total = 0
-        self.hash_cache_hits = 0
+        self.cache_hits = 0
 
+        # Groups + results
         self.groups_hash = 0
         self.groups_meta = 0
         self.groups_phash = 0
-        self.dup_groups = 0
-        self.dup_files = 0
-        self.dup_bytes = 0
+        self.dup_groups_total = 0
+        self.losers_total = 0
+        self.bytes_to_remove = 0
+
+        # Stage/ETA
+        self.stage_name = "idle"
+        self.stage_total = 0
+        self.stage_done = 0
+        self.stage_start_ts = time.time()
+        self._ema_rate = 0.0  # items/sec exponential moving average
 
         # Dashboard
         self.dash: Optional[TermDash] = None  # type: ignore
         self._ticker: Optional[threading.Thread] = None
         self._stop_evt = threading.Event()
 
+        # Pre-built lines (created in start())
+        self._line_title = None
+        self._line_stage = None
+        self._line_lr1 = self._line_lr2 = self._line_lr3 = None
+
+    # ---- dashboard lifecycle ----
     def start(self):
         if not self.enable_dash:
             return
         self.dash = TermDash(
             refresh_rate=self.refresh_rate,
-            enable_separators=True,
+            enable_separators=False,
             reserve_extra_rows=2,
             align_columns=True,
-            min_col_pad=2,
-            max_col_width=None,
+            max_col_width=28,
         )
-        self.dash.__enter__()  # start renderer
 
-        # Title line (single-stat)
-        self.dash.add_line("hdr", Line("hdr", stats=[
-            Stat("title", "Video Deduper — Live", format_string="{}", no_expand=True, display_width=self.COLW)
-        ], style="header"), at_top=True)
+        # Title
+        self._line_title = Line(
+            "title",
+            stats=[Stat("title", "Video Deduper — Live", format_string="{}")],
+            style="header",
+        )
+        # Stage + ETA
+        self._line_stage = Line(
+            "stage",
+            stats=[
+                Stat("stage", "scanning", prefix="Stage: ", format_string="{}",
+                     no_expand=True, display_width=14),
+                Stat("eta", "--:--:--", prefix=" |  ETA: ", format_string="{}",
+                     no_expand=True, display_width=10),
+            ],
+        )
+        # Left/Right block 1
+        self._line_lr1 = Line(
+            "lr1",
+            stats=[
+                Stat("elapsed", "00:00:00", prefix="Elapsed: ", format_string="{}",
+                     no_expand=True, display_width=10),
+                Stat("files", (0, 0), prefix=" |  Files: ", format_string="{}/{}",
+                     no_expand=True, display_width=16),
+                Stat("videos", 0, prefix=" |  Videos: ", format_string="{}",
+                     no_expand=True, display_width=14),
+                Stat("hashed", (0, 0), prefix=" |  Hashed: ", format_string="{}/{}",
+                     no_expand=True, display_width=16),
+            ],
+        )
+        # Left/Right block 2
+        self._line_lr2 = Line(
+            "lr2",
+            stats=[
+                Stat("scanned", "0 MiB", prefix="Scanned: ", format_string="{}",
+                     no_expand=True, display_width=16),
+                Stat("cache_hits", 0, prefix=" |  Cache hits: ", format_string="{}",
+                     no_expand=True, display_width=16),
+            ],
+        )
+        # Left/Right block 3
+        self._line_lr3 = Line(
+            "lr3",
+            stats=[
+                Stat("g_hash", 0, prefix="Hash groups: ", format_string="{}",
+                     no_expand=True, display_width=16),
+                Stat("g_meta", 0, prefix=" |  Meta groups: ", format_string="{}",
+                     no_expand=True, display_width=16),
+                Stat("g_phash", 0, prefix=" |  pHash groups: ", format_string="{}",
+                     no_expand=True, display_width=18),
+                Stat("dup_groups", 0, prefix=" |  Dup groups: ", format_string="{}",
+                     no_expand=True, display_width=16),
+                Stat("dup_files", 0, prefix=" |  Dup files: ", format_string="{}",
+                     no_expand=True, display_width=14),
+                Stat("bytes_rm", "0 MiB", prefix=" |  To remove: ", format_string="{}",
+                     no_expand=True, display_width=16),
+            ],
+        )
 
-        # Stage line (single-stat to avoid truncation)
-        self.dash.add_line("stage", Line("stage", stats=[
-            Stat("stage", "scanning", prefix="Stage: ", format_string="{}", no_expand=True, display_width=self.COLW)
-        ]))
+        # Start dashboard
+        self.dash.__enter__()  # context-like start
+        self.dash.add_line("title", self._line_title, at_top=True)
+        self.dash.add_line("stage", self._line_stage)
+        self.dash.add_line("lr1", self._line_lr1)
+        self.dash.add_line("lr2", self._line_lr2)
+        self.dash.add_line("lr3", self._line_lr3)
 
-        # Elapsed | Files
-        self.dash.add_line("l1", Line("l1", stats=[
-            Stat("elapsed", "00:00:00", prefix="Elapsed: ", format_string="{}", no_expand=True, display_width=self.COLW),
-            Stat("files", (0, 0), prefix="Files: ", format_string="{}/{}", no_expand=True, display_width=self.COLW),
-        ]))
-
-        # Videos | Hashed N/T
-        self.dash.add_line("l2", Line("l2", stats=[
-            Stat("videos", 0, prefix="Videos: ", format_string="{}", no_expand=True, display_width=self.COLW),
-            Stat("hashed", (0, 0), prefix="Hashed: ", format_string="{}/{}", no_expand=True, display_width=self.COLW),
-        ]))
-
-        # Scanned MiB | Cache hits
-        self.dash.add_line("l3", Line("l3", stats=[
-            Stat("scanned", "0 MiB", prefix="Scanned: ", format_string="{}", no_expand=True, display_width=self.COLW),
-            Stat("cache_hits", 0, prefix="Cache hits: ", format_string="{}", no_expand=True, display_width=self.COLW),
-        ]))
-
-        # Hash groups | Meta groups
-        self.dash.add_line("l4", Line("l4", stats=[
-            Stat("g_hash", 0, prefix="Hash groups: ", format_string="{}", no_expand=True, display_width=self.COLW),
-            Stat("g_meta", 0, prefix="Meta groups: ", format_string="{}", no_expand=True, display_width=self.COLW),
-        ]))
-
-        # pHash groups | Dup groups
-        self.dash.add_line("l5", Line("l5", stats=[
-            Stat("g_phash", 0, prefix="pHash groups: ", format_string="{}", no_expand=True, display_width=self.COLW),
-            Stat("dup_groups", 0, prefix="Dup groups: ", format_string="{}", no_expand=True, display_width=self.COLW),
-        ]))
-
-        # Dup files | To remove
-        self.dash.add_line("l6", Line("l6", stats=[
-            Stat("dup_files", 0, prefix="Dup files: ", format_string="{}", no_expand=True, display_width=self.COLW),
-            Stat("dup_bytes", "0 MiB", prefix="To remove: ", format_string="{}", no_expand=True, display_width=self.COLW),
-        ]))
-
-        # background ticker to update elapsed
+        # background ticker to update elapsed/ETA text
         self._ticker = threading.Thread(target=self._tick_loop, daemon=True)
         self._ticker.start()
         self.flush()  # initial paint
@@ -411,76 +445,130 @@ class ProgressReporter:
             except Exception:
                 pass
 
-    def set_stage(self, stage: str):
-        self.stage = stage
-        if self.enable_dash and self.dash:
-            self.dash.update_stat("stage", "stage", stage)
-
-    def set_total_files(self, n: int):
-        self.total_files = int(n)
-        self.flush()
-
-    def set_hash_plan(self, total: int):
-        self.hash_plan_total = max(0, int(total))
-        self.flush()
-
-    def inc_scanned(self, n: int = 1, *, bytes_added: int = 0, is_video: bool = False):
-        self.scanned_files += n
-        self.bytes_seen += int(bytes_added)
-        if is_video:
-            self.video_files += n
-        self.flush()
-
-    def inc_hashed(self, n: int = 1):
-        self.hash_done += n
-        self.flush()
-
-    def inc_cache_hit(self, n: int = 1):
-        self.hash_cache_hits += n
-        self.flush()
-
-    def inc_group(self, mode: str, n: int = 1):
-        if mode == "hash":
-            self.groups_hash += n
-        elif mode == "meta":
-            self.groups_meta += n
-        elif mode == "phash":
-            self.groups_phash += n
-        self.dup_groups = self.groups_hash + self.groups_meta + self.groups_phash
-        self.flush()
-
-    def set_dup_summary(self, dup_files: int, dup_bytes: int):
-        self.dup_files = dup_files
-        self.dup_bytes = dup_bytes
-        self.flush()
-
-    # ---- internal ticking & paint ----
+    # ---- tick & flush ----
     def _tick_loop(self):
         while not self._stop_evt.is_set():
             self._update_elapsed()
+            self._update_eta()
             time.sleep(self.refresh_rate)
 
     def _update_elapsed(self):
         if not self.enable_dash or not self.dash:
             return
         elapsed = int(time.time() - self.start_ts)
-        self.dash.update_stat("l1", "elapsed", f"{elapsed//3600:02d}:{(elapsed%3600)//60:02d}:{elapsed%60:02d}")
+        self.dash.update_stat("lr1", "elapsed", _fmt_hms(elapsed))
+
+    def _update_eta(self):
+        if not self.enable_dash or not self.dash:
+            return
+        eta_text = _fmt_hms(self._estimate_remaining())
+        self.dash.update_stat("stage", "eta", eta_text)
 
     def flush(self):
         if not self.enable_dash or not self.dash:
             return
-        self._update_elapsed()
-        self.dash.update_stat("l1", "files", (self.scanned_files, self.total_files))
-        self.dash.update_stat("l2", "videos", self.video_files)
-        self.dash.update_stat("l2", "hashed", (self.hash_done, self.hash_plan_total))
-        self.dash.update_stat("l3", "scanned", f"{_bytes_to_mib(self.bytes_seen):.0f} MiB")
-        self.dash.update_stat("l3", "cache_hits", self.hash_cache_hits)
-        self.dash.update_stat("l4", "g_hash", self.groups_hash)
-        self.dash.update_stat("l4", "g_meta", self.groups_meta)
-        self.dash.update_stat("l5", "g_phash", self.groups_phash)
-        self.dash.update_stat("l5", "dup_groups", self.dup_groups)
-        self.dash.update_stat("l6", "dup_files", self.dup_files)
-        self.dash.update_stat("l6", "dup_bytes", f"{_bytes_to_mib(self.dup_bytes):.0f} MiB")
+        with self.lock:
+            self._update_elapsed()
+            self._update_eta()
+            # stage name
+            self.dash.update_stat("stage", "stage", self.stage_name)
+            # files/videos/hashed
+            self.dash.update_stat("lr1", "files", (self.scanned_files, self.total_files))
+            self.dash.update_stat("lr1", "videos", self.video_files)
+            self.dash.update_stat("lr1", "hashed", (self.hash_done, self.hash_total))
+            # bytes + cache
+            self.dash.update_stat("lr2", "scanned", f"{_bytes_to_mib(self.bytes_seen):.0f} MiB")
+            self.dash.update_stat("lr2", "cache_hits", self.cache_hits)
+            # groups + dup outcome
+            self.dash.update_stat("lr3", "g_hash", self.groups_hash)
+            self.dash.update_stat("lr3", "g_meta", self.groups_meta)
+            self.dash.update_stat("lr3", "g_phash", self.groups_phash)
+            self.dash.update_stat("lr3", "dup_groups", self.dup_groups_total)
+            self.dash.update_stat("lr3", "dup_files", self.losers_total)
+            self.dash.update_stat("lr3", "bytes_rm", f"{_bytes_to_mib(self.bytes_to_remove):.0f} MiB")
+
+    # ---- stage/ETA helpers ----
+    def start_stage(self, name: str, total: int):
+        with self.lock:
+            self.stage_name = name
+            self.stage_total = max(0, int(total))
+            self.stage_done = 0
+            self.stage_start_ts = time.time()
+            self._ema_rate = 0.0
+        self.flush()
+
+    def _bump_stage(self, n: int = 1):
+        with self.lock:
+            self.stage_done += int(n)
+            # update EMA rate
+            elapsed = max(1e-6, time.time() - self.stage_start_ts)
+            inst = self.stage_done / elapsed
+            alpha = 0.15
+            self._ema_rate = inst if self._ema_rate <= 0 else (alpha * inst + (1 - alpha) * self._ema_rate)
+
+    def _estimate_remaining(self) -> Optional[float]:
+        # return seconds remaining for current stage
+        with self.lock:
+            if self.stage_total <= 0:
+                return None
+            remaining = self.stage_total - self.stage_done
+            if remaining <= 0:
+                return 0.0
+            rate = self._ema_rate
+            if rate <= 0:
+                # fallback to average
+                elapsed = max(1e-6, time.time() - self.stage_start_ts)
+                rate = self.stage_done / elapsed if self.stage_done > 0 else 0.0
+            return (remaining / rate) if rate > 0 else None
+
+    # ---- counters (thread-safe) ----
+    def set_total_files(self, n: int):
+        with self.lock:
+            self.total_files = int(n)
+        self.flush()
+
+    def inc_scanned(self, n: int = 1, *, bytes_added: int = 0, is_video: bool = False):
+        with self.lock:
+            self.scanned_files += n
+            self.bytes_seen += int(bytes_added)
+            if is_video:
+                self.video_files += n
+        # scanning stage progress
+        if self.stage_name == "scanning":
+            self._bump_stage(n)
+        self.flush()
+
+    def set_hash_total(self, n: int):
+        with self.lock:
+            self.hash_total = int(n)
+        self.flush()
+
+    def inc_hashed(self, n: int = 1, cache_hit: bool = False):
+        with self.lock:
+            self.hash_done += n
+            if cache_hit:
+                self.cache_hits += n
+        # hashing stage progress
+        if self.stage_name == "hashing":
+            self._bump_stage(n)
+        self.flush()
+
+    def inc_group(self, mode: str, n: int = 1):
+        with self.lock:
+            if mode == "hash":
+                self.groups_hash += n
+            elif mode == "meta":
+                self.groups_meta += n
+            elif mode == "phash":
+                self.groups_phash += n
+        self.flush()
+
+    def set_results(self, dup_groups: int, losers_count: int, bytes_total: int):
+        with self.lock:
+            self.dup_groups_total = int(dup_groups)
+            self.losers_total = int(losers_count)
+            self.bytes_to_remove = int(bytes_total)
+        self.flush()
 
 # ----------------------------
 # File enumeration
@@ -494,6 +582,7 @@ def _normalize_patterns(patts: Optional[List[str]]) -> Optional[List[str]]:
         p = (p or "").strip()
         if not p:
             continue
+        # If user passed ".mp4" or "mp4", turn into "*.mp4"
         has_wild = any(ch in p for ch in "*?[")
         if not has_wild:
             ext = p.lstrip(".")
@@ -508,6 +597,14 @@ def iter_files(
     *,
     patterns: Optional[List[str]] = None,
 ) -> Iterable[Path]:
+    """
+    Backward-compatible iterator.
+
+    - Old style: iter_files(root, pattern="*.mp4", max_depth=None)
+    - New style: iter_files(root, patterns=["*.mp4", "*.mkv"], max_depth=None)
+    - Both can be used together; they'll be merged.
+    """
+    # Merge pattern + patterns
     merged: List[str] = []
     if patterns:
         merged.extend(patterns)
@@ -541,7 +638,11 @@ class Grouper:
         same_codec: bool = False,
         same_container: bool = False,
         phash_frames: int = 5,
-        phash_threshold: int = 12
+        phash_threshold: int = 12,
+        *,
+        scan_workers: int = 8,
+        hash_workers: int = 8,
+        cache: Optional[HashCache] = None,
     ):
         self.mode = mode  # 'hash' | 'meta' | 'phash' | 'all'
         self.duration_tolerance = duration_tolerance
@@ -550,7 +651,10 @@ class Grouper:
         self.same_container = same_container
         self.phash_frames = phash_frames
         self.phash_threshold = phash_threshold
+        self.scan_workers = max(1, int(scan_workers))
+        self.hash_workers = max(1, int(hash_workers))
         self._reporter: Optional[ProgressReporter] = None
+        self._cache = cache
 
     def _collect_filemeta(self, path: Path) -> FileMeta:
         try:
@@ -565,27 +669,27 @@ class Grouper:
             sig = compute_phash_signature(path, frames=self.phash_frames)
             if sig:
                 object.__setattr__(vm, "phash_signature", sig)  # frozen dataclass
+                if self._reporter:
+                    # phash sigs counted implicitly as scanned; not a separate stat on UI
+                    pass
         return vm
 
-    def collect(
-        self,
-        files: List[Path],
-        reporter: Optional[ProgressReporter] = None,
-        hash_cache: Optional[HashCache] = None,
-    ) -> Dict[str, List[VideoMeta | FileMeta]]:
+    def collect(self, files: List[Path], reporter: Optional[ProgressReporter] = None) -> Dict[str, List[VideoMeta | FileMeta]]:
+        """
+        Returns groups keyed by an opaque ID; each group is a list of FileMeta/VideoMeta to consider duplicates.
+        """
         self._reporter = reporter
-        if self._reporter:
-            self._reporter.set_stage("scanning")
-            self._reporter.set_total_files(len(files))
-
         groups: Dict[str, List[VideoMeta | FileMeta]] = {}
         want_meta = self.mode in ("meta", "phash", "all")
         want_phash = self.mode in ("phash", "all")
 
         metas: List[VideoMeta | FileMeta] = []
         lock = threading.Lock()
+        if self._reporter:
+            self._reporter.set_total_files(len(files))
+            self._reporter.start_stage("scanning", total=len(files))
 
-        def worker(p: Path):
+        def worker_scan(p: Path):
             try:
                 st = p.stat()
                 bytes_added = int(st.st_size)
@@ -601,41 +705,47 @@ class Grouper:
             if self._reporter:
                 self._reporter.inc_scanned(1, bytes_added=bytes_added, is_video=is_video)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
-            list(ex.map(worker, files))
-
-        total_hash_targets = len(metas) if self.mode in ("hash", "all") else 0
-        if self._reporter:
-            self._reporter.set_hash_plan(total_hash_targets)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.scan_workers) as ex:
+            list(ex.map(worker_scan, files))
 
         # Exact hash
         if self.mode in ("hash", "all"):
-            if self._reporter:
-                self._reporter.set_stage("hashing")
             by_hash: Dict[str, List[VideoMeta | FileMeta]] = defaultdict(list)
 
+            # prepare hashing stage
+            if self._reporter:
+                self._reporter.set_hash_total(len(metas))
+                self._reporter.start_stage("hashing", total=len(metas))
+
+            cache = self._cache
+            if cache:
+                cache.open_append()
+
             def ensure_hash(m: VideoMeta | FileMeta):
-                # cache first
-                if m.sha256 is None and hash_cache is not None:
-                    cached = hash_cache.get(m.path, m.size, m.mtime)
-                    if cached:
-                        object.__setattr__(m, "sha256", cached)
-                        if self._reporter:
-                            self._reporter.inc_cache_hit(1)
-                            self._reporter.inc_hashed(1)
-                        return
-                # compute
+                # cache?
+                cached = None
+                if cache:
+                    cached = cache.get(m.path, m.size, m.mtime)
+                if cached:
+                    object.__setattr__(m, "sha256", cached)
+                    if self._reporter:
+                        self._reporter.inc_hashed(1, cache_hit=True)
+                    return
+
                 if m.sha256 is None:
                     h = sha256_file(m.path)
                     if h:
                         object.__setattr__(m, "sha256", h)
-                        if hash_cache is not None:
-                            hash_cache.put(m.path, m.size, m.mtime, h)
+                        if cache:
+                            cache.put(m.path, m.size, m.mtime, h)
                 if self._reporter:
-                    self._reporter.inc_hashed(1)
+                    self._reporter.inc_hashed(1, cache_hit=False)
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.hash_workers) as ex:
                 list(ex.map(ensure_hash, metas))
+
+            if cache:
+                cache.close()
 
             for m in metas:
                 if m.sha256:
@@ -646,10 +756,8 @@ class Grouper:
                     if self._reporter:
                         self._reporter.inc_group("hash", 1)
 
-        # Metadata grouping
+        # Metadata (single union-find across all videos)
         if self.mode in ("meta", "all"):
-            if self._reporter:
-                self._reporter.set_stage("grouping(meta)")
             vids = [m for m in metas if isinstance(m, VideoMeta)]
             if vids:
                 tol = max(0.0, float(self.duration_tolerance))
@@ -688,10 +796,12 @@ class Grouper:
                 for bkey in sorted(buckets.keys()):
                     curr = buckets[bkey]
                     nxt = buckets.get(bkey + 1, [])
+                    # within bucket
                     for i in range(len(curr)):
                         for j in range(i + 1, len(curr)):
                             if similar(curr[i], curr[j]):
                                 union(curr[i], curr[j])
+                    # cross with next bucket
                     for a in curr:
                         for b in nxt:
                             if similar(a, b):
@@ -708,10 +818,8 @@ class Grouper:
                         if self._reporter:
                             self._reporter.inc_group("meta", 1)
 
-        # Perceptual hashing grouping
+        # Perceptual hashing (grouping on signatures gathered during scanning)
         if self.mode in ("phash", "all"):
-            if self._reporter:
-                self._reporter.set_stage("grouping(phash)")
             vids = [m for m in metas if isinstance(m, VideoMeta) and m.phash_signature]
             visited = set()
             gid = 0
@@ -737,6 +845,7 @@ class Grouper:
                     if self._reporter:
                         self._reporter.inc_group("phash", 1)
 
+        # final flush before return
         if self._reporter:
             self._reporter.flush()
         return groups
@@ -751,7 +860,7 @@ def make_keep_key(order: Sequence[str]):
         res = m.resolution_area if isinstance(m, VideoMeta) else 0
         vbr = m.video_bitrate if isinstance(m, VideoMeta) and m.video_bitrate else 0
         newer = m.mtime
-        smaller = -m.size
+        smaller = -m.size  # negative so "smaller" ranks higher in descending order
         depth = len(m.path.parts)
         mapping = {
             "longer": duration,
@@ -773,6 +882,7 @@ def choose_winners(groups: Dict[str, List[FileMeta | VideoMeta]], keep_order: Se
     return out
 
 def ensure_backup_move(path: Path, backup_root: Path, base_root: Path) -> Path:
+    # Preserve folder layout relative to base_root (auto-handles Windows paths)
     rel = path.resolve().relative_to(base_root.resolve())
     dest = backup_root.joinpath(rel)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -849,10 +959,14 @@ def write_report(path: Path, winners: Dict[str, Tuple[FileMeta | VideoMeta, List
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 # ----------------------------
-# Apply report
+# Apply report (new)
 # ----------------------------
 
 def apply_report(report_path: Path, *, dry_run: bool, force: bool, backup: Optional[Path], base_root: Optional[Path] = None) -> Tuple[int, int]:
+    """
+    Read a report JSON (from -R/--report) and delete/move all listed losers.
+    Returns (count, total_bytes).
+    """
     data = json.loads(Path(report_path).read_text(encoding="utf-8"))
     groups = data.get("groups") or {}
     loser_paths: List[Path] = []
@@ -867,12 +981,14 @@ def apply_report(report_path: Path, *, dry_run: bool, force: bool, backup: Optio
         _print("Report contains no losers to process.")
         return (0, 0)
 
+    # Derive base_root if not provided, so backup preserves structure sanely
     if base_root is None:
         try:
             base_root = Path(os.path.commonpath([str(p) for p in loser_paths]))
         except Exception:
             base_root = Path("/")
 
+    # Build synthetic FileMeta list with current sizes/mtimes
     metas: List[FileMeta] = []
     for p in loser_paths:
         try:
@@ -887,9 +1003,8 @@ def apply_report(report_path: Path, *, dry_run: bool, force: bool, backup: Optio
         _print("All losers from report are missing; nothing to do.")
         return (0, 0)
 
+    count = total = 0
     if dry_run:
-        count = 0
-        total = 0
         for m in metas:
             _print(f"[cyan][DRY-RUN][/cyan] Would remove: {m.path}")
             count += 1
@@ -906,34 +1021,36 @@ def apply_report(report_path: Path, *, dry_run: bool, force: bool, backup: Optio
 # CLI
 # ----------------------------
 
-class _NiceFormatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter):
-    pass
+def _default_io_workers() -> int:
+    c = os.cpu_count() or 4
+    # IO-friendly default, but don't thrash the disk
+    return max(4, min(32, c * 2))
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     epilog = r"""
-Examples (PowerShell)
+Examples (PowerShell):
 
-  Exact duplicates (fast), dry-run, all files:
-    python .\video_dedupe.py "D:\Pictures\Saved" -M hash -x
+  # Exact duplicates (fast), dry-run, all files:
+  python .\video_dedupe.py "D:\Pictures\Saved" -M hash -x
 
-  All modes, MP4 only, recurse fully, write report:
-    python .\video_dedupe.py "D:\Pictures\Saved" -M all -p *.mp4 -r -x -R D:\report.json
+  # All modes, MP4 only, recurse fully, write report:
+  python .\video_dedupe.py "D:\Pictures\Saved" -M all -p *.mp4 -r -x -R D:\report.json
 
-  Apply a previously generated report (delete/move losers listed in it):
-    python .\video_dedupe.py --apply-report D:\report.json -f -b D:\Quarantine
+  # Apply a previously generated report (delete/move losers listed in it):
+  python .\video_dedupe.py --apply-report D:\report.json -f -b D:\Quarantine
 
-  Live dashboard:
-    python .\video_dedupe.py "D:\Videos" -M all -p *.mp4 -r -x --live
+  # Live dashboard:
+  python .\video_dedupe.py "D:\Videos" -M all -p *.mp4 -r -x --live
 
-  Using --dir instead of positional, two patterns:
-    python .\video_dedupe.py --dir "D:\Videos" -p *.mp4 -p *.mkv -M meta -u 3 -x
+  # Using --dir instead of positional, two patterns:
+  python .\video_dedupe.py --dir "D:\Videos" -p *.mp4 -p *.mkv -M meta -u 3 -x
 
-  Preset high tolerance, back up losers:
-    python .\video_dedupe.py "D:\Videos" --preset high -b D:\quarantine -f
+  # Preset high tolerance, back up losers:
+  python .\video_dedupe.py "D:\Videos" --preset high -b D:\quarantine -f
 """
     p = argparse.ArgumentParser(
         description="Find and remove duplicate/similar videos & files, or apply a saved report.",
-        formatter_class=_NiceFormatter,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=epilog
     )
 
@@ -946,7 +1063,7 @@ Examples (PowerShell)
 
     # Mode
     p.add_argument("-M", "--mode", choices=["hash", "meta", "phash", "all"], default="hash",
-                   help="Duplicate detection mode")
+                   help="Duplicate detection mode (default: hash)")
 
     # Patterns (repeatable). Accepts '*.mp4' or '.mp4' or 'mp4'
     p.add_argument("-p", "--pattern", action="append",
@@ -958,20 +1075,20 @@ Examples (PowerShell)
 
     # Metadata rules
     p.add_argument("--duration_tolerance", "-u", type=float, default=2.0,
-                   help="Duration tolerance in seconds")
+                   help="Duration tolerance in seconds (default: 2.0)")
     p.add_argument("--same_res", action="store_true", help="Require same resolution")
     p.add_argument("--same_codec", action="store_true", help="Require same video codec")
     p.add_argument("--same_container", action="store_true", help="Require same container/format")
 
     # Perceptual hashing
-    p.add_argument("--phash_frames", "-F", type=int, default=5, help="Frames to sample for phash")
+    p.add_argument("--phash_frames", "-F", type=int, default=5, help="Frames to sample for phash (default: 5)")
     p.add_argument("--phash_threshold", "-T", type=int, default=12,
-                   help="Per-frame Hamming distance threshold (64-bit)")
+                   help="Per-frame Hamming distance threshold (64-bit, default: 12)")
 
     # Keep policy
     p.add_argument("--keep", "-k", type=str,
                    default="longer,resolution,video_bitrate,newer,smaller,deeper",
-                   help="Order to keep best copy (comma list)")
+                   help="Order to keep best copy (comma list). Default: longer,resolution,video_bitrate,newer,smaller,deeper")
 
     # Actions & outputs
     p.add_argument("-x", "--dry-run", action="store_true", help="No changes; just print")
@@ -982,17 +1099,22 @@ Examples (PowerShell)
 
     # Live dashboard
     p.add_argument("-L", "--live", action="store_true", help="Show live, in-place progress with TermDash")
-    p.add_argument("--refresh-rate", type=float, default=0.2, help="Dashboard refresh rate in seconds")
+    p.add_argument("--refresh-rate", type=float, default=0.2, help="Dashboard refresh rate in seconds (default: 0.2)")
 
     # Hash cache
-    p.add_argument("-C", "--hash-cache", type=str,
-                   help="JSONL file to use for persistent SHA-256 cache (default: <root>/.vdhashcache.jsonl)")
-    p.add_argument("--no-cache", action="store_true", help="Disable hash cache")
+    p.add_argument("-C", "--cache", type=str, help="Path to JSONL hash cache file (enables cache read/write)")
+
+    # Threading
+    p.add_argument("--scan-workers", type=int, default=_default_io_workers(),
+                   help="Max worker threads for scanning/probing (default: ~2x CPU, capped)")
+    p.add_argument("--hash-workers", type=int, default=_default_io_workers(),
+                   help="Max worker threads for hashing (default: ~2x CPU, capped)")
 
     return p.parse_args(argv)
 
 def _apply_preset(args: argparse.Namespace):
     """
+    Apply --preset defaults unless the user already overrode them.
     'low'    -> exact hashes only (strict)
     'medium' -> metadata duration match, same resolution, moderate tolerance
     'high'   -> all modes + phash, lenient tolerance
@@ -1008,10 +1130,8 @@ def _apply_preset(args: argparse.Namespace):
 
     elif args.preset == "medium":
         args.mode = if_default(args.mode, "hash", "meta")
-        if args.duration_tolerance == 2.0:
-            args.duration_tolerance = 3.0
-        if not args.same_res:
-            args.same_res = True
+        args.duration_tolerance = if_default(args.duration_tolerance, 2.0, 3.0)
+        args.same_res = True if not args.same_res else args.same_res
 
     elif args.preset == "high":
         args.mode = "all"
@@ -1032,6 +1152,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"video_dedupe.py: error: report not found: {report_path}", file=sys.stderr)
             return 2
         base_root: Optional[Path] = None
+        # If user passed a directory, use it as base for backup path preservation
         if args.directory or args.dir_opt:
             base_root = Path(args.directory or args.dir_opt).expanduser().resolve()
         backup = Path(args.backup).expanduser().resolve() if args.backup else None
@@ -1060,25 +1181,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # Normalize patterns
     patterns = _normalize_patterns(args.pattern)
 
-    # Apply preset
+    # Apply preset first (may modify mode/tolerances)
     _apply_preset(args)
 
     # Prepare live reporter
     reporter = ProgressReporter(enable_dash=bool(args.live), refresh_rate=args.refresh_rate)
     reporter.start()
 
-    # Prepare hash cache (default path under the root)
-    cache = None
-    try:
-        if not args.no_cache:
-            cache_path = Path(args.hash_cache).expanduser().resolve() if args.hash_cache else root / ".vdhashcache.jsonl"
-            cache = HashCache(cache_path, enabled=True)
-            _print(f"[cyan]Hash cache:[/] {cache_path}")  # answer: where it's saved
-    except Exception:
-        cache = None
+    # Prepare cache (optional)
+    cache = HashCache(Path(args.cache)) if args.cache else None
 
     try:
-        reporter.set_stage("scanning")
         files = list(iter_files(root, max_depth=max_depth, patterns=patterns))
         if not files:
             _print("No files matched.")
@@ -1092,40 +1205,39 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             same_container=args.same_container,
             phash_frames=args.phash_frames,
             phash_threshold=args.phash_threshold,
+            scan_workers=args.scan_workers,
+            hash_workers=args.hash_workers,
+            cache=cache,
         )
 
-        groups = g.collect(files, reporter=reporter, hash_cache=cache)
+        groups = g.collect(files, reporter=reporter)
 
-        # Winners selection
-        reporter.set_stage("selecting")
+        if not groups:
+            _print("No duplicate groups found.")
+            return 0
+
         keep_order = [t.strip() for t in args.keep.split(",") if t.strip()]
         winners = choose_winners(groups, keep_order)
         print_groups(groups, winners)
-
-        # Prepare summary numbers for dashboard
-        losers = [l for (_, ls) in winners.values() for l in ls]
-        total_loser_bytes = sum(l.size for l in losers)
-        reporter.set_dup_summary(len(losers), total_loser_bytes)
 
         if args.report:
             write_report(Path(args.report), winners)
             _print(f"Wrote report to: {args.report}")
 
-        # Delete/backup
+        losers = [l for (_, ls) in winners.values() for l in ls]
         total_deleted = total_bytes = 0
         if losers:
-            reporter.set_stage("deleting" if not args.dry_run else "dry-run")
             backup = Path(args.backup).expanduser().resolve() if args.backup else None
             c, s = delete_or_backup(losers, dry_run=args.dry_run, force=args.force, backup_dir=backup, base_root=root)
             total_deleted += c
             total_bytes += s
 
+        # Final numbers to dashboard
+        reporter.set_results(len(winners), len(losers), sum(l.size for l in losers))
         _print(f"Candidates processed: {len(losers)}; removed/moved: {total_deleted}; size={total_bytes/1_048_576:.2f} MiB")
         return 0
     finally:
         reporter.stop()
-        if cache:
-            cache.close()
 
 if __name__ == "__main__":
     sys.exit(main())
