@@ -7,11 +7,31 @@ A command-line utility for finding and listing files based on size, date, and ot
 
 import argparse
 import hashlib
+import re
 import shutil
 import sys
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
+
+def parse_size(size_str):
+    """Converts a size string (e.g., '50kb', '200mb') into an integer number of bytes."""
+    size_str = str(size_str).lower().strip()
+    
+    # Regular expression to find the number and the unit
+    match = re.match(r'^(\d+\.?\d*)\s*([kmgtp]?b?)$', size_str)
+    if not match:
+        raise argparse.ArgumentTypeError(f"Invalid size format: '{size_str}'")
+        
+    num, unit = match.groups()
+    num = float(num)
+    
+    unit = unit.strip('b')
+    powers = {'k': 1, 'm': 2, 'g': 3, 't': 4, 'p': 5}
+    
+    power = powers.get(unit, 0)
+    
+    return int(num * (1024 ** power))
 
 def get_files_from_path(search_path, file_filter, recursive):
     """Walks a path and yields file info, handling errors."""
@@ -41,8 +61,8 @@ def format_bytes(size_bytes):
         return "0B"
     power = 1024
     n = 0
-    power_labels = {0: '', 1: 'K', 2: 'M', 3: 'G', 4: 'T'}
-    while size_bytes >= power and n < len(power_labels):
+    power_labels = {0: 'B', 1: 'K', 2: 'M', 3: 'G', 4: 'T'}
+    while size_bytes >= power and n < len(power_labels) - 1:
         size_bytes /= power
         n += 1
     return f"{size_bytes:.2f}{power_labels[n]}B"
@@ -79,9 +99,10 @@ def handle_top_size(args):
 def handle_find_recent(args):
     """Finds files larger than a given size that were accessed within N days."""
     search_type = "recursively" if args.recursive else "in the top-level directory"
-    print(f"Searching {search_type} of '{args.path}' for '{args.filter}' files > {args.size} GB accessed in the last {args.days} days...")
+    size_str_arg = format_bytes(args.size)
+    print(f"Searching {search_type} of '{args.path}' for '{args.filter}' files > {size_str_arg} accessed in the last {args.days} days...")
     
-    size_threshold_bytes = args.size * (1024**3)
+    size_threshold_bytes = args.size # This is now already in bytes thanks to parse_size
     cutoff_datetime = datetime.now() - timedelta(days=args.days)
     cutoff_timestamp = cutoff_datetime.timestamp()
     
@@ -249,7 +270,7 @@ def main():
 
     # --- Parser for 'find-recent' utility ---
     parser_recent = subparsers.add_parser('find-recent', help='Find large files accessed recently.', parents=[common_parser])
-    parser_recent.add_argument('-s', '--size', type=float, default=1.0, help='The minimum file size in GB (default: 1.0).')
+    parser_recent.add_argument('-s', '--size', type=parse_size, default='1gb', help='Minimum file size. Units: KB, MB, GB... (default: 1gb).')
     parser_recent.add_argument('-d', '--days', type=int, default=30, help='How many days back to consider "recent" (default: 30).')
     parser_recent.add_argument('-f', '--filter', default='*.*', help='The file filter/pattern to use (default: "*.*").')
 
@@ -262,7 +283,7 @@ def main():
     
     # --- Parser for 'find-dupes' utility ---
     parser_dupes = subparsers.add_parser('find-dupes', help='Find files with identical content.', parents=[common_parser])
-    parser_dupes.add_argument('-m', '--min-size', type=int, default=1, help='Minimum file size in bytes to check (default: 1).')
+    parser_dupes.add_argument('-m', '--min-size', type=parse_size, default='1kb', help='Minimum file size to check. Units: B, KB, MB... (default: 1kb).')
 
     # --- Parser for 'summarize' utility ---
     parser_summary = subparsers.add_parser('summarize', help='Show a breakdown of disk usage by file type.', parents=[common_parser])
