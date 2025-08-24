@@ -9,8 +9,10 @@ Key points:
 - Fixes Windows cp1252 UnicodeEncodeError by forcing UTF-8 stdout/stderr.
 - Memory-efficient top-N selection (heap) for largest files.
 - Fast duplicate detection: optional prehash + threaded full hashing; selectable hash algo.
-- New global output options: --absolute, --output, --encoding.
-- New 'du' command (directory usage) with --max-depth and sort controls.
+- Global output options: --absolute, --output, --encoding.
+- 'du' command (directory usage) with --max-depth and sort controls.
+- 'largest' command: any files (including extensionless) or filter by glob/type groups; CSV/JSON export.
+- NEW: 'df' command: per-drive/mount free/used/total + %used (cross-platform), CSV/JSON export.
 - Console output shows filenames by default; full paths when --absolute or --output.
 """
 
@@ -21,6 +23,7 @@ import concurrent.futures
 import hashlib
 import heapq
 import io
+import json
 import os
 import re
 import shutil
@@ -28,7 +31,7 @@ import sys
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Generator, List, Optional, Tuple
+from typing import Dict, Generator, Iterable, List, Optional, Set, Tuple
 
 # ----------------------------
 # Utility & Formatting Helpers
@@ -64,12 +67,10 @@ def configure_stdout(encoding: str = "utf-8") -> None:
         try:
             stream.reconfigure(encoding=encoding, errors="backslashreplace")  # type: ignore[attr-defined]
         except Exception:
-            # Fallback: wrap via TextIOWrapper if .reconfigure is not available and buffer exists
             try:
                 wrapped = io.TextIOWrapper(stream.buffer, encoding=encoding, errors="backslashreplace")  # type: ignore[attr-defined]
                 setattr(sys, stream_name, wrapped)
             except Exception:
-                # As a last resort, keep whatever encoding exists.
                 pass
 
 def safe_path_display(p: Path, absolute: bool) -> str:
@@ -133,7 +134,7 @@ def _name_for_console(p: Path, args) -> str:
     """Use filename for interactive console; full path if --absolute or writing to file."""
     if args.absolute or args.output:
         return safe_path_display(p, args.absolute)
-    return p.name  # keeps tests stable and readable in terminals
+    return p.name
 
 def handle_top_size(args: argparse.Namespace) -> None:
     """Find top N largest files (heap-based)."""
@@ -443,6 +444,303 @@ def handle_summarize(args: argparse.Namespace) -> None:
         for ext, data in sorted_summary[: args.top]:
             w.write(f"{ext:<{EXT_W}} {data['count']:>{CNT_W}} {format_bytes(data['size']):>{SZ_W}}")
 
+# -------- Largest files (any/glob/type groups, CSV/JSON) --------
+
+TYPE_GROUPS: Dict[str, Set[str]] = {
+    "images": {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif", ".heic", ".heif", ".svg", ".ico", ".avif"},
+    "images_raw": {".cr2", ".arw", ".nef", ".rw2", ".orf", ".dng", ".raf", ".sr2"},
+    "videos": {".mp4", ".mkv", ".mov", ".avi", ".wmv", ".flv", ".webm", ".m4v", ".mpeg", ".mpg"},
+    "audio": {".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a", ".wma", ".opus", ".aiff", ".alac"},
+    "archives": {".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".zst", ".tgz", ".tbz", ".txz"},
+    "docs": {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".md", ".rtf", ".odt", ".ods", ".odp", ".csv"},
+    "code": {".py", ".js", ".ts", ".java", ".c", ".cpp", ".h", ".hpp", ".cs", ".go", ".rb", ".php", ".rs", ".swift", ".kt", ".m", ".mm",
+             ".sh", ".ps1", ".bat", ".pl", ".lua", ".sql", ".yml", ".yaml", ".json", ".toml", ".ini", ".cfg", ".conf", ".tsx", ".jsx"},
+}
+
+def _ext_matches_group(path: Path, groups: Iterable[str]) -> bool:
+    if not groups:
+        return True
+    ext = path.suffix.lower()
+    if not ext:
+        return False
+    allowed: Set[str] = set()
+    for g in groups:
+        allowed |= TYPE_GROUPS.get(g, set())
+    return ext in allowed
+
+def handle_largest(args: argparse.Namespace) -> None:
+    """
+    Print the largest files (top-N) restricting by:
+      - glob pattern (default '*', includes extensionless)
+      - one or more type groups (-g/--group)
+      - minimum size
+    Output: console table (default), or --csv / --json.
+    """
+    if args.csv and args.json:
+        print("Error: Choose either --csv or --json, not both.", file=sys.stderr)
+        sys.exit(2)
+
+    search_type = "recursively" if args.recursive else "in the top-level directory"
+    with TeeWriter(Path(args.output) if args.output else None, args.encoding) as w:
+        if not (args.csv or args.json):
+            w.write(
+                f"Finding largest files {search_type} of '{args.path}' "
+                f"(filter='{args.filter}', groups={args.group or 'none'}, min={format_bytes(args.min_size)})..."
+            )
+
+        heap: List[Tuple[int, str, Path, os.stat_result]] = []
+        for p, st in get_files_from_path(args.path, args.filter, args.recursive):
+            if st.st_size < args.min_size:
+                continue
+            if not _ext_matches_group(p, args.group or []):
+                continue
+            item = (st.st_size, p.name, p, st)
+            if len(heap) < args.top:
+                heapq.heappush(heap, item)
+            else:
+                if item > heap[0]:
+                    heapq.heapreplace(heap, item)
+
+        if not heap:
+            if not (args.csv or args.json):
+                w.write("No matching files found.")
+            else:
+                if args.csv:
+                    w.write("size_bytes,size_human,mtime,atime,path")
+                elif args.json:
+                    w.write(json.dumps([], ensure_ascii=False))
+            return
+
+        rows = sorted(heap, key=lambda x: (x[0], x[1]), reverse=True)
+
+        if args.csv or args.json:
+            records = []
+            for size, _, p, st in rows:
+                record = {
+                    "size_bytes": int(size),
+                    "size_human": format_bytes(size),
+                    "mtime": datetime.fromtimestamp(st.st_mtime).isoformat(sep=" ", timespec="seconds"),
+                    "atime": datetime.fromtimestamp(st.st_atime).isoformat(sep=" ", timespec="seconds"),
+                    "path": safe_path_display(p, args.absolute),
+                }
+                records.append(record)
+            if args.csv:
+                w.write("size_bytes,size_human,mtime,atime,path")
+                for r in records:
+                    w.write(f"{r['size_bytes']},{r['size_human']},{r['mtime']},{r['atime']},{r['path']}")
+            else:
+                w.write(json.dumps(records, ensure_ascii=False))
+            return
+
+        try:
+            console_width = shutil.get_terminal_size().columns
+        except OSError:
+            console_width = 120
+
+        SIZE_W, DATE_W, SP = 10, 25, 2
+        name_w = max(20, console_width - SIZE_W - DATE_W - SP)
+        w.write("-" * console_width)
+        w.write(f"{'Name':<{name_w}} {'Size':>{SIZE_W}} {'Modified':>{DATE_W}}")
+        w.write(f"{'-'*name_w:<{name_w}} {'-'*SIZE_W:>{SIZE_W}} {'-'*DATE_W:>{DATE_W}}")
+        for size, _, p, st in rows:
+            size_str = format_bytes(size)
+            date_str = datetime.fromtimestamp(st.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+            name_str = _name_for_console(p, args)
+            if not args.output and not args.absolute and len(name_str) > name_w:
+                name_str = name_str[: name_w - 3] + "..."
+            w.write(f"{name_str:<{name_w}} {size_str:>{SIZE_W}} {date_str:>{DATE_W}}")
+        w.write("-" * console_width)
+
+# -------- Disk Free (df) ------------------------------------------------------
+
+# POSIX pseudo FS types commonly excluded unless --all is provided
+_SKIP_FSTYPES = {
+    "proc", "sysfs", "devtmpfs", "tmpfs", "squashfs", "overlay", "ramfs",
+    "cgroup", "cgroup2", "fusectl", "debugfs", "tracefs", "nsfs", "securityfs",
+    "selinuxfs", "configfs", "efivarfs", "autofs", "binfmt_misc", "mqueue", "hugetlbfs",
+}
+
+# Filesystem types to *include* by default on POSIX
+_INCLUDE_FSTYPES = {
+    "ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "ntfs", "exfat", "vfat", "f2fs", "apfs", "hfs", "hfsplus"
+}
+
+def _posix_mounts(include_all: bool) -> List[Tuple[str, str]]:
+    """
+    Return list of (mount_point, fstype) on POSIX.
+    Uses /proc/mounts if available; otherwise falls back to /etc/mtab.
+    Filters out pseudo filesystems unless include_all is True.
+    Deduplicates by real path (bind mounts).
+    """
+    candidates = []
+    mounts_file = "/proc/mounts" if os.path.exists("/proc/mounts") else "/etc/mtab"
+    try:
+        with open(mounts_file, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                _dev, mnt, fstype = parts[0], parts[1], parts[2]
+                if not include_all:
+                    if fstype in _SKIP_FSTYPES:
+                        continue
+                    if fstype not in _ INCLUDE_FSTYPES and not mnt.startswith("/mnt"):
+                        # allow external/mounted paths under /mnt even if fstype unknown
+                        continue
+                candidates.append((mnt, fstype))
+    except Exception:
+        # Best-effort: at least include root
+        candidates = [("/", "unknown")]
+
+    # Deduplicate by realpath
+    seen = set()
+    out: List[Tuple[str, str]] = []
+    for mnt, fstype in candidates:
+        try:
+            rp = os.path.realpath(mnt)
+        except Exception:
+            rp = mnt
+        if rp in seen:
+            continue
+        seen.add(rp)
+        out.append((mnt, fstype))
+    return out
+
+def _windows_drives(include_all: bool) -> List[Tuple[str, str]]:
+    """
+    Return list of (mount_point, type_label) for Windows.
+    Uses ctypes GetLogicalDrives/GetDriveTypeW to avoid extra deps.
+    Filters to FIXED + REMOTE by default; includes REMOVABLE/CDROM/UNKNOWN when include_all.
+    """
+    drives: List[Tuple[str, str]] = []
+    try:
+        import ctypes  # lazy import
+        GetLogicalDrives = ctypes.windll.kernel32.GetLogicalDrives
+        GetDriveTypeW = ctypes.windll.kernel32.GetDriveTypeW
+        DRIVE_UNKNOWN, DRIVE_NO_ROOT_DIR, DRIVE_REMOVABLE, DRIVE_FIXED, DRIVE_REMOTE, DRIVE_CDROM, DRIVE_RAMDISK = range(0, 7)
+        bitmask = GetLogicalDrives()
+        for i in range(26):
+            if bitmask & (1 << i):
+                root = f"{chr(ord('A') + i)}:\\"
+                dtype = GetDriveTypeW(ctypes.c_wchar_p(root))
+                label_map = {
+                    DRIVE_UNKNOWN: "UNKNOWN",
+                    DRIVE_NO_ROOT_DIR: "NO_ROOT",
+                    DRIVE_REMOVABLE: "REMOVABLE",
+                    DRIVE_FIXED: "FIXED",
+                    DRIVE_REMOTE: "REMOTE",
+                    DRIVE_CDROM: "CDROM",
+                    DRIVE_RAMDISK: "RAMDISK",
+                }
+                label = label_map.get(dtype, "UNKNOWN")
+                if not include_all and label not in {"FIXED", "REMOTE"}:
+                    continue
+                if os.path.exists(root):
+                    drives.append((root, label))
+    except Exception:
+        # fallback: exists check
+        for c in range(ord("A"), ord("Z") + 1):
+            root = f"{chr(c)}:\\"
+            if os.path.exists(root):
+                drives.append((root, "FIXED"))
+    return drives
+
+def _gather_df(include_all: bool) -> List[Dict[str, object]]:
+    rows: List[Dict[str, object]] = []
+    if os.name == "nt":
+        mounts = _windows_drives(include_all)
+    else:
+        mounts = _posix_mounts(include_all)
+
+    for mnt, fstype in mounts:
+        try:
+            usage = shutil.disk_usage(mnt)
+            total, used, free = int(usage.total), int(usage.used), int(usage.free)
+            pct = (used / total * 100.0) if total > 0 else 0.0
+            rows.append({
+                "mount": mnt,
+                "type": fstype,
+                "total": total,
+                "used": used,
+                "free": free,
+                "use_pct": pct,
+            })
+        except Exception:
+            # Skip mounts we cannot stat (e.g., permissions/unavailable)
+            continue
+    return rows
+
+def handle_df(args: argparse.Namespace) -> None:
+    """Show per-drive/mount disk free/used/total with sorting and CSV/JSON export."""
+    rows = _gather_df(include_all=args.all)
+
+    # optional filter substring on mount path
+    if args.filter:
+        needle = args.filter.lower()
+        rows = [r for r in rows if needle in str(r["mount"]).lower()]
+
+    # sort
+    sort_key_map = {
+        "name": lambda r: str(r["mount"]),
+        "total": lambda r: r["total"],
+        "used":  lambda r: r["used"],
+        "free":  lambda r: r["free"],
+        "use%":  lambda r: r["use_pct"],
+    }
+    key_fn = sort_key_map[args.sort]
+    reverse = args.sort in {"total", "used", "free", "use%"}
+    rows.sort(key=key_fn, reverse=reverse)
+
+    # truncate to top N if requested
+    if args.top and args.top > 0:
+        rows = rows[: args.top]
+
+    with TeeWriter(Path(args.output) if args.output else None, args.encoding) as w:
+        if args.json:
+            out = [
+                {
+                    "mount": r["mount"],
+                    "type": r["type"],
+                    "total_bytes": r["total"],
+                    "used_bytes": r["used"],
+                    "free_bytes": r["free"],
+                    "use_pct": round(r["use_pct"], 2),
+                }
+                for r in rows
+            ]
+            w.write(json.dumps(out, ensure_ascii=False))
+            return
+
+        if args.csv:
+            w.write("mount,type,total,used,free,use_pct")
+            for r in rows:
+                w.write(f"{r['mount']},{r['type']},{r['total']},{r['used']},{r['free']},{r['use_pct']:.2f}")
+            return
+
+        # pretty table
+        try:
+            console_width = shutil.get_terminal_size().columns
+        except OSError:
+            console_width = 120
+        NAME_W, TYPE_W, SIZE_W = 28, 10, 12
+        # adjust a bit for very small/very large terminals
+        NAME_W = max(12, min(40, console_width - (TYPE_W + SIZE_W * 3 + 12)))
+
+        w.write(f"Disk free for {'ALL' if args.all else 'primary'} mounts...")
+        w.write("-" * console_width)
+        w.write(f"{'Mount':<{NAME_W}} {'Type':<{TYPE_W}} {'Total':>{SIZE_W}} {'Used':>{SIZE_W}} {'Free':>{SIZE_W}} {'Use%':>6}")
+        w.write(f"{'-'*NAME_W:<{NAME_W}} {'-'*TYPE_W:<{TYPE_W}} {'-'*SIZE_W:>{SIZE_W}} {'-'*SIZE_W:>{SIZE_W}} {'-'*SIZE_W:>{SIZE_W}} {'-'*6:>6}")
+        for r in rows:
+            w.write(
+                f"{str(r['mount']):<{NAME_W}} "
+                f"{str(r['type']):<{TYPE_W}} "
+                f"{format_bytes(int(r['total'])):>{SIZE_W}} "
+                f"{format_bytes(int(r['used'])):>{SIZE_W}} "
+                f"{format_bytes(int(r['free'])):>{SIZE_W}} "
+                f"{r['use_pct']:>5.1f}%"
+            )
+        w.write("-" * console_width)
+
 # ----------------------------
 # CLI Setup
 # ----------------------------
@@ -462,8 +760,8 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("-o", "--output", default=None, help="Write output to a file (UTF-8 by default).")
     common.add_argument("-e", "--encoding", default="utf-8", help="Output encoding (default: utf-8).")
 
-    # top-size
-    p_top = subparsers.add_parser("top-size", help="Find the largest files.", parents=[common])
+    # top-size (kept for compatibility; 'largest' is the superset)
+    p_top = subparsers.add_parser("top-size", help="Find the largest files (compat; see 'largest').", parents=[common])
     p_top.add_argument("-t", "--top", type=int, default=10, help="Number of files to list (default: 10).")
     p_top.add_argument("-f", "--filter", default="*.*", help='Glob pattern (default: "*.*").')
 
@@ -504,6 +802,25 @@ def build_parser() -> argparse.ArgumentParser:
     p_du.add_argument("--max-depth", "-D", type=int, default=2, help="Maximum depth relative to base (default: 2).")
     p_du.add_argument("--sort", choices=["size", "name"], default="size", help="Sort criterion (default: size).")
 
+    # largest (any/glob/type groups; CSV/JSON)
+    p_lg = subparsers.add_parser("largest", help="Show the largest files (any/glob/type groups).", parents=[common])
+    p_lg.add_argument("-t", "--top", type=int, default=10, help="Number of files to list (default: 10).")
+    p_lg.add_argument("-f", "--filter", default="*", help="Glob pattern (default: '*', includes extensionless).")
+    p_lg.add_argument("-s", "--min-size", type=parse_size, default="0", help="Minimum size filter (default: 0).")
+    p_lg.add_argument("-g", "--group", choices=sorted(TYPE_GROUPS.keys()), nargs="+", help="Filter by one or more type groups.")
+    p_lg.add_argument("--csv", action="store_true", help="Emit CSV (size_bytes,size_human,mtime,atime,path).")
+    p_lg.add_argument("--json", action="store_true", help="Emit JSON array of records.")
+
+    # df (disk free per drive/mount)
+    p_df = subparsers.add_parser("df", help="Show disk free/used/total per drive/mount.", parents=[common])
+    p_df.add_argument("-t", "--top", type=int, default=0, help="Limit to top N rows after sort (0 = all).")
+    p_df.add_argument("--sort", choices=["name", "total", "used", "free", "use%"], default="free",
+                      help="Sort by column (default: free).")
+    p_df.add_argument("--all", action="store_true", help="Include pseudo/temporary/removable mounts.")
+    p_df.add_argument("--filter", default=None, help="Substring to match mount path (case-insensitive).")
+    p_df.add_argument("--csv", action="store_true", help="Emit CSV.")
+    p_df.add_argument("--json", action="store_true", help="Emit JSON.")
+
     return parser
 
 def main(argv: Optional[List[str]] = None) -> None:
@@ -517,6 +834,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         "find-dupes": handle_find_dupes,
         "summarize": handle_summarize,
         "du": handle_du,
+        "largest": handle_largest,
+        "df": handle_df,
     }
     handler = handler_map[args.command]
     handler(args)

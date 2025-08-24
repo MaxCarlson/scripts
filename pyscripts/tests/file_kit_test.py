@@ -70,14 +70,30 @@ def test_find_recent_and_old(tmp_path: Path, monkeypatch):
     # ---- find-recent (uses just filename in console mode)
     buf = io.StringIO()
     monkeypatch.setattr(sys, "stdout", buf)
-    file_kit.main(["find-recent", "-p", str(tmp_path), "-s", "1kb", "-d", "30", "-e", "utf-8"])
+    file_kit.main(
+        ["find-recent", "-p", str(tmp_path), "-s", "1kb", "-d", "30", "-e", "utf-8"]
+    )
     out = buf.getvalue()
     assert "recent.bin" in out
 
     # ---- find-old (by modified)
     buf2 = io.StringIO()
     monkeypatch.setattr(sys, "stdout", buf2)
-    file_kit.main(["find-old", "-p", str(tmp_path), "-c", "60", "-t", "5", "-d", "m", "-e", "utf-8"])
+    file_kit.main(
+        [
+            "find-old",
+            "-p",
+            str(tmp_path),
+            "-c",
+            "60",
+            "-t",
+            "5",
+            "-d",
+            "m",
+            "-e",
+            "utf-8",
+        ]
+    )
     out2 = buf2.getvalue()
     assert "old.bin" in out2
 
@@ -148,7 +164,9 @@ def test_output_file_and_encoding(tmp_path: Path):
     make_file(target, 1234, b"Z")
     out_file = tmp_path / "out.txt"
 
-    file_kit.main(["top-size", "-p", str(tmp_path), "-t", "1", "-o", str(out_file), "-e", "utf-8"])
+    file_kit.main(
+        ["top-size", "-p", str(tmp_path), "-t", "1", "-o", str(out_file), "-e", "utf-8"]
+    )
     text = out_file.read_text(encoding="utf-8")
     assert uni in text  # ensure unicode and full path made it into the file
 
@@ -174,9 +192,42 @@ def test_summarize_and_du(tmp_path: Path, monkeypatch):
     buf2 = io.StringIO()
     monkeypatch.setattr(sys, "stdout", buf2)
     file_kit.main(
-        ["du", "-p", str(tmp_path), "--max-depth", "1", "-t", "10", "--sort", "name", "-e", "utf-8"]
+        [
+            "du",
+            "-p",
+            str(tmp_path),
+            "--max-depth",
+            "1",
+            "-t",
+            "10",
+            "--sort",
+            "name",
+            "-e",
+            "utf-8",
+        ]
     )
     out2 = buf2.getvalue()
     # Ensure both dirs listed and in name order (dirA before dirB)
     assert "Directory" in out2 and "dirA" in out2 and "dirB" in out2
     assert out2.find("dirA") < out2.find("dirB")
+
+
+def test_df_text_output(monkeypatch):
+    # Just ensure it runs and prints the table headers and at least one row
+    buf = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", buf)
+    file_kit.main(["df", "--sort", "free"])
+    out = buf.getvalue()
+    assert "Mount" in out and "Total" in out and "Free" in out
+    # There should be at least one line of data under the header separators
+    assert out.count("\n") > 4
+
+
+def test_df_csv_and_filter(tmp_path: Path):
+    out_csv = tmp_path / "df.csv"
+    # CSV export; filter with a generic slash/root substring so it likely matches on POSIX/WSL/Termux,
+    # and on Windows most mounts contain ":" so we skip filter there.
+    args = ["df", "--csv", "-o", str(out_csv)]
+    file_kit.main(args)
+    text = out_csv.read_text(encoding="utf-8")
+    assert "mount,type,total,used,free,use_pct" in text

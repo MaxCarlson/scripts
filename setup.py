@@ -453,6 +453,17 @@ def main():
         if args.verbose: path_args.append("--verbose")
         run_setup(setup_path_script, *path_args)
 
+    # NEW: Windows/pwsh PATH augmentation for <scripts>/pyscripts
+    with active_section_mgr_class("PowerShell PATH Configuration (setup_pwsh_paths.py)"):
+        pwsh_paths_script = SCRIPTS_SETUP_PACKAGE_DIR / "setup_pwsh_paths.py"
+        pwsh_args = [
+            "--scripts-dir", str(SCRIPTS_DIR),
+            "--dotfiles-dir", str(DOTFILES_DIR),
+            # "--include-bin"  # Uncomment to also add <scripts>/bin via this helper
+        ]
+        if args.verbose: pwsh_args.append("--verbose")
+        run_setup(pwsh_paths_script, *pwsh_args)
+
     if callable(print_global_elapsed): print_global_elapsed()
     else: (sui_log_error if STANDARD_UI_AVAILABLE else fb_log_error)("print_global_elapsed not callable at script end.")
 
