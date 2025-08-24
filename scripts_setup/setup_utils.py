@@ -91,16 +91,33 @@ def create_symlink(src: Path, dest: Path, verbose: bool = True) -> bool:
 
 def _create_windows_cmd_wrapper(wrapper_path: Path, target_script: Path, verbose: bool):
     """
-    Create/refresh a .cmd wrapper that invokes the target Python script with the current environment's Python.
-    This avoids relying on PATHEXT or .py associations and works from any directory.
+    Create/refresh a .cmd wrapper that invokes the target Python script.
+    Order of interpreter preference:
+      1) The exact Python used to run setup (sys.executable) if it exists
+      2) %CONDA_PREFIX%\python.exe if a conda/mamba env is active
+      3) python.exe found on PATH
+      4) py.exe -3 (Windows launcher) LAST, to avoid broken conda 'py' shims
     """
-    # Use 'py -3' if available, fallback to 'python'
+    py_abs = sys.executable.replace("/", "\\")
+    script_abs = str(target_script.resolve()).replace("/", "\\")
     content = (
         "@echo off\r\n"
         "setlocal\r\n"
-        "set \"_PY=python\"\r\n"
-        "where py >nul 2>nul && set \"_PY=py -3\"\r\n"
-        f"%_PY% \"{str(target_script)}\" %*\r\n"
+        f"set \"_PY_ABS={py_abs}\"\r\n"
+        f"set \"_SCRIPT={script_abs}\"\r\n"
+        "if exist \"%_PY_ABS%\" goto run\r\n"
+        "if defined CONDA_PREFIX (\r\n"
+        "  if exist \"%CONDA_PREFIX%\\python.exe\" set \"_PY_ABS=%CONDA_PREFIX%\\python.exe\"\r\n"
+        ")\r\n"
+        "if exist \"%_PY_ABS%\" goto run\r\n"
+        "for %%I in (python.exe) do if exist \"%%~$PATH:I\" set \"_PY_ABS=%%~$PATH:I\"\r\n"
+        "if exist \"%_PY_ABS%\" goto run\r\n"
+        "for %%I in (py.exe) do if exist \"%%~$PATH:I\" set \"_PY_LAUNCH=%%~$PATH:I\"\r\n"
+        "if defined _PY_LAUNCH \"%_PY_LAUNCH%\" -3 \"%_SCRIPT%\" %* & goto :eof\r\n"
+        "echo Python interpreter not found. Ensure Python is installed and on PATH.\r\n"
+        "exit /b 9009\r\n"
+        ":run\r\n"
+        "\"%_PY_ABS%\" \"%_SCRIPT%\" %*\r\n"
     )
     _write_text_if_changed(wrapper_path, content, verbose, crlf=True)
 
