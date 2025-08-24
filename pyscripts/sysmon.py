@@ -2,27 +2,7 @@
 #!/usr/bin/env python3
 """
 sysmon.py — unified CPU / Memory / Disk / Network / Overall / GPU TUI for tiny terminals.
-
-What's new in this build
-- Termux-safe DISK: permission errors no longer crash; per-disk panel hides if unavailable
-- Graphs ON by default (toggle with 'g'); minimal sparklines sized for small panes
-- Overall dashboard with compact mini-graphs for CPU, MEM free, NET total, DISK total
-- Label mode toggle ('x'): switch per-proc tables between Name+stats and PID+stats
-- DISK: per-disk Read/Write/Util (rolling instants) + per-proc I/O; trimmed names & numbers aligned
-- Windows: PhysicalDriveN → actual model name via 'wmic' (fallback if unavailable)
-- Update work is limited to the visible view each tick (low CPU)
-
-Keys
-  v          Cycle view (CPU → NET → DISK → OVERALL → GPU)
-  s          Cycle sort for the view
-  + / -      Increase / decrease Top‑N rows
-  ] / [      Increase / decrease refresh interval (0.2–5.0s)
-  m          Toggle Mb/s vs MiB/s (NET totals)
-  g          Toggle graphs  (on ←→ off)
-  p          Toggle NET per‑proc list on/off
-  x          Toggle per‑proc label mode: Name ↔ PID
-  h          Toggle help overlay
-  q          Quit
+(Updated: Termux-safe CPU, fixed NET per-proc deltas, expanded OVERALL graphs)
 """
 from __future__ import annotations
 
@@ -58,8 +38,7 @@ if os.name == "nt":
                 return msvcrt.getwch()
             return None
 else:
-    import tty
-    import termios
+    import tty, termios
 
     class KeyReader:
         def __enter__(self):
@@ -118,6 +97,22 @@ def sparkline(values: Sequence[float], width: int = 30) -> str:
         level = int(round((v - lo) / (hi - lo) * (len(blocks) - 1))) if hi > lo else 0
         out.append(blocks[level])
     return "".join(out)
+
+# Safe wrappers (Termux/locked filesystems can deny /proc or /sys reads)
+def safe_cpu_percent() -> float:
+    try:
+        return float(psutil.cpu_percent(interval=None))
+    except Exception:
+        return 0.0
+
+def safe_virtual_memory():
+    try:
+        return psutil.virtual_memory()
+    except Exception:
+        class Dummy:  # minimal shape
+            total = used = available = 0
+            percent = 0.0
+        return Dummy()
 
 # ---------------------- Process snapshotting for CPU/DISK --------------------
 @dataclass
@@ -187,9 +182,10 @@ def deltas(prev: Dict[int, ProcSnap], curr: Dict[int, ProcSnap], ncpu: int) -> L
 
 # ------------------------------ CPU view -------------------------------------
 def cpu_columns_for_width(width: int, label_mode: str) -> List[str]:
-    cols = ["PID" if label_mode == "pid" else "PID",  # PID always shown (right-justified)
-            "Name"] if label_mode == "name" else ["PID"]
-    # append metrics
+    cols = ["PID"]
+    if label_mode == "name":
+        cols.append("Name")
+    # metrics
     base = ["CPU %", "Mem(MB)", "DΔ(MB)", "RΔ(MB)", "WΔ(MB)"]
     if width < 65:  return cols + ["CPU %"]
     if width < 80:  return cols + ["CPU %", "Mem(MB)"]
@@ -231,7 +227,6 @@ def render_cpu_table(rows: List[dict], total: int, limit: int, sort_mode: str,
 
     for r in rows[:limit]:
         vals = []
-        # PID always first
         if "PID" in cols:     vals.append(str(r["pid"]))
         if "Name" in cols:    vals.append(truncate(r["name"], name_cap))
         if "CPU %" in cols:   vals.append(f"{r['cpu_pct']:.1f}")
@@ -246,11 +241,11 @@ def render_cpu_table(rows: List[dict], total: int, limit: int, sort_mode: str,
     items: List = [table, Text(cap, style="dim"), footer]
 
     if cpu_state.graph_mode != "off":
-        total_cpu = psutil.cpu_percent(interval=None)  # non-blocking
+        total_cpu = safe_cpu_percent()
         cpu_state.hist_total.append(total_cpu)
         if len(cpu_state.hist_total) > 120:
             cpu_state.hist_total = cpu_state.hist_total[-120:]
-        s = sparkline(cpu_state.hist_total, width=max(20, min(60, width - 10)))
+        s = sparkline(cpu_state.hist_total, width=max(20, min(80, width - 10)))
         items.insert(0, Text(f"CPU total: {total_cpu:.1f}%  {s}"))
 
     return Panel(Group(*items), title="CPU / Memory / Disk", border_style="cyan")
@@ -264,7 +259,7 @@ class DiskLiveState:
     graph_mode: str = "total"   # graphs on by default
     per_disk_available: bool = True
     label_mode: str = "name"    # 'name'|'pid' for per-proc table
-    win_drive_model_map: Dict[str, str] = None  # PhysicalDriveN -> Model
+    win_drive_model_map: Dict[str, str] = None
     def __init__(self):
         self.prev = {}
         self.last_ts = time.time()
@@ -281,7 +276,6 @@ def safe_disk_io_counters_perdisk() -> Dict[str, psutil._common.sdiskio]:
         return {}
 
 def _win_populate_drive_models() -> Dict[str, str]:
-    """Return {'PhysicalDrive0': 'Samsung 970 EVO', ...} if possible."""
     mapping: Dict[str, str] = {}
     if os.name != "nt":
         return mapping
@@ -301,10 +295,6 @@ def _win_populate_drive_models() -> Dict[str, str]:
     return mapping
 
 def disk_perdisk_snapshot(state: DiskLiveState) -> Dict[str, Tuple[float, float, float, str]]:
-    """
-    Return {dev: (read_Bps, write_Bps, util%, display_name)}.
-    If per-disk stats are unavailable (Termux, perms), returns {} and sets state.per_disk_available=False.
-    """
     curr = safe_disk_io_counters_perdisk()
     if not curr:
         state.per_disk_available = False
@@ -316,7 +306,6 @@ def disk_perdisk_snapshot(state: DiskLiveState) -> Dict[str, Tuple[float, float,
     out: Dict[str, Tuple[float, float, float, str]] = {}
     total_bw = 0.0
 
-    # Windows: lazily populate model names
     if os.name == "nt" and not state.win_drive_model_map:
         state.win_drive_model_map = _win_populate_drive_models()
 
@@ -326,8 +315,10 @@ def disk_perdisk_snapshot(state: DiskLiveState) -> Dict[str, Tuple[float, float,
         if prv:
             d_read = max(0, io.read_bytes - prv.read_bytes) / dt
             d_write = max(0, io.write_bytes - prv.write_bytes) / dt
+            d_time = max(0, (io.read_time + io.write_time) - (prv.read_time + prv.read_time))
+            # ^ bug in old build; correct util uses (prev.read_time + prev.write_time):
             d_time = max(0, (io.read_time + io.write_time) - (prv.read_time + prv.write_time))
-            util = min(100.0, (d_time / (dt * 1000.0)) * 100.0)  # times in ms
+            util = min(100.0, (d_time / (dt * 1000.0)) * 100.0)
             read_bps, write_bps = d_read, d_write
             total_bw += (d_read + d_write) / (1024 ** 2)
 
@@ -378,9 +369,7 @@ def render_disk_view(proc_rows: List[dict], total_procs: int, top_n: int, sort_m
                      dstate: DiskLiveState) -> Panel:
     width = term_width()
     name_cap = max(6, min(20, width - 30))
-    # per-proc table
     ptable = Table(box=box.SIMPLE_HEAVY, expand=True, title="DISK — per-process I/O")
-    # columns: PID always printed; Name optional based on label_mode
     ptable.add_column("PID", justify="right", no_wrap=True)
     if dstate.label_mode == "name":
         ptable.add_column("Name", justify="left", no_wrap=True, overflow="ellipsis", width=name_cap)
@@ -397,12 +386,11 @@ def render_disk_view(proc_rows: List[dict], total_procs: int, top_n: int, sort_m
 
     cap = f"Showing {min(top_n, len(proc_rows))} of {total_procs} procs   |   sort: {sort_mode}"
 
-    # per-disk instants (may be empty on Termux/locked systems)
     inst = disk_perdisk_snapshot(dstate)
     items: List = []
 
     if dstate.graph_mode != "off":
-        sl = sparkline(dstate.hist_total_mb_s, width=max(20, min(60, width - 10)))
+        sl = sparkline(dstate.hist_total_mb_s, width=max(20, min(80, width - 10)))
         latest = dstate.hist_total_mb_s[-1] if dstate.hist_total_mb_s else 0.0
         items.append(Text(f"Disk total MB/s: {latest:.2f}  {sl}"))
 
@@ -497,7 +485,7 @@ def render_net_panel(state: NetState, top_n: int, interval_hint: float,
         table.add_column("Process", justify="left", no_wrap=True, overflow="ellipsis", width=name_cap)
     table.add_column("Σ ({}b/s)".format("Mi" if state.units == "mib" else "M"), justify="right", no_wrap=True)
 
-    if state.per_proc_on:
+    if state.per_proc_on and proc_rows:
         for r in proc_rows[:top_n]:
             row = [str(r["pid"])]
             if state.label_mode == "name":
@@ -517,7 +505,7 @@ def render_net_panel(state: NetState, top_n: int, interval_hint: float,
 
     items: List = [hdr]
     if state.graph_mode != "off":
-        items.append(Text(sparkline(state.hist_total_mbps, width=max(20, min(60, width - 24)))))
+        items.append(Text(sparkline(state.hist_total_mbps, width=max(20, min(80, width - 24)))))
     items.extend([Text(totals), Text(cap, style="dim"), table,
                   Text("[v] view  [s] sort  [+/-] topN  ]/[ interval  m units  p per-proc  g graphs  x label  [q] quit", style="dim")])
 
@@ -542,37 +530,33 @@ class OverallState:
 
 def render_overall(ost: OverallState, nst: NetState, dst: DiskLiveState) -> Panel:
     width = term_width()
-    cpu = psutil.cpu_percent(interval=None)
-    mem = psutil.virtual_memory()
-    mem_free = mem.available / (1024**3)
+    cpu = safe_cpu_percent()
+    mem = safe_virtual_memory()
+    mem_free = (getattr(mem, "available", 0) or 0) / (1024**3)
 
-    # update hists
-    ost.cpu_hist.append(cpu)
-    if len(ost.cpu_hist) > 120: ost.cpu_hist = ost.cpu_hist[-120:]
-    if nst.hist_total_mbps: ost.net_hist.append(nst.hist_total_mbps[-1])
-    if len(ost.net_hist) > 120: ost.net_hist = ost.net_hist[-120:]
-    if dst.hist_total_mb_s: ost.disk_hist.append(dst.hist_total_mb_s[-1])
-    if len(ost.disk_hist) > 120: ost.disk_hist = ost.disk_hist[-120:]
-    ost.mem_free_hist.append(mem_free)
-    if len(ost.mem_free_hist) > 120: ost.mem_free_hist = ost.mem_free_hist[-120:]
+    ost.cpu_hist.append(cpu);            ost.cpu_hist = ost.cpu_hist[-120:]
+    if nst.hist_total_mbps: ost.net_hist.append(nst.hist_total_mbps[-1]); ost.net_hist = ost.net_hist[-120:]
+    if dst.hist_total_mb_s: ost.disk_hist.append(dst.hist_total_mb_s[-1]); ost.disk_hist = ost.disk_hist[-120:]
+    ost.mem_free_hist.append(mem_free);  ost.mem_free_hist = ost.mem_free_hist[-120:]
 
     t = Table(box=box.SIMPLE_HEAVY, expand=True, title="Overall")
-    t.add_column("Metric")
-    t.add_column("Value", justify="right")
+    t.add_column("Metric"); t.add_column("Value", justify="right")
+    total_gb = (getattr(mem, "total", 0) or 0)/(1024**3)
+    used_gb  = (getattr(mem, "used", 0) or 0)/(1024**3)
+    percent  = getattr(mem, "percent", 0.0)
     t.add_row("CPU", f"{cpu:.1f}%")
-    t.add_row("Mem Used", f"{(mem.used/(1024**3)):.2f} / {(mem.total/(1024**3)):.2f} GB ({mem.percent:.1f}%)")
-    if nst.hist_total_mbps:
-        t.add_row("Net Σ", f"{nst.hist_total_mbps[-1]:.2f} {'MiB/s' if nst.units=='mib' else 'Mb/s'}")
-    if dst.hist_total_mb_s:
-        t.add_row("Disk Σ", f"{dst.hist_total_mb_s[-1]:.2f} MB/s")
+    t.add_row("Mem Used", f"{used_gb:.2f} / {total_gb:.2f} GB ({percent:.1f}%)")
+    if nst.hist_total_mbps: t.add_row("Net Σ",  f"{nst.hist_total_mbps[-1]:.2f} {'MiB/s' if nst.units=='mib' else 'Mb/s'}")
+    if dst.hist_total_mb_s: t.add_row("Disk Σ", f"{dst.hist_total_mb_s[-1]:.2f} MB/s")
 
+    graph_width = max(30, min(90, width - 10))
     items: List = [t]
     if ost.graph_mode != "off":
         items.extend([
-            Text(f"CPU   {sparkline(ost.cpu_hist,       width=max(20, min(60, width-10)))}"),
-            Text(f"MEM↑  {sparkline(ost.mem_free_hist,  width=max(20, min(60, width-10)))} (free GB)"),
-            Text(f"NET   {sparkline(ost.net_hist,       width=max(20, min(60, width-10)))}"),
-            Text(f"DISK  {sparkline(ost.disk_hist,      width=max(20, min(60, width-10)))}"),
+            Text(f"CPU   {sparkline(ost.cpu_hist,       width=graph_width)}"),
+            Text(f"MEM↑  {sparkline(ost.mem_free_hist,  width=graph_width)} (free GB)"),
+            Text(f"NET   {sparkline(ost.net_hist,       width=graph_width)}"),
+            Text(f"DISK  {sparkline(ost.disk_hist,      width=graph_width)}"),
         ])
     items.append(Text("[v] view  g graphs  [q] quit", style="dim"))
     return Panel(Group(*items), title="OVERALL", border_style="white")
@@ -587,7 +571,6 @@ class GpuState:
         self.graph_mode = "total"
 
 def gpu_info() -> Tuple[List[dict], Optional[str]]:
-    """Return (gpu_rows, err). Uses GPUtil if present; else tries nvidia-smi."""
     try:
         import GPUtil  # type: ignore
         gpus = GPUtil.getGPUs()
@@ -611,30 +594,27 @@ def gpu_info() -> Tuple[List[dict], Optional[str]]:
                 rows.append({"name": name, "id": int(idx), "load": float(util),
                              "mem_used": float(mu), "mem_total": float(mt), "temp": float(temp)})
             return rows, None
-        except Exception as e:
+        except Exception:
             return [], "GPU info unavailable (install GPUtil or nvidia-smi)"
 
 def render_gpu(gst: GpuState) -> Panel:
     width = term_width()
     rows, err = gpu_info()
     table = Table(title="GPU", box=box.SIMPLE_HEAVY, expand=True)
-    table.add_column("ID", justify="right")
-    table.add_column("Name")
-    table.add_column("Util %", justify="right")
-    table.add_column("Mem(used/total MB)", justify="right")
+    table.add_column("ID", justify="right"); table.add_column("Name")
+    table.add_column("Util %", justify="right"); table.add_column("Mem(used/total MB)", justify="right")
     table.add_column("Temp °C", justify="right")
     if rows:
         for r in rows:
             table.add_row(str(r["id"]), truncate(r["name"], max(8, min(32, width-36))),
                           f"{r['load']:.1f}", f"{r['mem_used']:.0f}/{r['mem_total']:.0f}", f"{r['temp']:.0f}")
-        gst.hist_util.append(rows[0]["load"])
-        if len(gst.hist_util) > 120: gst.hist_util = gst.hist_util[-120:]
+        gst.hist_util.append(rows[0]["load"]); gst.hist_util = gst.hist_util[-120:]
     else:
         table.add_row("-", err or "No GPU detected", "-", "-", "-")
 
     items: List = [table]
     if gst.graph_mode != "off" and gst.hist_util:
-        items.insert(0, Text(f"GPU util: {gst.hist_util[-1]:.1f}%  {sparkline(gst.hist_util, width=max(20, min(60, width-10)))}"))
+        items.insert(0, Text(f"GPU util: {gst.hist_util[-1]:.1f}%  {sparkline(gst.hist_util, width=max(20, min(80, width-10)))}"))
     items.append(Text("[v] view  g graphs  [q] quit", style="dim"))
     return Panel(Group(*items), title="GPU", border_style="blue")
 
@@ -675,18 +655,17 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     ncpu = psutil.cpu_count(logical=True) or 1
 
-    # States per-view
+    # States
     cpu_state  = CpuState()
     net_state  = NetState(units=args.units); net_state.prev_total = get_total_counters(); net_state.prev_time = time.time(); net_state.link_cap_mbps = sum_active_link_capacity_mbps(); net_state.per_proc_on = True
     disk_state = DiskLiveState(); disk_state.prev = safe_disk_io_counters_perdisk()
     over_state = OverallState()
     gpu_state  = GpuState()
 
-    prev_snaps: Dict[int, ProcSnap] = {}  # CPU/DISK per-proc deltas
-    help_on = False
+    prev_snaps: Dict[int, ProcSnap] = {}      # CPU/DISK per-proc
+    prev_net_snaps: Dict[int, ProcSnap] = {}  # NET per-proc (persist while NET tab visible)
 
-    if args.verbose:
-        sys.stderr.write(f"[sysmon] view={VIEWS[view_idx]} top={top_n} interval={interval}\n")
+    help_on = False
 
     with KeyReader() as keys, Live(refresh_per_second=8, redirect_stdout=False) as live:
         while True:
@@ -722,7 +701,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                     elif v == "gpu":
                         gpu_state.graph_mode = GRAPH_MODES[(GRAPH_MODES.index(gpu_state.graph_mode) + 1) % len(GRAPH_MODES)]
                 elif low == "x":
-                    # toggle label mode for current per-proc table
                     v = VIEWS[view_idx]
                     if v == "cpu":    cpu_state.label_mode  = "pid" if cpu_state.label_mode  == "name" else "name"
                     elif v == "net":  net_state.label_mode  = "pid" if net_state.label_mode  == "name" else "name"
@@ -754,9 +732,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             elif current_view == "net":
                 proc_rows = []
                 if net_state.per_proc_on:
-                    # quick once-per-tick scan for names + recent I/O deltas
                     curr_snaps = iter_snaps("*")
-                    proc_rows = list(deltas({}, curr_snaps, ncpu))  # we only need current I/O delta surrogates
+                    proc_rows = deltas(prev_net_snaps, curr_snaps, ncpu)
+                    prev_net_snaps = curr_snaps
                     if net_sort == "name":
                         proc_rows.sort(key=lambda r: r["name"].lower())
                     else:
@@ -764,19 +742,17 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 panel = render_net_panel(net_state, top_n=top_n, interval_hint=interval, proc_rows=proc_rows)
 
             elif current_view == "overall":
-                # minimal ticks so sparklines move here as well
-                _ = disk_perdisk_snapshot(disk_state)  # updates disk_state.hist_total_mb_s
+                _ = disk_perdisk_snapshot(disk_state)
+                # keep NET history moving cheaply
                 now = time.time()
                 if net_state.prev_time == 0.0:
-                    net_state.prev_time = now
-                    net_state.prev_total = get_total_counters()
+                    net_state.prev_time = now; net_state.prev_total = get_total_counters()
                 else:
                     curr_total = get_total_counters()
                     elapsed = max(1e-6, now - net_state.prev_time)
                     total_bps = max(0.0, ((curr_total[0]-net_state.prev_total[0]) + (curr_total[1]-net_state.prev_total[1])) * 8.0 / elapsed)
                     net_state.hist_total_mbps.append(human_mbps(total_bps, net_state.units))
-                    if len(net_state.hist_total_mbps) > 120:
-                        net_state.hist_total_mbps = net_state.hist_total_mbps[-120:]
+                    net_state.hist_total_mbps = net_state.hist_total_mbps[-120:]
                     net_state.prev_total, net_state.prev_time = curr_total, now
                 panel = render_overall(over_state, net_state, disk_state)
 
