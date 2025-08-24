@@ -1,28 +1,38 @@
+# File: pyscripts/sysmon.py
 #!/usr/bin/env python3
 """
-sysmon.py — unified CPU / Memory / Disk / Network TUI for tiny terminals.
+sysmon.py — unified CPU / Memory / Disk / Network / Overall / GPU TUI for tiny terminals.
 
-Optimized to be lightweight (~1–3% CPU):
-- Snapshot once per tick; compute deltas vs previous snapshot (no internal sleeps)
-- Single psutil walk via process_iter(attrs=...) per tick
-- Lower refresh rate & optional heavy features
-- Optional low process priority (--low-prio)
+Design goals
+- Lightweight: update only the *visible* view each tick
+- One psutil walk per tick where possible
+- Optional heavier features behind toggles
+- Plays nicely on small/remote terminals
 
-Keyboard (while running)
+Views
+- CPU   : Per-process CPU%, Mem(MB), Disk deltas; optional total CPU sparkline
+- NET   : Totals + (default ON) per-process "Σ" using I/O deltas; sparkline of total
+- DISK  : Per-process disk R/W/Total MB/s + per-disk live R/W/Util with rolling avg; sparkline of total
+- OVER  : Compact dashboard with CPU, MEM, NET, DISK summaries + sparklines
+- GPU   : GPU summary + per-process (if available)
+
+Keys
   q          Quit
-  v          Toggle view (CPU → NET → DISK → CPU)
+  v          Toggle view (CPU → NET → DISK → OVERALL → GPU → CPU)
   s          Cycle sort mode for current view
-  + / -      Increase / decrease Top-N rows
-  ] / [      Increase / decrease refresh interval
-  m          Toggle Mb/s vs Mib/s (NET view; totals)
+  + / -      Increase / decrease Top-N process rows
+  ] / [      Increase / decrease refresh interval (0.2–5.0s)
+  m          Toggle Mb/s vs MiB/s (NET view)
+  g          Toggle graphs (off → total graph)
+  p          Toggle per-proc list in NET view
   h          Toggle help overlay
 
 Examples
   python sysmon.py
   python sysmon.py -i 1.0 -t 20
-  python sysmon.py -g "vivaldi*"         # filter processes by name (CPU/DISK views)
-  python sysmon.py -w net                # start in NET view
-  python sysmon.py --net-procs           # (heavier) show per-proc “Σ” in NET view
+  python sysmon.py -g "vivaldi*"
+  python sysmon.py -w net
+  python sysmon.py --low-prio
 """
 
 from __future__ import annotations
@@ -33,6 +43,7 @@ import os
 import random
 import select
 import shutil
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -46,30 +57,29 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-# ----- Cross-platform non-blocking key polling --------------------------------
+# --------------------------- Key reader (non-blocking) ------------------------
 if os.name == "nt":
     import msvcrt
 
     class KeyReader:
-        """Non-blocking single-char reader for Windows (msvcrt)."""
         def __enter__(self): return self
         def __exit__(self, et, ex, tb): return False
         def read(self) -> Optional[str]:
             if msvcrt.kbhit():
-                return msvcrt.getwch()
+                ch = msvcrt.getwch()
+                return ch
             return None
 else:
     import tty
     import termios
 
     class KeyReader:
-        """Non-blocking single-char reader for POSIX using raw stdin + select."""
         def __enter__(self):
             self.fd = sys.stdin.fileno()
             self.ok = sys.stdin.isatty()
             if self.ok:
                 self.old = termios.tcgetattr(self.fd)
-                tty.setcbreak(self.fd)  # immediate char, no Enter
+                tty.setcbreak(self.fd)
             return self
         def __exit__(self, et, ex, tb):
             if getattr(self, "ok", False):
@@ -80,18 +90,18 @@ else:
             if not getattr(self, "ok", False): return None
             r, _, _ = select.select([sys.stdin], [], [], 0)
             if r:
-                ch = sys.stdin.read(1)
-                return ch
+                return sys.stdin.read(1)
             return None
 
-# ----- Constants ---------------------------------------------------------------
-CPU_SORTS = ["cpu", "memory", "disk", "name", "random"]
-NET_SORTS = ["mbps", "name"]
+# ------------------------------ Constants ------------------------------------
+CPU_SORTS  = ["cpu", "memory", "disk", "name", "random"]
+NET_SORTS  = ["mbps", "name"]
 DISK_SORTS = ["read", "write", "total", "name"]
-UNITS = ["mb", "mib"]
-VIEWS = ["cpu", "net", "disk"]
+UNITS      = ["mb", "mib"]
+VIEWS      = ["cpu", "net", "disk", "overall", "gpu"]
+GRAPH_MODES = ["off", "total"]  # keep simple for tiny terminals
 
-# ----- Helpers ----------------------------------------------------------------
+# ------------------------------ Helpers --------------------------------------
 def term_width() -> int:
     return shutil.get_terminal_size((100, 24)).columns
 
@@ -121,7 +131,7 @@ def sparkline(values: Sequence[float], width: int = 30) -> str:
         out.append(blocks[level])
     return "".join(out)
 
-# ----- Process snapshotting (lightweight) -------------------------------------
+# ---------------------- Process snapshotting for CPU/DISK --------------------
 @dataclass
 class ProcSnap:
     pid: int
@@ -134,12 +144,10 @@ class ProcSnap:
     ts: float
 
 def iter_snaps(glob_pattern: str) -> Dict[int, ProcSnap]:
-    """Single pass: get per-proc attrs; filter by name glob, build snapshots."""
     snaps: Dict[int, ProcSnap] = {}
     now = time.time()
     gp = glob_pattern.lower()
-    use_glob = any(c in gp for c in "*?[]")
-    patt = gp if use_glob else f"*{gp}*"
+    patt = gp if any(c in gp for c in "*?[]") else f"*{gp}*"
     for info in psutil.process_iter(attrs=["pid", "name", "memory_info", "io_counters", "cpu_times"]):
         try:
             name = (info.info.get("name") or "").lower()
@@ -163,7 +171,6 @@ def iter_snaps(glob_pattern: str) -> Dict[int, ProcSnap]:
     return snaps
 
 def deltas(prev: Dict[int, ProcSnap], curr: Dict[int, ProcSnap], ncpu: int) -> List[dict]:
-    """Compute per-proc CPU%, mem MB, read/write/total MB/s from snapshots."""
     rows: List[dict] = []
     for pid, c in curr.items():
         p = prev.get(pid)
@@ -174,7 +181,7 @@ def deltas(prev: Dict[int, ProcSnap], curr: Dict[int, ProcSnap], ncpu: int) -> L
             elapsed = max(1e-6, c.ts - p.ts)
             cpu_time_delta = (c.cpu_user + c.cpu_system) - (p.cpu_user + p.cpu_system)
             cpu_pct = 100.0 * cpu_time_delta / elapsed / max(1, ncpu)
-            rps = max(0.0, (c.read_bytes - p.read_bytes) / elapsed) / (1024 ** 2)  # MB/s
+            rps = max(0.0, (c.read_bytes - p.read_bytes) / elapsed) / (1024 ** 2)
             wps = max(0.0, (c.write_bytes - p.write_bytes) / elapsed) / (1024 ** 2)
         rows.append(
             {
@@ -185,16 +192,13 @@ def deltas(prev: Dict[int, ProcSnap], curr: Dict[int, ProcSnap], ncpu: int) -> L
                 "r_mb_s": rps,
                 "w_mb_s": wps,
                 "d_mb_s": rps + wps,
-                # For backward-compat test rows that use 'disk_mb' (delta per tick),
-                # we provide a synthetic key so sort_cpu_rows('disk') works in tests.
-                "disk_mb": rps + wps,
+                "disk_mb": rps + wps,  # legacy key
             }
         )
     return rows
 
-# ----- CPU table ---------------------------------------------------------------
+# ------------------------------ CPU view -------------------------------------
 def cpu_columns_for_width(width: int) -> List[str]:
-    # Keep legacy labels to match tests: DΔ(MB), RΔ(MB), WΔ(MB)
     cols = ["PID", "Name", "CPU %", "Mem(MB)", "DΔ(MB)", "RΔ(MB)", "WΔ(MB)"]
     if width < 65:  return ["PID", "Name", "CPU %"]
     if width < 80:  return ["PID", "Name", "CPU %", "Mem(MB)"]
@@ -203,31 +207,34 @@ def cpu_columns_for_width(width: int) -> List[str]:
     return cols
 
 def sort_cpu_rows(rows: List[dict], mode: str) -> None:
-    if mode == "cpu":
-        rows.sort(key=lambda r: r.get("cpu_pct", 0.0), reverse=True)
-    elif mode == "memory":
-        rows.sort(key=lambda r: r.get("mem_mb", 0.0), reverse=True)
-    elif mode == "disk":
-        # Accept both the new 'd_mb_s' and legacy test key 'disk_mb'
-        rows.sort(key=lambda r: r.get("d_mb_s", r.get("disk_mb", 0.0)), reverse=True)
-    elif mode == "name":
-        rows.sort(key=lambda r: r.get("name", "").lower())
-    else:
-        random.shuffle(rows)
+    if     mode == "cpu":    rows.sort(key=lambda r: r.get("cpu_pct", 0.0), reverse=True)
+    elif   mode == "memory": rows.sort(key=lambda r: r.get("mem_mb", 0.0), reverse=True)
+    elif   mode == "disk":   rows.sort(key=lambda r: r.get("d_mb_s", r.get("disk_mb", 0.0)), reverse=True)
+    elif   mode == "name":   rows.sort(key=lambda r: r.get("name", "").lower())
+    else:                    random.shuffle(rows)
 
-def render_cpu_table(rows: List[dict], total: int, limit: int, sort_mode: str) -> Panel:
+@dataclass
+class CpuState:
+    hist_total: List[float]
+    graph_mode: str = "off"
+    def __init__(self):
+        self.hist_total = []
+        self.graph_mode = "off"
+
+def render_cpu_table(rows: List[dict], total: int, limit: int, sort_mode: str,
+                     cpu_state: CpuState) -> Panel:
     width = term_width()
     cols = cpu_columns_for_width(width)
     name_cap = max(8, min(32, width - 40))
 
     table = Table(box=box.SIMPLE_HEAVY, expand=True, show_header=True)
-    if "PID" in cols: table.add_column("PID", justify="right", no_wrap=True)
-    if "Name" in cols: table.add_column("Name", justify="left", no_wrap=True, overflow="ellipsis", width=name_cap)
-    if "CPU %" in cols: table.add_column("CPU %", justify="right", no_wrap=True)
-    if "Mem(MB)" in cols: table.add_column("Mem(MB)", justify="right", no_wrap=True)
-    if "DΔ(MB)" in cols: table.add_column("DΔ(MB)", justify="right", no_wrap=True)
-    if "RΔ(MB)" in cols: table.add_column("RΔ(MB)", justify="right", no_wrap=True)
-    if "WΔ(MB)" in cols: table.add_column("WΔ(MB)", justify="right", no_wrap=True)
+    for col in cols:
+        if col == "PID":
+            table.add_column("PID", justify="right", no_wrap=True)
+        elif col == "Name":
+            table.add_column("Name", justify="left", no_wrap=True, overflow="ellipsis", width=name_cap)
+        else:
+            table.add_column(col, justify="right", no_wrap=True)
 
     for r in rows[:limit]:
         vals = []
@@ -235,56 +242,129 @@ def render_cpu_table(rows: List[dict], total: int, limit: int, sort_mode: str) -
         if "Name" in cols:    vals.append(truncate(r["name"], name_cap))
         if "CPU %" in cols:   vals.append(f"{r['cpu_pct']:.1f}")
         if "Mem(MB)" in cols: vals.append(f"{r['mem_mb']:.1f}")
-        # Use MB/s values but keep legacy delta labels for compatibility
         if "DΔ(MB)" in cols:  vals.append(f"{r['d_mb_s']:.2f}")
         if "RΔ(MB)" in cols:  vals.append(f"{r['r_mb_s']:.2f}")
         if "WΔ(MB)" in cols:  vals.append(f"{r['w_mb_s']:.2f}")
         table.add_row(*vals)
 
     cap = f"Showing {min(limit, len(rows))} of {total} procs   |   sort: {sort_mode}"
-    footer = Text("[v] view  [s] sort  [+/-] topN  ]/[ interval  [q] quit", style="dim")
-    return Panel(Group(table, Text(cap, style="dim"), footer), title="CPU / Memory / Disk", border_style="cyan")
+    footer = Text("[v] view  [s] sort  [+/-] topN  ]/[ interval  g graphs  [q] quit", style="dim")
+    group_items = [table, Text(cap, style="dim"), footer]
 
-# ----- Disk view ---------------------------------------------------------------
-def disk_columns_for_width(width: int) -> List[str]:
-    cols = ["PID", "Name", "R MB/s", "W MB/s", "D MB/s"]
-    if width < 60:  return ["PID", "Name", "D MB/s"]
-    if width < 80:  return ["PID", "Name", "R MB/s", "W MB/s"]
-    return cols
+    if cpu_state.graph_mode != "off":
+        # total CPU% sparkline
+        total_cpu = psutil.cpu_percent(interval=None)  # non-blocking
+        cpu_state.hist_total.append(total_cpu)
+        if len(cpu_state.hist_total) > 120:
+            cpu_state.hist_total = cpu_state.hist_total[-120:]
+        s = sparkline(cpu_state.hist_total, width=max(20, min(60, width - 10)))
+        group_items.insert(0, Text(f"CPU total: {total_cpu:.1f}%  {s}"))
 
-def sort_disk_rows(rows: List[dict], mode: str) -> None:
-    if mode == "read":
-        rows.sort(key=lambda r: r["r_mb_s"], reverse=True)
-    elif mode == "write":
-        rows.sort(key=lambda r: r["w_mb_s"], reverse=True)
-    elif mode == "total":
-        rows.sort(key=lambda r: r["d_mb_s"], reverse=True)
-    else:
-        rows.sort(key=lambda r: r["name"].lower())
+    return Panel(Group(*group_items), title="CPU / Memory / Disk", border_style="cyan")
 
-def render_disk_table(rows: List[dict], total: int, limit: int, sort_mode: str) -> Panel:
+# -------------------------- Disk live (per-disk) ------------------------------
+@dataclass
+class DiskLiveState:
+    prev: Dict[str, psutil._common.sdiskio]
+    last_ts: float
+    hist_total_mb_s: List[float]
+    graph_mode: str = "off"
+    def __init__(self):
+        self.prev = {}
+        self.last_ts = time.time()
+        self.hist_total_mb_s = []
+        self.graph_mode = "off"
+
+def disk_perdisk_snapshot(state: DiskLiveState) -> Dict[str, Tuple[float, float, float]]:
+    """Return per-disk instantaneous (read_B/s, write_B/s, util_0_100)."""
+    curr = psutil.disk_io_counters(perdisk=True) or {}
+    now = time.time()
+    dt = max(1e-6, now - state.last_ts)
+    out: Dict[str, Tuple[float, float, float]] = {}
+    total_bw = 0.0
+    for dev, io in curr.items():
+        prv = state.prev.get(dev)
+        if not prv:
+            out[dev] = (0.0, 0.0, 0.0)
+            continue
+        d_read = max(0, io.read_bytes - prv.read_bytes) / dt
+        d_write = max(0, io.write_bytes - prv.write_bytes) / dt
+        d_time = max(0, (io.read_time + io.write_time) - (prv.read_time + prv.write_time))
+        util = min(100.0, (d_time / (dt * 1000.0)) * 100.0)  # read/write_time are ms
+        out[dev] = (d_read, d_write, util)
+        total_bw += (d_read + d_write) / (1024 ** 2)
+    # keep history for graph of total disk throughput (MB/s)
+    state.hist_total_mb_s.append(total_bw)
+    if len(state.hist_total_mb_s) > 120:
+        state.hist_total_mb_s = state.hist_total_mb_s[-120:]
+    state.prev = curr
+    state.last_ts = now
+    return out
+
+def disk_usage_table() -> Table:
+    table = Table(title="Disk Usage", box=box.SIMPLE_HEAVY)
+    table.add_column("Mount/Drv", style="cyan")
+    table.add_column("FS")
+    table.add_column("Total(GB)", justify="right")
+    table.add_column("Free(GB)", justify="right")
+    table.add_column("Used(%)", justify="right")
+    for part in psutil.disk_partitions():
+        try:
+            u = psutil.disk_usage(part.mountpoint)
+        except PermissionError:
+            continue
+        table.add_row(
+            part.mountpoint,
+            part.fstype,
+            f"{u.total/1e9:.2f}",
+            f"{u.free/1e9:.2f}",
+            f"{u.percent:.2f}",
+        )
+    return table
+
+def per_disk_perf_table(inst: Dict[str, Tuple[float, float, float]]) -> Table:
+    table = Table(title="Live Disk Performance", box=box.SIMPLE_HEAVY)
+    table.add_column("Drive", style="magenta")
+    table.add_column("Read MB/s", justify="right")
+    table.add_column("Write MB/s", justify="right")
+    table.add_column("Util(%)", justify="right")
+    for dev, (rb, wb, util) in inst.items():
+        table.add_row(dev, f"{rb/(1024**2):.2f}", f"{wb/(1024**2):.2f}", f"{util:.2f}")
+    return table
+
+def render_disk_view(proc_rows: List[dict], total_procs: int, top_n: int, sort_mode: str,
+                     dstate: DiskLiveState) -> Panel:
     width = term_width()
-    cols = disk_columns_for_width(width)
+    # Per-process I/O table
     name_cap = max(8, min(32, width - 28))
-    table = Table(box=box.SIMPLE_HEAVY, expand=True)
-    if "PID" in cols:     table.add_column("PID", justify="right", no_wrap=True)
-    if "Name" in cols:    table.add_column("Name", justify="left", no_wrap=True, overflow="ellipsis", width=name_cap)
-    if "R MB/s" in cols:  table.add_column("R MB/s", justify="right", no_wrap=True)
-    if "W MB/s" in cols:  table.add_column("W MB/s", justify="right", no_wrap=True)
-    if "D MB/s" in cols:  table.add_column("D MB/s", justify="right", no_wrap=True)
-    for r in rows[:limit]:
-        vals = []
-        if "PID" in cols:    vals.append(str(r["pid"]))
-        if "Name" in cols:   vals.append(truncate(r["name"], name_cap))
-        if "R MB/s" in cols: vals.append(f"{r['r_mb_s']:.2f}")
-        if "W MB/s" in cols: vals.append(f"{r['w_mb_s']:.2f}")
-        if "D MB/s" in cols: vals.append(f"{r['d_mb_s']:.2f}")
-        table.add_row(*vals)
-    cap = f"Showing {min(limit, len(rows))} of {total} procs   |   sort: {sort_mode}"
-    footer = Text("[v] view  [s] sort  [+/-] topN  ]/[ interval  [q] quit", style="dim")
-    return Panel(Group(table, Text(cap, style="dim"), footer), title="DISK — per-process I/O", border_style="green")
+    ptable = Table(box=box.SIMPLE_HEAVY, expand=True, title="DISK — per-process I/O")
+    for col in ("PID","Name","R MB/s","W MB/s","D MB/s"):
+        just = "left" if col == "Name" else "right"
+        ptable.add_column(col, justify=just, no_wrap=True, overflow="ellipsis", width=None if col!="Name" else name_cap)
+    for r in proc_rows[:top_n]:
+        ptable.add_row(str(r["pid"]), truncate(r["name"], name_cap),
+                       f"{r['r_mb_s']:.2f}", f"{r['w_mb_s']:.2f}", f"{r['d_mb_s']:.2f}")
+    cap = f"Showing {min(top_n, len(proc_rows))} of {total_procs} procs   |   sort: {sort_mode}"
+    footer = Text("[v] view  [s] sort  [+/-] topN  ]/[ interval  g graphs  [q] quit", style="dim")
 
-# ----- Network sampling (totals are cheap; per-proc optional) -----------------
+    # Per-disk instantaneous stats (and history-based total sparkline)
+    inst = disk_perdisk_snapshot(dstate)
+    dtable = per_disk_perf_table(inst)
+    items: List = []
+
+    if dstate.graph_mode != "off":
+        sl = sparkline(dstate.hist_total_mb_s, width=max(20, min(60, width - 10)))
+        items.append(Text(f"Disk total MB/s: { (dstate.hist_total_mb_s[-1] if dstate.hist_total_mb_s else 0.0):.2f}  {sl}"))
+
+    # Layout compactly (stack for very narrow terminals)
+    if width < 100:
+        grp = Group(ptable, Text(cap, style="dim"), dtable, footer)
+    else:
+        # Show usage table only when space allows
+        grp = Group(ptable, Text(cap, style="dim"), dtable, disk_usage_table(), footer)
+    return Panel(grp, title="DISK", border_style="green")
+
+# ------------------------------ NET view -------------------------------------
 def _sysfs_sum_net_bytes() -> Optional[Tuple[int, int]]:
     base = "/sys/class/net"
     try:
@@ -321,60 +401,6 @@ def sum_active_link_capacity_mbps() -> float:
         return 0.0
     return total
 
-# ---- These functions are restored for test compatibility ---------------------
-def pids_with_sockets() -> set:
-    out = set()
-    try:
-        conns = psutil.net_connections(kind="inet")
-    except (PermissionError, Exception):
-        conns = []
-    for c in conns:
-        if c.pid:
-            out.add(c.pid)
-    return out
-
-def proc_io_bytes_and_name(pid: int) -> Tuple[Optional[int], Optional[str]]:
-    try:
-        p = psutil.Process(pid)
-        io = p.io_counters()
-        return io.read_bytes + io.write_bytes, p.name()
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        return None, None
-
-def compute_net_rows(prev_map: Dict[int, Tuple[int, str]],
-                     curr_pids: Iterable[int],
-                     elapsed: float,
-                     base: str) -> Tuple[List[Tuple[int, str, float]], Dict[int, Tuple[int, str]]]:
-    """Return (rows, updated_map). Each row = (pid, name, mbps)."""
-    # Seed new PIDs
-    for pid in curr_pids:
-        if pid not in prev_map:
-            b, nm = proc_io_bytes_and_name(pid)
-            if b is not None:
-                prev_map[pid] = (b, nm or str(pid))
-
-    rows: List[Tuple[int, str, float]] = []
-    for pid in list(prev_map.keys()):
-        if pid not in curr_pids:
-            prev_map.pop(pid, None)
-            continue
-        prev_b, prev_name = prev_map.get(pid, (None, None))
-        if prev_b is None:
-            continue
-        curr_b, curr_nm = proc_io_bytes_and_name(pid)
-        if curr_b is None:
-            prev_map.pop(pid, None)
-            continue
-        name = curr_nm or prev_name or str(pid)
-        delta = max(0, curr_b - prev_b)
-        bps = (delta * 8.0) / max(1e-6, elapsed)
-        rows.append((pid, name, human_mbps(bps, base)))
-        prev_map[pid] = (curr_b, name)
-
-    rows.sort(key=lambda r: r[2], reverse=True)
-    return rows, prev_map
-# -----------------------------------------------------------------------------
-
 @dataclass
 class NetState:
     units: str = "mb"
@@ -382,11 +408,13 @@ class NetState:
     prev_time: float = 0.0
     link_cap_mbps: float = 0.0
     hist_total_mbps: List[float] = None  # type: ignore
+    per_proc_on: bool = True
+    graph_mode: str = "off"
     def __post_init__(self):
         if self.hist_total_mbps is None: self.hist_total_mbps = []
 
 def render_net_panel(state: NetState, top_n: int, interval_hint: float,
-                     show_proc_rows: bool, proc_rows: List[dict]) -> Panel:
+                     proc_rows: List[dict]) -> Panel:
     now = time.time()
     elapsed = now - state.prev_time if state.prev_time else interval_hint
     if elapsed <= 0: elapsed = interval_hint
@@ -402,8 +430,8 @@ def render_net_panel(state: NetState, top_n: int, interval_hint: float,
     util = (total_mbps / state.link_cap_mbps * 100.0) if state.link_cap_mbps > 0 else 0.0
 
     state.hist_total_mbps.append(total_mbps)
-    if len(state.hist_total_mbps) > 80:
-        state.hist_total_mbps = state.hist_total_mbps[-80:]
+    if len(state.hist_total_mbps) > 120:
+        state.hist_total_mbps = state.hist_total_mbps[-120:]
 
     width = term_width()
     name_cap = max(8, min(30, width - 26))
@@ -411,42 +439,155 @@ def render_net_panel(state: NetState, top_n: int, interval_hint: float,
     table.add_column("PID", justify="right", no_wrap=True)
     table.add_column("Process", justify="left", no_wrap=True, overflow="ellipsis", width=name_cap)
     table.add_column("Σ ({}b/s)".format("Mi" if state.units == "mib" else "M"), justify="right", no_wrap=True)
-    if show_proc_rows:
-        # NOTE: “Σ” here uses disk-I/O-based deltas (portable, lightweight).
+    if state.per_proc_on:
         for r in proc_rows[:top_n]:
             table.add_row(str(r["pid"]), truncate(r["name"], name_cap), f"{r['d_mb_s']:8.2f}")
     else:
-        table.add_row("-", "(per-proc off for low CPU; use --net-procs)", "-")
+        table.add_row("-", "(per-proc off)", "-")
 
     hdr = Text.assemble(
         ("Network Usage  ", "cyan bold"),
-        (f"(interval≈{elapsed:.2f}s, units={'Mib/s' if state.units=='mib' else 'Mb/s'})", "dim"),
+        (f"(interval≈{elapsed:.2f}s, units={'MiB/s' if state.units=='mib' else 'Mb/s'})", "dim"),
     )
     totals = f"Total:  ↓ {recv_mbps:7.2f}  ↑ {sent_mbps:7.2f}  Σ {total_mbps:7.2f}    Util: {util:5.1f}%"
-    cap = (
-        f"{int(state.link_cap_mbps):d} Mb/s link cap (sum of up NICs)"
-        if state.link_cap_mbps > 0
-        else "unknown link cap (Termux fallback)"
-    )
-    sk = sparkline(state.hist_total_mbps, width=max(20, min(60, width - 24)))
-    footer = Text("[v] view  [s] sort  [+/-] topN  ]/[ interval  m units  [q] quit", style="dim")
+    cap = (f"{int(state.link_cap_mbps):d} Mb/s link cap (sum of up NICs)"
+           if state.link_cap_mbps > 0 else "unknown link cap (permissions?)")
 
-    panel = Panel(Group(hdr, Text(sk), Text(totals), Text(cap, style="dim"), table, footer),
-                  title="NET — totals", border_style="magenta")
+    items: List = [hdr]
+    if state.graph_mode != "off":
+        items.append(Text(sparkline(state.hist_total_mbps, width=max(20, min(60, width - 24)))))
+    items.extend([Text(totals), Text(cap, style="dim"), table,
+                  Text("[v] view  [s] sort  [+/-] topN  ]/[ interval  m units  p per-proc  g graphs  [q] quit", style="dim")])
+
     state.prev_total = curr_total
     state.prev_time = now
-    return panel
+    return Panel(Group(*items), title="NET — totals", border_style="magenta")
 
-# ----- CLI / Main -------------------------------------------------------------
+# ------------------------------ OVERALL view ---------------------------------
+@dataclass
+class OverallState:
+    cpu_hist: List[float]
+    net_hist: List[float]
+    disk_hist: List[float]
+    graph_mode: str = "off"
+    def __init__(self):
+        self.cpu_hist = []
+        self.net_hist = []
+        self.disk_hist = []
+        self.graph_mode = "off"
+
+def render_overall(ost: OverallState, nst: NetState, dst: DiskLiveState) -> Panel:
+    width = term_width()
+
+    cpu = psutil.cpu_percent(interval=None)
+    mem = psutil.virtual_memory()
+    # add to hists
+    ost.cpu_hist.append(cpu)
+    if len(ost.cpu_hist) > 120: ost.cpu_hist = ost.cpu_hist[-120:]
+    if nst.hist_total_mbps: ost.net_hist.append(nst.hist_total_mbps[-1])
+    if len(ost.net_hist) > 120: ost.net_hist = ost.net_hist[-120:]
+    if dst.hist_total_mb_s: ost.disk_hist.append(dst.hist_total_mb_s[-1])
+    if len(ost.disk_hist) > 120: ost.disk_hist = ost.disk_hist[-120:]
+
+    # tiny tables
+    t = Table(box=box.SIMPLE_HEAVY, expand=True, title="Overall")
+    t.add_column("Metric")
+    t.add_column("Value", justify="right")
+    t.add_row("CPU", f"{cpu:.1f}%")
+    t.add_row("Mem Used", f"{(mem.used/(1024**3)):.2f} / {(mem.total/(1024**3)):.2f} GB ({mem.percent:.1f}%)")
+    if nst.hist_total_mbps:
+        t.add_row("Net Σ", f"{nst.hist_total_mbps[-1]:.2f} {'MiB/s' if nst.units=='mib' else 'Mb/s'}")
+    if dst.hist_total_mb_s:
+        t.add_row("Disk Σ", f"{dst.hist_total_mb_s[-1]:.2f} MB/s")
+
+    items: List = [t]
+    if ost.graph_mode != "off":
+        items.extend([
+            Text(f"CPU  {sparkline(ost.cpu_hist,  width=max(20, min(60, width-10)))}"),
+            Text(f"NET  {sparkline(ost.net_hist,  width=max(20, min(60, width-10)))}"),
+            Text(f"DISK {sparkline(ost.disk_hist, width=max(20, min(60, width-10)))}"),
+        ])
+    items.append(Text("[v] view  g graphs  [q] quit", style="dim"))
+    return Panel(Group(*items), title="OVERALL", border_style="white")
+
+# ------------------------------ GPU view -------------------------------------
+@dataclass
+class GpuState:
+    hist_util: List[float]
+    graph_mode: str = "off"
+    def __init__(self):
+        self.hist_util = []
+        self.graph_mode = "off"
+
+def gpu_info() -> Tuple[List[dict], Optional[str]]:
+    """Return (gpu_rows, err). Uses GPUtil if present; else tries nvidia-smi."""
+    try:
+        import GPUtil  # type: ignore
+        gpus = GPUtil.getGPUs()
+        rows = []
+        for g in gpus:
+            rows.append({
+                "name": g.name,
+                "id": g.id,
+                "load": g.load * 100.0,
+                "mem_used": g.memoryUsed,
+                "mem_total": g.memoryTotal,
+                "temp": g.temperature,
+            })
+        return rows, None
+    except Exception:
+        # fallback: nvidia-smi
+        try:
+            out = subprocess.check_output(
+                ["nvidia-smi", "--query-gpu=name,index,utilization.gpu,memory.used,memory.total,temperature.gpu",
+                 "--format=csv,noheader,nounits"],
+                stderr=subprocess.DEVNULL, text=True, timeout=1.0
+            )
+            rows = []
+            for line in out.strip().splitlines():
+                name, idx, util, mu, mt, temp = [s.strip() for s in line.split(",")]
+                rows.append({
+                    "name": name, "id": int(idx), "load": float(util),
+                    "mem_used": float(mu), "mem_total": float(mt), "temp": float(temp)
+                })
+            return rows, None
+        except Exception as e:
+            return [], "GPU info unavailable (install GPUtil or nvidia-smi)"
+
+def render_gpu(gst: GpuState) -> Panel:
+    width = term_width()
+    rows, err = gpu_info()
+    table = Table(title="GPU", box=box.SIMPLE_HEAVY, expand=True)
+    table.add_column("ID", justify="right")
+    table.add_column("Name")
+    table.add_column("Util %", justify="right")
+    table.add_column("Mem(used/total MB)", justify="right")
+    table.add_column("Temp °C", justify="right")
+    if rows:
+        for r in rows:
+            table.add_row(str(r["id"]), truncate(r["name"], max(8, min(32, width-36))),
+                          f"{r['load']:.1f}", f"{r['mem_used']:.0f}/{r['mem_total']:.0f}", f"{r['temp']:.0f}")
+        # keep a single-util line history (first GPU)
+        gst.hist_util.append(rows[0]["load"])
+        if len(gst.hist_util) > 120: gst.hist_util = gst.hist_util[-120:]
+    else:
+        table.add_row("-", err or "No GPU detected", "-", "-", "-")
+
+    items: List = [table]
+    if gst.graph_mode != "off" and gst.hist_util:
+        items.insert(0, Text(f"GPU util: {gst.hist_util[-1]:.1f}%  {sparkline(gst.hist_util, width=max(20, min(60, width-10)))}"))
+    items.append(Text("[v] view  g graphs  [q] quit", style="dim"))
+    return Panel(Group(*items), title="GPU", border_style="blue")
+
+# ------------------------------- CLI / Main ----------------------------------
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Unified CPU/NET/DISK process monitor (lightweight)")
+    p = argparse.ArgumentParser(description="Unified CPU/NET/DISK/OVERALL/GPU monitor (lightweight)")
     p.add_argument("-t", "--top", type=int, default=15, help="Top N rows (1-99)")
     p.add_argument("-i", "--interval", type=float, default=1.0, help="Refresh interval seconds (0.2–5)")
     p.add_argument("-g", "--glob", type=str, default="*", help="Process name glob filter for CPU/DISK views")
     p.add_argument("-w", "--view", choices=VIEWS, default="cpu", help="Initial view")
     p.add_argument("-S", "--sort", choices=CPU_SORTS + NET_SORTS + DISK_SORTS, default="cpu", help="Initial sort mode")
     p.add_argument("-u", "--units", choices=UNITS, default="mb", help="Network units (mb or mib)")
-    p.add_argument("--net-procs", action="store_true", help="Show per-proc rows in NET view (heavier)")
     p.add_argument("--low-prio", action="store_true", help="Lower this process priority (nice / BELOW_NORMAL)")
     p.add_argument("-v", "--verbose", action="store_true", help="Verbose logs to stderr")
     return p.parse_args(argv)
@@ -469,80 +610,132 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     top_n = int(clamp(args.top, 1, 99))
     interval = float(clamp(args.interval, 0.2, 5.0))
 
-    cpu_sort = args.sort if args.sort in CPU_SORTS else "cpu"
-    net_sort = args.sort if args.sort in NET_SORTS else "mbps"
+    cpu_sort  = args.sort if args.sort in CPU_SORTS  else "cpu"
+    net_sort  = args.sort if args.sort in NET_SORTS  else "mbps"
     disk_sort = args.sort if args.sort in DISK_SORTS else "total"
-    view_idx = VIEWS.index(args.view)
+    view_idx  = VIEWS.index(args.view)
 
     ncpu = psutil.cpu_count(logical=True) or 1
-    net_state = NetState(units=args.units)
-    net_state.prev_total = get_total_counters()
-    net_state.prev_time = time.time()
-    net_state.link_cap_mbps = sum_active_link_capacity_mbps()
 
-    prev_snaps: Dict[int, ProcSnap] = {}
+    # States per-view
+    cpu_state = CpuState()
+    net_state = NetState(units=args.units); net_state.prev_total = get_total_counters(); net_state.prev_time = time.time(); net_state.link_cap_mbps = sum_active_link_capacity_mbps(); net_state.per_proc_on = True
+    disk_state = DiskLiveState(); disk_state.prev = psutil.disk_io_counters(perdisk=True) or {}
+    over_state = OverallState()
+    gpu_state  = GpuState()
 
-    if args.verbose:
-        sys.stderr.write(
-            f"[sysmon] start view={VIEWS[view_idx]} sort(cpu)={cpu_sort} sort(net)={net_sort} sort(disk)={disk_sort} "
-            f"top={top_n} interval={interval} net_procs={args.net_procs}\n"
-        )
+    prev_snaps: Dict[int, ProcSnap] = {}  # for CPU/DISK per-proc
 
     help_on = False
+
+    if args.verbose:
+        sys.stderr.write(f"[sysmon] start view={VIEWS[view_idx]} top={top_n} interval={interval}\n")
 
     with KeyReader() as keys, Live(refresh_per_second=8, redirect_stdout=False) as live:
         while True:
             ch = keys.read()
             if ch:
-                if ch.lower() == "q": break
-                elif ch.lower() == "v": view_idx = (view_idx + 1) % len(VIEWS)
-                elif ch.lower() == "s":
+                low = ch.lower()
+                if low == "q": break
+                elif low == "v": view_idx = (view_idx + 1) % len(VIEWS)
+                elif low == "s":
                     v = VIEWS[view_idx]
                     if v == "cpu":
                         cpu_sort = CPU_SORTS[(CPU_SORTS.index(cpu_sort) + 1) % len(CPU_SORTS)]
                     elif v == "net":
                         net_sort = NET_SORTS[(NET_SORTS.index(net_sort) + 1) % len(NET_SORTS)]
-                    else:
+                    elif v == "disk":
                         disk_sort = DISK_SORTS[(DISK_SORTS.index(disk_sort) + 1) % len(DISK_SORTS)]
                 elif ch == "+": top_n = int(clamp(top_n + 1, 1, 99))
                 elif ch == "-": top_n = int(clamp(top_n - 1, 1, 99))
                 elif ch == "]": interval = float(clamp(interval + 0.1, 0.2, 5.0))
                 elif ch == "[": interval = float(clamp(interval - 0.1, 0.2, 5.0))
-                elif ch.lower() == "m": net_state.units = "mib" if net_state.units == "mb" else "mb"
-                elif ch.lower() == "h": help_on = not help_on
+                elif low == "m": net_state.units = "mib" if net_state.units == "mb" else "mb"
+                elif low == "p": net_state.per_proc_on = not net_state.per_proc_on
+                elif low == "g":
+                    # cycle graph mode for the active view
+                    v = VIEWS[view_idx]
+                    if v == "cpu":
+                        cpu_state.graph_mode = GRAPH_MODES[(GRAPH_MODES.index(cpu_state.graph_mode) + 1) % len(GRAPH_MODES)]
+                    elif v == "net":
+                        net_state.graph_mode = GRAPH_MODES[(GRAPH_MODES.index(net_state.graph_mode) + 1) % len(GRAPH_MODES)]
+                    elif v == "disk":
+                        disk_state.graph_mode = GRAPH_MODES[(GRAPH_MODES.index(disk_state.graph_mode) + 1) % len(GRAPH_MODES)]
+                    elif v == "overall":
+                        over_state.graph_mode = GRAPH_MODES[(GRAPH_MODES.index(over_state.graph_mode) + 1) % len(GRAPH_MODES)]
+                    elif v == "gpu":
+                        gpu_state.graph_mode = GRAPH_MODES[(GRAPH_MODES.index(gpu_state.graph_mode) + 1) % len(GRAPH_MODES)]
+                elif low == "h":
+                    help_on = not help_on
 
-            # Single snapshot pass
-            curr_snaps = iter_snaps(args.glob)
-            rows = deltas(prev_snaps, curr_snaps, ncpu)
-            total_procs = len(curr_snaps)
-            prev_snaps = curr_snaps  # swap for next tick
-
-            # Sort for all views once; no extra work later
-            rows_cpu = list(rows)
-            sort_cpu_rows(rows_cpu, cpu_sort)
-
-            rows_disk = list(rows)
-            sort_disk_rows(rows_disk, disk_sort)
-
-            rows_net = list(rows)
-            if net_sort == "name":
-                rows_net.sort(key=lambda r: r["name"].lower())
-            else:
-                rows_net.sort(key=lambda r: r["d_mb_s"], reverse=True)
-
+            # ------------ Update only the active view ------------
             current_view = VIEWS[view_idx]
-            if current_view == "cpu":
-                panel = render_cpu_table(rows_cpu, total=total_procs, limit=top_n, sort_mode=cpu_sort)
-            elif current_view == "disk":
-                panel = render_disk_table(rows_disk, total=total_procs, limit=top_n, sort_mode=disk_sort)
-            else:
-                panel = render_net_panel(net_state, top_n=top_n, interval_hint=interval,
-                                         show_proc_rows=args.net_procs, proc_rows=rows_net)
+
+            if current_view in ("cpu", "disk"):
+                # One snapshot pass for CPU/DISK process tables
+                curr_snaps = iter_snaps(args.glob)
+                rows = deltas(prev_snaps, curr_snaps, ncpu)
+                total_procs = len(curr_snaps)
+                prev_snaps = curr_snaps
+
+                if current_view == "cpu":
+                    rows_cpu = list(rows)
+                    sort_cpu_rows(rows_cpu, cpu_sort)
+                    panel = render_cpu_table(rows_cpu, total=total_procs, limit=top_n, sort_mode=cpu_sort, cpu_state=cpu_state)
+                else:
+                    # DISK view: per-process sort + per-disk snapshot
+                    rows_disk = list(rows)
+                    if   disk_sort == "read":  rows_disk.sort(key=lambda r: r["r_mb_s"], reverse=True)
+                    elif disk_sort == "write": rows_disk.sort(key=lambda r: r["w_mb_s"], reverse=True)
+                    elif disk_sort == "total": rows_disk.sort(key=lambda r: r["d_mb_s"], reverse=True)
+                    else:                      rows_disk.sort(key=lambda r: r["name"].lower())
+                    panel = render_disk_view(rows_disk, total_procs, top_n, disk_sort, disk_state)
+
+            elif current_view == "net":
+                # Build per-proc rows only if we'll show them, and sort according to net_sort
+                proc_rows = []
+                if net_state.per_proc_on:
+                    # Reuse disk deltas approach but only need names+I/O deltas
+                    curr_snaps = iter_snaps("*")
+                    rows = deltas({}, curr_snaps, ncpu)  # no CPU delta needed; just current snapshot vs zero yields 0
+                    proc_rows = list(rows)
+                    if net_sort == "name":
+                        proc_rows.sort(key=lambda r: r["name"].lower())
+                    else:
+                        proc_rows.sort(key=lambda r: r["d_mb_s"], reverse=True)
+                panel = render_net_panel(net_state, top_n=top_n, interval_hint=interval, proc_rows=proc_rows)
+
+            elif current_view == "overall":
+                # Overall uses quick totals; disk_state/net_state histories already maintained by their views,
+                # so we append on-demand minimal points to keep graphs moving even if user sits on OVERALL.
+                # Do a cheap tick for disk/net so sparklines update here too:
+                _ = disk_perdisk_snapshot(disk_state)  # updates disk_state.hist_total_mb_s
+                # For net we need a quick delta:
+                _ = render_net_panel  # keep linter happy
+                now = time.time()
+                if net_state.prev_time == 0.0:
+                    net_state.prev_time = now
+                    net_state.prev_total = get_total_counters()
+                else:
+                    # compute, update, but do not build the panel here
+                    curr_total = get_total_counters()
+                    elapsed = max(1e-6, now - net_state.prev_time)
+                    total_bps = max(0.0, ((curr_total[0]-net_state.prev_total[0]) + (curr_total[1]-net_state.prev_total[1])) * 8.0 / elapsed)
+                    net_state.hist_total_mbps.append(human_mbps(total_bps, net_state.units))
+                    if len(net_state.hist_total_mbps) > 120:
+                        net_state.hist_total_mbps = net_state.hist_total_mbps[-120:]
+                    net_state.prev_total, net_state.prev_time = curr_total, now
+
+                panel = render_overall(over_state, net_state, disk_state)
+
+            else:  # GPU
+                panel = render_gpu(gpu_state)
 
             if help_on:
                 help_text = Text(
-                    "q quit • v view • s sort • +/- top rows • ]/[ interval • m units (NET)\n"
-                    "CPU sort: cpu, memory, disk, name, random | NET sort: mbps, name | DISK sort: read, write, total, name",
+                    "q quit • v view • s sort • +/- top rows • ]/[ interval • m units(NET) • p per-proc(NET) • g graphs\n"
+                    "Views: cpu, net, disk, overall, gpu | CPU sort: cpu,memory,disk,name,random | "
+                    "NET sort: mbps,name | DISK sort: read,write,total,name",
                     style="yellow",
                 )
                 live.update(Panel(Group(panel, Panel(help_text, title="Help", border_style="yellow"))))
