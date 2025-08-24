@@ -1,81 +1,104 @@
+# pwsh/Add-ScriptsPaths.ps1 (hardened)
 <#
-.SYNOPSIS
-Ensures scripts\pyscripts (and optionally scripts\bin) are on the User PATH on Windows.
-
-.DESCRIPTION
-- Idempotently appends absolute paths to the User PATH (persistent) and to the current session.
-- Uses Set-PathVariable from your w11-powershell modules when available,
-  otherwise falls back to a local safe implementation.
-
-.EXAMPLE
-pwsh -NoProfile -ExecutionPolicy Bypass -File .\pwsh\Add-ScriptsPaths.ps1 -ScriptsDir C:\path\to\scripts -Verbose
+Ensures scripts\pyscripts (and optionally scripts\bin) are on the *User* PATH on Windows,
+without ever overwriting existing entries. Creates timestamped backups and verifies writes.
 #>
 
 [CmdletBinding()]
 param(
-    # Root of THIS scripts repo. Defaults to parent of this script folder.
-    [string]$ScriptsDir = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path,
-
-    # Also add scripts\bin (optional - useful once Windows shims/symlinks or .cmd wrappers are finalized)
-    [switch]$IncludeBin
+  [string]$ScriptsDir = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path,
+  [switch]$IncludeBin
 )
 
-Write-Verbose "ScriptsDir resolved to: $ScriptsDir"
+# --- Constants & helpers ---
+$TargetScope = [System.EnvironmentVariableTarget]::User
+$MaxChars    = 32767   # practical Windows env limit for a single variable
 
-# --- Fallback if Set-PathVariable isn't available ---
-function Add-PathIfMissing {
-    param([Parameter(Mandatory)][string]$PathToAdd)
-
-    $scope = 'User'
-    $current = [System.Environment]::GetEnvironmentVariable('Path', $scope)
-
-    if (-not $current) {
-        Write-Error "Current $scope PATH is null/empty. Aborting to avoid corruption."
-        exit 1
-    }
-
-    if ($current -match "(^|;)$([regex]::Escape($PathToAdd))(;|$)") {
-        Write-Verbose "'$PathToAdd' already present in $scope PATH."
-        return
-    }
-
-    $new = "$current;$PathToAdd"
-    [System.Environment]::SetEnvironmentVariable('Path', $new, $scope)
-    Write-Host "Added '$PathToAdd' to $scope PATH (persisted). Open a new terminal to pick it up." -ForegroundColor Green
+function Get-UserPath {
+  [System.Environment]::GetEnvironmentVariable('Path', $TargetScope)
 }
 
-# Pick helper: prefer your module's Set-PathVariable if present
-$helper = Get-Command Set-PathVariable -ErrorAction SilentlyContinue
-if ($null -eq $helper) {
-    Write-Verbose "Set-PathVariable not found; using local Add-PathIfMissing."
-    $AddPath = { param($p) Add-PathIfMissing -PathToAdd $p }
-} else {
-    Write-Verbose "Using Set-PathVariable from your PowerShell modules."
-    $AddPath = { param($p) Set-PathVariable -PathToAdd $p }  # from your repo  
+function Save-UserPathBackup {
+  param([string]$current)
+  $stamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
+  $bkKey = "Path_Backup_$stamp"
+  # Save alongside Path in HKCU:\Environment so recovery is easy
+  New-Item -Path HKCU:\Environment -Force | Out-Null
+  New-ItemProperty -Path HKCU:\Environment -Name $bkKey -Value $current -PropertyType ExpandString -Force | Out-Null
+  # Also write a .reg file in case registry editing is easier
+  $regFile = Join-Path $env:USERPROFILE "PATH-backup-$stamp.reg"
+  @"
+Windows Registry Editor Version 5.00
+
+[HKEY_CURRENT_USER\Environment]
+"Path"="$($current -replace '\\','\\' -replace '"','\"')"
+"@ | Set-Content -LiteralPath $regFile -Encoding ASCII
+  Write-Verbose "Backed up PATH to HKCU:\Environment\$bkKey and $regFile"
 }
 
-# Build targets
-$targets = @()
+function Normalize-PathList {
+  param([string[]]$items)
+  # trim, drop blanks, de-dup case-insensitively, keep order
+  $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+  $out = New-Object System.Collections.Generic.List[string]
+  foreach ($i in $items) {
+    $p = ($i -replace '^\s+|\s+$','')
+    if (-not [string]::IsNullOrWhiteSpace($p)) {
+      if ($seen.Add($p)) { [void]$out.Add($p) }
+    }
+  }
+  $out
+}
+
+function Safe-AppendToUserPath {
+  param([Parameter(Mandatory)][string[]]$AbsolutePathsToAdd)
+
+  $current = Get-UserPath
+  if ([string]::IsNullOrEmpty($current)) {
+    throw "Current User PATH is null/empty. Refusing to proceed to avoid overwriting."
+  }
+
+  Save-UserPathBackup -current $current
+
+  $currentParts = $current -split ';'
+  $nextParts    = $currentParts + $AbsolutePathsToAdd
+  $finalParts   = Normalize-PathList $nextParts
+  $finalStr     = ($finalParts -join ';')
+
+  if ($finalStr.Length -gt $MaxChars) {
+    throw "Refusing to write: resulting User PATH would be $($finalStr.Length) chars (limit ~$MaxChars)."
+  }
+
+  # Write and verify
+  [System.Environment]::SetEnvironmentVariable('Path', $finalStr, $TargetScope)
+  $roundTrip = Get-UserPath
+  if ($roundTrip -ne $finalStr) {
+    throw "Verification failed: read-back PATH did not match what was written."
+  }
+
+  # Also update current session so it's immediately available
+  $env:Path = ($env:Path + ';' + ($AbsolutePathsToAdd -join ';'))
+
+  Write-Host "User PATH updated safely. Open a new terminal for other apps to see it." -ForegroundColor Green
+}
+
+# --- Build targets from repo layout ---
+$targets = New-Object System.Collections.Generic.List[string]
 
 $py = Join-Path $ScriptsDir 'pyscripts'
-if (Test-Path $py -PathType Container) { $targets += (Resolve-Path $py).Path } else { Write-Warning "Missing directory: $py" }
+if (Test-Path $py -PathType Container) { $targets.Add((Resolve-Path $py).Path) } else { Write-Warning "Missing directory: $py" }
 
 if ($IncludeBin) {
-    $bin = Join-Path $ScriptsDir 'bin'
-    if (Test-Path $bin -PathType Container) { $targets += (Resolve-Path $bin).Path } else { Write-Warning "Missing directory: $bin" }
+  $bin = Join-Path $ScriptsDir 'bin'
+  if (Test-Path $bin -PathType Container) { $targets.Add((Resolve-Path $bin).Path) } else { Write-Warning "Missing directory: $bin" }
 }
 
-# Apply
-foreach ($t in $targets) {
-    & $AddPath.Invoke($t)
-
-    # Also make current session immediately aware
-    if ($env:Path -notmatch "(^|;)$([regex]::Escape($t))(;|$)") {
-        $env:Path = "$env:Path;$t"
-        Write-Verbose "Added '$t' to current session PATH."
-    } else {
-        Write-Verbose "'$t' already in current session PATH."
-    }
+if ($targets.Count -eq 0) {
+  Write-Error "No valid directories to add. Exiting."
+  exit 1
 }
 
+# --- Apply (no external helpers—ever) ---
+Safe-AppendToUserPath -AbsolutePathsToAdd $targets
+Write-Verbose "Added to current session PATH: $($targets -join ';')"
 Write-Host "Done." -ForegroundColor Green
