@@ -454,15 +454,17 @@ def main():
         run_setup(setup_path_script, *path_args)
 
     # NEW: Windows/pwsh PATH augmentation for <scripts>/pyscripts
-    with active_section_mgr_class("PowerShell PATH Configuration (setup_pwsh_paths.py)"):
-        pwsh_paths_script = SCRIPTS_SETUP_PACKAGE_DIR / "setup_pwsh_paths.py"
-        pwsh_args = [
-            "--scripts-dir", str(SCRIPTS_DIR),
-            "--dotfiles-dir", str(DOTFILES_DIR),
-            # "--include-bin"  # Uncomment to also add <scripts>/bin via this helper
-        ]
-        if args.verbose: pwsh_args.append("--verbose")
-        run_setup(pwsh_paths_script, *pwsh_args)
+    with active_section_mgr_class("Windows PATH (pwsh/pwsh_pathmgr.py)"):
+        if os.name == "nt":
+            pwsh_mgr = SCRIPTS_DIR / "pwsh" / "pwsh_pathmgr.py"
+            if pwsh_mgr.is_file():
+                mgr_args = ["--scope", "User", "add", str(BIN_DIR), "--cleanup"]
+                # We intentionally do NOT pass --dry-run; we want the PATH updated.
+                run_setup(pwsh_mgr, *mgr_args)
+            else:
+                sui_log_warning(f"pwsh_pathmgr.py not found at {pwsh_mgr}; skipping PATH add for bin.")
+        else:
+            sui_log_info("Non-Windows OS detected. Skipping pwsh_pathmgr PATH step.")
 
     if callable(print_global_elapsed): print_global_elapsed()
     else: (sui_log_error if STANDARD_UI_AVAILABLE else fb_log_error)("print_global_elapsed not callable at script end.")
