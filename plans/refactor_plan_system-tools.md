@@ -1,0 +1,24 @@
+# Refactoring Plan: System Tools Consolidation
+
+**Goal:** Finalize the refactoring of `cross_platform` into `system_tools`, making `system_tools` the single, unified module for core platform utilities that all other projects will depend on.
+
+### Source Files to Merge:
+
+- `modules/cross_platform/` (source of logic)
+- `modules/system_tools/` (target destination)
+
+### Execution Plan:
+
+1.  **Identify Missing Components:** Perform a diff between the directory structures and file contents of `cross_platform` and `system_tools`. Identify any classes, functions, or entire files present in `cross_platform` that have not yet been migrated to `system_tools`.
+2.  **Migrate Logic:**
+    -   Copy or move the missing components into the appropriate sub-package within `system_tools`. For example, `cross_platform/process_manager.py` should be moved to `system_tools/process/`.
+    -   Ensure the `__init__.py` files in `system_tools` and its sub-packages correctly export the newly added components.
+3.  **Update All Dependencies:**
+    -   Perform a project-wide search for the string `from cross_platform`.
+    -   For each file that imports from the old module, update the import statements to point to the new location within `system_tools`. For example, `from cross_platform.clipboard_utils import set_clipboard` would become `from system_tools.core.clipboard_utils import set_clipboard` (or similar, depending on the final structure).
+4.  **Run All Tests:** Execute the entire test suite for the whole project to ensure that the import refactoring has not broken any functionality.
+5.  **Deprecate and Delete:** Once all dependencies have been updated and all tests pass, delete the entire `modules/cross_platform/` directory.
+
+### Files to Delete Post-Refactoring:
+
+- The `modules/cross_platform/` directory.
