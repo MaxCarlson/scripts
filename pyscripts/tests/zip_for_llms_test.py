@@ -3,9 +3,8 @@ import os
 import zipfile
 import pytest
 import shutil
-import io
 from pathlib import Path
-from types import SimpleNamespace
+
 from zip_for_llms import (
     # core API
     zip_folder,
@@ -17,12 +16,9 @@ from zip_for_llms import (
     DEFAULT_EXCLUDE_EXTS,
     DEFAULT_EXCLUDE_FILES,
     PRESETS,
-    # LLM analysis helpers
+    # LLM analysis helpers now available
     prepare_analysis_workspace,
-    run_gemini_cli,
-    write_commit_history_snapshot,
-    perform_gemini_analysis,
-    build_gemini_prompt,
+    run_gemini_analysis,
 )
 
 # ================================================================
@@ -32,9 +28,8 @@ from zip_for_llms import (
 @pytest.fixture
 def temp_test_dir(tmp_path: Path) -> Path:
     """
-    Creates a temporary test repository structure with a mix of
-    source files, large files, caches, logs, and directories to
-    exercise advanced path/glob matching and default/preset ignores.
+    Creates a temporary test repository with mixed content to exercise
+    exclusions, patterns, and flattening.
     """
     root = tmp_path / "test_repo"
     root.mkdir(parents=True, exist_ok=True)
@@ -81,7 +76,7 @@ def temp_test_dir(tmp_path: Path) -> Path:
 
 
 # ================================================================
-# Core functionality tests (mostly preserved, adjusted where needed)
+# Core functionality tests
 # ================================================================
 
 def test_zip_creation_default_exclusions(temp_test_dir: Path, tmp_path: Path):
@@ -159,7 +154,7 @@ def test_delete_files_to_fit_size(tmp_path: Path):
 
 
 # ================================================================
-# Exclusion & pattern arguments (preserved & expanded)
+# Exclusion & pattern arguments
 # ================================================================
 
 @pytest.mark.parametrize("mode_func_is_zip", [True, False])
@@ -205,7 +200,7 @@ def test_exclude_ext_custom(temp_test_dir: Path, tmp_path: Path, mode_func_is_zi
 def test_exclude_file_custom_and_include_override(temp_test_dir: Path, tmp_path: Path, mode_func_is_zip):
     """
     Ensures a file listed in exclude_files can be force-included by removing it from the set
-    (simulating the CLI behavior where include-file removes from exclusions).
+    (simulating CLI behavior where include-file removes from exclusions).
     """
     output_name = f"custom_xf_include.{'zip' if mode_func_is_zip else 'txt'}"
     output_path = tmp_path / output_name
@@ -289,7 +284,7 @@ def test_keep_patterns_overrides_remove(temp_test_dir: Path, tmp_path: Path, mod
 
 
 # ================================================================
-# Advanced exclude-dir semantics (added)
+# Advanced exclude-dir semantics
 # ================================================================
 
 @pytest.mark.parametrize("mode_func_is_zip", [True, False])
@@ -358,7 +353,7 @@ def test_exclude_dir_multiple_values_combined(temp_test_dir: Path, tmp_path: Pat
 
 
 # ================================================================
-# Text mode specifics (preserved & expanded)
+# Text mode specifics
 # ================================================================
 
 def test_text_file_mode_hierarchy_and_content(temp_test_dir: Path, tmp_path: Path):
@@ -382,7 +377,8 @@ def test_text_file_mode_hierarchy_and_content(temp_test_dir: Path, tmp_path: Pat
     assert "# Test Repo" in content
     assert "-- File: src/script.py --" in content
     assert "print('Hello, Python!')" in content
-    assert "-- File: data/large_file.dat --" in content  # allowed binary in text listing; content may not render
+    # Header appears even if reading fails (binary)
+    assert "-- File: data/large_file.dat --" in content
     assert "-- File: src/__pycache__/cachefile.pyc --" not in content
     assert "-- File: .git/config --" not in content
 
@@ -401,8 +397,9 @@ def test_text_file_mode_verbose_skipped_and_non_utf8(capsys, temp_test_dir: Path
     stdout = captured.out
 
     assert "Files skipped from content:" in stdout
-    assert "yarn.lock (excluded by dir/ext/file rule on 'yarn.lock')" in stdout
-    assert "data/large_file.dat (excluded by dir/ext/file rule on 'large_file.dat')" in stdout
+    # New message style is simpler: "... (excluded)"
+    assert "yarn.lock (excluded)" in stdout
+    assert "data/large_file.dat (excluded)" in stdout
     # Non-UTF-8 binary should log a read error (not excluded by ext)
     assert "data/binary.bin (binary or non-UTF-8 content)" in stdout
 
@@ -412,7 +409,7 @@ def test_text_file_mode_verbose_skipped_and_non_utf8(capsys, temp_test_dir: Path
 
 
 # ================================================================
-# Flattening in both modes (preserved)
+# Flattening in both modes
 # ================================================================
 
 def test_zip_with_flatten_and_name_by_path(temp_test_dir: Path, tmp_path: Path):
@@ -453,7 +450,7 @@ def test_text_mode_with_flatten_and_name_by_path(temp_test_dir: Path, tmp_path: 
 
 
 # ================================================================
-# Flag combinations and output naming (simulated, preserved)
+# Flag combinations and output naming (simulated)
 # ================================================================
 
 @pytest.fixture
@@ -621,7 +618,7 @@ def test_preset_python_applied_correctly(mock_args: mock_args, tmp_path: Path, t
 
 
 # ================================================================
-# Gemini CLI analysis – new tests
+# Gemini CLI analysis – updated tests for new API
 # ================================================================
 
 def test_prepare_analysis_workspace_prunes(temp_test_dir: Path):
@@ -642,250 +639,110 @@ def test_prepare_analysis_workspace_prunes(temp_test_dir: Path):
         assert not (ws / "analysistmp2xx").exists()
         # kept relevant source
         assert (ws / "src" / "script.py").exists()
-        # workspace guide exists
-        assert (ws / "LLM_WORKSPACE_README.txt").exists()
     finally:
         shutil.rmtree(ws, ignore_errors=True)
 
 
-def test_run_gemini_cli_constructs_command(monkeypatch, tmp_path: Path):
+def test_run_gemini_analysis_constructs_command(monkeypatch, tmp_path: Path):
     ws = tmp_path / "ws"
     ws.mkdir()
 
     calls = {}
 
-    def fake_which(cmd):
-        return "/usr/bin/" + cmd if cmd == "gemini" else None
-
     class CP:
-        returncode = 0
-        stdout = "OK"
-        stderr = ""
+        def __init__(self, rc=0, out="OK", err=""):
+            self.returncode = rc
+            self.stdout = out
+            self.stderr = err
 
     def fake_run(cmd, cwd=None, capture_output=None, text=None):
         calls["cmd"] = cmd
         calls["cwd"] = cwd
         return CP()
 
-    monkeypatch.setattr("zip_for_llms.shutil.which", fake_which)
     monkeypatch.setattr("zip_for_llms.subprocess.run", fake_run)
 
-    cp = run_gemini_cli(ws, model="gemini-2.5-flash", prompt="Analyze", show_memory_usage=True, verbose=True)
-    assert cp.returncode == 0 and cp.stdout == "OK"
+    out = tmp_path / "report.md"
+    rc = run_gemini_analysis(
+        filtered_workspace=ws,
+        model_name="gemini-2.5-flash",
+        analysis_outfile=out,
+        include_commits=False,
+        commit_limit=None,
+        show_memory=True,
+        verbose=True,
+    )
+    assert rc == 0 and out.read_text() == "OK"
     assert calls["cwd"] == str(ws)
-    assert "--all-files" in calls["cmd"]
-    assert "gemini-2.5-flash" in calls["cmd"]
-    # check --show-memory-usage presence (inserted at index 1)
-    assert "--show-memory-usage" in calls["cmd"]
+    cmd = calls["cmd"]
+    assert cmd[0] == "gemini"
+    assert "--all-files" in cmd
+    assert "gemini-2.5-flash" in cmd
+    assert "--show-memory-usage" in cmd
 
 
-def test_write_commit_history_snapshot_skips_without_git(monkeypatch, tmp_path: Path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    dest = tmp_path / "ws"
-    dest.mkdir()
-    # Pretend git not available
-    monkeypatch.setattr("zip_for_llms.which", lambda c: None if c == "git" else shutil.which(c))
-    out = write_commit_history_snapshot(repo, dest, limit=3, verbose=True)
-    assert out is None
+def test_run_gemini_analysis_includes_commit_snapshot(monkeypatch, tmp_path: Path):
+    ws = tmp_path / "ws2"
+    ws.mkdir()
 
+    # Ensure our function believes there are commits
+    monkeypatch.setattr("zip_for_llms._git_commit_snapshot", lambda *_: "commit A\ncommit B")
 
-def test_build_gemini_prompt_content():
-    no_commits = build_gemini_prompt(include_commits=False)
-    with_commits = build_gemini_prompt(include_commits=True)
-    assert "Project purpose" in no_commits or "purpose" in no_commits
-    assert "Recent Changes" in with_commits
-
-
-def test_perform_gemini_analysis_creates_report_and_cleans_workspace(monkeypatch, temp_test_dir: Path, tmp_path: Path):
-    """
-    Integration-lite test:
-      - Prepare workspace is real (uses pruning rules).
-      - Gemini call is mocked to avoid external dependency.
-      - Ensure report file is created.
-      - Ensure workspace is removed unless keep flag is set.
-    """
-    # Monkeypatch run_gemini_cli to avoid external calls
-    class CP:
-        def __init__(self, rc=0, out="REPORT", err=""):
-            self.returncode = rc
-            self.stdout = out
-            self.stderr = err
-
-    created_workspaces = []
-
-    def fake_prepare(src, *args, **kwargs):
-        ws = tmp_path / "__fake_ws"
-        ws.mkdir(exist_ok=True)
-        created_workspaces.append(ws)
-        # create a file to ensure --all-files would see something
-        (ws / "README_FAKE.md").write_text("fake")
-        return ws
-
-    def fake_run_cli(ws, model, prompt, show_memory_usage, gemini_bin=None, verbose=False):
-        # Assert cwd/ws is what we created
-        assert ws.exists()
-        assert "Gemini" not in (ws / "README_FAKE.md").read_text()  # just sanity
-        return CP(0, "# Fake Gemini Report\nOK")
-
-    monkeypatch.setattr("zip_for_llms.prepare_analysis_workspace", fake_prepare)
-    monkeypatch.setattr("zip_for_llms.run_gemini_cli", fake_run_cli)
-
-    report = tmp_path / "repo_analysis.md"
-    perform_gemini_analysis(
-        source_dir_str=str(temp_test_dir),
-        model="gemini-2.5-flash",
-        exclude_dirs=DEFAULT_EXCLUDE_DIRS,
-        exclude_exts=DEFAULT_EXCLUDE_EXTS,
-        exclude_files=DEFAULT_EXCLUDE_FILES,
-        remove_patterns=[],
-        keep_patterns=[],
-        include_commits=False,
-        commit_limit=5,
-        show_memory_usage=True,
-        output_report_path=report,
-        keep_workspace=False,
-        verbose=True
-    )
-
-    # report created
-    assert report.exists() and report.read_text().startswith("# Fake Gemini Report")
-    # workspace cleaned up
-    assert created_workspaces and not created_workspaces[0].exists()
-
-
-def test_perform_gemini_analysis_keeps_workspace_when_flag_set(monkeypatch, temp_test_dir: Path, tmp_path: Path):
-    class CP:
-        def __init__(self, rc=0, out="REPORT", err=""):
-            self.returncode = rc
-            self.stdout = out
-            self.stderr = err
-
-    def fake_prepare(src, *args, **kwargs):
-        ws = tmp_path / "__fake_ws_keep"
-        ws.mkdir(exist_ok=True)
-        return ws
-
-    def fake_run_cli(ws, *_, **__):
-        return CP(0, "OK")
-
-    monkeypatch.setattr("zip_for_llms.prepare_analysis_workspace", fake_prepare)
-    monkeypatch.setattr("zip_for_llms.run_gemini_cli", fake_run_cli)
-
-    report = tmp_path / "keep_report.md"
-    perform_gemini_analysis(
-        source_dir_str=str(temp_test_dir),
-        model="gemini-2.5-flash",
-        exclude_dirs=DEFAULT_EXCLUDE_DIRS,
-        exclude_exts=DEFAULT_EXCLUDE_EXTS,
-        exclude_files=DEFAULT_EXCLUDE_FILES,
-        remove_patterns=[],
-        keep_patterns=[],
-        include_commits=False,
-        commit_limit=3,
-        show_memory_usage=False,
-        output_report_path=report,
-        keep_workspace=True,
-        verbose=False
-    )
-    assert report.exists()
-    assert (tmp_path / "__fake_ws_keep").exists()
-
-
-def test_perform_gemini_analysis_handles_nonzero_exit(monkeypatch, temp_test_dir: Path, tmp_path: Path):
-    class CP:
-        def __init__(self):
-            self.returncode = 17
-            self.stdout = "partial"
-            self.stderr = "boom"
-
-    def fake_prepare(src, *args, **kwargs):
-        ws = tmp_path / "__fake_ws_err"
-        ws.mkdir(exist_ok=True)
-        return ws
-
-    def fake_run_cli(ws, *_, **__):
-        return CP()
-
-    monkeypatch.setattr("zip_for_llms.prepare_analysis_workspace", fake_prepare)
-    monkeypatch.setattr("zip_for_llms.run_gemini_cli", fake_run_cli)
-
-    report = tmp_path / "err_report.md"
-    perform_gemini_analysis(
-        source_dir_str=str(temp_test_dir),
-        model="gemini-2.5-flash",
-        exclude_dirs=DEFAULT_EXCLUDE_DIRS,
-        exclude_exts=DEFAULT_EXCLUDE_EXTS,
-        exclude_files=DEFAULT_EXCLUDE_FILES,
-        remove_patterns=[],
-        keep_patterns=[],
-        include_commits=False,
-        commit_limit=3,
-        show_memory_usage=False,
-        output_report_path=report,
-        keep_workspace=False,
-        verbose=True
-    )
-    assert report.exists()
-    txt = report.read_text()
-    assert "Gemini CLI returned exit code 17" in txt
-    assert "## STDOUT" in txt and "partial" in txt
-    assert "## STDERR" in txt and "boom" in txt
-
-
-def test_perform_gemini_analysis_includes_commit_snapshot_when_enabled(monkeypatch, temp_test_dir: Path, tmp_path: Path):
-    """
-    We don't invoke `git`; instead ensure our pipeline requests a snapshot and
-    that the snapshot file lands in the workspace prior to the (mocked) CLI run.
-    """
     class CP:
         def __init__(self):
             self.returncode = 0
             self.stdout = "OK"
             self.stderr = ""
 
-    # Our fake prepare creates the workspace
-    def fake_prepare(src, *args, **kwargs):
-        ws = tmp_path / "__fake_ws_commits"
-        ws.mkdir(exist_ok=True)
-        return ws
-
-    # Fake writer places the snapshot file
-    def fake_write_commits(src_repo, dest_dir, limit, verbose):
-        out = dest_dir / "COMMIT_HISTORY_FOR_LLM.txt"
-        out.write_text("commit A\ncommit B", encoding="utf-8")
-        return out
-
-    # Capture that CLI sees the workspace containing the snapshot
-    snapshot_seen = {"ok": False}
-
-    def fake_run_cli(ws, *_, **__):
-        if (ws / "COMMIT_HISTORY_FOR_LLM.txt").exists():
-            snapshot_seen["ok"] = True
+    def fake_run(cmd, cwd=None, capture_output=None, text=None):
+        # COMMIT_HISTORY_FOR_LLM.md should exist in cwd before run
+        assert (ws / "COMMIT_HISTORY_FOR_LLM.md").exists()
         return CP()
 
-    monkeypatch.setattr("zip_for_llms.prepare_analysis_workspace", fake_prepare)
-    monkeypatch.setattr("zip_for_llms.write_commit_history_snapshot", fake_write_commits)
-    monkeypatch.setattr("zip_for_llms.run_gemini_cli", fake_run_cli)
+    monkeypatch.setattr("zip_for_llms.subprocess.run", fake_run)
 
-    report = tmp_path / "commit_report.md"
-    perform_gemini_analysis(
-        source_dir_str=str(temp_test_dir),
-        model="gemini-2.5-flash",
-        exclude_dirs=DEFAULT_EXCLUDE_DIRS,
-        exclude_exts=DEFAULT_EXCLUDE_EXTS,
-        exclude_files=DEFAULT_EXCLUDE_FILES,
-        remove_patterns=[],
-        keep_patterns=[],
+    out = tmp_path / "report2.md"
+    rc = run_gemini_analysis(
+        filtered_workspace=ws,
+        model_name="gemini-2.5-pro",
+        analysis_outfile=out,
         include_commits=True,
         commit_limit=5,
-        show_memory_usage=False,
-        output_report_path=report,
-        keep_workspace=False,
-        verbose=False
+        show_memory=False,
+        verbose=False,
     )
-    assert report.exists()
-    assert snapshot_seen["ok"] is True
+    assert rc == 0
+    assert out.exists()
+
+
+def test_run_gemini_analysis_handles_nonzero(monkeypatch, tmp_path: Path):
+    ws = tmp_path / "ws3"
+    ws.mkdir()
+
+    class CP:
+        def __init__(self):
+            self.returncode = 7
+            self.stdout = "partial"
+            self.stderr = "boom"
+
+    def fake_run(cmd, cwd=None, capture_output=None, text=None):
+        return CP()
+
+    monkeypatch.setattr("zip_for_llms.subprocess.run", fake_run)
+
+    out = tmp_path / "report3.md"
+    rc = run_gemini_analysis(
+        filtered_workspace=ws,
+        model_name="gemini-2.5-flash",
+        analysis_outfile=out,
+        include_commits=False,
+        commit_limit=None,
+        show_memory=False,
+        verbose=True,
+    )
+    # We still write stdout; rc is nonzero
+    assert rc == 7
+    assert out.read_text() == "partial"
 
 
 # ================================================================
@@ -894,8 +751,7 @@ def test_perform_gemini_analysis_includes_commit_snapshot_when_enabled(monkeypat
 
 def test_text_mode_skips_binary_file(temp_test_dir: Path, tmp_path: Path):
     """
-    Ensure binary file is skipped with informative message stored in verbose path.
-    (Here we don't capture stdout; we just ensure it doesn't appear in output content.)
+    Ensure binary file isn't printed with contents (header may exist).
     """
     out = tmp_path / "txt.txt"
     text_file_mode(
@@ -920,15 +776,13 @@ def test_zip_honors_remove_and_keep_on_conflict(temp_test_dir: Path, tmp_path: P
     )
     with zipfile.ZipFile(out, "r") as z:
         names = z.namelist()
-        # important.log excluded by remove, but keep only "other.log"
         assert "logs/other.log" in names
         assert "logs/important.log" not in names
 
 
 def test_zip_respects_advanced_exclude_dirs_when_flattening(temp_test_dir: Path, tmp_path: Path):
     """
-    Even in flatten mode the advanced exclude folder checks should apply
-    (by virtue of prune rules during flatten copy).
+    Even in flatten mode the advanced exclude folder checks should apply.
     """
     out = tmp_path / "flat.zip"
     xd = DEFAULT_EXCLUDE_DIRS.copy()
@@ -940,16 +794,13 @@ def test_zip_respects_advanced_exclude_dirs_when_flattening(temp_test_dir: Path,
     )
     with zipfile.ZipFile(out, "r") as z:
         names = z.namelist()
-        # folder_structure.txt always exists in working_dir_for_zip
         assert "folder_structure.txt" in names
-        # flattened names shouldn't include analysistmp* files
         assert not any("analysistmp" in n for n in names)
 
 
 def test_text_mode_with_keep_over_remove_dirname(temp_test_dir: Path, tmp_path: Path):
     """
-    Create a directory that matches a remove pattern but a specific keep
-    pattern rescues a file within it.
+    Directory matches a remove pattern but a specific keep pattern rescues a file within it.
     """
     special_dir = temp_test_dir / "build_logs"
     special_dir.mkdir(exist_ok=True)
