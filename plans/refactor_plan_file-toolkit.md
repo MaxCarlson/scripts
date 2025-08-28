@@ -8,11 +8,14 @@
 - **Features to Integrate:**
   - `pyscripts/folder_stats.py`
   - `downloads_dlpn/scripts/scan_by_date.py`
+  - `downloads_dlpn/scripts/scan-downloads.py`
   - `pyscripts/deduplicator.py`
   - `pyscripts/delete_files.py`
   - `pyscripts/folder_matcher.py`
   - `pyscripts/folder_similarity.py`
   - `pyscripts/zip_for_llms.py` / `pyscripts/repo_processor.py`
+  - `pyscripts/llm_project_parser.py`
+  - `pscripts/video/FileMerger.py`
 - **Core Library:** `modules/file_utils/` (entire module)
 
 ### Execution Plan:

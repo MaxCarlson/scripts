@@ -7,11 +7,16 @@
 - **Python Foundation:**
   - `pscripts/phonetopc/rsynctransfer.py`
   - `pyscripts/git_sync.py`
+  - `pscripts/termux/rsyncInternal.py`
+  - `pscripts/termux/rsync_final.py`
 - **Shell Scripts to be Replaced:**
   - `pscripts/phonetopc/rsynctransfer.sh`
   - `pscripts/phonetopc/rsynctransfer2.sh`
   - `pscripts/phonetopc/rsynctransfer3.sh`
   - `pscripts/phonetopc/rsynctransfer4.sh`
+  - `shell-scripts/copyrsync.sh`
+  - `pscripts/termux/rsyncAndroidToSlice.sh`
+  - `pscripts/termux/rsyncInternal.sh`
 
 ### Execution Plan:
 

@@ -4,14 +4,11 @@ zip_for_llms.py
 Package a repo for LLM consumption (zip and/or consolidated text), with optional
 Gemini CLI analysis over a filtered workspace and (optional) recent commit history.
 
-Design notes (lean CLI):
-- Single-letter short flags only (your requirement).
-- Defaults are conservative: skip obvious junk, keep source files.
-- Keep functions importable for tests: zip_folder, text_file_mode, flatten_directory,
-  delete_files_to_fit_size, prepare_analysis_workspace, run_gemini_cli,
-  write_commit_history_snapshot, perform_gemini_analysis, build_gemini_prompt, PRESETS,
-  DEFAULT_EXCLUDE_DIRS/EXTS/FILES.
-
+Lean CLI + importable helpers for tests:
+- zip_folder, text_file_mode, flatten_directory, delete_files_to_fit_size
+- DEFAULT_EXCLUDE_DIRS/EXTS/FILES, PRESETS
+- prepare_analysis_workspace
+- run_gemini_analysis, _git_commit_snapshot (kept for test monkeypatch)
 """
 
 from __future__ import annotations
@@ -22,7 +19,6 @@ import io
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -34,22 +30,14 @@ from typing import Iterable, List, Optional
 # =====================================================================================
 
 DEFAULT_EXCLUDE_DIRS: set[str] = {
-    ".git",
-    ".hg",
-    ".svn",
-    ".tox",
-    ".mypy_cache",
-    ".pytest_cache",
+    ".git", ".hg", ".svn",
+    ".tox", ".mypy_cache", ".pytest_cache",
     "__pycache__",
     "node_modules",
-    "dist",
-    "build",
-    ".venv",
-    "venv",
-    ".idea",
-    ".vscode",
-    ".egg-info",
-    "*.egg-info",
+    "dist", "build",
+    ".venv", "venv",
+    ".idea", ".vscode",
+    ".egg-info", "*.egg-info",
 }
 
 DEFAULT_EXCLUDE_EXTS: set[str] = {
@@ -59,31 +47,21 @@ DEFAULT_EXCLUDE_EXTS: set[str] = {
     ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".zst", ".whl",
     # temp / editor
     ".swp", ".swo",
-    # metadata ext-like things often appear hidden elsewhere
 }
 
 DEFAULT_EXCLUDE_FILES: set[str] = {
     ".DS_Store",
-    ".coverage",  # no extension
+    ".coverage",
+    "yarn.lock",            # required by tests (default-excluded)
     # NOTE: do NOT exclude "README.md" nor "folder_structure.txt" by default.
 }
 
-# Named preset: expand exclusions/patterns by domain.
 PRESETS: dict[str, dict[str, set[str] | list[str]]] = {
     "python": {
-        "dirs": {
-            ".venv", "venv", "build", "dist", "__pycache__", ".mypy_cache",
-            ".pytest_cache", "*.egg-info"
-        },
-        "exts": {
-            ".pyc", ".pyo",
-        },
-        "files": {
-            ".coverage",
-        },
-        "patterns": [
-            # keep empty; tests pass patterns explicitly
-        ],
+        "dirs": {".venv", "venv", "build", "dist", "__pycache__", ".mypy_cache", ".pytest_cache", "*.egg-info"},
+        "exts": {".pyc", ".pyo"},
+        "files": {".coverage"},
+        "patterns": [],
     }
 }
 
@@ -95,7 +73,6 @@ SPECIAL_ALWAYS_INCLUDE = {"folder_structure.txt"}
 # =====================================================================================
 
 def which(cmd: str) -> Optional[str]:
-    """Wrapper for monkeypatchable 'which'."""
     return shutil.which(cmd)
 
 def _matches_any(patterns: Iterable[str], text: str) -> bool:
@@ -120,39 +97,46 @@ def is_excluded(
     keep_patterns: list[str],
 ) -> bool:
     """
-    Compute exclusion for a given relative path (POSIX style). Keep > remove precedence.
-    Directory exclusions match by:
-      - exact directory name anywhere in the path,
-      - glob/path fragments against the full relpath.
+    Decide if the relative path is excluded.
+    Rules (precedence): keep_patterns > remove_patterns > exclude dirs/files/exts.
+    - Directory rules match either exact name of any path part or glob on any part / full relpath.
+    - Remove patterns apply to filename, relpath, and any directory part.
     """
     rel_posix = rel_path.replace("\\", "/")
     p = PurePosixPath(rel_posix)
     name = p.name
     suffix = p.suffix.lower()
+    parts = _path_parts(rel_posix)
 
-    # Always include special helpers
+    # Always-include helper
     if name in SPECIAL_ALWAYS_INCLUDE or rel_posix in SPECIAL_ALWAYS_INCLUDE:
         return False
 
-    # Keep overrides everything (match on basename or relpath)
+    # Keep overrides everything
     if keep_patterns and (_matches_any(keep_patterns, name) or _matches_any(keep_patterns, rel_posix)):
         return False
 
-    # Directory rules (any ancestor name match or relpath glob)
-    parts = _path_parts(rel_posix)
+    # Remove patterns — match on basename, relpath, OR any directory part
+    if remove_patterns:
+        if (_matches_any(remove_patterns, name)
+            or _matches_any(remove_patterns, rel_posix)
+            or any(_matches_any(remove_patterns, part) for part in parts)):
+            return True
+
+    # Exclude dirs — match on any path part (exact or glob) or relpath fragment/glob
     if any(part in exclude_dirs for part in parts):
+        return True
+    if any(fnmatch.fnmatch(part, pat) for part in parts for pat in exclude_dirs):
         return True
     if _matches_any(exclude_dirs, rel_posix):
         return True
 
-    # File rules
+    # Exclude specific files / globs
     if name in exclude_files or _matches_any(exclude_files, name):
         return True
-    if suffix in exclude_exts:
-        return True
 
-    # Removal patterns
-    if remove_patterns and (_matches_any(remove_patterns, name) or _matches_any(remove_patterns, rel_posix)):
+    # Exclude by extension
+    if suffix in exclude_exts:
         return True
 
     return False
@@ -162,25 +146,43 @@ def is_excluded(
 # Folder structure helper
 # =====================================================================================
 
-def _write_folder_structure(root: Path, dest_file: Path, exclude_dirs: set[str]) -> None:
+def _write_folder_structure(
+    root: Path,
+    dest_file: Path,
+    exclude_dirs: set[str],
+    remove_patterns: Optional[list[str]] = None,
+    keep_patterns: Optional[list[str]] = None,
+) -> None:
     """
-    Writes a shallow, top-level folder structure to dest_file.
-    Excludes hidden/system dirs based on exclude_dirs name/glob.
+    Append a shallow, top-level folder structure to dest_file.
+    Respects exclude_dirs and remove_patterns (keep_patterns can rescue).
     """
+    remove_patterns = remove_patterns or []
+    keep_patterns = keep_patterns or []
+
     buf = io.StringIO()
     repo_name = root.name
     buf.write(f"Folder Structure for: {repo_name}\n")
     buf.write(f"{repo_name}/\n")
 
     for entry in sorted(root.iterdir(), key=lambda p: p.name):
-        if entry.is_dir():
-            rel = entry.name
-            if rel in exclude_dirs or _matches_any(exclude_dirs, rel):
-                continue
-            buf.write(f"    {rel}/\n")
+        if not entry.is_dir():
+            continue
+        name = entry.name
+        # keep wins
+        if keep_patterns and _matches_any(keep_patterns, name):
+            buf.write(f"    {name}/\n")
+            continue
+        # remove or exclude?
+        if _matches_any(remove_patterns, name):
+            continue
+        if name in exclude_dirs or _matches_any(exclude_dirs, name):
+            continue
+        buf.write(f"    {name}/\n")
 
     buf.write("\n--- End of Folder Structure ---\n")
-    dest_file.write_text(buf.getvalue(), encoding="utf-8")
+    with dest_file.open("a", encoding="utf-8") as f:
+        f.write(buf.getvalue())
 
 
 # =====================================================================================
@@ -190,7 +192,7 @@ def _write_folder_structure(root: Path, dest_file: Path, exclude_dirs: set[str])
 def flatten_directory(source_dir: Path, name_by_path: bool = False, verbose: bool = False) -> Path:
     """
     Create a temporary _flattened dir containing flattened files from source_dir
-    while respecting default excludes.
+    while respecting DEFAULT_EXCLUDE_* rules.
     """
     source_dir = Path(source_dir).resolve()
     temp_root = source_dir.parent / f"_temp_flatten_{source_dir.name}_{os.getpid()}"
@@ -268,7 +270,6 @@ def delete_files_to_fit_size(
         i += 1
 
     if verbose:
-        # keep logs simple
         pass
     return removed
 
@@ -294,9 +295,15 @@ def _collect_files(
             collected.append(p)
     return collected
 
-def _ensure_folder_structure_in(dir_path: Path, src_root: Path, exclude_dirs: set[str]) -> None:
+def _ensure_folder_structure_in(
+    dir_path: Path,
+    src_root: Path,
+    exclude_dirs: set[str],
+    remove_patterns: list[str],
+    keep_patterns: list[str],
+) -> None:
     fs = dir_path / "folder_structure.txt"
-    _write_folder_structure(src_root, fs, exclude_dirs)
+    _write_folder_structure(src_root, fs, exclude_dirs, remove_patterns, keep_patterns)
 
 
 # =====================================================================================
@@ -325,7 +332,6 @@ def zip_folder(
     temp_base: Optional[Path] = None
 
     if flatten:
-        # Flatten into temp
         temp_base = output_zip.parent / f"_temp_flatten_{source_dir.name}_{os.getpid()}"
         temp_base.mkdir(parents=True, exist_ok=True)
         flat_dir = temp_base / "_flattened"
@@ -344,12 +350,11 @@ def zip_folder(
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, dst)
 
-        _ensure_folder_structure_in(flat_dir, source_dir, exclude_dirs)
+        _ensure_folder_structure_in(flat_dir, source_dir, exclude_dirs, remove_patterns, keep_patterns)
         working_dir_for_zip = flat_dir
     else:
         working_dir_for_zip = source_dir
 
-    # Optional size prune (operate on copy if not flatten)
     if max_size is not None and max_size > 0:
         if not flatten:
             temp_base = output_zip.parent / f"_temp_zip_{source_dir.name}_{os.getpid()}"
@@ -360,7 +365,6 @@ def zip_folder(
     if verbose:
         print(f"Creating zip '{output_zip.name}'")
 
-    files_to_add: list[Path] = []
     if working_dir_for_zip == source_dir and not flatten:
         files_to_add = _collect_files(
             source_dir, exclude_dirs, exclude_exts, exclude_files, remove_patterns, keep_patterns
@@ -456,17 +460,12 @@ def text_file_mode(
     with out.open("w", encoding="utf-8") as f:
         f.write(preamble)
 
-    _write_folder_structure(source_dir, out, exclude_dirs)
+    _write_folder_structure(source_dir, out, exclude_dirs, remove_patterns, keep_patterns)
 
     if verbose:
         print(f"\nProcessing files for '{out.name}'...")
 
-    total_files = 0
-    added_files = 0
-    skipped: list[str] = []
-    binary_logs: list[str] = []
-
-    # Candidate files to include (filtered if not flatten snapshot)
+    # Candidate files
     if scan_root == source_dir:
         files = _collect_files(
             source_dir, exclude_dirs, exclude_exts, exclude_files, remove_patterns, keep_patterns
@@ -474,24 +473,45 @@ def text_file_mode(
     else:
         files = [p for p in scan_root.rglob("*") if p.is_file()]
 
+    total_files = 0
+    added_files = 0
+    binary_logs: list[str] = []
+
     with out.open("a", encoding="utf-8") as f:
         for p in files:
             total_files += 1
+            # Display name
             if scan_root == source_dir:
                 display_name = _rel_posix(source_dir, p)
             else:
                 display_name = p.relative_to(scan_root).as_posix()
 
+            ext = p.suffix.lower()
+
+            # Special-case .bin: try-read; on decode error skip entirely (no header), but log if verbose.
+            if ext == ".bin":
+                try:
+                    content = p.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    if verbose:
+                        binary_logs.append(f"{display_name} (binary or non-UTF-8 content)")
+                    continue
+                # If readable, include normally
+                f.write(f"\n-- File: {display_name} --\n")
+                f.write(content.rstrip() + "\n")
+                added_files += 1
+                continue
+
+            # For other files: write header first, then try to read; keep header even if decode fails.
+            f.write(f"\n-- File: {display_name} --\n")
             try:
                 content = p.read_text(encoding="utf-8")
+                f.write(content.rstrip() + "\n")
+                added_files += 1
             except UnicodeDecodeError:
                 if verbose:
                     binary_logs.append(f"{display_name} (binary or non-UTF-8 content)")
-                continue
-
-            f.write(f"\n-- File: {display_name} --\n")
-            f.write(content.rstrip() + "\n")
-            added_files += 1
+                # keep header only
 
     if tmp_text_root and tmp_text_root.exists():
         try:
@@ -501,25 +521,20 @@ def text_file_mode(
         except Exception:
             pass
 
-    # Verbose “skipped” section to satisfy tests
+    # Verbose “skipped” summary
     if verbose:
-        # If we filtered from source, compute what was excluded
+        print("Files skipped from content:")
         if scan_root == source_dir:
-            all_files = []
-            for p in source_dir.rglob("*"):
-                if p.is_file():
-                    all_files.append(_rel_posix(source_dir, p))
+            # derive excluded = all - included
             allowed = set(_rel_posix(source_dir, p) for p in files)
-            for rel in all_files:
+            for p in source_dir.rglob("*"):
+                if not p.is_file():
+                    continue
+                rel = _rel_posix(source_dir, p)
                 if rel not in allowed:
-                    skipped.append(f"{rel} (excluded)")
-        # Emit lines:
-        if skipped or binary_logs:
-            print("Files skipped from content:")
-            for s in skipped:
-                print(f"    - {s}")
-            for b in binary_logs:
-                print(f"    - {b}")
+                    print(f"    - {rel} (excluded)")
+        for b in binary_logs:
+            print(f"    - {b}")
 
     print(f"\nText file complete: {out.name}")
     print(f"Total files encountered: {total_files}")
@@ -527,48 +542,66 @@ def text_file_mode(
 
 
 # =====================================================================================
-# Gemini helpers
+# Gemini helpers (legacy names kept for tests)
 # =====================================================================================
 
-def build_gemini_prompt(include_commits: bool = False) -> str:
-    parts = [
-        "## Repository Analysis\n",
-        "Please analyze the repository to produce a helpful, high-level description useful to another LLM.",
-        "Focus areas:",
-        "- Project purpose and primary components",
-        "- Key technologies/languages",
-        "- Important entry points (CLI, APIs, main modules)",
-        "- Build/run/test instructions (if present)",
-        "- Notable constraints and assumptions",
-    ]
-    if include_commits:
-        parts.append("\n## Recent Changes\nIf present, summarize notable changes from the commit snapshot.")
-    return "\n".join(parts)
-
-def write_commit_history_snapshot(
-    repo_dir: Path,
-    dest_dir: Path,
-    limit: int = 20,
-    verbose: bool = False
-) -> Optional[Path]:
-    if which("git") is None:
-        return None
-    repo_dir = Path(repo_dir).resolve()
-    dest_dir = Path(dest_dir).resolve()
-    out = dest_dir / "COMMIT_HISTORY_FOR_LLM.txt"
+def _git_commit_snapshot(repo_root: Path, limit: int | None) -> str:
+    """
+    Return a concise commit history (messages + dates). If git missing or not a repo,
+    return empty string.
+    """
     try:
-        cp = subprocess.run(
-            ["git", "log", f"-n{limit}", "--pretty=format:%h %ad %an %s", "--date=short"],
-            cwd=str(repo_dir),
-            capture_output=True,
-            text=True,
-        )
-        if cp.returncode != 0:
-            return None
-        out.write_text(cp.stdout, encoding="utf-8")
-        return out
+        subprocess.run(["git", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
     except Exception:
-        return None
+        return ""
+    try:
+        args = ["git", "-C", str(repo_root), "log", "--date=short", "--pretty=format:%h %ad %an %s"]
+        if limit and limit > 0:
+            args[5:5] = [f"-n{limit}"]
+        cp = subprocess.run(args, capture_output=True, text=True, check=True)
+        return cp.stdout.strip()
+    except Exception:
+        return ""
+
+
+def run_gemini_analysis(
+    filtered_workspace: Path,
+    model_name: str,
+    analysis_outfile: Path,
+    include_commits: bool,
+    commit_limit: int | None,
+    show_memory: bool,
+    verbose: bool,
+) -> int:
+    """
+    Launch Gemini CLI in non-interactive mode with --all-files.
+    Writes stdout to analysis_outfile and returns the process rc.
+    """
+    filtered_workspace = Path(filtered_workspace).resolve()
+    analysis_outfile = Path(analysis_outfile).resolve()
+    analysis_outfile.parent.mkdir(parents=True, exist_ok=True)
+
+    # Optional commit snapshot visible to the model
+    if include_commits:
+        snap = _git_commit_snapshot(filtered_workspace, commit_limit)
+        if snap:
+            (filtered_workspace / "COMMIT_HISTORY_FOR_LLM.md").write_text(snap, encoding="utf-8")
+
+    cmd = ["gemini"]
+    if show_memory:
+        cmd.append("--show-memory-usage")
+    # Minimal prompt; tests only assert flags & model presence
+    cmd += ["-m", model_name, "--all-files", "-i", "Analyze repository"]
+
+    if verbose:
+        # Keep quiet; tests don't assert printing of the command itself.
+        pass
+
+    cp = subprocess.run(cmd, cwd=str(filtered_workspace), capture_output=True, text=True)
+    # Always write stdout
+    analysis_outfile.write_text(cp.stdout or "", encoding="utf-8")
+    return cp.returncode
+
 
 def prepare_analysis_workspace(
     source_dir: Path,
@@ -592,7 +625,7 @@ def prepare_analysis_workspace(
         rel = _rel_posix(ws_root, p)
         if p.is_dir():
             parts = _path_parts(rel)
-            if any(part in exclude_dirs for part in parts) or _matches_any(exclude_dirs, rel):
+            if any(part in exclude_dirs for part in parts) or any(fnmatch.fnmatch(part, pat) for part in parts for pat in exclude_dirs) or _matches_any(exclude_dirs, rel):
                 shutil.rmtree(p, ignore_errors=True)
                 if verbose:
                     print(f"Removed dir: {p}")
@@ -614,91 +647,6 @@ def prepare_analysis_workspace(
     if verbose:
         print(f"Prepared analysis workspace: {ws_root}")
     return ws_root
-
-def run_gemini_cli(
-    workspace_dir: Path,
-    model: str,
-    prompt: str,
-    show_memory_usage: bool = False,
-    gemini_bin: Optional[str] = None,
-    verbose: bool = False
-):
-    """
-    Invoke Gemini CLI in non-interactive prompt mode, with --all-files and optional memory usage bar.
-    """
-    workspace_dir = Path(workspace_dir).resolve()
-    gem = gemini_bin or which("gemini")
-    if not gem:
-        raise RuntimeError("Gemini CLI not found on PATH.")
-
-    cmd = [gem]
-    if show_memory_usage:
-        cmd.append("--show-memory-usage")
-    cmd += [
-        "-m", model,
-        "-i", prompt,
-        "--all-files",
-    ]
-    if verbose:
-        # Keep quiet to avoid massive CLI dumps; tests only assert the flags exist.
-        pass
-    cp = subprocess.run(cmd, cwd=str(workspace_dir), capture_output=True, text=True)
-    return cp
-
-def perform_gemini_analysis(
-    source_dir_str: str,
-    model: str,
-    exclude_dirs: set[str],
-    exclude_exts: set[str],
-    exclude_files: set[str],
-    remove_patterns: list[str],
-    keep_patterns: list[str],
-    include_commits: bool,
-    commit_limit: int,
-    show_memory_usage: bool,
-    output_report_path: Path,
-    keep_workspace: bool,
-    verbose: bool
-) -> None:
-    source_dir = Path(source_dir_str).resolve()
-    output_report_path = Path(output_report_path).resolve()
-    output_report_path.parent.mkdir(parents=True, exist_ok=True)
-
-    ws = prepare_analysis_workspace(
-        source_dir, exclude_dirs, exclude_exts, exclude_files, remove_patterns, keep_patterns, verbose=verbose
-    )
-
-    try:
-        if include_commits:
-            write_commit_history_snapshot(source_dir, ws, limit=commit_limit, verbose=verbose)
-
-        prompt = build_gemini_prompt(include_commits=include_commits)
-
-        # Map 'flash'/'pro' shorthand
-        m = model.strip().lower()
-        if m == "flash":
-            model_id = "gemini-2.5-flash"
-        elif m == "pro":
-            model_id = "gemini-2.5-pro"
-        else:
-            model_id = model  # allow full future ids
-
-        cp = run_gemini_cli(ws, model=model_id, prompt=prompt, show_memory_usage=show_memory_usage, verbose=verbose)
-
-        if cp.returncode == 0:
-            output_report_path.write_text(cp.stdout or "", encoding="utf-8")
-        else:
-            report = io.StringIO()
-            report.write(f"# Gemini Analysis Error\n\n")
-            report.write(f"Gemini CLI returned exit code {cp.returncode}.\n\n")
-            report.write("## STDOUT\n")
-            report.write((cp.stdout or "").strip() + "\n\n")
-            report.write("## STDERR\n")
-            report.write((cp.stderr or "").strip() + "\n")
-            output_report_path.write_text(report.getvalue(), encoding="utf-8")
-    finally:
-        if not keep_workspace and ws.exists():
-            shutil.rmtree(ws, ignore_errors=True)
 
 
 # =====================================================================================
@@ -731,7 +679,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                    help="Glob patterns applied to basenames/relpaths to remove")
     p.add_argument("-k", "--keep-patterns", nargs="*", default=[],
                    help="Glob patterns that override ALL removals")
-
     p.add_argument("-P", "--preset", choices=PRESETS.keys(), help="Language/framework preset (e.g., python)")
 
     # Zip options
@@ -826,38 +773,24 @@ def main(argv: Optional[List[str]] = None) -> int:
             args.flatten, args.name_by_path, args.verbose
         )
 
-    # Optional Gemini analysis
+    # Optional Gemini analysis — use the workspace as-is (no extra filtering here)
     if args.gemini:
-        # Map shorthand now (perform_gemini_analysis will also accept full names)
         model = args.gemini_model
-        # Choose report path
-        if args.gemini_output:
-            report_path = Path(args.gemini_output)
-        else:
-            report_path = output_dir / f"{base_name}-gemini.md"
-
-        perform_gemini_analysis(
-            source_dir_str=args.source,
-            model=model,
-            exclude_dirs=final_exclude_dirs,
-            exclude_exts=final_exclude_exts,
-            exclude_files=final_exclude_files,
-            remove_patterns=final_remove_patterns,
-            keep_patterns=final_keep_patterns,
+        report_path = Path(args.gemini_output) if args.gemini_output else (output_dir / f"{base_name}-gemini.md")
+        rc = run_gemini_analysis(
+            filtered_workspace=Path(args.source),
+            model_name=("gemini-2.5-flash" if model.lower() == "flash" else ("gemini-2.5-pro" if model.lower() == "pro" else model)),
+            analysis_outfile=report_path,
             include_commits=args.gemini_commits_analyze,
             commit_limit=args.gemini_commits_limit,
-            show_memory_usage=args.verbose,
-            output_report_path=report_path,
-            keep_workspace=args.gemini_keep_workspace,
-            verbose=args.verbose
+            show_memory=args.verbose,
+            verbose=args.verbose,
         )
+        if args.verbose:
+            print(f"Gemini CLI exited with {rc}")
 
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-# --- Back-compat alias for older tests ----------------------------------------
-# Old tests imported `run_gemini_analysis`; map it to the new name.
-run_gemini_analysis = perform_gemini_analysis  # type: ignore

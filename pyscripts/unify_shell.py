@@ -33,12 +33,13 @@ except Exception as e:
 
 # ---------- Models ----------
 
+
 @dataclasses.dataclass
 class Entry:
     name: str
     desc: str = ""
-    posix: Optional[str] = None        # shell string for bash/zsh
-    powershell: Optional[str] = None   # shell string for pwsh
+    posix: Optional[str] = None  # shell string for bash/zsh
+    powershell: Optional[str] = None  # shell string for pwsh
     python_impl: Optional[str] = None  # name of python function implemented below
     requires: List[str] = dataclasses.field(default_factory=list)
     category: str = "misc"
@@ -46,18 +47,22 @@ class Entry:
 
 # ---------- Helpers ----------
 
+
 def _is_windows() -> bool:
     return platform.system().lower().startswith("win")
+
 
 def _have(cmd: str) -> bool:
     # On Windows, honor .exe/.ps1 in PATH as well
     return shutil.which(cmd) is not None
+
 
 def _all_requirements_present(reqs: List[str]) -> bool:
     for r in reqs:
         if not _have(r):
             return False
     return True
+
 
 def load_aliases(yaml_path: Path) -> List[Entry]:
     """
@@ -95,12 +100,20 @@ def load_aliases(yaml_path: Path) -> List[Entry]:
         entries.append(
             Entry(
                 name=name.strip(),
-                desc=(raw.get("desc") or "") if isinstance(raw.get("desc"), str) else "",
+                desc=(raw.get("desc") or "")
+                if isinstance(raw.get("desc"), str)
+                else "",
                 posix=raw.get("posix") if isinstance(raw.get("posix"), str) else None,
-                powershell=raw.get("powershell") if isinstance(raw.get("powershell"), str) else None,
-                python_impl=raw.get("python_impl") if isinstance(raw.get("python_impl"), str) else None,
+                powershell=raw.get("powershell")
+                if isinstance(raw.get("powershell"), str)
+                else None,
+                python_impl=raw.get("python_impl")
+                if isinstance(raw.get("python_impl"), str)
+                else None,
                 requires=list(raw.get("requires") or []),
-                category=raw.get("category", "misc") if isinstance(raw.get("category"), str) else "misc",
+                category=raw.get("category", "misc")
+                if isinstance(raw.get("category"), str)
+                else "misc",
             )
         )
 
@@ -113,12 +126,15 @@ def load_aliases(yaml_path: Path) -> List[Entry]:
         else:
             seen.add(e.name)
     if dups:
-        raise ValueError(f"Duplicate alias names across loaded YAMLs: {sorted(set(dups))}")
+        raise ValueError(
+            f"Duplicate alias names across loaded YAMLs: {sorted(set(dups))}"
+        )
 
     return entries
 
 
 # ---------- Python implementations (portable logic) ----------
+
 
 def py_mkcd(argv: List[str]) -> int:
     """
@@ -134,6 +150,7 @@ def py_mkcd(argv: List[str]) -> int:
     # Change directory only for subshell; print the path for the shell shim to cd.
     print(str(target))
     return 0
+
 
 def py_rgmax(argv: List[str]) -> int:
     """
@@ -172,21 +189,25 @@ def py_rgmax(argv: List[str]) -> int:
         print(f"{p}:{c}")
     return 0
 
+
 def _walk_limited(root: Path, max_depth: int) -> List[Tuple[int, Path]]:
     """Pure-Python limited-depth directory walk for lt fallback."""
     items: List[Tuple[int, Path]] = []
     root = root.resolve()
+
     def rel_depth(p: Path) -> int:
         try:
             return len(p.relative_to(root).parts)
         except Exception:
             return 0
+
     for p in root.rglob("*"):
         d = rel_depth(p)
         if d <= max_depth:
             items.append((d, p))
     items.sort(key=lambda t: (t[0], str(t[1])))
     return items
+
 
 def py_lt(argv: List[str]) -> int:
     """
@@ -219,7 +240,14 @@ def py_lt(argv: List[str]) -> int:
         return 2
 
     if _have("eza"):
-        cmd = ["eza", "--tree", f"--level={depth}", "--group-directories-first", "--icons", str(start)]
+        cmd = [
+            "eza",
+            "--tree",
+            f"--level={depth}",
+            "--group-directories-first",
+            "--icons",
+            str(start),
+        ]
         return subprocess.call(cmd)
     if _have("tree"):
         cmd = ["tree", "-L", str(depth), str(start)]
@@ -235,6 +263,7 @@ def py_lt(argv: List[str]) -> int:
         rel = p.relative_to(start)
         print(f"{indent_unit * d}{rel}")
     return 0
+
 
 def py_list(argv: List[str], entries: List[Entry]) -> int:
     """
@@ -256,6 +285,7 @@ def py_list(argv: List[str], entries: List[Entry]) -> int:
         print(f"{n}{pad}  —  {d}")
     return 0
 
+
 PY_FUNCS = {
     "mkcd": py_mkcd,
     "rgmax": py_rgmax,
@@ -266,7 +296,10 @@ PY_FUNCS = {
 
 # ---------- Execution ----------
 
-def run_entry(entry: Entry, argv: List[str], all_entries: Optional[List[Entry]] = None) -> int:
+
+def run_entry(
+    entry: Entry, argv: List[str], all_entries: Optional[List[Entry]] = None
+) -> int:
     # Python implementation takes precedence if present
     if entry.python_impl:
         if entry.python_impl == "list":
@@ -311,6 +344,7 @@ PWSH_HEADER = """# AUTOGENERATED — DO NOT EDIT
 # Generated by unify_shell.py
 """
 
+
 def generate_zsh(entries: List[Entry]) -> str:
     lines = [ZSH_HEADER]
     lines.append('command -v dot >/dev/null 2>&1 || alias dot="unify_shell.py"')
@@ -340,6 +374,7 @@ function {e.name}() {{
         else:
             lines.append(f"alias {e.name}='dot run {e.name}'  # {e.desc}")
     return "\n".join(lines).strip() + "\n"
+
 
 def generate_pwsh(entries: List[Entry]) -> str:
     lines = [PWSH_HEADER]
@@ -382,6 +417,7 @@ Set-Alias -Name {e.name} -Value {e.name} -Force 2>$null | Out-Null
 
 # ---------- CLI ----------
 
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="dot", description="Unified shell aliases/functions"
@@ -393,9 +429,7 @@ def main() -> int:
     p_run.add_argument("argv", nargs=argparse.REMAINDER)
 
     p_gen = sub.add_parser("generate", help="Generate shell files")
-    p_gen.add_argument(
-        "--yaml", type=Path, default=Path.home() / "dotfiles/unified"
-    )
+    p_gen.add_argument("--yaml", type=Path, default=Path.home() / "dotfiles/unified")
     p_gen.add_argument("--zsh", type=Path, help="Write zsh aliases to this file")
     p_gen.add_argument(
         "--pwsh", type=Path, help="Write PowerShell aliases to this file"
@@ -442,5 +476,5 @@ def main() -> int:
     return 0
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+# if __name__ == "__main__":
+#    sys.exit(main())
