@@ -1,3 +1,21 @@
+<!--
+This plan outlines the consolidation of various code-related scripts into a single project.
+
+**Source Files:**
+- modules/code_tools/func_replacer.py
+- modules/code_tools/rgcodeblock_cli.py
+- modules/code_tools/rgcodeblock_lib/__init__.py
+- modules/code_tools/rgcodeblock_lib/extractors.py
+- modules/code_tools/rgcodeblock_lib/language_defs.py
+- pyscripts/rgcode.py
+- pyscripts/unpaired_finder.py
+
+**Test Files:**
+- modules/code_tools/tests/test_func_replacer.py
+- modules/code_tools/tests/test_rgcodeblock_cli.py
+- modules/code_tools/tests/test_rgcodeblock_lib_extractors.py
+-->
+
 # Refactoring Plan: Code Tools
 
 **Goal:** Stabilize the `code_tools` module by fixing its tests, promote it to a full project in `pyprjs`, and consolidate related developer scripts into it.

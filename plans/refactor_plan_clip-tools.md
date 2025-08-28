@@ -1,3 +1,21 @@
+modules/cross_platform/clipboard_utils.py
+modules/cross_platform/tests/clipboard_utils_test.py
+modules/system_tools/core/clipboard_utils.py
+pyscripts/append_clipboard.py
+pyscripts/clipboard_diff.py
+pyscripts/clipboard_replace.py
+pyscripts/copy_buffer_to_clipboard.py
+pyscripts/copy_log_to_clipboard.py
+pyscripts/copy_to_clipboard.py
+pyscripts/output_to_clipboard.py
+pyscripts/replace_with_clipboard.py
+pyscripts/tests/append_clipboard_test.py
+pyscripts/tests/clipboard_replace_test.py
+pyscripts/tests/copy_buffer_to_clipboard_test.py
+pyscripts/tests/copy_to_clipboard_test.py
+pyscripts/tests/output_to_clipboard_test.py
+pyscripts/tests/replace_with_clipboard_test.py
+
 # Refactoring Plan: Clip Tools
 
 **Goal:** Consolidate all standalone clipboard utility scripts into a single, robust CLI tool named `clip-tools` under `pyprjs`.
