@@ -4,11 +4,42 @@ zip_for_llms.py
 Package a repo for LLM consumption (zip and/or consolidated text), with optional
 Gemini CLI analysis over a filtered workspace and (optional) recent commit history.
 
-Lean CLI + importable helpers for tests:
+Key improvements in this release:
+- Verbose skip output is now compact: if a directory is excluded, we DO NOT print
+  any of its children. One line per excluded dir, period.
+- Restored readable colored output for humans (auto-disables when not a TTY or NO_COLOR set).
+- Gemini (-G) now shows a spinner/progress line while the CLI runs so you can
+  tell it's working instead of "hanging".
+- Presets expanded to mirror GitHub .gitignore templates for popular stacks
+  (python, cpp, node, rust, go, java, dotnet, swift). Using a preset adjusts
+  dirs/exts/files/remove-patterns by default.
+
+CLI style (single-letter + long-form, all programs must honor both):
+  -f / --file-mode           -> emit consolidated .txt
+  -z / --zip-mode            -> emit .zip
+  -o / --output              -> output base name/path (extension inferred if needed)
+  -x / --exclude-dir         -> exclude directory (repeatable)
+  -e / --exclude-ext         -> exclude extension (repeatable, with dot)
+  -X / --exclude-file        -> exclude filename (repeatable)
+  -I / --include-file        -> force-include filename (removes from exclude set)
+  -R / --remove-pattern      -> fnmatch to drop paths (repeatable)
+  -K / --keep-pattern        -> fnmatch to rescue paths (repeatable)
+  -m / --max-size            -> max zip size in MiB (best-effort culling)
+  -p / --preferences         -> comma list of preferred extensions to drop when trimming
+  -F / --flatten             -> copy files to a temp "_flattened" staging folder
+  -N / --name-by-path        -> if flattening, rename files by path (a_b_c.ext)
+  -v / --verbose             -> show progress & skip details
+  -P / --preset              -> use language preset (python, cpp, node, rust, go, java, dotnet, swift)
+  -G / --gemini              -> run Gemini CLI analysis on filtered workspace
+  -M / --model               -> Gemini model (default: gemini-2.5-flash)
+  -C / --include-commits     -> include a compact git commit snapshot in analysis workspace
+  -L / --commit-limit        -> limit the number of commits if included (default 20)
+  -S / --show-memory         -> add '--show-memory-usage' to Gemini CLI
+
+The module also exposes:
 - zip_folder, text_file_mode, flatten_directory, delete_files_to_fit_size
+- prepare_analysis_workspace, run_gemini_analysis
 - DEFAULT_EXCLUDE_DIRS/EXTS/FILES, PRESETS
-- prepare_analysis_workspace
-- run_gemini_analysis, _git_commit_snapshot (kept for test monkeypatch)
 """
 
 from __future__ import annotations
@@ -19,549 +50,584 @@ import io
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
+import threading
+import time
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Set
 
 
 # =====================================================================================
-# Defaults & Presets
+# ANSI color helpers (auto-disable for non-TTY or NO_COLOR)
 # =====================================================================================
 
-DEFAULT_EXCLUDE_DIRS: set[str] = {
-    ".git", ".hg", ".svn",
-    ".tox", ".mypy_cache", ".pytest_cache",
-    "__pycache__",
+def _supports_color() -> bool:
+    if os.environ.get("NO_COLOR"):
+        return False
+    try:
+        return sys.stdout.isatty()
+    except Exception:
+        return False
+
+_COLOR = _supports_color()
+
+def C(code: str) -> str:
+    return f"\033[{code}m" if _COLOR else ""
+
+COL = {
+    "reset": C("0"),
+    "bold": C("1"),
+    "dim": C("2"),
+    "green": C("32"),
+    "yellow": C("33"),
+    "red": C("31"),
+    "cyan": C("36"),
+    "magenta": C("35"),
+    "blue": C("34"),
+    "gray": C("90"),
+}
+
+
+def cfmt(s: str, color_key: str) -> str:
+    return f"{COL.get(color_key,'')}{s}{COL['reset'] if _COLOR else ''}"
+
+
+# =====================================================================================
+# Defaults & Extended Presets
+# =====================================================================================
+
+DEFAULT_EXCLUDE_DIRS: Set[str] = {
+    # VCS & IDE
+    ".git", ".hg", ".svn", ".idea", ".vscode", ".DS_Store",
+    # Python caches / envs
+    "__pycache__", ".mypy_cache", ".pytest_cache", ".venv", "env", "venv", ".tox",
+    # Node
     "node_modules",
-    "dist", "build",
-    ".venv", "venv",
-    ".idea", ".vscode",
-    ".egg-info", "*.egg-info",
+    # Build / dist
+    "dist", "build", "target", "out",
 }
 
-DEFAULT_EXCLUDE_EXTS: set[str] = {
-    # compiled / caches / native artifacts
-    ".pyc", ".pyo", ".class", ".o", ".so", ".dll", ".dylib",
-    # archives / pkg blobs
-    ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".zst", ".whl",
-    # temp / editor
-    ".swp", ".swo",
+DEFAULT_EXCLUDE_EXTS: Set[str] = {
+    # compiled
+    ".pyc", ".pyo", ".pyd", ".o", ".obj", ".class",
+    # archives & binaries
+    ".zip", ".tar", ".gz", ".7z", ".rar", ".iso",
+    ".dll", ".so", ".dylib", ".exe",
+    # media-ish large odds
+    ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".mp4", ".mov", ".mp3", ".wav",
+    # package locks often noisy
+    ".lock",
 }
 
-DEFAULT_EXCLUDE_FILES: set[str] = {
-    ".DS_Store",
-    ".coverage",
-    "yarn.lock",            # required by tests (default-excluded)
-    # NOTE: do NOT exclude "README.md" nor "folder_structure.txt" by default.
+DEFAULT_EXCLUDE_FILES: Set[str] = {
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+    ".coverage", "coverage.xml",
 }
 
-PRESETS: dict[str, dict[str, set[str] | list[str]]] = {
+# Hefty, language-leaning presets inspired by github/gitignore contents.
+# Note: these are static patterns; they don’t fetch from the web.
+PRESETS = {
     "python": {
-        "dirs": {".venv", "venv", "build", "dist", "__pycache__", ".mypy_cache", ".pytest_cache", "*.egg-info"},
-        "exts": {".pyc", ".pyo"},
-        "files": {".coverage"},
-        "patterns": [],
-    }
+        "dirs": {
+            ".venv", "venv", "env", "__pycache__", ".pytest_cache",
+            ".mypy_cache", ".tox", "build", "dist", "*.egg-info",
+        },
+        "exts": {".pyc", ".pyo", ".pyd", ".so"},
+        "files": {".python-version", ".coverage", "coverage.xml"},
+        "patterns": ["*.egg-info", ".ruff_cache", ".hypothesis", ".nox"],
+    },
+    "cpp": {
+        "dirs": {"build", "cmake-build-*", "out", "bin", "obj", ".cache"},
+        "exts": {".o", ".obj", ".a", ".lib", ".dll", ".so", ".dylib", ".exe", ".pdb"},
+        "files": set(),
+        "patterns": ["CMakeFiles", "CMakeCache.txt", "compile_commands.json"],
+    },
+    "node": {
+        "dirs": {"node_modules", "dist", "coverage", ".next", ".nuxt", ".turbo"},
+        "exts": {".log", ".map"},
+        "files": {"package-lock.json", "yarn.lock", "pnpm-lock.yaml"},
+        "patterns": [".vercel", ".cache", ".parcel-cache"],
+    },
+    "rust": {
+        "dirs": {"target"},
+        "exts": {".rlib", ".d", ".o"},
+        "files": set(),
+        "patterns": ["Cargo.lock"],
+    },
+    "go": {
+        "dirs": {"bin"},
+        "exts": {".test"},
+        "files": {"go.sum"},
+        "patterns": ["vendor", ".cache"],
+    },
+    "java": {
+        "dirs": {"target", "out", ".gradle", ".idea"},
+        "exts": {".class", ".jar", ".war", ".ear"},
+        "files": {"pom.xml.tag"},
+        "patterns": ["*.iml", "build"],
+    },
+    "dotnet": {
+        "dirs": {"bin", "obj", ".vs"},
+        "exts": {".dll", ".pdb", ".cache", ".mdb"},
+        "files": {"project.lock.json"},
+        "patterns": ["*.user", "*.suo"],
+    },
+    "swift": {
+        "dirs": {".build", "DerivedData"},
+        "exts": {".xcodeproj", ".xcworkspace"},
+        "files": set(),
+        "patterns": ["*.swiftpm"],
+    },
 }
 
-SPECIAL_ALWAYS_INCLUDE = {"folder_structure.txt"}
+# =====================================================================================
+# Tiny structured printing utilities
+# =====================================================================================
+
+def _print_header(title: str) -> None:
+    print(f"{cfmt('==', 'magenta')} {cfmt(title, 'bold')}")
+
+def _print_stat(label: str, value: str) -> None:
+    print(f"  {cfmt(label+':', 'cyan')} {value}")
+
+def _print_skip(path: str, why: str) -> None:
+    print(f"  - {cfmt(path, 'gray')} {cfmt(f'({why})', 'yellow')}")
+
+def _print_ok(path: str) -> None:
+    print(f"  + {cfmt(path, 'green')}")
+
+def _print_warn(msg: str) -> None:
+    print(f"{cfmt('warn:', 'yellow')} {msg}")
+
+def _print_err(msg: str) -> None:
+    print(f"{cfmt('error:', 'red')} {msg}", file=sys.stderr)
 
 
 # =====================================================================================
-# Small utilities
+# Helpers
 # =====================================================================================
 
-def which(cmd: str) -> Optional[str]:
-    return shutil.which(cmd)
+def _relpath(p: Path, root: Path) -> str:
+    try:
+        return str(PurePosixPath(p.relative_to(root)))
+    except Exception:
+        return str(PurePosixPath(p))
 
-def _matches_any(patterns: Iterable[str], text: str) -> bool:
+
+def _match_any_fragment(path_rel: str, patterns: Iterable[str]) -> bool:
+    # Consider any fragment match: exact dir name, partial path fragment, or glob
     for pat in patterns:
-        if fnmatch.fnmatch(text, pat):
+        if pat in path_rel:
+            return True
+        if fnmatch.fnmatch(path_rel, pat):
             return True
     return False
 
-def _rel_posix(root: Path, p: Path) -> str:
-    return p.relative_to(root).as_posix()
 
-def _path_parts(rel_posix: str) -> list[str]:
-    return list(PurePosixPath(rel_posix).parts)
-
-
-def is_excluded(
-    rel_path: str,
-    exclude_dirs: set[str],
-    exclude_exts: set[str],
-    exclude_files: set[str],
-    remove_patterns: list[str],
-    keep_patterns: list[str],
-) -> bool:
+def flatten_directory(source_dir: Path, name_by_path: bool, verbose: bool) -> Path:
     """
-    Decide if the relative path is excluded.
-    Rules (precedence): keep_patterns > remove_patterns > exclude dirs/files/exts.
-    - Directory rules match either exact name of any path part or glob on any part / full relpath.
-    - Remove patterns apply to filename, relpath, and any directory part.
+    Copy all files into a temp "_flattened" directory for packaging.
     """
-    rel_posix = rel_path.replace("\\", "/")
-    p = PurePosixPath(rel_posix)
-    name = p.name
-    suffix = p.suffix.lower()
-    parts = _path_parts(rel_posix)
-
-    # Always-include helper
-    if name in SPECIAL_ALWAYS_INCLUDE or rel_posix in SPECIAL_ALWAYS_INCLUDE:
-        return False
-
-    # Keep overrides everything
-    if keep_patterns and (_matches_any(keep_patterns, name) or _matches_any(keep_patterns, rel_posix)):
-        return False
-
-    # Remove patterns — match on basename, relpath, OR any directory part
-    if remove_patterns:
-        if (_matches_any(remove_patterns, name)
-            or _matches_any(remove_patterns, rel_posix)
-            or any(_matches_any(remove_patterns, part) for part in parts)):
-            return True
-
-    # Exclude dirs — match on any path part (exact or glob) or relpath fragment/glob
-    if any(part in exclude_dirs for part in parts):
-        return True
-    if any(fnmatch.fnmatch(part, pat) for part in parts for pat in exclude_dirs):
-        return True
-    if _matches_any(exclude_dirs, rel_posix):
-        return True
-
-    # Exclude specific files / globs
-    if name in exclude_files or _matches_any(exclude_files, name):
-        return True
-
-    # Exclude by extension
-    if suffix in exclude_exts:
-        return True
-
-    return False
-
-
-# =====================================================================================
-# Folder structure helper
-# =====================================================================================
-
-def _write_folder_structure(
-    root: Path,
-    dest_file: Path,
-    exclude_dirs: set[str],
-    remove_patterns: Optional[list[str]] = None,
-    keep_patterns: Optional[list[str]] = None,
-) -> None:
-    """
-    Append a shallow, top-level folder structure to dest_file.
-    Respects exclude_dirs and remove_patterns (keep_patterns can rescue).
-    """
-    remove_patterns = remove_patterns or []
-    keep_patterns = keep_patterns or []
-
-    buf = io.StringIO()
-    repo_name = root.name
-    buf.write(f"Folder Structure for: {repo_name}\n")
-    buf.write(f"{repo_name}/\n")
-
-    for entry in sorted(root.iterdir(), key=lambda p: p.name):
-        if not entry.is_dir():
+    flat = source_dir / "_flattened"
+    if flat.exists():
+        shutil.rmtree(flat)
+    flat.mkdir()
+    for root, _, files in os.walk(source_dir):
+        root_path = Path(root)
+        if flat in root_path.parents or root_path == flat:
             continue
-        name = entry.name
-        # keep wins
-        if keep_patterns and _matches_any(keep_patterns, name):
-            buf.write(f"    {name}/\n")
-            continue
-        # remove or exclude?
-        if _matches_any(remove_patterns, name):
-            continue
-        if name in exclude_dirs or _matches_any(exclude_dirs, name):
-            continue
-        buf.write(f"    {name}/\n")
+        for f in files:
+            src = root_path / f
+            rel = _relpath(src, source_dir)
+            target_name = rel.replace("/", "_") if name_by_path else f
+            dst = flat / target_name
+            if verbose:
+                _print_ok(f"flatten: {rel} -> {_relpath(dst, source_dir)}")
+            try:
+                shutil.copy2(src, dst)
+            except Exception as e:
+                if verbose:
+                    _print_warn(f"failed to copy {rel}: {e}")
+    # Add a plain structure marker file for zip output parity
+    (flat / "folder_structure.txt").write_text("Flattened view artifacts (see text mode for full structure).")
+    return flat
 
-    buf.write("\n--- End of Folder Structure ---\n")
-    with dest_file.open("a", encoding="utf-8") as f:
-        f.write(buf.getvalue())
 
-
-# =====================================================================================
-# Flattening
-# =====================================================================================
-
-def flatten_directory(source_dir: Path, name_by_path: bool = False, verbose: bool = False) -> Path:
+def delete_files_to_fit_size(folder: Path, max_mib: int, preference_exts: Iterable[str], verbose: bool) -> List[str]:
     """
-    Create a temporary _flattened dir containing flattened files from source_dir
-    while respecting DEFAULT_EXCLUDE_* rules.
+    Best-effort removal: delete biggest preferred-extension files first until
+    the folder fits under max_mib.
     """
-    source_dir = Path(source_dir).resolve()
-    temp_root = source_dir.parent / f"_temp_flatten_{source_dir.name}_{os.getpid()}"
-    flat_dir = temp_root / "_flattened"
-    flat_dir.mkdir(parents=True, exist_ok=True)
-
-    if verbose:
-        print(f"Flattening directory {temp_root.name} into _flattened...")
-
-    total = 0
-    for path in source_dir.rglob("*"):
-        if not path.is_file():
-            continue
-        rel = _rel_posix(source_dir, path)
-        if is_excluded(rel, DEFAULT_EXCLUDE_DIRS, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES, [], []):
-            if verbose and path.name == "yarn.lock":
-                print("  Skipping (default rule): yarn.lock")
-            continue
-        total += 1
-        flat_name = rel.replace("/", "_") if name_by_path else path.name
-        target = flat_dir / flat_name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, target)
-
-    if verbose:
-        print(f"Flattened {total} files into {flat_dir}.")
-    return flat_dir
-
-
-# =====================================================================================
-# Size trimming
-# =====================================================================================
-
-def delete_files_to_fit_size(
-    directory: Path,
-    max_megabytes: int,
-    preferences: List[str],
-    verbose: bool = False
-) -> List[str]:
-    """
-    Delete files (prioritizing extensions in 'preferences', then by size desc)
-    until the directory size <= max_megabytes. Returns removed file paths (str).
-    """
-    directory = Path(directory)
-    max_bytes = max(0, int(max_megabytes * 1024 * 1024))
+    max_bytes = max_mib * 1024 * 1024
     removed: List[str] = []
 
-    def gather():
-        files = []
-        for p in directory.rglob("*"):
-            if p.is_file():
+    def size_of_tree(p: Path) -> int:
+        total = 0
+        for r, _, files in os.walk(p):
+            for f in files:
                 try:
-                    sz = p.stat().st_size
-                except FileNotFoundError:
+                    total += (Path(r) / f).stat().st_size
+                except OSError:
+                    pass
+        return total
+
+    preference_exts = set(preference_exts or [])
+    while True:
+        total = size_of_tree(folder)
+        if total <= max_bytes:
+            break
+        # collect candidate files
+        candidates: List[Path] = []
+        for r, _, files in os.walk(folder):
+            for f in files:
+                p = Path(r) / f
+                try:
+                    if p.suffix in preference_exts:
+                        candidates.append(p)
+                except Exception:
                     continue
-                files.append((p, sz, p.suffix.lower()))
-        return files
-
-    files = gather()
-    total = sum(sz for _, sz, _ in files)
-    if total <= max_bytes:
-        return removed
-
-    pref_index = {ext.lower(): i for i, ext in enumerate(preferences)}
-    files.sort(key=lambda t: (pref_index.get(t[2], len(preferences)), -t[1]))
-    i = 0
-    while total > max_bytes and i < len(files):
-        p, sz, _ = files[i]
+        if not candidates:
+            # fallback: delete any biggest file
+            for r, _, files in os.walk(folder):
+                for f in files:
+                    candidates.append(Path(r) / f)
+        if not candidates:
+            break
+        # pick largest
+        candidates.sort(key=lambda p: p.stat().st_size if p.exists() else 0, reverse=True)
+        victim = candidates[0]
         try:
-            p.unlink()
-            removed.append(str(p))
-            total -= sz
-        except FileNotFoundError:
-            pass
-        i += 1
-
-    if verbose:
-        pass
+            if verbose:
+                _print_warn(f"trimming to fit: deleting {_relpath(victim, folder)}")
+            removed.append(str(victim))
+            victim.unlink(missing_ok=True)
+        except Exception as e:
+            if verbose:
+                _print_warn(f"failed to delete {victim}: {e}")
+            break
     return removed
 
 
 # =====================================================================================
-# Internal collectors
+# Exclusion logic
 # =====================================================================================
 
-def _collect_files(
-    root: Path,
-    exclude_dirs: set[str],
-    exclude_exts: set[str],
-    exclude_files: set[str],
-    remove_patterns: list[str],
-    keep_patterns: list[str],
-) -> list[Path]:
-    collected = []
-    for p in root.rglob("*"):
-        if p.is_file():
-            rel = _rel_posix(root, p)
-            if is_excluded(rel, exclude_dirs, exclude_exts, exclude_files, remove_patterns, keep_patterns):
-                continue
-            collected.append(p)
-    return collected
+@dataclass(frozen=True)
+class Exclusion:
+    exclude_dirs: Set[str]
+    exclude_exts: Set[str]
+    exclude_files: Set[str]
+    remove_patterns: List[str]
+    keep_patterns: List[str]
 
-def _ensure_folder_structure_in(
-    dir_path: Path,
-    src_root: Path,
-    exclude_dirs: set[str],
-    remove_patterns: list[str],
-    keep_patterns: list[str],
-) -> None:
-    fs = dir_path / "folder_structure.txt"
-    _write_folder_structure(src_root, fs, exclude_dirs, remove_patterns, keep_patterns)
+    def dir_is_excluded(self, rel_dir: str) -> bool:
+        # If directory name itself or any fragment/glob matches, it's excluded
+        name = Path(rel_dir).name
+        if name in self.exclude_dirs:
+            return True
+        if rel_dir in self.exclude_dirs:
+            return True
+        return _match_any_fragment(rel_dir, self.exclude_dirs)
 
-
-# =====================================================================================
-# ZIP creation
-# =====================================================================================
-
-def zip_folder(
-    source_dir_str: str,
-    output_zip_str: str,
-    exclude_dirs: set[str],
-    exclude_exts: set[str],
-    exclude_files: set[str],
-    remove_patterns: list[str],
-    keep_patterns: list[str],
-    max_size: Optional[int],
-    preferences: List[str],
-    flatten: bool,
-    name_by_path: bool,
-    verbose: bool
-) -> None:
-    source_dir = Path(source_dir_str).resolve()
-    output_zip = Path(output_zip_str).resolve()
-    output_zip.parent.mkdir(parents=True, exist_ok=True)
-
-    working_dir_for_zip: Path
-    temp_base: Optional[Path] = None
-
-    if flatten:
-        temp_base = output_zip.parent / f"_temp_flatten_{source_dir.name}_{os.getpid()}"
-        temp_base.mkdir(parents=True, exist_ok=True)
-        flat_dir = temp_base / "_flattened"
-        flat_dir.mkdir(parents=True, exist_ok=True)
-
-        if verbose:
-            print(f"Flatten mode: zipping from {flat_dir}")
-
-        orig_files = _collect_files(
-            source_dir, exclude_dirs, exclude_exts, exclude_files, remove_patterns, keep_patterns
-        )
-        for path in orig_files:
-            rel = _rel_posix(source_dir, path)
-            flat_name = rel.replace("/", "_") if name_by_path else path.name
-            dst = flat_dir / flat_name
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(path, dst)
-
-        _ensure_folder_structure_in(flat_dir, source_dir, exclude_dirs, remove_patterns, keep_patterns)
-        working_dir_for_zip = flat_dir
-    else:
-        working_dir_for_zip = source_dir
-
-    if max_size is not None and max_size > 0:
-        if not flatten:
-            temp_base = output_zip.parent / f"_temp_zip_{source_dir.name}_{os.getpid()}"
-            shutil.copytree(source_dir, temp_base, dirs_exist_ok=False)
-            working_dir_for_zip = temp_base
-        delete_files_to_fit_size(working_dir_for_zip, max_size, preferences, verbose=verbose)
-
-    if verbose:
-        print(f"Creating zip '{output_zip.name}'")
-
-    if working_dir_for_zip == source_dir and not flatten:
-        files_to_add = _collect_files(
-            source_dir, exclude_dirs, exclude_exts, exclude_files, remove_patterns, keep_patterns
-        )
-    else:
-        files_to_add = [p for p in working_dir_for_zip.rglob("*") if p.is_file()]
-
-    added = 0
-    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as z:
-        for p in files_to_add:
-            if working_dir_for_zip == source_dir:
-                arcname = _rel_posix(source_dir, p)
-            else:
-                arcname = p.relative_to(working_dir_for_zip).as_posix()
-            z.write(p, arcname)
-            added += 1
-
-    if verbose:
-        print(f"Total files zipped: {added}")
-    try:
-        sz_mb = output_zip.stat().st_size / (1024 * 1024)
-        print(f"\nFinal zip '{output_zip.name}' size: {sz_mb:.2f} MB")
-    except FileNotFoundError:
-        print(f"\nFinal zip '{output_zip.name}' size: 0.00 MB")
-
-    if temp_base and temp_base.exists():
-        try:
-            shutil.rmtree(temp_base, ignore_errors=True)
-            if verbose:
-                print(f"Cleaned temp: {temp_base}")
-        except Exception:
-            pass
+    def file_is_excluded(self, rel_path: str) -> bool:
+        # Keep overrides remove
+        base = Path(rel_path).name
+        if base in self.keep_patterns or any(fnmatch.fnmatch(base, pat) for pat in self.keep_patterns):
+            return False
+        if base in self.exclude_files:
+            return True
+        if Path(rel_path).suffix in self.exclude_exts:
+            return True
+        if any(fnmatch.fnmatch(rel_path, pat) for pat in self.remove_patterns):
+            return True
+        # If any parent dir is excluded by pattern, treat as excluded (pruning handles this too)
+        parts = Path(rel_path).parts
+        agg = ""
+        for part in parts[:-1]:
+            agg = f"{agg}/{part}" if agg else part
+            if self.dir_is_excluded(agg):
+                return True
+        return False
 
 
 # =====================================================================================
 # Text mode
 # =====================================================================================
 
+def _emit_folder_structure(root: Path, exclusion: Exclusion, out: io.TextIOBase, verbose: bool) -> None:
+    out.write(f"\nFolder Structure for: {root.name}\n")
+    def walk(d: Path, indent: int = 0) -> None:
+        rel = _relpath(d, root)
+        if rel and exclusion.dir_is_excluded(rel):
+            out.write("    " * indent + f"{Path(rel).name}/ (excluded)\n")
+            if verbose:
+                _print_skip(rel, "excluded dir")
+            return  # CRITICAL: do not descend into excluded dirs
+        if rel:
+            out.write("    " * indent + f"{Path(rel).name}/\n")
+        for child in sorted(d.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+            if child.is_dir():
+                walk(child, indent + (1 if rel else 1))
+    walk(root)
+
+
 def text_file_mode(
     source_dir_str: str,
     output_txt_str: str,
-    exclude_dirs: set[str],
-    exclude_exts: set[str],
-    exclude_files: set[str],
-    remove_patterns: list[str],
-    keep_patterns: list[str],
+    exclude_dirs: Set[str],
+    exclude_exts: Set[str],
+    exclude_files: Set[str],
+    remove_patterns: List[str],
+    keep_patterns: List[str],
     flatten: bool,
     name_by_path: bool,
-    verbose: bool
+    verbose: bool,
 ) -> None:
     source_dir = Path(source_dir_str).resolve()
-    out = Path(output_txt_str).resolve()
-    out.parent.mkdir(parents=True, exist_ok=True)
+    output_txt = Path(output_txt_str)
 
-    tmp_text_root: Optional[Path] = None
-    scan_root: Path
-
-    if flatten:
-        tmp_text_root = out.parent / f"_temp_text_flatten_{source_dir.name}_{os.getpid()}"
-        tmp_text_root.mkdir(parents=True, exist_ok=True)
-        flat_dir = tmp_text_root / "_flattened"
-        flat_dir.mkdir(parents=True, exist_ok=True)
-
-        if verbose:
-            print(f"Flattening directory {tmp_text_root.name} into _flattened...")
-
-        orig_files = _collect_files(
-            source_dir, exclude_dirs, exclude_exts, exclude_files, remove_patterns, keep_patterns
-        )
-        total = 0
-        for path in orig_files:
-            rel = _rel_posix(source_dir, path)
-            new_name = rel.replace("/", "_") if name_by_path else path.name
-            dst = flat_dir / new_name
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(path, dst)
-            total += 1
-
-        if verbose:
-            print(f"Flattened {total} files into {flat_dir}.")
-            print(f"Text flatten: {flat_dir}")
-        scan_root = flat_dir
-    else:
-        scan_root = source_dir
+    exclusion = Exclusion(set(exclude_dirs), set(exclude_exts), set(exclude_files), list(remove_patterns), list(keep_patterns))
 
     if verbose:
-        print("Generating folder structure...")
+        _print_header("Generating folder structure...")
+    with io.open(output_txt, "w", encoding="utf-8") as out:
+        out.write("This document packages a repository for a Large Language Model (LLM).\n")
+        _emit_folder_structure(source_dir, exclusion, out, verbose)
 
-    preamble = (
-        "This document packages a repository for a Large Language Model (LLM).\n"
-        "It contains a high-level folder structure followed by selected file contents.\n\n"
-    )
-    with out.open("w", encoding="utf-8") as f:
-        f.write(preamble)
+        out.write("\nProcessing files for content...\n")
 
-    _write_folder_structure(source_dir, out, exclude_dirs, remove_patterns, keep_patterns)
+        skipped_once_dirs: Set[str] = set()  # remember which excluded dirs we already logged
 
-    if verbose:
-        print(f"\nProcessing files for '{out.name}'...")
+        # Prepare flattening if requested (still prints structure from original tree)
+        staging_root = source_dir
+        if flatten:
+            if verbose:
+                _print_header("Flattening files...")
+            staging_root = flatten_directory(source_dir, name_by_path=name_by_path, verbose=verbose)
 
-    # Candidate files
-    if scan_root == source_dir:
-        files = _collect_files(
-            source_dir, exclude_dirs, exclude_exts, exclude_files, remove_patterns, keep_patterns
-        )
-    else:
-        files = [p for p in scan_root.rglob("*") if p.is_file()]
+        # Walk staging root for file contents (prune excluded dirs entirely)
+        for r, dirs, files in os.walk(staging_root):
+            root_path = Path(r)
+            # Prune excluded dirs BEFORE descent; print just once per dir.
+            pruned: List[str] = []
+            for d in list(dirs):
+                rel_d = _relpath(root_path / d, staging_root)
+                if exclusion.dir_is_excluded(rel_d):
+                    pruned.append(d)
+                    if verbose and rel_d not in skipped_once_dirs:
+                        _print_skip(rel_d, "excluded dir")
+                        skipped_once_dirs.add(rel_d)
+            for d in pruned:
+                dirs.remove(d)
 
-    total_files = 0
-    added_files = 0
-    binary_logs: list[str] = []
+            # Process files
+            for f in files:
+                p = root_path / f
+                rel = _relpath(p, staging_root)
+                if exclusion.file_is_excluded(rel):
+                    # Only print skip if not under an already-excluded dir (we pruned, but be safe)
+                    parent_rel = _relpath(p.parent, staging_root)
+                    if verbose and not exclusion.dir_is_excluded(parent_rel):
+                        reason = "excluded" if Path(rel).suffix in exclusion.exclude_exts or Path(rel).name in exclusion.exclude_files else "removed by pattern"
+                        _print_skip(rel, reason)
+                    continue
 
-    with out.open("a", encoding="utf-8") as f:
-        for p in files:
-            total_files += 1
-            # Display name
-            if scan_root == source_dir:
-                display_name = _rel_posix(source_dir, p)
-            else:
-                display_name = p.relative_to(scan_root).as_posix()
-
-            ext = p.suffix.lower()
-
-            # Special-case .bin: try-read; on decode error skip entirely (no header), but log if verbose.
-            if ext == ".bin":
+                # Emit header then try to read as UTF-8 text
+                display_name = rel.replace("/", "_") if (flatten and name_by_path) else rel
+                out.write(f"\n-- File: {display_name} --\n")
                 try:
-                    content = p.read_text(encoding="utf-8")
+                    with io.open(p, "r", encoding="utf-8") as fin:
+                        out.write(fin.read())
                 except UnicodeDecodeError:
                     if verbose:
-                        binary_logs.append(f"{display_name} (binary or non-UTF-8 content)")
-                    continue
-                # If readable, include normally
-                f.write(f"\n-- File: {display_name} --\n")
-                f.write(content.rstrip() + "\n")
-                added_files += 1
-                continue
+                        _print_skip(rel, "binary or non-UTF-8 content")
+                except Exception as e:
+                    if verbose:
+                        _print_warn(f"read error {rel}: {e}")
 
-            # For other files: write header first, then try to read; keep header even if decode fails.
-            f.write(f"\n-- File: {display_name} --\n")
-            try:
-                content = p.read_text(encoding="utf-8")
-                f.write(content.rstrip() + "\n")
-                added_files += 1
-            except UnicodeDecodeError:
-                if verbose:
-                    binary_logs.append(f"{display_name} (binary or non-UTF-8 content)")
-                # keep header only
+        if flatten and staging_root != source_dir:
+            shutil.rmtree(staging_root, ignore_errors=True)
 
-    if tmp_text_root and tmp_text_root.exists():
-        try:
-            shutil.rmtree(tmp_text_root, ignore_errors=True)
-            if verbose:
-                print(f"Cleaned text temp: {tmp_text_root}")
-        except Exception:
-            pass
-
-    # Verbose “skipped” summary
     if verbose:
-        print("Files skipped from content:")
-        if scan_root == source_dir:
-            # derive excluded = all - included
-            allowed = set(_rel_posix(source_dir, p) for p in files)
-            for p in source_dir.rglob("*"):
-                if not p.is_file():
+        _print_stat("Text file complete", str(output_txt))
+        _print_stat("Source", str(source_dir))
+
+
+# =====================================================================================
+# Zip mode
+# =====================================================================================
+
+def zip_folder(
+    source_dir_str: str,
+    output_zip_str: str,
+    exclude_dirs: Set[str],
+    exclude_exts: Set[str],
+    exclude_files: Set[str],
+    remove_patterns: List[str],
+    keep_patterns: List[str],
+    max_size: Optional[int],
+    preferences: List[str],
+    flatten: bool,
+    name_by_path: bool,
+    verbose: bool,
+) -> None:
+    source_dir = Path(source_dir_str).resolve()
+    output_zip = Path(output_zip_str)
+    exclusion = Exclusion(set(exclude_dirs), set(exclude_exts), set(exclude_files), list(remove_patterns), list(keep_patterns))
+
+    # Stage files (optionally flatten)
+    staging_root = source_dir
+    if flatten:
+        if verbose:
+            _print_header("Flattening files...")
+        staging_root = flatten_directory(source_dir, name_by_path=name_by_path, verbose=verbose)
+
+    # Create zip
+    if verbose:
+        _print_header(f"Creating zip: {output_zip.name}")
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as z:
+        # Add a structure marker (helps LLM context)
+        structure_txt = "folder_structure.txt"
+        z.writestr(structure_txt, "See text mode for detailed structure.")
+        if verbose:
+            _print_ok(f"added {structure_txt}")
+
+        for r, dirs, files in os.walk(staging_root):
+            root_path = Path(r)
+            # Prune excluded dirs before descent
+            for d in list(dirs):
+                rel_d = _relpath(root_path / d, staging_root)
+                if exclusion.dir_is_excluded(rel_d):
+                    if verbose:
+                        _print_skip(rel_d, "excluded dir")
+                    dirs.remove(d)
+            for f in files:
+                p = root_path / f
+                rel = _relpath(p, staging_root)
+                if exclusion.file_is_excluded(rel):
+                    if verbose:
+                        reason = "excluded"
+                        _print_skip(rel, reason)
                     continue
-                rel = _rel_posix(source_dir, p)
-                if rel not in allowed:
-                    print(f"    - {rel} (excluded)")
-        for b in binary_logs:
-            print(f"    - {b}")
+                arcname = rel.replace("/", "_") if (flatten and name_by_path) else rel
+                try:
+                    z.write(p, arcname)
+                    if verbose:
+                        _print_ok(f"+ {arcname}")
+                except Exception as e:
+                    if verbose:
+                        _print_warn(f"failed to add {rel}: {e}")
 
-    print(f"\nText file complete: {out.name}")
-    print(f"Total files encountered: {total_files}")
-    print(f"Files added to text: {added_files}")
+    # Size trimming if requested
+    if max_size is not None:
+        # Extract, trim, re-zip (simpler logic)
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            with zipfile.ZipFile(output_zip, "r") as z:
+                z.extractall(td_path)
+            removed = delete_files_to_fit_size(td_path, max_size, preferences, verbose=verbose)
+            with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as z:
+                for r, _, files in os.walk(td_path):
+                    for f in files:
+                        p = Path(r) / f
+                        rel = _relpath(p, td_path)
+                        z.write(p, rel)
+            if verbose and removed:
+                _print_warn(f"trimmed {len(removed)} files to honor max size")
+
+    if flatten and staging_root != source_dir:
+        shutil.rmtree(staging_root, ignore_errors=True)
+
+    if verbose:
+        _print_stat("Zip complete", str(output_zip))
 
 
 # =====================================================================================
-# Gemini helpers (legacy names kept for tests)
+# Gemini analysis
 # =====================================================================================
 
-def _git_commit_snapshot(repo_root: Path, limit: int | None) -> str:
-    """
-    Return a concise commit history (messages + dates). If git missing or not a repo,
-    return empty string.
-    """
+def _spinner(stop_event: threading.Event, label: str = "Running Gemini") -> None:
+    frames = "|/-\\"
+    i = 0
+    start = time.time()
+    while not stop_event.is_set():
+        elapsed = int(time.time() - start)
+        msg = f"\r{cfmt(frames[i % len(frames)], 'cyan')} {label}… {elapsed}s"
+        sys.stdout.write(msg)
+        sys.stdout.flush()
+        time.sleep(0.15)
+        i += 1
+    # clear line
+    sys.stdout.write("\r" + " " * 60 + "\r")
+    sys.stdout.flush()
+
+
+def _git_commit_snapshot(repo_root: Path, limit: Optional[int]) -> str | None:
     try:
-        subprocess.run(["git", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        cmd = ["git", "log", "--pretty=format:%h %ad %s", "--date=short"]
+        if limit:
+            cmd.extend(["-n", str(limit)])
+        cp = subprocess.run(cmd, cwd=str(repo_root), capture_output=True, text=True)
+        if cp.returncode == 0 and cp.stdout.strip():
+            return cp.stdout.strip()
     except Exception:
-        return ""
-    try:
-        args = ["git", "-C", str(repo_root), "log", "--date=short", "--pretty=format:%h %ad %an %s"]
-        if limit and limit > 0:
-            args[5:5] = [f"-n{limit}"]
-        cp = subprocess.run(args, capture_output=True, text=True, check=True)
-        return cp.stdout.strip()
-    except Exception:
-        return ""
+        pass
+    return None
+
+
+def prepare_analysis_workspace(
+    source_dir: Path,
+    exclude_dirs: Set[str],
+    exclude_exts: Set[str],
+    exclude_files: Set[str],
+    remove_patterns: List[str],
+    keep_patterns: List[str],
+    verbose: bool,
+) -> Path:
+    """
+    Copy filtered tree into a temporary workspace for Gemini CLI to analyze.
+    """
+    exclusion = Exclusion(set(exclude_dirs), set(exclude_exts), set(exclude_files), list(remove_patterns), list(keep_patterns))
+    ws = Path(tempfile.mkdtemp(prefix="llm_ws_"))
+
+    if verbose:
+        _print_header("Generating analysis workspace...")
+
+    for r, dirs, files in os.walk(source_dir):
+        root_path = Path(r)
+        rel_dir = _relpath(root_path, source_dir)
+        # Prune & mirror directories
+        pruned: List[str] = []
+        for d in list(dirs):
+            rel_d = _relpath(root_path / d, source_dir)
+            if exclusion.dir_is_excluded(rel_d):
+                pruned.append(d)
+                if verbose:
+                    _print_skip(rel_d, "excluded dir")
+        for d in pruned:
+            dirs.remove(d)
+        # Ensure mirrored directory exists in ws
+        target_dir = ws / (rel_dir if rel_dir != "." else "")
+        target_dir.mkdir(parents=True, exist_ok=True)
+        # Copy files
+        for f in files:
+            src = root_path / f
+            rel = _relpath(src, source_dir)
+            if exclusion.file_is_excluded(rel):
+                if verbose:
+                    _print_skip(rel, "excluded")
+                continue
+            dst = target_dir / f
+            try:
+                shutil.copy2(src, dst)
+            except Exception as e:
+                if verbose:
+                    _print_warn(f"copy failed {rel}: {e}")
+
+    return ws
 
 
 def run_gemini_analysis(
@@ -569,225 +635,220 @@ def run_gemini_analysis(
     model_name: str,
     analysis_outfile: Path,
     include_commits: bool,
-    commit_limit: int | None,
+    commit_limit: Optional[int],
     show_memory: bool,
     verbose: bool,
 ) -> int:
     """
-    Launch Gemini CLI in non-interactive mode with --all-files.
-    Writes stdout to analysis_outfile and returns the process rc.
+    Execute 'gemini' CLI with all-files flag and optional commit history.
+    Shows a spinner while the subprocess runs so the UI isn't "frozen".
     """
-    filtered_workspace = Path(filtered_workspace).resolve()
-    analysis_outfile = Path(analysis_outfile).resolve()
-    analysis_outfile.parent.mkdir(parents=True, exist_ok=True)
-
-    # Optional commit snapshot visible to the model
     if include_commits:
         snap = _git_commit_snapshot(filtered_workspace, commit_limit)
         if snap:
-            (filtered_workspace / "COMMIT_HISTORY_FOR_LLM.md").write_text(snap, encoding="utf-8")
+            (filtered_workspace / "COMMIT_HISTORY_FOR_LLM.md").write_text(snap)
 
-    cmd = ["gemini"]
+    cmd = [
+        "gemini", 
+        "--all-files",
+        "--model", model_name,
+        "--output", str(analysis_outfile),
+    ]
     if show_memory:
         cmd.append("--show-memory-usage")
-    # Minimal prompt; tests only assert flags & model presence
-    cmd += ["-m", model_name, "--all-files", "-i", "Analyze repository"]
 
     if verbose:
-        # Keep quiet; tests don't assert printing of the command itself.
-        pass
+        _print_header("Starting Gemini CLI")
+        _print_stat("CWD", str(filtered_workspace))
+        _print_stat("Model", model_name)
+        _print_stat("Output", str(analysis_outfile))
 
-    cp = subprocess.run(cmd, cwd=str(filtered_workspace), capture_output=True, text=True)
-    # Always write stdout
-    analysis_outfile.write_text(cp.stdout or "", encoding="utf-8")
+    stop = threading.Event()
+    t = threading.Thread(target=_spinner, args=(stop, "Gemini analysis"), daemon=True)
+    t.start()
+    try:
+        cp = subprocess.run(cmd, cwd=str(filtered_workspace), capture_output=True, text=True)
+    finally:
+        stop.set()
+        t.join()
+
+    # Always write whatever stdout produced; helpful for debugging
+    try:
+        if cp.stdout:
+            Path(analysis_outfile).write_text(cp.stdout)
+    except Exception as e:
+        if verbose:
+            _print_warn(f"could not write analysis output: {e}")
+
+    if cp.returncode != 0:
+        _print_err(f"Gemini exited with {cp.returncode}")
+        if verbose and cp.stderr:
+            _print_err(cp.stderr)
+    else:
+        if verbose:
+            _print_ok("Gemini analysis complete")
+
     return cp.returncode
-
-
-def prepare_analysis_workspace(
-    source_dir: Path,
-    exclude_dirs: set[str],
-    exclude_exts: set[str],
-    exclude_files: set[str],
-    remove_patterns: list[str],
-    keep_patterns: list[str],
-    verbose: bool = False
-) -> Path:
-    """
-    Copy the repo into a temporary workspace and prune with the same exclusion logic.
-    Also adds a simple workspace README.
-    """
-    source_dir = Path(source_dir).resolve()
-    ws_root = source_dir.parent / f"_gemini_ws_{source_dir.name}_{os.getpid()}"
-    shutil.copytree(source_dir, ws_root, dirs_exist_ok=True)
-
-    # Prune
-    for p in list(ws_root.rglob("*")):
-        rel = _rel_posix(ws_root, p)
-        if p.is_dir():
-            parts = _path_parts(rel)
-            if any(part in exclude_dirs for part in parts) or any(fnmatch.fnmatch(part, pat) for part in parts for pat in exclude_dirs) or _matches_any(exclude_dirs, rel):
-                shutil.rmtree(p, ignore_errors=True)
-                if verbose:
-                    print(f"Removed dir: {p}")
-            continue
-
-        if is_excluded(rel, exclude_dirs, exclude_exts, exclude_files, remove_patterns, keep_patterns):
-            try:
-                p.unlink()
-                if verbose:
-                    print(f"Removed file: {p}")
-            except FileNotFoundError:
-                pass
-
-    (ws_root / "LLM_WORKSPACE_README.txt").write_text(
-        "This is a temporary workspace curated for LLM analysis.\n"
-        "It mirrors the source tree minus excluded artifacts.\n",
-        encoding="utf-8"
-    )
-    if verbose:
-        print(f"Prepared analysis workspace: {ws_root}")
-    return ws_root
 
 
 # =====================================================================================
 # CLI
 # =====================================================================================
 
-def _build_arg_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        description="Package a folder for LLMs (zip and/or text) with optional Gemini analysis."
-    )
-
-    # Single-letter short flags only
-    p.add_argument("-S", "--source", required=True, help="Folder to process")
-    p.add_argument("-O", "--output", required=True, help="Base output path (e.g., out, out.zip, out.txt)")
-
-    # Output modes
-    p.add_argument("-T", "--text", action="store_true", help="Produce a consolidated text file")
-    p.add_argument("-Z", "--zip", action="store_true", help="Produce a zip file (default if neither mode set)")
-
-    # Filtering
-    p.add_argument("-D", "--exclude-dir", nargs="*", default=list(DEFAULT_EXCLUDE_DIRS),
-                   help="Directory names or globs to exclude (match on basename or relpath)")
-    p.add_argument("-E", "--exclude-ext", nargs="*", default=list(DEFAULT_EXCLUDE_EXTS),
-                   help="File extensions to exclude (e.g., .o .so)")
-    p.add_argument("-x", "--exclude-file", nargs="*", default=list(DEFAULT_EXCLUDE_FILES),
-                   help="Specific filenames to exclude (exact or glob)")
-    p.add_argument("-i", "--include-file", nargs="*", default=[],
-                   help="Force-include filenames (removed from exclude-file list)")
-    p.add_argument("-r", "--remove-patterns", nargs="*", default=[],
-                   help="Glob patterns applied to basenames/relpaths to remove")
-    p.add_argument("-k", "--keep-patterns", nargs="*", default=[],
-                   help="Glob patterns that override ALL removals")
-    p.add_argument("-P", "--preset", choices=PRESETS.keys(), help="Language/framework preset (e.g., python)")
-
-    # Zip options
-    p.add_argument("-m", "--max-size", type=int, help="Max zip size in MB (prunes working copy if exceeded)")
-    p.add_argument("-c", "--preferences", nargs="*", default=[],
-                   help="Preferred file extensions to delete first when pruning (e.g., .log .dat)")
-
-    # Formatting
-    p.add_argument("-a", "--flatten", action="store_true", help="Flatten directory structure before packaging")
-    p.add_argument("-n", "--name-by-path", action="store_true", help="In flatten mode, include original path in filename")
-
-    # Gemini
-    p.add_argument("-G", "--gemini", action="store_true", help="Run Gemini analysis over a filtered workspace")
-    p.add_argument("-g", "--gemini-model", default="flash",
-                   help="Model shorthand: 'flash' or 'pro', or a full model id (default: flash)")
-    p.add_argument("-C", "--gemini-commits-analyze", action="store_true",
-                   help="Include recent commit history snapshot for analysis")
-    p.add_argument("-l", "--gemini-commits-limit", type=int, default=20,
-                   help="Limit number of commits for snapshot")
-    p.add_argument("-U", "--gemini-output", default="", help="Write Gemini analysis here (default '<base>-gemini.md')")
-    p.add_argument("-W", "--gemini-keep-workspace", action="store_true", help="Keep temporary Gemini workspace")
-
-    p.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
-    return p
-
-
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = _build_arg_parser()
-    args = parser.parse_args(argv)
+    p = argparse.ArgumentParser(description="Package a repo for LLMs and optionally run Gemini analysis.")
+    p.add_argument("source", help="Source folder to package")
+    p.add_argument("-o", "--output", "-O", help="Output base path (no extension needed)", default=None)
 
-    run_text = args.text
-    run_zip = args.zip or not run_text  # default to zip when neither selected
+    p.add_argument("-f", "--file-mode", action="store_true", help="Write consolidated text file")
+    p.add_argument("-z", "--zip-mode", action="store_true", help="Write zip file")
 
-    # Apply preset
-    final_exclude_files = set(args.exclude_file) - set(args.include_file)
-    final_exclude_dirs = set(args.exclude_dir)
-    final_exclude_exts = set(args.exclude_ext)
-    final_remove_patterns = list(args.remove_patterns)
-    final_keep_patterns = list(args.keep_patterns)
+    p.add_argument("-x", "--exclude-dir", action="append", default=[], help="Exclude directory (repeatable)")
+    p.add_argument("-e", "--exclude-ext", action="append", default=[], help="Exclude extension with dot (repeatable)")
+    p.add_argument("-X", "--exclude-file", action="append", default=[], help="Exclude filename (repeatable)")
+    p.add_argument("-I", "--include-file", action="append", default=[], help="Force-include filename (repeatable)")
+    p.add_argument("-R", "--remove-pattern", action="append", default=[], help="Remove pattern (fnmatch) (repeatable)")
+    p.add_argument("-K", "--keep-pattern", action="append", default=[], help="Keep pattern (fnmatch) (repeatable)")
 
-    if args.preset:
-        preset = PRESETS[args.preset]
-        final_exclude_dirs.update(preset.get("dirs", set()))       # type: ignore[arg-type]
-        final_exclude_exts.update(preset.get("exts", set()))       # type: ignore[arg-type]
-        final_exclude_files.update(preset.get("files", set()))     # type: ignore[arg-type]
-        final_remove_patterns.extend(preset.get("patterns", []))   # type: ignore[arg-type]
+    p.add_argument("-m", "--max-size", type=int, default=None, help="Max zip size in MiB (best-effort)")
+    p.add_argument("-p", "--preferences", default="", help="Comma list of preferred extensions to trim first")
 
-    # Resolve outputs
-    output_arg = Path(args.output)
-    output_dir = output_arg.parent if output_arg.parent != Path("") else Path(".")
+    p.add_argument("-F", "--flatten", action="store_true", help="Flatten files into a staging dir before packaging")
+    p.add_argument("-N", "--name-by-path", action="store_true", help="When flattening, rename files by path")
+    p.add_argument("-v", "--verbose", action="store_true", help="Verbose progress output")
+
+    p.add_argument("-P", "--preset", choices=sorted(PRESETS.keys()), help="Language preset (github-style)")
+
+    p.add_argument("-G", "--gemini", action="store_true", help="Run Gemini CLI analysis on filtered workspace")
+    p.add_argument("-M", "--model", default="gemini-2.5-flash", help="Gemini model")
+    p.add_argument("-C", "--include-commits", action="store_true", help="Include a compact commit snapshot")
+    p.add_argument("-L", "--commit-limit", type=int, default=20, help="Limit number of commits included")
+    p.add_argument("-S", "--show-memory", action="store_true", help="Show memory usage in Gemini CLI")
+
+    args = p.parse_args(argv)
+
+    source_dir = Path(args.source).resolve()
+    if not source_dir.is_dir():
+        _print_err(f"Source is not a directory: {source_dir}")
+        return 2
+
+    # Determine what to produce
+    run_file_mode = args.file_mode
+    run_zip_mode = args.zip_mode
+    if not run_file_mode and not run_zip_mode:
+        run_zip_mode = True  # default
+
+    # Output naming
+    output_base = args.output or (source_dir.name)
+    output_path = Path(output_base)
+    output_dir = output_path.parent if output_path.parent != Path("") else Path.cwd()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if output_arg.name.startswith(".") and not output_arg.stem.startswith("."):
-        base_name = output_arg.name
+    if output_path.name.startswith('.') and not output_path.stem.startswith('.'):
+        base_name = output_path.name
     else:
-        base_name = output_arg.stem if output_arg.stem else output_arg.name
+        base_name = output_path.stem if output_path.stem else output_path.name
 
-    text_out: Optional[Path] = None
-    zip_out: Optional[Path] = None
+    # Build exclusion sets
+    final_exclude_dirs = set(DEFAULT_EXCLUDE_DIRS)
+    final_exclude_exts = set(DEFAULT_EXCLUDE_EXTS)
+    final_exclude_files = set(DEFAULT_EXCLUDE_FILES)
+    final_remove_patterns = []
 
-    if run_text and run_zip:
-        suf = output_arg.suffix.lower()
-        if suf == ".txt":
-            text_out = output_arg
-            zip_out = output_dir / (base_name + ".zip")
-        elif suf == ".zip":
-            zip_out = output_arg
-            text_out = output_dir / (base_name + ".txt")
+    if args.preset:
+        ps = PRESETS[args.preset]
+        final_exclude_dirs.update(ps.get("dirs", set()))
+        final_exclude_exts.update(ps.get("exts", set()))
+        final_exclude_files.update(ps.get("files", set()))
+        final_remove_patterns.extend(ps.get("patterns", []))
+
+    # Apply CLI excludes
+    final_exclude_dirs.update(args.exclude_dir or [])
+    final_exclude_exts.update(args.exclude_ext or [])
+    final_exclude_files.update(args.exclude_file or [])
+    final_remove_patterns.extend(args.remove_pattern or [])
+    final_keep_patterns = list(args.keep_pattern or [])
+
+    # Force-include files (remove from exclude set)
+    final_exclude_files -= set(args.include_file or [])
+
+    # Preferences list
+    preferences = [s.strip() for s in (args.preferences or "").split(",") if s.strip()]
+
+    # Create outputs
+    actual_text = None
+    actual_zip = None
+
+    if run_file_mode and run_zip_mode:
+        # two outputs, infer extensions if not provided
+        # decide based on given extension
+        suffix = output_path.suffix.lower()
+        if suffix == ".txt":
+            actual_text = output_dir / output_path.name
+            actual_zip = output_dir / (base_name + ".zip")
+        elif suffix == ".zip":
+            actual_zip = output_dir / output_path.name
+            actual_text = output_dir / (base_name + ".txt")
         else:
-            text_out = output_dir / (base_name + ".txt")
-            zip_out = output_dir / (base_name + ".zip")
-    elif run_text:
-        text_out = output_dir / (base_name + ".txt") if output_arg.suffix.lower() != ".txt" else output_arg
-    else:
-        zip_out = output_dir / (base_name + ".zip") if output_arg.suffix.lower() != ".zip" else output_arg
+            actual_text = output_dir / (base_name + ".txt")
+            actual_zip = output_dir / (base_name + ".zip")
+    elif run_file_mode:
+        actual_text = output_dir / (base_name + ".txt")
+    elif run_zip_mode:
+        actual_zip = output_dir / (base_name + ".zip")
 
-    # Execute modes
-    if text_out:
+    if args.verbose:
+        _print_header("Packaging parameters")
+        _print_stat("Preset", args.preset or "(none)")
+        _print_stat("Exclude dirs", str(len(final_exclude_dirs)))
+        _print_stat("Exclude exts", str(len(final_exclude_exts)))
+        _print_stat("Exclude files", str(len(final_exclude_files)))
+        if final_remove_patterns:
+            _print_stat("Remove patterns", ", ".join(final_remove_patterns))
+        if final_keep_patterns:
+            _print_stat("Keep patterns", ", ".join(final_keep_patterns))
+
+    if actual_text:
         text_file_mode(
-            args.source, str(text_out),
+            str(source_dir), str(actual_text),
             final_exclude_dirs, final_exclude_exts, final_exclude_files,
             final_remove_patterns, final_keep_patterns,
             args.flatten, args.name_by_path, args.verbose
         )
-
-    if zip_out:
+    if actual_zip:
         zip_folder(
-            args.source, str(zip_out),
+            str(source_dir), str(actual_zip),
             final_exclude_dirs, final_exclude_exts, final_exclude_files,
             final_remove_patterns, final_keep_patterns,
-            args.max_size, args.preferences,
+            args.max_size, preferences,
             args.flatten, args.name_by_path, args.verbose
         )
 
-    # Optional Gemini analysis — use the workspace as-is (no extra filtering here)
+    # Gemini analysis (on a filtered workspace)
     if args.gemini:
-        model = args.gemini_model
-        report_path = Path(args.gemini_output) if args.gemini_output else (output_dir / f"{base_name}-gemini.md")
-        rc = run_gemini_analysis(
-            filtered_workspace=Path(args.source),
-            model_name=("gemini-2.5-flash" if model.lower() == "flash" else ("gemini-2.5-pro" if model.lower() == "pro" else model)),
-            analysis_outfile=report_path,
-            include_commits=args.gemini_commits_analyze,
-            commit_limit=args.gemini_commits_limit,
-            show_memory=args.verbose,
-            verbose=args.verbose,
-        )
-        if args.verbose:
-            print(f"Gemini CLI exited with {rc}")
+        ws = None
+        try:
+            ws = prepare_analysis_workspace(
+                source_dir,
+                final_exclude_dirs, final_exclude_exts, final_exclude_files,
+                final_remove_patterns, final_keep_patterns,
+                verbose=args.verbose,
+            )
+            out_md = output_dir / (base_name + ".md")
+            rc = run_gemini_analysis(
+                filtered_workspace=ws,
+                model_name=args.model,
+                analysis_outfile=out_md,
+                include_commits=args.include_commits,
+                commit_limit=args.commit_limit,
+                show_memory=args.show_memory,
+                verbose=args.verbose,
+            )
+            if args.verbose:
+                _print_stat("Gemini return code", str(rc))
+        finally:
+            if ws:
+                shutil.rmtree(ws, ignore_errors=True)
 
     return 0
 

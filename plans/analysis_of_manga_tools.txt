@@ -1,3 +1,11 @@
+downloads_dlpn/manga-mgmt/model_manager/model_manager.py
+downloads_dlpn/manga-mgmt/poptags.json
+downloads_dlpn/manga-mgmt/quantize-manga.py
+downloads_dlpn/manga-mgmt/scrape-nhentai-tags.py
+downloads_dlpn/manga-mgmt/summarize-manga.py
+downloads_dlpn/nhentai-dl/dlnh.py
+downloads_dlpn/nhentai-dl/dlnhv2.py
+
 # Analysis of nhentai-dl and manga-mgmt
 
 ## High-Level Summary
