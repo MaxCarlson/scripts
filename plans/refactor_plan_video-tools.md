@@ -7,6 +7,7 @@
 - `downloads_dlpn/scripts/video_processor.py`
 - `downloads_dlpn/scripts/video_cleaner.py`
 - `pyscripts/edit_video_file.py`
+- `pyscripts/video_dedupe.py`
 - `downloads_dlpn/scripts/shortest.py`
 
 ### Execution Plan:

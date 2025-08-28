@@ -16,8 +16,10 @@
 3.  **Update All Dependencies:**
     -   Perform a project-wide search for the string `from cross_platform`.
     -   For each file that imports from the old module, update the import statements to point to the new location within `system_tools`. For example, `from cross_platform.clipboard_utils import set_clipboard` would become `from system_tools.core.clipboard_utils import set_clipboard` (or similar, depending on the final structure).
-4.  **Run All Tests:** Execute the entire test suite for the whole project to ensure that the import refactoring has not broken any functionality.
-5.  **Deprecate and Delete:** Once all dependencies have been updated and all tests pass, delete the entire `modules/cross_platform/` directory.
+4.  **Absorb Standalone Utilities**:
+    -   Incorporate the logic from `pscripts/link_creator.py` into the `system_tools` module, likely within the `file_system` sub-package, to provide a unified way of handling file links.
+5.  **Run All Tests:** Execute the entire test suite for the whole project to ensure that the import refactoring has not broken any functionality.
+6.  **Deprecate and Delete:** Once all dependencies have been updated and all tests pass, delete the entire `modules/cross_platform/` directory.
 
 ### Files to Delete Post-Refactoring:
 
