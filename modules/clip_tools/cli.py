@@ -47,6 +47,34 @@ console_err = Console(stderr=True)
 WHOLE_WRAP_HEADER_MARKER = "WHOLE_CLIPBOARD_CONTENT_BLOCK_V1"
 
 
+class RealSysAPI:
+    """
+    Real system adapter that uses the project's backends.
+    This provides a consistent interface for both the application and tests.
+    """
+    def __init__(self):
+        self._system_utils = None
+        self._tmux_manager = None
+
+    def get_clipboard(self) -> str:
+        return get_clipboard()
+
+    def set_clipboard(self, text: str) -> None:
+        set_clipboard(text)
+
+    def is_tmux(self) -> bool:
+        # Lazy load
+        if self._system_utils is None:
+            self._system_utils = SystemUtilsAdapter()
+        return self._system_utils.is_tmux()
+
+    def tmux_capture_pane(self, start_line: str = "-10000") -> Optional[str]:
+        # Lazy load
+        if self._tmux_manager is None:
+            self._tmux_manager = TmuxManagerAdapter()
+        return self._tmux_manager.capture_pane(start_line=start_line)
+
+
 # =====================================================================================
 # Helpers reused by subcommands
 # =====================================================================================
@@ -102,15 +130,15 @@ def _extract_payload_from_single_script_generated_block(block_text: str) -> str:
 # Subcommand implementations
 # =====================================================================================
 
-def cmd_append(file_path: str, no_stats: bool) -> int:
+def cmd_append(args, sys_api) -> int:
     stats = {}
     code = 0
     try:
-        path = Path(file_path)
+        path = Path(args.file)
         stats["File Path"] = str(path.resolve())
 
         try:
-            clip = get_clipboard()
+            clip = sys_api.get_clipboard()
         except NotImplementedError:
             stats["Error"] = "Clipboard get not implemented"
             console_err.print("[bold red][ERROR] Clipboard functionality not implemented.[/]")
@@ -120,7 +148,7 @@ def cmd_append(file_path: str, no_stats: bool) -> int:
             console_err.print(f"[bold red][ERROR] {stats['Error']}[/]")
             return 1
 
-        if not clip:
+        if not clip or clip.strip() == "":
             stats["Clipboard Status"] = "Empty"
             console_err.print("Clipboard is empty. Aborting.")
             code = 0
@@ -148,16 +176,16 @@ def cmd_append(file_path: str, no_stats: bool) -> int:
                 console_err.print(f"[bold red][ERROR] {stats['Error']}[/]")
                 code = 1
     finally:
-        if not no_stats:
+        if not args.no_stats:
             _print_stats_table("append (clip_tools) Statistics", stats)
     return code
 
 
-def cmd_diff(file_path: str, context_lines: int, similarity: float, loc_warn: int, no_stats: bool) -> int:
+def cmd_diff(args, sys_api) -> int:
     stats = {}
     code = 0
     try:
-        path = Path(file_path)
+        path = Path(args.file)
         stats["File Path"] = str(path.resolve())
 
         try:
@@ -170,7 +198,7 @@ def cmd_diff(file_path: str, context_lines: int, similarity: float, loc_warn: in
             return 1
 
         try:
-            clip = get_clipboard()
+            clip = sys_api.get_clipboard()
         except NotImplementedError:
             stats["Error"] = "Clipboard get not implemented"
             console_err.print("[bold red][ERROR] Clipboard functionality not implemented.[/]")
@@ -193,7 +221,7 @@ def cmd_diff(file_path: str, context_lines: int, similarity: float, loc_warn: in
             fromfile=f"file: {path}",
             tofile="clipboard",
             lineterm="",
-            n=context_lines
+            n=args.context_lines
         )
 
         has_diff = False
@@ -217,18 +245,18 @@ def cmd_diff(file_path: str, context_lines: int, similarity: float, loc_warn: in
 
         loc_difference = abs(len(file_lines) - len(clip_lines))
         stats["LOC Difference"] = loc_difference
-        if loc_difference > loc_warn:
-            msg = f"Large LOC difference detected ({loc_difference} lines)."
-            console_out.print(f"[orange3]{msg}[/]")
+        if loc_difference > args.loc_diff_warn:
+            msg = f"Warning: Large LOC delta detected ({loc_difference} lines)."
+            console_err.print(f"[orange3]{msg}[/]")
             stats["LOC Difference Warning"] = "Issued"
 
         ratio = difflib.SequenceMatcher(None, "\n".join(file_lines), "\n".join(clip_lines)).ratio()
         stats["Similarity Ratio"] = f"{ratio:.2f}"
-        if ratio < similarity:
-            console_out.print(f"[yellow]Note: Very dissimilar (ratio {ratio:.2f}).[/]")
+        if ratio < args.similarity_threshold:
+            console_err.print(f"[yellow]Warning: Low similarity (ratio {ratio:.2f}).[/]")
             stats["Dissimilarity Note"] = "Issued"
     finally:
-        if not no_stats:
+        if not args.no_stats:
             _print_stats_table("diff (clip_tools) Statistics", stats)
     return code
 
@@ -286,14 +314,14 @@ def _replace_python_block(lines: List[str], name: str, new_block: str) -> Tuple[
     return updated, stats
 
 
-def cmd_replace_block(file_path: str, no_stats: bool) -> int:
+def cmd_replace_block(args, sys_api) -> int:
     stats = {}
     code = 0
     try:
-        path = Path(file_path)
+        path = Path(args.file)
         stats["File Path"] = str(path.resolve())
         try:
-            clip = get_clipboard()
+            clip = sys_api.get_clipboard()
         except NotImplementedError:
             stats["Error"] = "Clipboard get not implemented."
             console_err.print(f"[bold red][ERROR] {stats['Error']}[/]")
@@ -332,18 +360,19 @@ def cmd_replace_block(file_path: str, no_stats: bool) -> int:
             stats["Error"] = f"Error writing to file '{path}': {e}"
             console_err.print(f"[bold red][ERROR] {stats['Error']}[/]")
             code = 1
+    except SystemExit as e:
+        return e.code
     finally:
-        if not no_stats:
+        if not args.no_stats:
             _print_stats_table("replace-block (clip_tools) Statistics", stats)
     return code
 
 
-def cmd_copy_buffer(full: bool, no_stats: bool) -> int:
+def cmd_copy_buffer(args, sys_api) -> int:
     stats = {}
     code = 0
     try:
-        sysu = SystemUtilsAdapter()
-        if not sysu.is_tmux():
+        if not sys_api.is_tmux():
             stats["Environment"] = "Not a tmux session"
             msg = "This command is designed to run inside a tmux session."
             stats["Error"] = msg
@@ -351,8 +380,7 @@ def cmd_copy_buffer(full: bool, no_stats: bool) -> int:
             return 1
 
         stats["Environment"] = "tmux session detected"
-        tmux = TmuxManagerAdapter()
-        buf = tmux.capture_pane(start_line='-10000')
+        buf = sys_api.tmux_capture_pane(start_line='-10000')
         if buf is None:
             stats["Buffer Capture"] = "Failed"
             console_err.print("[bold red][ERROR] Failed to capture tmux pane buffer.[/]")
@@ -362,7 +390,7 @@ def cmd_copy_buffer(full: bool, no_stats: bool) -> int:
         stats["Raw Buffer Chars"] = len(buf)
         stats["Raw Buffer Lines"] = len(buf.splitlines())
 
-        if full:
+        if args.full:
             stats["Mode"] = "Full Buffer"
             text = buf
         else:
@@ -385,22 +413,22 @@ def cmd_copy_buffer(full: bool, no_stats: bool) -> int:
             console_err.print("[INFO] No content to copy after processing.")
             stats["Clipboard Action"] = "Skipped (no content)"
         else:
-            set_clipboard(final)
+            sys_api.set_clipboard(final)
             console_err.print(f"[INFO] Copied {stats['Final Text Lines']} lines ({stats['Final Text Chars']} chars) to clipboard.")
             stats["Clipboard Action"] = "Success"
-            code = 0
+        code = 0
     except Exception as e:
         stats["Error"] = f"Unexpected error: {e}"
         console_err.print(f"[bold red][ERROR] {stats['Error']}[/]")
         code = 1
     finally:
-        if not no_stats:
+        if not args.no_stats:
             _print_stats_table("copy-buffer (clip_tools) Statistics", stats)
     return code
 
 
-def cmd_copy_log(lines: int, no_stats: bool) -> int:
-    stats = {"Lines Requested": lines}
+def cmd_copy_log(args, sys_api) -> int:
+    stats = {"Lines Requested": args.lines}
     code = 0
     try:
         shlvl = os.environ.get("SHLVL", "N/A")
@@ -415,15 +443,15 @@ def cmd_copy_log(lines: int, no_stats: bool) -> int:
             return 1
 
         all_lines = log_file.read_text(encoding="utf-8").splitlines()
-        out_lines = all_lines if lines >= len(all_lines) else all_lines[-lines:]
+        out_lines = all_lines if args.lines >= len(all_lines) else all_lines[-args.lines:]
         text = "\n".join(out_lines).strip()
 
         if not text:
-            console_out.print(f"Log file '{log_file}' yielded no content for the last {lines} lines.")
+            console_out.print(f"Log file '{log_file}' yielded no content for the last {args.lines} lines.")
             stats["Content Status"] = "None"
             return 0
 
-        set_clipboard(text)
+        sys_api.set_clipboard(text)
         console_out.print(f"Last {len(out_lines)} lines from SHLVL={shlvl} log copied to clipboard.")
         stats["Lines Copied"] = len(out_lines)
         stats["Characters Copied"] = len(text)
@@ -434,45 +462,36 @@ def cmd_copy_log(lines: int, no_stats: bool) -> int:
         console_err.print(f"[bold red][ERROR] {stats['Error']}[/]")
         code = 1
     finally:
-        if not no_stats:
+        if not args.no_stats:
             _print_stats_table("copy-log (clip_tools) Statistics", stats)
     return code
 
 
-def cmd_copy(
-    files: List[str],
-    raw_copy: bool,
-    wrap: bool,
-    whole_wrap: bool,
-    show_full_path: bool,
-    append: bool,
-    override_append_wrapping: bool,
-    no_stats: bool
-) -> int:
+def cmd_copy(args, sys_api) -> int:
     stats = {}
     code = 0
     try:
-        if override_append_wrapping and not append:
+        if args.override_append_wrapping and not args.append:
             console_err.print("[bold red][ERROR] --override-append-wrapping (-o) can only be used with --append (-a).[/]")
             return 1
 
-        file_paths = [Path(p) for p in files]
+        file_paths = [Path(p) for p in args.files]
         current_dir = Path.cwd()
 
         # Determine mode (replicates original behavior)
-        if raw_copy:
+        if args.raw_copy:
             mode = "raw_explicit"
-        elif wrap:
+        elif args.wrap:
             mode = "individual_wrap"
-        elif whole_wrap:
+        elif args.whole_wrap:
             mode = "whole_wrap"
         elif len(file_paths) > 1:
             mode = "individual_wrap_multi_default"
         else:
             mode = "raw_single_default"
         stats["Effective New Content Mode"] = mode
-        stats["Append Mode"] = "Enabled" if append else "Disabled"
-        stats["Override Append Wrapping"] = "Enabled" if override_append_wrapping else "Disabled"
+        stats["Append Mode"] = "Enabled" if args.append else "Disabled"
+        stats["Override Append Wrapping"] = "Enabled" if args.override_append_wrapping else "Disabled"
 
         parts = []
         success_count = 0
@@ -500,14 +519,14 @@ def cmd_copy(
         elif mode in ["individual_wrap", "individual_wrap_multi_default"]:
             blocks = []
             for path_obj, content in parts:
-                header = _generate_file_header(path_obj, show_full_path, current_dir)
+                header = _generate_file_header(path_obj, args.show_full_path, current_dir)
                 blocks.append(f"{header}\n```\n{content}\n```")
             new_text = "\n\n".join(blocks)
             stats["Mode Description"] = "Individually wrapped files" + (" (multiple files default)" if mode.endswith("multi_default") else " (due to --wrap)")
         else:  # whole_wrap
             inner = []
             for path_obj, content in parts:
-                header = _generate_file_header(path_obj, show_full_path, current_dir)
+                header = _generate_file_header(path_obj, args.show_full_path, current_dir)
                 inner.append(f"{header}\n{content}")
             payload = "\n\n---\n\n".join(inner)
             new_text = f"{WHOLE_WRAP_HEADER_MARKER}\n```\n{payload}\n```"
@@ -516,9 +535,9 @@ def cmd_copy(
         final_text = new_text
         original = None
 
-        if append:
+        if args.append:
             try:
-                original = get_clipboard()
+                original = sys_api.get_clipboard()
                 stats["Original Clipboard Read For Append"] = "Success"
             except Exception as e:
                 stats["Original Clipboard Read For Append"] = f"Failed ({type(e).__name__})"
@@ -527,7 +546,7 @@ def cmd_copy(
                 stats["Append Action"] = "Normal copy (original clipboard was empty)"
             else:
                 payload = new_text
-                if override_append_wrapping:
+                if args.override_append_wrapping:
                     final_text = original.rstrip('\n') + '\n\n' + payload
                     stats["Append Action"] = "General append after original (override active)"
                 else:
@@ -563,7 +582,7 @@ def cmd_copy(
         stats["Lines in Clipboard Payload"] = lines
         stats["Characters in Clipboard Payload"] = chars
 
-        set_clipboard(final_text)
+        sys_api.set_clipboard(final_text)
         console_err.print(f"[INFO] Attempting to copy to clipboard ({lines} lines, {chars} chars).")
         stats["Clipboard Action Status"] = "Set Succeeded"
         code = 0
@@ -572,17 +591,17 @@ def cmd_copy(
         console_err.print(f"[bold red][ERROR] {stats['Error']}[/]")
         code = 1
     finally:
-        if not no_stats:
+        if not args.no_stats:
             _print_stats_table("copy (clip_tools) Statistics", stats)
     return code
 
 
-def cmd_paste(file_path: Optional[str], no_stats: bool) -> int:
+def cmd_paste(args, sys_api) -> int:
     stats = {}
     code = 0
     try:
         try:
-            clip = get_clipboard()
+            clip = sys_api.get_clipboard()
         except NotImplementedError:
             stats["Error"] = "Clipboard get not implemented."
             console_err.print(f"[bold red][ERROR] {stats['Error']}[/]")
@@ -599,7 +618,7 @@ def cmd_paste(file_path: Optional[str], no_stats: bool) -> int:
 
         stats["Clipboard Content"] = f"{len(clip)} chars, {len(clip.splitlines())} lines"
 
-        if file_path is None:
+        if args.file is None:
             stats["Operation Mode"] = "Print to stdout"
             sys.stdout.write(clip)
             sys.stdout.flush()
@@ -608,7 +627,7 @@ def cmd_paste(file_path: Optional[str], no_stats: bool) -> int:
             code = 0
         else:
             stats["Operation Mode"] = "Replace file content"
-            path = Path(file_path)
+            path = Path(args.file)
             stats["File Path"] = str(path.resolve())
             created_new = False
             if not path.exists():
@@ -638,34 +657,35 @@ def cmd_paste(file_path: Optional[str], no_stats: bool) -> int:
         console_err.print(f"[bold red][ERROR] {stats['Error']}[/]")
         code = 1
     finally:
-        if not no_stats:
+        if not args.no_stats:
             # If printing to stdout, direct stats to stderr (to match old behavior).
-            _print_stats_table("paste (clip_tools) Statistics", stats, to_stderr=(file_path is None))
+            _print_stats_table("paste (clip_tools) Statistics", stats, to_stderr=(args.file is None))
     return code
 
 
-def cmd_run(command_parts: Optional[List[str]], replay_n: Optional[int], wrap: bool, no_stats: bool) -> int:
+def cmd_run(args, sys_api) -> int:
     stats = {}
     code = 0
     try:
-        if command_parts and not (len(command_parts) == 1 and command_parts[0] == "--"):
+        cmd_str = None
+        if args.command_and_args and not (len(args.command_and_args) == 1 and args.command_and_args[0] == "--"):
             stats["Mode"] = "Direct Command Execution"
-            cmd_str = " ".join(command_parts)
+            cmd_str = " ".join(args.command_and_args)
             stats["Provided Command"] = cmd_str
-        elif replay_n is not None:
-            stats["Mode"] = f"Replay History (N={replay_n})"
-            if replay_n <= 0:
+        elif args.replay_n is not None:
+            stats["Mode"] = f"Replay History (N={args.replay_n})"
+            if args.replay_n <= 0:
                 stats["Error"] = "Value for --replay-history (-r) must be positive."
                 console_err.print(f"[bold red][ERROR] {stats['Error']}[/]")
                 return 1
 
-            console_err.print(f"[INFO] Attempting to replay history entry N={replay_n}...")
+            console_err.print(f"[INFO] Attempting to replay history entry N={args.replay_n}...")
             hist = HistoryUtilsAdapter()
-            last_cmd = hist.get_nth_recent_command(replay_n)
-            stats["History Fetch Attempted For N"] = replay_n
+            last_cmd = hist.get_nth_recent_command(args.replay_n)
+            stats["History Fetch Attempted For N"] = args.replay_n
 
             if not last_cmd:
-                stats["Error"] = f"Failed to retrieve the {replay_n}th command from history."
+                stats["Error"] = f"Failed to retrieve the {args.replay_n}th command from history."
                 stats["History Command Found"] = "No"
                 console_err.print(f"[bold red][ERROR] {stats['Error']}[/]")
                 if hist.shell_type == "unknown":
@@ -690,7 +710,7 @@ def cmd_run(command_parts: Optional[List[str]], replay_n: Optional[int], wrap: b
                     is_self = True
 
             if is_self:
-                stats["Error"] = f"Loop detected: History entry N={replay_n} ('{last_cmd}') is this script. Aborting."
+                stats["Error"] = f"Loop detected: History entry N={args.replay_n} ('{last_cmd}') is this script. Aborting."
                 console_err.print(f"[bold red][WARNING] {stats['Error']}[/]")
                 return 1
 
@@ -710,7 +730,14 @@ def cmd_run(command_parts: Optional[List[str]], replay_n: Optional[int], wrap: b
                 console_err.print("[INFO] User cancelled re-run.")
                 return 0
         else:
-            stats["Error"] = "No command provided and no replay triggered."
+            # Default to replay N=1 if no command is given
+            stats["Mode"] = "Replay History (N=1, default)"
+            args.replay_n = 1
+            return cmd_run(args, sys_api)
+
+
+        if cmd_str is None:
+            stats["Error"] = "No command to execute."
             console_err.print("[bold red][ERROR] Internal Error: No command to execute.[/]")
             return 1
 
@@ -730,14 +757,14 @@ def cmd_run(command_parts: Optional[List[str]], replay_n: Optional[int], wrap: b
             stats["Characters Copied"] = 0
             return 0
 
-        if wrap:
+        if args.wrap:
             header = f"$ {cmd_str}"
             out = f"{header}\n```\n{out}\n```"
             stats["Wrapping Mode"] = "Wrapped (command + code block)"
         else:
             stats["Wrapping Mode"] = "Raw"
 
-        set_clipboard(out)
+        sys_api.set_clipboard(out)
         console_out.print("Copied command output to clipboard.")
         stats["Output Status"] = "Copied"
         stats["Lines Copied"] = len(out.splitlines())
@@ -750,7 +777,7 @@ def cmd_run(command_parts: Optional[List[str]], replay_n: Optional[int], wrap: b
         console_err.print(f"[bold red]{stats['Error']}[/]")
         code = 1
     finally:
-        if not no_stats:
+        if not args.no_stats:
             _print_stats_table("run (clip_tools) Statistics", stats, to_stderr=True)
     return code
 
@@ -771,7 +798,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("append", help="Append clipboard to a file.")
     sp.add_argument("file", help="Target file path.")
     sp.add_argument("--no-stats", "-N", action="store_true", help="Suppress statistics output.")
-    sp.set_defaults(func=lambda a: cmd_append(a.file, a.no_stats))
+    sp.set_defaults(func=lambda args, api: cmd_append(args, api))
 
     # diff
     sp = sub.add_parser("diff", help="Diff clipboard with a file.")
@@ -780,25 +807,25 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("-t", "--similarity-threshold", type=float, default=0.75, help="Similarity threshold (0.0-1.0).")
     sp.add_argument("-L", "--loc-diff-warn", type=int, default=50, help="Warn if LOC difference exceeds this.")
     sp.add_argument("--no-stats", "-N", action="store_true", help="Suppress statistics output.")
-    sp.set_defaults(func=lambda a: cmd_diff(a.file, a.context_lines, a.similarity_threshold, a.loc_diff_warn, a.no_stats))
+    sp.set_defaults(func=lambda args, api: cmd_diff(args, api))
 
     # replace-block
     sp = sub.add_parser("replace-block", help="Replace a Python def/class in file with clipboard block.")
     sp.add_argument("file", help="Target Python file.")
     sp.add_argument("--no-stats", "-N", action="store_true", help="Suppress statistics output.")
-    sp.set_defaults(func=lambda a: cmd_replace_block(a.file, a.no_stats))
+    sp.set_defaults(func=lambda args, api: cmd_replace_block(args, api))
 
     # copy-buffer
     sp = sub.add_parser("copy-buffer", help="Copy terminal scrollback (tmux) to clipboard.")
     sp.add_argument("-f", "--full", action="store_true", help="Copy the entire scrollback buffer.")
     sp.add_argument("--no-stats", "-N", action="store_true", help="Suppress statistics output.")
-    sp.set_defaults(func=lambda a: cmd_copy_buffer(a.full, a.no_stats))
+    sp.set_defaults(func=lambda args, api: cmd_copy_buffer(args, api))
 
     # copy-log
     sp = sub.add_parser("copy-log", help="Copy last N lines from current shell session log to clipboard.")
     sp.add_argument("-n", "--lines", type=int, default=10, help="Number of lines to copy (default: 10).")
     sp.add_argument("--no-stats", "-N", action="store_true", help="Suppress statistics output.")
-    sp.set_defaults(func=lambda a: cmd_copy_log(a.lines, a.no_stats))
+    sp.set_defaults(func=lambda args, api: cmd_copy_log(args, api))
 
     # copy
     sp = sub.add_parser("copy", help="Copy file(s) to clipboard with flexible wrapping and append options.")
@@ -812,15 +839,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("-o", "--override-append-wrapping", action="store_true",
                     help="With -a, append after existing clipboard using the new content's own format (skip smart insert).")
     sp.add_argument("--no-stats", "-N", action="store_true", help="Suppress statistics output.")
-    sp.set_defaults(func=lambda a: cmd_copy(
-        a.files, a.raw_copy, a.wrap, a.whole_wrap, a.show_full_path, a.append, a.override_append_wrapping, a.no_stats
-    ))
+    sp.set_defaults(func=lambda args, api: cmd_copy(args, api))
 
     # paste
     sp = sub.add_parser("paste", help="Replace file with clipboard contents or print clipboard if no file given.")
     sp.add_argument("file", nargs="?", default=None, help="Target file (optional). If omitted, prints to stdout.")
     sp.add_argument("--no-stats", "-N", action="store_true", help="Suppress statistics output.")
-    sp.set_defaults(func=lambda a: cmd_paste(a.file, a.no_stats))
+    sp.set_defaults(func=lambda args, api: cmd_paste(args, api))
 
     # run
     sp = sub.add_parser("run", help="Run a command and copy its output to clipboard.")
@@ -830,9 +855,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-stats", "-N", action="store_true", help="Suppress statistics output.")
     sp.add_argument("command_and_args", nargs=argparse.REMAINDER,
                     help="Command to execute (prefix with '--' if it begins with '-')")
-    sp.set_defaults(func=lambda a: cmd_run(
-        a.command_and_args if a.command_and_args else None, a.replay_n, a.wrap, a.no_stats
-    ))
+    sp.set_defaults(func=lambda args, api: cmd_run(args, api))
 
     return p
 
@@ -840,8 +863,25 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return args.func(args)  # type: ignore
+    sys_api = RealSysAPI()
+    return args.func(args, sys_api)
 
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# --- Legacy Aliases ---
+# apc -> append
+# cld -> diff
+# crx -> replace-block
+# cb2c -> copy-buffer
+# cb2cf -> copy-buffer -f
+# c2c -> copy
+# c2cd -> copy -w
+# c2cr -> copy -r
+# c2ca -> copy -a
+# rwc -> paste
+# otc -> run
+# otcw -> run -w
+# ----------------------

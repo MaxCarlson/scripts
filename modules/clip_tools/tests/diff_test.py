@@ -7,7 +7,7 @@ def test_diff_shows_changes_and_stats(tmp_path, fake_sysapi, ns, capsys):
     f.write_text("a\nb\nc\n")
     fake_sysapi.set_clipboard("a\nB\nc\n")
 
-    args = ns(file=str(f), context=3, warn_loc_delta=50, warn_similarity=0.1, no_stats=False)
+    args = ns(file=str(f), context_lines=3, loc_diff_warn=50, similarity_threshold=0.1, no_stats=False)
     rc = cli.cmd_diff(args, fake_sysapi)
     assert rc == 0
     captured = capsys.readouterr()
@@ -21,9 +21,10 @@ def test_diff_warnings(tmp_path, fake_sysapi, ns, capsys):
     f.write_text("one\n")
     fake_sysapi.set_clipboard("x\n" * 200)  # large difference
 
-    args = ns(file=str(f), context=1, warn_loc_delta=3, warn_similarity=0.99, no_stats=False)
+    args = ns(file=str(f), context_lines=1, loc_diff_warn=3, similarity_threshold=0.99, no_stats=False)
     rc = cli.cmd_diff(args, fake_sysapi)
     assert rc == 0
     captured = capsys.readouterr()
     assert "Warning: Large LOC delta" in captured.err
     assert "Warning: Low similarity" in captured.err
+
