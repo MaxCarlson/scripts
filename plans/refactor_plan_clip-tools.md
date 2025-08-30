@@ -1,6 +1,3 @@
-modules/cross_platform/clipboard_utils.py
-modules/cross_platform/tests/clipboard_utils_test.py
-modules/system_tools/core/clipboard_utils.py
 pyscripts/append_clipboard.py
 pyscripts/clipboard_diff.py
 pyscripts/clipboard_replace.py
