@@ -1,3 +1,7 @@
+downloads_dlpn/manga-mgmt/model_manager/model_manager.py
+downloads_dlpn/manga-mgmt/quantize-manga.py
+downloads_dlpn/manga-mgmt/summarize-manga.py
+
 # Refactoring Plan: Manga Analyzer
 
 **Goal:** Create a dedicated project for the AI-powered manga analysis suite, to be named `manga-analyzer` and located in `pyprjs/`.

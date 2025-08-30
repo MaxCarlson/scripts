@@ -1,3 +1,14 @@
+downloads_dlpn/scripts/shortest.py
+downloads_dlpn/scripts/video_cleaner.py
+downloads_dlpn/scripts/video_processor.py
+pyscripts/edit_video_file.py
+pyscripts/tests/edit_video_file_test.py
+pyscripts/tests/video_dedupe_apply_report_test.py
+pyscripts/tests/video_dedupe_iter_files_test.py
+pyscripts/tests/video_dedupe_test.py
+pyscripts/tests/video_processory_test.py
+pyscripts/video_dedupe.py
+
 # Refactoring Plan: Video Tools
 
 **Goal:** Consolidate all video post-processing scripts into a single, coherent CLI tool named `video-tools` under `pyprjs`.

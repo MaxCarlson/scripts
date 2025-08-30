@@ -1,3 +1,18 @@
+pscripts/phonetopc/rsynctransfer-test.py
+pscripts/phonetopc/rsynctransfer.py
+pscripts/phonetopc/rsynctransfer.sh
+pscripts/phonetopc/rsynctransfer2.sh
+pscripts/phonetopc/rsynctransfer3.sh
+pscripts/phonetopc/rsynctransfer4.sh
+pscripts/termux/rsyncAndroidToSlice.sh
+pscripts/termux/rsyncInternal.py
+pscripts/termux/rsyncInternal.sh
+pscripts/termux/rsync_final.py
+pscripts/termux/tests/rsync_final_test.py
+pyscripts/git_sync.py
+pyscripts/tests/git_sync_test.py
+shell-scripts/copyrsync.sh
+
 # Refactoring Plan: Sync Tool
 
 **Goal:** Unify all file synchronization scripts into a single, portable Python-based tool named `sync-tool` under `pyprjs`.
@@ -9,6 +24,9 @@
   - `pyscripts/git_sync.py`
   - `pscripts/termux/rsyncInternal.py`
   - `pscripts/termux/rsync_final.py`
+  - `pscripts/termux/rsync_last.py`
+  - `pscripts/termux/rsync_last2.py`
+  - `pscripts/termux/rsync_last3.py`
 - **Shell Scripts to be Replaced:**
   - `pscripts/phonetopc/rsynctransfer.sh`
   - `pscripts/phonetopc/rsynctransfer2.sh`

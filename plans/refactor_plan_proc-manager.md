@@ -1,3 +1,5 @@
+downloads_dlpn/scripts/ProcessManager.py
+
 # Refactoring Plan: Process Manager
 
 **Goal:** Establish the process manager script as a standalone, reusable project named `proc-manager` under `pyprjs`.

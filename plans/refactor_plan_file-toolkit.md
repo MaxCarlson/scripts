@@ -1,3 +1,26 @@
+downloads_dlpn/scripts/scan-downloads.py
+downloads_dlpn/scripts/scan_by_date.py
+downloads_dlpn/tests/scan_by_date_test.py
+modules/file_utils/duplicate_finder.py
+modules/file_utils/file_manager.py
+modules/file_utils/file_organizer.py
+modules/file_utils/file_utils.py
+modules/file_utils/utils.py
+pscripts/video/FileMerger.py
+pyscripts/deduplicator.py
+pyscripts/delete_files.py
+pyscripts/file_kit.py
+pyscripts/folder_matcher.py
+pyscripts/folder_similarity.py
+pyscripts/folder_stats.py
+pyscripts/llm_project_parser.py
+pyscripts/repo_processor.py
+pyscripts/tests/file_kit_test.py
+pyscripts/tests/folder_stats_test.py
+pyscripts/tests/repo_processor_test.py
+pyscripts/tests/zip_for_llms_test.py
+pyscripts/zip_for_llms.py
+
 # Refactoring Plan: File Toolkit
 
 **Goal:** Consolidate all file/folder scanning, analysis, and manipulation scripts into a single, powerful CLI tool named `file-toolkit` under `pyprjs`.
