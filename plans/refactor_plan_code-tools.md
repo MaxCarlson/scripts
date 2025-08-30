@@ -1,3 +1,13 @@
+modules/code_tools/func_replacer.py
+modules/code_tools/rgcodeblock_cli.py
+modules/code_tools/rgcodeblock_lib/extractors.py
+modules/code_tools/rgcodeblock_lib/language_defs.py
+modules/code_tools/tests/test_func_replacer.py
+modules/code_tools/tests/test_rgcodeblock_cli.py
+modules/code_tools/tests/test_rgcodeblock_lib_extractors.py
+pyscripts/rgcode.py
+pyscripts/unpaired_finder.py
+
 <!--
 This plan outlines the consolidation of various code-related scripts into a single project.
 

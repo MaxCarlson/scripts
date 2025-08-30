@@ -1,3 +1,26 @@
+downloads_dlpn/manga-mgmt/scrape-nhentai-tags.py
+downloads_dlpn/nhentai-dl/dlnh.py
+downloads_dlpn/nhentai-dl/dlnhv2.py
+downloads_dlpn/scripts/aebndl_dlpn.py
+downloads_dlpn/scripts/roundrr.py
+downloads_dlpn/scripts/roundrobin_ytdlp.py
+downloads_dlpn/tests/aebndl_dlpn_test.py
+pscripts/images/dl-mangadex-old.py
+pscripts/images/dl-mangadex.py
+pscripts/images/hentdl.py
+pscripts/video/downloadAllPageURLs.py
+pscripts/video/expand_urls.py
+pscripts/video/m3u8_extractor2.py
+pscripts/video/m3u8_v2.py
+pscripts/video/paralleldl.py
+pscripts/video/pyppeteer_m3u8_2.py
+pscripts/video/RemainingDownloads.py
+pscripts/video/round_robin_ytdlp/round_robin_ytdlp.py
+pscripts/video/test/expand_urls_test.py
+pscripts/video/urlsize.py
+pyscripts/tests/ytdlp_cleanup_test.py
+pyscripts/ytdlp_cleanup.py
+
 # Refactoring Plan: Media Downloader
 
 **Goal:** Create a unified, extensible media downloading framework named `media-dl` under `pyprjs`.

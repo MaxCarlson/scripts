@@ -1,3 +1,38 @@
+modules/cross_platform/clipboard_utils.py
+modules/cross_platform/debug_utils.py
+modules/cross_platform/file_system_manager.py
+modules/cross_platform/history_utils.py
+modules/cross_platform/network_utils.py
+modules/cross_platform/privileges_manager.py
+modules/cross_platform/process_manager.py
+modules/cross_platform/service_manager.py
+modules/cross_platform/system_utils.py
+modules/cross_platform/tmux_utils.py
+modules/cross_platform/tests/clipboard_utils_test.py
+modules/cross_platform/tests/debug_utils_test.py
+modules/cross_platform/tests/history_utils_test.py
+modules/cross_platform/tests/network_utils_test.py
+modules/cross_platform/tests/privleges_manager_test.py
+modules/cross_platform/tests/process_manager_test.py
+modules/cross_platform/tests/system_utils_test.py
+modules/cross_platform/tests/tmux_utils_test.py
+modules/system_tools/cli.py
+modules/system_tools/core/clipboard_utils.py
+modules/system_tools/core/debug_utils.py
+modules/system_tools/core/system_utils.py
+modules/system_tools/file_system/file_system_manager.py
+modules/system_tools/network/network_utils.py
+modules/system_tools/privileges/privileges_manager.py
+modules/system_tools/process/process_manager.py
+modules/system_tools/process/service_manager.py
+modules/system_tools/system_info/cli.py
+modules/system_tools/system_info/linux_info.py
+modules/system_tools/system_info/mac_info.py
+modules/system_tools/system_info/termux_info.py
+modules/system_tools/system_info/windows_info.py
+modules/system_tools/tests/test_cross_platform.py
+pscripts/link_creator.py
+
 # Refactoring Plan: System Tools Consolidation
 
 **Goal:** Finalize the refactoring of `cross_platform` into `system_tools`, making `system_tools` the single, unified module for core platform utilities that all other projects will depend on.
