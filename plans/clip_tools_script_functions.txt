@@ -1,0 +1,126 @@
+**Functionalities of scripts for `pyprjs/clip-tools`:**
+
+---
+
+**1. `pyscripts/append_clipboard.py`**
+*   **Purpose:** Appends the current content of the system clipboard to a specified file.
+*   **Key Functionalities:**
+    *   Retrieves text from the system clipboard.
+    *   Appends the retrieved text (prefixed with a newline) to the end of a target file.
+    *   Creates the target file if it does not exist.
+    *   Provides detailed statistics about the operation (file path, clipboard status, characters/lines appended, outcome).
+    *   Handles errors related to clipboard access and file writing.
+    *   Supports suppressing statistics output.
+
+---
+
+**2. `pyscripts/clipboard_diff.py`**
+*   **Purpose:** Compares the content of the system clipboard with a specified file and displays the differences.
+*   **Key Functionalities:**
+    *   Reads content from a specified file.
+    *   Retrieves text from the system clipboard.
+    *   Performs a unified diff between the file content and clipboard content.
+    *   Highlights differences using rich console formatting (red for removed, green for added, cyan for context).
+    *   Calculates and displays statistics including:
+        *   File Lines of Code (LOC) and Clipboard LOC.
+        *   Absolute LOC difference.
+        *   Similarity ratio between the file and clipboard content.
+    *   Issues warnings for large LOC differences or very dissimilar content based on configurable thresholds.
+    *   Handles errors related to file reading and clipboard access.
+    *   Supports configurable context lines for the diff output.
+    *   Supports suppressing statistics output.
+
+---
+
+**3. `pyscripts/clipboard_replace.py`**
+*   **Purpose:** Replaces a Python function or class block within a specified Python file with content from the clipboard. The function/class to replace is identified from the clipboard content itself.
+*   **Key Functionalities:**
+    *   Retrieves Python code from the system clipboard.
+    *   Extracts the name of the function or class from the clipboard content.
+    *   Locates the corresponding function or class block (including decorators) in the target Python file.
+    *   Replaces the identified block with the clipboard content.
+    *   Handles cases where the function/class is not found or multiple definitions exist.
+    *   Provides statistics about the operation (file path, clipboard content details, lines in original/updated block, outcome).
+    *   Handles errors related to clipboard access, file reading/writing, and code parsing.
+    *   Supports suppressing statistics output.
+
+---
+
+**4. `pyscripts/copy_buffer_to_clipboard.py`**
+*   **Purpose:** Copies the current terminal scrollback buffer (or a portion of it) to the system clipboard. Primarily designed for use within a tmux session.
+*   **Key Functionalities:**
+    *   Detects if running within a tmux session.
+    *   Captures the tmux pane scrollback buffer.
+    *   Supports copying the full buffer or content since the last `clear` command.
+    *   Identifies and removes `clear` escape sequences from the buffer.
+    *   Copies the processed text to the system clipboard.
+    *   Provides statistics about the buffer capture and clipboard action (raw buffer size, final text size, mode, success/failure).
+    *   Handles errors related to tmux interaction and clipboard setting.
+    *   Supports suppressing statistics output.
+
+---
+
+**5. `pyscripts/copy_log_to_clipboard.py`**
+*   **Purpose:** Copies the last N lines from the current shell session's log file (based on `SHLVL`) to the system clipboard.
+*   **Key Functionalities:**
+    *   Determines the current session's log file path based on the `SHLVL` environment variable.
+    *   Reads the content of the log file.
+    *   Extracts the last N lines from the log file.
+    *   Copies the extracted lines to the system clipboard.
+    *   Provides statistics about the operation (log file path, lines/characters copied, SHLVL).
+    *   Handles cases where the log file is not found or is empty.
+    *   Handles errors related to file reading and clipboard setting.
+    *   Supports configurable number of lines to copy.
+    *   Supports suppressing statistics output.
+
+---
+
+**6. `pyscripts/copy_to_clipboard.py`**
+*   **Purpose:** Copies content from one or more specified files to the system clipboard, with various formatting and appending options.
+*   **Key Functionalities:**
+    *   Reads content from multiple specified files.
+    *   Supports different formatting modes for the copied content:
+        *   Raw concatenation of file contents.
+        *   Individual wrapping of each file's content with its name and code fences.
+        *   Wrapping all combined content in a single marked block.
+    *   Supports including full absolute paths in headers for wrapped content.
+    *   Supports appending new content to existing clipboard content.
+    *   Provides "smart append" logic to integrate new content into existing wrapped blocks (e.g., `WHOLE_CLIPBOARD_CONTENT_BLOCK_V1`).
+    *   Supports overriding smart append for simple concatenation.
+    *   Verifies clipboard content after setting (if `get_clipboard` is implemented).
+    *   Provides detailed statistics about the operation (files processed, mode, append status, lines/characters in payload, clipboard action status).
+    *   Handles errors related to file reading and clipboard access.
+    *   Supports suppressing statistics output.
+
+---
+
+**7. `pyscripts/output_to_clipboard.py`**
+*   **Purpose:** Executes a shell command and copies its combined stdout/stderr output to the system clipboard. Can also replay a command from shell history.
+*   **Key Functionalities:**
+    *   Executes a direct shell command provided as arguments.
+    *   Supports replaying the Nth most recent command from shell history (with user confirmation).
+    *   Captures both standard output and standard error of the executed command.
+    *   Wraps the command output in a code block with the command string as a header (optional).
+    *   Copies the processed output to the system clipboard.
+    *   Includes loop prevention for history replay to avoid re-executing itself.
+    *   Provides statistics about the command execution and clipboard action (command executed, exit status, output length, success/failure).
+    *   Handles errors related to command execution, history access, and clipboard setting.
+    *   Supports suppressing statistics output.
+
+---
+
+**8. `pyscripts/replace_with_clipboard.py`**
+*   **Purpose:** Replaces the content of a specified file with the current content of the system clipboard. If no file is specified, it prints the clipboard content to stdout.
+*   **Key Functionalities:**
+    *   Retrieves text from the system clipboard.
+    *   If a file path is provided:
+        *   Replaces the entire content of the specified file with the clipboard data.
+        *   Creates the file if it does not exist.
+        *   Provides statistics about the file replacement (original content size, characters/lines written, file action).
+    *   If no file path is provided:
+        *   Prints the clipboard content directly to standard output.
+        *   Provides statistics about the content printed.
+    *   Handles errors related to clipboard access and file writing/reading.
+    *   Supports suppressing statistics output.
+
+---

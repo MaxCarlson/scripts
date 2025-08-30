@@ -1,0 +1,707 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.11, pytest-8.3.4, pluggy-1.5.0
+rootdir: /data/data/com.termux/files/home/scripts/modules/clip_tools
+configfile: pyproject.toml
+plugins: anyio-4.9.0, libtmux-0.46.2, mock-3.14.0, asyncio-1.0.0, cov-6.2.1
+asyncio: mode=Mode.STRICT, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 26 items
+
+tests/append_test.py FF                                                  [  7%]
+tests/copt_test.py FFFFFF                                                [ 30%]
+tests/copy_buffer_test.py FFF                                            [ 42%]
+tests/copy_log_test.py F.                                                [ 50%]
+tests/diff_test.py FF                                                    [ 57%]
+tests/paste_test.py FF                                                   [ 65%]
+tests/replace_block_test.py FFFF                                         [ 80%]
+tests/run_test.py FFFFF                                                  [100%]
+
+=================================== FAILURES ===================================
+_______________________ test_append_creates_and_appends ________________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_append_creates_and_append0')
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c79a6f0>
+ns = <function ns.<locals>.<lambda> at 0x6e6c7a8540>
+capsys = <_pytest.capture.CaptureFixture object at 0x6e6c79a720>
+
+    def test_append_creates_and_appends(tmp_path, fake_sysapi, ns, capsys):
+        target = tmp_path / "out.txt"
+        fake_sysapi.set_clipboard("foo\nbar")
+    
+        args = ns(file=str(target), no_stats=False)
+>       rc = cli.cmd_append(args, fake_sysapi)
+
+tests/append_test.py:11: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+cli.py:109: in cmd_append
+    path = Path(file_path)
+../../../../usr/lib/python3.12/pathlib.py:1162: in __init__
+    super().__init__(*args)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <[AttributeError("'PosixPath' object has no attribute '_raw_paths'") raised in repr()] PosixPath object at 0x6e6c7a0900>
+args = (namespace(file='/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_append_creates_and_append0/out.txt', no_stats=False),)
+paths = []
+arg = namespace(file='/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_append_creates_and_append0/out.txt', no_stats=False)
+path = namespace(file='/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_append_creates_and_append0/out.txt', no_stats=False)
+
+    def __init__(self, *args):
+        paths = []
+        for arg in args:
+            if isinstance(arg, PurePath):
+                if arg._flavour is not self._flavour:
+                    # GH-103631: Convert separators for backwards compatibility.
+                    paths.append(arg.as_posix())
+                else:
+                    paths.extend(arg._raw_paths)
+            else:
+                try:
+                    path = os.fspath(arg)
+                except TypeError:
+                    path = arg
+                if not isinstance(path, str):
+>                   raise TypeError(
+                        "argument should be a str or an os.PathLike "
+                        "object where __fspath__ returns a str, "
+                        f"not {type(path).__name__!r}")
+E                   TypeError: argument should be a str or an os.PathLike object where __fspath__ returns a str, not 'SimpleNamespace'
+
+../../../../usr/lib/python3.12/pathlib.py:373: TypeError
+_______________________ test_append_empty_clipboard_noop _______________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_append_empty_clipboard_no0')
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c79bbf0>
+ns = <function ns.<locals>.<lambda> at 0x6e6c7aaac0>
+capsys = <_pytest.capture.CaptureFixture object at 0x6e6c79bb60>
+
+    def test_append_empty_clipboard_noop(tmp_path, fake_sysapi, ns, capsys):
+        target = tmp_path / "out.txt"
+        fake_sysapi.set_clipboard("   \n   ")  # whitespace only -> strip becomes empty in cmd
+        args = ns(file=str(target), no_stats=False)
+>       rc = cli.cmd_append(args, fake_sysapi)
+
+tests/append_test.py:30: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+cli.py:109: in cmd_append
+    path = Path(file_path)
+../../../../usr/lib/python3.12/pathlib.py:1162: in __init__
+    super().__init__(*args)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <[AttributeError("'PosixPath' object has no attribute '_raw_paths'") raised in repr()] PosixPath object at 0x6e6c7e3290>
+args = (namespace(file='/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_append_empty_clipboard_no0/out.txt', no_stats=False),)
+paths = []
+arg = namespace(file='/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_append_empty_clipboard_no0/out.txt', no_stats=False)
+path = namespace(file='/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_append_empty_clipboard_no0/out.txt', no_stats=False)
+
+    def __init__(self, *args):
+        paths = []
+        for arg in args:
+            if isinstance(arg, PurePath):
+                if arg._flavour is not self._flavour:
+                    # GH-103631: Convert separators for backwards compatibility.
+                    paths.append(arg.as_posix())
+                else:
+                    paths.extend(arg._raw_paths)
+            else:
+                try:
+                    path = os.fspath(arg)
+                except TypeError:
+                    path = arg
+                if not isinstance(path, str):
+>                   raise TypeError(
+                        "argument should be a str or an os.PathLike "
+                        "object where __fspath__ returns a str, "
+                        f"not {type(path).__name__!r}")
+E                   TypeError: argument should be a str or an os.PathLike object where __fspath__ returns a str, not 'SimpleNamespace'
+
+../../../../usr/lib/python3.12/pathlib.py:373: TypeError
+_____________________________ test_copy_raw_single _____________________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_copy_raw_single0')
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c79b590>
+ns = <function ns.<locals>.<lambda> at 0x6e6c7aaa20>
+capsys = <_pytest.capture.CaptureFixture object at 0x6e6c79b8f0>
+
+    def test_copy_raw_single(tmp_path, fake_sysapi, ns, capsys):
+        p = tmp_path / "a.txt"
+        p.write_text("A\n")
+        args = ns(files=[str(p)], raw_copy=True, wrap=False, whole_wrap=False,
+                  show_full_path=False, append=False, override_append_wrapping=False, no_stats=False)
+>       rc = cli.cmd_copy(args, fake_sysapi)
+E       TypeError: cmd_copy() missing 6 required positional arguments: 'wrap', 'whole_wrap', 'show_full_path', 'append', 'override_append_wrapping', and 'no_stats'
+
+tests/copt_test.py:10: TypeError
+_____________________________ test_copy_wrap_multi _____________________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_copy_wrap_multi0')
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c7fe8d0>
+ns = <function ns.<locals>.<lambda> at 0x6e6c7ab4c0>
+
+    def test_copy_wrap_multi(tmp_path, fake_sysapi, ns):
+        a = tmp_path / "a.txt"; b = tmp_path / "b.txt"
+        a.write_text("A"); b.write_text("B")
+        args = ns(files=[str(a), str(b)], raw_copy=False, wrap=True, whole_wrap=False,
+                  show_full_path=True, append=False, override_append_wrapping=False, no_stats=True)
+>       rc = cli.cmd_copy(args, fake_sysapi)
+E       TypeError: cmd_copy() missing 6 required positional arguments: 'wrap', 'whole_wrap', 'show_full_path', 'append', 'override_append_wrapping', and 'no_stats'
+
+tests/copt_test.py:21: TypeError
+_____________________________ test_copy_whole_wrap _____________________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_copy_whole_wrap0')
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c79bb30>
+ns = <function ns.<locals>.<lambda> at 0x6e6c7aaa20>
+
+    def test_copy_whole_wrap(tmp_path, fake_sysapi, ns):
+        p = tmp_path / "a.txt"; p.write_text("A")
+        args = ns(files=[str(p)], raw_copy=False, wrap=False, whole_wrap=True,
+                  show_full_path=False, append=False, override_append_wrapping=False, no_stats=True)
+>       rc = cli.cmd_copy(args, fake_sysapi)
+E       TypeError: cmd_copy() missing 6 required positional arguments: 'wrap', 'whole_wrap', 'show_full_path', 'append', 'override_append_wrapping', and 'no_stats'
+
+tests/copt_test.py:30: TypeError
+______________________ test_copy_append_smart_into_whole _______________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_copy_append_smart_into_wh0')
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c79af60>
+ns = <function ns.<locals>.<lambda> at 0x6e6c7a85e0>
+
+    def test_copy_append_smart_into_whole(tmp_path, fake_sysapi, ns):
+        # Existing clipboard has WHOLE block
+        existing = f"{cli.WHOLE_WRAP_HEADER_MARKER}\n```\nold.txt\nOLD\n```"
+        fake_sysapi.set_clipboard(existing)
+        # New file to append
+        p = tmp_path / "n.txt"; p.write_text("NEW")
+        args = ns(files=[str(p)], raw_copy=False, wrap=True, whole_wrap=False,
+                  show_full_path=False, append=True, override_append_wrapping=False, no_stats=True)
+>       rc = cli.cmd_copy(args, fake_sysapi)
+E       TypeError: cmd_copy() missing 6 required positional arguments: 'wrap', 'whole_wrap', 'show_full_path', 'append', 'override_append_wrapping', and 'no_stats'
+
+tests/copt_test.py:43: TypeError
+___________________ test_copy_append_override_simple_concat ____________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_copy_append_override_simp0')
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c7fde20>
+ns = <function ns.<locals>.<lambda> at 0x6e6c7ab7e0>
+
+    def test_copy_append_override_simple_concat(tmp_path, fake_sysapi, ns):
+        fake_sysapi.set_clipboard("EXISTING")
+        p = tmp_path / "a.txt"; p.write_text("A")
+        args = ns(files=[str(p)], raw_copy=True, wrap=False, whole_wrap=False,
+                  show_full_path=False, append=True, override_append_wrapping=True, no_stats=True)
+>       rc = cli.cmd_copy(args, fake_sysapi)
+E       TypeError: cmd_copy() missing 6 required positional arguments: 'wrap', 'whole_wrap', 'show_full_path', 'append', 'override_append_wrapping', and 'no_stats'
+
+tests/copt_test.py:54: TypeError
+_______________________ test_copy_verification_mismatch ________________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_copy_verification_mismatc0')
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c7fd370>
+ns = <function ns.<locals>.<lambda> at 0x6e6c7aab60>
+capsys = <_pytest.capture.CaptureFixture object at 0x6e6c7fe810>
+
+    def test_copy_verification_mismatch(tmp_path, fake_sysapi, ns, capsys):
+        # Force mismatch by toggling flag
+        fake_sysapi.verify_mismatch = True
+        p = tmp_path / "a.txt"; p.write_text("A")
+        args = ns(files=[str(p)], raw_copy=True, wrap=False, whole_wrap=False,
+                  show_full_path=False, append=False, override_append_wrapping=False, no_stats=False)
+>       rc = cli.cmd_copy(args, fake_sysapi)
+E       TypeError: cmd_copy() missing 6 required positional arguments: 'wrap', 'whole_wrap', 'show_full_path', 'append', 'override_append_wrapping', and 'no_stats'
+
+tests/copt_test.py:65: TypeError
+____________________________ test_copy_buffer_full _____________________________
+
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c7fc6e0>
+ns = <function ns.<locals>.<lambda> at 0x6e6c7ab9c0>
+capsys = <_pytest.capture.CaptureFixture object at 0x6e6c7fc800>
+
+    def test_copy_buffer_full(fake_sysapi, ns, capsys):
+        fake_sysapi._tmux = True
+        fake_sysapi._pane = "line1\nline2\nline3\n"
+        args = ns(full=True, no_stats=False)
+        rc = cli.cmd_copy_buffer(args, fake_sysapi)
+>       assert rc == 0
+E       assert 1 == 0
+
+tests/copy_buffer_test.py:9: AssertionError
+----------------------------- Captured stdout call -----------------------------
+[Debug] Initialized SystemUtils for OS: linux
+[Debug] is_tmux: False
+----------------------------- Captured stderr call -----------------------------
+[ERROR] This command is designed to run inside a tmux session.
+_________________________ test_copy_buffer_since_clear _________________________
+
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c6e6990>
+ns = <function ns.<locals>.<lambda> at 0x6e6c6c4040>
+
+    def test_copy_buffer_since_clear(fake_sysapi, ns):
+        fake_sysapi._tmux = True
+        # Include a "clear" marker then new content
+        fake_sysapi._pane = "old\n\x1b[H\x1b[2Jnew1\nnew2\n"
+        args = ns(full=False, no_stats=True)
+        rc = cli.cmd_copy_buffer(args, fake_sysapi)
+>       assert rc == 0
+E       assert 1 == 0
+
+tests/copy_buffer_test.py:20: AssertionError
+----------------------------- Captured stdout call -----------------------------
+[Debug] Initialized SystemUtils for OS: linux
+[Debug] is_tmux: False
+----------------------------- Captured stderr call -----------------------------
+[ERROR] This command is designed to run inside a tmux session.
+__________________________ test_copy_buffer_not_tmux ___________________________
+
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c6e78f0>
+ns = <function ns.<locals>.<lambda> at 0x6e6c6c4400>
+capsys = <_pytest.capture.CaptureFixture object at 0x6e6c6e7890>
+
+    def test_copy_buffer_not_tmux(fake_sysapi, ns, capsys):
+        fake_sysapi._tmux = False
+        args = ns(full=False, no_stats=False)
+        rc = cli.cmd_copy_buffer(args, fake_sysapi)
+        assert rc == 1
+        out = capsys.readouterr()
+>       assert "Not running inside tmux" in out.err
+E       AssertionError: assert 'Not running inside tmux' in '[ERROR] This command is designed to run inside a tmux session.\n'
+E        +  where '[ERROR] This command is designed to run inside a tmux session.\n' = CaptureResult(out='[Debug] Initialized SystemUtils for OS: linux\n[Debug] is_tmux: False\n', err='[ERROR] This command is designed to run inside a tmux session.\n').err
+
+tests/copy_buffer_test.py:29: AssertionError
+____________________________ test_copy_log_success _____________________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_copy_log_success0')
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c6e6a20>
+ns = <function ns.<locals>.<lambda> at 0x6e6c783920>
+capsys = <_pytest.capture.CaptureFixture object at 0x6e6c6e6f60>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x6e6c6e7290>
+
+    def test_copy_log_success(tmp_path, fake_sysapi, ns, capsys, monkeypatch):
+        # SHLVL=3 from autouse fixture; create corresponding log file in HOME
+        log = Path(os.path.expanduser("~")) / ".term_log.session_shlvl_3"
+        log.write_text("\n".join([f"line{i}" for i in range(10)]) + "\n")
+        args = ns(lines=4, no_stats=False)
+        rc = cli.cmd_copy_log(args, fake_sysapi)
+>       assert rc == 0
+E       assert 1 == 0
+
+tests/copy_log_test.py:12: AssertionError
+----------------------------- Captured stderr call -----------------------------
+[ERROR] Unexpected error: '>=' not supported between instances of 
+'types.SimpleNamespace' and 'int'
+______________________ test_diff_shows_changes_and_stats _______________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_diff_shows_changes_and_st0')
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c704260>
+ns = <function ns.<locals>.<lambda> at 0x6e6c6c4540>
+capsys = <_pytest.capture.CaptureFixture object at 0x6e6c704050>
+
+    def test_diff_shows_changes_and_stats(tmp_path, fake_sysapi, ns, capsys):
+        f = tmp_path / "f.txt"
+        f.write_text("a\nb\nc\n")
+        fake_sysapi.set_clipboard("a\nB\nc\n")
+    
+        args = ns(file=str(f), context=3, warn_loc_delta=50, warn_similarity=0.1, no_stats=False)
+>       rc = cli.cmd_diff(args, fake_sysapi)
+E       TypeError: cmd_diff() missing 3 required positional arguments: 'similarity', 'loc_warn', and 'no_stats'
+
+tests/diff_test.py:11: TypeError
+______________________________ test_diff_warnings ______________________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_diff_warnings0')
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c6e73e0>
+ns = <function ns.<locals>.<lambda> at 0x6e6c6c4ae0>
+capsys = <_pytest.capture.CaptureFixture object at 0x6e6c6e6ed0>
+
+    def test_diff_warnings(tmp_path, fake_sysapi, ns, capsys):
+        f = tmp_path / "f.txt"
+        f.write_text("one\n")
+        fake_sysapi.set_clipboard("x\n" * 200)  # large difference
+    
+        args = ns(file=str(f), context=1, warn_loc_delta=3, warn_similarity=0.99, no_stats=False)
+>       rc = cli.cmd_diff(args, fake_sysapi)
+E       TypeError: cmd_diff() missing 3 required positional arguments: 'similarity', 'loc_warn', and 'no_stats'
+
+tests/diff_test.py:25: TypeError
+__________________________ test_paste_to_file_creates __________________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_paste_to_file_creates0')
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6cad0260>
+ns = <function ns.<locals>.<lambda> at 0x6e6c6c5080>
+
+    def test_paste_to_file_creates(tmp_path, fake_sysapi, ns):
+        fake_sysapi.set_clipboard("hello\nworld")
+        target = tmp_path / "out.txt"
+        args = ns(file=str(target), no_stats=True)
+        rc = cli.cmd_paste(args, fake_sysapi)
+>       assert rc == 0
+E       assert 1 == 0
+
+tests/paste_test.py:10: AssertionError
+----------------------------- Captured stdout call -----------------------------
+[Debug] Initialized SystemUtils for OS: linux
+[Debug] is_termux: True
+[Information] Using Termux clipboard retrieval.
+[Debug] Running command: termux-clipboard-get
+[Debug] Command succeeded: termux-clipboard-get
+----------------------------- Captured stderr call -----------------------------
+[ERROR] Unexpected error: argument should be a str or an os.PathLike object 
+where __fspath__ returns a str, not 'SimpleNamespace'
+___________________________ test_paste_print_stdout ____________________________
+
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c706090>
+ns = <function ns.<locals>.<lambda> at 0x6e6c6c5580>
+capsys = <_pytest.capture.CaptureFixture object at 0x6e6c7060f0>
+
+    def test_paste_print_stdout(fake_sysapi, ns, capsys):
+        fake_sysapi.set_clipboard("X\nY")
+        args = ns(file=None, no_stats=False)
+        rc = cli.cmd_paste(args, fake_sysapi)
+>       assert rc == 0
+E       assert 1 == 0
+
+tests/paste_test.py:17: AssertionError
+----------------------------- Captured stdout call -----------------------------
+[Debug] Initialized SystemUtils for OS: linux
+[Debug] is_termux: True
+[Information] Using Termux clipboard retrieval.
+[Debug] Running command: termux-clipboard-get
+[Debug] Command succeeded: termux-clipboard-get
+----------------------------- Captured stderr call -----------------------------
+[ERROR] Unexpected error: argument should be a str or an os.PathLike object 
+where __fspath__ returns a str, not 'SimpleNamespace'
+_____________________ test_replace_function_with_decorator _____________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_replace_function_with_dec0')
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c6e7080>
+ns = <function ns.<locals>.<lambda> at 0x6e6c6c5260>
+
+    def test_replace_function_with_decorator(tmp_path, fake_sysapi, ns):
+        src = tmp_path / "mod.py"
+        src.write_text(
+            "@dec\n"
+            "def target(x):\n"
+            "    return x+1\n"
+            "\n"
+            "def other():\n"
+            "    return 0\n"
+        )
+        fake_sysapi.set_clipboard(
+            "def target(x):\n"
+            "    # replaced\n"
+            "    return x+2\n"
+        )
+        args = ns(file=str(src), no_stats=True)
+>       rc = cli.cmd_replace_block(args, fake_sysapi)
+
+tests/replace_block_test.py:21: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+cli.py:293: in cmd_replace_block
+    path = Path(file_path)
+../../../../usr/lib/python3.12/pathlib.py:1162: in __init__
+    super().__init__(*args)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <[AttributeError("'PosixPath' object has no attribute '_raw_paths'") raised in repr()] PosixPath object at 0x6e6c6453f0>
+args = (namespace(file='/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_replace_function_with_dec0/mod.py', no_stats=True),)
+paths = []
+arg = namespace(file='/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_replace_function_with_dec0/mod.py', no_stats=True)
+path = namespace(file='/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_replace_function_with_dec0/mod.py', no_stats=True)
+
+    def __init__(self, *args):
+        paths = []
+        for arg in args:
+            if isinstance(arg, PurePath):
+                if arg._flavour is not self._flavour:
+                    # GH-103631: Convert separators for backwards compatibility.
+                    paths.append(arg.as_posix())
+                else:
+                    paths.extend(arg._raw_paths)
+            else:
+                try:
+                    path = os.fspath(arg)
+                except TypeError:
+                    path = arg
+                if not isinstance(path, str):
+>                   raise TypeError(
+                        "argument should be a str or an os.PathLike "
+                        "object where __fspath__ returns a str, "
+                        f"not {type(path).__name__!r}")
+E                   TypeError: argument should be a str or an os.PathLike object where __fspath__ returns a str, not 'SimpleNamespace'
+
+../../../../usr/lib/python3.12/pathlib.py:373: TypeError
+___________________________ test_replace_class_block ___________________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_replace_class_block0')
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c704560>
+ns = <function ns.<locals>.<lambda> at 0x6e6c6c5bc0>
+
+    def test_replace_class_block(tmp_path, fake_sysapi, ns):
+        src = tmp_path / "mod.py"
+        src.write_text(
+            "class Foo:\n"
+            "    def a(self):\n"
+            "        return 1\n"
+            "\n"
+            "class Bar:\n"
+            "    pass\n"
+        )
+        fake_sysapi.set_clipboard(
+            "class Foo:\n"
+            "    def a(self):\n"
+            "        return 2\n"
+        )
+        args = ns(file=str(src), no_stats=True)
+>       rc = cli.cmd_replace_block(args, fake_sysapi)
+
+tests/replace_block_test.py:43: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+cli.py:293: in cmd_replace_block
+    path = Path(file_path)
+../../../../usr/lib/python3.12/pathlib.py:1162: in __init__
+    super().__init__(*args)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <[AttributeError("'PosixPath' object has no attribute '_raw_paths'") raised in repr()] PosixPath object at 0x6e6c645620>
+args = (namespace(file='/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_replace_class_block0/mod.py', no_stats=True),)
+paths = []
+arg = namespace(file='/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_replace_class_block0/mod.py', no_stats=True)
+path = namespace(file='/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_replace_class_block0/mod.py', no_stats=True)
+
+    def __init__(self, *args):
+        paths = []
+        for arg in args:
+            if isinstance(arg, PurePath):
+                if arg._flavour is not self._flavour:
+                    # GH-103631: Convert separators for backwards compatibility.
+                    paths.append(arg.as_posix())
+                else:
+                    paths.extend(arg._raw_paths)
+            else:
+                try:
+                    path = os.fspath(arg)
+                except TypeError:
+                    path = arg
+                if not isinstance(path, str):
+>                   raise TypeError(
+                        "argument should be a str or an os.PathLike "
+                        "object where __fspath__ returns a str, "
+                        f"not {type(path).__name__!r}")
+E                   TypeError: argument should be a str or an os.PathLike object where __fspath__ returns a str, not 'SimpleNamespace'
+
+../../../../usr/lib/python3.12/pathlib.py:373: TypeError
+____________________________ test_replace_not_found ____________________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_replace_not_found0')
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c6e7ce0>
+ns = <function ns.<locals>.<lambda> at 0x6e6c7a8540>
+capsys = <_pytest.capture.CaptureFixture object at 0x6e6c6e7b90>
+
+    def test_replace_not_found(tmp_path, fake_sysapi, ns, capsys):
+        src = tmp_path / "mod.py"
+        src.write_text("def nope():\n    return 1\n")
+        fake_sysapi.set_clipboard("def missing():\n    return 2\n")
+        args = ns(file=str(src), no_stats=False)
+>       rc = cli.cmd_replace_block(args, fake_sysapi)
+
+tests/replace_block_test.py:53: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+cli.py:293: in cmd_replace_block
+    path = Path(file_path)
+../../../../usr/lib/python3.12/pathlib.py:1162: in __init__
+    super().__init__(*args)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <[AttributeError("'PosixPath' object has no attribute '_raw_paths'") raised in repr()] PosixPath object at 0x6e6c645770>
+args = (namespace(file='/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_replace_not_found0/mod.py', no_stats=False),)
+paths = []
+arg = namespace(file='/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_replace_not_found0/mod.py', no_stats=False)
+path = namespace(file='/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_replace_not_found0/mod.py', no_stats=False)
+
+    def __init__(self, *args):
+        paths = []
+        for arg in args:
+            if isinstance(arg, PurePath):
+                if arg._flavour is not self._flavour:
+                    # GH-103631: Convert separators for backwards compatibility.
+                    paths.append(arg.as_posix())
+                else:
+                    paths.extend(arg._raw_paths)
+            else:
+                try:
+                    path = os.fspath(arg)
+                except TypeError:
+                    path = arg
+                if not isinstance(path, str):
+>                   raise TypeError(
+                        "argument should be a str or an os.PathLike "
+                        "object where __fspath__ returns a str, "
+                        f"not {type(path).__name__!r}")
+E                   TypeError: argument should be a str or an os.PathLike object where __fspath__ returns a str, not 'SimpleNamespace'
+
+../../../../usr/lib/python3.12/pathlib.py:373: TypeError
+_______________________ test_replace_multiple_defs_error _______________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_replace_multiple_defs_err0')
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c7fe870>
+ns = <function ns.<locals>.<lambda> at 0x6e6c7aac00>
+capsys = <_pytest.capture.CaptureFixture object at 0x6e6c7fc1a0>
+
+    def test_replace_multiple_defs_error(tmp_path, fake_sysapi, ns, capsys):
+        src = tmp_path / "mod.py"
+        src.write_text(
+            "def target():\n    pass\n\n"
+            "def target():\n    pass\n"
+        )
+        fake_sysapi.set_clipboard("def target():\n    return 123\n")
+        args = ns(file=str(src), no_stats=False)
+>       rc = cli.cmd_replace_block(args, fake_sysapi)
+
+tests/replace_block_test.py:66: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+cli.py:293: in cmd_replace_block
+    path = Path(file_path)
+../../../../usr/lib/python3.12/pathlib.py:1162: in __init__
+    super().__init__(*args)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <[AttributeError("'PosixPath' object has no attribute '_raw_paths'") raised in repr()] PosixPath object at 0x6e6c647bc0>
+args = (namespace(file='/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_replace_multiple_defs_err0/mod.py', no_stats=False),)
+paths = []
+arg = namespace(file='/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_replace_multiple_defs_err0/mod.py', no_stats=False)
+path = namespace(file='/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-297/test_replace_multiple_defs_err0/mod.py', no_stats=False)
+
+    def __init__(self, *args):
+        paths = []
+        for arg in args:
+            if isinstance(arg, PurePath):
+                if arg._flavour is not self._flavour:
+                    # GH-103631: Convert separators for backwards compatibility.
+                    paths.append(arg.as_posix())
+                else:
+                    paths.extend(arg._raw_paths)
+            else:
+                try:
+                    path = os.fspath(arg)
+                except TypeError:
+                    path = arg
+                if not isinstance(path, str):
+>                   raise TypeError(
+                        "argument should be a str or an os.PathLike "
+                        "object where __fspath__ returns a str, "
+                        f"not {type(path).__name__!r}")
+E                   TypeError: argument should be a str or an os.PathLike object where __fspath__ returns a str, not 'SimpleNamespace'
+
+../../../../usr/lib/python3.12/pathlib.py:373: TypeError
+_____________________________ test_run_direct_raw ______________________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x6e6c7ff590>
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c7fc380>
+ns = <function ns.<locals>.<lambda> at 0x6e6c7aa8e0>
+capsys = <_pytest.capture.CaptureFixture object at 0x6e6c7fe810>
+
+    def test_run_direct_raw(monkeypatch, fake_sysapi, ns, capsys):
+        def fake_run(cmd, shell, capture_output, text, check):
+            assert "echo raw" in cmd
+            return FakeCompleted(stdout="OUT\n", stderr="ERR\n", returncode=0)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        args = ns(replay_history=None, wrap=False, no_stats=False, command_and_args=["echo", "raw"])
+>       rc = cli.cmd_run(args, fake_sysapi)
+E       TypeError: cmd_run() missing 2 required positional arguments: 'wrap' and 'no_stats'
+
+tests/run_test.py:26: TypeError
+_____________________________ test_run_direct_wrap _____________________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x6e6c7986e0>
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c79bfb0>
+ns = <function ns.<locals>.<lambda> at 0x6e6c6c5ee0>
+
+    def test_run_direct_wrap(monkeypatch, fake_sysapi, ns):
+        def fake_run(cmd, shell, capture_output, text, check):
+            return FakeCompleted(stdout="A", stderr="", returncode=0)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        args = ns(replay_history=None, wrap=True, no_stats=True, command_and_args=["echo", "wrapped"])
+>       rc = cli.cmd_run(args, fake_sysapi)
+E       TypeError: cmd_run() missing 2 required positional arguments: 'wrap' and 'no_stats'
+
+tests/run_test.py:38: TypeError
+_________________________ test_run_nonzero_exit_warns __________________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x6e6c79b470>
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c79baa0>
+ns = <function ns.<locals>.<lambda> at 0x6e6c6c6200>
+capsys = <_pytest.capture.CaptureFixture object at 0x6e6c79bc50>
+
+    def test_run_nonzero_exit_warns(monkeypatch, fake_sysapi, ns, capsys):
+        def fake_run(cmd, shell, capture_output, text, check):
+            return FakeCompleted(stdout="ok", stderr="bad", returncode=3)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        args = ns(replay_history=None, wrap=False, no_stats=False, command_and_args=["echo", "x"])
+>       rc = cli.cmd_run(args, fake_sysapi)
+E       TypeError: cmd_run() missing 2 required positional arguments: 'wrap' and 'no_stats'
+
+tests/run_test.py:47: TypeError
+_________________ test_run_default_replay_history_confirm_yes __________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x6e6c705790>
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c704620>
+ns = <function ns.<locals>.<lambda> at 0x6e6c6c5a80>
+capsys = <_pytest.capture.CaptureFixture object at 0x6e6c706a80>
+
+    def test_run_default_replay_history_confirm_yes(monkeypatch, fake_sysapi, ns, capsys):
+        # Patch HistoryUtilsAdapter used inside cmd_run
+        monkeypatch.setattr(cli, "HistoryUtilsAdapter", lambda: FakeHistory({1: "echo hi"}))
+        # Simulate user confirming
+        monkeypatch.setattr(cli.console_err, "input", lambda prompt: "y")
+        # Patch subprocess.run
+        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: FakeCompleted(stdout="hello\n", stderr="", returncode=0))
+    
+        # No command_and_args, no -r => defaults to N=1 replay
+        args = ns(replay_history=None, wrap=False, no_stats=False, command_and_args=None)
+>       rc = cli.cmd_run(args, fake_sysapi)
+E       TypeError: cmd_run() missing 2 required positional arguments: 'wrap' and 'no_stats'
+
+tests/run_test.py:62: TypeError
+___________________________ test_run_loop_prevention ___________________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x6e6c706c30>
+fake_sysapi = <conftest.FakeSysAPI object at 0x6e6c707080>
+ns = <function ns.<locals>.<lambda> at 0x6e6c6c60c0>
+capsys = <_pytest.capture.CaptureFixture object at 0x6e6c707050>
+
+    def test_run_loop_prevention(monkeypatch, fake_sysapi, ns, capsys):
+        # Simulate history command that would call this script itself
+        script_name = "clip-tools"
+        monkeypatch.setattr(cli, "HistoryUtilsAdapter", lambda: FakeHistory({1: script_name}))
+        monkeypatch.setattr(cli.console_err, "input", lambda prompt: "y")  # confirmation won't be reached
+        args = ns(replay_history=None, wrap=False, no_stats=False, command_and_args=None)
+>       rc = cli.cmd_run(args, fake_sysapi)
+E       TypeError: cmd_run() missing 2 required positional arguments: 'wrap' and 'no_stats'
+
+tests/run_test.py:74: TypeError
+=========================== short test summary info ============================
+FAILED tests/append_test.py::test_append_creates_and_appends - TypeError: arg...
+FAILED tests/append_test.py::test_append_empty_clipboard_noop - TypeError: ar...
+FAILED tests/copt_test.py::test_copy_raw_single - TypeError: cmd_copy() missi...
+FAILED tests/copt_test.py::test_copy_wrap_multi - TypeError: cmd_copy() missi...
+FAILED tests/copt_test.py::test_copy_whole_wrap - TypeError: cmd_copy() missi...
+FAILED tests/copt_test.py::test_copy_append_smart_into_whole - TypeError: cmd...
+FAILED tests/copt_test.py::test_copy_append_override_simple_concat - TypeErro...
+FAILED tests/copt_test.py::test_copy_verification_mismatch - TypeError: cmd_c...
+FAILED tests/copy_buffer_test.py::test_copy_buffer_full - assert 1 == 0
+FAILED tests/copy_buffer_test.py::test_copy_buffer_since_clear - assert 1 == 0
+FAILED tests/copy_buffer_test.py::test_copy_buffer_not_tmux - AssertionError:...
+FAILED tests/copy_log_test.py::test_copy_log_success - assert 1 == 0
+FAILED tests/diff_test.py::test_diff_shows_changes_and_stats - TypeError: cmd...
+FAILED tests/diff_test.py::test_diff_warnings - TypeError: cmd_diff() missing...
+FAILED tests/paste_test.py::test_paste_to_file_creates - assert 1 == 0
+FAILED tests/paste_test.py::test_paste_print_stdout - assert 1 == 0
+FAILED tests/replace_block_test.py::test_replace_function_with_decorator - Ty...
+FAILED tests/replace_block_test.py::test_replace_class_block - TypeError: arg...
+FAILED tests/replace_block_test.py::test_replace_not_found - TypeError: argum...
+FAILED tests/replace_block_test.py::test_replace_multiple_defs_error - TypeEr...
+FAILED tests/run_test.py::test_run_direct_raw - TypeError: cmd_run() missing ...
+FAILED tests/run_test.py::test_run_direct_wrap - TypeError: cmd_run() missing...
+FAILED tests/run_test.py::test_run_nonzero_exit_warns - TypeError: cmd_run() ...
+FAILED tests/run_test.py::test_run_default_replay_history_confirm_yes - TypeE...
+FAILED tests/run_test.py::test_run_loop_prevention - TypeError: cmd_run() mis...
+========================= 25 failed, 1 passed in 3.19s =========================

@@ -1,0 +1,208 @@
+**Functionalities of scripts for `pyprjs/knowledge-manager`:**
+
+---
+
+**1. `modules/knowledge_manager/cli.py`**
+*   **Purpose:** Provides the command-line interface (CLI) for the Knowledge Manager application, allowing users to interact with projects and tasks.
+*   **Key Functionalities:**
+    *   **`init` command:** Initializes the SQLite database and sets up content directories for projects and tasks.
+    *   **`project` commands:**
+        *   `add`: Creates a new project with a name and optional Markdown description.
+        *   `list`: Lists all projects, with optional filtering by status.
+        *   `view`: Displays details of a specific project (by ID or name), including its description.
+    *   **`task` commands:**
+        *   `add`: Creates a new task with a title, optional project association, parent task, details, priority, and due date.
+        *   `list`: Lists tasks, with filtering by project, status, and parent task. Can include subtasks.
+        *   `view`: Displays details of a specific task, including its Markdown content.
+        *   `done`: Marks a task as completed.
+        *   `getpath`: Retrieves the file path for a task's details Markdown file.
+        *   `update`: Modifies various attributes of an existing task (title, status, priority, due date, details, project association).
+    *   **Common Arguments:** Supports a global `--data-dir` argument to override the default data storage location.
+    *   **Output:** Prints project and task details to the console in a human-readable format.
+    *   **Error Handling:** Provides user-friendly error messages for common issues (e.g., project/task not found, invalid input).
+
+---
+
+**2. `modules/knowledge_manager/db.py`**
+*   **Purpose:** Manages the SQLite database interactions for the Knowledge Manager, providing CRUD (Create, Read, Update, Delete) operations for `Project` and `Task` entities.
+*   **Key Functionalities:**
+    *   `get_db_connection`: Establishes a connection to the SQLite database, ensuring foreign key constraints are enabled.
+    *   `init_db`: Creates the `projects` and `tasks` tables if they don't exist, defining their schemas and relationships.
+    *   `get_default_db_path`: Determines the default location for the database file.
+    *   **Project CRUD:**
+        *   `add_project`: Inserts a new project record into the database.
+        *   `get_project_by_id`: Retrieves a project by its UUID.
+        *   `get_project_by_name`: Retrieves a project by its name.
+        *   `list_projects`: Fetches a list of projects, with optional filtering by status.
+        *   `update_project`: Modifies an existing project record.
+        *   `delete_project`: Deletes a project record.
+    *   **Task CRUD:**
+        *   `add_task`: Inserts a new task record into the database.
+        *   `get_task_by_id`: Retrieves a task by its UUID.
+        *   `get_tasks_by_title_prefix`: Searches for tasks by a title prefix, optionally scoped by project.
+        *   `list_tasks`: Fetches a list of tasks, with filtering by project, status, parent task, and inclusion of subtasks.
+        *   `update_task`: Modifies an existing task record.
+        *   `delete_task`: Deletes a task record.
+    *   **Data Conversion:** Handles conversion between Python `datetime`, `date`, `uuid.UUID`, `Path` objects and SQLite-compatible string/integer formats.
+
+---
+
+**3. `modules/knowledge_manager/models.py`**
+*   **Purpose:** Defines the data models for `Project` and `Task` entities, including their attributes, statuses, and methods for data validation and conversion.
+*   **Key Functionalities:**
+    *   `ProjectStatus` Enum: Defines possible statuses for a project (ACTIVE, BACKLOG, COMPLETED).
+    *   `TaskStatus` Enum: Defines possible statuses for a task (TODO, IN_PROGRESS, DONE).
+    *   `Project` dataclass:
+        *   Attributes: `id` (UUID), `name` (str), `status` (ProjectStatus), `created_at` (datetime), `modified_at` (datetime), `description_md_path` (Path).
+        *   `__post_init__`: Handles automatic conversion of string inputs to appropriate types (e.g., `str` to `ProjectStatus`, `str` to `datetime`, `str` to `Path`).
+    *   `Task` dataclass:
+        *   Attributes: `id` (UUID), `title` (str), `status` (TaskStatus), `project_id` (Optional UUID), `parent_task_id` (Optional UUID), `created_at` (datetime), `modified_at` (datetime), `completed_at` (Optional datetime), `priority` (int), `due_date` (Optional date), `details_md_path` (Path).
+        *   `__post_init__`: Handles automatic conversion of string inputs to appropriate types (e.g., `str` to `TaskStatus`, `str` to `UUID`, `str` to `datetime`, `str` to `date`, `str` to `Path`).
+
+---
+
+**4. `modules/knowledge_manager/project_ops.py`**
+*   **Purpose:** Provides higher-level operations for managing `Project` entities, abstracting direct database interactions.
+*   **Key Functionalities:**
+    *   `create_new_project`: Creates a new project, handles name uniqueness, generates UUIDs, sets timestamps, and optionally creates a Markdown description file.
+    *   `find_project`: Locates a project by its ID (UUID string or object) or by its name.
+    *   `list_all_projects`: Retrieves a list of all projects, with optional filtering by status.
+    *   `update_project_details`: Modifies a project's name, status, or description. Handles name conflicts and updates Markdown description files.
+    *   `get_project_with_details`: Fetches a project and its associated Markdown description content.
+    *   `delete_project_permanently`: Deletes a project from the database and removes its associated Markdown description file.
+    *   **Dependencies:** Uses `db.py` for database access and `utils.py` for path management, Markdown file operations, and timestamp generation.
+
+---
+
+**5. `modules/knowledge_manager/task_ops.py`**
+*   **Purpose:** Provides higher-level operations for managing `Task` entities, abstracting direct database interactions and handling complex task relationships (e.g., parent-child tasks).
+*   **Key Functionalities:**
+    *   `_resolve_project_id`: Internal helper to resolve a project identifier (ID or name) to a UUID.
+    *   `_resolve_task_id`: Internal helper to resolve a task identifier (ID or title prefix) to a UUID, handling multiple matches and project context.
+    *   `create_new_task`: Creates a new task, handling project and parent task associations, generating UUIDs, setting timestamps, and optionally creating a Markdown details file.
+    *   `find_task`: Locates a task by its ID or title prefix, optionally within a project context.
+    *   `list_all_tasks`: Retrieves a list of tasks, with filtering by project, status, parent task, and an option to include all subtasks regardless of parent.
+    *   `update_task_details_and_status`: Modifies various attributes of an existing task (title, status, priority, due date, details, project, parent task). Handles status-based `completed_at` timestamp updates.
+    *   `mark_task_status`: A convenience function to update only a task's status.
+    *   `get_task_file_path`: Retrieves the file path for a task's details Markdown file, optionally creating it if missing.
+    *   `delete_task_permanently`: Deletes a task from the database and removes its associated Markdown details file.
+    *   **Dependencies:** Uses `db.py` for database access, `utils.py` for path management, Markdown file operations, and timestamp generation, and `models.py` for data structures.
+
+---
+
+**6. `modules/knowledge_manager/tui/app.py`**
+*   **Purpose:** The main Textual TUI (Terminal User Interface) application for the Knowledge Manager. It sets up the overall application structure, manages screens, and handles global actions like adding projects.
+*   **Key Functionalities:**
+    *   **Application Setup:** Initializes the Textual `App`, defines CSS path, and sets up initial screen (`ProjectsScreen`).
+    *   **Screen Management:** Manages navigation between `ProjectsScreen` and `TasksScreen`.
+    *   **Reactive State:** Uses Textual's reactive system to manage `selected_project` and `selected_task` across screens.
+    *   **Global Actions:** Provides actions like `quit` and `add_project_prompt` (which uses an `InputDialog`).
+    *   **Event Handling:** Responds to `ListView.Selected` events to navigate to task lists or edit task details.
+    *   **Data Directory Override:** Allows specifying a custom data directory via command-line arguments.
+    *   **Logging:** Integrates with the `utils.setup_logging` for application logging.
+
+---
+
+**7. `modules/knowledge_manager/tui/km_tui.css`**
+*   **Purpose:** Defines the styling and layout for the Knowledge Manager Textual TUI application.
+*   **Key Functionalities:**
+    *   **Global Styles:** Sets background colors, text styles, and layout for `Screen` and `Header`.
+    *   **Component Styling:** Styles various Textual widgets like `Vertical`, `VerticalScroll`, `Static`, `Markdown`, `ListView`, `ListItem`, `Label`, `Input`, and `Button`.
+    *   **Layout:** Defines layout properties (e.g., `dock`, `height`, `width`, `padding`, `margin`) for containers and widgets.
+    *   **Theming:** Uses Textual's `$primary`, `$surface`, `$text`, and `$accent` variables for consistent theming.
+    *   **Specific Element Styling:** Styles elements like `view_header`, `list-item-label`, and `InputDialog` components.
+    *   **Highlighting:** Defines styles for `ListItem` highlighting (e.g., `:hover`, `--highlight`).
+
+---
+
+**8. `modules/knowledge_manager/tui/screens/projects.py`**
+*   **Purpose:** Represents the "Projects" screen within the Knowledge Manager TUI, displaying a list of projects and their details.
+*   **Key Functionalities:**
+    *   **UI Composition:** Lays out the screen with a header, a list of projects (`ProjectList`), and a detail pane (`Markdown`) for project descriptions or tasks.
+    *   **Key Bindings:** Defines keyboard shortcuts for actions like adding, editing, deleting, viewing, and reloading projects.
+    *   **Project Loading:** Loads projects using `project_ops.list_all_projects` and populates the `ProjectList` widget.
+    *   **Detail View Toggle:** Allows toggling the detail pane to show either the project's description or a list of its associated tasks.
+    *   **Project Actions:** Implements actions for adding (via `InputDialog`), editing (renaming), and deleting projects.
+    *   **Task Integration:** Displays tasks associated with the selected project within the detail pane, formatted as Markdown.
+    *   **Reactive Updates:** Reacts to changes in `selected_project` and `detail_view_mode` to update the displayed information.
+
+---
+
+**9. `modules/knowledge_manager/tui/screens/tasks.py`**
+*   **Purpose:** Represents the "Tasks" screen within the Knowledge Manager TUI, displaying a list of tasks for a specific project and their details.
+*   **Key Functionalities:**
+    *   **UI Composition:** Lays out the screen with a header, a list of tasks (`TaskList`), and a detail pane (`Markdown`) for task details.
+    *   **Key Bindings:** Defines keyboard shortcuts for actions like adding tasks/subtasks, editing details, cycling status, filtering, reparenting, deleting, and reloading tasks.
+    *   **Task Loading:** Loads tasks for the current project using `task_ops.list_all_tasks` and populates the `TaskList` widget. Supports filtering by task status.
+    *   **Task Actions:** Implements actions for adding tasks/subtasks (via `InputDialog`), editing task details (by launching an external editor), cycling task status, reparenting tasks, and deleting tasks.
+    *   **External Editor Integration:** Launches the user's configured `EDITOR` to edit task details Markdown files.
+    *   **Reparenting Logic:** Provides a workflow for changing a task's parent, allowing users to select a new parent task from the list.
+    *   **View Modes:** Supports "full" (task list only) and "split" (task list + details pane) view modes.
+    *   **Reactive Updates:** Reacts to changes in `task_filter` and `reparenting_task` to update the displayed information and footer messages.
+
+---
+
+**10. `modules/knowledge_manager/tui/widgets/dialogs.py`**
+*   **Purpose:** Provides reusable modal dialogs for user input within the Textual TUI.
+*   **Key Functionalities:**
+    *   `InputDialog`: A modal screen that prompts the user for a single line of text input.
+        *   Displays a prompt message.
+        *   Provides an input field with an optional initial value.
+        *   Includes "OK" and "Cancel" buttons.
+        *   Returns the input value (or an empty string if canceled) when dismissed.
+        *   Applies basic styling for appearance and positioning.
+
+---
+
+**11. `modules/knowledge_manager/tui/widgets/footer.py`**
+*   **Purpose:** A custom Textual widget that displays the key bindings for the currently active screen in the TUI.
+*   **Key Functionalities:**
+    *   Dynamically updates its content to reflect the `BINDINGS` of the `App`'s current screen.
+    *   Filters to show only bindings marked as `show=True`.
+    *   Formats key bindings with their descriptions (e.g., `[b u]q[/b u] Quit`).
+    *   Uses Textual's reactive system to watch for screen changes and update automatically.
+
+---
+
+**12. `modules/knowledge_manager/tui/widgets/lists.py`**
+*   **Purpose:** Provides custom Textual `ListItem` and `ListView` widgets specifically tailored for displaying `Project` and `Task` data within the TUI.
+*   **Key Functionalities:**
+    *   `ProjectListItem`:
+        *   Displays a project's name and status.
+        *   Stores the `Project` object for easy access.
+    *   `TaskListItem`:
+        *   Displays a task's title, status icon (✓, …, ☐), priority, and due date.
+        *   Supports indentation for subtasks based on their level in the hierarchy.
+        *   Stores the `Task` object.
+    *   `ProjectList` (inherits `ListView`):
+        *   Loads and displays a list of `ProjectListItem`s.
+        *   Handles loading projects from `project_ops`.
+        *   Displays a message if no projects are found or an error occurs.
+    *   `TaskList` (inherits `ListView`):
+        *   Loads and displays a list of `TaskListItem`s for a given project.
+        *   Handles loading tasks from `task_ops`.
+        *   Supports filtering tasks by status.
+        *   Recursively adds subtasks to maintain the hierarchy in the display.
+        *   Displays a message if no tasks are found or an error occurs.
+
+---
+
+**13. `modules/knowledge_manager/utils.py`**
+*   **Purpose:** Provides various utility functions for path management, file operations (especially Markdown), and timestamp generation, used across the Knowledge Manager application.
+*   **Key Functionalities:**
+    *   **Path Management:**
+        *   `get_base_data_dir`: Determines the base directory for storing application data (defaults to `~/.local/share/knowledge_manager_data/` or a user-specified path).
+        *   `get_db_path`: Returns the full path to the SQLite database file.
+        *   `get_content_files_base_dir`: Returns the base directory for storing Markdown content files.
+        *   `get_project_content_dir`: Returns the directory for project Markdown descriptions.
+        *   `get_task_content_dir`: Returns the directory for task Markdown details.
+        *   `generate_markdown_file_path`: Generates a unique file path for Markdown descriptions/details based on entity ID and type.
+    *   **File Operations:**
+        *   `write_markdown_file`: Writes content to a Markdown file, creating parent directories if necessary.
+        *   `read_markdown_file`: Reads content from a Markdown file.
+    *   **Timestamp Utilities:**
+        *   `get_current_utc_timestamp`: Returns the current UTC datetime.
+    *   **Logging Setup:**
+        *   `setup_logging`: Configures application logging, allowing logs to be written to a file or suppressed.
+
+---

@@ -1,0 +1,24 @@
+# File: pyprjs/clip_tools/pyproject.toml
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "clip_tools"
+version = "0.1.0"
+description = "Unified clipboard utilities (append, diff, replace-block, copy-buffer, copy-log, copy, paste, run)."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Max Carlson" }]
+dependencies = [
+  "rich>=13.7.1",
+  # The unified backend prefers modules/system_tools if present.
+  # If you're packaging it as a separate local project, add a path-dependency here.
+  # e.g., "system-tools @ file:///${PROJECT_ROOT}/modules/system_tools"
+]
+
+[project.scripts]
+clip_tools = "clip_tools.cli:main"
+
+[tool.hatch.build]
+packages = ["pyprjs/clip_tools"]

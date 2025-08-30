@@ -1,0 +1,274 @@
+**Functionalities of scripts for `pyprjs/media-dl`:**
+
+---
+
+**1. `downloads_dlpn/manga-mgmt/scrape-nhentai-tags.py`**
+*   **Purpose:** Scrapes popular tags from nhentai.net and outputs a JSON list of unique tags with their counts.
+*   **Key Functionalities:**
+    *   **Web Scraping:** Fetches HTML content from nhentai.net's popular tags pages.
+    *   **Tag Extraction:** Parses HTML to extract tag names and their associated counts.
+    *   **Count Parsing:** Converts human-readable counts (e.g., "21K", "3.4M") into integer values.
+    *   **Deduplication & Sorting:** Deduplicates tags and sorts them by count in descending order.
+    *   **Output:** Saves the scraped tags to a JSON file.
+    *   **Rate Limiting:** Supports a configurable delay between page requests to avoid overwhelming the server.
+
+---
+
+**2. `downloads_dlpn/nhentai-dl/dlnh.py`**
+*   **Purpose:** Batch downloads nhentai galleries using the `nhentai` CLI tool.
+*   **Key Functionalities:**
+    *   **ID Extraction:** Extracts numeric gallery IDs from raw IDs or nhentai URLs.
+    *   **User-Agent & Cookie Handling:** Reads user-agent and cookie information from a `userAgent.txt` file for authentication.
+    *   **CLI Wrapper:** Executes the external `nhentai` command-line tool to perform downloads.
+    *   **Batch Processing:** Supports downloading multiple galleries specified by individual IDs/URLs or from a file.
+    *   **Output Directory:** Allows specifying an output directory for downloads.
+    *   **Download Summary:** Provides a summary of successful and failed downloads.
+
+---
+
+**3. `downloads_dlpn/nhentai-dl/dlnhv2.py`**
+*   **Purpose:** (Similar to `dlnh.py`) Batch downloads nhentai galleries using the `nhentai` CLI tool, potentially with updated features or different default arguments.
+*   **Key Functionalities:**
+    *   **ID Extraction:** Extracts numeric gallery IDs from raw IDs or nhentai URLs.
+    *   **User-Agent & Cookie Handling:** Reads user-agent and cookie information from a `userAgent.txt` file.
+    *   **CLI Wrapper:** Executes the external `nhentai` command-line tool to perform downloads.
+    *   **Batch Processing:** Supports downloading multiple galleries specified by individual IDs/URLs or from a file.
+    *   **Output Directory:** Allows specifying an output directory for downloads.
+    *   **Download Summary:** Provides a summary of successful and failed downloads.
+    *   **Note:** This script appears to be a version of `dlnh.py`, likely with minor variations or improvements.
+
+---
+
+**4. `downloads_dlpn/scripts/aebndl_dlpn.py`**
+*   **Purpose:** A batch downloader wrapper for the `aebndl` tool, supporting archive-based skipping, optional file-exists skipping, host guarding, and size-aware quality downgrades.
+*   **Key Functionalities:**
+    *   **URL Reading:** Reads URLs from batch files or a specified directory of batch files.
+    *   **Archive-based Skipping:** Skips URLs that are already present in a download archive file.
+    *   **File-exists Skipping:** Heuristically skips downloads if a likely output file already exists in the output directory.
+    *   **Host Guard:** By default, only allows AEBN hosts, with an option to allow non-AEBN hosts.
+    *   **Size-aware Downgrade:** If a downloaded file exceeds a maximum size, it can retry the download at a lower quality (if quality templates and order are provided).
+    *   **Retries:** Supports retrying failed downloads.
+    *   **Dry Run:** Shows what would be run without actually calling `aebndl`.
+    *   **Output Management:** Manages output and working directories.
+    *   **Archive Management:** Writes completed URLs to an archive file and can remove URLs from the archive for retries.
+
+---
+
+**5. `downloads_dlpn/scripts/roundrr.py`**
+*   **Purpose:** A randomized downloader for `yt-dlp` that processes URLs from multiple list files, with per-download timeouts and in-place progress updates.
+*   **Key Functionalities:**
+    *   **URL List Processing:** Reads URLs from multiple `.txt` files in a specified directory.
+    *   **Randomized Processing:** Shuffles the order of URL files for round-robin processing.
+    *   **Archive-based Skipping:** Skips URLs that are already in a download archive.
+    *   **Per-Download Timeout:** Enforces a timeout for individual `yt-dlp` downloads.
+    *   **Rate Limiting:** Applies a rate limit to downloads.
+    *   **Live Progress UI:** Updates the terminal title bar with remaining download time.
+    *   **Logging:** Supports logging download events to a file.
+    *   **Resume Capability:** Can resume downloads from where they left off.
+
+---
+
+**6. `downloads_dlpn/scripts/roundrobin_ytdlp.py`**
+*   **Purpose:** A parallel `yt-dlp` downloader that groups URLs by base domain and runs separate `yt-dlp` instances concurrently, providing a live, in-place updating UI with overall and per-domain progress.
+*   **Key Functionalities:**
+    *   **URL Grouping:** Reads URLs from input files and groups them by their base domain.
+    *   **Parallel Downloading:** Launches a separate `yt-dlp` instance (in a thread) for each domain group, enabling concurrent downloads.
+    *   **Live Progress UI (Rich):** Uses the `Rich` library to display a dynamic, in-place updating terminal UI showing:
+        *   Overall download progress (percentage, completed videos, total videos, speed).
+        *   Per-domain progress (percentage, completed videos, speed).
+        *   Progress bars for visual representation.
+    *   **Custom `yt-dlp` Arguments:** Allows passing custom `yt-dlp` arguments as key-value pairs.
+    *   **Download Archive:** Uses a `yt-dlp` download archive to skip already downloaded videos.
+    *   **Error Handling:** Catches `yt-dlp` errors and provides basic logging.
+    *   **Graceful Termination:** Handles `KeyboardInterrupt` (Ctrl+C) to signal threads to stop gracefully.
+
+---
+
+**7. `pscripts/images/dl-mangadex-old.py`**
+*   **Purpose:** (Likely an older version of `dl-mangadex.py`) Batch downloads MangaDex URLs with live stats and logging.
+*   **Key Functionalities:**
+    *   **MangaDex Downloader Integration:** Uses an external `mangadex-dl` or `mangadex-downloader` executable (or Python module) to perform downloads.
+    *   **URL Processing:** Reads MangaDex URLs from an input file.
+    *   **Live Progress UI (Rich):** Displays a live, in-place updating terminal UI showing:
+        *   Overall download statistics (URLs processed, total MB, total files, average speed).
+        *   Current download status (title, current MB, current files, speed).
+        *   A log buffer for messages and errors.
+    *   **Archive Management:** Loads and appends URLs to an archive file to skip already downloaded items.
+    *   **Error Logging:** Logs errors to a separate `error.log` file.
+    *   **Title Extraction:** Extracts a human-readable title from the MangaDex URL.
+
+---
+
+**8. `pscripts/images/dl-mangadex.py`**
+*   **Purpose:** Batch downloads MangaDex URLs with live stats, verbose, and debug logging.
+*   **Key Functionalities:**
+    *   **MangaDex Downloader Integration:** Uses an external `mangadex-dl` or `mangadex-downloader` executable (or Python module) to perform downloads.
+    *   **URL Processing:** Reads MangaDex URLs from an input file.
+    *   **Live Progress UI (Rich):** Displays a live, in-place updating terminal UI showing:
+        *   Overall download statistics (URLs processed, total MB, total files, average speed).
+        *   Current download status (title, current MB, current files, speed).
+        *   A log buffer for messages and errors.
+    *   **Archive Management:** Loads and appends URLs to an archive file to skip already downloaded items.
+    *   **Error Logging:** Logs errors to a separate `error.log` file.
+    *   **Title Extraction:** Extracts a human-readable title from the MangaDex URL.
+    *   **Verbose/Debug Modes:** Provides verbose and debug logging options for more detailed output.
+    *   **Note:** This script is very similar to `dl-mangadex-old.py`, likely an updated version.
+
+---
+
+**9. `pscripts/images/hentdl.py`**
+*   **Purpose:** Downloads images from a specified base URL (assumed to be a manga/hentai page) by iterating through page numbers and extracting image URLs.
+*   **Key Functionalities:**
+    *   **Page Iteration:** Constructs page URLs by incrementing a page number.
+    *   **HTML Fetching:** Fetches HTML content for each page URL using `requests`.
+    *   **Image URL Extraction:** Parses HTML to extract image URLs (specifically `.jpg`, `.jpeg`, `.png`).
+    *   **Image Downloading:** Downloads images with a specified referer header and saves them to an output directory.
+    *   **Retries:** Includes retry logic for fetching HTML and downloading images.
+    *   **Session Management:** Uses a `requests.Session` to persist headers and cookies.
+    *   **Filename Generation:** Generates filenames based on page number.
+    *   **Skipping Existing:** Skips downloading if the image file already exists.
+
+---
+
+**10. `pscripts/video/downloadAllPageURLs.py`**
+*   **Purpose:** Scrapes video links from multiple paginated search result pages concurrently using Selenium (Pyppeteer) and saves them to an output file.
+*   **Key Functionalities:**
+    *   **Paginated URL Generation:** Generates a list of paginated URLs based on a base URL, number of pages, and pagination parameter.
+    *   **Concurrent Scraping:** Uses a `ThreadPoolExecutor` to scrape multiple search URLs concurrently, with each thread getting its own Selenium WebDriver instance.
+    *   **Selenium Automation:** Navigates to pages, waits for content, and performs adaptive scrolling to load dynamic content.
+    *   **Video Link Extraction:** Parses page source using BeautifulSoup to extract video links based on common selectors (e.g., `/watch`, `/view_video`).
+    *   **URL Archiving/Skipping:** Loads URLs to skip from a file and saves newly scraped URLs to the same file to prevent re-scraping.
+    *   **Output:** Appends extracted video links to a specified output file.
+    *   **Logging:** Provides logging for processing steps and errors.
+
+---
+
+**11. `pscripts/video/expand_urls.py`**
+*   **Purpose:** Expands shortened URLs, primarily for video URLs, with interactive progress, auto-saving, and resume support.
+*   **Key Functionalities:**
+    *   **URL Resolution:** Resolves URLs by following redirects using `requests` to get the final URL.
+    *   **Video URL Detection:** Heuristically determines if a URL likely points to a video.
+    *   **Interactive Mode (curses):** Provides a curses-based TUI with:
+        *   Scrolling log of processed URLs.
+        *   Colored visual progress bar.
+        *   Auto-saving progress every N URLs.
+        *   Resume capability from a previous session.
+    *   **Batch Mode:** Supports non-interactive batch processing.
+    *   **Non-Video URL Removal:** Optionally removes URLs that do not appear to be video URLs.
+    *   **Output:** Writes expanded URLs to an output file.
+
+---
+
+**12. `pscripts/video/m3u8_extractor2.py`**
+*   **Purpose:** Extracts M3U8 URLs from video pages using Pyppeteer (headless Chromium) and optionally downloads the videos using `yt-dlp`.
+*   **Key Functionalities:**
+    *   **Headless Browser Automation:** Launches a headless Chromium instance using Pyppeteer.
+    *   **Network Request Interception:** Intercepts network requests to capture `.m3u8` URLs.
+    *   **Page Interaction:** Navigates to video pages, waits for content, and simulates clicks on video elements to trigger M3U8 requests.
+    *   **M3U8 Extraction:** Retrieves the first captured `.m3u8` URL.
+    *   **Video Downloading (yt-dlp):** Optionally downloads the video using `yt-dlp` once the M3U8 URL is found.
+    *   **Error Handling:** Catches errors during page loading and M3U8 extraction.
+    *   **Output:** Prints found M3U8 URLs and download status.
+
+---
+
+**13. `pscripts/video/m3u8_v2.py`**
+*   **Purpose:** (Similar to `m3u8_extractor2.py`) Extracts M3U8 URLs from video pages using Pyppeteer and optionally downloads the videos using `yt-dlp`. This version seems to be integrated with a `parallel_runner_generic2` module.
+*   **Key Functionalities:**
+    *   **Headless Browser Automation:** Launches a headless Chromium instance using Pyppeteer.
+    *   **Network Request Interception:** Intercepts network requests to capture `.m3u8` URLs.
+    *   **Page Interaction:** Navigates to video pages, waits for content, and simulates clicks on video elements.
+    *   **M3U8 Extraction:** Retrieves the first captured `.m3u8` URL.
+    *   **Video Downloading (yt-dlp):** Optionally downloads the video using `yt-dlp` once the M3u8 URL is found.
+    *   **Parallel Processing Integration:** Designed to work with `parallel_runner_generic2` for concurrent M3U8 extraction and video downloading.
+    *   **Progress Aggregation:** Includes logic to parse `yt-dlp` output and aggregate download progress across multiple parallel downloads.
+    *   **Error Handling:** Catches errors during page loading and M3U8 extraction.
+
+---
+
+**14. `pscripts/video/paralleldl.py`**
+*   **Purpose:** A parallel downloader for `yt-dlp` that processes URLs from multiple list files, grouping them by base domain and running separate `yt-dlp` instances concurrently. It provides a live, in-place updating UI using the `Rich` library.
+*   **Key Functionalities:**
+    *   **URL Grouping:** Reads URLs from input files and groups them by their base domain.
+    *   **Parallel Downloading:** Creates and manages multiple threads, each running a `yt-dlp` instance for a specific domain group.
+    *   **Live Progress UI (Rich):** Displays a dynamic, in-place updating terminal UI using `Rich` tables to show:
+        *   Overall download progress (percentage, completed videos, total videos, speed).
+        *   Per-domain progress (percentage, completed videos, speed).
+        *   Progress bars for visual representation.
+    *   **Custom `yt-dlp` Arguments:** Allows passing custom `yt-dlp` arguments.
+    *   **Download Archive:** Uses a `yt-dlp` download archive to skip already downloaded videos.
+    *   **Error Handling:** Catches `yt-dlp` errors and provides basic logging.
+    *   **Graceful Termination:** Handles `KeyboardInterrupt` (Ctrl+C) to signal threads to stop gracefully.
+    *   **Note:** This script is very similar to `downloads_dlpn/scripts/roundrobin_ytdlp.py`, likely a parallel development or an older version.
+
+---
+
+**15. `pscripts/video/pyppeteer_m3u8_2.py`**
+*   **Purpose:** (Similar to `m3u8_extractor2.py` and `m3u8_v2.py`) Extracts M3U8 URLs from video pages using Pyppeteer and optionally downloads the videos using `yt-dlp`. This version also includes archive management.
+*   **Key Functionalities:**
+    *   **Headless Browser Automation:** Launches a headless Chromium instance using Pyppeteer.
+    *   **Network Request Interception:** Intercepts network requests to capture `.m3u8` URLs.
+    *   **Page Interaction:** Navigates to video pages, waits for content, and simulates clicks on video elements.
+    *   **M3U8 Extraction:** Retrieves the first captured `.m3u8` URL.
+    *   **Video Downloading (yt-dlp):** Optionally downloads the video using `yt-dlp`.
+    *   **Archive Management:** Reads existing archive files to skip already downloaded videos and appends new URLs to the archive.
+    *   **Error Handling:** Catches errors during page loading and M3U8 extraction.
+
+---
+
+**16. `pscripts/video/RemainingDownloads.py`**
+*   **Purpose:** Estimates the remaining download size for URLs in a list file by querying `yt-dlp` for each URL's size and comparing against an archive.
+*   **Key Functionalities:**
+    *   **URL List Processing:** Reads URLs from a specified list file.
+    *   **Archive Management:** Reads a download archive file to identify already downloaded URLs.
+    *   **`yt-dlp` Integration:** Uses `yt-dlp -j` to fetch JSON metadata for each URL to estimate its size.
+    *   **Size Estimation:** Calculates estimated file sizes based on direct filesize, bitrates, or HTTP HEAD requests.
+    *   **Progress Reporting:** Prints progress updates showing done/remaining counts and MBs.
+    *   **Summary:** Provides a summary for each processed URL list file, including total URLs, downloaded, remaining, and their respective sizes.
+
+---
+
+**17. `pscripts/video/round_robin_ytdlp/round_robin_ytdlp.py`**
+*   **Purpose:** A round-robin `yt-dlp` downloader that processes URLs from multiple list files, providing a live, in-place updating UI using the `Rich` library. It includes features for archive management, error handling, and optional URL anonymization.
+*   **Key Functionalities:**
+    *   **URL List Discovery:** Discovers URL list files (`.txt`) in a specified directory.
+    *   **Round-Robin Processing:** Iterates through URL lists in a round-robin fashion, processing one URL from each list per cycle.
+    *   **Archive Management:** Uses `yt-dlp` archive files and script error archive files to track processed and failed URLs, enabling resume functionality.
+    *   **Live Progress UI (Rich):** Displays a dynamic, in-place updating terminal UI using `Rich` to show:
+        *   Overall session statistics (files completed, data downloaded, active download time).
+        *   Current list and URL being processed.
+        *   `yt-dlp` progress line.
+    *   **Download Limits:** Supports per-download time and byte limits.
+    *   **Retries:** Allows configuring the maximum number of failed `yt-dlp` attempts per URL.
+    *   **URL Anonymization:** Can anonymize URLs in logs and UI for privacy.
+    *   **Logging:** Logs events (attempt, finish, error, etc.) to a specified log file.
+    *   **Error Handling:** Catches `yt-dlp` errors and logs them, moving to the next URL/list if limits are hit.
+
+---
+
+**18. `pscripts/video/urlsize.py`**
+*   **Purpose:** Estimates the download size of a single video URL or processes a list of URLs to report their sizes, using `yt-dlp`.
+*   **Key Functionalities:**
+    *   **Single URL Size Estimation:** Takes a single video URL and estimates its download size in MB using `yt-dlp -j` to get metadata.
+    *   **Size Estimation Methods:** Uses direct filesize, calculated bitrate, or HTTP HEAD requests for size estimation.
+    *   **Format Listing:** Can list all available formats for a given URL.
+    *   **All Formats Size:** Can show estimated sizes for all available formats.
+    *   **URL List Processing:** Processes a list of URL files, reporting download/remaining counts and sizes for each.
+    *   **Output:** Prints estimated sizes and filenames to console.
+
+---
+
+**19. `pyscripts/ytdlp_cleanup.py`**
+*   **Purpose:** Scans a root folder for `.part` and fragment files, classifies them (safe to delete, keep for now), optionally finds duplicate full media files, and offers to delete safe items.
+*   **Key Functionalities:**
+    *   **File Classification:** Identifies partial (`.part`) and fragment (`.frag`) files.
+    *   **Base File Derivation:** Attempts to derive the base filename for partial/fragment files.
+    *   **Safety Classification:** Classifies partial/fragment files into:
+        *   `safe_to_delete`: If a completed full file exists, or if the partial/fragment file is old and orphaned.
+        *   `keep_for_now`: If the file is recent (potentially active download) or its status is unknown.
+    *   **Duplicate Full File Detection:** Optionally finds exact duplicate full media files (by size and SHA256 hash).
+    *   **Deletion:** Offers to delete files classified as `safe_to_delete` after user confirmation. Supports no-prompt deletion.
+    *   **Reporting:** Provides per-folder counts of classified files and dumps lists of safe-to-delete and keep-for-now files.
+    *   **Statistics:** Prints a summary of deleted files and failures.
+
+---
