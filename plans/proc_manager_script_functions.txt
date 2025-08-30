@@ -1,0 +1,37 @@
+**Functionalities of scripts for `pyprjs/proc-manager`:**
+
+---
+
+**1. `downloads_dlpn/scripts/ProcessManager.py`**
+*   **Purpose:** A command-line utility to manage detached PowerShell 7 processes, providing functionalities for starting, listing, viewing logs, and stopping processes.
+*   **Key Functionalities:**
+    *   **Process Execution (`-e`, `--execute-script`):**
+        *   Starts a PowerShell 7 script block in a detached process.
+        *   Redirects all stdout and stderr to a dedicated log file for each process.
+        *   Assigns a unique ID and name to each started process.
+        *   Records process metadata (PID, name, log file path, start time) in a JSON state file.
+    *   **Process Listing (`-l`, `--list-processes`):**
+        *   Lists all tracked processes, showing their ID, PID, name, status (Running/Exited), runtime, and start time.
+        *   Automatically updates the status of exited processes.
+    *   **Log Viewing (`-v`, `--view-process`):**
+        *   Tails the log file of a specified process (by ID or name), showing real-time output.
+        *   If the process has exited, it dumps the entire log content.
+    *   **Log Dumping (`-d`, `--dump-log`):**
+        *   Dumps the entire log content of a specified process (by ID or name).
+    *   **Process Stopping (`-s`, `--stop-process`):**
+        *   Stops and removes a single process (by ID or name).
+        *   Terminates the process using `taskkill` on Windows or `SIGTERM` on other platforms.
+    *   **Stop All (`-S`, `--stop-all`):**
+        *   Stops and removes all currently tracked processes.
+    *   **Stop Running (`-R`, `--stop-running`):**
+        *   Stops and removes only processes that are still running.
+    *   **Stop Exited (`-X`, `--stop-exited`):**
+        *   Removes only processes that have already exited from the tracking list.
+    *   **Stop Range (`-sr`, `--stop-range`):**
+        *   Stops and removes processes within a specified ID range.
+    *   **Watch Running (`-w`, `--watch-running`):**
+        *   Provides a curses-based interactive UI to continuously display the status of running processes (ID, Name, PID, Status, Runtime).
+    *   **State Management:** Persists process information in a `state.json` file within a dedicated `~/.processmanager` directory.
+    *   **Cross-Platform Detachment:** Uses `subprocess.DETACHED_PROCESS` for Windows and standard `Popen` behavior for others to ensure processes run independently.
+
+---

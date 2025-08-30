@@ -1,0 +1,88 @@
+**Functionalities of scripts for `pyprjs/code-tools`:**
+
+---
+
+**1. `modules/code_tools/func_replacer.py`**
+*   **Purpose:** Replaces a function or class block in a target code file with new content provided from a source file or the system clipboard.
+*   **Key Functionalities:**
+    *   Reads target code file content.
+    *   Obtains replacement code from a specified source file or the system clipboard.
+    *   Infers the name of the function/class to replace from the new code block (supports Python, Ruby, Lua, and C-style brace languages heuristically).
+    *   Allows explicit specification of the function/class name and approximate line number for replacement.
+    *   Detects the language type of the target file (using `rgcodeblock_lib.language_defs`).
+    *   Uses language-specific extractors (from `rgcodeblock_lib.extractors`) to locate the existing code block.
+    *   Replaces the old code block with the new content, preserving original indentation.
+    *   Offers a confirmation prompt before making changes.
+    *   Can create a `.bak` backup of the target file before modification.
+    *   Handles errors related to file I/O, clipboard access, language detection, and block extraction.
+
+---
+
+**2. `modules/code_tools/rgcodeblock_cli.py`**
+*   **Purpose:** A command-line interface (CLI) tool that uses `ripgrep` to find matches and then extracts and displays the enclosing code blocks for those matches.
+*   **Key Functionalities:**
+    *   Executes `ripgrep` with a user-provided pattern and path, capturing JSON output.
+    *   Parses `ripgrep`'s JSON output to identify matches.
+    *   Determines the language type of the file containing the match (using `rgcodeblock_lib.language_defs`).
+    *   Uses language-specific extractors (from `rgcodeblock_lib.extractors`) to find the enclosing code block (e.g., function, class, JSON object, XML element).
+    *   Highlights the matched text within the extracted code block using ANSI colors.
+    *   If block extraction fails, falls back to displaying context lines around the match.
+    *   Supports various output formatting options (text, JSON).
+    *   Allows filtering `ripgrep` search by file extensions (include/exclude) and path globs.
+    *   Can pass additional arguments directly to `ripgrep`.
+    *   Provides detailed statistics about the search and extraction process (total matches, unique blocks, files processed, language breakdown, truncation count).
+    *   Can list all supported languages and their extensions.
+
+---
+
+**3. `modules/code_tools/rgcodeblock_lib/extractors.py`**
+*   **Purpose:** Provides functions to extract enclosing code blocks for various programming languages given a line number or entity name. This is a library used by `rgcodeblock_cli.py` and `func_replacer.py`.
+*   **Key Functionalities:**
+    *   `extract_python_block_ast`: Extracts Python function/class blocks using Python's `ast` module for accurate parsing.
+    *   `extract_brace_block`: Extracts code blocks in C-style brace languages (e.g., C++, Java, JavaScript) by counting opening and closing braces.
+    *   `extract_json_block`: Extracts JSON objects or arrays using a brace/bracket counting heuristic.
+    *   `extract_yaml_block`: Extracts YAML documents or sections using `PyYAML` (if installed).
+    *   `extract_xml_block`: Extracts XML elements using `lxml` (if installed).
+    *   `_extract_keyword_pair_block`: A generic helper for languages like Ruby and Lua that use keyword pairs (e.g., `def...end`, `function...end`).
+    *   `extract_ruby_block`: Extracts Ruby code blocks.
+    *   `extract_lua_block`: Extracts Lua code blocks.
+    *   Handles optional library dependencies (`PyYAML`, `lxml`) gracefully, providing notes if they are missing.
+
+---
+
+**4. `modules/code_tools/rgcodeblock_lib/language_defs.py`**
+*   **Purpose:** Defines a centralized mapping of language types to their common file extensions and provides a utility function to determine language type from a filename. This is a library used by `rgcodeblock_cli.py` and `func_replacer.py`.
+*   **Key Functionalities:**
+    *   `LANGUAGE_DEFINITIONS`: A dictionary containing definitions for various languages, including their associated file extensions and notes on the extraction method (e.g., AST-based, brace counting).
+    *   `get_language_type_from_filename`: Takes a filename and returns its determined language category (e.g., "python", "brace", "json") and its raw file extension.
+
+---
+
+**5. `pyscripts/rgcode.py`**
+*   **Purpose:** (Likely an older or simpler version of `rgcodeblock_cli.py`) Executes `ripgrep` and attempts to display the enclosing code block for matches.
+*   **Key Functionalities:**
+    *   Executes `ripgrep` with a pattern and path.
+    *   Parses `ripgrep`'s output.
+    *   Determines language type (using a simpler `get_language_type` function).
+    *   Attempts to extract code blocks using functions similar to those in `rgcodeblock_lib/extractors.py` (e.g., `extract_python_block_ast`, `extract_brace_block`, `extract_json_block`, `extract_yaml_block`, `extract_xml_block`, `_extract_keyword_pair_block` and its wrappers for Ruby/Lua).
+    *   Highlights matched text.
+    *   Falls back to context display if block extraction fails.
+    *   Includes basic error handling for `ripgrep` not found or execution errors.
+    *   **Note:** This script appears to be a standalone implementation of functionalities now encapsulated and improved in `modules/code_tools/rgcodeblock_cli.py` and `rgcodeblock_lib`.
+
+---
+
+**6. `pyscripts/unpaired_finder.py`**
+*   **Purpose:** Scans a specified file to find and report unpaired or mismatched braces (`{}[]()`).
+*   **Key Functionalities:**
+    *   Reads a file line by line.
+    *   Uses a stack-based approach to track opening braces.
+    *   Identifies and reports:
+        *   Unpaired closing braces (e.g., `}` without a preceding `{`).
+        *   Mismatched braces (e.g., `]` closing a `(`).
+        *   Unpaired opening braces (remaining on the stack at the end of the file).
+    *   Reports errors with line and column numbers.
+    *   Lists line numbers of unpaired opening braces.
+    *   Handles `FileNotFoundError` and other unexpected exceptions during file processing.
+
+---

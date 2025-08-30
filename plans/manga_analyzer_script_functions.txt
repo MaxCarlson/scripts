@@ -1,0 +1,46 @@
+**Functionalities of scripts for `pyprjs/manga-analyzer`:**
+
+---
+
+**1. `downloads_dlpn/manga-mgmt/model_manager/model_manager.py`**
+*   **Purpose:** A lightweight manager for downloading, quantizing, loading, and managing local Large Language Models (LLMs) from Hugging Face.
+*   **Key Functionalities:**
+    *   **Model Caching:** Manages a local cache directory for downloaded models.
+    *   **Model Listing:** Lists locally cached models and can list remote models from Hugging Face Hub.
+    *   **Model Preparation:** Downloads full-precision LLM snapshots and quantizes them (e.g., to 4-bit) using `bitsandbytes` and `transformers` libraries.
+    *   **Model Loading:** Loads models into a uniform `.generate()` interface, supporting both Hugging Face quantized models and GGUF models via `llama_cpp` (if available).
+    *   **Active Model Management:** Allows switching the currently active model.
+    *   **Model Deletion:** Deletes cached model directories.
+    *   **Text Generation:** Provides a `generate()` method to produce text using the active loaded model.
+    *   **Dependencies:** `huggingface_hub`, `transformers`, `bitsandbytes`, `accelerate`, `llama_cpp` (optional).
+
+---
+
+**2. `downloads_dlpn/manga-mgmt/quantize-manga.py`**
+*   **Purpose:** A standalone script to quantize a specified base LLM model from Hugging Face and save the quantized version locally.
+*   **Key Functionalities:**
+    *   Loads a pre-defined base model (`mosaicml/mpt-7b-instruct`).
+    *   Applies 4-bit quantization using `BitsAndBytesConfig` from the `transformers` library.
+    *   Saves the quantized model to a local directory.
+    *   **Dependencies:** `torch`, `transformers`.
+    *   **Note:** This script seems to be a specific example or utility for quantizing a single model, rather than a general-purpose tool. Its functionality is largely encapsulated within `model_manager.py`.
+
+---
+
+**3. `downloads_dlpn/manga-mgmt/summarize-manga.py`**
+*   **Purpose:** Automates the process of OCR (Optical Character Recognition), summarization, and tag generation for manga collections using local LLMs.
+*   **Key Functionalities:**
+    *   **Manga Directory Discovery:** Can process a single manga folder or recursively find all manga folders (directories containing image files) under a specified root.
+    *   **OCR Processing:**
+        *   Uses `pytesseract` to perform OCR on all image files within a manga folder.
+        *   Concatenates the extracted text and saves it to a mirrored path under a specified OCR output directory.
+        *   Skips folders with no OCR text.
+    *   **LLM Integration:**
+        *   Loads an LLM model (specified by ID or local folder) using `transformers` pipeline.
+        *   Constructs a detailed prompt for the LLM, instructing it to produce a brief summary, a detailed summary, and a list of tags.
+        *   Passes the OCR'd text to the LLM for summarization and tag generation.
+    *   **Tagging:** Selects tags from a predefined JSON tag pool based on the LLM's output, limiting to a specified number of tags.
+    *   **Output:** Saves the processed results (manga directory, OCR text file path, brief summary, detailed summary, tags) to a JSON output file.
+    *   **Dependencies:** `os`, `argparse`, `glob`, `json`, `PIL` (Pillow), `pytesseract`, `transformers`.
+
+---
