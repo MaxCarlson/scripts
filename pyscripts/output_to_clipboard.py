@@ -289,7 +289,7 @@ def run_command_and_copy_main(
                 console_stderr.print("[WARNING] No input for confirmation (EOFError). Assuming 'No'.")
                 resp = "n"
             except KeyboardInterrupt:
-                console_stderr.print("\n[INFO] User cancelled confirmation (KeyboardInterrupt).")
+                console_stderr.print("\n[INFO] User cancelled re-run (KeyboardInterrupt).")
                 stats_data["User Confirmation"] = "Cancelled (KeyboardInterrupt)"
                 user_cancelled_operation = True
                 exit_code = 0  # Clean exit for user cancel
