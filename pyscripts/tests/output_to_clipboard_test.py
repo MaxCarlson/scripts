@@ -23,7 +23,6 @@ if not SCRIPT_PATH.is_file():
 LAST_CLIP = ""
 
 # --- Mocks (Clipboard and HistoryUtils) ---
-# Helper to ensure cross_platform is a package in sys.modules
 def _ensure_cross_platform_package():
     """Ensures 'cross_platform' is a package in sys.modules for sub-module mocking."""
     if 'cross_platform' not in sys.modules:
