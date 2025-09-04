@@ -7,12 +7,13 @@ from unittest.mock import MagicMock # For mocking shlex module in one test
 import shlex # For constructing expected verbose output string
 
 # Import the main function from your script
-from run_history_process import main
-import run_history_process as rhp_module # To access internals like rhp_module.shlex
+
 
 
 # Helper to run `main` with monkeypatched sys.argv and capture output
 def run_rhp_main(capsys, monkeypatch, args_list):
+    import run_history_process
+    import run_history_process as rhp_module # For shlex access
     """
     Runs the main() function from run_history_process.py with specified arguments.
     Captures the returned exit code (if main returns one) or the code from SystemExit.
@@ -28,7 +29,7 @@ def run_rhp_main(capsys, monkeypatch, args_list):
         # Call the main function from your script.
         # It is designed to RETURN an integer exit code in most paths.
         # Argparse errors within main() (from parser.error()) WILL call sys.exit(), raising SystemExit.
-        returned_value_from_main = main()
+        returned_value_from_main = run_history_process.main() # Use the imported main
         actual_exit_code = returned_value_from_main # Capture the direct return value
     except SystemExit as e:
         actual_exit_code = e.code # Capture exit code if sys.exit() was called (e.g., by argparse)

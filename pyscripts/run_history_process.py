@@ -7,6 +7,7 @@ import os
 import re
 import fnmatch
 import sys
+import sys
 
 def get_all_historical_paths(history_limit=50, verbose=False):
     """
@@ -19,19 +20,16 @@ def get_all_historical_paths(history_limit=50, verbose=False):
             ['atuin', 'history', 'list', '--format', '{command}', '--limit', str(history_limit), '-r'],
             capture_output=True, text=True, check=True, encoding='utf-8'
         )
-        history_lines = process_result.stdout.strip().split('\n')
+        history_lines = [line for line in process_result.stdout.strip().split('\n') if line]
     except FileNotFoundError:
-        if verbose:
-            print("Error: 'atuin' command not found. Is Atuin installed and in your PATH?", file=sys.stderr)
+        print("Error: 'atuin' command not found. Is Atuin installed and in your PATH?", file=sys.stderr)
         return []
     except subprocess.CalledProcessError as e:
-        if verbose:
-            print(f"Error fetching Atuin history: {e}", file=sys.stderr)
-            print(f"Stderr from atuin: {e.stderr}", file=sys.stderr)
+        print(f"Error fetching Atuin history: {e}", file=sys.stderr)
+        print(f"Stderr from atuin: {e.stderr}", file=sys.stderr)
         return []
     except Exception as e: # Catch any other unexpected error during subprocess interaction
-        if verbose:
-            print(f"An unexpected error occurred while fetching history: {e}", file=sys.stderr)
+        print(f"An unexpected error occurred while fetching history: {e}", file=sys.stderr)
         return []
 
     if verbose:
@@ -171,9 +169,8 @@ def main():
     all_historical_paths = get_all_historical_paths(history_limit=args.limit, verbose=args.verbose)
 
     if not all_historical_paths:
-        if args.verbose: print("No paths identified in the scanned history.", file=sys.stderr)
-        if not is_insert_mode: # Only print error to stderr if not insert mode and not verbose
-            print("Error: No paths found in history.", file=sys.stderr)
+        print("No paths identified in the scanned history.", file=sys.stderr)
+        print("Error: No paths found in history.", file=sys.stderr)
         return 1
 
     filtered_paths = []
@@ -188,15 +185,14 @@ def main():
         
         if args.verbose: print(f"Paths after pattern filtering: {len(filtered_paths)} found.", file=sys.stderr)
         if not filtered_paths:
-            if not is_insert_mode:
-                print(f"Error: No paths found matching pattern '{args.pattern}'.", file=sys.stderr)
+            print(f"Error: No paths found matching pattern '{args.pattern}'.", file=sys.stderr)
             return 1
     else:
         filtered_paths = all_historical_paths
         if args.verbose: print(f"No pattern specified, using all {len(filtered_paths)} found paths.", file=sys.stderr)
 
     if args.index <= 0:
-        if not is_insert_mode: print("Error: --index must be a positive integer (1-based).", file=sys.stderr)
+        print("Error: --index must be a positive integer (1-based).", file=sys.stderr)
         return 1
     
     selected_path_str = None
@@ -204,12 +200,11 @@ def main():
         selected_path_str = filtered_paths[args.index - 1] # 1-based index from user
         if args.verbose: print(f"Selected path at 1-based index {args.index}: '{selected_path_str}'", file=sys.stderr)
     except IndexError:
-        if not is_insert_mode:
-            msg = f"Error: Not enough paths to satisfy index {args.index}. "
-            msg += f"Found {len(filtered_paths)} paths"
-            if args.pattern: msg += f" matching pattern '{args.pattern}'."
-            else: msg += "."
-            print(msg, file=sys.stderr)
+        msg = f"Error: Not enough paths to satisfy index {args.index}. "
+        msg += f"Found {len(filtered_paths)} paths"
+        if args.pattern: msg += f" matching pattern '{args.pattern}'."
+        else: msg += "."
+        print(msg, file=sys.stderr)
         return 1
         
     if is_insert_mode:
