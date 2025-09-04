@@ -9,7 +9,7 @@ import os
 import time
 import pytest
 
-from cleanup_part_frag import (
+from ytdlp_cleanup import (
     classify_part_and_frag,
     derive_base_candidates,
     is_partial_or_frag,

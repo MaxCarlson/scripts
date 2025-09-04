@@ -293,7 +293,7 @@ def process_git_workflow(add_pattern, force, cwd, branch, submodules_to_process,
 
     # --- Git Add (Dry-run for preview) ---
     add_command_dry_run = ["git", "add", "--dry-run", add_pattern]
-    stdout_add_dry_run, _, _ = run_command(add_command_dry_run, cwd=repo_path, capture_output=True, text=Text, verbose=verbose)
+    stdout_add_dry_run, _, _ = run_command(add_command_dry_run, cwd=repo_path, capture_output=True, text=True, verbose=verbose)
     if stdout_add_dry_run.strip():
         print("\nChanges to be staged if you continue:")
         print(stdout_add_dry_run)
@@ -316,14 +316,14 @@ def process_git_workflow(add_pattern, force, cwd, branch, submodules_to_process,
     # --- Git Add (Actual add) ---
     if not skip_commit:
         add_command = ["git", "add", add_pattern]
-        stdout_add, stderr_add, returncode_add = run_command(add_command, cwd=repo_path, verbose=verbose, capture_output=True, text=Text)
+        stdout_add, stderr_add, returncode_add = run_command(add_command, cwd=repo_path, verbose=verbose, capture_output=True, text=True)
         if returncode_add != 0:
             error_log(f"Error during git add: {stderr_add}")
             print("Error during git add, aborting commit, pull, and push.")
             skip_commit = True # Prevent commit, pull, push if add failed
 
         if not verbose: # Show git status after add in non-verbose as well (using porcelain for summary)
-            stdout_status_after_add_porcelain, stderr_status_after_add_porcelain, returncode_status_after_add_porcelain = run_command(status_command_porcelain, cwd=repo_path, capture_output=True, text=Text, verbose=verbose)
+            stdout_status_after_add_porcelain, stderr_status_after_add_porcelain, returncode_status_after_add_porcelain = run_command(status_command_porcelain, cwd=repo_path, capture_output=True, text=True, verbose=verbose)
             if returncode_status_after_add_porcelain == 0:
                 print("Git status after add:")
                 print(summarize_git_status_porcelain(stdout_status_after_add_porcelain))
@@ -336,21 +336,21 @@ def process_git_workflow(add_pattern, force, cwd, branch, submodules_to_process,
         if not skip_commit:
             commit_message = input("Commit Message (leave empty for default message): ")
             commit_command = ["git", "commit", "-m", commit_message] if commit_message else ["git", "commit"]
-            stdout_commit, stderr_commit, returncode_commit = run_command(commit_command, cwd=repo_path, verbose=verbose, capture_output=True, text=Text)
+            stdout_commit, stderr_commit, returncode_commit = run_command(commit_command, cwd=repo_path, verbose=verbose, capture_output=True, text=True)
             if returncode_commit != 0:
                 error_log(f"Error during git commit: {stderr_commit}")
                 print("Error during git commit, proceeding with pull and push.") # Non-critical, try to pull and push anyway
 
     # --- Git Pull ---
     pull_command = ["git", "pull"]
-    stdout_pull, stderr_pull, returncode_pull = run_command(pull_command, cwd=repo_path, verbose=verbose, capture_output=True, text=Text)
+    stdout_pull, stderr_pull, returncode_pull = run_command(pull_command, cwd=repo_path, verbose=verbose, capture_output=True, text=True)
     if returncode_pull != 0:
         error_log(f"Error during git pull: {stderr_pull}")
         print("Error during git pull.")
 
     # --- Git Push ---
     push_command = ["git", "push"]
-    stdout_push, stderr_push, returncode_push = run_command(push_command, cwd=repo_path, verbose=verbose, capture_output=True, text=Text)
+    stdout_push, stderr_push, returncode_push = run_command(push_command, cwd=repo_path, verbose=verbose, capture_output=True, text=True)
     if returncode_push != 0:
         error_log(f"Error during git push: {stderr_push}")
         print("Error during git push.")

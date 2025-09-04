@@ -60,7 +60,7 @@ def manage_clipboard_mock(monkeypatch):
     # Install into sys.modules
     monkeypatch.setitem(sys.modules, mock_clipboard_utils_name, mock_clipboard_utils_mod)
     # Also attach onto the parent package
-    monkeypatch.setattr(sys.modules['cross_platform'], 'clipboard_utils', mock_clipboard_utils_mod)
+    
 
     # Patch directly onto the already-loaded otc_module (if any)
     if otc_module:
@@ -92,7 +92,7 @@ def mock_history_utils(monkeypatch):
     mock_history_utils_mod.HistoryUtils = FakeHistoryUtils
 
     monkeypatch.setitem(sys.modules, history_utils_mod_name, mock_history_utils_mod)
-    monkeypatch.setattr(sys.modules['cross_platform'], 'history_utils', mock_history_utils_mod)
+    
 
     if otc_module:
         monkeypatch.setattr(otc_module, 'HistoryUtils', FakeHistoryUtils, raising=False)

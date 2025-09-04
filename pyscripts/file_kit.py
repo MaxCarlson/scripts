@@ -584,7 +584,7 @@ def _posix_mounts(include_all: bool) -> List[Tuple[str, str]]:
                 if not include_all:
                     if fstype in _SKIP_FSTYPES:
                         continue
-                    if fstype not in _ INCLUDE_FSTYPES and not mnt.startswith("/mnt"):
+                    if fstype not in _INCLUDE_FSTYPES and not mnt.startswith("/mnt"):
                         # allow external/mounted paths under /mnt even if fstype unknown
                         continue
                 candidates.append((mnt, fstype))
