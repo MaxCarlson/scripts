@@ -1,4 +1,3 @@
-# file: folder_stats.py
 #!/usr/bin/env python3
 # folder_stats.py
 # Totals space by file extension under a target directory (cross-platform, pwsh7 friendly).
