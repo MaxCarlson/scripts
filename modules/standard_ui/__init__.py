@@ -1,3 +1,4 @@
+# File: modules/standard_ui/__init__.py
 """
 standard_ui package
 
@@ -7,6 +8,7 @@ and formatting helpers.
 """
 
 from .standard_ui import (
+    # Existing, preserved API
     init_timer,
     print_global_elapsed,
     set_verbose,
@@ -22,9 +24,16 @@ from .standard_ui import (
     print_panel,
     progress_bar,
     print_parsed_args,
+
+    # New, optional higher-level helpers (non-breaking additions)
+    SetupSession,
+    Phase,
+    run_cmd_status,
+    print_run_summary,
 )
 
 __all__ = [
+    # Existing
     "init_timer",
     "print_global_elapsed",
     "set_verbose",
@@ -40,4 +49,9 @@ __all__ = [
     "print_panel",
     "progress_bar",
     "print_parsed_args",
+    # New
+    "SetupSession",
+    "Phase",
+    "run_cmd_status",
+    "print_run_summary",
 ]
