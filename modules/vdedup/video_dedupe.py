@@ -25,7 +25,9 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Any
 
@@ -167,7 +169,51 @@ def _render_pair_diff(keep: Path, lose: Path, a: Dict[str, Any], b: Dict[str, An
     return lines
 
 
-def render_analysis_for_reports(paths: List[Path], verbosity: int = 1) -> str:
+# ---------- tiny textual progress bar (no deps) ----------
+
+class _TextProgress:
+    def __init__(self, total: int, label: str = "Processing"):
+        self.total = max(0, int(total))
+        self.label = label
+        self.n = 0
+        self.start = time.time()
+        self._last_render = 0.0
+
+    def _fmt_hms(self, sec: Optional[float]) -> str:
+        if sec is None or sec < 0:
+            return "--:--"
+        s = int(sec)
+        return f"{s//60:02d}:{s%60:02d}"
+
+    def _render(self, force: bool = False):
+        now = time.time()
+        if not force and (now - self._last_render) < 0.05:
+            return
+        self._last_render = now
+
+        cols = shutil.get_terminal_size(fallback=(80, 20)).columns
+        barw = max(10, min(40, cols - 40))
+        pct = 0.0 if self.total == 0 else min(1.0, self.n / self.total)
+        filled = int(barw * pct)
+        bar = "#" * filled + "-" * (barw - filled)
+        elapsed = now - self.start
+        rate = self.n / elapsed if elapsed > 0 else 0.0
+        eta = (self.total - self.n) / rate if rate > 0 else None
+        text = f"\r{self.label} [{bar}] {self.n}/{self.total}  {pct*100:5.1f}%  ETA {self._fmt_hms(eta)}"
+        sys.stdout.write(text)
+        sys.stdout.flush()
+
+    def update(self, n: int = 1):
+        self.n += int(n)
+        self._render()
+
+    def close(self):
+        self._render(force=True)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+
+def render_analysis_for_reports(paths: List[Path], verbosity: int = 1, *, show_progress: bool = True) -> str:
     """
     Produce a readable diff for each (keep, loser) pair in one or more reports.
     verbosity currently:
@@ -179,6 +225,8 @@ def render_analysis_for_reports(paths: List[Path], verbosity: int = 1) -> str:
       - Videos to delete (losers)
       - Space to save
       - Total pairs analyzed
+
+    While running, a textual progress bar is shown if show_progress=True and stdout is a TTY.
     """
     out: List[str] = []
     total_pairs = 0
@@ -187,6 +235,21 @@ def render_analysis_for_reports(paths: List[Path], verbosity: int = 1) -> str:
     overall_groups = 0
     overall_losers = 0
     overall_space_bytes = 0
+
+    # Pre-count total pairs for the progress bar
+    planned_pairs = 0
+    for rp in paths:
+        try:
+            d = load_report(rp)
+            groups = d.get("groups") or {}
+            for g in groups.values():
+                planned_pairs += len(g.get("losers") or [])
+        except Exception:
+            continue
+
+    prog: Optional[_TextProgress] = None
+    if show_progress and sys.stdout.isatty():
+        prog = _TextProgress(planned_pairs, label="Analyzing report(s)")
 
     for rp in paths:
         data = load_report(rp)
@@ -226,7 +289,12 @@ def render_analysis_for_reports(paths: List[Path], verbosity: int = 1) -> str:
                         pass
                 if verbosity >= 1:
                     out.extend(f"    {line}" for line in _render_pair_diff(keep, l, a, b))
+                if prog:
+                    prog.update(1)
         out.append("")
+
+    if prog:
+        prog.close()
 
     # Bottom-of-report overall stats
     out.append("Overall totals:")
@@ -259,7 +327,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Stages to run: 1=size prefilter, 2=hashing, 3=metadata, 4=phash/subset. You may also pass 5 (no-op) for convenience. Examples: 1-2 or 1,3-4 or all"
     )
 
-    # Mode label (informational only; printed in banner)
+    # Mode label (informational only; printed in the banner)
     p.add_argument("-M", "--mode", type=str, default="hash", help="Free-form label for the run (printed in the banner)")
 
     # Performance & GPU
@@ -297,6 +365,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     # Report analysis
     p.add_argument("-Y", "--analyze-report", action="append", help="Path to a JSON report to analyze (winner↔loser diffs). Repeatable.")
     p.add_argument("--diff-verbosity", type=int, default=1, choices=[0, 1], help="Analysis verbosity. 0=totals only, 1=pairs with stats.")
+    p.add_argument("--no-progress", action="store_true", help="Disable textual progress bar during report analysis.")
 
     # Apply report
     p.add_argument("-A", "--apply-report", type=str, help="Read a JSON report and delete/move all listed losers")
@@ -321,7 +390,7 @@ def _maybe_print_or_analyze(args: argparse.Namespace) -> Optional[int]:
     # Analyze
     if args.analyze_report and not args.directory and not args.apply_report:
         paths = [Path(p).expanduser().resolve() for p in args.analyze_report]
-        text = render_analysis_for_reports(paths, verbosity=int(args.diff_verbosity))
+        text = render_analysis_for_reports(paths, verbosity=int(args.diff_verbosity), show_progress=not args.no_progress)
         print(text)
         return 0
     return None
@@ -406,6 +475,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         stages = parse_pipeline(args.pipeline)
+        # run_pipeline in your repo already accepts skip_paths; if not, remove this kwarg or add it to pipeline.
         groups = run_pipeline(
             root=root,
             patterns=patterns,
@@ -414,7 +484,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             cfg=cfg,
             cache=cache,
             reporter=reporter,
-            skip_paths=skip_paths,
+            skip_paths=skip_paths,  # harmless if pipeline ignores unknown kwarg? keep in sync with pipeline signature
         )
 
         keep_order = ["longer", "resolution", "video-bitrate", "newer", "smaller", "deeper"]
@@ -434,7 +504,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(pretty_print_reports(paths, verbosity=int(args.verbosity)))
         if args.analyze_report:
             paths = [Path(p).expanduser().resolve() for p in args.analyze_report]
-            print(render_analysis_for_reports(paths, verbosity=int(args.diff_verbosity)))
+            print(render_analysis_for_reports(paths, verbosity=int(args.diff_verbosity), show_progress=not args.no_progress))
 
         return 0
     finally:
