@@ -234,6 +234,7 @@ def apply_report(
     vault: Optional[Path] = None,
     reporter: Any = None,
     verbosity: int = 0,
+    full_file_names: bool = False,   # NEW: show real paths if True; otherwise compact vset… aliases
 ) -> Tuple:
     """
     Apply a report:
@@ -247,8 +248,7 @@ def apply_report(
               - Delete/backup the loser.
               - Create a HARDLINK at the loser path pointing to the vaulted file.
 
-    Returns (ops_count, total_bytes_saved_from_losers):
-      - ops_count = number of paths linked (vault mode) or losers processed (delete/backup mode)
+    Returns (ops_count, total_bytes_saved_from_losers)
 
     Prints group-by-group details according to `verbosity`:
       V=2 – full stats and every planned operation
@@ -280,6 +280,61 @@ def apply_report(
                 return str(p)
         return str(p)
 
+    # helpers for compact aliases
+    def _friendly_gid(method: str, gid: str) -> str:
+        if method == "collapsed" and gid.startswith("collapsed:"):
+            try:
+                n = int(gid.split(":", 1)[1])
+                return f"Duplicate Set {n}"
+            except Exception:
+                return f"Duplicate Set ({gid})"
+        return f"{gid}"
+
+    def _set_number(method: str, gid: str, fallback_index: int) -> int:
+        if method == "collapsed" and gid.startswith("collapsed:"):
+            try:
+                return int(gid.split(":", 1)[1])
+            except Exception:
+                pass
+        # try to pull trailing digits
+        digits = "".join(ch for ch in gid if ch.isdigit())
+        try:
+            if digits:
+                return int(digits)
+        except Exception:
+            pass
+        return fallback_index
+
+    def _group_base(paths: List[str]) -> str:
+        if not paths:
+            return ""
+        prefix = os.path.commonprefix(paths)
+        i = max(prefix.rfind("/"), prefix.rfind("\\"))
+        return prefix[: i + 1] if i >= 0 else ""
+
+    def _first_folder(trimmed: str) -> str:
+        if not trimmed:
+            return ""
+        for sep in ("/", "\\"):
+            if sep in trimmed:
+                return trimmed.split(sep, 1)[0]
+        return ""
+
+    # colors (only when TTY)
+    def _c(s: str, code: str) -> str:
+        if not os.isatty(1) or os.getenv("NO_COLOR"):
+            return s
+        return f"\x1b[{code}m{s}\x1b[0m"
+
+    C_HDR  = "96;1"   # bright cyan bold
+    C_KEEP = "92"     # green
+    C_LOSE = "91"     # red
+    C_VAULT= "95"     # magenta
+    C_LINK = "94"     # bright blue
+    C_REPL = "93"     # yellow for REPLACE
+    C_FOLD = "36"     # cyan folder token
+    C_DIM  = "2"
+
     # Progress
     if reporter:
         reporter.start_stage("apply report", total=len(groups))
@@ -301,6 +356,7 @@ def apply_report(
 
     link_ops = 0
     losers_processed = 0
+    set_sizes: List[int] = []
 
     if verbosity >= 0:
         print(f"Applying report: {report_path}")
@@ -339,41 +395,8 @@ def apply_report(
                 return cand
             i += 1
 
-    # colors (only when TTY)
-    def _c(s: str, code: str) -> str:
-        if not os.isatty(1) or os.getenv("NO_COLOR"):
-            return s
-        return f"\x1b[{code}m{s}\x1b[0m"
-
-    C_HDR = "96;1"   # bright cyan bold
-    C_KEEP = "92"    # green
-    C_LOSE = "91"    # red
-    C_VAULT = "95"   # magenta
-    C_LINK = "94"    # bright blue
-    C_DIM = "2"
-
-    # stats: set sizes
-    set_sizes: List[int] = []
-
-    # helper: friendlier name for collapsed groups
-    def _friendly_gid(method: str, gid: str) -> str:
-        if method == "collapsed" and gid.startswith("collapsed:"):
-            try:
-                n = int(gid.split(":", 1)[1])
-                return f"Duplicate Set {n}"
-            except Exception:
-                return f"Duplicate Set ({gid})"
-        return f"{gid}"
-
-    # helper: group base (to trim repeated folders)
-    def _group_base(paths: List[str]) -> str:
-        if not paths:
-            return ""
-        prefix = os.path.commonprefix(paths)
-        i = max(prefix.rfind("/"), prefix.rfind("\\"))
-        return prefix[: i + 1] if i >= 0 else ""
-
-    for gid, g in groups.items():
+    # iterate with enumeration for fallback numbering
+    for idx, (gid, g) in enumerate(groups.items(), start=0):
         keep = Path(g.get("keep", "")) if g.get("keep") else None
         losers = [Path(x) for x in (g.get("losers") or [])]
         method = g.get("method", "unknown")
@@ -389,16 +412,38 @@ def apply_report(
         def _trim(s: str) -> str:
             return s[len(gbase):] if gbase and s.startswith(gbase) else s
 
+        # numbering + alias names (only for compact mode)
+        set_num = _set_number(method, gid, idx)
+        keep_ext = keep.suffix if keep else ".mp4"
+        keep_alias = f"vset{set_num}_v1{keep_ext}"
+        loser_aliases = [f"vset{set_num}_v{i+2}{p.suffix}" for i, p in enumerate(losers)]
+        vault_short = f"{vault.name}/{keep_alias}" if vault else keep_alias
+
+        def _fold_colored(path_rel_trim: str) -> str:
+            folder = _first_folder(path_rel_trim)
+            if not folder:
+                return f"{keep_alias}"
+            return f"{_c(folder, C_FOLD)}/{keep_alias}"
+
+        def _fold_colored_loser(trim: str, alias: str) -> str:
+            folder = _first_folder(trim)
+            if not folder:
+                return alias
+            return f"{_c(folder, C_FOLD)}/{alias}"
+
         # Per-group headers (V1+)
         if verbosity >= 1:
             print(_c(f"[{_friendly_gid(method, gid)}]", C_HDR))
             if gbase:
                 print(_c(f"  Base  : {gbase}", C_DIM))
             if keep:
-                print(f"  KEEP  : {_c(_trim(rel_keep), C_KEEP)}")
+                if full_file_names:
+                    print(f"  KEEP  : {_c(_trim(rel_keep), C_KEEP)}")
+                else:
+                    print(f"  KEEP  : {_c(_fold_colored(_trim(rel_keep)), C_KEEP)}")
             print(f"  LOSERS: {len(losers)}")
 
-        # Detailed diffs (V2)
+        # Detailed diffs (V2) — these are meaningful only with real paths
         if verbosity >= 2 and keep:
             astats = _probe_stats(keep)
             for l, rl in zip(losers, rel_losers):
@@ -410,12 +455,12 @@ def apply_report(
         planned_vault_dest: Optional[Path] = None
         if vault and keep:
             planned_vault_dest = _choose_vault_dest(vault, keep, evidence)
-            # unique original paths that will become links
-            link_targets = [keep, *losers]
-            link_targets = list(dict.fromkeys(link_targets))
             if verbosity >= 1:
-                print(f"  Vault : {_c('MOVE', C_VAULT)} -> {rel(planned_vault_dest)}")
-                print(f"  Links : {len(link_targets)} path(s) will point to the vaulted file")
+                if full_file_names:
+                    print(f"  Vault : {_c('MOVE', C_VAULT)} -> {rel(planned_vault_dest)}")
+                else:
+                    print(f"  Vault : {_c('MOVE', C_VAULT)} -> {vault_short}")
+                print(f"  Links : {1 + len(losers)} path(s) will point to the vaulted file")
         else:
             if verbosity >= 1:
                 print("  Action: delete losers" + (" (backup move)" if backup else ""))
@@ -423,17 +468,34 @@ def apply_report(
         # Execute (or dry-run)
         if dry_run:
             if vault and planned_vault_dest and keep:
-                print(f"    {_c('[DRY] MOVE', C_VAULT)} {_trim(rel_keep)} -> {rel(planned_vault_dest)}")
-                print(f"    {_c('[DRY] RECREATE HARDLINK', C_LINK)} at {_trim(rel_keep)} -> {rel(planned_vault_dest)}")
-                for rl in rel_losers:
-                    print(f"    {_c('[DRY] REPLACE', C_DIM)} {_trim(rl)} WITH {_c('HARDLINK', C_LINK)} -> {rel(planned_vault_dest)}")
+                if full_file_names:
+                    print(f"    {_c('[DRY] MOVE', C_VAULT)} {_trim(rel_keep)} -> {rel(planned_vault_dest)}")
+                    print(f"    {_c('[DRY] RECREATE HARDLINK', C_LINK)} at {_trim(rel_keep)} -> {rel(planned_vault_dest).rsplit('/',1)[0]}")
+                    print(f"        {_c('WITH HARDLINK', C_LINK)} -> {planned_vault_dest.name}")
+                else:
+                    print(f"    {_c('[DRY] MOVE', C_VAULT)} {_fold_colored(_trim(rel_keep))} -> {vault_short}")
+                    print(f"    {_c('[DRY] RECREATE HARDLINK', C_LINK)} at {_fold_colored(_trim(rel_keep))} -> {vault.name}")
+                    print(f"        {_c('WITH HARDLINK', C_LINK)} -> {keep_alias}")
+                for rl, la in zip(rel_losers, loser_aliases):
+                    if full_file_names:
+                        print(f"    {_c('[DRY] REPLACE', C_REPL)} {_trim(rl)}")
+                        print(f"        {_c('WITH HARDLINK', C_LINK)} -> {planned_vault_dest.name}")
+                    else:
+                        print(f"    {_c('[DRY] REPLACE', C_REPL)} {_fold_colored_loser(_trim(rl), la)}")
+                        print(f"        {_c('WITH HARDLINK', C_LINK)} -> {keep_alias}")
                 link_ops += 1 + len(losers)
             else:
-                for rl in rel_losers:
+                for rl, la in zip(rel_losers, loser_aliases):
                     if backup:
-                        print(f"    {_c('[DRY] BACKUP MOVE', C_DIM)} {_trim(rl)} -> {backup}")
+                        if full_file_names:
+                            print(f"    {_c('[DRY] BACKUP MOVE', C_DIM)} {_trim(rl)} -> {backup}")
+                        else:
+                            print(f"    {_c('[DRY] BACKUP MOVE', C_DIM)} {_fold_colored_loser(_trim(rl), la)} -> {backup}")
                     else:
-                        print(f"    {_c('[DRY] DELETE', C_LOSE)} {_trim(rl)}")
+                        if full_file_names:
+                            print(f"    {_c('[DRY] DELETE', C_LOSE)} {_trim(rl)}")
+                        else:
+                            print(f"    {_c('[DRY] DELETE', C_LOSE)} {_fold_colored_loser(_trim(rl), la)}")
             losers_processed += len(losers)
         else:
             try:
@@ -481,7 +543,7 @@ def apply_report(
 
         if verbosity == 0:
             # terse 1-liner per group
-            keep_name = _trim(rel_keep) if keep else "(missing)"
+            keep_name = (_trim(rel_keep) if full_file_names else keep_alias) if keep else "(missing)"
             links = (1 + len(losers)) if vault else 0
             print(f"[{_friendly_gid(method, gid)}] keep: {keep_name}  <- {len(losers)} losers; +{links} links")
 

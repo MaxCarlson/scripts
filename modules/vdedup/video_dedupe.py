@@ -393,6 +393,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("-U", "--vault", type=str, help="Vault root for canonical content. With -A, move winner into the vault and hardlink original paths to it.")
     p.add_argument("-f", "--force", action="store_true", help="Do not prompt for deletion (apply-report mode)")
     p.add_argument("-x", "--dry-run", action="store_true", help="No changes; just print / write report")
+    p.add_argument("-E", "--full-file-names", action="store_true", help="Show full original paths in apply output (disable compact vset aliases)")
 
     # Collapse report
     p.add_argument("-k", "--collapse-report", type=str, help="Collapse an existing report by merging overlapping groups.")
@@ -480,6 +481,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 vault=vault,
                 reporter=reporter,
                 verbosity=int(args.verbosity),
+                full_file_names=bool(args.full_file_names),
             )
             reporter.set_results(dup_groups=0, losers_count=count, bytes_total=size)
             if args.vault:
