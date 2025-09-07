@@ -112,9 +112,6 @@ class ProgressReporter:
         self._ticker: Optional[threading.Thread] = None
         self._stop_evt = threading.Event()
 
-    # ---------------------------------------------------------------------------------------------
-    # UI setup
-    # ---------------------------------------------------------------------------------------------
     def _term_cols(self) -> int:
         try:
             return shutil.get_terminal_size(fallback=(120, 30)).columns
@@ -161,7 +158,6 @@ class ProgressReporter:
         self._add_line("banner", Stat("banner", self.banner, format_string="{}", no_expand=True, display_width=bw))
 
         if self._layout.stacked:
-            # 1-per-line
             w = bw
             self._add_line("stage", Stat("stage", "idle", prefix="Stage: ", format_string="{}", no_expand=True, display_width=w))
             self._add_line("elapsed", Stat("elapsed", "00:00:00", prefix="Elapsed: ", format_string="{}", no_expand=True, display_width=w))
@@ -179,7 +175,6 @@ class ProgressReporter:
             self._add_line("bytes_rm", Stat("bytes_rm", "0 MiB", prefix="To remove: ", format_string="{}", no_expand=True, display_width=w))
             self._add_line("total_elapsed", Stat("tot_elapsed", "00:00:00", prefix="Total elapsed: ", format_string="{}", no_expand=True, display_width=w))
         else:
-            # Multi-column
             self._add_line(
                 "stage",
                 Stat("stage", "idle", prefix="Stage: ", format_string="{}", no_expand=True, display_width=22),
@@ -214,14 +209,10 @@ class ProgressReporter:
             )
             self._add_line("total", Stat("tot_elapsed", "00:00:00", prefix="Total elapsed: ", format_string="{}", no_expand=True, display_width=16))
 
-        # Ticker thread: updates ETA/elapsed continuously
         self._ticker = threading.Thread(target=self._tick_loop, daemon=True)
         self._ticker.start()
-        self.flush()  # initial paint
+        self.flush()
 
-    # ---------------------------------------------------------------------------------------------
-    # Live updates
-    # ---------------------------------------------------------------------------------------------
     def _tick_loop(self):
         while not self._stop_evt.is_set():
             try:
@@ -236,10 +227,7 @@ class ProgressReporter:
         eta_text = _fmt_hms(self._estimate_remaining())
         elapsed_stage = _fmt_hms(time.time() - self.stage_start_ts)
         elapsed_total = _fmt_hms(time.time() - self.start_ts)
-
-        # stage ETA
         self.dash.update_stat("stage", "eta", eta_text)  # type: ignore
-        # elapsed for stage (wide) or its dedicated line (stacked)
         if self._layout.stacked:
             self.dash.update_stat("elapsed", "elapsed", elapsed_stage)  # type: ignore
             self.dash.update_stat("total_elapsed", "tot_elapsed", elapsed_total)  # type: ignore
@@ -281,9 +269,6 @@ class ProgressReporter:
                 self.dash.update_stat("results", "dup_files", self.losers_total)  # type: ignore
                 self.dash.update_stat("results", "bytes_rm", f"{self.bytes_to_remove/1048576:.0f} MiB")  # type: ignore
 
-    # ---------------------------------------------------------------------------------------------
-    # Stage & counters
-    # ---------------------------------------------------------------------------------------------
     def start_stage(self, name: str, total: int):
         with self.lock:
             self.stage_name = name
@@ -340,7 +325,6 @@ class ProgressReporter:
             self.hash_done += int(n)
             if cache_hit:
                 self.cache_hits += int(n)
-        # treat as stage progress for Q2/Q3/Q4
         self._bump_stage(n)
         self.flush()
 
@@ -361,9 +345,6 @@ class ProgressReporter:
             self.bytes_to_remove = int(bytes_total)
         self.flush()
 
-    # ---------------------------------------------------------------------------------------------
-    # Shutdown
-    # ---------------------------------------------------------------------------------------------
     def stop(self):
         if not self.enable_dash:
             return

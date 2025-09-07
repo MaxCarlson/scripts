@@ -22,11 +22,11 @@ never looks idle while work is happening.
 from __future__ import annotations
 
 import concurrent.futures
-import dataclasses
 import hashlib
 import os
 import sys
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple, Union
 
@@ -37,54 +37,81 @@ try:
 except Exception:
     _BLAKE3_AVAILABLE = False
 
-# Local modules
-try:
-    from .models import FileMeta, VideoMeta
-except Exception:
-    # Fallback minimal stubs (in case of direct module execution)
-    @dataclasses.dataclass(frozen=True)
-    class FileMeta:
-        path: Path
-        size: int
-        mtime: float
-        sha256: Optional[str] = None
+# Local modules (absolute imports so CLI works installed or from source)
+from vdedup.models import FileMeta, VideoMeta
+from vdedup.probe import probe_video
+from vdedup.phash import compute_phash_signature, phash_distance
+from vdedup.progress import ProgressReporter
+from vdedup.cache import HashCache
 
-    @dataclasses.dataclass(frozen=True)
-    class VideoMeta(FileMeta):
-        duration: Optional[float] = None
-        width: Optional[int] = None
-        height: Optional[int] = None
-        container: Optional[str] = None
-        vcodec: Optional[str] = None
-        acodec: Optional[str] = None
-        overall_bitrate: Optional[int] = None
-        video_bitrate: Optional[int] = None
-        phash_signature: Optional[Tuple[int, ...]] = None
 
-# These are optional; Q3/Q4 will gracefully degrade if missing.
-try:
-    from .probe import probe_video  # -> VideoMeta
-except Exception:
-    probe_video = None  # type: ignore
+# -------------------------------------------------------------------------------------------------
+# Config & parsing
+# -------------------------------------------------------------------------------------------------
 
-try:
-    from .phash import compute_phash_signature, alignable_distance  # type: ignore
-except Exception:
-    compute_phash_signature = None  # type: ignore
-    alignable_distance = None  # type: ignore
+@dataclass
+class PipelineConfig:
+    threads: int = 8
+    # metadata grouping
+    duration_tolerance: float = 2.0
+    same_res: bool = False
+    same_codec: bool = False
+    same_container: bool = False
+    # phash
+    phash_frames: int = 5
+    phash_threshold: int = 12
+    # subset (sliding alignment)
+    subset_detect: bool = False
+    subset_min_ratio: float = 0.30
+    subset_frame_threshold: int = 14
+    # gpu hint for pHash
+    gpu: bool = False
 
-try:
-    from .progress import ProgressReporter  # only for type hints
-except Exception:
-    ProgressReporter = object  # type: ignore
+
+def parse_pipeline(spec: Optional[str]) -> List[int]:
+    """
+    Parse strings like: "1-2", "1,3-4", "4", "all".
+    Empty/None -> [1,2,3,4] (full pipeline).
+    """
+    if not spec:
+        return [1, 2, 3, 4]
+    s = spec.strip().lower()
+    if s in {"all", "full", "1-4"}:
+        return [1, 2, 3, 4]
+    parts = [p.strip() for p in s.split(",") if p.strip()]
+    out: set[int] = set()
+    for p in parts:
+        if "-" in p:
+            a, b = p.split("-", 1)
+            try:
+                a_i, b_i = int(a), int(b)
+                if a_i > b_i:
+                    a_i, b_i = b_i, a_i
+                for x in range(max(1, a_i), min(4, b_i) + 1):
+                    out.add(x)
+            except ValueError:
+                continue
+        else:
+            try:
+                x = int(p)
+                if 1 <= x <= 4:
+                    out.add(x)
+            except ValueError:
+                continue
+    r = sorted(out)
+    return r or [1, 2, 3, 4]
 
 
 # -------------------------------------------------------------------------------------------------
 # Helpers
 # -------------------------------------------------------------------------------------------------
 
+_VIDEO_EXT = {".mp4", ".mkv", ".mov", ".avi", ".wmv", ".flv", ".webm", ".m4v"}
+
+
 def _is_video_suffix(p: Path) -> bool:
-    return p.suffix.lower() in {".mp4", ".mkv", ".mov", ".avi", ".wmv", ".flv", ".webm", ".m4v"}
+    return p.suffix.lower() in _VIDEO_EXT
+
 
 def _iter_files(root: Path, patterns: Optional[Sequence[str]], max_depth: Optional[int]) -> Iterator[Path]:
     """Yield files under root matching any of the provided glob patterns. Case-insensitive on Windows."""
@@ -103,7 +130,7 @@ def _iter_files(root: Path, patterns: Optional[Sequence[str]], max_depth: Option
                 yield Path(dp) / name
         return
 
-    # Normalise patterns: accept "mp4" or ".mp4" or "*.mp4"
+    # Patterns are normalized by CLI; still accept "mp4" or ".mp4" or "*.mp4"
     norm: List[str] = []
     for pat in patterns:
         s = (pat or "").strip()
@@ -166,72 +193,7 @@ def _blake3_partial_hex(path: Path, head: int = 1 << 20, tail: int = 1 << 20, mi
     return h.hexdigest()
 
 
-# -------------------------------------------------------------------------------------------------
-# Public API
-# -------------------------------------------------------------------------------------------------
-
-@dataclasses.dataclass
-class PipelineConfig:
-    threads: int = 8
-    # metadata grouping
-    duration_tolerance: float = 2.0
-    same_res: bool = False
-    same_codec: bool = False
-    same_container: bool = False
-    # phash
-    phash_frames: int = 5
-    phash_threshold: int = 12
-    # subset
-    subset_detect: bool = False
-    subset_min_ratio: float = 0.30
-    subset_frame_threshold: int = 14
-    # gpu hint for pHash
-    gpu: bool = False
-
-
-def parse_pipeline(spec: str) -> List[int]:
-    """
-    Parse strings like: "1-2", "1,3-4", "4"
-    Returns sorted unique stage integers.
-    """
-    if not spec:
-        return [1, 2]
-    parts = [p.strip() for p in str(spec).split(",") if p.strip()]
-    out: set[int] = set()
-    for p in parts:
-        if "-" in p:
-            a, b = p.split("-", 1)
-            try:
-                a_i, b_i = int(a), int(b)
-                if a_i > b_i:
-                    a_i, b_i = b_i, a_i
-                for x in range(a_i, b_i + 1):
-                    if 1 <= x <= 4:
-                        out.add(x)
-            except ValueError:
-                continue
-        else:
-            try:
-                x = int(p)
-                if 1 <= x <= 4:
-                    out.add(x)
-            except ValueError:
-                continue
-    return sorted(out) or [1, 2]
-
-
-# -------------------------------------------------------------------------------------------------
-# Core pipeline
-# -------------------------------------------------------------------------------------------------
-
-Meta = Union[FileMeta, VideoMeta]
-GroupMap = Dict[str, List[Meta]]
-
-def _collect_filemeta(p: Path) -> FileMeta:
-    st = p.stat()
-    return FileMeta(path=p, size=int(st.st_size), mtime=float(st.st_mtime))
-
-def _safe_cache_get(cache, path: Path, size: int, mtime: float) -> Optional[str]:
+def _safe_cache_get(cache: Optional[HashCache], path: Path, size: int, mtime: float) -> Optional[str]:
     """
     Try several common cache APIs to retrieve a sha256 for (path,size,mtime).
     Returns hex digest or None.
@@ -248,7 +210,8 @@ def _safe_cache_get(cache, path: Path, size: int, mtime: float) -> Optional[str]
         return None
     return None
 
-def _safe_cache_put(cache, path: Path, size: int, mtime: float, sha256: str) -> None:
+
+def _safe_cache_put(cache: Optional[HashCache], path: Path, size: int, mtime: float, sha256: str) -> None:
     try:
         if cache is None:
             return
@@ -262,6 +225,35 @@ def _safe_cache_put(cache, path: Path, size: int, mtime: float, sha256: str) -> 
         pass
 
 
+def _alignable_distance(a_sig: Sequence[int], b_sig: Sequence[int], per_frame_thresh: int) -> Optional[float]:
+    """
+    Best normalized distance between two signature sequences by allowing
+    a sliding alignment (to detect subset relations). Return the average Hamming
+    distance per aligned frame for the best offset; None if not alignable.
+    """
+    if not a_sig or not b_sig:
+        return None
+    A, B = (a_sig, b_sig) if len(a_sig) <= len(b_sig) else (b_sig, a_sig)
+    best = None
+    for offset in range(0, len(B) - len(A) + 1):
+        dist = 0
+        for i in range(len(A)):
+            x = A[i] ^ B[i + offset]
+            dist += x.bit_count() if hasattr(int, "bit_count") else bin(x).count("1")
+        avg = dist / len(A)
+        if best is None or avg < best:
+            best = avg
+    return best if (best is not None and best <= per_frame_thresh) else None
+
+
+# -------------------------------------------------------------------------------------------------
+# Main pipeline
+# -------------------------------------------------------------------------------------------------
+
+Meta = Union[FileMeta, VideoMeta]
+GroupMap = Dict[str, List[Meta]]
+
+
 def run_pipeline(
     root: Path,
     *,
@@ -269,7 +261,7 @@ def run_pipeline(
     max_depth: Optional[int],
     selected_stages: Sequence[int],
     cfg: PipelineConfig,
-    cache=None,
+    cache: Optional[HashCache] = None,
     reporter: Optional[ProgressReporter] = None,
 ) -> GroupMap:
     """
@@ -280,52 +272,52 @@ def run_pipeline(
       - updates group/results counters
     """
     root = Path(root).expanduser().resolve()
+
     # -----------------------------
     # Stage: scanning / enumeration
     # -----------------------------
-    if reporter:
-        reporter.start_stage("scanning", total=1)  # unknown total until we collect
-
     files: List[Path] = list(_iter_files(root, patterns, max_depth))
     if reporter:
         reporter.set_total_files(len(files))
-        reporter.flush()
+        reporter.start_stage("scanning", total=len(files))
 
-    # Build FileMeta list and size index; bump "scanned" while we stat().
     metas: List[FileMeta] = []
     by_size: Dict[int, List[FileMeta]] = defaultdict(list)
 
-    for p in files:
+    def scan_one(p: Path) -> None:
         try:
             st = p.stat()
             fm = FileMeta(path=p, size=int(st.st_size), mtime=float(st.st_mtime))
-            metas.append(fm)
-            by_size[fm.size].append(fm)
-            if reporter:
-                reporter.inc_scanned(1, bytes_added=fm.size, is_video=_is_video_suffix(p))
-        except FileNotFoundError:
-            continue
+        except Exception:
+            fm = FileMeta(path=p, size=0, mtime=0.0)
+        metas.append(fm)
+        by_size[fm.size].append(fm)
+        if reporter:
+            reporter.inc_scanned(1, bytes_added=fm.size, is_video=_is_video_suffix(p))
 
-    # This completes the 'scanning' placeholder
-    if reporter:
-        reporter.flush()
-
-    groups: GroupMap = {}
+    if files:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(cfg.threads))) as ex:
+            list(ex.map(scan_one, files))
 
     # -------------------------------------------
     # Q1: size buckets (cheap; no hashing needed)
     # -------------------------------------------
+    # We don't start a dedicated stage here (the heavy part was scanning).
+    # But we do precompute which files collide on size for Q2.
+    size_collisions: List[FileMeta] = []
     if 1 in selected_stages:
-        # We don't start a dedicated stage here (the heavy part was scanning).
-        # But we can account groups formed by size alone if you want a "candidate" view.
-        pass  # kept as lightweight step
+        for bucket in by_size.values():
+            if len(bucket) > 1:
+                size_collisions.extend(bucket)
+
+    groups: GroupMap = {}
 
     # -------------------------------------------------------
     # Q2: partial (blake3 slices) -> full sha256 on collisions
     # -------------------------------------------------------
     if 2 in selected_stages:
         # Candidates for partial hashing are the sizes with more than one file
-        partial_candidates: List[FileMeta] = [m for lst in by_size.values() if len(lst) > 1 for m in lst]
+        partial_candidates: List[FileMeta] = size_collisions[:]
 
         if reporter:
             reporter.start_stage("Q2 partial", total=len(partial_candidates))
@@ -368,7 +360,7 @@ def run_pipeline(
                 if reporter:
                     reporter.inc_hashed(1, cache_hit=False)
                 return m, sha, False
-            except FileNotFoundError:
+            except Exception:
                 if reporter:
                     reporter.inc_hashed(1, cache_hit=False)
                 return m, None, False
@@ -393,38 +385,34 @@ def run_pipeline(
     # Q3: ffprobe metadata (duration/format/codec…)
     # ---------------------------------------------
     if 3 in selected_stages:
-        if probe_video is None:
-            # Can't probe; skip stage gracefully
-            pass
-        else:
-            # Only probe videos; to reduce cost, consider only sizes that are not already exact dupes
-            vids: List[VideoMeta] = []
-
+        # Probe only videos
+        vids_in: List[VideoMeta] = [VideoMeta(path=m.path, size=m.size, mtime=m.mtime) for m in metas if _is_video_suffix(m.path)]
+        if vids_in:
             if reporter:
-                # We "probe" only once per file; set totals accordingly
-                reporter.start_stage("Q3 metadata", total=len(metas))
-                reporter.set_hash_total(len(metas))  # reuse hashed bar for "probed"
+                reporter.start_stage("Q3 metadata", total=len(vids_in))
+                reporter.set_hash_total(len(vids_in))  # reuse hashed bar for "probed"
 
-            def _probe_one(m: FileMeta) -> Optional[VideoMeta]:
+            def _probe_one(vm: VideoMeta) -> Optional[VideoMeta]:
                 try:
-                    vm = probe_video(m.path)
+                    out = probe_video(vm.path)
                     if reporter:
                         reporter.inc_hashed(1, cache_hit=False)
-                    return vm
+                    return out
                 except Exception:
                     if reporter:
                         reporter.inc_hashed(1, cache_hit=False)
                     return None
 
+            probed: List[VideoMeta] = []
             with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(cfg.threads))) as ex:
-                for vm in ex.map(_probe_one, metas):
+                for vm in ex.map(_probe_one, vids_in):
                     if vm:
-                        vids.append(vm)
+                        probed.append(vm)
 
             # Simple metadata-based grouping by duration buckets within tolerance
             tol = max(0.0, float(cfg.duration_tolerance))
             bucket: Dict[int, List[VideoMeta]] = defaultdict(list)
-            for v in vids:
+            for v in probed:
                 d = v.duration if v.duration is not None else -1.0
                 bucket[int(d // max(1.0, tol))].append(v)
 
@@ -455,7 +443,7 @@ def run_pipeline(
                 if ra != rb:
                     parent[rb] = ra
 
-            for v in vids:
+            for v in probed:
                 parent[id(v)] = id(v)
 
             keys = sorted(bucket.keys())
@@ -472,59 +460,63 @@ def run_pipeline(
                             _union(id(a), id(b))
 
             comps: Dict[int, List[VideoMeta]] = defaultdict(list)
-            for v in vids:
+            for v in probed:
                 comps[_find(id(v))].append(v)
 
             formed = 0
-            for idx, comp in comps.items():
+            gid = 0
+            for comp in comps.values():
                 if len(comp) > 1:
-                    groups[f"meta:{idx}"] = comp
+                    groups[f"meta:{gid}"] = comp
+                    gid += 1
                     formed += 1
             if reporter and formed:
                 reporter.inc_group("meta", formed)
                 reporter.flush()
 
+            # Replace input list for Q4 with probed metadata
+            video_for_q4 = probed
+        else:
+            video_for_q4 = []
+    else:
+        # If Q3 not selected, still allow Q4 to run by synthesizing bare VideoMeta for video files
+        video_for_q4 = [VideoMeta(path=m.path, size=m.size, mtime=m.mtime) for m in metas if _is_video_suffix(m.path)]
+
     # ----------------------------------------------------------
     # Q4: pHash grouping & optional subset detection (expensive)
     # ----------------------------------------------------------
-    if 4 in selected_stages and compute_phash_signature is not None:
-        # Compute signatures
-        # We will only do phash for videos we haven't conclusively grouped by hash already
-        candidates: List[VideoMeta] = []
-        for fm in metas:
-            if _is_video_suffix(fm.path):
-                # If we already grouped the file by exact hash, we can still include it for subset checks,
-                # but it’s fine either way. We'll include all videos for simplicity.
-                vm = probe_video(fm.path) if probe_video else VideoMeta(path=fm.path, size=fm.size, mtime=fm.mtime)
-                candidates.append(vm)
-
+    if 4 in selected_stages and video_for_q4:
         if reporter:
-            reporter.start_stage("Q4 pHash", total=len(candidates))
-            reporter.set_hash_total(len(candidates))
+            reporter.start_stage("Q4 pHash", total=len(video_for_q4))
+            reporter.set_hash_total(len(video_for_q4))
 
-        def _do_phash(vm: VideoMeta) -> Optional[VideoMeta]:
-            try:
-                sig = compute_phash_signature(vm.path, frames=cfg.phash_frames, gpu=cfg.gpu)  # type: ignore[misc]
-                if sig:
-                    object.__setattr__(vm, "phash_signature", sig)
-            finally:
-                if reporter:
-                    reporter.inc_hashed(1, cache_hit=False)
+        def _do_phash(vm: VideoMeta) -> VideoMeta:
+            sig = compute_phash_signature(vm.path, frames=cfg.phash_frames, gpu=cfg.gpu)
+            if sig:
+                return VideoMeta(
+                    path=vm.path, size=vm.size, mtime=vm.mtime,
+                    duration=vm.duration, width=vm.width, height=vm.height,
+                    container=vm.container, vcodec=vm.vcodec, acodec=vm.acodec,
+                    overall_bitrate=vm.overall_bitrate, video_bitrate=vm.video_bitrate,
+                    phash_signature=tuple(int(x) for x in sig),
+                )
             return vm
 
         phashed: List[VideoMeta] = []
-        if candidates:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(cfg.threads))) as ex:
-                for vm in ex.map(_do_phash, candidates):
-                    if vm and vm.phash_signature:
-                        phashed.append(vm)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(cfg.threads))) as ex:
+            for vm in ex.map(_do_phash, video_for_q4):
+                phashed.append(vm)
+                if reporter:
+                    reporter.inc_hashed(1, cache_hit=False)
 
-        # Group by pHash proximity (simple threshold on aligned average distance)
+        # Group by pHash proximity (same-length matches) using simple per-frame threshold
         formed_phash = 0
         if phashed:
             used = set()
             gid = 0
             for i, a in enumerate(phashed):
+                if not a.phash_signature:
+                    continue
                 if i in used:
                     continue
                 grp = [a]
@@ -533,12 +525,13 @@ def run_pipeline(
                     if j in used:
                         continue
                     b = phashed[j]
-                    if not a.phash_signature or not b.phash_signature:
+                    if not b.phash_signature:
                         continue
-                    if alignable_distance is None:
+                    L = min(len(a.phash_signature), len(b.phash_signature))
+                    if L < 2:
                         continue
-                    best = alignable_distance(a.phash_signature, b.phash_signature, cfg.phash_threshold)  # type: ignore[misc]
-                    if best is not None:
+                    dist = phash_distance(a.phash_signature[:L], b.phash_signature[:L])
+                    if dist <= cfg.phash_threshold * L:
                         grp.append(b)
                         used.add(j)
                 if len(grp) > 1:
@@ -550,7 +543,7 @@ def run_pipeline(
             reporter.flush()
 
         # Optional subset detection (short version of longer one)
-        if cfg.subset_detect and phashed and alignable_distance is not None:
+        if cfg.subset_detect and phashed:
             formed_subset = 0
             gid = 0
             # split into short/long pairs and test duration ratio + aligned distance
@@ -563,22 +556,20 @@ def run_pipeline(
                     ratio = short.duration / (long.duration or 1.0)
                     if ratio < cfg.subset_min_ratio:
                         continue
-                    best = alignable_distance(short.phash_signature, long.phash_signature, cfg.subset_frame_threshold)  # type: ignore[misc]
+                    best = _alignable_distance(short.phash_signature, long.phash_signature, cfg.subset_frame_threshold)  # type: ignore[arg-type]
                     if best is not None:
                         groups[f"subset:{gid}"] = [short, long]
                         gid += 1
                         formed_subset += 1
             if reporter and formed_subset:
-                # progress has no dedicated counter; reuse groups_subset if available
                 try:
-                    reporter.groups_subset += formed_subset  # type: ignore[attr-defined]
+                    reporter.groups_subset += formed_subset  # surface in UI if present
                     reporter.flush()
                 except Exception:
                     pass
 
-    # Final flush of results
+    # Final flush of results (CLI will compute losers/bytes after keep-policy)
     if reporter:
-        # Summarize losers/bytes = 0 here; the CLI will compute precise counts after keep-policy
         reporter.set_results(dup_groups=len(groups), losers_count=0, bytes_total=0)
         reporter.flush()
     return groups

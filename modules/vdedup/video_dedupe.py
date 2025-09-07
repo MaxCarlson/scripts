@@ -19,22 +19,17 @@ Typical usage:
 from __future__ import annotations
 
 import argparse
-import json
-import os
 import sys
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from .pipeline import PipelineConfig, parse_pipeline, run_pipeline
-from .progress import ProgressReporter
-from .cache import HashCache
-from .grouping import choose_winners
-from .report import write_report, apply_report
+# NOTE: absolute imports so the CLI works whether installed or run from source
+from vdedup.pipeline import PipelineConfig, parse_pipeline, run_pipeline
+from vdedup.progress import ProgressReporter
+from vdedup.cache import HashCache
+from vdedup.grouping import choose_winners
+from vdedup.report import write_report, apply_report
 
-
-# -----------------------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------------------
 
 def _normalize_patterns(patts: Optional[List[str]]) -> Optional[List[str]]:
     if not patts:
@@ -58,42 +53,55 @@ def _banner_text(scan: bool, *, dry: bool, mode: str, threads: int, gpu: bool, b
     return b
 
 
-# -----------------------------------------------------------------------------------
-# CLI
-# -----------------------------------------------------------------------------------
-
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Find and remove duplicate/similar videos & files using a staged pipeline.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-
     # Directory (positional; optional for --apply-report)
     p.add_argument("directory", nargs="?", help="Root directory to scan")
-    # Patterns and recursion
+
+    # Patterns & recursion
     p.add_argument("-p", "--pattern", action="append", help="Glob to include (repeatable), e.g. -p *.mp4 -p *.mkv")
     p.add_argument("-r", "--recursive", action="store_true", help="Recurse into subdirectories (unlimited depth)")
+
     # Pipeline stages
-    p.add_argument("-Q", "--pipeline", type=str, default="1-2", help="Stages to run (1=size,2=partial/full,3=meta,4=phash/subset). Example: 1-2 or 1,3-4")
-    # Mode label (informational)
+    p.add_argument(
+        "-Q", "--pipeline",
+        type=str, default="1-2",
+        help="Stages to run: 1=size prefilter, 2=hashing, 3=metadata, 4=phash/subset. Examples: 1-2 or 1,3-4 or all"
+    )
+
+    # Mode label (informational only; printed in banner)
     p.add_argument("-M", "--mode", type=str, default="hash", help="Free-form label for the run (printed in the banner)")
-    # Performance
-    p.add_argument("-t", "--threads", type=int, default=8, help="Total worker threads for hashing/probing (default: 8)")
-    p.add_argument("-g", "--gpu", action="store_true", help="Hint FFmpeg to use GPU decode for pHash/subset (NVDEC/CUDA)")
+
+    # Performance & GPU
+    p.add_argument("-t", "--threads", type=int, default=8, help="Total worker threads (default: 8)")
+    p.add_argument("-g", "--gpu", action="store_true", help="Hint FFmpeg to use NVDEC/CUDA for pHash/subset (if available)")
+
     # Metadata / pHash params
-    p.add_argument("-u", "--duration-tolerance", dest="duration_tolerance", type=float, default=2.0, help="Duration tolerance (seconds) for metadata grouping (default: 2.0)")
-    p.add_argument("-F", "--phash-frames", dest="phash_frames", type=int, default=5, help="Frames to sample for perceptual hash (default: 5)")
-    p.add_argument("-T", "--phash-threshold", dest="phash_threshold", type=int, default=12, help="Per-frame Hamming distance threshold for pHash (default: 12)")
-    p.add_argument("-s", "--subset-detect", action="store_true", help="Enable subset detection (shorter cut of longer video)")
-    p.add_argument("-m", "--subset-min-ratio", type=float, default=0.30, help="Minimum short/long duration ratio for subset matches (default: 0.30)")
+    p.add_argument("-u", "--duration-tolerance", dest="duration_tolerance", type=float, default=2.0,
+                   help="Duration tolerance (seconds) for metadata grouping (default: 2.0)")
+    p.add_argument("-F", "--phash-frames", dest="phash_frames", type=int, default=5,
+                   help="Frames to sample for perceptual hash (default: 5)")
+    p.add_argument("-T", "--phash-threshold", dest="phash_threshold", type=int, default=12,
+                   help="Per-frame Hamming distance threshold for pHash (default: 12)")
+    p.add_argument("-s", "--subset-detect", action="store_true",
+                   help="Enable subset detection (find shorter cut-downs of longer videos)")
+    p.add_argument("-m", "--subset-min-ratio", type=float, default=0.30,
+                   help="Minimum short/long duration ratio for subset matches (default: 0.30)")
+
     # Live UI
     p.add_argument("-L", "--live", action="store_true", help="Show live TermDash UI")
-    p.add_argument("-e", "--refresh-rate", dest="refresh_rate", type=float, default=0.2, help="UI refresh rate in seconds (default: 0.2)")
-    p.add_argument("-Z", "--stacked-ui", action="store_true", help="Force stacked UI (1 metric per line)")
+    p.add_argument("-e", "--refresh-rate", dest="refresh_rate", type=float, default=0.2,
+                   help="UI refresh rate in seconds (default: 0.2)")
+    p.add_argument("-Z", "--stacked-ui", action="store_true", help="Force stacked UI (one metric per line)")
     p.add_argument("-W", "--wide-ui", action="store_true", help="Force wide UI (multi-column)")
+
     # Cache & report
-    p.add_argument("-C", "--cache", type=str, help="Path to JSONL cache file (resumable append-on-write)")
+    p.add_argument("-C", "--cache", type=str, help="Path to JSONL cache file (append-on-write, resumable)")
     p.add_argument("-R", "--report", type=str, help="Write JSON report to this path")
+
     # Apply report
     p.add_argument("-A", "--apply-report", type=str, help="Read a JSON report and delete/move all listed losers")
     p.add_argument("-b", "--backup", type=str, help="Move losers to this folder instead of deleting (apply-report mode)")
@@ -132,12 +140,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         finally:
             reporter.stop()
 
-    # SCAN mode (produce/extend a report)
+    # SCAN mode
     root_str = args.directory
     if not root_str:
         print("video-dedupe: error: the following arguments are required: directory", file=sys.stderr)
         return 2
-
     root = Path(root_str).expanduser().resolve()
     if not root.exists():
         print(f"video-dedupe: error: directory not found: {root}", file=sys.stderr)
@@ -180,23 +187,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             reporter=reporter,
         )
 
-        # Keep policy: prefer longer → resolution → video-bitrate → newer → smaller → deeper
         keep_order = ["longer", "resolution", "video-bitrate", "newer", "smaller", "deeper"]
         winners = choose_winners(groups, keep_order)
 
-        # If writing a report, do it now
         if args.report:
             write_report(Path(args.report), winners)
             print(f"Wrote report to: {args.report}")
 
-        # Update final counters in UI (losers and bytes)
         losers = [loser for (_keep, losers) in winners.values() for loser in losers]
         bytes_total = sum(int(getattr(l, "size", 0)) for l in losers)
         reporter.set_results(dup_groups=len(winners), losers_count=len(losers), bytes_total=bytes_total)
-
-        # Deletions are ONLY performed via --apply-report; scan phase is safe by design.
         return 0
-
     finally:
         if cache:
             cache.close()
