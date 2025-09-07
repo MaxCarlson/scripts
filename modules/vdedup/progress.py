@@ -2,17 +2,13 @@
 """
 vdedup.progress
 
-Live progress reporter with a responsive TermDash UI + hotkeys:
-- 'z' to Pause/Resume pipeline work (UI shows [PAUSED])
-- 'q' to request Quit (prompts [y/N] in the console)
-
-Layout:
+Live progress reporter with a responsive TermDash UI.
 - Auto layout: wide (multi-column) or stacked (1 stat per line) based on terminal width.
 - Can be forced with stacked_ui=True / wide_ui=True flags.
-
-Thread-safety:
-- All counters are protected by a lock.
-- wait_if_paused() can be called inside worker threads to block while paused.
+- Thread-safe counters and per-stage ETA + total elapsed.
+- Key controls:
+    Z = pause/resume pipeline
+    Q = request quit (press 'y' to confirm)
 
 This module does not require TermDash to run; when it is not available,
 all update calls are no-ops (the pipeline still functions).
@@ -20,7 +16,6 @@ all update calls are no-ops (the pipeline still functions).
 
 from __future__ import annotations
 
-import atexit
 import os
 import select
 import shutil
@@ -55,7 +50,7 @@ class _LayoutChoice:
 
 class ProgressReporter:
     """
-    Counters + live UI + hotkeys.
+    Counters + live UI.
     Public methods used by the pipeline/CLI:
       - start_stage(name, total)
       - set_total_files(n)
@@ -65,10 +60,12 @@ class ProgressReporter:
       - inc_group(mode, n=1)   # mode in {"hash","meta","phash"}
       - set_results(dup_groups, losers_count, bytes_total)
       - set_banner(text)
-      - wait_if_paused()
-      - should_quit()
       - flush()
       - stop()
+
+    Control helpers for pipeline:
+      - wait_if_paused()
+      - should_quit() -> bool
     """
 
     def __init__(
@@ -120,126 +117,82 @@ class ProgressReporter:
         self.stage_start_ts = time.time()
         self._ema_rate = 0.0  # items/sec (EMA)
 
-        # Pause / Quit controls
-        self._paused = False
-        self._pause_cv = threading.Condition()
-        self._quit = False
-
         # Dashboard runtime
         self.dash: Optional[TermDash] = None  # type: ignore
         self._ticker: Optional[threading.Thread] = None
         self._stop_evt = threading.Event()
-        self._key_thread: Optional[threading.Thread] = None
 
-        # POSIX raw mode handles
-        self._tty_restore = None
+        # Controls
+        self._paused_evt = threading.Event()
+        self._paused_evt.set()  # "not paused" means set
+        self._quit_evt = threading.Event()
+        self._keys_thread: Optional[threading.Thread] = None
+        self._await_quit_confirm = False
+        self._stdin_ok = sys.stdin and sys.stdin.isatty()
 
-    # ------------- Hotkeys -------------
+    # --------------- keyboard handling ---------------
 
-    def _enable_posix_cbreak(self):
-        """Enable cbreak mode on POSIX to read single keys from stdin."""
-        if os.name != "nt" and sys.stdin.isatty():
-            import termios
-            import tty
-
-            fd = sys.stdin.fileno()
-            old = termios.tcgetattr(fd)
-            tty.setcbreak(fd)
-            self._tty_restore = (fd, old)
-
-            def _restore():
-                try:
-                    if self._tty_restore:
-                        termios.tcsetattr(self._tty_restore[0], termios.TCSADRAIN, self._tty_restore[1])
-                except Exception:
-                    pass
-
-            atexit.register(_restore)
-
-    def _key_loop(self):
-        """Background key watcher: 'z' pause/resume, 'q' quit? [y/N]."""
-        try:
-            if os.name != "nt":
-                self._enable_posix_cbreak()
-        except Exception:
-            pass
-
-        while not self._stop_evt.is_set() and not self._quit:
-            ch = None
+    def _keys_loop(self):
+        """
+        Very small non-blocking key reader:
+          - Windows: use msvcrt.getch
+          - POSIX: select on sys.stdin
+        """
+        if not self._stdin_ok:
+            return
+        is_win = os.name == "nt"
+        if is_win:
             try:
-                if os.name == "nt":
-                    try:
-                        import msvcrt  # type: ignore
-                        if msvcrt.kbhit():
-                            ch = msvcrt.getwch()
-                    except Exception:
-                        time.sleep(0.2)
-                        continue
-                else:
-                    # POSIX: non-blocking select on stdin
-                    r, _w, _e = select.select([sys.stdin], [], [], 0.2)
-                    if r:
-                        ch = sys.stdin.read(1)
+                import msvcrt  # type: ignore
             except Exception:
-                # No input
-                time.sleep(0.2)
-                continue
+                return
+            while not self._stop_evt.is_set():
+                if msvcrt.kbhit():
+                    ch = msvcrt.getwch()
+                    self._handle_key(ch)
+                time.sleep(0.05)
+        else:
+            fd = sys.stdin.fileno()
+            while not self._stop_evt.is_set():
+                r, _w, _e = select.select([fd], [], [], 0.05)
+                if r:
+                    try:
+                        ch = os.read(fd, 1).decode(errors="ignore")
+                    except Exception:
+                        ch = ""
+                    if ch:
+                        self._handle_key(ch)
+            return
 
-            if not ch:
-                continue
-            if ch in ("z", "Z"):
-                self.toggle_pause()
-            elif ch in ("q", "Q"):
-                # Prompt for confirmation in console
-                try:
-                    # Temporarily show prompt outside the dashboard
-                    sys.stdout.write("\nQuit? [y/N]: ")
-                    sys.stdout.flush()
-                    ans = None
-                    if os.name == "nt":
-                        import msvcrt  # type: ignore
-                        # read a single key; fall back to input if needed
-                        t0 = time.time()
-                        while time.time() - t0 < 10:
-                            if msvcrt.kbhit():
-                                ans = msvcrt.getwch()
-                                break
-                            time.sleep(0.05)
-                    else:
-                        r, _w, _e = select.select([sys.stdin], [], [], 10.0)
-                        if r:
-                            ans = sys.stdin.read(1)
-                    if (ans or "").lower() == "y":
-                        with self.lock:
-                            self._quit = True
-                        sys.stdout.write(" quitting...\n")
-                        sys.stdout.flush()
-                        break
-                    else:
-                        sys.stdout.write(" continuing.\n")
-                        sys.stdout.flush()
-                except Exception:
-                    # If prompt fails, do nothing
-                    pass
-
-    def toggle_pause(self):
-        with self._pause_cv:
-            self._paused = not self._paused
-            if not self._paused:
-                self._pause_cv.notify_all()
-        self.flush()  # refresh "[PAUSED]" marker
+    def _handle_key(self, ch: str):
+        ch = (ch or "").lower()
+        if ch == "z":
+            if self._paused_evt.is_set():
+                # pause now
+                self._paused_evt.clear()
+                self.set_banner((self.banner or "") + "  [PAUSED]")
+            else:
+                # resume
+                self._paused_evt.set()
+                self.set_banner((self.banner or "").replace("  [PAUSED]", ""))
+        elif ch == "q":
+            # require next 'y' to confirm
+            self._await_quit_confirm = True
+            if self.dash:
+                self.set_banner((self.banner or "") + "  [Quit? press 'y' to confirm]")
+        elif ch == "y" and self._await_quit_confirm:
+            self._quit_evt.set()
+            self._await_quit_confirm = False
 
     def wait_if_paused(self):
-        """Worker threads call this to block while paused."""
-        with self._pause_cv:
-            while self._paused and not self._quit:
-                self._pause_cv.wait(timeout=0.25)
+        # Block pipeline worker threads while paused
+        while not self._paused_evt.is_set():
+            time.sleep(0.05)
 
     def should_quit(self) -> bool:
-        with self.lock:
-            return bool(self._quit)
+        return self._quit_evt.is_set()
 
-    # ----------- UI helpers -----------
+    # ---------------- UI plumbing --------------------
 
     def _term_cols(self) -> int:
         try:
@@ -261,15 +214,12 @@ class ProgressReporter:
         self.dash.add_line(key, Line(key, stats=list(stats)))  # type: ignore
 
     def start(self):
-        # Start key watcher even if UI is disabled (hotkeys still work)
-        self._stop_evt.clear()
-        if self._key_thread is None or not self._key_thread.is_alive():
-            self._key_thread = threading.Thread(target=self._key_loop, daemon=True)
-            self._key_thread.start()
-
         if not self.enable_dash:
+            # still start key thread for pause/quit convenience if stdin is a TTY
+            if self._stdin_ok and not self._keys_thread:
+                self._keys_thread = threading.Thread(target=self._keys_loop, daemon=True)
+                self._keys_thread.start()
             return
-
         self._layout = self._choose_layout()
 
         # Start TermDash
@@ -285,7 +235,7 @@ class ProgressReporter:
         # Title
         self.dash.add_line(  # type: ignore
             "title",
-            Line("title", stats=[Stat("title", "Video Deduper — Live (press 'z' pause/resume, 'q' quit) ", format_string="{}")], style="header"),  # type: ignore
+            Line("title", stats=[Stat("title", "Video Deduper — Live", format_string="{}")], style="header"),  # type: ignore
             at_top=True,
         )
 
@@ -313,7 +263,7 @@ class ProgressReporter:
         else:
             self._add_line(
                 "stage",
-                Stat("stage", "idle", prefix="Stage: ", format_string="{}", no_expand=True, display_width=28),
+                Stat("stage", "idle", prefix="Stage: ", format_string="{}", no_expand=True, display_width=22),
                 Stat("elapsed", "00:00:00", prefix="Elapsed: ", format_string="{}", no_expand=True, display_width=14),
                 Stat("eta", "--:--:--", prefix="ETA: ", format_string="{}", no_expand=True, display_width=14),
             )
@@ -345,8 +295,12 @@ class ProgressReporter:
             )
             self._add_line("total", Stat("tot_elapsed", "00:00:00", prefix="Total elapsed: ", format_string="{}", no_expand=True, display_width=16))
 
+        # start ticker + keys
         self._ticker = threading.Thread(target=self._tick_loop, daemon=True)
         self._ticker.start()
+        if self._stdin_ok and not self._keys_thread:
+            self._keys_thread = threading.Thread(target=self._keys_loop, daemon=True)
+            self._keys_thread.start()
         self.flush()
 
     def _tick_loop(self):
@@ -363,9 +317,6 @@ class ProgressReporter:
         eta_text = _fmt_hms(self._estimate_remaining())
         elapsed_stage = _fmt_hms(time.time() - self.stage_start_ts)
         elapsed_total = _fmt_hms(time.time() - self.start_ts)
-        # stage row
-        name = self.stage_name + (" [PAUSED]" if self._paused else "")
-        self.dash.update_stat("stage", "stage", name)  # type: ignore
         self.dash.update_stat("stage", "eta", eta_text)  # type: ignore
         if self._layout.stacked:
             self.dash.update_stat("elapsed", "elapsed", elapsed_stage)  # type: ignore
@@ -380,37 +331,32 @@ class ProgressReporter:
             self.dash.update_stat("banner", "banner", text)  # type: ignore
 
     def flush(self):
-        # Also refresh stage name with [PAUSED] marker
         if self.enable_dash and self.dash:
-            name = self.stage_name + (" [PAUSED]" if self._paused else "")
-            self.dash.update_stat("stage", "stage", name)  # type: ignore
-
-        if not self.enable_dash or not self.dash:
-            return
-        with self.lock:
-            self.dash.update_stat("files", "files", (self.scanned_files, self.total_files))  # type: ignore
-            if self._layout.stacked:
-                self.dash.update_stat("videos", "videos", self.video_files)  # type: ignore
-                self.dash.update_stat("hashed", "hashed", (self.hash_done, self.hash_total))  # type: ignore
-                self.dash.update_stat("cache", "cache_hits", self.cache_hits)  # type: ignore
-                self.dash.update_stat("scan", "scanned", f"{self.bytes_seen/1048576:.0f} MiB")  # type: ignore
-                self.dash.update_stat("g_hash", "g_hash", self.groups_hash)  # type: ignore
-                self.dash.update_stat("g_meta", "g_meta", self.groups_meta)  # type: ignore
-                self.dash.update_stat("g_phash", "g_phash", self.groups_phash)  # type: ignore
-                self.dash.update_stat("g_subset", "g_subset", self.groups_subset)  # type: ignore
-                self.dash.update_stat("dup_files", "dup_files", self.losers_total)  # type: ignore
-                self.dash.update_stat("bytes_rm", "bytes_rm", f"{self.bytes_to_remove/1048576:.0f} MiB")  # type: ignore
-            else:
-                self.dash.update_stat("files", "videos", self.video_files)  # type: ignore
-                self.dash.update_stat("hash", "hashed", (self.hash_done, self.hash_total))  # type: ignore
-                self.dash.update_stat("hash", "cache_hits", self.cache_hits)  # type: ignore
-                self.dash.update_stat("scan", "scanned", f"{self.bytes_seen/1048576:.0f} MiB")  # type: ignore
-                self.dash.update_stat("groups1", "g_hash", self.groups_hash)  # type: ignore
-                self.dash.update_stat("groups1", "g_meta", self.groups_meta)  # type: ignore
-                self.dash.update_stat("groups2", "g_phash", self.groups_phash)  # type: ignore
-                self.dash.update_stat("groups2", "g_subset", self.groups_subset)  # type: ignore
-                self.dash.update_stat("results", "dup_files", self.losers_total)  # type: ignore
-                self.dash.update_stat("results", "bytes_rm", f"{self.bytes_to_remove/1048576:.0f} MiB")  # type: ignore
+            with self.lock:
+                self.dash.update_stat("stage", "stage", self.stage_name)  # type: ignore
+                self.dash.update_stat("files", "files", (self.scanned_files, self.total_files))  # type: ignore
+                if self._layout.stacked:
+                    self.dash.update_stat("videos", "videos", self.video_files)  # type: ignore
+                    self.dash.update_stat("hashed", "hashed", (self.hash_done, self.hash_total))  # type: ignore
+                    self.dash.update_stat("cache", "cache_hits", self.cache_hits)  # type: ignore
+                    self.dash.update_stat("scan", "scanned", f"{self.bytes_seen/1048576:.0f} MiB")  # type: ignore
+                    self.dash.update_stat("g_hash", "g_hash", self.groups_hash)  # type: ignore
+                    self.dash.update_stat("g_meta", "g_meta", self.groups_meta)  # type: ignore
+                    self.dash.update_stat("g_phash", "g_phash", self.groups_phash)  # type: ignore
+                    self.dash.update_stat("g_subset", "g_subset", self.groups_subset)  # type: ignore
+                    self.dash.update_stat("dup_files", "dup_files", self.losers_total)  # type: ignore
+                    self.dash.update_stat("bytes_rm", "bytes_rm", f"{self.bytes_to_remove/1048576:.0f} MiB")  # type: ignore
+                else:
+                    self.dash.update_stat("files", "videos", self.video_files)  # type: ignore
+                    self.dash.update_stat("hash", "hashed", (self.hash_done, self.hash_total))  # type: ignore
+                    self.dash.update_stat("hash", "cache_hits", self.cache_hits)  # type: ignore
+                    self.dash.update_stat("scan", "scanned", f"{self.bytes_seen/1048576:.0f} MiB")  # type: ignore
+                    self.dash.update_stat("groups1", "g_hash", self.groups_hash)  # type: ignore
+                    self.dash.update_stat("groups1", "g_meta", self.groups_meta)  # type: ignore
+                    self.dash.update_stat("groups2", "g_phash", self.groups_phash)  # type: ignore
+                    self.dash.update_stat("groups2", "g_subset", self.groups_subset)  # type: ignore
+                    self.dash.update_stat("results", "dup_files", self.losers_total)  # type: ignore
+                    self.dash.update_stat("results", "bytes_rm", f"{self.bytes_to_remove/1048576:.0f} MiB")  # type: ignore
 
     def start_stage(self, name: str, total: int):
         with self.lock:
@@ -489,16 +435,16 @@ class ProgressReporter:
         self.flush()
 
     def stop(self):
-        # stop threads and restore terminal
+        # stop ticker + keys threads
         self._stop_evt.set()
         if self._ticker:
             try:
                 self._ticker.join(timeout=1.0)
             except Exception:
                 pass
-        if self._key_thread:
+        if self._keys_thread:
             try:
-                self._key_thread.join(timeout=0.5)
+                self._keys_thread.join(timeout=1.0)
             except Exception:
                 pass
         if self.enable_dash and self.dash:
