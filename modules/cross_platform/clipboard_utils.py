@@ -31,6 +31,12 @@ class ClipboardUtils:
       - get_clipboard() -> str
 
     Also exposes module-level wrappers set_clipboard()/get_clipboard() below.
+
+    NEW (robust Windows + dual-target behavior):
+      • Always emit OSC 52 so the *local* terminal/Termux gets the copy over SSH/tmux.
+      • On Windows, copy to the Windows clipboard using a PowerShell -EncodedCommand
+        that decodes a UTF-8 payload inside PowerShell (thus ignoring console codepages),
+        with a UTF-16LE clip.exe fallback.
     """
 
     def __init__(self):
@@ -66,11 +72,12 @@ class ClipboardUtils:
         *,
         input_text: Optional[str] = None,
         check: bool = False,
+        text: bool = True,
     ) -> subprocess.CompletedProcess:
         return subprocess.run(
             args,
             input=input_text,
-            text=True,
+            text=text,
             capture_output=True,
             check=check,
         )
@@ -79,7 +86,10 @@ class ClipboardUtils:
     # OSC 52 helpers
     # ------------------------
     def _emit_osc52(self, text: str):
-        # Base64-encode per OSC 52 spec
+        """
+        Emit OSC 52 so the *local* terminal receives the clipboard
+        (works over SSH if terminal/tmux allows OSC 52).
+        """
         encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
         osc = f"\033]52;c;{encoded}\a"
 
@@ -101,18 +111,80 @@ class ClipboardUtils:
                 _log("Warning", f"Failed to write OSC 52: {e}")
 
     # ------------------------
+    # Windows robust setters
+    # ------------------------
+    def _pwsh_exe(self) -> Optional[str]:
+        for exe in ("pwsh", "powershell"):
+            p = shutil.which(exe)
+            if p:
+                return p
+        return None
+
+    def _set_clipboard_windows_robust(self, text: str) -> bool:
+        """
+        Use PowerShell -EncodedCommand (UTF-16LE) to decode a UTF-8
+        payload *inside* PowerShell and Set-Clipboard. Ignores console codepages.
+        """
+        pwsh = self._pwsh_exe()
+        if not pwsh:
+            _log("Warning", "pwsh/powershell not found for robust Set-Clipboard.")
+            return False
+
+        payload_b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        ps_script = f"""
+$bytes  = [Convert]::FromBase64String('{payload_b64}');
+$str    = [Text.Encoding]::UTF8.GetString($bytes);
+Set-Clipboard -Value $str
+"""
+        encoded = base64.b64encode(ps_script.encode("utf-16le")).decode("ascii")
+        try:
+            cp = self._run([pwsh, "-NoProfile", "-EncodedCommand", encoded], check=True)
+            _log("Information", "Windows Set-Clipboard via -EncodedCommand OK.")
+            if cp.stdout.strip():
+                _log("Debug", cp.stdout.strip())
+            if cp.stderr.strip():
+                _log("Debug", cp.stderr.strip())
+            return True
+        except subprocess.CalledProcessError as e:
+            _log("Warning", f"Windows Set-Clipboard (-EncodedCommand) failed: rc={e.returncode} {e.stderr or e.stdout}")
+            return False
+        except Exception as e:
+            _log("Warning", f"Windows Set-Clipboard (-EncodedCommand) exception: {e}")
+            return False
+
+    def _set_clipboard_windows_clip(self, text: str) -> bool:
+        """
+        Fallback to clip.exe; feed UTF-16LE bytes.
+        """
+        clip = shutil.which("clip") or shutil.which("clip.exe")
+        if not clip:
+            _log("Warning", "clip.exe not found.")
+            return False
+        try:
+            # Send bytes, not text, so we control encoding precisely.
+            proc = subprocess.run([clip], input=text.encode("utf-16le"))
+            if proc.returncode == 0:
+                _log("Information", "Windows clip.exe OK.")
+                return True
+            _log("Warning", f"clip.exe failed rc={proc.returncode}")
+            return False
+        except Exception as e:
+            _log("Warning", f"clip.exe exception: {e}")
+            return False
+
+    # ------------------------
     # Clipboard (SET)
     # ------------------------
     def set_clipboard(self, text: str):
         """
-        Strategy:
-          1) Always try OSC 52 (updates local terminal clipboard)
+        Strategy (dual-target):
+          1) Always try OSC 52 (updates local terminal/Termux clipboard over SSH/tmux)
           2) If tmux, also push to tmux buffer (stdin to avoid 'no data specified')
           3) Platform-native set:
              - Termux: termux-clipboard-set
              - macOS : pbcopy
              - Linux : wl-copy | xclip | xsel
-             - Windows: pwsh/powershell Set-Clipboard (NoProfile) or clip.exe
+             - Windows: PowerShell -EncodedCommand (UTF-8 payload) then clip.exe UTF-16LE fallback
         """
         # 1) OSC 52 for local terminal clipboard
         self._emit_osc52(text)
@@ -158,36 +230,25 @@ class ClipboardUtils:
             return  # OSC52 already done
 
         if osname == "windows":
-            # Prefer PowerShell 7 first; never load profiles; read from stdin.
-            if shutil.which("pwsh"):
-                try:
-                    self._run(
-                        ["pwsh", "-NoProfile", "-NonInteractive", "-Command",
-                         "Set-Clipboard -Value ([Console]::In.ReadToEnd())"],
-                        input_text=text, check=True
-                    )
-                    return
-                except Exception as e:
-                    _log("Warning", f"pwsh Set-Clipboard failed: {e}")
+            # Robust path first (codepage-proof)
+            if self._set_clipboard_windows_robust(text):
+                return
+            # Fallback: clip.exe with UTF-16LE
+            if self._set_clipboard_windows_clip(text):
+                return
 
-            # clip.exe reads stdin and is usually present
-            if shutil.which("clip"):
-                try:
-                    self._run(["clip"], input_text=text, check=True)
-                    return
-                except Exception as e:
-                    _log("Warning", f"clip.exe failed: {e}")
-
-            # Fallback to WindowsPowerShell, still no profile
+            # Last chance: classic console stdin route (may fail on non-UTF-8 consoles)
             try:
+                ps = "pwsh" if shutil.which("pwsh") else "powershell"
                 self._run(
-                    ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                    [ps, "-NoProfile", "-NonInteractive", "-Command",
                      "Set-Clipboard -Value ([Console]::In.ReadToEnd())"],
                     input_text=text, check=True
                 )
+                _log("Information", "Windows Set-Clipboard via stdin path OK.")
                 return
             except Exception as e:
-                _log("Error", f"powershell Set-Clipboard failed: {e}")
+                _log("Error", f"{ps} Set-Clipboard (stdin path) failed: {e}")
                 return
 
         # Unknown OS — OSC 52 likely already did the job
@@ -226,12 +287,19 @@ class ClipboardUtils:
             return ""
 
         if osname == "windows":
-            ps = "pwsh" if shutil.which("pwsh") else "powershell"
-            try:
-                res = self._run([ps, "-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard -Raw"], check=True)
-                return res.stdout
-            except Exception as e:
-                _log("Warning", f"{ps} Get-Clipboard failed: {e}")
+            # Use -EncodedCommand so we are independent of console encodings
+            ps = self._pwsh_exe()
+            if ps:
+                try:
+                    script = "Get-Clipboard -Raw"
+                    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+                    res = self._run([ps, "-NoProfile", "-EncodedCommand", encoded], check=True)
+                    return res.stdout
+                except Exception as e:
+                    _log("Warning", f"{ps} Get-Clipboard failed: {e}")
+                    return ""
+            else:
+                _log("Warning", "No PowerShell available for Get-Clipboard.")
                 return ""
 
         return ""

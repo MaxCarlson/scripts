@@ -1,3 +1,4 @@
+# termdash/dashboard.py
 #!/usr/bin/env python3
 """
 TermDash dashboard — in-place renderer with column alignment, separators, and helpers.
@@ -394,6 +395,7 @@ class TermDash:
 
             time.sleep(self._refresh_rate)
 
+    # --- Context manager (existing) ---
     def __enter__(self):
         sig = getattr(signal, "SIGWINCH", None)
         if sig is not None:
@@ -442,3 +444,13 @@ class TermDash:
             if exc_type and exc_type is not KeyboardInterrupt:
                 self.log(f"Dashboard exited with exception: {exc_val}", level='error')
             self.log("Dashboard stopped.", level='info')
+
+    # --- NEW convenience: start()/stop() without a with-block ---
+    def start(self) -> "TermDash":
+        """Begin rendering without using a context manager."""
+        self.__enter__()
+        return self
+
+    def stop(self):
+        """Stop rendering without using a context manager."""
+        self.__exit__(None, None, None)
