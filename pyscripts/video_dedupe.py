@@ -1,4 +1,3 @@
-# file: video_dedupe.py
 #!/usr/bin/env python3
 """
 Video & File Deduplicator
@@ -9,10 +8,9 @@ Video & File Deduplicator
 - Safe actions: dry-run, backup/quarantine, prompts
 - Presets: --preset {low,medium,high}
 - Optional live dashboard via --live (uses TermDash module provided by user)
-- Hash cache: JSONL cache for SHA-256 results (-C / --cache)
+- Hash/meta cache: JSONL cache for SHA-256, ffprobe metadata, and pHash (append-on-write)
 - Apply an existing JSON report via --apply-report to delete/move listed losers
-- ETA for each stage (scanning, hashing)
-- Ctrl+C exits cleanly and restores terminal
+- ETA + Elapsed timers for each stage; Ctrl+C exits cleanly and restores terminal
 
 Cross-platform: Windows 11 (PowerShell), WSL2, Termux
 """
@@ -32,7 +30,7 @@ import threading
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 # ----------------------------
 # Optional UI libs
@@ -110,7 +108,10 @@ def _bytes_to_mib(n: int) -> float:
     except Exception:
         return 0.0
 
-def sha256_file(path: Path, block_size: int = 1 << 18) -> Optional[str]:
+def sha256_file(path: Path, block_size: int = 1 << 20) -> Optional[str]:
+    """
+    Compute SHA-256 with a larger default block size (1 MiB) for throughput.
+    """
     h = hashlib.sha256()
     try:
         with path.open("rb") as f:
@@ -135,15 +136,7 @@ def _run_ffprobe_json(path: Path) -> Optional[dict]:
     except Exception:
         return None
 
-def probe_video(path: Path) -> VideoMeta:
-    try:
-        st = path.stat()
-        size = st.st_size
-        mtime = st.st_mtime
-    except FileNotFoundError:
-        return VideoMeta(path=path, size=0, mtime=0.0)
-
-    fmt = _run_ffprobe_json(path)
+def _extract_vmeta_from_ffprobe(path: Path, fmt: Optional[dict], size: int, mtime: float) -> "VideoMeta":
     if not fmt:
         return VideoMeta(path=path, size=size, mtime=mtime)
 
@@ -194,6 +187,17 @@ def probe_video(path: Path) -> VideoMeta:
         video_bitrate=video_bitrate,
     )
 
+def probe_video(path: Path) -> VideoMeta:
+    try:
+        st = path.stat()
+        size = st.st_size
+        mtime = st.st_mtime
+    except FileNotFoundError:
+        return VideoMeta(path=path, size=0, mtime=0.0)
+
+    fmt = _run_ffprobe_json(path)
+    return _extract_vmeta_from_ffprobe(path, fmt, size, mtime)
+
 def compute_phash_signature(path: Path, frames: int = 5) -> Optional[Tuple[int, ...]]:
     try:
         from PIL import Image
@@ -220,8 +224,11 @@ def compute_phash_signature(path: Path, frames: int = 5) -> Optional[Tuple[int, 
                 "pipe:1",
             ]
             raw = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
+            from PIL import Image  # re-import within loop for mypy silence
+            import io  # likewise
             img = Image.open(io.BytesIO(raw))
             img.load()
+            import imagehash  # likewise
             h = imagehash.phash(img)  # 64-bit
             sig.append(int(str(h), 16))
         except Exception:
@@ -240,21 +247,26 @@ def phash_distance(sig_a: Sequence[int], sig_b: Sequence[int]) -> int:
 
 
 # ----------------------------
-# Hash cache (JSONL)
+# Hash/meta cache (JSONL)
 # ----------------------------
 
 class HashCache:
     """
-    Simple JSONL cache: each line -> {"path": "...", "size": int, "mtime": float, "sha256": "..."}
-    Lookup key is (path, size, mtime). Appends new results as they are computed.
+    JSONL cache; each line is a JSON object with any of:
+      - {"path": "...", "size": int, "mtime": float, "sha256": "..."}
+      - {"path": "...", "size": int, "mtime": float, "video_meta": {...}, "phash": [int,...]}
+    Lookup key is (path, size, mtime). New results are appended immediately.
+    Backward compatible with older lines that only store "sha256".
     """
     def __init__(self, path: Optional[Path]):
         self.path = path
-        self._map: dict[tuple[str, int, float], str] = {}
+        self._map_sha: dict[tuple[str, int, float], str] = {}
+        self._map_meta: dict[tuple[str, int, float], dict] = {}
         self._fh = None
         if path:
             self._load()
 
+    # ---------- I/O ----------
     def _load(self):
         p = Path(self.path).expanduser()
         if not p.exists():
@@ -268,10 +280,15 @@ class HashCache:
                         continue
                     try:
                         rec = json.loads(line)
-                        k = (rec.get("path", ""), int(rec.get("size", 0)), float(rec.get("mtime", 0.0)))
-                        v = rec.get("sha256")
-                        if k[0] and v:
-                            self._map[k] = str(v)
+                        key = (rec.get("path", ""), int(rec.get("size", 0)), float(rec.get("mtime", 0.0)))
+                        if not key[0]:
+                            continue
+                        if "sha256" in rec and rec["sha256"]:
+                            self._map_sha[key] = str(rec["sha256"])
+                        if "video_meta" in rec:
+                            self._map_meta[key] = dict(rec["video_meta"])
+                            if "phash" in rec:
+                                self._map_meta[key]["phash"] = tuple(int(x) for x in rec["phash"])
                     except Exception:
                         continue
         except Exception:
@@ -291,15 +308,34 @@ class HashCache:
                 pass
             self._fh = None
 
-    def get(self, path: Path, size: int, mtime: float) -> Optional[str]:
-        return self._map.get((str(path), size, mtime))
+    # ---------- SHA ----------
+    def get_sha(self, path: Path, size: int, mtime: float) -> Optional[str]:
+        return self._map_sha.get((str(path), size, mtime))
 
-    def put(self, path: Path, size: int, mtime: float, sha256: str):
+    def put_sha(self, path: Path, size: int, mtime: float, sha256: str):
         key = (str(path), size, mtime)
-        self._map[key] = sha256
+        self._map_sha[key] = sha256
         if self._fh:
             try:
                 rec = {"path": str(path), "size": size, "mtime": mtime, "sha256": sha256}
+                self._fh.write(json.dumps(rec) + "\n")
+                self._fh.flush()
+            except Exception:
+                pass
+
+    # ---------- META ----------
+    def get_meta(self, path: Path, size: int, mtime: float) -> Optional[dict]:
+        return self._map_meta.get((str(path), size, mtime))
+
+    def put_meta(self, path: Path, size: int, mtime: float, video_meta: dict):
+        key = (str(path), size, mtime)
+        self._map_meta[key] = dict(video_meta)
+        if self._fh:
+            try:
+                rec = {"path": str(path), "size": size, "mtime": mtime, "video_meta": video_meta}
+                # include optional phash if caller added it into video_meta
+                if "phash" in video_meta and isinstance(video_meta["phash"], (list, tuple)):
+                    rec["phash"] = list(int(x) for x in video_meta["phash"])
                 self._fh.write(json.dumps(rec) + "\n")
                 self._fh.flush()
             except Exception:
@@ -311,7 +347,7 @@ class HashCache:
 # ----------------------------
 
 class ProgressReporter:
-    """Thread-safe counters + optional TermDash updates, with per-stage ETA."""
+    """Thread-safe counters + optional TermDash updates, with per-stage ETA and Elapsed."""
     def __init__(self, enable_dash: bool, refresh_rate: float = 0.2):
         self.enable_dash = enable_dash and TERMDASH_AVAILABLE and sys.stdout.isatty()
         self.refresh_rate = max(0.05, float(refresh_rate))
@@ -358,6 +394,7 @@ class ProgressReporter:
         self._line_groups1 = None
         self._line_groups2 = None
         self._line_results = None
+        self._line_total = None
 
     # ---- dashboard lifecycle ----
     def start(self):
@@ -377,19 +414,20 @@ class ProgressReporter:
             stats=[Stat("title", "Video Deduper — Live", format_string="{}")],
             style="header",
         )
-        # Stage + ETA (2 columns)
+        # Stage + Elapsed + ETA (3 columns, wider to avoid truncation)
         self._line_stage = Line(
             "stage",
             stats=[
-                Stat("stage", "scanning", prefix="Stage: ", format_string="{}", no_expand=True, display_width=18),
-                Stat("eta", "--:--:--", prefix="ETA: ", format_string="{}", no_expand=True, display_width=10),
+                Stat("stage", "scanning", prefix="Stage: ", format_string="{}", no_expand=True, display_width=22),
+                Stat("elapsed", "00:00:00", prefix="Elapsed: ", format_string="{}", no_expand=True, display_width=14),
+                Stat("eta", "--:--:--", prefix="ETA: ", format_string="{}", no_expand=True, display_width=14),
             ],
         )
         # Files + Videos (2 columns)
         self._line_files = Line(
             "files",
             stats=[
-                Stat("files", (0, 0), prefix="Files: ", format_string="{}/{}", no_expand=True, display_width=20),
+                Stat("files", (0, 0), prefix="Files: ", format_string="{}/{}", no_expand=True, display_width=22),
                 Stat("videos", 0, prefix="Videos: ", format_string="{}", no_expand=True, display_width=18),
             ],
         )
@@ -401,13 +439,10 @@ class ProgressReporter:
                 Stat("cache_hits", 0, prefix="Cache hits: ", format_string="{}", no_expand=True, display_width=18),
             ],
         )
-        # Scanned bytes (MiB) + (2nd column left blank; keeps grid even)
+        # Scanned bytes (MiB)
         self._line_scan = Line(
             "scan",
-            stats=[
-                Stat("scanned", "0 MiB", prefix="Scanned: ", format_string="{}", no_expand=True, display_width=22),
-                Stat("blank1", "", prefix="", format_string="{}", no_expand=True, display_width=1),
-            ],
+            stats=[Stat("scanned", "0 MiB", prefix="Scanned: ", format_string="{}", no_expand=True, display_width=22)],
         )
         # Hash/meta groups (2 columns)
         self._line_groups1 = Line(
@@ -433,6 +468,11 @@ class ProgressReporter:
                 Stat("bytes_rm", "0 MiB", prefix="To remove: ", format_string="{}", no_expand=True, display_width=22),
             ],
         )
+        # Total elapsed (single column)
+        self._line_total = Line(
+            "total",
+            stats=[Stat("tot_elapsed", "00:00:00", prefix="Total elapsed: ", format_string="{}", no_expand=True, display_width=16)],
+        )
 
         # Start dashboard
         self.dash.__enter__()  # context-like start
@@ -444,6 +484,7 @@ class ProgressReporter:
         self.dash.add_line("groups1", self._line_groups1)
         self.dash.add_line("groups2", self._line_groups2)
         self.dash.add_line("results", self._line_results)
+        self.dash.add_line("total", self._line_total)
 
         # background ticker to update elapsed/ETA text
         self._ticker = threading.Thread(target=self._tick_loop, daemon=True)
@@ -465,14 +506,18 @@ class ProgressReporter:
     # ---- tick & flush ----
     def _tick_loop(self):
         while not self._stop_evt.is_set():
-            self._update_eta()
+            self._update_times()
             time.sleep(self.refresh_rate)
 
-    def _update_eta(self):
+    def _update_times(self):
         if not self.enable_dash or not self.dash:
             return
         eta_text = _fmt_hms(self._estimate_remaining())
+        elapsed_stage = _fmt_hms(time.time() - self.stage_start_ts)
+        elapsed_total = _fmt_hms(time.time() - self.start_ts)
         self.dash.update_stat("stage", "eta", eta_text)
+        self.dash.update_stat("stage", "elapsed", elapsed_stage)
+        self.dash.update_stat("total", "tot_elapsed", elapsed_total)
 
     def flush(self):
         if not self.enable_dash or not self.dash:
@@ -643,9 +688,9 @@ class Grouper:
         phash_frames: int = 5,
         phash_threshold: int = 12,
         *,
-        scan_workers: int = 8,
-        hash_workers: int = 8,
+        threads: int = 8,
         cache: Optional[HashCache] = None,
+        block_size: int = 1 << 20,
     ):
         self.mode = mode  # 'hash' | 'meta' | 'phash' | 'all'
         self.duration_tolerance = duration_tolerance
@@ -654,8 +699,8 @@ class Grouper:
         self.same_container = same_container
         self.phash_frames = phash_frames
         self.phash_threshold = phash_threshold
-        self.scan_workers = max(1, int(scan_workers))
-        self.hash_workers = max(1, int(hash_workers))
+        self.threads = max(1, int(threads))
+        self.block_size = max(64 * 1024, int(block_size))
         self._reporter: Optional[ProgressReporter] = None
         self._cache = cache
 
@@ -667,23 +712,74 @@ class Grouper:
             return FileMeta(path=path, size=0, mtime=0)
 
     def _collect_videometa(self, path: Path, want_phash: bool) -> VideoMeta:
-        vm = probe_video(path)
+        """
+        Use cache when possible; persist results immediately.
+        """
+        try:
+            st = path.stat()
+            size, mtime = st.st_size, st.st_mtime
+        except Exception:
+            return VideoMeta(path=path, size=0, mtime=0)
+
+        cache = self._cache
+        if cache:
+            meta = cache.get_meta(path, size, mtime)
+            if meta:
+                vm = _extract_vmeta_from_ffprobe(path, meta.get("ffprobe"), size, mtime) if "ffprobe" in meta else VideoMeta(
+                    path=path,
+                    size=size,
+                    mtime=mtime,
+                    duration=meta.get("duration"),
+                    width=meta.get("width"),
+                    height=meta.get("height"),
+                    container=meta.get("container"),
+                    vcodec=meta.get("vcodec"),
+                    acodec=meta.get("acodec"),
+                    overall_bitrate=meta.get("overall_bitrate"),
+                    video_bitrate=meta.get("video_bitrate"),
+                )
+                if "phash" in meta and isinstance(meta["phash"], (list, tuple)):
+                    object.__setattr__(vm, "phash_signature", tuple(int(x) for x in meta["phash"]))
+                return vm
+
+        # Not cached – run ffprobe
+        fmt = _run_ffprobe_json(path)
+        vm = _extract_vmeta_from_ffprobe(path, fmt, size, mtime)
+
+        # Optional pHash (can be quite expensive)
         if want_phash:
             sig = compute_phash_signature(path, frames=self.phash_frames)
             if sig:
                 object.__setattr__(vm, "phash_signature", sig)
+
+        # Store minimal, normalized meta for speed on restarts
+        if cache:
+            meta_payload = {
+                # store a lean schema (no raw ffprobe unless desired)
+                "duration": vm.duration,
+                "width": vm.width,
+                "height": vm.height,
+                "container": vm.container,
+                "vcodec": vm.vcodec,
+                "acodec": vm.acodec,
+                "overall_bitrate": vm.overall_bitrate,
+                "video_bitrate": vm.video_bitrate,
+            }
+            if vm.phash_signature:
+                meta_payload["phash"] = list(vm.phash_signature)
+            cache.put_meta(path, size, mtime, meta_payload)
         return vm
 
-    def collect(self, files: List[Path], reporter: Optional[ProgressReporter] = None) -> Dict[str, List[VideoMeta | FileMeta]]:
+    def collect(self, files: List[Path], reporter: Optional[ProgressReporter] = None) -> Dict[str, List[Union[VideoMeta, FileMeta]]]:
         """
         Returns groups keyed by an opaque ID; each group is a list of FileMeta/VideoMeta to consider duplicates.
         """
         self._reporter = reporter
-        groups: Dict[str, List[VideoMeta | FileMeta]] = {}
+        groups: Dict[str, List[Union[VideoMeta, FileMeta]]] = {}
         want_meta = self.mode in ("meta", "phash", "all")
         want_phash = self.mode in ("phash", "all")
 
-        metas: List[VideoMeta | FileMeta] = []
+        metas: List[Union[VideoMeta, FileMeta]] = []
         lock = threading.Lock()
         if self._reporter:
             self._reporter.set_total_files(len(files))
@@ -705,12 +801,12 @@ class Grouper:
             if self._reporter:
                 self._reporter.inc_scanned(1, bytes_added=bytes_added, is_video=is_video)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.scan_workers) as ex:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.threads) as ex:
             list(ex.map(worker_scan, files))
 
         # Exact hash
         if self.mode in ("hash", "all"):
-            by_hash: Dict[str, List[VideoMeta | FileMeta]] = defaultdict(list)
+            by_hash: Dict[str, List[Union[VideoMeta, FileMeta]]] = defaultdict(list)
 
             if self._reporter:
                 self._reporter.set_hash_total(len(metas))
@@ -720,31 +816,31 @@ class Grouper:
             if cache:
                 cache.open_append()
 
-            def ensure_hash(m: VideoMeta | FileMeta):
-                cached = cache.get(m.path, m.size, m.mtime) if cache else None
+            def ensure_hash(m: Union[VideoMeta, FileMeta]):
+                cached = cache.get_sha(m.path, m.size, m.mtime) if cache else None  # type: ignore[attr-defined]
                 if cached:
                     object.__setattr__(m, "sha256", cached)
                     if self._reporter:
                         self._reporter.inc_hashed(1, cache_hit=True)
                     return
                 if m.sha256 is None:
-                    h = sha256_file(m.path)
+                    h = sha256_file(m.path, block_size=self.block_size)
                     if h:
                         object.__setattr__(m, "sha256", h)
                         if cache:
-                            cache.put(m.path, m.size, m.mtime, h)
+                            cache.put_sha(m.path, m.size, m.mtime, h)  # type: ignore[attr-defined]
                 if self._reporter:
                     self._reporter.inc_hashed(1, cache_hit=False)
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=self.hash_workers) as ex:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.threads) as ex:
                 list(ex.map(ensure_hash, metas))
 
             if cache:
                 cache.close()
 
             for m in metas:
-                if m.sha256:
-                    by_hash[m.sha256].append(m)
+                if m.sha256:  # type: ignore[attr-defined]
+                    by_hash[m.sha256].append(m)  # type: ignore[index]
             for h, lst in by_hash.items():
                 if len(lst) > 1:
                     groups[f"hash:{h}"] = lst
@@ -858,7 +954,7 @@ def make_keep_key(order: Sequence[str]):
         mapping = {
             "longer": duration,
             "resolution": res,
-            "video_bitrate": vbr,
+            "video-bitrate": vbr,
             "newer": newer,
             "smaller": smaller,
             "deeper": depth,
@@ -1009,7 +1105,7 @@ def apply_report(report_path: Path, *, dry_run: bool, force: bool, backup: Optio
 # CLI
 # ----------------------------
 
-def _default_io_workers() -> int:
+def _default_threads() -> int:
     c = os.cpu_count() or 4
     return max(4, min(32, c * 2))
 
@@ -1024,16 +1120,16 @@ Examples (PowerShell):
   python .\video_dedupe.py "D:\Pictures\Saved" -M all -p *.mp4 -r -x -R D:\report.json
 
   # Apply a previously generated report (delete/move losers listed in it):
-  python .\video_dedupe.py --apply-report D:\report.json -f -b D:\Quarantine
+  python .\video_dedupe.py -A D:\report.json -f -b D:\Quarantine
 
   # Live dashboard:
-  python .\video_dedupe.py "D:\Videos" -M all -p *.mp4 -r -x --live
+  python .\video_dedupe.py "D:\Videos" -M all -p *.mp4 -r -x -L
 
   # Using --dir instead of positional, two patterns:
-  python .\video_dedupe.py --dir "D:\Videos" -p *.mp4 -p *.mkv -M meta -u 3 -x
+  python .\video_dedupe.py -D "D:\Videos" -p *.mp4 -p *.mkv -M meta -r -x
 
   # Preset high tolerance, back up losers:
-  python .\video_dedupe.py "D:\Videos" --preset high -b D:\quarantine -f
+  python .\video_dedupe.py "D:\Videos" -P high -b D:\quarantine -f
 """
     p = argparse.ArgumentParser(
         description="Find and remove duplicate/similar videos & files, or apply a saved report.",
@@ -1043,10 +1139,10 @@ Examples (PowerShell):
 
     # Directory (positional or optional) — optional if --apply-report is used
     p.add_argument("directory", nargs="?", help="Root directory to scan")
-    p.add_argument("-D", "--dir", "--directory", dest="dir_opt", help="Root directory (alternative to positional)")
+    p.add_argument("-D", "--dir", dest="dir_opt", help="Root directory (alternative to positional)")
 
     # Presets
-    p.add_argument("--preset", choices=["low", "medium", "high"], help="Low/Medium/High tolerance presets")
+    p.add_argument("-P", "--preset", choices=["low", "medium", "high"], help="Low/Medium/High tolerance presets")
 
     # Mode
     p.add_argument("-M", "--mode", choices=["hash", "meta", "phash", "all"], default="hash",
@@ -1060,22 +1156,22 @@ Examples (PowerShell):
     p.add_argument("-r", "--recursive", nargs="?", const=-1, type=int,
                    help="Recurse: omit for none; -r for unlimited; -r N for depth N")
 
-    # Metadata rules
-    p.add_argument("--duration_tolerance", "-u", type=float, default=2.0,
+    # Metadata rules (kebab-case long names; keep underscore aliases for back-compat)
+    p.add_argument("-u", "--duration-tolerance", dest="duration_tolerance", type=float, default=2.0,
                    help="Duration tolerance in seconds (default: 2.0)")
-    p.add_argument("--same_res", action="store_true", help="Require same resolution")
-    p.add_argument("--same_codec", action="store_true", help="Require same video codec")
-    p.add_argument("--same_container", action="store_true", help="Require same container/format")
+    p.add_argument("-S", "--same-res", dest="same_res", action="store_true", help="Require same resolution")
+    p.add_argument("-c", "--same-codec", dest="same_codec", action="store_true", help="Require same video codec")
+    p.add_argument("-O", "--same-container", dest="same_container", action="store_true", help="Require same container/format")
 
     # Perceptual hashing
-    p.add_argument("--phash_frames", "-F", type=int, default=5, help="Frames to sample for phash (default: 5)")
-    p.add_argument("--phash_threshold", "-T", type=int, default=12,
+    p.add_argument("-F", "--phash-frames", dest="phash_frames", type=int, default=5, help="Frames to sample for pHash (default: 5)")
+    p.add_argument("-T", "--phash-threshold", dest="phash_threshold", type=int, default=12,
                    help="Per-frame Hamming distance threshold (64-bit, default: 12)")
 
-    # Keep policy
-    p.add_argument("--keep", "-k", type=str,
-                   default="longer,resolution,video_bitrate,newer,smaller,deeper",
-                   help="Order to keep best copy (comma list). Default: longer,resolution,video_bitrate,newer,smaller,deeper")
+    # Keep policy (kebab-case terms inside list are supported)
+    p.add_argument("-k", "--keep", type=str,
+                   default="longer,resolution,video-bitrate,newer,smaller,deeper",
+                   help="Order to keep best copy (comma list). Default: longer,resolution,video-bitrate,newer,smaller,deeper")
 
     # Actions & outputs
     p.add_argument("-x", "--dry-run", action="store_true", help="No changes; just print")
@@ -1086,16 +1182,32 @@ Examples (PowerShell):
 
     # Live dashboard
     p.add_argument("-L", "--live", action="store_true", help="Show live, in-place progress with TermDash")
-    p.add_argument("--refresh-rate", type=float, default=0.2, help="Dashboard refresh rate in seconds (default: 0.2)")
+    p.add_argument("-e", "--refresh-rate", dest="refresh_rate", type=float, default=0.2,
+                   help="Dashboard refresh rate in seconds (default: 0.2)")
 
-    # Hash cache
-    p.add_argument("-C", "--cache", type=str, help="Path to JSONL hash cache file (enables cache read/write)")
+    # Cache
+    p.add_argument("-C", "--cache", type=str, help="Path to JSONL cache file (enables cache read/write)")
 
-    # Threading
-    p.add_argument("--scan-workers", type=int, default=_default_io_workers(),
-                   help="Max worker threads for scanning/probing (default: ~2x CPU, capped)")
-    p.add_argument("--hash-workers", type=int, default=_default_io_workers(),
-                   help="Max worker threads for hashing (default: ~2x CPU, capped)")
+    # Threading (single pool for all work)
+    p.add_argument("-t", "--threads", type=int, default=_default_threads(),
+                   help="Max worker threads for scanning/probing/hashing (default: ~2x CPU, capped)")
+
+    # Hash I/O
+    p.add_argument("-B", "--block-size", type=int, default=(1 << 20),
+                   help="Block size (bytes) for reading when hashing (default: 1048576)")
+
+    # ---- deprecated / back-compat aliases ----
+    # Old underscore long names still accepted; they map to the same dests.
+    p.add_argument("--duration_tolerance", dest="duration_tolerance", type=float, help=argparse.SUPPRESS)
+    p.add_argument("--same_res", dest="same_res", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--same_codec", dest="same_codec", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--same_container", dest="same_container", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--phash_frames", dest="phash_frames", type=int, help=argparse.SUPPRESS)
+    p.add_argument("--phash_threshold", dest="phash_threshold", type=int, help=argparse.SUPPRESS)
+    p.add_argument("--refresh_rate", dest="refresh_rate", type=float, help=argparse.SUPPRESS)
+    # Old split worker flags map to unified threads
+    p.add_argument("--scan-workers", dest="threads", type=int, help=argparse.SUPPRESS)
+    p.add_argument("--hash-workers", dest="threads", type=int, help=argparse.SUPPRESS)
 
     return p.parse_args(argv)
 
@@ -1173,6 +1285,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             _print("No files matched.")
             return 0
 
+        if cache:
+            cache.open_append()
+
         g = Grouper(
             mode=args.mode,
             duration_tolerance=args.duration_tolerance,
@@ -1181,9 +1296,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             same_container=args.same_container,
             phash_frames=args.phash_frames,
             phash_threshold=args.phash_threshold,
-            scan_workers=args.scan_workers,
-            hash_workers=args.hash_workers,
+            threads=args.threads,
             cache=cache,
+            block_size=args.block_size,
         )
 
         groups = g.collect(files, reporter=reporter)
@@ -1216,6 +1331,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 130
     finally:
         reporter.stop()
+        if cache:
+            cache.close()
 
 
 if __name__ == "__main__":
