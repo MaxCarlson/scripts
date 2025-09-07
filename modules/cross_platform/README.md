@@ -1,45 +1,61 @@
 # cross_platform Module
 
-A collection of small, focused utilities that make your scripts **portable** across Windows 11, WSL2, and Termux. The goal is to centralize common patterns—filesystem walking, path printing, safe deletion, and more—so your scripts stay lean and robust.
+The `cross_platform` module is a comprehensive collection of Python utilities designed to abstract and standardize interactions with the underlying operating system. Its primary goal is to provide a unified API for common system-level tasks, allowing higher-level scripts to function consistently across different environments like Windows, Linux, macOS, Termux, and WSL2, without needing to implement OS-specific logic for each operation.
 
-## Key Principles
+## Purpose
 
-- **No surprises:** Helpers never raise on routine tasks like formatting a relative path.
-- **Pure & composable:** Return plain data (lists, dicts, strings). Callers decide how to print or log.
-- **Cross-platform first:** Handle Windows drive letters/anchors, Linux paths, symlinks, and case differences gracefully.
-- **Stable surfaces:** Functions are small, with predictable signatures that are easy for humans and LLMs to use.
+To offer a robust and consistent set of tools for:
+*   Managing clipboard content.
+*   Handling debugging and logging.
+*   Performing file system operations.
+*   Accessing and parsing shell history.
+*   Executing network-related tasks.
+*   Checking and requiring administrative privileges.
+*   Managing system processes and services.
+*   Controlling `tmux` sessions and capturing pane content.
 
-## Submodules
+## Key Files and Classes
 
-- `cross_platform.fs_utils` — Filesystem helpers (path normalization, scanning, deletion, safe relative paths, summaries).
-- Other submodules (e.g., `debug_utils`, `process_manager`, etc.) exist in this package; this README focuses on `fs_utils` because it underpins many scripts.
+*   **`__init__.py`**: The package initializer, which imports and exposes the main utility classes and the `debug_utils` module, making them directly accessible when `cross_platform` is imported.
 
-## Quickstart
+*   **`system_utils.py` (Class: `SystemUtils`)**: This is the foundational base class for the module. It provides core functionalities such as detecting the operating system (Windows, Linux, macOS, Termux, WSL2), executing shell commands, and sourcing files. Most other utility classes in this module inherit from `SystemUtils`.
 
-```python
-from pathlib import Path
-from cross_platform.fs_utils import (
-    scanned_files_by_extension,
-    aggregate_counts_by_parent,
-    dir_summary_lines,
-    relpath_str,
-    delete_files,
-)
+*   **`clipboard_utils.py` (Class: `ClipboardUtils`)**: Offers robust cross-platform capabilities for getting and setting clipboard content. It employs a multi-tiered approach, prioritizing modern methods like OSC 52 for local terminal clipboard updates, then `tmux` buffer integration, and finally falling back to various platform-native tools (`pbcopy`, `xclip`, `xsel`, `termux-clipboard-set`, PowerShell, `clip.exe`).
 
-root = Path("stars")               # user-facing path (relative is fine)
-result = scanned_files_by_extension(root, "jpg")
+*   **`debug_utils.py` (Module: `debug_utils`)**: Provides a flexible and configurable framework for logging and debugging. It supports different verbosity levels for console and file output, includes features for log rotation, and ensures proper cleanup of old log files.
 
-print(f"Searched {len(result.searched_dirs)} directories.")
-print(f"Found {len(result.matched_files)} *.jpg files.")
+*   **`file_system_manager.py` (Class: `FileSystemManager`)**: Extends `SystemUtils` to provide common file system operations, including creating directories, deleting directories, and listing files within a specified path.
 
-# Per-directory summary (safe across OSes; never raises)
-counts = aggregate_counts_by_parent(result.matched_files)
-for line in dir_summary_lines(root, counts, top_n=50, show_all=False, absolute_paths=False):
-    print(line)
+*   **`fs_utils.py`**: Offers more granular, cross-platform filesystem utilities. This includes safe methods for formatting relative paths, performing exact (case-insensitive) file extension matching, and walking directories with options for excluding specific directories and limiting recursion depth.
 
-# Dry run pattern; actually delete when you're ready
-# failures = delete_files(result.matched_files)
-# if failures:
-#     for p, ex in failures:
-#         print(f"Failed to delete {p}: {ex}", file=sys.stderr)
-```
+*   **`history_utils.py` (Class: `HistoryUtils`)**: Designed to access and parse shell history from various environments (PowerShell, Bash, Zsh) to extract recently used commands and file paths.
+
+*   **`network_utils.py` (Class: `NetworkUtils`)**: Provides cross-platform functionalities for network management, such as resetting network settings using OS-specific commands.
+
+*   **`privileges_manager.py` (Class: `PrivilegesManager`)**: Contains methods to check for and, if necessary, enforce administrative or root privileges for script execution, ensuring that operations requiring elevated permissions can proceed safely.
+
+*   **`process_manager.py` (Class: `ProcessManager`)**: Manages system processes, offering methods to list currently running processes and to terminate specific processes by name.
+
+*   **`service_manager.py` (Class: `ServiceManager`)**: Provides cross-platform capabilities for managing system services, including querying their status, starting them, and stopping them.
+
+*   **`tmux_utils.py` (Class: `TmuxManager`)**: Specializes in `tmux` session management. It allows listing, attaching to, creating, switching between, renaming, and detaching `tmux` sessions. It also includes functionality to fuzzy-find sessions (requiring `fzf`) and capture pane content. Requires `tmux` to be installed.
+
+## Overall Functionality
+
+The `cross_platform` module aims to create a robust and reliable layer for Python scripts to interact with the operating system's core functionalities. By encapsulating OS-specific logic, it significantly reduces code duplication and improves the maintainability and portability of scripts that need to perform system-level tasks.
+
+## Dependencies
+
+This module relies on standard Python libraries (`platform`, `subprocess`, `os`, `sys`, `shutil`, `pathlib`). For its full functionality, it may also depend on various external command-line tools and utilities, depending on the operating system and the specific feature being used. These include, but are not limited to:
+
+*   `tmux` (for `TmuxManager`)
+*   `fzf` (for fuzzy-finding in `TmuxManager`)
+*   `xclip` or `xsel` (for Linux clipboard on X11)
+*   `wl-copy` or `wl-paste` (for Linux clipboard on Wayland)
+*   `pbcopy` or `pbpaste` (for macOS clipboard)
+*   `termux-clipboard-set` or `termux-clipboard-get` (for Termux clipboard)
+*   PowerShell or `clip.exe` (for Windows clipboard)
+*   `sudo` (for privilege escalation on Unix-like systems)
+*   `git` (for `debug_utils` to determine log file prefixes based on repository name)
+
+Ensure that the necessary external tools are installed and available in your system's PATH for the respective functionalities to work correctly.
