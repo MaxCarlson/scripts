@@ -4,7 +4,7 @@ vdedup.video_dedupe – CLI entrypoint
 
 This CLI drives the staged pipeline and report application.
 
-Typical usage:
+Examples:
 
   # Fast exact-dupe sweep (HDD-friendly)
   video-dedupe "D:\\Videos" -Q 1-2 -p *.mp4 -r -t 4 -C D:\\vd-cache.jsonl -R D:\\report.json -x -L
@@ -14,6 +14,12 @@ Typical usage:
 
   # Apply a previously generated report
   video-dedupe -A D:\\report.json -f -b D:\\Quarantine
+
+  # Print one or more reports (with verbosity)
+  video-dedupe -P D:\\report.json -V 2
+
+  # Analyze report(s): print winner↔loser diffs (duration, resolution, bitrates, size)
+  video-dedupe -Y D:\\report.json --diff-verbosity 1
 """
 
 from __future__ import annotations
@@ -21,15 +27,17 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple, Any
 
 # NOTE: absolute imports so the CLI works whether installed or run from source
 from vdedup.pipeline import PipelineConfig, parse_pipeline, run_pipeline
 from vdedup.progress import ProgressReporter
 from vdedup.cache import HashCache
 from vdedup.grouping import choose_winners
-from vdedup.report import write_report, apply_report
+from vdedup.report import write_report, apply_report, pretty_print_reports, collect_exclusions, load_report
 
+
+# -------- helpers --------
 
 def _normalize_patterns(patts: Optional[List[str]]) -> Optional[List[str]]:
     if not patts:
@@ -53,12 +61,155 @@ def _banner_text(scan: bool, *, dry: bool, mode: str, threads: int, gpu: bool, b
     return b
 
 
+def _fmt_bytes(n: int) -> str:
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024**2:
+        return f"{n/1024:.2f} KiB"
+    if n < 1024**3:
+        return f"{n/1024**2:.2f} MiB"
+    return f"{n/1024**3:.2f} GiB"
+
+
+def _fmt_dur(sec: Optional[float]) -> str:
+    try:
+        s = int(sec or 0)
+        return f"{s//3600:02d}:{(s%3600)//60:02d}:{s%60:02d}"
+    except Exception:
+        return "--:--:--"
+
+
+def _probe_stats(path: Path) -> Dict[str, Any]:
+    """
+    Lightweight probe used by analysis mode.
+    Returns dict: duration, width, height, overall_bitrate, video_bitrate, size.
+    """
+    size = 0
+    try:
+        st = path.stat()
+        size = int(st.st_size)
+    except Exception:
+        pass
+
+    duration = None
+    width = height = None
+    overall_bitrate = None
+    video_bitrate = None
+    try:
+        from vdedup.probe import run_ffprobe_json  # lazy
+        fmt = run_ffprobe_json(path)
+        if fmt:
+            try:
+                duration = float(fmt.get("format", {}).get("duration", 0.0))
+            except Exception:
+                duration = None
+            try:
+                br = fmt.get("format", {}).get("bit_rate", None)
+                overall_bitrate = int(br) if br is not None else None
+            except Exception:
+                overall_bitrate = None
+            for s in fmt.get("streams", []):
+                if s.get("codec_type") == "video":
+                    try:
+                        video_bitrate = int(s.get("bit_rate")) if s.get("bit_rate") is not None else None
+                    except Exception:
+                        video_bitrate = None
+                    try:
+                        width = int(s.get("width") or 0) or None
+                        height = int(s.get("height") or 0) or None
+                    except Exception:
+                        width = height = None
+                    break
+    except Exception:
+        pass
+
+    return {
+        "size": size,
+        "duration": duration,
+        "width": width,
+        "height": height,
+        "overall_bitrate": overall_bitrate,
+        "video_bitrate": video_bitrate,
+    }
+
+
+def _render_pair_diff(keep: Path, lose: Path, a: Dict[str, Any], b: Dict[str, Any]) -> List[str]:
+    """
+    Render left-justified stats with deltas.
+    """
+    lines: List[str] = []
+    lines.append(f"KEEP: {keep}")
+    lines.append(f"LOSE: {lose}")
+
+    def col(label: str, av: Any, bv: Any, fmt=lambda x: str(x)):
+        la = fmt(av) if av is not None else "—"
+        lb = fmt(bv) if bv is not None else "—"
+        delta = None
+        if isinstance(av, (int, float)) and isinstance(bv, (int, float)):
+            dv = av - bv
+            if abs(dv) > 0:
+                delta = f"{'+' if dv>=0 else ''}{dv}"
+        lines.append(f"  {label:<14}: {la:<12} vs {lb:<12}" + (f"  Δ {delta}" if delta is not None else ""))
+
+    # duration
+    col("duration", a.get("duration"), b.get("duration"), _fmt_dur)
+    # resolution
+    resa = f"{a.get('width','?')}x{a.get('height','?')}" if a.get("width") and a.get("height") else None
+    resb = f"{b.get('width','?')}x{b.get('height','?')}" if b.get("width") and b.get("height") else None
+    lines.append(f"  {'resolution':<14}: {resa or '—':<12} vs {resb or '—':<12}")
+    # video bitrate
+    col("v_bitrate", a.get("video_bitrate"), b.get("video_bitrate"))
+    # overall bitrate
+    col("overall_bps", a.get("overall_bitrate"), b.get("overall_bitrate"))
+    # size
+    col("size", a.get("size"), b.get("size"), _fmt_bytes)
+
+    return lines
+
+
+def render_analysis_for_reports(paths: List[Path], verbosity: int = 1) -> str:
+    """
+    Produce a readable diff for each (keep, loser) pair in one or more reports.
+    verbosity currently:
+      0 = totals only (number of pairs)
+      1 = per-group winner/loser pairs with stat lines
+    """
+    out: List[str] = []
+    total_pairs = 0
+    for rp in paths:
+        data = load_report(rp)
+        groups = data.get("groups") or {}
+        if not groups:
+            continue
+        out.append(f"Analysis: {rp}")
+        for gid, g in groups.items():
+            keep = Path(g.get("keep", ""))
+            losers = [Path(x) for x in (g.get("losers") or [])]
+            if verbosity >= 1:
+                out.append(f"  [{g.get('method', 'unknown')}] {gid}")
+            for l in losers:
+                total_pairs += 1
+                a = _probe_stats(keep)
+                b = _probe_stats(l)
+                if verbosity >= 1:
+                    out.extend(f"    {line}" for line in _render_pair_diff(keep, l, a, b))
+        out.append("")
+
+    if verbosity == 0:
+        out.append(f"Pairs analyzed: {total_pairs}")
+    else:
+        out.append(f"Total pairs analyzed: {total_pairs}")
+    return "\n".join(out)
+
+
+# -------- CLI parsing --------
+
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Find and remove duplicate/similar videos & files using a staged pipeline.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    # Directory (positional; optional for --apply-report)
+    # Directory (positional; optional for --apply-report or --print/--analyze-report)
     p.add_argument("directory", nargs="?", help="Root directory to scan")
 
     # Patterns & recursion
@@ -69,7 +220,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument(
         "-Q", "--pipeline",
         type=str, default="1-2",
-        help="Stages to run: 1=size prefilter, 2=hashing, 3=metadata, 4=phash/subset. Examples: 1-2 or 1,3-4 or all"
+        help="Stages to run: 1=size prefilter, 2=hashing, 3=metadata, 4=phash/subset. You may also pass 5 (no-op) for convenience. Examples: 1-2 or 1,3-4 or all"
     )
 
     # Mode label (informational only; printed in banner)
@@ -102,6 +253,15 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("-C", "--cache", type=str, help="Path to JSONL cache file (append-on-write, resumable)")
     p.add_argument("-R", "--report", type=str, help="Write JSON report to this path")
 
+    # Report utilities
+    p.add_argument("-P", "--print-report", action="append", help="Path to a JSON report to pretty-print (repeatable)")
+    p.add_argument("-V", "--verbosity", type=int, default=1, choices=[0, 1, 2], help="Report print verbosity (0–2). Default: 1")
+    p.add_argument("-X", "--exclude-by-report", action="append", help="Path to a JSON report; losers listed will be skipped during scan (repeatable)")
+
+    # Report analysis
+    p.add_argument("-Y", "--analyze-report", action="append", help="Path to a JSON report to analyze (winner↔loser diffs). Repeatable.")
+    p.add_argument("--diff-verbosity", type=int, default=1, choices=[0, 1], help="Analysis verbosity. 0=totals only, 1=pairs with stats.")
+
     # Apply report
     p.add_argument("-A", "--apply-report", type=str, help="Read a JSON report and delete/move all listed losers")
     p.add_argument("-b", "--backup", type=str, help="Move losers to this folder instead of deleting (apply-report mode)")
@@ -111,8 +271,33 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def _maybe_print_or_analyze(args: argparse.Namespace) -> Optional[int]:
+    """
+    If only -P/--print-report or -Y/--analyze-report were supplied (no directory / apply),
+    do that and exit.
+    """
+    # Pretty print
+    if args.print_report and not args.directory and not args.apply_report and not args.analyze_report:
+        paths = [Path(p).expanduser().resolve() for p in args.print_report]
+        text = pretty_print_reports(paths, verbosity=int(args.verbosity))
+        print(text)
+        return 0
+    # Analyze
+    if args.analyze_report and not args.directory and not args.apply_report:
+        paths = [Path(p).expanduser().resolve() for p in args.analyze_report]
+        text = render_analysis_for_reports(paths, verbosity=int(args.diff_verbosity))
+        print(text)
+        return 0
+    return None
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
+
+    # If they only want to print/analyze reports, do that and exit
+    maybe = _maybe_print_or_analyze(args)
+    if maybe is not None:
+        return maybe
 
     # UI layout preference
     stacked_pref: Optional[bool] = True if args.stacked_ui else (False if args.wide_ui else None)
@@ -143,7 +328,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # SCAN mode
     root_str = args.directory
     if not root_str:
-        print("video-dedupe: error: the following arguments are required: directory", file=sys.stderr)
+        print("video-dedupe: error: the following arguments are required: directory (or use -P/--print-report / -Y/--analyze-report)", file=sys.stderr)
         return 2
     root = Path(root_str).expanduser().resolve()
     if not root.exists():
@@ -175,6 +360,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if cache:
         cache.open_append()
 
+    # Build exclusion set from reports, if any
+    skip_paths = set()
+    if args.exclude_by_report:
+        ex_paths = [Path(p).expanduser().resolve() for p in args.exclude_by_report]
+        skip_paths = collect_exclusions(ex_paths)
+        if skip_paths:
+            print(f"Excluding {len(skip_paths)} files listed as losers in supplied report(s).")
+
     try:
         stages = parse_pipeline(args.pipeline)
         groups = run_pipeline(
@@ -185,18 +378,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             cfg=cfg,
             cache=cache,
             reporter=reporter,
+            skip_paths=skip_paths,
         )
 
         keep_order = ["longer", "resolution", "video-bitrate", "newer", "smaller", "deeper"]
         winners = choose_winners(groups, keep_order)
 
         if args.report:
-            write_report(Path(args.report), winners)
+            write_report(Path(args.report), winners, cfg)
             print(f"Wrote report to: {args.report}")
 
         losers = [loser for (_keep, losers) in winners.values() for loser in losers]
         bytes_total = sum(int(getattr(l, "size", 0)) for l in losers)
         reporter.set_results(dup_groups=len(winners), losers_count=len(losers), bytes_total=bytes_total)
+
+        # If they also passed -P or -Y with a directory, run those too (after scan)
+        if args.print_report:
+            paths = [Path(p).expanduser().resolve() for p in args.print_report]
+            print(pretty_print_reports(paths, verbosity=int(args.verbosity)))
+        if args.analyze_report:
+            paths = [Path(p).expanduser().resolve() for p in args.analyze_report]
+            print(render_analysis_for_reports(paths, verbosity=int(args.diff_verbosity)))
+
         return 0
     finally:
         if cache:
