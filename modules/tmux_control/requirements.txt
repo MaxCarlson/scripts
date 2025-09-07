@@ -1,0 +1,4 @@
+libtmux
+psutil
+typer
+rich
