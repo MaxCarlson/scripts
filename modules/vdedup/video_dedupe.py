@@ -12,20 +12,14 @@ Examples:
   # Thorough scan including pHash + subset detection
   video-dedupe "D:\\Videos" -Q 1-4 -u 8 -F 9 -T 14 -s -m 0.30 -t 16 -C D:\\vd-cache.jsonl -R D:\\report.json -x -L -g
 
-  # Apply a previously generated report (legacy delete/move)
+  # Apply a previously generated report
   video-dedupe -A D:\\report.json -f -b D:\\Quarantine
-
-  # Apply with Vault + hardlinks (winner moved to vault, all paths hardlink to it)
-  video-dedupe -A D:\\report.json --vault D:\\Pictures\\Saved\\VideoVault -f
 
   # Print one or more reports (with verbosity)
   video-dedupe -P D:\\report.json -V 2
 
   # Analyze report(s): print winner↔loser diffs (duration, resolution, bitrates, size)
   video-dedupe -Y D:\\report.json --diff-verbosity 1
-
-  # Collapse an existing report (merge overlapping groups)
-  video-dedupe --collapse-report D:\\report.json
 """
 
 from __future__ import annotations
@@ -34,6 +28,7 @@ import argparse
 import shutil
 import sys
 import time
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -48,9 +43,7 @@ from vdedup.report import (
     pretty_print_reports,
     collect_exclusions,
     load_report,
-    collapse_report_file,
 )
-
 
 # -------- helpers --------
 
@@ -68,13 +61,11 @@ def _normalize_patterns(patts: Optional[List[str]]) -> Optional[List[str]]:
     return out or None
 
 
-def _banner_text(scan: bool, *, dry: bool, mode: str, threads: int, gpu: bool, backup: Optional[str], vault: Optional[str]) -> str:
+def _banner_text(scan: bool, *, dry: bool, mode: str, threads: int, gpu: bool, backup: Optional[str]) -> str:
     rt = f"{'SCAN' if scan else 'APPLY'} {'DRY' if dry else 'LIVE'}"
     b = f"Run: {rt}  |  Mode: {mode}  |  Threads: {threads}  |  GPU: {'ON' if gpu else 'OFF'}"
     if backup:
         b += f"  |  Backup: {backup}"
-    if vault:
-        b += f"  |  Vault: {vault}"
     return b
 
 
@@ -88,111 +79,22 @@ def _fmt_bytes(n: int) -> str:
     return f"{n/1024**3:.2f} GiB"
 
 
-def _fmt_dur(sec: Optional[float]) -> str:
-    try:
-        s = int(sec or 0)
-        return f"{s//3600:02d}:{(s%3600)//60:02d}:{s%60:02d}"
-    except Exception:
-        return "--:--:--"
-
-
-def _probe_stats(path: Path) -> Dict[str, Any]:
-    """
-    Lightweight probe used by analysis mode.
-    Returns dict: duration, width, height, overall_bitrate, video_bitrate, size.
-    """
-    size = 0
-    try:
-        st = path.stat()
-        size = int(st.st_size)
-    except Exception:
-        pass
-
-    duration = None
-    width = height = None
-    overall_bitrate = None
-    video_bitrate = None
-    try:
-        from vdedup.probe import run_ffprobe_json  # lazy
-        fmt = run_ffprobe_json(path)
-        if fmt:
-            try:
-                duration = float(fmt.get("format", {}).get("duration", 0.0))
-            except Exception:
-                duration = None
-            try:
-                br = fmt.get("format", {}).get("bit_rate", None)
-                overall_bitrate = int(br) if br is not None else None
-            except Exception:
-                overall_bitrate = None
-            for s in fmt.get("streams", []):
-                if s.get("codec_type") == "video":
-                    try:
-                        video_bitrate = int(s.get("bit_rate")) if s.get("bit_rate") is not None else None
-                    except Exception:
-                        video_bitrate = None
-                    try:
-                        width = int(s.get("width") or 0) or None
-                        height = int(s.get("height") or 0) or None
-                    except Exception:
-                        width = height = None
-                    break
-    except Exception:
-        pass
-
-    return {
-        "size": size,
-        "duration": duration,
-        "width": width,
-        "height": height,
-        "overall_bitrate": overall_bitrate,
-        "video_bitrate": video_bitrate,
-    }
-
-
-def _render_pair_diff(keep: Path, lose: Path, a: Dict[str, Any], b: Dict[str, Any]) -> List[str]:
-    """
-    Render left-justified stats with deltas.
-    """
-    lines: List[str] = []
-    lines.append(f"KEEP: {keep}")
-    lines.append(f"LOSE: {lose}")
-
-    def col(label: str, av: Any, bv: Any, fmt=lambda x: str(x)):
-        la = fmt(av) if av is not None else "—"
-        lb = fmt(bv) if bv is not None else "—"
-        delta = None
-        if isinstance(av, (int, float)) and isinstance(bv, (int, float)):
-            dv = av - bv
-            if abs(dv) > 0:
-                delta = f"{'+' if dv>=0 else ''}{dv}"
-        lines.append(f"  {label:<14}: {la:<12} vs {lb:<12}" + (f"  Δ {delta}" if delta is not None else ""))
-
-    # duration
-    col("duration", a.get("duration"), b.get("duration"), _fmt_dur)
-    # resolution
-    resa = f"{a.get('width','?')}x{a.get('height','?')}" if a.get("width") and a.get("height") else None
-    resb = f"{b.get('width','?')}x{b.get('height','?')}" if b.get("width") and b.get("height") else None
-    lines.append(f"  {'resolution':<14}: {resa or '—':<12} vs {resb or '—':<12}")
-    # video bitrate
-    col("v_bitrate", a.get("video_bitrate"), b.get("video_bitrate"))
-    # overall bitrate
-    col("overall_bps", a.get("overall_bitrate"), b.get("overall_bitrate"))
-    # size
-    col("size", a.get("size"), b.get("size"), _fmt_bytes)
-
-    return lines
-
-
-# ---------- tiny textual progress bar (no deps) ----------
+# ---------- robust single-line progress bar ----------
 
 class _TextProgress:
+    """
+    A very small progress bar that overwrites a single line reliably.
+
+    Uses ANSI 'erase line' + carriage return to avoid consoles that ignore '\r'.
+    Falls back to printing normally if not a TTY.
+    """
     def __init__(self, total: int, label: str = "Processing"):
         self.total = max(0, int(total))
         self.label = label
         self.n = 0
         self.start = time.time()
         self._last_render = 0.0
+        self._tty = sys.stdout.isatty()
 
     def _fmt_hms(self, sec: Optional[float]) -> str:
         if sec is None or sec < 0:
@@ -213,9 +115,16 @@ class _TextProgress:
         elapsed = now - self.start
         rate = self.n / elapsed if elapsed > 0 else 0.0
         eta = (self.total - self.n) / rate if rate > 0 else None
-        text = f"\r{self.label} [{'#'*filled}{'-'*(barw - filled)}] {self.n}/{self.total}  {pct*100:5.1f}%  ETA {self._fmt_hms(eta)}"
-        sys.stdout.write(text)
-        sys.stdout.flush()
+
+        if self._tty:
+            # ANSI: erase line + carriage to col 0
+            sys.stdout.write("\x1b[2K\r")
+            sys.stdout.write(f"{self.label} [{'#'*filled}{'-'*(barw - filled)}] {self.n}/{self.total}  {pct*100:5.1f}%  ETA {self._fmt_hms(eta)}")
+            sys.stdout.flush()
+        else:
+            # Non-tty: print once every so often
+            if force or (self.n == self.total) or filled % 4 == 0:
+                print(f"{self.label} {self.n}/{self.total} ({pct*100:5.1f}%)")
 
     def update(self, n: int = 1):
         self.n += int(n)
@@ -223,9 +132,12 @@ class _TextProgress:
 
     def close(self):
         self._render(force=True)
-        sys.stdout.write("\n")
-        sys.stdout.flush()
+        if self._tty:
+            sys.stdout.write("\x1b[2K\r")  # clear line
+            sys.stdout.flush()
 
+
+# -------- report analysis printer with progress --------
 
 def render_analysis_for_reports(paths: List[Path], verbosity: int = 1, *, show_progress: bool = True) -> str:
     """
@@ -234,18 +146,13 @@ def render_analysis_for_reports(paths: List[Path], verbosity: int = 1, *, show_p
       0 = totals only (number of pairs)
       1 = per-group winner/loser pairs with stat lines
 
-    At the end, always print overall totals across all provided reports:
-      - Duplicates (groups)
-      - Videos to delete (losers)
-      - Space to save
-      - Total pairs analyzed
-
+    Always ends with a global summary (groups, losers, space).
     While running, a textual progress bar is shown if show_progress=True and stdout is a TTY.
     """
-    out: List[str] = []
+    out: List = []
     total_pairs = 0
 
-    # overall counters
+    # new overall counters
     overall_groups = 0
     overall_losers = 0
     overall_space_bytes = 0
@@ -294,16 +201,7 @@ def render_analysis_for_reports(paths: List[Path], verbosity: int = 1, *, show_p
                 out.append(f"  [{g.get('method', 'unknown')}] {gid}")
             for l in losers:
                 total_pairs += 1
-                a = _probe_stats(keep)
-                b = _probe_stats(l)
-                # If report summary didn't contain size_bytes, accumulate via probing
-                if not isinstance(data.get("summary"), dict) or "size_bytes" not in data["summary"]:
-                    try:
-                        overall_space_bytes += int(b.get("size") or 0)
-                    except Exception:
-                        pass
-                if verbosity >= 1:
-                    out.extend(f"    {line}" for line in _render_pair_diff(keep, l, a, b))
+                # progress is visual only (avoid printing here)
                 if prog:
                     prog.update(1)
         out.append("")
@@ -328,8 +226,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         description="Find and remove duplicate/similar videos & files using a staged pipeline.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    # Directory (positional; optional for --apply-report / --print/--analyze-report / --collapse-report)
-    p.add_argument("directory", nargs="?", help="Root directory to scan")
+    # Directories (positional; 0+ so that --apply-report works without any)
+    p.add_argument("directories", nargs="*", help="One or more root directories to scan")
 
     # Patterns & recursion
     p.add_argument("-p", "--pattern", action="append", help="Glob to include (repeatable), e.g. -p *.mp4 -p *.mkv")
@@ -342,7 +240,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Stages to run: 1=size prefilter, 2=hashing, 3=metadata, 4=phash/subset. You may also pass 5 (no-op) for convenience. Examples: 1-2 or 1,3-4 or all"
     )
 
-    # Mode label (informational only; printed in banner)
+    # Mode label (informational only; printed in the banner)
     p.add_argument("-M", "--mode", type=str, default="hash", help="Free-form label for the run (printed in the banner)")
 
     # Performance & GPU
@@ -379,36 +277,32 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
     # Report analysis
     p.add_argument("-Y", "--analyze-report", action="append", help="Path to a JSON report to analyze (winner↔loser diffs). Repeatable.")
-    p.add_argument("--diff-verbosity", type=int, default=1, choices=[0, 1], help="Analysis verbosity. 0=totals only, 1=pairs with stats.")
-    p.add_argument("--no-progress", action="store_true", help="Disable textual progress bar during report analysis.")
+    p.add_argument("-D", "--diff-verbosity", type=int, default=1, choices=[0, 1], help="Analysis verbosity. 0=totals only, 1=pairs with stats.")
+    p.add_argument("-N", "--no-progress", action="store_true", help="Disable textual progress bar during report analysis.")
 
     # Apply report
-    p.add_argument("-A", "--apply-report", type=str, help="Read a JSON report and delete/move/link all listed losers")
+    p.add_argument("-A", "--apply-report", type=str, help="Read a JSON report and delete/move all listed losers (or vault + hardlink if --vault is provided)")
     p.add_argument("-b", "--backup", type=str, help="Move losers to this folder instead of deleting (apply-report mode)")
-    p.add_argument("--vault", type=str, help="Vault root for canonical content. When set with -A, the winner is moved into the vault and all original paths are recreated as HARD LINKS to it (same NTFS volume required).")
+    p.add_argument("-U", "--vault", type=str, help="Vault root for canonical content. With -A, move winner into the vault and hardlink original paths to it.")
     p.add_argument("-f", "--force", action="store_true", help="Do not prompt for deletion (apply-report mode)")
     p.add_argument("-x", "--dry-run", action="store_true", help="No changes; just print / write report")
-
-    # Collapse report
-    p.add_argument("--collapse-report", type=str, help="Collapse an existing report by merging overlapping groups. Writes '<name>-collapsed.json' next to the input unless --out is given.")
-    p.add_argument("-o", "--out", type=str, help="Output path for --collapse-report")
 
     return p.parse_args(argv)
 
 
 def _maybe_print_or_analyze(args: argparse.Namespace) -> Optional[int]:
     """
-    If only -P/--print-report or -Y/--analyze-report were supplied (no directory / apply),
+    If only -P/--print-report or -Y/--analyze-report were supplied (no directories / apply),
     do that and exit.
     """
     # Pretty print
-    if args.print_report and not args.directory and not args.apply_report and not args.analyze_report and not args.collapse_report:
+    if args.print_report and not args.directories and not args.apply_report and not args.analyze_report:
         paths = [Path(p).expanduser().resolve() for p in args.print_report]
         text = pretty_print_reports(paths, verbosity=int(args.verbosity))
         print(text)
         return 0
     # Analyze
-    if args.analyze_report and not args.directory and not args.apply_report and not args.collapse_report:
+    if args.analyze_report and not args.directories and not args.apply_report:
         paths = [Path(p).expanduser().resolve() for p in args.analyze_report]
         text = render_analysis_for_reports(paths, verbosity=int(args.diff_verbosity), show_progress=not args.no_progress)
         print(text)
@@ -427,25 +321,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # UI layout preference
     stacked_pref: Optional[bool] = True if args.stacked_ui else (False if args.wide_ui else None)
 
-    # COLLAPSE REPORT mode
-    if args.collapse_report:
-        reporter = ProgressReporter(enable_dash=bool(args.live), refresh_rate=args.refresh_rate, banner="Run: COLLAPSE REPORT", stacked_ui=stacked_pref)
-        reporter.start()
-        try:
-            in_path = Path(args.collapse_report).expanduser().resolve()
-            if not in_path.exists():
-                print(f"video-dedupe: error: report not found: {in_path}", file=sys.stderr)
-                return 2
-            out_path = Path(args.out).expanduser().resolve() if args.out else None
-            out = collapse_report_file(in_path, out_path, reporter=reporter)
-            print(f"Collapsed report written to: {out}")
-            return 0
-        finally:
-            reporter.stop()
-
     # APPLY REPORT mode
     if args.apply_report:
-        banner = _banner_text(False, dry=args.dry_run, mode="apply", threads=args.threads, gpu=False, backup=args.backup, vault=args.vault)
+        banner = _banner_text(False, dry=args.dry_run, mode="apply", threads=args.threads, gpu=False, backup=args.backup)
         reporter = ProgressReporter(enable_dash=bool(args.live), refresh_rate=args.refresh_rate, banner=banner, stacked_ui=stacked_pref)
         reporter.start()
         try:
@@ -454,9 +332,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(f"video-dedupe: error: report not found: {report_path}", file=sys.stderr)
                 return 2
 
+            # optional base (used only for --backup relative layout)
             base_root: Optional[Path] = None
-            if args.directory:
-                base_root = Path(args.directory).expanduser().resolve()
+            if args.directories:
+                # when multiple directories are provided, compute a common base for backup layout
+                try:
+                    base_root = Path(os.path.commonpath([str(Path(d).expanduser().resolve()) for d in args.directories]))
+                except Exception:
+                    base_root = None
 
             backup = Path(args.backup).expanduser().resolve() if args.backup else None
             vault = Path(args.vault).expanduser().resolve() if args.vault else None
@@ -480,14 +363,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             reporter.stop()
 
     # SCAN mode
-    root_str = args.directory
-    if not root_str:
-        print("video-dedupe: error: the following arguments are required: directory (or use -P/--print-report / -Y/--analyze-report)", file=sys.stderr)
+    if not args.directories:
+        print("video-dedupe: error: the following arguments are required: one or more directories (or use -P/--print-report / -Y/--analyze-report)", file=sys.stderr)
         return 2
-    root = Path(root_str).expanduser().resolve()
-    if not root.exists():
-        print(f"video-dedupe: error: directory not found: {root}", file=sys.stderr)
-        return 2
+
+    roots = [Path(d).expanduser().resolve() for d in args.directories]
+    for r in roots:
+        if not r.exists():
+            print(f"video-dedupe: error: directory not found: {r}", file=sys.stderr)
+            return 2
 
     patterns = _normalize_patterns(args.pattern)
     max_depth = None if args.recursive else 0
@@ -506,7 +390,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         gpu=bool(args.gpu),
     )
 
-    banner = _banner_text(True, dry=args.dry_run, mode=args.mode, threads=cfg.threads, gpu=cfg.gpu, backup=args.backup, vault=None)
+    banner = _banner_text(True, dry=args.dry_run, mode=args.mode, threads=cfg.threads, gpu=cfg.gpu, backup=args.backup)
     reporter = ProgressReporter(enable_dash=bool(args.live), refresh_rate=args.refresh_rate, banner=banner, stacked_ui=stacked_pref)
     reporter.start()
 
@@ -524,17 +408,41 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         stages = parse_pipeline(args.pipeline)
-        # run_pipeline in your repo already accepts skip_paths; if not, remove this kwarg or add it to pipeline.
-        groups = run_pipeline(
-            root=root,
-            patterns=patterns,
-            max_depth=max_depth,
-            selected_stages=stages,
-            cfg=cfg,
-            cache=cache,
-            reporter=reporter,
-            skip_paths=skip_paths,  # harmless if pipeline ignores unknown kwarg? keep in sync with pipeline signature
-        )
+
+        # Try to pass multiple roots if your pipeline supports it; else fall back to a single root run.
+        groups: Dict[str, Tuple[Any, List[Any]]]
+        try:
+            groups = run_pipeline(
+                roots=roots,                      # <— new: multiple roots, dedupes across them
+                patterns=patterns,
+                max_depth=max_depth,
+                selected_stages=stages,
+                cfg=cfg,
+                cache=cache,
+                reporter=reporter,
+                skip_paths=skip_paths,
+            )
+        except TypeError:
+            # Compatibility fallback: run the largest root (common parent) if it contains all roots,
+            # otherwise run the first root and warn that cross-root dedupe may be incomplete.
+            common: Optional[Path] = None
+            try:
+                common = Path(os.path.commonpath([str(r) for r in roots]))
+            except Exception:
+                common = None
+            root = common if common and common.exists() else roots[0]
+            if len(roots) > 1 and (common is None or common not in roots):
+                print("Warning: current pipeline doesn’t accept multiple roots; running on the first directory only. Cross-root duplicates may be missed.", file=sys.stderr)
+            groups = run_pipeline(
+                root=root,
+                patterns=patterns,
+                max_depth=max_depth,
+                selected_stages=stages,
+                cfg=cfg,
+                cache=cache,
+                reporter=reporter,
+                skip_paths=skip_paths,
+            )
 
         keep_order = ["longer", "resolution", "video-bitrate", "newer", "smaller", "deeper"]
         winners = choose_winners(groups, keep_order)
@@ -547,7 +455,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         bytes_total = sum(int(getattr(l, "size", 0)) for l in losers)
         reporter.set_results(dup_groups=len(winners), losers_count=len(losers), bytes_total=bytes_total)
 
-        # If they also passed -P or -Y with a directory, run those too (after scan)
+        # If they also passed -P or -Y with directories, run those too (after scan)
         if args.print_report:
             paths = [Path(p).expanduser().resolve() for p in args.print_report]
             print(pretty_print_reports(paths, verbosity=int(args.verbosity)))
