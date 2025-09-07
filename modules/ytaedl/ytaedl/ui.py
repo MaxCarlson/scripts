@@ -5,7 +5,7 @@ import queue
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Tuple, Any, Optional
+from typing import Dict, Tuple, Any, Optional, Set
 
 # TermDash (required for TermdashUI). We intentionally avoid touching internal members.
 try:
@@ -169,6 +169,7 @@ class TermdashUI(UIBase):
 
         # line name registry
         self._line_names: Dict[int, Tuple[str, str, str, str]] = {}
+        self._known_lines: Set[str] = set()
 
         self._setup()
 
@@ -181,30 +182,39 @@ class TermdashUI(UIBase):
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.dash.__exit__(exc_type, exc_val, exc_tb)
 
+    # ---------------------- internal helpers -------------------
+
+    def _add_line(self, name: str, line: Line):
+        self.dash.add_line(name, line)
+        self._known_lines.add(name)
+
+    def _has_line(self, name: str) -> bool:
+        return name in self._known_lines
+
     # --------------------------- layout ------------------------
 
     def _setup(self):
         # Header lines
-        self.dash.add_line(
+        self._add_line(
             "overall1",
             Line(
                 "overall1",
                 stats=[
                     Stat("time", "00:00:00", prefix="Time "),
-                    Stat("speed", 0.0, prefix=" Speed ", format_string="{:.1f}"),
-                    Stat("mbytes", 0.0, prefix=" MB ", format_string="{:.1f}"),
+                    Stat("speed", 0.0, prefix=" |  Speed ", format_string="{:.1f}"),
+                    Stat("mbytes", 0.0, prefix="                         ", format_string="{:.1f}"),
                 ],
                 style="header",
             ),
         )
-        self.dash.add_line(
+        self._add_line(
             "overall2",
             Line(
                 "overall2",
                 stats=[
-                    Stat("urls", (0, self.total_urls), prefix=" URLs ", format_string="{}/{}"),
-                    Stat("already", 0, prefix=" Already "),
-                    Stat("bad", 0, prefix=" Bad "),
+                    Stat("urls", (0, self.total_urls), prefix="URLs ", format_string="{}/{}"),
+                    Stat("already", 0, prefix="  |  Already "),
+                    Stat("bad", 0, prefix=""),
                 ],
                 style="header",
             ),
@@ -218,43 +228,43 @@ class TermdashUI(UIBase):
             ln_s1 = f"w{w}:s1"
             ln_s2 = f"w{w}:s2"
             ln_s3 = f"w{w}:s3"
-            self.dash.add_line(
+            self._add_line(
                 ln_main,
                 Line(
                     ln_main,
                     stats=[
                         Stat("w", f"Worker {w}", prefix="", no_expand=True, display_width=10),
-                        Stat("set", "", prefix=" | Set ", no_expand=True, display_width=18),
-                        Stat("urls", (0, 0), prefix=" | URLs ", format_string="{}/{}", no_expand=True, display_width=9),
+                        Stat("set", "", prefix=" | ", no_expand=True, display_width=18),
+                        Stat("urls", (0, 0), prefix=" |  Set", format_string="{}/{}", no_expand=True, display_width=9),
                     ],
                 ),
             )
-            self.dash.add_line(
+            self._add_line(
                 ln_s1,
                 Line(
                     ln_s1,
                     stats=[
                         Stat("mbps", 0.0, prefix="Spd ", format_string="{:.1f}"),
-                        Stat("eta", "--:--:--", prefix=" | ETA "),
-                        Stat("mb", (0.0, 0.0), prefix=" | MB/Seg ", format_string="{:.1f}/{:.1f}"),
+                        Stat("eta", "", prefix="               |                  |  ETA"),
+                        Stat("mb", (0.0, 0.0), prefix="", format_string="{:.1f}/{:.1f}"),
                     ],
                 ),
             )
-            self.dash.add_line(
+            self._add_line(
                 ln_s2,
                 Line(
                     ln_s2,
                     stats=[
                         Stat("id", "", prefix="ID ", no_expand=True, display_width=10),
-                        Stat("title", "", prefix=" | ", no_expand=True, display_width=40),
+                        Stat("title", "", prefix="  |  ", no_expand=True, display_width=40),
                     ],
                 ),
             )
-            self.dash.add_line(
+            self._add_line(
                 ln_s3,
                 Line(
                     ln_s3,
-                    stats=[Stat("already", 0, prefix="Already "), Stat("bad", 0, prefix=" | Bad ")],
+                    stats=[Stat("already", 0, prefix="Already "), Stat("bad", 0, prefix="             |                  |  Bad")],
                 ),
             )
             self.dash.add_separator()
@@ -262,9 +272,9 @@ class TermdashUI(UIBase):
 
         # Scanning section scaffold (added lazily in begin_scan)
         # Footer/status line (simple)
-        self.dash.add_line(
+        self._add_line(
             "status",
-            Line("status", stats=[Stat("msg", "Keys: z pause/resume | q confirm quit | Q force quit", prefix="")]),
+            Line("status", stats=[Stat("msg", "Keys: z pause/resume  |  q confirm quit  |  Q force quit", prefix="")]),
         )
 
     # ------------------------ scanning UI ----------------------
@@ -277,7 +287,7 @@ class TermdashUI(UIBase):
         # If lines already exist, leave them; otherwise add scan header + rows == worker count
         if not self._has_line("scan:hdr"):
             self.dash.add_separator()
-            self.dash.add_line(
+            self._add_line(
                 "scan:hdr",
                 Line(
                     "scan:hdr",
@@ -289,7 +299,7 @@ class TermdashUI(UIBase):
             )
             for i in range(self.num_workers):
                 name = f"scan:{i}"
-                self.dash.add_line(
+                self._add_line(
                     name,
                     Line(
                         name,
