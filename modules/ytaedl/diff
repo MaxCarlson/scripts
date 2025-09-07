@@ -1,0 +1,1407 @@
+$ git diff ./
+```
+diff --git a/yt_ae_dl/yt_ae_dl/cli.py b/yt_ae_dl/yt_ae_dl/cli.py
+index a9317da..02a29ef 100644
+--- a/yt_ae_dl/yt_ae_dl/cli.py
++++ b/yt_ae_dl/yt_ae_dl/cli.py
+@@ -1,8 +1,9 @@
+ #!/usr/bin/env python3
+-"""CLI entry point for the yt-ae-dl downloader module (TermDash-first)."""
++"""CLI entry point (dual short/long flags, 1 job default, no archive by default)."""
+ from __future__ import annotations
+ 
+ import argparse
++import signal
+ import sys
+ import time
+ from pathlib import Path
+@@ -12,83 +13,61 @@ from yt_ae_dl.io import expand_url_dirs, read_urls_from_files
+ from yt_ae_dl.models import DownloaderConfig
+ from yt_ae_dl.runner import DownloadRunner
+ from yt_ae_dl.ui import TERMDASH_AVAILABLE, TermdashUI, SimpleUI
+-from yt_ae_dl.downloaders import terminate_all_active_procs
++from yt_ae_dl.downloaders import request_abort, terminate_all_active_procs
+ 
+ 
+ def build_parser() -> argparse.ArgumentParser:
+     p = argparse.ArgumentParser(
+         prog="yt-ae-dl",
+-        description="A modular downloader for yt-dlp and aebn (TermDash UI).",
++        description="Modular downloader for yt-dlp and aebn with TermDash UI.",
+         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+     )
+     # Inputs
+-    p.add_argument(
+-        "-u", "--url-file",
+-        action="append",
+-        help="Path to a text file of URLs. Can be specified multiple times."
+-    )
+-    p.add_argument(
+-        "-U", "--url-dir",
+-        action="append",
+-        help="Directory containing '*.txt' URL files. Can be specified multiple times."
+-    )
+-    # Output layout defaults to ./stars/<url-file-stem>
+-    p.add_argument(
+-        "-P", "--per-file-subdirs",
+-        action="store_true",
+-        default=True,
+-        help="Place each URL file's downloads into a subfolder named after the file stem (default: True)."
+-    )
+-    p.add_argument(
+-        "-o", "--output-dir",
+-        type=Path,
+-        default=Path("./stars"),
+-        help="Base output directory (default: ./stars). Each URL file maps to a subfolder if -P is set."
+-    )
++    p.add_argument("-u", "--url-file", action="append", help="Path to a URL file (repeatable).")
++    p.add_argument("-U", "--url-dir", action="append", help="Directory whose *.txt files are URL files (repeatable).")
++
++    # Output (default: ./stars/<file-stem>)
++    p.add_argument("-o", "--output-dir", type=Path, default=Path("./stars"), help="Base output directory.")
++    p.add_argument("-P", "--per-file-subdirs", action="store_true", default=True,
++                   help="Create subfolders named by URL file stem (default: on).")
+ 
+     # Concurrency & runtime
+-    p.add_argument("-j", "--jobs", type=int, default=4, help="Number of parallel download jobs.")
+-    p.add_argument(
+-        "-a", "--archive-file",
+-        type=Path,
+-        default=Path("yt-ae-dl-archive.txt"),
+-        help="File to record completed URLs to avoid re-downloads."
+-    )
+-    p.add_argument(
+-        "-w", "--work-dir",
+-        type=Path,
+-        default=Path("./tmp_dl"),
+-        help="Temporary working directory for downloader caches."
+-    )
+-    p.add_argument(
+-        "-t", "--timeout",
+-        type=int, default=3600,
+-        help="Timeout in seconds for each download process."
+-    )
++    p.add_argument("-j", "--jobs", type=int, default=1, help="Parallel download jobs (default: 1).")
++    p.add_argument("-w", "--work-dir", type=Path, default=Path("./tmp_dl"), help="Working directory for caches.")
++    p.add_argument("-t", "--timeout", type=int, default=3600, help="Per-process timeout (seconds).")
++
++    # Archive (off by default)
++    p.add_argument("-a", "--archive-file", type=Path, default=None,
++                   help="Archive file to record completed URLs (disabled by default).")
+ 
+     # UI & logging
+-    p.add_argument("--no-ui", action="store_true", help="Disable TermDash UI and use simple print statements.")
+-    p.add_argument("--log-file", type=Path, help="Write a plain-text log of events to this file.")
++    p.add_argument("--no-ui", action="store_true", help="Use simple print UI instead of TermDash.")
++    p.add_argument("-L", "--log-file", type=Path, help="Append a text log of events to this file.")
+ 
+     # Feature toggles
+     p.add_argument("--aebn-only", action="store_true", help="Skip non-AEBN URLs.")
+     g = p.add_mutually_exclusive_group()
+-    g.add_argument("--scene-from-url", dest="scene_from_url", action="store_true", default=True,
+-                   help="Parse scene info from the URL (default).")
+-    g.add_argument("--no-scene-from-url", dest="scene_from_url", action="store_false",
+-                   help="Do not parse scene info from the URL.")
+-    p.add_argument("--save-covers", action="store_true", help="Ask aebndl to save cover images (-c).")
+-    p.add_argument("--keep-covers", action="store_true", help="Keep newly-generated cover images.")
+-
+-    # Passthrough args
+-    p.add_argument("-E", "--aebn-arg", action="append", help="Append a raw argument to aebndl (repeatable).")
+-    p.add_argument("-Y", "--ytdlp-arg", action="append", help="Append a raw argument to yt-dlp (repeatable).")
+-
+-    # yt-dlp tuning
+-    p.add_argument("-N", "--connections", type=int, help="yt-dlp fragment downloads in parallel (-N).")
+-    p.add_argument("-r", "--rate-limit", help="Limit the download rate (yt-dlp -r), e.g., 2M.")
+-    p.add_argument("-R", "--retries", type=int, help="Number of retries for yt-dlp.")
+-    p.add_argument("-F", "--fragment-retries", type=int, help="Number of fragment retries for yt-dlp.")
++    g.add_argument("-G", "--no-scene-from-url", dest="scene_from_url", action="store_false",
++                   help="Do not parse scene info from URL fragments/paths.")
++    g.add_argument("-g", "--scene-from-url", dest="scene_from_url", action="store_true", default=True,
++                   help="Parse scene info from URL (default).")
++    p.add_argument("-C", "--save-covers", action="store_true", help="Ask aebndl to save cover images (-c).")
++    p.add_argument("-K", "--keep-covers", action="store_true", help="Keep cover images on success.")
++
++    # yt-dlp tuning args (mirroring runytdlp.py defaults)
++    p.add_argument("-N", "--connections", type=int, help="yt-dlp -N fragment concurrency.")
++    p.add_argument("-r", "--rate-limit", help="yt-dlp --throttled-rate (e.g., 700K, 1M).")
++    p.add_argument("-R", "--retries", type=int, help="yt-dlp --retries.")
++    p.add_argument("-F", "--fragment-retries", type=int, help="yt-dlp --fragment-retries.")
++    p.add_argument("-B", "--buffer-size", dest="buffer_size", help="yt-dlp --buffer-size (e.g., 16M).")
++    p.add_argument("-S", "--aria2-splits", dest="aria2_splits", type=int, help="aria2c -s splits.")
++    p.add_argument("-X", "--aria2-x", dest="aria2_x_conn", type=int, help="aria2c -x connections per server.")
++    p.add_argument("-M", "--aria2-min-split", dest="aria2_min_split", help="aria2c --min-split-size (e.g., 1M).")
++    p.add_argument("-T", "--aria2-timeout", dest="aria2_timeout", type=int, help="aria2c --timeout (seconds).")
++
++    # Raw passthrough args
++    p.add_argument("-E", "--aebn-arg", action="append", help="Append raw arg to aebndl (repeatable).")
++    p.add_argument("-Y", "--ytdlp-arg", action="append", help="Append raw arg to yt-dlp (repeatable).")
+     return p
+ 
+ 
+@@ -96,13 +75,13 @@ def main() -> int:
+     p = build_parser()
+     args = p.parse_args()
+ 
+-    # Resolve & dedupe URL files
++    # Resolve URL files
+     url_files: List[Path] = []
+     if args.url_file:
+         url_files += [Path(x) for x in args.url_file]
+     if args.url_dir:
+         url_files += expand_url_dirs(Path(d) for d in args.url_dir)
+-
++    # unique
+     seen, uniq = set(), []
+     for f in url_files:
+         k = str(f.resolve())
+@@ -110,21 +89,20 @@ def main() -> int:
+             seen.add(k)
+             uniq.append(f)
+     url_files = uniq
+-
+     if not url_files:
+         print("No URL files provided. Use -u or -U.", file=sys.stderr)
+         return 2
+ 
+-    out = args.output_dir
+-    out.mkdir(parents=True, exist_ok=True)
++    base_out = args.output_dir
++    base_out.mkdir(parents=True, exist_ok=True)
+ 
+-    # Pre-count total URLs for the UI header
++    # Pre-count URLs for nicer header
+     total_urls = sum(len(read_urls_from_files([f])) for f in url_files)
+ 
+     cfg = DownloaderConfig(
+         work_dir=args.work_dir,
+         archive_path=args.archive_file,
+-        parallel_jobs=args.jobs,
++        parallel_jobs=max(1, int(args.jobs)),
+         timeout_seconds=args.timeout,
+         aebn_only=bool(args.aebn_only),
+         scene_from_url=bool(args.scene_from_url),
+@@ -132,34 +110,45 @@ def main() -> int:
+         keep_covers_flag=bool(args.keep_covers),
+         extra_aebn_args=args.aebn_arg or [],
+         extra_ytdlp_args=args.ytdlp_arg or [],
++        # yt-dlp tuning
+         ytdlp_connections=args.connections,
+         ytdlp_rate_limit=args.rate_limit,
+         ytdlp_retries=args.retries,
+         ytdlp_fragment_retries=args.fragment_retries,
++        ytdlp_buffer_size=args.buffer_size,
++        aria2_splits=args.aria2_splits,
++        aria2_x_conn=args.aria2_x_conn,
++        aria2_min_split=args.aria2_min_split,
++        aria2_timeout=args.aria2_timeout,
+     )
+ 
+-    # TermDash is the default UI now
+-    ui = SimpleUI() if (args.no_ui or not TERMDASH_AVAILABLE) else TermdashUI(
+-        num_workers=args.jobs,
+-        total_urls=total_urls,
+-    )
++    # TermDash default unless disabled or unavailable
++    ui = SimpleUI() if (args.no_ui or not TERMDASH_AVAILABLE) else TermdashUI(num_workers=cfg.parallel_jobs, total_urls=total_urls)
+     runner = DownloadRunner(cfg, ui, log_file=args.log_file)
+ 
+-    print(f"Starting download… Jobs: {args.jobs}, Output: {out}")
++    # SIGINT handler → immediate exit
++    def _sigint(_signo, _frame):
++        request_abort()
++        terminate_all_active_procs()
++        # force shutdown promptly
++        raise KeyboardInterrupt
++
++    signal.signal(signal.SIGINT, _sigint)
++
++    print(f"Starting download… Jobs: {cfg.parallel_jobs}, Output: {base_out}")
+     print("UI:", "Simple" if (args.no_ui or not TERMDASH_AVAILABLE) else "Termdash")
+ 
+     started = time.monotonic()
+     try:
+         with ui:
+-            runner.run_from_files(url_files, out, per_file_subdirs=bool(args.per_file_subdirs))
++            runner.run_from_files(url_files, base_out, per_file_subdirs=bool(args.per_file_subdirs))
+     except KeyboardInterrupt:
+-        # enforce immediate stop; kill all child processes
+-        terminate_all_active_procs()
+-        print("\nInterrupted by user. Shutting down.", file=sys.stderr)
+-        return 1
++        print("\nInterrupted by user. Exiting now.", file=sys.stderr)
++        return 130
+     finally:
+         elapsed = time.monotonic() - started
+         ui.summary({}, elapsed)
++        terminate_all_active_procs()
+     return 0
+ 
+ 
+diff --git a/yt_ae_dl/yt_ae_dl/downloaders.py b/yt_ae_dl/yt_ae_dl/downloaders.py
+index 99ca98f..caa330b 100644
+--- a/yt_ae_dl/yt_ae_dl/downloaders.py
++++ b/yt_ae_dl/yt_ae_dl/downloaders.py
+@@ -1,8 +1,10 @@
+-"""Defines the downloader abstractions and implementations."""
++"""Downloader implementations and process control utilities."""
+ from __future__ import annotations
+ 
++import os
+ import time
+ import subprocess
++import sys
+ from abc import ABC, abstractmethod
+ from pathlib import Path
+ from typing import Iterator, List, Optional, Set
+@@ -21,10 +23,19 @@ from .models import (
+     DestinationEvent,
+     AlreadyEvent,
+ )
+-from .parsers import parse_ytdlp_line, parse_aebndl_line
++from .parsers import parse_ytdlp_line, parse_aebndl_line, sanitize_line
+ from .url_parser import parse_aebn_scene_controls, is_aebn_url
+ 
+-# -------- process registry for hard aborts (Ctrl+C) --------
++# ------------ global abort flag + process registry ------------
++_ABORT_REQUESTED: bool = False
++
++def request_abort() -> None:
++    global _ABORT_REQUESTED
++    _ABORT_REQUESTED = True
++
++def abort_requested() -> bool:
++    return _ABORT_REQUESTED
++
+ _ACTIVE_PROCS: Set[subprocess.Popen] = set()
+ 
+ def _register_proc(p: subprocess.Popen) -> None:
+@@ -39,21 +50,19 @@ def _unregister_proc(p: subprocess.Popen) -> None:
+     except Exception:
+         pass
+ 
+-def terminate_all_active_procs(timeout: float = 2.0) -> None:
+-    """Best-effort terminate/kill all child processes we spawned."""
++def terminate_all_active_procs(timeout: float = 1.5) -> None:
++    """Best-effort terminate → kill everything we spawned."""
+     procs = list(_ACTIVE_PROCS)
+     for p in procs:
+         try:
++            # send SIGTERM / CTRL_BREAK equivalent
+             p.terminate()
+         except Exception:
+             pass
+     t0 = time.monotonic()
+     for p in procs:
+         try:
+-            while True:
+-                rc = p.poll()
+-                if rc is not None:
+-                    break
++            while p.poll() is None:
+                 if time.monotonic() - t0 > timeout:
+                     p.kill()
+                     break
+@@ -76,9 +85,11 @@ class DownloaderBase(ABC):
+         ...
+ 
+ 
++# -------------------- yt-dlp --------------------
+ class YtDlpDownloader(DownloaderBase):
+     def download(self, item: DownloadItem) -> Iterator[DownloadEvent]:
+-        # Ensure target dir exists
++        if abort_requested():
++            return
+         item.output_dir.mkdir(parents=True, exist_ok=True)
+ 
+         yield StartEvent(item=item)
+@@ -86,25 +97,39 @@ class YtDlpDownloader(DownloaderBase):
+         logs: List[str] = []
+ 
+         out_tmpl = item.output_dir / "%(title)s.%(ext)s"
+-        cmd = [
++        cmd: List[str] = [
+             "yt-dlp",
+-            "-f",
+-            "best",
+-            "-o",
+-            str(out_tmpl),
+             "--newline",
+-            "--print",
+-            "TDMETA\t%(id)s\t%(title)s",
++            "--print", "TDMETA\t%(id)s\t%(title)s",
++            "-o", str(out_tmpl),
+         ]
+-        if self.config.ytdlp_connections is not None:
++        # IMPORTANT: don't force "-f best" (yt-dlp warns it's not ideal)
++        # External downloader & args (aria2c) like your runytdlp.py
++        aria2_args: List[str] = []
++        if self.config.aria2_x_conn:
++            aria2_args += ["-x", str(self.config.aria2_x_conn)]
++        if self.config.aria2_splits:
++            aria2_args += ["-s", str(self.config.aria2_splits)]
++        if self.config.aria2_min_split:
++            aria2_args += [f"--min-split-size={self.config.aria2_min_split}"]
++        if self.config.ytdlp_rate_limit:
++            aria2_args += [f"--lowest-speed-limit={self.config.ytdlp_rate_limit}"]
++        if self.config.aria2_timeout:
++            aria2_args += [f"--timeout={int(self.config.aria2_timeout)}"]
++        if aria2_args:
++            cmd += ["--external-downloader", "aria2c", "--external-downloader-args", " ".join(aria2_args)]
++
++        if self.config.ytdlp_connections:
+             cmd += ["-N", str(self.config.ytdlp_connections)]
++        if self.config.ytdlp_buffer_size:
++            cmd += ["--buffer-size", self.config.ytdlp_buffer_size]
+         if self.config.ytdlp_rate_limit:
+-            cmd += ["-r", self.config.ytdlp_rate_limit]
++            cmd += ["--throttled-rate", self.config.ytdlp_rate_limit]
+         if self.config.ytdlp_retries is not None:
+             cmd += ["--retries", str(self.config.ytdlp_retries)]
+         if self.config.ytdlp_fragment_retries is not None:
+             cmd += ["--fragment-retries", str(self.config.ytdlp_fragment_retries)]
+-        cmd += ["--retries", str(item.retries)]
++
+         cmd += self.config.extra_ytdlp_args
+         cmd += item.extra_args
+         cmd.append(item.url)
+@@ -113,6 +138,7 @@ class YtDlpDownloader(DownloaderBase):
+ 
+         status = DownloadStatus.FAILED
+         err: Optional[str] = None
++        proc: Optional[subprocess.Popen] = None
+         try:
+             proc = subprocess.Popen(
+                 cmd,
+@@ -122,18 +148,21 @@ class YtDlpDownloader(DownloaderBase):
+                 encoding="utf-8",
+                 errors="replace",
+                 bufsize=1,
+-                start_new_session=True,
++                start_new_session=True,  # detached group for clean terminate/kill
+             )
+             _register_proc(proc)
+             assert proc.stdout is not None
+             for raw in iter(proc.stdout.readline, ""):
+-                line = raw.rstrip("\n")
++                if abort_requested():
++                    raise KeyboardInterrupt
++                line = sanitize_line(raw)
++                if not line:
++                    continue
+                 logs.append(line)
+                 data = parse_ytdlp_line(line)
+                 if not data:
+                     yield LogEvent(item=item, message=line)
+                     continue
+-
+                 kind = data.get("event")
+                 if kind == "progress":
+                     yield ProgressEvent(
+@@ -145,11 +174,7 @@ class YtDlpDownloader(DownloaderBase):
+                         unit="bytes",
+                     )
+                 elif kind == "meta":
+-                    yield MetaEvent(
+-                        item=item,
+-                        video_id=data.get("id", "") or "",
+-                        title=data.get("title", "") or "",
+-                    )
++                    yield MetaEvent(item=item, video_id=data.get("id", "") or "", title=data.get("title", "") or "")
+                 elif kind == "destination":
+                     yield DestinationEvent(item=item, path=Path(data.get("path", "") or ""))
+                 elif kind == "already":
+@@ -164,27 +189,25 @@ class YtDlpDownloader(DownloaderBase):
+                     status = DownloadStatus.COMPLETED
+             else:
+                 err = f"non-zero exit code: {rc}"
++        except KeyboardInterrupt:
++            err = "interrupted"
++            status = DownloadStatus.FAILED
++            raise
+         except Exception as e:
+             err = str(e)
+         finally:
+-            _unregister_proc(proc)
++            if proc is not None:
++                _unregister_proc(proc)
+ 
+         dur = time.monotonic() - start
+-        yield FinishEvent(
+-            item=item,
+-            result=DownloadResult(
+-                item=item,
+-                status=status,
+-                duration=dur,
+-                error_message=err,
+-                log_output=logs,
+-            ),
+-        )
++        yield FinishEvent(item=item, result=DownloadResult(item=item, status=status, duration=dur, error_message=err, log_output=logs))
+ 
+ 
++# -------------------- aebndl --------------------
+ class AebnDownloader(DownloaderBase):
+     def download(self, item: DownloadItem) -> Iterator[DownloadEvent]:
+-        # Ensure dirs exist before spawning aebndl
++        if abort_requested():
++            return
+         item.output_dir.mkdir(parents=True, exist_ok=True)
+         self.config.work_dir.mkdir(parents=True, exist_ok=True)
+ 
+@@ -192,16 +215,11 @@ class AebnDownloader(DownloaderBase):
+         start = time.monotonic()
+         logs: List[str] = []
+ 
+-        cmd = ["aebndl", "-o", str(item.output_dir), "-w", str(self.config.work_dir), "-t", "4"]
+-
+-        # Scene-aware behavior:
+-        # - Small scene indices (e.g., '#scene-5', '/scene/5') -> pass '-s 5'
+-        # - Large scene IDs (e.g., '#scene-919883') -> DO NOT pass '-s' (aebndl interprets the fragment)
++        cmd: List[str] = ["aebndl", "-o", str(item.output_dir), "-w", str(self.config.work_dir), "-t", "4"]
+         if self.config.scene_from_url:
+             sc = parse_aebn_scene_controls(item.url)
+             if sc.get("scene_index"):
+-                cmd += ["-s", sc["scene_index"]]  # type: ignore[arg-type]
+-
++                cmd += ["-s", sc["scene_index"]]  # only when index is small (ID fragments omitted)
+         if self.config.save_covers:
+             cmd.append("-c")
+         cmd += self.config.extra_aebn_args
+@@ -211,6 +229,7 @@ class AebnDownloader(DownloaderBase):
+ 
+         status = DownloadStatus.FAILED
+         err: Optional[str] = None
++        proc: Optional[subprocess.Popen] = None
+         try:
+             proc = subprocess.Popen(
+                 cmd,
+@@ -225,11 +244,14 @@ class AebnDownloader(DownloaderBase):
+             _register_proc(proc)
+             assert proc.stdout is not None
+             for raw in iter(proc.stdout.readline, ""):
+-                line = raw.rstrip("\n")
++                if abort_requested():
++                    raise KeyboardInterrupt
++                line = sanitize_line(raw)
++                if not line:
++                    continue
+                 logs.append(line)
+                 data = parse_aebndl_line(line)
+                 if not data:
+-                    # still surface raw output to log file
+                     yield LogEvent(item=item, message=line)
+                     continue
+ 
+@@ -237,17 +259,15 @@ class AebnDownloader(DownloaderBase):
+                 if ev == "destination":
+                     yield DestinationEvent(item=item, path=Path(data["path"]))
+                 elif ev == "aebn_progress":
+-                    # Map aebndl progress to generic ProgressEvent in "segments" units
+                     yield ProgressEvent(
+                         item=item,
+                         downloaded_bytes=int(data["segments_done"]),
+                         total_bytes=int(data["segments_total"]),
+-                        speed_bps=float(data["rate_itps"]),  # iterations/second
++                        speed_bps=float(data["rate_itps"]),
+                         eta_seconds=int(data["eta_s"]),
+                         unit="segments",
+                     )
+                 else:
+-                    # prep/other → no-op for UI, but keep log
+                     yield LogEvent(item=item, message=line)
+ 
+             rc = proc.wait(self.config.timeout_seconds)
+@@ -255,24 +275,20 @@ class AebnDownloader(DownloaderBase):
+                 status = DownloadStatus.COMPLETED
+             else:
+                 err = f"non-zero exit code: {rc}"
++        except KeyboardInterrupt:
++            err = "interrupted"
++            status = DownloadStatus.FAILED
++            raise
+         except Exception as e:
+             err = str(e)
+         finally:
+-            _unregister_proc(proc)
++            if proc is not None:
++                _unregister_proc(proc)
+ 
+         dur = time.monotonic() - start
+-        yield FinishEvent(
+-            item=item,
+-            result=DownloadResult(
+-                item=item,
+-                status=status,
+-                duration=dur,
+-                error_message=err,
+-                log_output=logs,
+-            ),
+-        )
++        yield FinishEvent(item=item, result=DownloadResult(item=item, status=status, duration=dur, error_message=err, log_output=logs))
+ 
+ 
+ def get_downloader(url: str, config: DownloaderConfig) -> DownloaderBase:
+-    # Only route *.aebn.com movie/movies URLs to the AEBN downloader.
++    # Route *.aebn.com links to AEBN; everything else to yt-dlp.
+     return AebnDownloader(config) if is_aebn_url(url) else YtDlpDownloader(config)
+diff --git a/yt_ae_dl/yt_ae_dl/io.py b/yt_ae_dl/yt_ae_dl/io.py
+index b5e8310..88917a8 100644
+--- a/yt_ae_dl/yt_ae_dl/io.py
++++ b/yt_ae_dl/yt_ae_dl/io.py
+@@ -1,86 +1,43 @@
+-"""
+-Functions for file I/O, including reading URL lists and managing archives.
+-"""
++"""File/URL I/O helpers."""
+ from __future__ import annotations
+ 
+-import re
+-import sys
+ from pathlib import Path
+ from typing import Iterable, List, Set
+ 
+-# Regex to find and strip inline comments like ' # a comment' or ' ; a comment'
+-_INLINE_CMT_RE = re.compile(r"\s[;#].*$")
+-
+ 
+ def read_urls_from_files(paths: Iterable[Path]) -> List[str]:
+-    """
+-    Read all non-comment, non-empty lines from the provided files.
+-
+-    - Full-line comments starting with '#', ';', or ']' are ignored.
+-    - Inline comments after whitespace (' # ...' or ' ; ...') are stripped.
+-
+-    Returns a de-duplicated list of sanitized URLs, preserving order.
+-    """
+-    urls_raw: List[str] = []
++    out: List[str] = []
+     for p in paths:
+-        if not p.is_file():
+-            print(f"[WARN] URL file not found: {p}", file=sys.stderr)
++        if not Path(p).is_file():
+             continue
+-        try:
+-            for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+-                if not line.strip():
+-                    continue
+-                head = line.lstrip()
+-                if head.startswith(('#', ';', ']')):
+-                    continue
+-
+-                sanitized_line = _INLINE_CMT_RE.sub("", line).strip()
+-                if sanitized_line:
+-                    urls_raw.append(sanitized_line)
+-        except Exception as exc:
+-            print(f"[WARN] Failed to read {p}: {exc}", file=sys.stderr)
+-
+-    # Stable de-duplication preserving first occurrence order
+-    return list(dict.fromkeys(urls_raw))
+-
+-
+-def expand_url_dirs(dirs: Iterable[Path], pattern: str = "*.txt") -> List[Path]:
+-    """
+-    Expand one or more directories into a list of URL files, sorted by name.
+-    """
+-    files: List[Path] = []
++        text = Path(p).read_text(encoding="utf-8", errors="ignore")
++        for ln in text.splitlines():
++            s = ln.strip()
++            if not s:
++                continue
++            if s.startswith("#") or s.startswith(";") or s.startswith("]"):
++                continue
++            # strip inline comments of the form "  # comment" or "  ; comment"
++            idx_hash = s.find(" # ")
++            idx_sem = s.find(" ; ")
++            idx = min([i for i in (idx_hash, idx_sem) if i >= 0], default=-1)
++            if idx >= 0:
++                s = s[:idx].strip()
++            out.append(s)
++    # stable de-dup
++    seen: Set[str] = set()
++    uniq: List[str] = []
++    for u in out:
++        if u not in seen:
++            seen.add(u)
++            uniq.append(u)
++    return uniq
++
++
++def expand_url_dirs(dirs: Iterable[Path]) -> List[Path]:
++    out: List[Path] = []
+     for d in dirs:
+-        if d.is_dir():
+-            files.extend(sorted(d.glob(pattern)))
+-        else:
+-            print(f"[WARN] URL dir not found: {d}", file=sys.stderr)
+-    return files
+-
+-
+-def load_archive(archive_path: Path) -> Set[str]:
+-    """
+-    Loads a set of URLs from an archive file.
+-    """
+-    if not archive_path.exists():
+-        return set()
+-    try:
+-        return {
+-            ln.strip()
+-            for ln in archive_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+-            if ln.strip()
+-        }
+-    except Exception as exc:
+-        print(f"[WARN] Could not read archive {archive_path}: {exc}", file=sys.stderr)
+-        return set()
+-
+-
+-def write_to_archive(archive_path: Path, url: str) -> None:
+-    """
+-    Appends a single URL to the archive file.
+-    """
+-    try:
+-        archive_path.parent.mkdir(parents=True, exist_ok=True)
+-        with archive_path.open("a", encoding="utf-8") as f:
+-            f.write(url.strip() + "\n")
+-    except Exception as exc:
+-        print(f"[WARN] Could not write to archive {archive_path}: {exc}", file=sys.stderr)
++        p = Path(d)
++        if p.is_dir():
++            out.extend(sorted(p.glob("*.txt")))
++    return out
+diff --git a/yt_ae_dl/yt_ae_dl/models.py b/yt_ae_dl/yt_ae_dl/models.py
+index 7b34533..2643ec7 100644
+--- a/yt_ae_dl/yt_ae_dl/models.py
++++ b/yt_ae_dl/yt_ae_dl/models.py
+@@ -5,7 +5,7 @@ import datetime as dt
+ from dataclasses import dataclass, field
+ from enum import Enum
+ from pathlib import Path
+-from typing import List, Optional, Union
++from typing import List, Literal, Optional, Union
+ 
+ 
+ class DownloadStatus(Enum):
+@@ -34,22 +34,20 @@ class ProgressEvent:
+     """
+     Generic progress event.
+ 
+-    For yt-dlp:
+-      - unit = "bytes"
+-      - downloaded_bytes/total_bytes reflect bytes
++    For yt-dlp (unit="bytes"):
++      - downloaded_bytes/total_bytes are bytes
+       - speed_bps is bytes per second
+ 
+-    For aebndl:
+-      - unit = "segments"
+-      - downloaded_bytes/total_bytes represent segments_done/segments_total
+-      - speed_bps is "iterations per second" (segments/s)
++    For aebndl (unit="segments"):
++      - downloaded_bytes/total_bytes are segments_done/segments_total
++      - speed_bps is iterations (segments) per second
+     """
+     item: "DownloadItem"
+     downloaded_bytes: int
+     total_bytes: Optional[int]
+     speed_bps: Optional[float]
+     eta_seconds: Optional[int]
+-    unit: str = "bytes"  # "bytes" or "segments"
++    unit: Literal["bytes", "segments"] = "bytes"
+ 
+ 
+ @dataclass(frozen=True)
+@@ -133,7 +131,9 @@ class DownloadResult:
+ @dataclass(frozen=True)
+ class DownloaderConfig:
+     work_dir: Path
+-    archive_path: Path
++    # None disables archival (default behavior requested)
++    archive_path: Optional[Path] = None
++
+     max_size_gb: float = 10.0
+     keep_oversized: bool = False
+     timeout_seconds: Optional[int] = None
+@@ -148,7 +148,13 @@ class DownloaderConfig:
+     extra_aebn_args: List[str] = field(default_factory=list)
+     extra_ytdlp_args: List[str] = field(default_factory=list)
+ 
++    # yt-dlp tuning
+     ytdlp_connections: Optional[int] = None
+     ytdlp_rate_limit: Optional[str] = None
+     ytdlp_retries: Optional[int] = None
+     ytdlp_fragment_retries: Optional[int] = None
++    ytdlp_buffer_size: Optional[str] = None  # e.g. "16M"
++    aria2_splits: Optional[int] = None       # e.g. 16
++    aria2_x_conn: Optional[int] = None       # e.g. 8
++    aria2_min_split: Optional[str] = None    # e.g. "1M"
++    aria2_timeout: Optional[int] = None      # seconds
+diff --git a/yt_ae_dl/yt_ae_dl/parsers.py b/yt_ae_dl/yt_ae_dl/parsers.py
+index d269faa..cd3a943 100644
+--- a/yt_ae_dl/yt_ae_dl/parsers.py
++++ b/yt_ae_dl/yt_ae_dl/parsers.py
+@@ -4,13 +4,18 @@ from __future__ import annotations
+ import re
+ from typing import Dict, Optional
+ 
++# ---------- shared sanitizers ----------
++_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
++_CR = re.compile(r"\r+")
++
++def sanitize_line(s: str) -> str:
++    """Strip CRs and ANSI control sequences; trim spaces."""
++    s = _CR.sub("", s)
++    s = _ANSI.sub("", s)
++    return s.strip()
+ 
+-# ----------------- yt-dlp -----------------
+ 
+-# Matches lines like:
+-# [download]   2.3% of 10.00MiB at 1.23MiB/s ETA 00:30
+-# [download] Destination: video.mp4
+-# TDMETA\t<id>\t<title>
++# ----------------- yt-dlp -----------------
+ _YTDLP_PROGRESS = re.compile(
+     r"^\[download\]\s+(?P<pct>\d+(?:\.\d+)?)%\s+of\s+(?P<total>[\d.]+)(?P<total_unit>[KMG]i?B)"
+     r"\s+at\s+(?P<speed>[\d.]+)(?P<speed_unit>[KMG]i?B)/s\s+ETA\s+(?P<eta>\d{2}:\d{2})"
+@@ -21,18 +26,18 @@ _YTDLP_META = re.compile(r"^TDMETA\t(?P<id>[^\t]+)\t(?P<title>.+)$")
+ 
+ 
+ def _unit_to_bytes(num: float, unit: str) -> float:
+-    unit = unit.lower()
+-    if unit.startswith("ki") or unit.endswith("kib"):
++    u = unit.lower()
++    if u in ("kib",) or u.startswith("ki"):
+         return num * 1024
+-    if unit.startswith("mi") or unit.endswith("mib"):
++    if u in ("mib",) or u.startswith("mi"):
+         return num * 1024 * 1024
+-    if unit.startswith("gi") or unit.endswith("gib"):
++    if u in ("gib",) or u.startswith("gi"):
+         return num * 1024 * 1024 * 1024
+-    if unit.endswith("kb"):
++    if u.endswith("kb"):
+         return num * 1000
+-    if unit.endswith("mb"):
++    if u.endswith("mb"):
+         return num * 1_000_000
+-    if unit.endswith("gb"):
++    if u.endswith("gb"):
+         return num * 1_000_000_000
+     return num
+ 
+@@ -47,6 +52,7 @@ def _parse_hm_to_seconds(hhmm: str) -> int:
+ 
+ 
+ def parse_ytdlp_line(line: str) -> Optional[Dict]:
++    line = sanitize_line(line)
+     if m := _YTDLP_META.match(line):
+         return {"event": "meta", "id": m.group("id"), "title": m.group("title")}
+     if m := _YTDLP_DEST.match(line):
+@@ -72,23 +78,19 @@ def parse_ytdlp_line(line: str) -> Optional[Dict]:
+ 
+ 
+ # ----------------- aebndl -----------------
+-
+-# Examples from screenshots:
+-# "Output file name: Dorcel – Luxure The Education Of My Wife 1440p.mp4"
+-# "Downloading segments 0 - 3448"
+-# "Audio download: 4% | 147/3450 [00:15<04:52, 11.30it/s]"
+-# "Video download: 2% | 70/3450 [00:14<24:38, 2.29it/s]"
++# Screenshots/logs show tqdm-like lines:
++# "Audio download:  52%|#####2    | 1801/3450 [00:20<00:27, 60.82it/s]"
++# "Video download:  20%|#9        | 678/3450 [00:40<04:14, 10.88it/s]"
+ _AE_DEST = re.compile(r"^Output file name:\s+(?P<path>.+)$", re.IGNORECASE)
+ _AE_PREP = re.compile(r"^Downloading segments\s+\d+\s*-\s*(?P<last>\d+)", re.IGNORECASE)
+-_AE_PROGRESS = re.compile(
++_AE_TQDM = re.compile(
+     r"^(?P<stream>Audio|Video)\s+download:\s+"
+-    r"(?P<pct>\d+)%\s*\|\s*(?P<done>\d+)\/(?P<total>\d+)\s*"
++    r"(?P<pct>\d+)%\|[^\|]*\|\s*(?P<done>\d+)\/(?P<total>\d+)\s*"
+     r"\[\s*(?P<elapsed>\d{2}:\d{2})(?::\d{2})?\s*<\s*(?P<eta>\d{2}:\d{2})(?::\d{2})?\s*,\s*"
+-    r"(?P<rate>[\d.]+)\s*it/s\]",
++    r"(?P<rate>\?|\d+(?:\.\d+)?)\s*it/s\]\s*$",
+     re.IGNORECASE,
+ )
+ 
+-
+ def _to_seconds(hms: str) -> int:
+     p = [int(x) for x in hms.split(":")]
+     if len(p) == 2:
+@@ -99,20 +101,23 @@ def _to_seconds(hms: str) -> int:
+ 
+ 
+ def parse_aebndl_line(line: str) -> Optional[Dict]:
++    line = sanitize_line(line)
++    if not line:
++        return None
+     if m := _AE_DEST.match(line):
+         return {"event": "destination", "path": m.group("path")}
+     if _AE_PREP.match(line):
+-        # preparation line (gives rough total); UI doesn’t need a specific event
+         return {"event": "prep"}
+ 
+-    m = _AE_PROGRESS.match(line)
++    m = _AE_TQDM.match(line)
+     if m:
++        rate = m.group("rate")
+         return {
+             "event": "aebn_progress",
+             "stream": m.group("stream").lower(),
+             "segments_done": int(m.group("done")),
+             "segments_total": int(m.group("total")),
+             "eta_s": _to_seconds(m.group("eta")),
+-            "rate_itps": float(m.group("rate")),
++            "rate_itps": float(rate) if rate != "?" else 0.0,
+         }
+     return None
+diff --git a/yt_ae_dl/yt_ae_dl/runner.py b/yt_ae_dl/yt_ae_dl/runner.py
+index 7077df3..bfce455 100644
+--- a/yt_ae_dl/yt_ae_dl/runner.py
++++ b/yt_ae_dl/yt_ae_dl/runner.py
+@@ -1,97 +1,121 @@
+-"""Concurrent download runner."""
++"""Parallel download runner with optional logging and hard abort."""
+ from __future__ import annotations
+ 
+-from concurrent.futures import ThreadPoolExecutor, as_completed
++import concurrent.futures as cf
++import threading
++import time
+ from pathlib import Path
+-from threading import Lock
+-from typing import Iterable, List, Optional
++from typing import Iterable, List, Optional, Set, Tuple
+ 
+-from .downloaders import get_downloader
+-from .io import load_archive, read_urls_from_files, write_to_archive
++from .downloaders import get_downloader, terminate_all_active_procs, request_abort, abort_requested
++from .io import read_urls_from_files
+ from .models import (
+     DownloaderConfig,
+     DownloadItem,
+     DownloadResult,
+     DownloadStatus,
+     FinishEvent,
+-    LogEvent,
+     StartEvent,
+-    URLSource,
++    DownloadEvent,
+ )
+ from .ui import UIBase
+-from .url_parser import is_aebn_url
+ 
+ 
+ class DownloadRunner:
+     def __init__(self, config: DownloaderConfig, ui: UIBase, log_file: Optional[Path] = None):
+         self.config = config
+         self.ui = ui
+-        self.archived_urls = load_archive(self.config.archive_path)
+-        self._archive_lock = Lock()
+-        self._log_file = log_file
++        self._abort = threading.Event()
++        self._log_fp = None
++        if log_file:
++            log_file.parent.mkdir(parents=True, exist_ok=True)
++            self._log_fp = open(log_file, "a", encoding="utf-8")
+ 
+-    def _log_line(self, text: str):
+-        if not self._log_file:
+-            return
+-        try:
+-            self._log_file.parent.mkdir(parents=True, exist_ok=True)
+-            with self._log_file.open("a", encoding="utf-8") as f:
+-                f.write(text + "\n")
+-        except Exception:
+-            pass
+-
+-    def run_from_files(self, url_files: List[Path], output_dir: Path, per_file_subdirs: bool = True):
+-        items: List[DownloadItem] = []
+-        item_id = 0
++    def _log(self, line: str) -> None:
++        if self._log_fp:
++            try:
++                self._log_fp.write(line.rstrip("\n") + "\n")
++                self._log_fp.flush()
++            except Exception:
++                pass
+ 
+-        for file in url_files:
+-            urls = read_urls_from_files([file])
+-            dest = output_dir / file.stem if per_file_subdirs else output_dir
+-            dest.mkdir(parents=True, exist_ok=True)
+-            for line_no, u in enumerate(urls, start=1):
+-                if u in self.archived_urls:
+-                    continue
+-                src = URLSource(file=file, line_number=line_no, original_url=u)
+-                items.append(DownloadItem(id=item_id, url=u, output_dir=dest, source=src))
+-                item_id += 1
++    def _handle_event(self, ev: DownloadEvent) -> None:
++        # Optional global logging (START/LOG/FINISH)
++        if isinstance(ev, StartEvent):
++            self._log(f"START {ev.item.id} {ev.item.url}")
++        elif isinstance(ev, FinishEvent):
++            self._log(f"FINISH {ev.item.id} {ev.result.status.value} {ev.item.url}")
++        else:
++            # stringify anything with message
++            msg = getattr(ev, "message", None)
++            if msg is not None:
++                self._log(f"LOG {getattr(ev, 'item').id} {msg}")
+ 
+-        self.run(items)
++        self.ui.handle_event(ev)
+ 
+-    def run(self, items: Iterable[DownloadItem]):
+-        with ThreadPoolExecutor(max_workers=self.config.parallel_jobs) as ex:
+-            futs = [ex.submit(self._one, it) for it in items]
+-            for f in as_completed(futs):
+-                f.result()
++    def _iter_items(self, url_files: Iterable[Path], base_out: Path, per_file_subdirs: bool) -> List[DownloadItem]:
++        items: List[DownloadItem] = []
++        next_id = 0
++        for url_file in url_files:
++            urls = read_urls_from_files([url_file])
++            out_dir = base_out / url_file.stem if per_file_subdirs else base_out
++            out_dir.mkdir(parents=True, exist_ok=True)
++            for ln, url in enumerate(urls, 1):
++                items.append(
++                    DownloadItem(
++                        id=next_id,
++                        url=url,
++                        output_dir=out_dir,
++                        source=None,  # set to None for now; can inject URLSource if needed
++                        retries=3,
++                    )
++                )
++                next_id += 1
++        return items
+ 
+-    def _one(self, item: DownloadItem):
+-        if self.config.aebn_only and not is_aebn_url(item.url):
+-            res = DownloadResult(
+-                item=item,
+-                status=DownloadStatus.SKIPPED,
+-                error_message="Non-AEBN URL skipped due to --aebn-only.",
+-            )
+-            self.ui.handle_event(StartEvent(item=item))
+-            self.ui.handle_event(LogEvent(item=item, message=res.error_message or "skipped"))
+-            self.ui.handle_event(FinishEvent(item=item, result=res))
+-            self._log_line(f"SKIPPED {item.url}")
+-            return
++    def _worker(self, item: DownloadItem) -> DownloadResult:
++        if abort_requested() or self._abort.is_set():
++            raise RuntimeError("aborted")
+ 
+         dl = get_downloader(item.url, self.config)
++        result: Optional[DownloadResult] = None
++        try:
++            for ev in dl.download(item):
++                self._handle_event(ev)
++                if isinstance(ev, FinishEvent):
++                    result = ev.result
++        except KeyboardInterrupt:
++            # Convert to global abort
++            request_abort()
++            terminate_all_active_procs()
++            raise
++        return result or DownloadResult(item=item, status=DownloadStatus.FAILED, error_message="no result")
+ 
+-        for ev in dl.download(item):
+-            if isinstance(ev, StartEvent):
+-                self._log_line(f"START {ev.item.id} {ev.item.url}")
+-            elif isinstance(ev, LogEvent):
+-                self._log_line(f"LOG {ev.item.id} {ev.message}")
+-            elif isinstance(ev, FinishEvent):
+-                self._log_line(f"FINISH {ev.item.id} {ev.result.status.value} {ev.item.url}")
++    def run_from_files(self, url_files: Iterable[Path], base_out: Path, per_file_subdirs: bool = True) -> None:
++        items = self._iter_items(url_files, base_out, per_file_subdirs=per_file_subdirs)
++        if not items:
++            return
+ 
+-            self.ui.handle_event(ev)
++        with cf.ThreadPoolExecutor(max_workers=max(1, self.config.parallel_jobs)) as ex:
++            futs = [ex.submit(self._worker, it) for it in items]
++            try:
++                for f in cf.as_completed(futs):
++                    if abort_requested():
++                        break
++                    # drain exceptions early
++                    _ = f.result()
++            except KeyboardInterrupt:
++                request_abort()
++                terminate_all_active_procs()
++                # Cancel remaining futures
++                for fut in futs:
++                    fut.cancel()
++                raise
++            finally:
++                terminate_all_active_procs()
+ 
+-            if isinstance(ev, FinishEvent) and ev.result.status in (
+-                DownloadStatus.COMPLETED,
+-                DownloadStatus.ALREADY_EXISTS,
+-            ):
+-                with self._archive_lock:
+-                    self.archived_urls.add(ev.result.item.url)
+-                    write_to_archive(self.config.archive_path, ev.result.item.url)
++        if self._log_fp:
++            try:
++                self._log_fp.close()
++            except Exception:
++                pass
+diff --git a/yt_ae_dl/yt_ae_dl/ui.py b/yt_ae_dl/yt_ae_dl/ui.py
+index a113a6e..f41985a 100644
+--- a/yt_ae_dl/yt_ae_dl/ui.py
++++ b/yt_ae_dl/yt_ae_dl/ui.py
+@@ -1,4 +1,4 @@
+-"""Defines the user interface layer for the downloader (TermDash-first)."""
++"""UI layer with TermDash live dashboard and simple fallback."""
+ from __future__ import annotations
+ 
+ import time
+@@ -60,19 +60,8 @@ class SimpleUI(UIBase):
+ 
+ class TermdashUI(UIBase):
+     """
+-    Rich live dashboard using TermDash.
+-
+-    Header:
+-      Time | Speed MB/s | MB
+-      URLs done/total | Already | Bad
+-
+-    Per worker (4 lines):
+-      Worker N | Set <file-stem> | URLs i/total
+-      MB/s <inst> | ETA <hh:mm:ss> | MB <done/total>  (for AEBN, 'MB' shows segments)
+-      ID <id> | <title>    (both no_expand)
+-      Already a | Bad b
++    Live dashboard using TermDash.
+     """
+-
+     def __init__(self, num_workers: int, total_urls: int):
+         if not TERMDASH_AVAILABLE:
+             raise ImportError("TermDash is not installed/available.")
+@@ -90,7 +79,7 @@ class TermdashUI(UIBase):
+             reserve_extra_rows=6,
+         )
+         self.start_time = time.monotonic()
+-        self.bytes_downloaded = 0.0  # for yt-dlp only; AEBN contributes via "segments"
++        self.bytes_downloaded = 0.0
+         self.urls_started = 0
+         self.already = 0
+         self.bad = 0
+@@ -105,14 +94,13 @@ class TermdashUI(UIBase):
+         self.dash.__exit__(exc_type, exc_val, exc_tb)
+ 
+     def _setup(self):
+-        # Header lines
+         self.dash.add_line(
+             "overall1",
+             Line(
+                 "overall1",
+                 stats=[
+                     Stat("time", "00:00:00", prefix="Time "),
+-                    Stat("speed", 0.0, prefix=" Speed MB/s ", format_string="{:.1f}"),
++                    Stat("speed", 0.0, prefix=" Speed ", format_string="{:.1f}"),
+                     Stat("mbytes", 0.0, prefix=" MB ", format_string="{:.1f}"),
+                 ],
+                 style="header",
+@@ -132,7 +120,6 @@ class TermdashUI(UIBase):
+         )
+         self.dash.add_separator()
+ 
+-        # Per-worker blocks
+         self._line_names: Dict[int, Tuple[str, str, str, str]] = {}
+         for i in range(self.num_workers):
+             w = i + 1
+@@ -156,9 +143,9 @@ class TermdashUI(UIBase):
+                 Line(
+                     ln_s1,
+                     stats=[
+-                        Stat("mbps", 0.0, prefix="MB/s ", format_string="{:.1f}"),
++                        Stat("mbps", 0.0, prefix="Spd ", format_string="{:.1f}"),
+                         Stat("eta", "--:--:--", prefix=" ETA "),
+-                        Stat("mb", (0.0, 0.0), prefix=" MB ", format_string="{:.1f}/{:.1f}"),
++                        Stat("mb", (0.0, 0.0), prefix=" MB/Seg ", format_string="{:.1f}/{:.1f}"),
+                     ],
+                 ),
+             )
+@@ -176,24 +163,20 @@ class TermdashUI(UIBase):
+                 ln_s3,
+                 Line(
+                     ln_s3,
+-                    stats=[
+-                        Stat("already", 0, prefix="Already "),
+-                        Stat("bad", 0, prefix=" Bad "),
+-                    ],
++                    stats=[Stat("already", 0, prefix="Already "), Stat("bad", 0, prefix=" Bad ")],
+                 ),
+             )
+             self.dash.add_separator()
+             self._line_names[i] = (ln_main, ln_s1, ln_s2, ln_s3)
+ 
+     def _header_tick(self):
++        from termdash.utils import fmt_hms, bytes_to_mib
+         elapsed = time.monotonic() - self.start_time
+-        # Sum instantaneous speeds across workers; for AEBN this is "it/s"
+         speed_sum = 0.0
+         for i in range(self.num_workers):
+             _, s1, _, _ = self._line_names[i]
+-            v = self.dash.read_stat(s1, "mbps")
+             try:
+-                speed_sum += float(v or 0.0)
++                speed_sum += float(self.dash.read_stat(s1, "mbps") or 0.0)
+             except Exception:
+                 pass
+         self.dash.update_stat("overall1", "time", fmt_hms(elapsed))
+@@ -204,7 +187,6 @@ class TermdashUI(UIBase):
+         self.dash.update_stat("overall2", "bad", self.bad)
+ 
+     def _slot_for_item(self, item_id: int) -> int:
+-        # Stable slot based on item id modulo worker count
+         return item_id % self.num_workers
+ 
+     def handle_event(self, event: DownloadEvent):
+@@ -215,41 +197,29 @@ class TermdashUI(UIBase):
+             ln_main, ln_s1, ln_s2, ln_s3 = self._line_names[slot]
+             setname = event.item.source.file.stem if event.item.source else ""
+             self.dash.update_stat(ln_main, "set", setname)
+-
+-            # Count on start of attempt
+             self.urls_started += 1
+             cur, total = self.dash.read_stat(ln_main, "urls") or (0, 0)
+-            try:
+-                cur_val = int(cur[0]) if isinstance(cur, tuple) else int(cur)
+-            except Exception:
+-                cur_val = 0
++            cur_val = int(cur[0]) if isinstance(cur, tuple) else int(cur or 0)
+             self.dash.update_stat(ln_main, "urls", (cur_val + 1, total or 0))
+-
+             self.dash.update_stat(ln_s2, "id", "")
+             self.dash.update_stat(ln_s2, "title", event.item.url)
+ 
+         elif isinstance(event, ProgressEvent):
+             slot = self._slot_for_item(event.item.id)
+             ln_main, ln_s1, ln_s2, ln_s3 = self._line_names[slot]
+-
+             if event.unit == "segments":
+-                # Show segments instead of MB; speed is "it/s"
+                 if event.total_bytes is not None:
+-                    self.dash.update_stat(
+-                        ln_s1, "mb", (float(event.downloaded_bytes or 0), float(event.total_bytes))
+-                    )
+-                self.dash.update_stat(ln_s1, "mbps", float(event.speed_bps or 0.0))
++                    self.dash.update_stat(ln_s1, "mb", (float(event.downloaded_bytes or 0), float(event.total_bytes)))
++                self.dash.update_stat(ln_s1, "mbps", float(event.speed_bps or 0.0))  # it/s
+                 self.dash.update_stat(ln_s1, "eta", fmt_hms(event.eta_seconds))
+-            else:
+-                # bytes
++            else:  # bytes
+                 if event.total_bytes is not None:
+                     prev = self._last_bytes_per_worker.get(slot, 0)
+                     cur = int(event.downloaded_bytes or 0)
+                     delta = max(0, cur - prev)
+                     self._last_bytes_per_worker[slot] = cur
+                     self.bytes_downloaded += delta
+-                    from termdash.utils import bytes_to_mib as _mib
+-                    self.dash.update_stat(ln_s1, "mb", (_mib(cur), _mib(int(event.total_bytes))))
++                    self.dash.update_stat(ln_s1, "mb", (float(cur) / (1024 * 1024), float(event.total_bytes) / (1024 * 1024)))
+                 self.dash.update_stat(ln_s1, "mbps", float((event.speed_bps or 0.0) / (1024 * 1024)))
+                 self.dash.update_stat(ln_s1, "eta", fmt_hms(event.eta_seconds))
+ 
+@@ -286,5 +256,4 @@ class TermdashUI(UIBase):
+                 self.dash.update_stat(ln_s3, "bad", int(cur) + 1)
+ 
+     def summary(self, stats: Dict[str, int], elapsed: float):
+-        # Dashboard already shows state; nothing extra.
+         pass
+diff --git a/yt_ae_dl/yt_ae_dl/url_parser.py b/yt_ae_dl/yt_ae_dl/url_parser.py
+index e6b715c..5f5f6f7 100644
+--- a/yt_ae_dl/yt_ae_dl/url_parser.py
++++ b/yt_ae_dl/yt_ae_dl/url_parser.py
+@@ -1,128 +1,72 @@
+-"""Utilities for URL identification and parsing for AEBN and yt-dlp."""
++"""URL helpers for routing and AEBN scene detection."""
+ from __future__ import annotations
+ 
+ import re
+-from urllib.parse import urlsplit, parse_qsl
+-from typing import Dict
+-
+-# Accept any subdomain of aebn.com (e.g., straight.aebn.com)
+-_AEBN_HOST_RE = re.compile(r"(?:^|\.)aebn\.com$", re.IGNORECASE)
+-_SCENE_FRAGMENT_RE = re.compile(r"scene-(\d+)$", re.IGNORECASE)
++from pathlib import Path
++from urllib.parse import urlparse, parse_qs
++from typing import Dict, Optional
+ 
+ 
+ def is_aebn_url(url: str) -> bool:
+-    """
+-    Return True if URL points to an AEBN movie page.
+-
+-    Works for:
+-      - https://www.aebn.com/movie/12345
+-      - https://straight.aebn.com/straight/movies/195412/...
+-      - https://gay.aebn.com/gay/movies/...
+-    """
+     try:
+-        u = urlsplit(url)
++        host = urlparse(url).netloc.lower()
++        return host.endswith(".aebn.com")
+     except Exception:
+         return False
+-    if not u.netloc or not u.path:
+-        return False
+-
+-    host_ok = bool(_AEBN_HOST_RE.search(u.hostname or ""))
+-    if not host_ok:
+-        return False
+-
+-    path = u.path.lower()
+-    # Accept both /movie/ and /movies/ (with optional category prefix)
+-    return ("/movie/" in path) or ("/movies/" in path)
+ 
+ 
+ def get_url_slug(url: str) -> str:
++    """Heuristic slug from last path segment + scene hints."""
++    p = urlparse(url)
++    last = Path(p.path).name or "download"
++    frag = p.fragment or ""
++    q = parse_qs(p.query)
++    parts = [last]
++    # fragment scene-x or scene=y
++    m = re.search(r"(?i)scene[-=]([A-Za-z0-9_]+)", frag)
++    if m:
++        parts.append(f"scene-{m.group(1)}")
++    # query sceneId etc.
++    for k in ("sceneId", "scene_id", "scene", "clip", "start", "end"):
++        if k in q and q[k]:
++            parts.append(f"{k}-{q[k][0]}")
++    # path .../scene/4
++    segs = [s for s in Path(p.path).parts if s]
++    if "scene" in segs:
++        i = segs.index("scene")
++        if i + 1 < len(segs):
++            parts.append(f"scene-{segs[i+1]}")
++    return "-".join(parts)
++
++
++def parse_aebn_scene_controls(url: str) -> Dict[str, Optional[str]]:
+     """
+-    Build a deterministic slug for output naming.
+-
+-    Rules (aligned with tests):
+-    - Base: the path segment immediately following '/movie/' or '/movies/'.
+-    - If fragment '#scene-N' exists -> append '-scene-N'.
+-    - Else if path contains '/scene/N' -> append '-scene-N'.
+-    - Else if query params exist -> append each as '-key-value' in appearance order.
+-    """
+-    try:
+-        u = urlsplit(url)
+-    except Exception:
+-        return "unknown"
+-
+-    parts = [p for p in u.path.split("/") if p]
+-    slug = "unknown"
+-    # find the segment after 'movie' or 'movies'
+-    for key in ("movie", "movies"):
+-        if key in parts:
+-            i = parts.index(key)
+-            if i + 1 < len(parts):
+-                slug = parts[i + 1]
+-                break
+-
+-    # Fragment '#scene-N'
+-    if u.fragment:
+-        m = _SCENE_FRAGMENT_RE.search(u.fragment)
+-        if m:
+-            return f"{slug}-scene-{m.group(1)}"
+-
+-    # Path '/scene/N'
+-    if "scene" in parts:
+-        si = parts.index("scene")
+-        if si + 1 < len(parts) and parts[si + 1].isdigit():
+-            return f"{slug}-scene-{parts[si + 1]}"
+-
+-    # Query params (preserve order)
+-    if u.query:
+-        for k, v in parse_qsl(u.query, keep_blank_values=False):
+-            slug += f"-{k}" + (f"-{v}" if v else "")
+-
+-    return slug
+-
+-
+-def parse_aebn_scene_controls(url: str) -> Dict[str, str | None]:
+-    """
+-    Parse scene controls from URL.
+-
+-    - '#scene-N' (fragment): if N <= 200 -> scene_index = N and scene_id = N,
+-                             else -> scene_id = N (index None).
+-    - '/scene/N' in the path: treat as scene_index = N (only for 'scene', not 'scenes').
+-    - '?sceneId=ID' in query: scene_id = ID.
++    Detect small numeric scene index (1..200) or a large ID.
+     """
+-    index: str | None = None
+-    scene_id: str | None = None
+-
+-    try:
+-        u = urlsplit(url)
+-    except Exception:
+-        return {"scene_index": None, "scene_id": None}
+-
+-    # Fragment '#scene-N'
+-    if u.fragment:
+-        m = _SCENE_FRAGMENT_RE.search(u.fragment)
+-        if m:
+-            n = m.group(1)
+-            try:
+-                iv = int(n)
+-            except ValueError:
+-                iv = 0
+-            if iv <= 200:
+-                index = n
+-                scene_id = n
+-            else:
+-                scene_id = n
+-
+-    # Path '/scene/N'
+-    parts = [p for p in u.path.split("/") if p]
+-    if "scene" in parts:
+-        si = parts.index("scene")
+-        if si + 1 < len(parts) and parts[si + 1].isdigit():
+-            index = parts[si + 1]
+-
+-    # Query '?sceneId=ID'
+-    if u.query:
+-        for k, v in parse_qsl(u.query, keep_blank_values=False):
+-            if k.lower() == "sceneid" and v:
+-                scene_id = v
+-
+-    return {"scene_index": index, "scene_id": scene_id}
++    p = urlparse(url)
++    frag = p.fragment or ""
++    q = parse_qs(p.query)
++    scene_index: Optional[str] = None
++
++    mfrag = re.search(r"(?i)\bscene[-=]?([0-9]+)\b", frag)
++    if mfrag and 1 <= int(mfrag.group(1)) <= 200:
++        scene_index = mfrag.group(1)
++    if not scene_index:
++        segs = [s for s in Path(p.path).parts if s]
++        if "scene" in segs:
++            i = segs.index("scene")
++            if i + 1 < len(segs):
++                cand = segs[i + 1]
++                if cand.isdigit() and 1 <= int(cand) <= 200:
++                    scene_index = cand
++
++    scene_id = None
++    for k in ("scene", "sceneId", "scene_id"):
++        if k in q and q[k]:
++            scene_id = q[k][0]
++    if not scene_id:
++        m2 = re.search(r"(?i)\bscene[-=]([A-Za-z0-9_]+)\b", frag)
++        if m2:
++            scene_id = m2.group(1)
++
++    return {"scene_index": scene_index, "scene_id": scene_id}
+```
