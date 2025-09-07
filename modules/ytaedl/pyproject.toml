@@ -1,27 +1,33 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "ytaedl"
-version = "0.3.0"
-description = "A modular and concurrent downloader for YouTube, AEBN, and more."
+version = "0.6.1"
+description = "Batch downloader using yt-dlp and aebndl with an optional terminal UI."
 readme = "README.md"
 requires-python = ">=3.8"
+dependencies = [
+  "yt-dlp>=2024.10.22",
+]
+# Optional: uncomment and fill out when you want
+# authors = [{ name = "Your Name" }]
+# license = { text = "MIT" }
+# keywords = ["yt-dlp", "aebn", "downloader"]
+
+[project.optional-dependencies]
+# If you want the pretty terminal dashboard, install with: pip install .[ui]
+ui = ["termdash>=0.5.0"]
 
 [project.scripts]
+# Main CLI (this is the `ytaedl` command you asked for)
+ytaedl = "ytaedl.cli:main"
+# Friendly alias that mirrors your help text’s program name
 yt-ae-dl = "ytaedl.cli:main"
-ytaedl   = "ytaedl.cli:main"
+# Orchestrator utility
+ytaedl-orchestrate = "ytaedl.orchestrator:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["ytaedl*", "ytaedl*"]
-
-[project.optional-dependencies]
-dev = [
-  "pytest",
-  "pytest-asyncio",
-  "pytest-cov",
-  "mock",
-  "libtmux",
-]
+include = ["ytaedl*"]
