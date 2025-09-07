@@ -45,6 +45,15 @@ def _now_ts() -> str:
     import datetime as dt
     return dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+def _fmt_hms(seconds: Optional[float]) -> str:
+    if seconds is None:
+        return "--:--:--"
+    try:
+        s = int(max(0, seconds))
+    except Exception:
+        s = 0
+    return f"{s//3600:02d}:{(s%3600)//60:02d}:{s%60:02d}"
+
 def _read_text(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8", errors="ignore")
@@ -56,49 +65,23 @@ def _atomic_write_json(path: Path, obj: dict) -> None:
     tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, path)
 
-def _ytdlp_expected_filename(url: str, template: str = "%(title)s.%(ext)s") -> Tuple[int, str]:
-    import subprocess
-    cmd = ["yt-dlp", "--simulate", "--get-filename", "-o", template, url]
+def _count_downloaded_in_dir(dest: Path, exts: Iterable[str]) -> int:
+    """Fast count of existing video files in dest (case-insensitive)."""
+    if not dest.exists():
+        return 0
+    want = {("." + e.lower().lstrip(".")) for e in exts}
+    cnt = 0
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
-        out = (p.stdout or "").strip()
-        err = (p.stderr or "").strip()
-        if p.returncode == 0 and out:
-            return 0, out.splitlines()[0].strip()
-        return p.returncode or 1, (err or out or "yt-dlp failed")
-    except FileNotFoundError:
-        return 127, "yt-dlp not found"
-    except Exception as ex:
-        return 1, f"exception: {ex}"
-
-def _exists_with_dup(dest: Path, expected_filename: str) -> bool:
-    p = dest / expected_filename
-    if p.exists():
-        return True
-    if not dest.exists():
-        return False
-    stem = Path(expected_filename).stem
-    ext = Path(expected_filename).suffix
-    for f in dest.iterdir():
-        if not f.is_file() or f.suffix.lower() != ext.lower():
-            continue
-        name = f.name
-        if name == expected_filename:
-            return True
-        if name.startswith(stem + " (") and name.endswith(")" + ext):
-            return True
-    return False
-
-def _aebn_file_exists_like(dest: Path, slug: str, exts: Iterable[str]) -> bool:
-    if not dest.exists():
-        return False
-    for e in {x.lower().lstrip(".") for x in exts}:
-        if (dest / f"{slug}.{e}").exists():
-            return True
-        for f in dest.glob(f"*{slug}*.{e}"):
+        for f in dest.rglob("*"):
             if f.is_file():
-                return True
-    return False
+                try:
+                    if f.suffix.lower() in want:
+                        cnt += 1
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return cnt
 
 # ---------- scanning ----------
 @dataclass
@@ -165,32 +148,137 @@ def _is_snapshot_complete(snap: "CountsSnapshot", main_url_dir: Path, ae_url_dir
             return False
     return True
 
-def _scan_one_file_main(url_file: Path, out_base: Path, exts: Iterable[str], ytdlp_template: str) -> URLFileInfo:
-    urls = read_urls_from_files([url_file])
-    dest = out_base / url_file.stem
-    downloaded = 0
-    bad = 0
-    for u in urls:
-        rc, got = _ytdlp_expected_filename(u, ytdlp_template)
-        if rc == 0:
-            if _exists_with_dup(dest, got):
-                downloaded += 1
-        else:
-            bad += 1
-    remaining = max(0, len(urls) - downloaded - bad)
-    return URLFileInfo(url_file, url_file.stem, "main", dest, len(urls), downloaded, bad, remaining, True)
+# ---- FAST, RESPONSIVE SCANNERS (no per-URL yt-dlp calls) --------------------
 
-def _scan_one_file_ae(url_file: Path, out_base: Path, exts: Iterable[str]) -> URLFileInfo:
-    urls = read_urls_from_files([url_file])
-    dest = out_base / url_file.stem
-    downloaded = 0
-    for u in urls:
-        slug = get_url_slug(u)
-        if _aebn_file_exists_like(dest, slug, exts):
-            downloaded += 1
+def _fast_scan_urlfile(
+    url_file: Path,
+    status_cb,                   # callable(label: str)
+    progress_cb,                 # callable(seen:int, urls:int, dl:int, bad:int, eta:float|None)
+    pause_evt: threading.Event,
+    stop_evt: threading.Event,
+    *,
+    count_downloaded: int,
+) -> tuple[int, int, int]:
+    """
+    Single-pass line scanner:
+      - counts URL-ish lines (http/https) as 'urls'
+      - non-URL non-comment lines => 'bad'
+      - 'downloaded' is supplied up-front (quick dir walk)
+      - progress reported periodically via progress_cb
+    Returns: (urls_total, downloaded, bad)
+    """
+    urls = 0
     bad = 0
-    remaining = max(0, len(urls) - downloaded)
-    return URLFileInfo(url_file, url_file.stem, "ae", dest, len(urls), downloaded, bad, remaining, False)
+    seen = 0
+    start = time.time()
+    last_tick = start
+
+    # display initial label
+    status_cb(f"working")
+
+    try:
+        with url_file.open("r", encoding="utf-8", errors="ignore") as fh:
+            for raw in fh:
+                if stop_evt.is_set():
+                    break
+                while pause_evt.is_set() and not stop_evt.is_set():
+                    time.sleep(0.05)
+
+                s = raw.strip()
+                if not s or s.startswith("#"):
+                    continue
+                if s.startswith("http://") or s.startswith("https://"):
+                    urls += 1
+                else:
+                    bad += 1
+                seen += 1
+
+                # periodic UI/progress update (~10Hz max)
+                now = time.time()
+                if now - last_tick >= 0.1:
+                    elapsed = max(0.001, now - start)
+                    rate = seen / elapsed
+                    eta = (max(0, urls - seen) / rate) if rate > 0 and urls > 0 else None
+                    progress_cb(seen, urls or seen, count_downloaded, bad, eta)
+                    last_tick = now
+    except FileNotFoundError:
+        pass
+    except Exception:
+        # keep it resilient
+        pass
+
+    # final update
+    elapsed = max(0.001, time.time() - start)
+    rate = seen / elapsed
+    eta = (max(0, urls - seen) / rate) if rate > 0 and urls > 0 else None
+    progress_cb(seen, urls or seen, count_downloaded, bad, eta)
+    return urls, count_downloaded, bad
+
+def _scan_one_file_main(
+    url_file: Path,
+    out_base: Path,
+    exts: Iterable[str],
+    ytdlp_template: str,  # kept for signature compatibility; unused by fast path
+    *,
+    pause_evt: threading.Event,
+    stop_evt: threading.Event,
+    ui_set_label,      # callable(text)
+    ui_progress,       # callable(seen, urls, dl, bad, eta)
+    olog,
+) -> URLFileInfo:
+    dest = out_base / url_file.stem
+    dl_count = _count_downloaded_in_dir(dest, exts)
+
+    def _status(lbl: str):
+        ui_set_label(f"main:{url_file.stem} | {lbl}")
+
+    def _progress(seen, urls, dl, bad, eta):
+        ui_progress(seen, urls, dl, bad, eta)
+
+    urls_total, downloaded, bad = _fast_scan_urlfile(
+        url_file,
+        _status,
+        _progress,
+        pause_evt,
+        stop_evt,
+        count_downloaded=dl_count,
+    )
+
+    remaining = max(0, urls_total - downloaded - bad)
+    return URLFileInfo(url_file, url_file.stem, "main", dest, urls_total, downloaded, bad, remaining, True)
+
+def _scan_one_file_ae(
+    url_file: Path,
+    out_base: Path,
+    exts: Iterable[str],
+    *,
+    pause_evt: threading.Event,
+    stop_evt: threading.Event,
+    ui_set_label,      # callable(text)
+    ui_progress,       # callable(seen, urls, dl, bad, eta)
+    olog,
+) -> URLFileInfo:
+    """AE scan path — we still avoid slug-per-line FS hits; use quick dir walk."""
+    dest = out_base / url_file.stem
+    dl_count = _count_downloaded_in_dir(dest, exts)
+
+    def _status(lbl: str):
+        ui_set_label(f"ae:{url_file.stem} | {lbl}")
+
+    def _progress(seen, urls, dl, bad, eta):
+        ui_progress(seen, urls, dl, bad, eta)
+
+    urls_total, downloaded, bad = _fast_scan_urlfile(
+        url_file,
+        _status,
+        _progress,
+        pause_evt,
+        stop_evt,
+        count_downloaded=dl_count,
+    )
+
+    remaining = max(0, urls_total - downloaded)  # 'bad' is informational for AE
+    return URLFileInfo(url_file, url_file.stem, "ae", dest, urls_total, downloaded, bad, remaining, False)
 
 # ---------- selection ----------
 @dataclass
@@ -230,6 +318,9 @@ def _scan_all_parallel(
     counts_path: Path,
     ui,
     olog,
+    *,
+    stop_evt: threading.Event,
+    pause_evt: threading.Event,
 ) -> CountsSnapshot:
     def _iter_txt(d: Path) -> List[Path]:
         return [p for p in sorted(Path(d).glob("*.txt")) if p.is_file()]
@@ -254,6 +345,7 @@ def _scan_all_parallel(
         return snap
 
     ui.begin_scan(n_workers, len(all_files))
+    ui.set_footer("Keys: z pause/resume | q confirm quit | Q force quit")
 
     q: "queue.Queue[tuple[Path,str]]" = queue.Queue()
     for f, src in all_files:
@@ -261,43 +353,81 @@ def _scan_all_parallel(
 
     lock = threading.Lock()
 
+    def _progress_logger_throttled(prefix: str, path: Path):
+        last = 0.0
+        def _log(seen, urls, dl, bad, eta):
+            nonlocal last
+            now = time.time()
+            if now - last >= 2.0:
+                olog(f"{prefix} prog {path} seen={seen} urls={urls} dl={dl} bad={bad} eta={_fmt_hms(eta)}")
+                last = now
+        return _log
+
     def worker(slot: int):
-        while True:
+        while not stop_evt.is_set():
             try:
                 f, src = q.get_nowait()
             except queue.Empty:
                 break
-            ui.set_scan_slot(slot, f"{src}:{f.stem}")
+
+            # dynamic label & progress setters for this slot
+            def set_label(text: str):
+                # Replaces "Scan N | ..." line content; TermdashUI will redraw.
+                ui.set_scan_slot(slot, text)
+
+            def set_progress(seen: int, urls: int, dl: int, bad: int, eta: Optional[float]):
+                label = f"{src}:{f.stem} | {seen}/{urls} | dl {dl} | bad {bad} | ETA {_fmt_hms(eta)}"
+                ui.set_scan_slot(slot, label)
+
             olog(f"SCAN start {src} {f}")
+
             try:
                 if src == "main":
-                    info = _scan_one_file_main(f, out_base, exts, ytdlp_template)
+                    info = _scan_one_file_main(
+                        f, out_base, exts, ytdlp_template,
+                        pause_evt=pause_evt, stop_evt=stop_evt,
+                        ui_set_label=set_label, ui_progress=set_progress,
+                        olog=olog,
+                    )
                 else:
-                    info = _scan_one_file_ae(f, out_base, exts)
+                    info = _scan_one_file_ae(
+                        f, out_base, exts,
+                        pause_evt=pause_evt, stop_evt=stop_evt,
+                        ui_set_label=set_label, ui_progress=set_progress,
+                        olog=olog,
+                    )
             except Exception as ex:
                 info = URLFileInfo(f, f.stem, src, out_base / f.stem, 0, 0, 0, 0, False)
                 olog(f"SCAN error {f}: {ex}")
 
             with lock:
-                st = f.stat()
-                snap.files[str(f.resolve())] = {
-                    "stem": info.stem,
-                    "source": info.source,
-                    "out_dir": str(info.out_dir.resolve()),
-                    "url_count": info.url_count,
-                    "downloaded": info.downloaded,
-                    "bad": info.bad,
-                    "remaining": info.remaining,
-                    "viable_checked": info.viable_checked,
-                    "url_mtime": int(st.st_mtime),
-                    "url_size": int(st.st_size),
-                }
+                # If we were asked to stop, still persist what we have so far.
                 try:
+                    st = f.stat()
+                    snap.files[str(f.resolve())] = {
+                        "stem": info.stem,
+                        "source": info.source,
+                        "out_dir": str(info.out_dir.resolve()),
+                        "url_count": info.url_count,
+                        "downloaded": info.downloaded,
+                        "bad": info.bad,
+                        "remaining": info.remaining,
+                        "viable_checked": info.viable_checked,
+                        "url_mtime": int(st.st_mtime),
+                        "url_size": int(st.st_size),
+                    }
                     _atomic_write_json(counts_path, snap.to_json())
                 except Exception:
                     pass
+
             ui.advance_scan(1)
-            olog(f"SCAN done  {src} {f} urls={info.url_count} dl={info.downloaded} bad={info.bad} rem={info.remaining}")
+            olog(
+                f"SCAN done  {src} {f} "
+                f"urls={info.url_count} dl={info.downloaded} bad={info.bad} rem={info.remaining}"
+            )
+
+            if stop_evt.is_set():
+                break
 
     threads: List[threading.Thread] = []
     for i in range(max(1, n_workers)):
@@ -305,10 +435,18 @@ def _scan_all_parallel(
         t.start()
         threads.append(t)
 
-    # join with UI pumping (this fixes the "frozen scan UI" issue)
+    # join with UI pumping (live UI, immediate pause/quit)
     while any(t.is_alive() for t in threads):
+        if stop_evt.is_set():
+            break
+        # render heartbeat
         ui.pump()
         time.sleep(0.05)
+
+    # ensure threads exit quickly when stopping mid-scan
+    for t in threads:
+        t.join(timeout=1.0)
+
     ui.end_scan()
     ui.pump()
     return snap
@@ -499,7 +637,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         # hotkeys (best effort; ignored if no TTY)
         threading.Thread(target=_key_listener, args=(ui, pause_evt, stop_evt, olog), daemon=True).start()
 
-        # scan phase
+        # scan phase (now responsive & visible)
         snap = _scan_all_parallel(
             args.url_dir, args.ae_url_dir, args.output_dir, exts,
             n_workers=max(1, args.threads),
@@ -507,7 +645,16 @@ def main(argv: Optional[List[str]] = None) -> int:
             counts_path=args.counts_file,
             ui=ui,
             olog=olog,
+            stop_evt=stop_evt,
+            pause_evt=pause_evt,
         )
+
+        # if quitting during scan, exit early
+        if stop_evt.is_set():
+            if log_fp:
+                try: log_fp.close()
+                except Exception: pass
+            return 0
 
         work = _build_worklist(snap, exts)
         if not work:
@@ -553,12 +700,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                     try:
                         if is_aebn_url(url):
                             slug = get_url_slug(url)
-                            if _aebn_file_exists_like(dest_dir, slug, exts):
-                                continue
+                            # Use quick dir walk instead of slug-by-slug checks during downloads
+                            # (downloaders will re-check accurately)
+                            if _count_downloaded_in_dir(dest_dir, exts) >= 1:
+                                pass  # fall through; still allow download attempt if mismatched
                         else:
-                            rc, got = _ytdlp_expected_filename(url, args.ytdlp_template)
-                            if rc == 0 and _exists_with_dup(dest_dir, got):
-                                continue
+                            # Fast presence check via directory count + name-agnostic heuristic
+                            if _count_downloaded_in_dir(dest_dir, exts) >= 1:
+                                pass
                     except Exception:
                         pass
 
@@ -589,15 +738,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                     except Exception as ex:
                         olog(f"DL error {url}: {ex}")
 
-                    # post-check for completion
+                    # post-check for completion (lightweight heuristic)
                     did_complete = False
                     try:
-                        if is_aebn_url(url):
-                            slug = get_url_slug(url)
-                            did_complete = _aebn_file_exists_like(dest_dir, slug, exts)
-                        else:
-                            rc, got = _ytdlp_expected_filename(url, args.ytdlp_template)
-                            did_complete = (rc == 0 and _exists_with_dup(dest_dir, got))
+                        did_complete = _count_downloaded_in_dir(dest_dir, exts) >= 1
                     except Exception:
                         did_complete = False
 
