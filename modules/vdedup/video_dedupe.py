@@ -173,14 +173,41 @@ def render_analysis_for_reports(paths: List[Path], verbosity: int = 1) -> str:
     verbosity currently:
       0 = totals only (number of pairs)
       1 = per-group winner/loser pairs with stat lines
+
+    At the end, always print overall totals across all provided reports:
+      - Duplicates (groups)
+      - Videos to delete (losers)
+      - Space to save
+      - Total pairs analyzed
     """
     out: List[str] = []
     total_pairs = 0
+
+    # new overall counters
+    overall_groups = 0
+    overall_losers = 0
+    overall_space_bytes = 0
+
     for rp in paths:
         data = load_report(rp)
         groups = data.get("groups") or {}
+
+        # pull summary if present to count groups/losers quickly
+        if isinstance(data.get("summary"), dict):
+            try:
+                overall_groups += int(data["summary"].get("groups", 0) or 0)
+                overall_losers += int(data["summary"].get("losers", 0) or 0)
+                overall_space_bytes += int(data["summary"].get("size_bytes", 0) or 0)
+            except Exception:
+                pass
+        else:
+            overall_groups += len(groups)
+            for g in groups.values():
+                overall_losers += len(g.get("losers") or [])
+
         if not groups:
             continue
+
         out.append(f"Analysis: {rp}")
         for gid, g in groups.items():
             keep = Path(g.get("keep", ""))
@@ -191,14 +218,23 @@ def render_analysis_for_reports(paths: List[Path], verbosity: int = 1) -> str:
                 total_pairs += 1
                 a = _probe_stats(keep)
                 b = _probe_stats(l)
+                # If report summary didn't contain size_bytes, accumulate via probing
+                if not isinstance(data.get("summary"), dict) or "size_bytes" not in data["summary"]:
+                    try:
+                        overall_space_bytes += int(b.get("size") or 0)
+                    except Exception:
+                        pass
                 if verbosity >= 1:
                     out.extend(f"    {line}" for line in _render_pair_diff(keep, l, a, b))
         out.append("")
 
-    if verbosity == 0:
-        out.append(f"Pairs analyzed: {total_pairs}")
-    else:
-        out.append(f"Total pairs analyzed: {total_pairs}")
+    # Bottom-of-report overall stats
+    out.append("Overall totals:")
+    out.append(f"  Duplicates (groups): {overall_groups}")
+    out.append(f"  Videos to delete   : {overall_losers}")
+    out.append(f"  Space to save      : {_fmt_bytes(overall_space_bytes)}")
+    out.append(f"  Total pairs analyzed: {total_pairs}")
+
     return "\n".join(out)
 
 

@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import vdedup.video_dedupe as cli
 
+
 def test_analysis_mode_monkeypatch(tmp_path: Path, monkeypatch):
     # fake _probe_stats so we don't need ffprobe
     def fake_probe(p: Path):
@@ -15,6 +16,7 @@ def test_analysis_mode_monkeypatch(tmp_path: Path, monkeypatch):
             "overall_bitrate": base * 10,
             "video_bitrate": base * 8,
         }
+
     monkeypatch.setattr(cli, "_probe_stats", fake_probe)
 
     # build a report
@@ -29,10 +31,10 @@ def test_analysis_mode_monkeypatch(tmp_path: Path, monkeypatch):
                 "keep": str(keep),
                 "losers": [str(lose)],
                 "method": "hash",
-                "evidence": {"sha256": "abcd"}
+                "evidence": {"sha256": "abcd"},
             }
         },
-        "summary": {"groups": 1, "losers": 1, "size_bytes": 0}
+        "summary": {"groups": 1, "losers": 1, "size_bytes": 800 * 1024},
     }
     rp.write_text(json.dumps(data), encoding="utf-8")
 
@@ -40,3 +42,8 @@ def test_analysis_mode_monkeypatch(tmp_path: Path, monkeypatch):
     assert "KEEP:" in out and "LOSE:" in out
     assert "duration" in out
     assert "size" in out
+    # overall footer should be present
+    assert "Overall totals:" in out
+    assert "Duplicates (groups): 1" in out
+    assert "Videos to delete" in out
+    assert "Space to save" in out
