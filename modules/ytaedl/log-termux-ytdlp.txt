@@ -1,0 +1,216 @@
+START 0 https://straight.aebn.com/straight/movies/195412/luxure-the-education-of-my-wife#scene-919883
+LOG 0 SPAWN aebndl: aebndl -o stars/julie_skyhigh -w tmp_dl -t 4 https://straight.aebn.com/straight/movies/195412/luxure-the-education-of-my-wife#scene-919883
+LOG 0 Traceback (most recent call last):
+LOG 0   File "/data/data/com.termux/files/usr/bin/aebndl", line 3, in <module>
+LOG 0     from aebn_dl.cli import main
+LOG 0   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/__init__.py", line 1, in <module>
+LOG 0     from .downloader import Downloader
+LOG 0   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/downloader.py", line 13, in <module>
+LOG 0     from . import utils
+LOG 0   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/utils.py", line 11, in <module>
+LOG 0     from .movie_scraper import Movie
+LOG 0   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/movie_scraper.py", line 6, in <module>
+LOG 0     from .custom_session import CustomSession
+LOG 0   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/custom_session.py", line 6, in <module>
+LOG 0     from curl_cffi import requests as cc_requests
+LOG 0   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/__init__.py", line 48, in <module>
+LOG 0     from .__version__ import __curl_version__, __description__, __title__, __version__  # noqa: F401
+LOG 0     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+LOG 0   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/__version__.py", line 3, in <module>
+LOG 0     from .curl import Curl
+LOG 0   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/curl.py", line 13, in <module>
+LOG 0     from ._wrapper import ffi, lib
+LOG 0 ImportError: dlopen failed: library "libcurl-impersonate.so.4" not found: needed by /data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/_wrapper.abi3.so in namespace (default)
+FINISH 0 failed https://straight.aebn.com/straight/movies/195412/luxure-the-education-of-my-wife#scene-919883
+START 1 https://straight.aebn.com/straight/movies/195412/luxure-the-education-of-my-wife#scene-919885
+LOG 1 SPAWN aebndl: aebndl -o stars/julie_skyhigh -w tmp_dl -t 4 https://straight.aebn.com/straight/movies/195412/luxure-the-education-of-my-wife#scene-919885
+LOG 1 Traceback (most recent call last):
+LOG 1   File "/data/data/com.termux/files/usr/bin/aebndl", line 3, in <module>
+LOG 1     from aebn_dl.cli import main
+LOG 1   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/__init__.py", line 1, in <module>
+LOG 1     from .downloader import Downloader
+LOG 1   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/downloader.py", line 13, in <module>
+LOG 1     from . import utils
+LOG 1   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/utils.py", line 11, in <module>
+LOG 1     from .movie_scraper import Movie
+LOG 1   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/movie_scraper.py", line 6, in <module>
+LOG 1     from .custom_session import CustomSession
+LOG 1   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/custom_session.py", line 6, in <module>
+LOG 1     from curl_cffi import requests as cc_requests
+LOG 1   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/__init__.py", line 48, in <module>
+LOG 1     from .__version__ import __curl_version__, __description__, __title__, __version__  # noqa: F401
+LOG 1     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+LOG 1   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/__version__.py", line 3, in <module>
+LOG 1     from .curl import Curl
+LOG 1   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/curl.py", line 13, in <module>
+LOG 1     from ._wrapper import ffi, lib
+LOG 1 ImportError: dlopen failed: library "libcurl-impersonate.so.4" not found: needed by /data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/_wrapper.abi3.so in namespace (default)
+FINISH 1 failed https://straight.aebn.com/straight/movies/195412/luxure-the-education-of-my-wife#scene-919885
+START 2 https://straight.aebn.com/straight/movies/208521/megan-escort-deluxe#scene-954930
+LOG 2 SPAWN aebndl: aebndl -o stars/julie_skyhigh -w tmp_dl -t 4 https://straight.aebn.com/straight/movies/208521/megan-escort-deluxe#scene-954930
+LOG 2 Traceback (most recent call last):
+LOG 2   File "/data/data/com.termux/files/usr/bin/aebndl", line 3, in <module>
+LOG 2     from aebn_dl.cli import main
+LOG 2   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/__init__.py", line 1, in <module>
+LOG 2     from .downloader import Downloader
+LOG 2   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/downloader.py", line 13, in <module>
+LOG 2     from . import utils
+LOG 2   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/utils.py", line 11, in <module>
+LOG 2     from .movie_scraper import Movie
+LOG 2   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/movie_scraper.py", line 6, in <module>
+LOG 2     from .custom_session import CustomSession
+LOG 2   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/custom_session.py", line 6, in <module>
+LOG 2     from curl_cffi import requests as cc_requests
+LOG 2   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/__init__.py", line 48, in <module>
+LOG 2     from .__version__ import __curl_version__, __description__, __title__, __version__  # noqa: F401
+LOG 2     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+LOG 2   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/__version__.py", line 3, in <module>
+LOG 2     from .curl import Curl
+LOG 2   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/curl.py", line 13, in <module>
+LOG 2     from ._wrapper import ffi, lib
+LOG 2 ImportError: dlopen failed: library "libcurl-impersonate.so.4" not found: needed by /data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/_wrapper.abi3.so in namespace (default)
+FINISH 2 failed https://straight.aebn.com/straight/movies/208521/megan-escort-deluxe#scene-954930
+START 3 https://straight.aebn.com/straight/movies/190969/french-maid-to-hire-2#scene-898698
+LOG 3 SPAWN aebndl: aebndl -o stars/julie_skyhigh -w tmp_dl -t 4 https://straight.aebn.com/straight/movies/190969/french-maid-to-hire-2#scene-898698
+LOG 3 Traceback (most recent call last):
+LOG 3   File "/data/data/com.termux/files/usr/bin/aebndl", line 3, in <module>
+LOG 3     from aebn_dl.cli import main
+LOG 3   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/__init__.py", line 1, in <module>
+LOG 3     from .downloader import Downloader
+LOG 3   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/downloader.py", line 13, in <module>
+LOG 3     from . import utils
+LOG 3   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/utils.py", line 11, in <module>
+LOG 3     from .movie_scraper import Movie
+LOG 3   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/movie_scraper.py", line 6, in <module>
+LOG 3     from .custom_session import CustomSession
+LOG 3   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/custom_session.py", line 6, in <module>
+LOG 3     from curl_cffi import requests as cc_requests
+LOG 3   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/__init__.py", line 48, in <module>
+LOG 3     from .__version__ import __curl_version__, __description__, __title__, __version__  # noqa: F401
+LOG 3     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+LOG 3   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/__version__.py", line 3, in <module>
+LOG 3     from .curl import Curl
+LOG 3   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/curl.py", line 13, in <module>
+LOG 3     from ._wrapper import ffi, lib
+LOG 3 ImportError: dlopen failed: library "libcurl-impersonate.so.4" not found: needed by /data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/_wrapper.abi3.so in namespace (default)
+FINISH 3 failed https://straight.aebn.com/straight/movies/190969/french-maid-to-hire-2#scene-898698
+START 4 https://straight.aebn.com/straight/movies/198254/julie--26-years-old--prostitute#scene-929561
+LOG 4 SPAWN aebndl: aebndl -o stars/julie_skyhigh -w tmp_dl -t 4 https://straight.aebn.com/straight/movies/198254/julie--26-years-old--prostitute#scene-929561
+LOG 4 Traceback (most recent call last):
+LOG 4   File "/data/data/com.termux/files/usr/bin/aebndl", line 3, in <module>
+LOG 4     from aebn_dl.cli import main
+LOG 4   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/__init__.py", line 1, in <module>
+LOG 4     from .downloader import Downloader
+LOG 4   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/downloader.py", line 13, in <module>
+LOG 4     from . import utils
+LOG 4   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/utils.py", line 11, in <module>
+LOG 4     from .movie_scraper import Movie
+LOG 4   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/movie_scraper.py", line 6, in <module>
+LOG 4     from .custom_session import CustomSession
+LOG 4   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/custom_session.py", line 6, in <module>
+LOG 4     from curl_cffi import requests as cc_requests
+LOG 4   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/__init__.py", line 48, in <module>
+LOG 4     from .__version__ import __curl_version__, __description__, __title__, __version__  # noqa: F401
+LOG 4     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+LOG 4   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/__version__.py", line 3, in <module>
+LOG 4     from .curl import Curl
+LOG 4   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/curl.py", line 13, in <module>
+LOG 4     from ._wrapper import ffi, lib
+LOG 4 ImportError: dlopen failed: library "libcurl-impersonate.so.4" not found: needed by /data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/_wrapper.abi3.so in namespace (default)
+FINISH 4 failed https://straight.aebn.com/straight/movies/198254/julie--26-years-old--prostitute#scene-929561
+START 5 https://straight.aebn.com/straight/movies/198254/julie--26-years-old--prostitute#scene-929563
+LOG 5 SPAWN aebndl: aebndl -o stars/julie_skyhigh -w tmp_dl -t 4 https://straight.aebn.com/straight/movies/198254/julie--26-years-old--prostitute#scene-929563
+LOG 5 Traceback (most recent call last):
+LOG 5   File "/data/data/com.termux/files/usr/bin/aebndl", line 3, in <module>
+LOG 5     from aebn_dl.cli import main
+LOG 5   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/__init__.py", line 1, in <module>
+LOG 5     from .downloader import Downloader
+LOG 5   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/downloader.py", line 13, in <module>
+LOG 5     from . import utils
+LOG 5   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/utils.py", line 11, in <module>
+LOG 5     from .movie_scraper import Movie
+LOG 5   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/movie_scraper.py", line 6, in <module>
+LOG 5     from .custom_session import CustomSession
+LOG 5   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/custom_session.py", line 6, in <module>
+LOG 5     from curl_cffi import requests as cc_requests
+LOG 5   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/__init__.py", line 48, in <module>
+LOG 5     from .__version__ import __curl_version__, __description__, __title__, __version__  # noqa: F401
+LOG 5     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+LOG 5   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/__version__.py", line 3, in <module>
+LOG 5     from .curl import Curl
+LOG 5   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/curl.py", line 13, in <module>
+LOG 5     from ._wrapper import ffi, lib
+LOG 5 ImportError: dlopen failed: library "libcurl-impersonate.so.4" not found: needed by /data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/_wrapper.abi3.so in namespace (default)
+FINISH 5 failed https://straight.aebn.com/straight/movies/198254/julie--26-years-old--prostitute#scene-929563
+START 6 https://straight.aebn.com/straight/movies/228702/anal--please#scene-1027453
+LOG 6 SPAWN aebndl: aebndl -o stars/julie_skyhigh -w tmp_dl -t 4 https://straight.aebn.com/straight/movies/228702/anal--please#scene-1027453
+LOG 6 Traceback (most recent call last):
+LOG 6   File "/data/data/com.termux/files/usr/bin/aebndl", line 3, in <module>
+LOG 6     from aebn_dl.cli import main
+LOG 6   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/__init__.py", line 1, in <module>
+LOG 6     from .downloader import Downloader
+LOG 6   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/downloader.py", line 13, in <module>
+LOG 6     from . import utils
+LOG 6   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/utils.py", line 11, in <module>
+LOG 6     from .movie_scraper import Movie
+LOG 6   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/movie_scraper.py", line 6, in <module>
+LOG 6     from .custom_session import CustomSession
+LOG 6   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/custom_session.py", line 6, in <module>
+LOG 6     from curl_cffi import requests as cc_requests
+LOG 6   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/__init__.py", line 48, in <module>
+LOG 6     from .__version__ import __curl_version__, __description__, __title__, __version__  # noqa: F401
+LOG 6     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+LOG 6   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/__version__.py", line 3, in <module>
+LOG 6     from .curl import Curl
+LOG 6   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/curl.py", line 13, in <module>
+LOG 6     from ._wrapper import ffi, lib
+LOG 6 ImportError: dlopen failed: library "libcurl-impersonate.so.4" not found: needed by /data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/_wrapper.abi3.so in namespace (default)
+FINISH 6 failed https://straight.aebn.com/straight/movies/228702/anal--please#scene-1027453
+START 7 https://straight.aebn.com/straight/movies/199324/moi-julie--26-ans--prostituee-a-bruxelles
+LOG 7 SPAWN aebndl: aebndl -o stars/julie_skyhigh -w tmp_dl -t 4 https://straight.aebn.com/straight/movies/199324/moi-julie--26-ans--prostituee-a-bruxelles
+LOG 7 Traceback (most recent call last):
+LOG 7   File "/data/data/com.termux/files/usr/bin/aebndl", line 3, in <module>
+LOG 7     from aebn_dl.cli import main
+LOG 7   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/__init__.py", line 1, in <module>
+LOG 7     from .downloader import Downloader
+LOG 7   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/downloader.py", line 13, in <module>
+LOG 7     from . import utils
+LOG 7   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/utils.py", line 11, in <module>
+LOG 7     from .movie_scraper import Movie
+LOG 7   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/movie_scraper.py", line 6, in <module>
+LOG 7     from .custom_session import CustomSession
+LOG 7   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/custom_session.py", line 6, in <module>
+LOG 7     from curl_cffi import requests as cc_requests
+LOG 7   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/__init__.py", line 48, in <module>
+LOG 7     from .__version__ import __curl_version__, __description__, __title__, __version__  # noqa: F401
+LOG 7     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+LOG 7   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/__version__.py", line 3, in <module>
+LOG 7     from .curl import Curl
+LOG 7   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/curl.py", line 13, in <module>
+LOG 7     from ._wrapper import ffi, lib
+LOG 7 ImportError: dlopen failed: library "libcurl-impersonate.so.4" not found: needed by /data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/_wrapper.abi3.so in namespace (default)
+FINISH 7 failed https://straight.aebn.com/straight/movies/199324/moi-julie--26-ans--prostituee-a-bruxelles
+START 8 https://straight.aebn.com/straight/movies/190975/slut-next-door#scene-899727
+LOG 8 SPAWN aebndl: aebndl -o stars/julie_skyhigh -w tmp_dl -t 4 https://straight.aebn.com/straight/movies/190975/slut-next-door#scene-899727
+LOG 8 Traceback (most recent call last):
+LOG 8   File "/data/data/com.termux/files/usr/bin/aebndl", line 3, in <module>
+LOG 8     from aebn_dl.cli import main
+LOG 8   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/__init__.py", line 1, in <module>
+LOG 8     from .downloader import Downloader
+LOG 8   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/downloader.py", line 13, in <module>
+LOG 8     from . import utils
+LOG 8   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/utils.py", line 11, in <module>
+LOG 8     from .movie_scraper import Movie
+LOG 8   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/movie_scraper.py", line 6, in <module>
+LOG 8     from .custom_session import CustomSession
+LOG 8   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/aebn_dl/custom_session.py", line 6, in <module>
+LOG 8     from curl_cffi import requests as cc_requests
+LOG 8   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/__init__.py", line 48, in <module>
+LOG 8     from .__version__ import __curl_version__, __description__, __title__, __version__  # noqa: F401
+LOG 8     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+LOG 8   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/__version__.py", line 3, in <module>
+LOG 8     from .curl import Curl
+LOG 8   File "/data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/curl.py", line 13, in <module>
+LOG 8     from ._wrapper import ffi, lib
+LOG 8 ImportError: dlopen failed: library "libcurl-impersonate.so.4" not found: needed by /data/data/com.termux/files/usr/lib/python3.12/site-packages/curl_cffi/_wrapper.abi3.so in namespace (default)
+FINISH 8 failed https://straight.aebn.com/straight/movies/190975/slut-next-door#scene-899727
