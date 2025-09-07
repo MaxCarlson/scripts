@@ -13,6 +13,9 @@ Key improvements in this release:
 - Presets expanded to mirror GitHub .gitignore templates for popular stacks
   (python, cpp, node, rust, go, java, dotnet, swift). Using a preset adjusts
   dirs/exts/files/remove-patterns by default.
+- NEW: Size tree reporting at the end of the run. Use:
+    -T / --size-tree [DEPTH]           (default 1 if value omitted)
+    -A / --auto-size-tree [TOPN]       (default 25 if value omitted; wins if both given)
 
 CLI style (single-letter + long-form, all programs must honor both):
   -f / --file-mode           -> emit consolidated .txt
@@ -35,10 +38,13 @@ CLI style (single-letter + long-form, all programs must honor both):
   -C / --include-commits     -> include a compact git commit snapshot in analysis workspace
   -L / --commit-limit        -> limit the number of commits if included (default 20)
   -S / --show-memory         -> add '--show-memory-usage' to Gemini CLI
+  -T / --size-tree [DEPTH]   -> print size tree to given depth (default 1 if no value)
+  -A / --auto-size-tree [N]  -> print "top N" largest folders (default 25). If deeper, parents included.
 
 The module also exposes:
 - zip_folder, text_file_mode, flatten_directory, delete_files_to_fit_size
 - prepare_analysis_workspace, run_gemini_analysis
+- compute_filtered_dir_sizes, render_size_tree
 - DEFAULT_EXCLUDE_DIRS/EXTS/FILES, PRESETS
 """
 
@@ -57,7 +63,7 @@ import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Iterable, List, Optional, Set
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 
 # =====================================================================================
@@ -649,7 +655,7 @@ def run_gemini_analysis(
             (filtered_workspace / "COMMIT_HISTORY_FOR_LLM.md").write_text(snap)
 
     cmd = [
-        "gemini", 
+        "gemini",
         "--all-files",
         "--model", model_name,
         "--output", str(analysis_outfile),
@@ -692,6 +698,161 @@ def run_gemini_analysis(
 
 
 # =====================================================================================
+# Size tree computation & rendering
+# =====================================================================================
+
+def _human_bytes(n: int) -> str:
+    """Human-readable bytes, no colors; aligned later."""
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    x = float(n)
+    for u in units:
+        if x < 1024.0 or u == units[-1]:
+            if u == "B":
+                return f"{int(x)} {u}"
+            return f"{x:.1f} {u}"
+        x /= 1024.0
+    return f"{int(n)} B"
+
+def compute_filtered_dir_sizes(
+    source_dir: Path,
+    exclude_dirs: Set[str],
+    exclude_exts: Set[str],
+    exclude_files: Set[str],
+    remove_patterns: List[str],
+    keep_patterns: List[str],
+) -> Dict[Path, int]:
+    """
+    Return a map of directory -> cumulative size (bytes), honoring exclusions.
+    """
+    exclusion = Exclusion(set(exclude_dirs), set(exclude_exts), set(exclude_files), list(remove_patterns), list(keep_patterns))
+    sizes: Dict[Path, int] = {}
+
+    def should_descend(rel: str) -> bool:
+        return not (rel and exclusion.dir_is_excluded(rel))
+
+    def add_size(p: Path, sz: int) -> None:
+        # bubble up to root
+        while True:
+            sizes[p] = sizes.get(p, 0) + sz
+            if p == source_dir:
+                break
+            p = p.parent
+
+    for r, dirs, files in os.walk(source_dir):
+        root_path = Path(r)
+        rel_dir = _relpath(root_path, source_dir)
+        # prune dirs
+        for d in list(dirs):
+            rel_d = _relpath(root_path / d, source_dir)
+            if not should_descend(rel_d):
+                dirs.remove(d)
+        # files
+        for f in files:
+            p = root_path / f
+            rel = _relpath(p, source_dir)
+            if exclusion.file_is_excluded(rel):
+                continue
+            try:
+                sz = p.stat().st_size
+            except OSError:
+                continue
+            add_size(root_path, sz)
+
+    # Ensure every traversed (non-excluded) dir at least appears (size 0)
+    for r, dirs, _ in os.walk(source_dir):
+        root_path = Path(r)
+        rel_dir = _relpath(root_path, source_dir)
+        if should_descend(rel_dir):
+            sizes.setdefault(root_path, sizes.get(root_path, 0))
+
+    return sizes
+
+def _gather_tree_lines_by_depth(
+    root: Path,
+    dir_sizes: Dict[Path, int],
+    max_depth: int,
+) -> List[Tuple[int, Path]]:
+    """
+    Collect (depth, path) entries up to max_depth for dirs present in dir_sizes.
+    """
+    items: List[Tuple[int, Path]] = []
+    root_prefix = str(root)
+
+    for d in sorted(dir_sizes.keys(), key=lambda p: str(p)):
+        if not str(d).startswith(root_prefix):
+            continue
+        depth = len(d.relative_to(root).parts) if d != root else 0
+        if depth <= max_depth:
+            items.append((depth, d))
+    # Sort by (depth, name)
+    items.sort(key=lambda t: (t[0], str(t[1]).lower()))
+    return items
+
+def render_size_tree(
+    source_dir: Path,
+    dir_sizes: Dict[Path, int],
+    depth: Optional[int] = None,
+    auto_top_n: Optional[int] = None,
+) -> str:
+    """
+    Render a size tree. If auto_top_n is provided, we pick the top-N heaviest
+    directories (excluding the root), include their ancestors, then render
+    up to the deepest level among those selections. Otherwise, depth-limited
+    from the root (default depth=1).
+    """
+    if auto_top_n is not None and auto_top_n <= 0:
+        return ""
+
+    # Build a set of dirs to include
+    include_dirs: Set[Path] = set()
+
+    if auto_top_n:
+        # Sort children by size (exclude the root itself for ranking)
+        ranked = [(p, sz) for p, sz in dir_sizes.items() if p != source_dir]
+        ranked.sort(key=lambda t: t[1], reverse=True)
+        top = [p for p, _ in ranked[:auto_top_n]]
+
+        # include ancestors for visual continuity
+        for p in top:
+            while True:
+                include_dirs.add(p)
+                if p == source_dir:
+                    break
+                p = p.parent
+        # compute max depth we need to render
+        max_depth = 0
+        for p in include_dirs:
+            d = len(p.relative_to(source_dir).parts) if p != source_dir else 0
+            if d > max_depth:
+                max_depth = d
+        items = []
+        for p in sorted(include_dirs, key=lambda q: (len(q.relative_to(source_dir).parts) if q != source_dir else 0, str(q).lower())):
+            depth_here = len(p.relative_to(source_dir).parts) if p != source_dir else 0
+            items.append((depth_here, p))
+    else:
+        max_depth = 1 if depth is None else max(0, depth)
+        items = _gather_tree_lines_by_depth(source_dir, dir_sizes, max_depth)
+
+    # Size column width
+    size_strings = {p: _human_bytes(dir_sizes.get(p, 0)) for _, p in items}
+    width = max((len(s) for s in size_strings.values()), default=0)
+
+    # Render lines
+    lines: List[str] = []
+    title = "Size Tree (auto top-N)" if auto_top_n else f"Size Tree (depth={max_depth})"
+    lines.append("")
+    lines.append(cfmt("==", "magenta") + " " + cfmt(title, "bold"))
+
+    for depth_i, p in items:
+        name = p.name if p != source_dir else p.name or str(source_dir)
+        indent = "    " * depth_i
+        size_s = size_strings[p].rjust(width)
+        lines.append(f"{indent}{name}/  {size_s}")
+
+    return "\n".join(lines)
+
+
+# =====================================================================================
 # CLI
 # =====================================================================================
 
@@ -725,6 +886,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("-L", "--commit-limit", type=int, default=20, help="Limit number of commits included")
     p.add_argument("-S", "--show-memory", action="store_true", help="Show memory usage in Gemini CLI")
 
+    # New tree-size flags
+    p.add_argument(
+        "-T", "--size-tree",
+        nargs="?", const=1, type=int, default=None,
+        help="Print a directory size tree to depth (default 1 if value omitted)."
+    )
+    p.add_argument(
+        "-A", "--auto-size-tree",
+        nargs="?", const=25, type=int, default=None,
+        help="Print top-N largest directories (default 25). If deeper, parents are included."
+    )
+
     args = p.parse_args(argv)
 
     source_dir = Path(args.source).resolve()
@@ -753,7 +926,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     final_exclude_dirs = set(DEFAULT_EXCLUDE_DIRS)
     final_exclude_exts = set(DEFAULT_EXCLUDE_EXTS)
     final_exclude_files = set(DEFAULT_EXCLUDE_FILES)
-    final_remove_patterns = []
+    final_remove_patterns: List[str] = []
 
     if args.preset:
         ps = PRESETS[args.preset]
@@ -781,7 +954,6 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if run_file_mode and run_zip_mode:
         # two outputs, infer extensions if not provided
-        # decide based on given extension
         suffix = output_path.suffix.lower()
         if suffix == ".txt":
             actual_text = output_dir / output_path.name
@@ -849,6 +1021,25 @@ def main(argv: Optional[List[str]] = None) -> int:
         finally:
             if ws:
                 shutil.rmtree(ws, ignore_errors=True)
+
+    # --------------------------
+    # Final: print size tree
+    # --------------------------
+    st_depth: Optional[int] = args.size_tree
+    st_topn: Optional[int] = args.auto_size_tree
+    if st_topn is not None:
+        # auto wins if both present
+        st_depth = None
+
+    if st_depth is not None or st_topn is not None:
+        sizes = compute_filtered_dir_sizes(
+            source_dir,
+            final_exclude_dirs, final_exclude_exts, final_exclude_files,
+            final_remove_patterns, final_keep_patterns,
+        )
+        report = render_size_tree(source_dir, sizes, depth=st_depth, auto_top_n=st_topn)
+        if report.strip():
+            print(report)
 
     return 0
 
