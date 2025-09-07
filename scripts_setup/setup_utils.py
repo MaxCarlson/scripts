@@ -94,9 +94,10 @@ def _create_windows_cmd_wrapper(wrapper_path: Path, target_script: Path, verbose
     Create/refresh a .cmd wrapper that invokes the target Python script.
     Order of interpreter preference:
       1) The exact Python used to run setup (sys.executable) if it exists
-      2) %CONDA_PREFIX%\python.exe if a conda/mamba env is active
-      3) python.exe found on PATH
-      4) py.exe -3 (Windows launcher) LAST, to avoid broken conda 'py' shims
+      2) %CONDA_PREFIX%\\python.exe if a conda/mamba env is active
+      3) %MAMBA_ROOT_PREFIX%\\python.exe (base) if defined
+      4) python.exe found on PATH
+      5) py.exe -3 (Windows launcher) LAST, to avoid broken conda 'py' shims
     """
     py_abs = sys.executable.replace("/", "\\")
     script_abs = str(target_script.resolve()).replace("/", "\\")
@@ -108,6 +109,10 @@ def _create_windows_cmd_wrapper(wrapper_path: Path, target_script: Path, verbose
         "if exist \"%_PY_ABS%\" goto run\r\n"
         "if defined CONDA_PREFIX (\r\n"
         "  if exist \"%CONDA_PREFIX%\\python.exe\" set \"_PY_ABS=%CONDA_PREFIX%\\python.exe\"\r\n"
+        ")\r\n"
+        "if exist \"%_PY_ABS%\" goto run\r\n"
+        "if defined MAMBA_ROOT_PREFIX (\r\n"
+        "  if exist \"%MAMBA_ROOT_PREFIX%\\python.exe\" set \"_PY_ABS=%MAMBA_ROOT_PREFIX%\\python.exe\"\r\n"
         ")\r\n"
         "if exist \"%_PY_ABS%\" goto run\r\n"
         "for %%I in (python.exe) do if exist \"%%~$PATH:I\" set \"_PY_ABS=%%~$PATH:I\"\r\n"
