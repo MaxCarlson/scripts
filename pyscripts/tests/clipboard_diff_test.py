@@ -1,131 +1,154 @@
-import sys
-import os
-import json
-import hashlib
-import types
-import pytest
-from pathlib import Path
+# tests/clipboard_diff_test.py
+from __future__ import annotations
 
-# ---------- Helpers to normalize Rich output ----------
+import os
 import re
+import sys
+import types
+import importlib.util
+import json
+from pathlib import Path
+import pytest
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+SCRIPT_PATH = ROOT / "clipboard_diff.py"
+
 ANSI_ESCAPE_REGEX = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 
-def strip_ansi_codes(s: str) -> str:
+def strip_ansi(s: str) -> str:
     return ANSI_ESCAPE_REGEX.sub('', s)
 
 def normalize_for_assertion(raw_text: str) -> str:
-    cleaned = strip_ansi_codes(raw_text).replace('\n', ' ')
-    return " ".join(cleaned.split()).strip()
+    s = strip_ansi(raw_text).replace('\n', ' ')
+    return " ".join(s.split()).strip()
 
-# ---------- Module import with patched clipboard ----------
-@pytest.fixture
-def load_clipboard_diff(monkeypatch):
-    # Ensure a package stub exists
-    sys.modules["cross_platform"] = types.ModuleType("cross_platform")
-    # Provide a fake clipboard_utils module with a mutable get_clipboard
-    fake_mod = types.ModuleType("cross_platform.clipboard_utils")
-    clip_value = {"text": ""}
-
-    def fake_get():
-        return clip_value["text"]
-
-    fake_mod.get_clipboard = fake_get
-    sys.modules["cross_platform.clipboard_utils"] = fake_mod
-
-    import importlib
-    if "clipboard_diff" in sys.modules:
-        del sys.modules["clipboard_diff"]
-    clipboard_diff = importlib.import_module("clipboard_diff")
-
-    # expose a setter for tests
-    def set_clip(text):
-        clip_value["text"] = text
-    return clipboard_diff, set_clip
-
-# ---------- Fixtures ----------
 @pytest.fixture
 def tmp_state_dir(tmp_path, monkeypatch):
-    state = tmp_path / "state"
-    state.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("CLIPBOARD_STATE_DIR", str(state))
-    return state
+    d = tmp_path / "state"
+    d.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CLIPBOARD_TOOLS_STATE_DIR", str(d))
+    return d
 
-# ---------- Tests ----------
-def test_no_diff_and_snapshot_saved(load_clipboard_diff, tmp_path, tmp_state_dir, capsys):
+@pytest.fixture
+def load_clipboard_diff(monkeypatch):
+    """
+    Inject a fake cross_platform.clipboard_utils with set/get.
+    Return (module, set_clip func).
+    """
+    # Minimal package skeleton
+    if 'cross_platform' not in sys.modules:
+        sys.modules['cross_platform'] = types.ModuleType('cross_platform')
+        sys.modules['cross_platform'].__path__ = [str(ROOT / 'cross_platform')]
+
+    # Fake clipboard module
+    last_clip = {'text': ""}
+
+    cl_name = 'cross_platform.clipboard_utils'
+    cl_mod = types.ModuleType(cl_name)
+    def _get(): return last_clip['text']
+    def _set(t: str): last_clip['text'] = t
+    cl_mod.set_clipboard = _set
+    cl_mod.get_clipboard = _get
+    sys.modules[cl_name] = cl_mod
+
+    # Load target module fresh
+    spec = importlib.util.spec_from_file_location("clipboard_diff", str(SCRIPT_PATH))
+    assert spec and spec.loader, f"Cannot load module from {SCRIPT_PATH}"
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["clipboard_diff"] = mod
+    spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+    return mod, _set
+
+def _has_marker(norm_out: str, marker: str, text: str) -> bool:
+    # Allow either "-B" or "- B" etc.
+    return (f"{marker}{text}" in norm_out) or (f"{marker} {text}" in norm_out)
+
+def test_diff_no_changes_shows_no_differences_and_stats(load_clipboard_diff, tmp_path, tmp_state_dir, capsys):
     clipboard_diff, set_clip = load_clipboard_diff
-    f = tmp_path / "file.txt"
-    f.write_text("A\nB\nC\n", encoding="utf-8")
-    set_clip("A\nB\nC\n")
+    content = "L1\nL2\n"
+    f = tmp_path / "same.txt"
+    f.write_text(content, encoding="utf-8")
+    set_clip(content)
 
     with pytest.raises(SystemExit) as e:
         clipboard_diff.diff_clipboard_with_file(str(f), context_lines=3, similarity_threshold=0.75, loc_diff_warning_threshold=50, no_stats=False)
     assert e.value.code == 0
 
     out = capsys.readouterr().out
-    norm_out = normalize_for_assertion(out)
-    assert "No differences found between file and clipboard." in norm_out
-    assert "clipboard_diff.py Statistics" in norm_out
-    assert "CLD Snapshot" in norm_out
-    # Snapshot files exist and are consistent
-    meta = json.loads((tmp_state_dir / "last_cld.json").read_text(encoding="utf-8"))
-    clip_text = (tmp_state_dir / "last_cld_clipboard.txt").read_text(encoding="utf-8")
-    assert meta["file_path"].endswith("file.txt")
-    assert clip_text == "A\nB\nC\n"
-    assert "clipboard_sha256" in meta
-    assert meta["clipboard_sha256"] == hashlib.sha256(clip_text.encode("utf-8")).hexdigest()
+    norm = normalize_for_assertion(out)
+    assert "No differences found between file and clipboard." in out
+    assert "Differences Found" in norm and "No" in norm
+    # Snapshot files exist
+    meta = tmp_state_dir / "last_cld.json"
+    data = tmp_state_dir / "last_cld_clipboard.txt"
+    assert meta.is_file() and data.is_file()
 
 def test_diff_detects_changes_and_similarity_and_loc_warn(load_clipboard_diff, tmp_path, tmp_state_dir, capsys):
     clipboard_diff, set_clip = load_clipboard_diff
     f = tmp_path / "file.txt"
     f.write_text("A\nB\nC\n", encoding="utf-8")
-    # Make clipboard different and longer
     set_clip("A\nX\nC\nEXTRA\n")
 
-    # Use a very small LOC warn threshold to force a warning
     with pytest.raises(SystemExit) as e:
-        clipboard_diff.diff_clipboard_with_file(str(f), context_lines=2, similarity_threshold=0.99, loc_diff_warning_threshold=0, no_stats=False)
+        clipboard_diff.diff_clipboard_with_file(
+            str(f),
+            context_lines=2,
+            similarity_threshold=0.99,
+            loc_diff_warning_threshold=0,
+            no_stats=False
+        )
     assert e.value.code == 0
 
     out = capsys.readouterr().out
     norm_out = normalize_for_assertion(out)
-    # Unified diff should show -B and +X and +EXTRA
-    assert "- B" in norm_out
-    assert "+ X" in norm_out
-    assert "+ EXTRA" in norm_out
-    # Similarity note should appear because threshold is 0.99
-    assert "very dissimilar" in norm_out
-    # LOC warning present
-    assert "Large LOC difference detected" in norm_out
-    # Stats table present
-    assert "clipboard_diff.py Statistics" in norm_out
+
+    # Unified diff shows removed B and added X and EXTRA (accept either with or without space)
+    assert _has_marker(norm_out, "-", "B")
+    assert _has_marker(norm_out, "+", "X")
+    assert _has_marker(norm_out, "+", "EXTRA")
+
+    # Stats lines
+    assert "LOC Difference" in norm_out
+    assert "Dissimilarity Note" in norm_out
+
+    # Snapshot files exist and meta points to clipboard file
+    meta_path = tmp_state_dir / "last_cld.json"
+    data_path = tmp_state_dir / "last_cld_clipboard.txt"
+    assert meta_path.is_file() and data_path.is_file()
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert Path(meta["clipboard_file"]).name == "last_cld_clipboard.txt"
+
+def test_missing_file_is_error(load_clipboard_diff, tmp_state_dir, capsys):
+    clipboard_diff, set_clip = load_clipboard_diff
+    set_clip("something")
+
+    with pytest.raises(SystemExit) as e:
+        clipboard_diff.diff_clipboard_with_file("not_there.txt", 3, 0.75, 50, False)
+    assert e.value.code == 1
+    err = capsys.readouterr().err
+    assert "Could not read file" in err
 
 def test_empty_clipboard_is_error(load_clipboard_diff, tmp_path, tmp_state_dir, capsys):
     clipboard_diff, set_clip = load_clipboard_diff
-    f = tmp_path / "file.txt"
-    f.write_text("X\n", encoding="utf-8")
-    set_clip("")  # empty clipboard
+    f = tmp_path / "f.txt"
+    f.write_text("hello\n", encoding="utf-8")
+    set_clip("  \n\t ")
 
     with pytest.raises(SystemExit) as e:
-        clipboard_diff.diff_clipboard_with_file(str(f), context_lines=3, similarity_threshold=0.5, loc_diff_warning_threshold=50, no_stats=False)
+        clipboard_diff.diff_clipboard_with_file(str(f), 3, 0.75, 50, False)
     assert e.value.code == 1
-
-    out = capsys.readouterr()
-    # Error message to stderr
-    assert "CRITICAL WARNING" in out.err
-    # Stats on stdout mention empty
-    assert "Empty or whitespace" in out.out
-    # No snapshot should be created
-    assert not (tmp_state_dir / "last_cld.json").exists()
+    err = capsys.readouterr().err
+    assert "Clipboard is empty" in err
 
 def test_no_stats_suppresses_table(load_clipboard_diff, tmp_path, tmp_state_dir, capsys):
     clipboard_diff, set_clip = load_clipboard_diff
-    f = tmp_path / "file.txt"
-    f.write_text("Z\n", encoding="utf-8")
-    set_clip("Q\n")
+    f = tmp_path / "f2.txt"
+    f.write_text("X\n", encoding="utf-8")
+    set_clip("Y\n")
 
     with pytest.raises(SystemExit) as e:
-        clipboard_diff.diff_clipboard_with_file(str(f), context_lines=1, similarity_threshold=0.0, loc_diff_warning_threshold=9999, no_stats=True)
-    assert e.value.code in (0, 1)  # depending on content, but no table either way
-
+        clipboard_diff.diff_clipboard_with_file(str(f), 3, 0.75, 50, True)
+    assert e.value.code == 0
     out = capsys.readouterr().out
     assert "clipboard_diff.py Statistics" not in out

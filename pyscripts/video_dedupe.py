@@ -11,6 +11,7 @@ Video & File Deduplicator
 - Hash/meta cache: JSONL cache for SHA-256, ffprobe metadata, and pHash (append-on-write)
 - Apply an existing JSON report via --apply-report to delete/move listed losers
 - ETA + Elapsed timers; run banner displaying run type/mode/threads/GPU/backup
+- **Responsive UI**: auto stacks metrics 1-per-line on narrow terminals; flags to force stacked/wide
 
 Cross-platform: Windows 11 (PowerShell), WSL2, Termux
 """
@@ -202,21 +203,15 @@ def _ffmpeg_cmd_for_frame(path: Path, ts: float, gpu: bool) -> List[str]:
     Build an ffmpeg command to grab one frame at timestamp `ts`.
     If gpu=True, try enabling CUDA/NVDEC; fall back to CPU automatically if that fails.
     """
-    base = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-ss", f"{ts:.3f}", "-i", str(path),
-        "-frames:v", "1",
-        "-f", "image2pipe",
-        "-vcodec", "png",
-        "pipe:1",
-    ]
     if gpu:
-        # Minimal, robust GPU hint. Many builds will accelerate decode automatically with -hwaccel cuda.
-        # If not supported, ffmpeg ignores it and falls back.
         return ["ffmpeg", "-hide_banner", "-loglevel", "error",
                 "-hwaccel", "cuda", "-ss", f"{ts:.3f}", "-i", str(path),
                 "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"]
-    return base
+    return [
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-ss", f"{ts:.3f}", "-i", str(path),
+        "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1",
+    ]
 
 def compute_phash_signature(path: Path, frames: int = 5, *, gpu: bool = False) -> Optional[Tuple[int, ...]]:
     try:
@@ -244,9 +239,7 @@ def compute_phash_signature(path: Path, frames: int = 5, *, gpu: bool = False) -
                 sig.append(int(str(h), 16))
                 break
             except Exception:
-                if attempt == 1:
-                    # both GPU and CPU failed → skip this frame
-                    pass
+                # try fallback once, then skip this frame
                 continue
 
     if len(sig) < max(2, frames // 2):
@@ -271,7 +264,6 @@ class HashCache:
       - {"path": "...", "size": int, "mtime": float, "sha256": "..."}
       - {"path": "...", "size": int, "mtime": float, "video_meta": {...}, "phash": [int,...]}
     Lookup key is (path, size, mtime). New results are appended immediately.
-    Backward compatible with older lines that only store "sha256".
     """
     def __init__(self, path: Optional[Path]):
         self.path = path
@@ -356,17 +348,18 @@ class HashCache:
 
 
 # ----------------------------
-# Live progress (optional)
+# Live progress (optional) — responsive layout
 # ----------------------------
 
 class ProgressReporter:
     """Thread-safe counters + optional TermDash updates, with per-stage ETA and Elapsed."""
-    def __init__(self, enable_dash: bool, *, refresh_rate: float = 0.2, banner: str = ""):
+    def __init__(self, enable_dash: bool, *, refresh_rate: float = 0.2, banner: str = "", stacked_ui: Optional[bool] = None):
         self.enable_dash = enable_dash and TERMDASH_AVAILABLE and sys.stdout.isatty()
         self.refresh_rate = max(0.05, float(refresh_rate))
         self.lock = threading.Lock()
         self.start_ts = time.time()
         self.banner = banner
+        self._stacked_pref = stacked_ui  # None -> auto, True -> stacked, False -> wide
 
         # High-level counters
         self.total_files = 0
@@ -400,116 +393,93 @@ class ProgressReporter:
         self._ticker: Optional[threading.Thread] = None
         self._stop_evt = threading.Event()
 
-        # Pre-built lines (created in start())
-        self._line_title = None
-        self._line_banner = None
-        self._line_stage = None
-        self._line_files = None
-        self._line_hash = None
-        self._line_scan = None
-        self._line_groups1 = None
-        self._line_groups2 = None
-        self._line_results = None
-        self._line_total = None
+        # lines are created in start()
+        self._stacked = False
+        self._term_cols = 120
 
-    # ---- dashboard lifecycle ----
+    def _term_width(self) -> int:
+        try:
+            return shutil.get_terminal_size(fallback=(120, 30)).columns
+        except Exception:
+            return 120
+
     def start(self):
         if not self.enable_dash:
             return
+
+        self._term_cols = self._term_width()
+        # Auto: stacked if very narrow
+        self._stacked = (self._stacked_pref if self._stacked_pref is not None else (self._term_cols < 120))
+
         self.dash = TermDash(
             refresh_rate=self.refresh_rate,
             enable_separators=False,
             reserve_extra_rows=2,
             align_columns=True,
-            max_col_width=None,  # no clipping
+            max_col_width=None,  # no clipping, we handle widths
         )
 
-        # Title + banner
-        self._line_title = Line(
-            "title",
-            stats=[Stat("title", "Video Deduper — Live", format_string="{}")],
-            style="header",
-        )
-        self._line_banner = Line(
-            "banner",
-            stats=[Stat("banner", self.banner, format_string="{}", no_expand=True, display_width=120)],
-        )
-        # Stage + Elapsed + ETA
-        self._line_stage = Line(
-            "stage",
-            stats=[
-                Stat("stage", "scanning", prefix="Stage: ", format_string="{}", no_expand=True, display_width=22),
-                Stat("elapsed", "00:00:00", prefix="Elapsed: ", format_string="{}", no_expand=True, display_width=14),
-                Stat("eta", "--:--:--", prefix="ETA: ", format_string="{}", no_expand=True, display_width=14),
-            ],
-        )
-        # Files + Videos
-        self._line_files = Line(
-            "files",
-            stats=[
-                Stat("files", (0, 0), prefix="Files: ", format_string="{}/{}", no_expand=True, display_width=22),
-                Stat("videos", 0, prefix="Videos: ", format_string="{}", no_expand=True, display_width=18),
-            ],
-        )
-        # Hashed + Cache hits
-        self._line_hash = Line(
-            "hash",
-            stats=[
-                Stat("hashed", (0, 0), prefix="Hashed: ", format_string="{}/{}", no_expand=True, display_width=22),
-                Stat("cache_hits", 0, prefix="Cache hits: ", format_string="{}", no_expand=True, display_width=18),
-            ],
-        )
-        # Scanned bytes
-        self._line_scan = Line(
-            "scan",
-            stats=[Stat("scanned", "0 MiB", prefix="Scanned: ", format_string="{}", no_expand=True, display_width=22)],
-        )
-        # Group counters
-        self._line_groups1 = Line(
-            "groups1",
-            stats=[
-                Stat("g_hash", 0, prefix="Hash groups: ", format_string="{}", no_expand=True, display_width=22),
-                Stat("g_meta", 0, prefix="Meta groups: ", format_string="{}", no_expand=True, display_width=22),
-            ],
-        )
-        self._line_groups2 = Line(
-            "groups2",
-            stats=[
-                Stat("g_phash", 0, prefix="pHash groups: ", format_string="{}", no_expand=True, display_width=22),
-                Stat("g_subset", 0, prefix="Subset groups: ", format_string="{}", no_expand=True, display_width=22),
-            ],
-        )
-        # Results
-        self._line_results = Line(
-            "results",
-            stats=[
-                Stat("dup_files", 0, prefix="Dup files: ", format_string="{}", no_expand=True, display_width=22),
-                Stat("bytes_rm", "0 MiB", prefix="To remove: ", format_string="{}", no_expand=True, display_width=22),
-            ],
-        )
-        # Total elapsed
-        self._line_total = Line(
-            "total",
-            stats=[Stat("tot_elapsed", "00:00:00", prefix="Total elapsed: ", format_string="{}", no_expand=True, display_width=16)],
-        )
-
-        # Start dashboard
-        self.dash.__enter__()  # context-like start
-        self.dash.add_line("title", self._line_title, at_top=True)
-        self.dash.add_line("banner", self._line_banner)
-        self.dash.add_line("stage", self._line_stage)
-        self.dash.add_line("files", self._line_files)
-        self.dash.add_line("hash", self._line_hash)
-        self.dash.add_line("scan", self._line_scan)
-        self.dash.add_line("groups1", self._line_groups1)
-        self.dash.add_line("groups2", self._line_groups2)
-        self.dash.add_line("results", self._line_results)
-        self.dash.add_line("total", self._line_total)
+        # Build layout
+        if self._stacked:
+            # 1 stat per line; width fits terminal
+            w = max(20, min(self._term_cols - 2, 200))
+            self._add_header()
+            self._add_line("banner", [Stat("banner", self.banner, format_string="{}", no_expand=True, display_width=w)])
+            self._add_line("stage", [Stat("stage", "scanning", prefix="Stage: ", format_string="{}", no_expand=True, display_width=w)])
+            self._add_line("elapsed", [Stat("elapsed", "00:00:00", prefix="Elapsed: ", format_string="{}", no_expand=True, display_width=w)])
+            self._add_line("eta", [Stat("eta", "--:--:--", prefix="ETA: ", format_string="{}", no_expand=True, display_width=w)])
+            self._add_line("files", [Stat("files", (0, 0), prefix="Files: ", format_string="{}/{}", no_expand=True, display_width=w)])
+            self._add_line("videos", [Stat("videos", 0, prefix="Videos: ", format_string="{}", no_expand=True, display_width=w)])
+            self._add_line("hashed", [Stat("hashed", (0, 0), prefix="Hashed: ", format_string="{}/{}", no_expand=True, display_width=w)])
+            self._add_line("cache", [Stat("cache_hits", 0, prefix="Cache hits: ", format_string="{}", no_expand=True, display_width=w)])
+            self._add_line("scan", [Stat("scanned", "0 MiB", prefix="Scanned: ", format_string="{}", no_expand=True, display_width=w)])
+            self._add_line("g_hash", [Stat("g_hash", 0, prefix="Hash groups: ", format_string="{}", no_expand=True, display_width=w)])
+            self._add_line("g_meta", [Stat("g_meta", 0, prefix="Meta groups: ", format_string="{}", no_expand=True, display_width=w)])
+            self._add_line("g_phash", [Stat("g_phash", 0, prefix="pHash groups: ", format_string="{}", no_expand=True, display_width=w)])
+            self._add_line("g_subset", [Stat("g_subset", 0, prefix="Subset groups: ", format_string="{}", no_expand=True, display_width=w)])
+            self._add_line("dup_files", [Stat("dup_files", 0, prefix="Dup files: ", format_string="{}", no_expand=True, display_width=w)])
+            self._add_line("bytes_rm", [Stat("bytes_rm", "0 MiB", prefix="To remove: ", format_string="{}", no_expand=True, display_width=w)])
+            self._add_line("total_elapsed", [Stat("tot_elapsed", "00:00:00", prefix="Total elapsed: ", format_string="{}", no_expand=True, display_width=w)])
+        else:
+            # multi-column wide layout
+            self._add_header()
+            self._add_line("banner", [Stat("banner", self.banner, format_string="{}", no_expand=True, display_width=120)])
+            self._add_line("stage",
+                           [Stat("stage", "scanning", prefix="Stage: ", format_string="{}", no_expand=True, display_width=22),
+                            Stat("elapsed", "00:00:00", prefix="Elapsed: ", format_string="{}", no_expand=True, display_width=14),
+                            Stat("eta", "--:--:--", prefix="ETA: ", format_string="{}", no_expand=True, display_width=14)])
+            self._add_line("files",
+                           [Stat("files", (0, 0), prefix="Files: ", format_string="{}/{}", no_expand=True, display_width=22),
+                            Stat("videos", 0, prefix="Videos: ", format_string="{}", no_expand=True, display_width=18)])
+            self._add_line("hash",
+                           [Stat("hashed", (0, 0), prefix="Hashed: ", format_string="{}/{}", no_expand=True, display_width=22),
+                            Stat("cache_hits", 0, prefix="Cache hits: ", format_string="{}", no_expand=True, display_width=18)])
+            self._add_line("scan",
+                           [Stat("scanned", "0 MiB", prefix="Scanned: ", format_string="{}", no_expand=True, display_width=22)])
+            self._add_line("groups1",
+                           [Stat("g_hash", 0, prefix="Hash groups: ", format_string="{}", no_expand=True, display_width=22),
+                            Stat("g_meta", 0, prefix="Meta groups: ", format_string="{}", no_expand=True, display_width=22)])
+            self._add_line("groups2",
+                           [Stat("g_phash", 0, prefix="pHash groups: ", format_string="{}", no_expand=True, display_width=22),
+                            Stat("g_subset", 0, prefix="Subset groups: ", format_string="{}", no_expand=True, display_width=22)])
+            self._add_line("results",
+                           [Stat("dup_files", 0, prefix="Dup files: ", format_string="{}", no_expand=True, display_width=22),
+                            Stat("bytes_rm", "0 MiB", prefix="To remove: ", format_string="{}", no_expand=True, display_width=22)])
+            self._add_line("total",
+                           [Stat("tot_elapsed", "00:00:00", prefix="Total elapsed: ", format_string="{}", no_expand=True, display_width=16)])
 
         # background ticker to update elapsed/ETA text
         self._ticker = threading.Thread(target=self._tick_loop, daemon=True)
         self._ticker.start()
         self.flush()  # initial paint
+
+    def _add_header(self):
+        self._line_title = Line("title", stats=[Stat("title", "Video Deduper — Live", format_string="{}")], style="header")
+        self.dash.__enter__()
+        self.dash.add_line("title", self._line_title, at_top=True)
+
+    def _add_line(self, key: str, stats: List[Stat]):
+        self.dash.add_line(key, Line(key, stats=stats))
 
     def stop(self):
         if not self.enable_dash:
@@ -535,9 +505,9 @@ class ProgressReporter:
         eta_text = _fmt_hms(self._estimate_remaining())
         elapsed_stage = _fmt_hms(time.time() - self.stage_start_ts)
         elapsed_total = _fmt_hms(time.time() - self.start_ts)
-        self.dash.update_stat("stage", "eta", eta_text)
-        self.dash.update_stat("stage", "elapsed", elapsed_stage)
-        self.dash.update_stat("total", "tot_elapsed", elapsed_total)
+        self.dash.update_stat("stage" if not self._stacked else "stage", "eta", eta_text)
+        self.dash.update_stat("stage" if not self._stacked else "elapsed", "elapsed", elapsed_stage)
+        self.dash.update_stat("total" if not self._stacked else "total_elapsed", "tot_elapsed", elapsed_total)
 
     def set_banner(self, text: str):
         self.banner = text
@@ -548,22 +518,31 @@ class ProgressReporter:
         if not self.enable_dash or not self.dash:
             return
         with self.lock:
-            # stage name
             self.dash.update_stat("stage", "stage", self.stage_name)
-            # files/videos/hashed
             self.dash.update_stat("files", "files", (self.scanned_files, self.total_files))
-            self.dash.update_stat("files", "videos", self.video_files)
-            self.dash.update_stat("hash", "hashed", (self.hash_done, self.hash_total))
-            self.dash.update_stat("hash", "cache_hits", self.cache_hits)
-            # scanned bytes
-            self.dash.update_stat("scan", "scanned", f"{_bytes_to_mib(self.bytes_seen):.0f} MiB")
-            # groups + dup outcome
-            self.dash.update_stat("groups1", "g_hash", self.groups_hash)
-            self.dash.update_stat("groups1", "g_meta", self.groups_meta)
-            self.dash.update_stat("groups2", "g_phash", self.groups_phash)
-            self.dash.update_stat("groups2", "g_subset", self.groups_subset)
-            self.dash.update_stat("results", "dup_files", self.losers_total)
-            self.dash.update_stat("results", "bytes_rm", f"{_bytes_to_mib(self.bytes_to_remove):.0f} MiB")
+            # "videos" stat may live under a dedicated line in stacked mode
+            if self._stacked:
+                self.dash.update_stat("videos", "videos", self.video_files)
+                self.dash.update_stat("hashed", "hashed", (self.hash_done, self.hash_total))
+                self.dash.update_stat("cache", "cache_hits", self.cache_hits)
+                self.dash.update_stat("scan", "scanned", f"{_bytes_to_mib(self.bytes_seen):.0f} MiB")
+                self.dash.update_stat("g_hash", "g_hash", self.groups_hash)
+                self.dash.update_stat("g_meta", "g_meta", self.groups_meta)
+                self.dash.update_stat("g_phash", "g_phash", self.groups_phash)
+                self.dash.update_stat("g_subset", "g_subset", self.groups_subset)
+                self.dash.update_stat("dup_files", "dup_files", self.losers_total)
+                self.dash.update_stat("bytes_rm", "bytes_rm", f"{_bytes_to_mib(self.bytes_to_remove):.0f} MiB")
+            else:
+                self.dash.update_stat("files", "videos", self.video_files)
+                self.dash.update_stat("hash", "hashed", (self.hash_done, self.hash_total))
+                self.dash.update_stat("hash", "cache_hits", self.cache_hits)
+                self.dash.update_stat("scan", "scanned", f"{_bytes_to_mib(self.bytes_seen):.0f} MiB")
+                self.dash.update_stat("groups1", "g_hash", self.groups_hash)
+                self.dash.update_stat("groups1", "g_meta", self.groups_meta)
+                self.dash.update_stat("groups2", "g_phash", self.groups_phash)
+                self.dash.update_stat("groups2", "g_subset", self.groups_subset)
+                self.dash.update_stat("results", "dup_files", self.losers_total)
+                self.dash.update_stat("results", "bytes_rm", f"{_bytes_to_mib(self.bytes_to_remove):.0f} MiB")
 
     # ---- stage/ETA helpers ----
     def start_stage(self, name: str, total: int):
@@ -699,13 +678,11 @@ def iter_files(
 
 def _alignable_distance(a_sig: Sequence[int], b_sig: Sequence[int], per_frame_thresh: int) -> Optional[float]:
     """
-    Compute the best normalized distance between two signature sequences by allowing
-    a sliding alignment (to detect subset relations). Return the average Hamming
-    distance per aligned frame for the best offset; None if not alignable.
+    Best normalized distance between two signature sequences using sliding alignment.
+    Returns the average Hamming distance per aligned frame for the best offset; None if not alignable.
     """
     if not a_sig or not b_sig:
         return None
-    # Let short be the sequence with fewer frames
     A, B = (a_sig, b_sig) if len(a_sig) <= len(b_sig) else (b_sig, a_sig)
     best = None
     for offset in range(0, len(B) - len(A) + 1):
@@ -716,7 +693,6 @@ def _alignable_distance(a_sig: Sequence[int], b_sig: Sequence[int], per_frame_th
         avg = dist / len(A)
         if best is None or avg < best:
             best = avg
-    # If best per-frame distance is below threshold, we consider it alignable
     return best if (best is not None and best <= per_frame_thresh) else None
 
 class Grouper:
@@ -762,9 +738,6 @@ class Grouper:
             return FileMeta(path=path, size=0, mtime=0)
 
     def _collect_videometa(self, path: Path, want_phash: bool) -> VideoMeta:
-        """
-        Use cache when possible; persist results immediately.
-        """
         try:
             st = path.stat()
             size, mtime = st.st_size, st.st_mtime
@@ -792,17 +765,14 @@ class Grouper:
                     object.__setattr__(vm, "phash_signature", tuple(int(x) for x in meta["phash"]))
                 return vm
 
-        # Not cached – run ffprobe
         fmt = _run_ffprobe_json(path)
         vm = _extract_vmeta_from_ffprobe(path, fmt, size, mtime)
 
-        # Optional pHash (can be expensive)
         if want_phash:
             sig = compute_phash_signature(path, frames=self.phash_frames, gpu=self.gpu)
             if sig:
                 object.__setattr__(vm, "phash_signature", sig)
 
-        # Store normalized meta for fast restarts
         if cache:
             meta_payload = {
                 "duration": vm.duration,
@@ -820,9 +790,6 @@ class Grouper:
         return vm
 
     def collect(self, files: List[Path], reporter: Optional[ProgressReporter] = None) -> Dict[str, List[Union[VideoMeta, FileMeta]]]:
-        """
-        Returns groups keyed by an opaque ID; each group is a list of FileMeta/VideoMeta to consider duplicates.
-        """
         self._reporter = reporter
         groups: Dict[str, List[Union[VideoMeta, FileMeta]]] = {}
         want_meta = self.mode in ("meta", "phash", "all") or self.subset_detect
@@ -1001,7 +968,6 @@ class Grouper:
                     ratio = (short.duration or 0.0) / (long.duration or 1.0)
                     if ratio < self.subset_min_ratio:
                         continue
-                    # Best alignable average distance
                     best = _alignable_distance(short.phash_signature, long.phash_signature, self.subset_frame_threshold)
                     if best is not None:
                         key = f"subset:{gid}"
@@ -1192,15 +1158,14 @@ Examples (PowerShell):
   # Fast exact duplicates (dry run, all files):
   python .\video_dedupe.py "D:\Pictures\Saved" -M hash -x
 
-  # Maximize matches & prefer longer (recommended for mixed libraries):
+  # Maximize matches & prefer longer (mixed libraries):
   python .\video_dedupe.py "D:\Videos" -M all -u 8 -F 9 -T 14 -s -m 0.30 -t 16 -C D:\vd-cache.jsonl -R D:\report.json -x -L
 
-  # Apply a previously generated report (delete/move losers listed in it):
-  python .\video_dedupe.py -A D:\report.json -f -b D:\Quarantine
+  # Force stacked UI (narrow terminal):
+  python .\video_dedupe.py "D:\Videos" -M all -Z -x -L
 
-Notes:
-- Use -g/--gpu to enable FFmpeg CUDA/NVDEC for pHash/subset (if your FFmpeg build supports it).
-- Keep policy defaults to favor LONGER, then RESOLUTION, VIDEO-BITRATE, NEWER, SMALLER, DEEPER.
+  # Apply a previously generated report:
+  python .\video_dedupe.py -A D:\report.json -f -b D:\Quarantine
 """
     p = argparse.ArgumentParser(
         description="Find and remove duplicate/similar videos & files (including subset cut-downs), or apply a saved report.",
@@ -1239,7 +1204,7 @@ Notes:
     p.add_argument("-T", "--phash-threshold", dest="phash_threshold", type=int, default=12,
                    help="Per-frame Hamming distance threshold (64-bit, default: 12)")
 
-    # Subset detection (short versions of longer videos)
+    # Subset detection
     p.add_argument("-s", "--subset-detect", action="store_true", help="Enable subset detection via pHash sliding alignment")
     p.add_argument("-m", "--subset-min-ratio", type=float, default=0.30,
                    help="Minimum short/long duration ratio to consider a subset (default: 0.30)")
@@ -1258,10 +1223,12 @@ Notes:
     p.add_argument("-R", "--report", type=str, help="Write JSON report to this path")
     p.add_argument("-A", "--apply-report", type=str, help="Read a JSON report and delete/move all listed losers")
 
-    # Live dashboard
+    # Live dashboard (+ layout controls)
     p.add_argument("-L", "--live", action="store_true", help="Show live, in-place progress with TermDash")
     p.add_argument("-e", "--refresh-rate", dest="refresh_rate", type=float, default=0.2,
                    help="Dashboard refresh rate in seconds (default: 0.2)")
+    p.add_argument("-Z", "--stacked-ui", action="store_true", help="Force stacked UI (one metric per line)")
+    p.add_argument("-W", "--wide-ui", action="store_true", help="Force wide UI (multi-column)")
 
     # Cache
     p.add_argument("-C", "--cache", type=str, help="Path to JSONL cache file (enables cache read/write)")
@@ -1304,6 +1271,9 @@ def _apply_preset(args: argparse.Namespace):
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
 
+    # UI preference: None=auto, True=stacked, False=wide
+    stacked_pref: Optional[bool] = True if args.stacked_ui else (False if args.wide_ui else None)
+
     # Run banner for UI
     if args.apply_report:
         run_type = f"Run: APPLY {'DRY' if args.dry_run else 'LIVE'} | Backup: {'YES' if args.backup else 'NO'}"
@@ -1312,7 +1282,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     # --apply-report mode (no scan dir required)
     if args.apply_report:
-        reporter = ProgressReporter(enable_dash=bool(args.live), refresh_rate=args.refresh_rate, banner=run_type)
+        reporter = ProgressReporter(enable_dash=bool(args.live), refresh_rate=args.refresh_rate, banner=run_type, stacked_ui=stacked_pref)
         reporter.start()
         try:
             report_path = Path(args.apply_report).expanduser().resolve()
@@ -1352,7 +1322,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     _apply_preset(args)
 
     # Live reporter & cache
-    reporter = ProgressReporter(enable_dash=bool(args.live), refresh_rate=args.refresh_rate, banner=run_type)
+    reporter = ProgressReporter(enable_dash=bool(args.live), refresh_rate=args.refresh_rate, banner=run_type, stacked_ui=stacked_pref)
     reporter.start()
     cache = HashCache(Path(args.cache)) if args.cache else None
 

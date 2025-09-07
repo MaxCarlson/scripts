@@ -20,6 +20,7 @@ func : copy_to_clipboard.py : c2cr : "Copies file(s) to clipboard recursively." 
 func : copy_to_clipboard.py : c2ca : "Copies file(s) to clipboard, wrapping content and appending to existing clipboard." : -w -a
 
 func : replace_with_clipboard.py : rwc : "Replaces the contents of a file with the contents of the clipboard." :
+func : replace_with_clipboard.py : rwcp : "Replaces the contents of the last file for which cld (clipboard_diff) was run on with the contents of the clipboard as it existed during the last cld run" : -f
 
 func : output_to_clipboard.py : otc : "Runs a command and copies its output to the clipboard." :
 func : output_to_clipboard.py : otcw : "Runs a command and copies its output to the clipboard, wrapped in a code block." : -w

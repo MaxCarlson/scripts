@@ -373,3 +373,37 @@ def print_run_summary(
         console.print(
             f"[ui.success]✅ All {session.name.lower()} steps completed successfully.[/] [ui.dim](Elapsed {elapsed:.2f}s)[/]"
         )
+
+
+# ---------- Tiny helpers expected by __init__ (new) ----------
+
+def blank(n: int = 1) -> None:
+    """
+    Print n blank lines. Kept simple to avoid Rich styling affecting layout.
+    """
+    for _ in range(max(1, n)):
+        console.print("")
+
+
+def status_line(message: str) -> None:
+    """
+    Print a subtle, single-line status.
+    """
+    console.print(f"[ui.dim]{message}[/]")
+
+
+def rule(text: str = "") -> None:  # noqa: F811 (intentional shadow for public API)
+    """
+    Thin wrapper so callers can import `rule` from standard_ui.
+    """
+    console.rule(text)
+
+
+def term_width() -> int:
+    """
+    Current terminal width as an int.
+    """
+    try:
+        return console.size.width  # Rich-aware
+    except Exception:
+        return 80

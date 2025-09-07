@@ -5,7 +5,7 @@ import argparse
 import subprocess
 from pathlib import Path
 import re
-import importlib # For invalidate_caches
+import importlib  # For invalidate_caches
 
 # --- Ensure tomlib (via tomli) is available ---
 try:
@@ -76,7 +76,7 @@ def _get_canonical_package_name_from_source_for_modules(module_source_path: Path
     if pyproject_file.is_file():
         try:
             with open(pyproject_file, "rb") as f:
-                data = tomllib.load(f) # tomllib is now expected to be available
+                data = tomllib.load(f)  # tomllib is now expected to be available
             if "project" in data and "name" in data["project"]:
                 name = data["project"]["name"]
                 if verbose: logger(f"Found package name '{name}' in {pyproject_file}")
@@ -151,6 +151,12 @@ def install_python_modules(modules_dir: Path, skip_reinstall: bool, production: 
     for potential_module_path in modules_dir.iterdir():
         if not potential_module_path.is_dir():
             if verbose: log_info(f"Skipping '{potential_module_path.name}', as it's not a directory.")
+            continue
+
+        # NEW: allow skipping unfinished / WIP modules via dot-prefix
+        name = potential_module_path.name
+        if name.startswith('.'):
+            if verbose: log_info(f"Skipping '{name}' (dot-prefixed; marked as WIP).")
             continue
 
         has_setup_py = (potential_module_path / "setup.py").exists()
@@ -246,7 +252,6 @@ def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path, verbose: bool = Fal
             with section("Windows PYTHONPATH Update"):
                 log_info("Windows OS detected for PYTHONPATH setup.")
                 try:
-                    # ... (rest of Windows PYTHONPATH logic remains the same)
                     completed_process = subprocess.run(
                         ['reg', 'query', r'HKCU\Environment', '/v', 'PYTHONPATH'],
                         capture_output=True, text=True, check=False, encoding='utf-8', errors='ignore'
@@ -311,8 +316,6 @@ def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path, verbose: bool = Fal
 
                 is_already_configured = False
                 for line_in_file in current_config_content.splitlines():
-                    # Check if modules_dir_abs is already the first element or a distinct element in the path
-                    # This is a bit more robust to variations in how $PYTHONPATH might be structured
                     if line_in_file.strip().startswith(f'export PYTHONPATH="{modules_dir_abs}') or \
                        f'{path_separator}{modules_dir_abs}{path_separator}' in line_in_file or \
                        line_in_file.strip().endswith(f'{path_separator}{modules_dir_abs}"'):
