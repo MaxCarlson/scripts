@@ -4,7 +4,7 @@ vdedup.video_dedupe – CLI entrypoint
 
 This CLI drives the staged pipeline and report application.
 
-Typical usage:
+Examples:
 
   # Fast exact-dupe sweep (HDD-friendly)
   video-dedupe "D:\\Videos" -Q 1-2 -p *.mp4 -r -t 4 -C D:\\vd-cache.jsonl -R D:\\report.json -x -L
@@ -21,10 +21,10 @@ Typical usage:
   # Print one or more reports (with verbosity)
   video-dedupe -P D:\\report.json -V 2
 
-  # Analyze report(s): winner↔loser diffs (duration, resolution, bitrates, size)
+  # Analyze report(s): print winner↔loser diffs (duration, resolution, bitrates, size)
   video-dedupe -Y D:\\report.json --diff-verbosity 1
 
-  # Collapse an existing report (merge overlapping groups) and write a new report next to it
+  # Collapse an existing report (merge overlapping groups)
   video-dedupe --collapse-report D:\\report.json
 """
 
@@ -34,74 +34,23 @@ import argparse
 import shutil
 import sys
 import time
-import json
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple, Any
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # NOTE: absolute imports so the CLI works whether installed or run from source
 from vdedup.pipeline import PipelineConfig, parse_pipeline, run_pipeline
 from vdedup.progress import ProgressReporter
 from vdedup.cache import HashCache
 from vdedup.grouping import choose_winners
+from vdedup.report import (
+    write_report,
+    apply_report,
+    pretty_print_reports,
+    collect_exclusions,
+    load_report,
+    collapse_report_file,
+)
 
-# ---- report helpers (with graceful fallbacks if not present) ----
-try:
-    from vdedup.report import write_report, apply_report, pretty_print_reports, collect_exclusions, load_report, collapse_report_file  # type: ignore
-except Exception:
-    # Required ones:
-    from vdedup.report import write_report, apply_report  # type: ignore
-    # Optional helpers: provide simple local fallbacks if your report.py doesn't export them
-    def load_report(path: Path) -> Dict[str, Any]:
-        try:
-            return json.loads(Path(path).read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-
-    def pretty_print_reports(paths: List[Path], verbosity: int = 1) -> str:
-        out: List[str] = []
-        total_groups = 0
-        total_losers = 0
-        total_bytes = 0
-        for p in paths:
-            data = load_report(p)
-            groups = data.get("groups") or {}
-            out.append(f"Report: {p}")
-            if verbosity >= 1:
-                for gid, g in groups.items():
-                    out.append(f"  {gid}")
-                    out.append(f"    keep  : {g.get('keep')}")
-                    for l in (g.get("losers") or []):
-                        out.append(f"    loser : {l}")
-            total_groups += len(groups)
-            for g in groups.values():
-                total_losers += len(g.get("losers") or [])
-                for l in (g.get("losers") or []):
-                    try:
-                        total_bytes += Path(l).stat().st_size
-                    except Exception:
-                        pass
-            out.append("")
-        out.append("Summary:")
-        out.append(f"  groups: {total_groups}")
-        out.append(f"  losers: {total_losers}")
-        out.append(f"  size  : {total_bytes/1_048_576:.2f} MiB")
-        return "\n".join(out)
-
-    def collect_exclusions(paths: List[Path]) -> set[Path]:
-        losers: set[Path] = set()
-        for p in paths:
-            d = load_report(p)
-            for g in (d.get("groups") or {}).values():
-                for lp in g.get("losers") or []:
-                    try:
-                        losers.add(Path(lp).resolve())
-                    except Exception:
-                        pass
-        return losers
-
-    # collapse_report_file only available in newer report.py; if missing, fail nicely when used
-    def collapse_report_file(*args, **kwargs):
-        raise RuntimeError("collapse_report_file not available in this build of vdedup.report")
 
 # -------- helpers --------
 
@@ -261,11 +210,10 @@ class _TextProgress:
         barw = max(10, min(40, cols - 40))
         pct = 0.0 if self.total == 0 else min(1.0, self.n / self.total)
         filled = int(barw * pct)
-        bar = "#" * filled + "-" * (barw - filled)
         elapsed = now - self.start
         rate = self.n / elapsed if elapsed > 0 else 0.0
         eta = (self.total - self.n) / rate if rate > 0 else None
-        text = f"\r{self.label} [{bar}] {self.n}/{self.total}  {pct*100:5.1f}%  ETA {self._fmt_hms(eta)}"
+        text = f"\r{self.label} [{'#'*filled}{'-'*(barw - filled)}] {self.n}/{self.total}  {pct*100:5.1f}%  ETA {self._fmt_hms(eta)}"
         sys.stdout.write(text)
         sys.stdout.flush()
 
@@ -314,6 +262,7 @@ def render_analysis_for_reports(paths: List[Path], verbosity: int = 1, *, show_p
             continue
 
     prog: Optional[_TextProgress] = None
+    # only show progress when TTY to avoid spamming logs
     if show_progress and sys.stdout.isatty():
         prog = _TextProgress(planned_pairs, label="Analyzing report(s)")
 
@@ -390,10 +339,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument(
         "-Q", "--pipeline",
         type=str, default="1-2",
-        help="Stages to run: 1=size prefilter, 2=hashing, 3=metadata, 4=phash/subset. Examples: 1-2 or 1,3-4 or all"
+        help="Stages to run: 1=size prefilter, 2=hashing, 3=metadata, 4=phash/subset. You may also pass 5 (no-op) for convenience. Examples: 1-2 or 1,3-4 or all"
     )
 
-    # Mode label (informational only; printed in the banner)
+    # Mode label (informational only; printed in banner)
     p.add_argument("-M", "--mode", type=str, default="hash", help="Free-form label for the run (printed in the banner)")
 
     # Performance & GPU
@@ -425,7 +374,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
     # Report utilities
     p.add_argument("-P", "--print-report", action="append", help="Path to a JSON report to pretty-print (repeatable)")
-    p.add_argument("-V", "--verbosity", type=int, default=1, choices=[0, 1, 2], help="Report print verbosity (0–2). Default: 1")
+    p.add_argument("-V", "--verbosity", type=int, default=1, choices=[0, 1, 2], help="Report/apply verbosity (0–2). Default: 1")
     p.add_argument("-X", "--exclude-by-report", action="append", help="Path to a JSON report; losers listed will be skipped during scan (repeatable)")
 
     # Report analysis
@@ -480,8 +429,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     # COLLAPSE REPORT mode
     if args.collapse_report:
-        reporter = ProgressReporter(enable_dash=bool(args.live), refresh_rate=args.refresh_rate,
-                                    banner="Run: COLLAPSE REPORT", stacked_ui=stacked_pref)
+        reporter = ProgressReporter(enable_dash=bool(args.live), refresh_rate=args.refresh_rate, banner="Run: COLLAPSE REPORT", stacked_ui=stacked_pref)
         reporter.start()
         try:
             in_path = Path(args.collapse_report).expanduser().resolve()
@@ -520,6 +468,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 base_root=base_root,
                 vault=vault,
                 reporter=reporter,
+                verbosity=int(args.verbosity),
             )
             reporter.set_results(dup_groups=0, losers_count=count, bytes_total=size)
             if args.vault:
@@ -533,7 +482,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # SCAN mode
     root_str = args.directory
     if not root_str:
-        print("video-dedupe: error: the following arguments are required: directory", file=sys.stderr)
+        print("video-dedupe: error: the following arguments are required: directory (or use -P/--print-report / -Y/--analyze-report)", file=sys.stderr)
         return 2
     root = Path(root_str).expanduser().resolve()
     if not root.exists():
@@ -575,38 +524,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         stages = parse_pipeline(args.pipeline)
-        # Try calling with skip_paths if your pipeline supports it; else retry without.
-        try:
-            groups = run_pipeline(
-                root=root,
-                patterns=patterns,
-                max_depth=max_depth,
-                selected_stages=stages,
-                cfg=cfg,
-                cache=cache,
-                reporter=reporter,
-                skip_paths=skip_paths,
-            )
-        except TypeError:
-            groups = run_pipeline(
-                root=root,
-                patterns=patterns,
-                max_depth=max_depth,
-                selected_stages=stages,
-                cfg=cfg,
-                cache=cache,
-                reporter=reporter,
-            )
+        # run_pipeline in your repo already accepts skip_paths; if not, remove this kwarg or add it to pipeline.
+        groups = run_pipeline(
+            root=root,
+            patterns=patterns,
+            max_depth=max_depth,
+            selected_stages=stages,
+            cfg=cfg,
+            cache=cache,
+            reporter=reporter,
+            skip_paths=skip_paths,  # harmless if pipeline ignores unknown kwarg? keep in sync with pipeline signature
+        )
 
         keep_order = ["longer", "resolution", "video-bitrate", "newer", "smaller", "deeper"]
         winners = choose_winners(groups, keep_order)
 
         if args.report:
-            # Keep compatibility with both write_report(path, winners) and write_report(path, winners, cfg)
-            try:
-                write_report(Path(args.report), winners, cfg)  # type: ignore[call-arg]
-            except TypeError:
-                write_report(Path(args.report), winners)  # type: ignore[misc]
+            write_report(Path(args.report), winners)
             print(f"Wrote report to: {args.report}")
 
         losers = [loser for (_keep, losers) in winners.values() for loser in losers]
