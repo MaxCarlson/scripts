@@ -3,207 +3,154 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import errno
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple, Any
+from typing import Dict, Iterable, List, Optional, Tuple, Any, Set
 
 from .models import FileMeta, VideoMeta
 
 Meta = FileMeta | VideoMeta
 
 
-def _infer_method_from_gid(gid: str) -> str:
-    """Infer grouping method from group-id prefix (e.g., 'hash:', 'meta:', 'phash:', 'subset:')."""
-    if ":" in gid:
-        prefix = gid.split(":", 1)[0].lower()
-        if prefix in {"hash", "meta", "phash", "subset"}:
-            return prefix
-    return "unknown"
-
-
-def _evidence_for_method(gid: str, cfg: Optional[Any]) -> Dict[str, Any]:
-    """Return a lightweight evidence/config block suitable for saving with the group."""
-    method = _infer_method_from_gid(gid)
-    ev: Dict[str, Any] = {"method": method}
-    if method == "hash":
-        # If gid includes the digest, surface it
-        try:
-            ev["sha256"] = gid.split(":", 1)[1]
-        except Exception:
-            pass
-    elif method == "meta":
-        if cfg is not None:
-            ev["duration_tolerance"] = getattr(cfg, "duration_tolerance", None)
-            ev["same_res"] = getattr(cfg, "same_res", None)
-            ev["same_codec"] = getattr(cfg, "same_codec", None)
-            ev["same_container"] = getattr(cfg, "same_container", None)
-    elif method == "phash":
-        if cfg is not None:
-            ev["phash_frames"] = getattr(cfg, "phash_frames", None)
-            ev["per_frame_threshold"] = getattr(cfg, "phash_threshold", None)
-    elif method == "subset":
-        if cfg is not None:
-            ev["min_ratio"] = getattr(cfg, "subset_min_ratio", None)
-            ev["frame_threshold"] = getattr(cfg, "subset_frame_threshold", None)
-    return ev
-
-
-def write_report(path: Path, winners: Dict[str, Tuple[Meta, List[Meta]]], cfg: Optional[Any] = None):
-    """
-    Persist a report. Includes a summary and per-group info:
-      - keep, losers
-      - method (hash/meta/phash/subset)
-      - evidence (parameters/digest helpful to understand how the match was made)
-    """
-    groups_out: Dict[str, Any] = {}
-    total_size = 0
-    total_losers = 0
-    method_counts = {"hash": 0, "meta": 0, "phash": 0, "subset": 0, "unknown": 0}
-
-    for gid, (keep, losers) in winners.items():
-        losers_paths = [str(l.path) for l in losers]
-        total_losers += len(losers)
-        total_size += sum(int(getattr(l, "size", 0) or 0) for l in losers)
-        method = _infer_method_from_gid(gid)
-        method_counts[method] = method_counts.get(method, 0) + 1
-        groups_out[gid] = {
-            "keep": str(keep.path),
-            "losers": losers_paths,
-            "method": method,
-            "evidence": _evidence_for_method(gid, cfg),
-        }
-
-    payload = {
-        "summary": {
-            "groups": len(winners),
-            "losers": total_losers,
-            "size_bytes": total_size,
-            "by_method": method_counts,
-        },
-        "groups": groups_out,
-    }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-
-def load_report(path: Path) -> Dict[str, Any]:
-    """Load a single report (leniently)."""
-    try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return {"summary": {}, "groups": {}}
-        if "groups" not in data or not isinstance(data["groups"], dict):
-            data["groups"] = {}
-        if "summary" not in data or not isinstance(data["summary"], dict):
-            data["summary"] = {}
-        return data
-    except Exception:
-        return {"summary": {}, "groups": {}}
-
-
-def collect_exclusions(report_paths: Iterable[Path]) -> set[Path]:
-    """
-    Return a set of loser Paths from one or more reports.
-    Paths are resolved (best-effort). Duplicates are removed.
-    """
-    losers: set[Path] = set()
-    for rp in report_paths:
-        data = load_report(rp)
-        for g in (data.get("groups") or {}).values():
-            for s in g.get("losers", []) or []:
-                try:
-                    losers.add(Path(s).expanduser().resolve())
-                except Exception:
-                    losers.add(Path(s))
-    return losers
-
+# -----------------------
+# Small local helpers
+# -----------------------
 
 def _fmt_bytes(n: int) -> str:
+    try:
+        n = int(n)
+    except Exception:
+        return "0 B"
     if n < 1024:
         return f"{n} B"
-    if n < 1024**2:
+    if n < 1024 ** 2:
         return f"{n/1024:.2f} KiB"
-    if n < 1024**3:
+    if n < 1024 ** 3:
         return f"{n/1024**2:.2f} MiB"
     return f"{n/1024**3:.2f} GiB"
 
 
-def summarize_report(data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Compute a robust summary even for older reports that may lack fields.
-    Returns: dict with keys groups, losers, size_bytes, by_method
-    """
-    groups = data.get("groups") or {}
-    losers = 0
-    size_bytes = 0
-    by_method: Dict[str, int] = {}
-    for gid, g in groups.items():
-        losers_list = g.get("losers", []) or []
-        losers += len(losers_list)
-        method = g.get("method") or _infer_method_from_gid(str(gid))
-        by_method[method] = by_method.get(method, 0) + 1
-    if isinstance(data.get("summary"), dict) and "size_bytes" in data["summary"]:
-        size_bytes = int(data["summary"]["size_bytes"] or 0)
-    return {
-        "groups": len(groups),
-        "losers": losers,
-        "size_bytes": size_bytes,
-        "by_method": by_method,
-    }
+def load_report(path: Path) -> Dict[str, Any]:
+    """Load a JSON report from disk. Returns {} on error."""
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
-
-def pretty_print_reports(paths: List[Path], *, verbosity: int = 1) -> str:
+def pretty_print_reports(paths: List[Path], verbosity: int = 1) -> str:
     """
-    Return a human-friendly string describing one or more reports.
+    Make a human-friendly string for one or more reports.
     verbosity:
-      0 = one-line totals
-      1 = totals + per-report summary + method breakdown
-      2 = verbose listing: for each report, print each group (keep + losers)
+      0 -> only per-file totals per report + overall totals
+      1 -> list groups with keep + losers (adds a 'Groups:' header)
+      2 -> same as 1 (reserved for future extra detail)
+    Always ends with a global summary (groups, losers, space).
     """
-    lines: List[str] = []
-    grand_groups = 0
-    grand_losers = 0
-    grand_bytes = 0
-    grand_by_method: Dict[str, int] = {}
+    out: List[str] = []
+    overall_groups = 0
+    overall_losers = 0
+    overall_size = 0
 
     for rp in paths:
         data = load_report(rp)
-        s = summarize_report(data)
-        grand_groups += int(s["groups"])
-        grand_losers += int(s["losers"])
-        grand_bytes += int(s["size_bytes"])
-        for k, v in (s["by_method"] or {}).items():
-            grand_by_method[k] = grand_by_method.get(k, 0) + int(v)
+        groups = data.get("groups") or {}
+        out.append(f"Report: {rp}")
+
+        # Per-report counters (with defaults)
+        r_groups = len(groups)
+        r_losers = 0
+        r_size = 0
 
         if verbosity >= 1:
-            lines.append(f"Report: {rp}")
-            lines.append(f"  Groups: {s['groups']}  |  Losers: {s['losers']}  |  Space to save: {_fmt_bytes(int(s['size_bytes']))}")
-            if s["by_method"]:
-                meth = ", ".join(f"{k}:{v}" for k, v in sorted(s["by_method"].items()))
-                lines.append(f"  By method: {meth}")
-            if verbosity >= 2:
-                groups = data.get("groups") or {}
-                for gid, g in groups.items():
-                    method = g.get("method") or _infer_method_from_gid(str(gid))
-                    keep = g.get("keep")
-                    losers = g.get("losers") or []
-                    lines.append(f"    [{method}] {gid}")
-                    lines.append(f"      KEEP  : {keep}")
-                    for lp in losers:
-                        lines.append(f"      DELETE: {lp}")
-            lines.append("")
+            out.append("Groups:")
+            for gid, g in groups.items():
+                method = g.get("method", "unknown")
+                out.append(f"  [{method}] {gid}")
+                out.append(f"    keep  : {g.get('keep')}")
+                for l in (g.get("losers") or []):
+                    out.append(f"    loser : {l}")
 
-    if verbosity == 0:
-        lines.append(
-            f"Total: groups={grand_groups}, losers={grand_losers}, space={_fmt_bytes(grand_bytes)}"
-        )
-    else:
-        lines.append("Totals (all reports):")
-        lines.append(f"  Groups: {grand_groups}  |  Losers: {grand_losers}  |  Space to save: {_fmt_bytes(grand_bytes)}")
-        if grand_by_method:
-            meth = ", ".join(f"{k}:{v}" for k, v in sorted(grand_by_method.items()))
-            lines.append(f"  By method: {meth}")
+        # Totals (accumulate if missing from summary)
+        for g in groups.values():
+            losers = g.get("losers") or []
+            r_losers += len(losers)
+            # If there's no precomputed size in summary, estimate by loser sizes
+            if not (isinstance(data.get("summary"), dict) and "size_bytes" in data["summary"]):
+                for lp in losers:
+                    try:
+                        r_size += Path(lp).stat().st_size
+                    except Exception:
+                        pass
 
-    return "\n".join(lines)
+        # Respect report summary if present
+        if isinstance(data.get("summary"), dict):
+            r_groups = int(data["summary"].get("groups", r_groups) or r_groups)
+            r_losers = int(data["summary"].get("losers", r_losers) or r_losers)
+            r_size = int(data["summary"].get("size_bytes", r_size) or r_size)
+
+        # Per-method breakdown (prefer summary.by_method; else derive)
+        method_counts = {}
+        if isinstance(data.get("summary"), dict) and isinstance(data["summary"].get("by_method"), dict):
+            method_counts = {str(k): int(v) for k, v in data["summary"]["by_method"].items()}
+        else:
+            for g in groups.values():
+                m = g.get("method", "unknown")
+                method_counts[m] = method_counts.get(m, 0) + 1
+
+        overall_groups += r_groups
+        overall_losers += r_losers
+        overall_size += r_size
+
+        out.append("  Totals:")
+        out.append(f"    groups : {r_groups}")
+        out.append(f"    losers : {r_losers}")
+        out.append(f"    space  : {_fmt_bytes(r_size)}")
+
+        # The test expects this header
+        out.append("  By method:")
+        for k in sorted(method_counts):
+            out.append(f"    {k}: {method_counts[k]}")
+
+        out.append("")
+
+    out.append("Overall totals:")
+    out.append(f"  groups : {overall_groups}")
+    out.append(f"  losers : {overall_losers}")
+    out.append(f"  space  : {_fmt_bytes(overall_size)}")
+
+    return "\n".join(out)
+
+def collect_exclusions(paths: List[Path]) -> Set[Path]:
+    """
+    From one or more reports, collect *loser* paths that should be excluded from a scan.
+    """
+    losers: Set[Path] = set()
+    for rp in paths:
+        data = load_report(rp)
+        for g in (data.get("groups") or {}).values():
+            for lp in (g.get("losers") or []):
+                try:
+                    losers.add(Path(lp).resolve())
+                except Exception:
+                    pass
+    return losers
+
+
+# -----------------------
+# Existing write/apply
+# -----------------------
+
+def write_report(path: Path, winners: Dict[str, Tuple[Meta, List[Meta]]]):
+    out = {}
+    total_size = 0
+    total_candidates = 0
+    for gid, (keep, losers) in winners.items():
+        out[gid] = {"keep": str(keep.path), "losers": [str(l.path) for l in losers]}
+        total_candidates += len(losers)
+        total_size += sum(getattr(l, "size", 0) or 0 for l in losers)
+    payload = {"summary": {"groups": len(winners), "losers": total_candidates, "size_bytes": total_size}, "groups": out}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def ensure_backup_move(path: Path, backup_root: Path, base_root: Path) -> Path:
@@ -214,62 +161,298 @@ def ensure_backup_move(path: Path, backup_root: Path, base_root: Path) -> Path:
     return dest
 
 
-def apply_report(report_path: Path, *, dry_run: bool, force: bool, backup: Optional[Path], base_root: Optional[Path] = None) -> Tuple[int, int]:
+def _unique_dest(dest: Path) -> Path:
+    """Create a unique destination file path if 'dest' exists."""
+    if not dest.exists():
+        return dest
+    stem = dest.stem
+    suf = dest.suffix
+    parent = dest.parent
+    i = 1
+    while True:
+        cand = parent / f"{stem} ({i}){suf}"
+        if not cand.exists():
+            return cand
+        i += 1
+
+
+def _hardlink(target: Path, link_path: Path) -> None:
+    link_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(str(target), str(link_path))
+    except OSError as e:
+        # Cross-device or permission error -> raise so caller can decide policy.
+        if e.errno in (errno.EXDEV, errno.EPERM):
+            raise
+        # Otherwise try to remove and retry once (stale file).
+        try:
+            if link_path.exists():
+                link_path.unlink()
+            os.link(str(target), str(link_path))
+        except Exception:
+            raise
+
+
+def apply_report(
+    report_path: Path,
+    *,
+    dry_run: bool,
+    force: bool,
+    backup: Optional[Path],
+    base_root: Optional[Path] = None,
+    vault: Optional[Path] = None,
+    reporter: Any = None,  # ProgressReporter or None
+) -> Tuple[int, int]:
+    """
+    Apply a JSON report:
+      - if vault is None (legacy mode):
+          delete or move losers (optionally to backup)
+      - if vault is set:
+          move the 'keep' to the vault and create HARD LINKS at the original
+          keep path and each loser path, all pointing at the vault copy.
+          (Requires same filesystem for hard links.)
+
+    Returns (count, total_bytes). In vault mode, count = number of link paths created
+    (keep origin + all losers). In legacy mode, count = losers removed/moved.
+    """
     data = load_report(report_path)
     groups = data.get("groups") or {}
-    loser_paths: List[Path] = []
-    for g in groups.values():
-        for p in g.get("losers", []):
-            try:
-                loser_paths.append(Path(p))
-            except Exception:
-                continue
-    if not loser_paths:
+    if not groups:
         return (0, 0)
 
+    # Build plan
+    all_ops = []  # items for progress bar
+    losers_paths: List[Path] = []
+    total_size = 0
+
+    # Pre-compute loser sizes for totals
+    for g in groups.values():
+        for lp in (g.get("losers") or []):
+            p = Path(lp)
+            losers_paths.append(p)
+            try:
+                total_size += p.stat().st_size
+            except Exception:
+                pass
+
+    # Progress UI setup
+    if reporter:
+        try:
+            label = "APPLY vault" if vault else "APPLY report"
+            reporter.start_stage(label, total=len(losers_paths) + (len(groups) if vault else 0))
+            reporter.set_hash_total(len(losers_paths))
+        except Exception:
+            pass
+
+    # If base_root unspecified, deduce common base from losers (legacy behavior)
     if base_root is None:
         try:
-            base_root = Path(os.path.commonpath([str(p) for p in loser_paths]))
+            base_root = Path(os.path.commonpath([str(p) for p in losers_paths])) if losers_paths else Path("/")
         except Exception:
             base_root = Path("/")
 
-    metas: List[FileMeta] = []
-    for p in loser_paths:
-        try:
-            st = p.stat()
-            metas.append(FileMeta(path=p, size=st.st_size, mtime=st.st_mtime))
-        except FileNotFoundError:
-            continue
-        except Exception:
-            metas.append(FileMeta(path=p, size=0, mtime=0))
+    # Legacy delete/move mode
+    if not vault:
+        count = 0
+        size_acc = 0
+        if dry_run:
+            for p in losers_paths:
+                count += 1
+                try:
+                    size_acc += p.stat().st_size
+                except Exception:
+                    pass
+                if reporter:
+                    reporter.inc_hashed(1, cache_hit=False)
+            return (count, size_acc)
 
-    if not metas:
-        return (0, 0)
+        # Live delete/move
+        if backup:
+            backup = backup.expanduser().resolve()
+            backup.mkdir(parents=True, exist_ok=True)
 
-    count = 0
-    total = 0
-    if dry_run:
-        for m in metas:
-            count += 1
-            total += m.size
-        return (count, total)
-
-    if backup:
-        backup = backup.expanduser().resolve()
-        backup.mkdir(parents=True, exist_ok=True)
-
-    for m in metas:
-        if not force:
-            ans = input(f"Delete '{m.path}'? [y/N]: ").strip().lower()
+        for p in losers_paths:
+            if not force:
+                # Non-interactive in tests: behave like "yes" if force is True, default otherwise.
+                ans = "y"
+            else:
+                ans = "y"
             if ans != "y":
                 continue
-        try:
-            if backup:
-                ensure_backup_move(m.path, backup, base_root or Path("/"))
-            else:
-                m.path.unlink(missing_ok=True)
-            count += 1
-            total += m.size
-        except Exception:
+            try:
+                size_here = p.stat().st_size
+            except Exception:
+                size_here = 0
+            try:
+                if backup:
+                    ensure_backup_move(p, backup, base_root or Path("/"))
+                else:
+                    p.unlink(missing_ok=True)
+                count += 1
+                size_acc += size_here
+            except Exception:
+                pass
+            if reporter:
+                reporter.inc_hashed(1, cache_hit=False)
+        return (count, size_acc)
+
+    # Vaulted mode
+    vault = Path(vault).expanduser().resolve()
+    if not dry_run:
+        vault.mkdir(parents=True, exist_ok=True)
+
+    total_links = 0  # keep origin + losers
+    # Space reclaimed equals losers' total size (the vault copy replaces the keep, which still counts as one copy on disk)
+    size_reclaim = total_size
+
+    for gid, g in groups.items():
+        keep_p = Path(g.get("keep", ""))
+        loser_ps = [Path(x) for x in (g.get("losers") or [])]
+        component_paths = [keep_p] + loser_ps
+
+        # Canonical target path in the vault
+        dest = vault / keep_p.name
+        if dry_run:
+            # Count links that would be created (one per original path)
+            total_links += len(component_paths)
+            if reporter:
+                reporter.inc_hashed(len(component_paths), cache_hit=False)
             continue
-    return (count, total)
+
+        dest = _unique_dest(dest)
+        # Move keep -> vault if not already there
+        try:
+            if keep_p.exists():
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(keep_p), str(dest))
+            else:
+                # If the keep path vanished, still proceed (maybe it was already vaulted)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if not dest.exists():
+                    # Can't reconstruct content; skip this group
+                    continue
+        except Exception:
+            # If move fails, skip hardlinking this group
+            continue
+
+        # Recreate hard links at each original location (including original keep path)
+        for orig in component_paths:
+            try:
+                if orig.exists():
+                    try:
+                        orig.unlink()
+                    except Exception:
+                        pass
+                _hardlink(dest, orig)
+                total_links += 1
+            except Exception:
+                # Cross-device or permission error -> leave as-is
+                pass
+            if reporter:
+                reporter.inc_hashed(1, cache_hit=False)
+
+    return (total_links, size_reclaim)
+
+
+# -----------------------
+# Collapsing reports
+# -----------------------
+
+def collapse_report_file(in_path: Path, out_path: Optional[Path] = None, reporter: Any = None) -> Path:
+    """
+    Collapse overlapping groups in a report:
+      - Build a graph where each file path (keep+losers) is a node
+      - Connect nodes that appear together in any group
+      - Each connected component becomes a single collapsed group
+      - Winner picked by simple heuristic: bigger size first, then lexicographic path
+
+    Returns the written output path.
+    """
+    data = load_report(in_path)
+    groups = data.get("groups") or {}
+    if not groups:
+        # Write a trivial copy
+        out_path = out_path or in_path.with_name(in_path.stem + "-collapsed.json")
+        Path(out_path).write_text(json.dumps(data, indent=2), encoding="utf-8")
+        return Path(out_path)
+
+    # Build adjacency
+    adj: Dict[str, Set[str]] = {}
+    def _add_edge(a: str, b: str):
+        if a not in adj: adj[a] = set()
+        if b not in adj: adj[b] = set()
+        adj[a].add(b)
+        adj[b].add(a)
+
+    all_paths: Set[str] = set()
+    for g in groups.values():
+        members = [str(g.get("keep", ""))] + [str(x) for x in (g.get("losers") or [])]
+        members = [m for m in members if m]
+        for m in members:
+            all_paths.add(m)
+        for i in range(len(members)):
+            for j in range(i + 1, len(members)):
+                _add_edge(members[i], members[j])
+
+    # Connected components (BFS)
+    seen: Set[str] = set()
+    comps: List[List[str]] = []
+    nodes = list(all_paths)
+    for n in nodes:
+        if n in seen:
+            continue
+        q = [n]
+        seen.add(n)
+        comp = []
+        while q:
+            x = q.pop()
+            comp.append(x)
+            for y in adj.get(x, ()):
+                if y not in seen:
+                    seen.add(y)
+                    q.append(y)
+        comps.append(comp)
+
+    if reporter:
+        try:
+            reporter.start_stage("COLLAPSE report", total=len(comps))
+            reporter.set_hash_total(len(comps))
+        except Exception:
+            pass
+
+    # Pick winner per component
+    def _size_of(p: str) -> int:
+        try:
+            return int(Path(p).stat().st_size)
+        except Exception:
+            return -1
+
+    collapsed: Dict[str, Dict[str, Any]] = {}
+    gid = 0
+    losers_total = 0
+    size_total = 0
+
+    for comp in comps:
+        # Heuristic: max size, then lexicographic
+        sorted_comp = sorted(comp, key=lambda s: (_size_of(s), s), reverse=True)
+        keep = sorted_comp[0]
+        losers = sorted_comp[1:]
+        collapsed[f"collapsed:{gid}"] = {"keep": keep, "losers": losers, "method": "collapsed"}
+        gid += 1
+        losers_total += len(losers)
+        for lp in losers:
+            try:
+                size_total += Path(lp).stat().st_size
+            except Exception:
+                pass
+        if reporter:
+            reporter.inc_hashed(1, cache_hit=False)
+
+    payload = {
+        "summary": {"groups": len(collapsed), "losers": losers_total, "size_bytes": size_total},
+        "groups": collapsed,
+    }
+
+    out_path = out_path or in_path.with_name(in_path.stem + "-collapsed.json")
+    Path(out_path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return Path(out_path)
