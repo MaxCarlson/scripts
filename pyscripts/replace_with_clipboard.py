@@ -136,7 +136,8 @@ def replace_or_print_clipboard(file_path_str: str | None, no_stats: bool, from_l
                 raise
 
         if source_text is None or source_text == "":
-            stats_data["Status"] = "Clipboard source is empty. Aborting."
+            # Revert to your original wording so existing tests pass.
+            stats_data["Status"] = "Clipboard is empty. Aborting."
             console_stderr.print(stats_data["Status"], style="bold red")
             exit_code = 1
 

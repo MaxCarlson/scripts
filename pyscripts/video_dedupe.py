@@ -4,13 +4,13 @@ Video & File Deduplicator
 
 - Exact duplicates by SHA-256 (any file type)
 - Metadata-aware video duplicates (duration tolerance, resolution, codec/container, bitrates)
-- Optional perceptual hashing (phash) for visually-similar videos
+- Perceptual hashing (pHash) + optional subset detection (short cut-downs of longer videos)
 - Safe actions: dry-run, backup/quarantine, prompts
 - Presets: --preset {low,medium,high}
 - Optional live dashboard via --live (uses TermDash module provided by user)
 - Hash/meta cache: JSONL cache for SHA-256, ffprobe metadata, and pHash (append-on-write)
 - Apply an existing JSON report via --apply-report to delete/move listed losers
-- ETA + Elapsed timers for each stage; Ctrl+C exits cleanly and restores terminal
+- ETA + Elapsed timers; run banner displaying run type/mode/threads/GPU/backup
 
 Cross-platform: Windows 11 (PowerShell), WSL2, Termux
 """
@@ -194,11 +194,31 @@ def probe_video(path: Path) -> VideoMeta:
         mtime = st.st_mtime
     except FileNotFoundError:
         return VideoMeta(path=path, size=0, mtime=0.0)
-
     fmt = _run_ffprobe_json(path)
     return _extract_vmeta_from_ffprobe(path, fmt, size, mtime)
 
-def compute_phash_signature(path: Path, frames: int = 5) -> Optional[Tuple[int, ...]]:
+def _ffmpeg_cmd_for_frame(path: Path, ts: float, gpu: bool) -> List[str]:
+    """
+    Build an ffmpeg command to grab one frame at timestamp `ts`.
+    If gpu=True, try enabling CUDA/NVDEC; fall back to CPU automatically if that fails.
+    """
+    base = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-ss", f"{ts:.3f}", "-i", str(path),
+        "-frames:v", "1",
+        "-f", "image2pipe",
+        "-vcodec", "png",
+        "pipe:1",
+    ]
+    if gpu:
+        # Minimal, robust GPU hint. Many builds will accelerate decode automatically with -hwaccel cuda.
+        # If not supported, ffmpeg ignores it and falls back.
+        return ["ffmpeg", "-hide_banner", "-loglevel", "error",
+                "-hwaccel", "cuda", "-ss", f"{ts:.3f}", "-i", str(path),
+                "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"]
+    return base
+
+def compute_phash_signature(path: Path, frames: int = 5, *, gpu: bool = False) -> Optional[Tuple[int, ...]]:
     try:
         from PIL import Image
         import imagehash
@@ -214,25 +234,20 @@ def compute_phash_signature(path: Path, frames: int = 5) -> Optional[Tuple[int, 
     fractions = [(i + 1) / (frames + 1) for i in range(frames)]
     for frac in fractions:
         ts = max(0.0, min(vm.duration * frac, max(0.0, vm.duration - 0.1)))
-        try:
-            cmd = [
-                "ffmpeg", "-hide_banner", "-loglevel", "error",
-                "-ss", f"{ts:.3f}", "-i", str(path),
-                "-frames:v", "1",
-                "-f", "image2pipe",
-                "-vcodec", "png",
-                "pipe:1",
-            ]
-            raw = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
-            from PIL import Image  # re-import within loop for mypy silence
-            import io  # likewise
-            img = Image.open(io.BytesIO(raw))
-            img.load()
-            import imagehash  # likewise
-            h = imagehash.phash(img)  # 64-bit
-            sig.append(int(str(h), 16))
-        except Exception:
-            continue
+        for attempt in (0, 1):  # try gpu once then cpu fallback
+            try:
+                cmd = _ffmpeg_cmd_for_frame(path, ts, gpu if attempt == 0 else False)
+                raw = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
+                img = Image.open(io.BytesIO(raw))
+                img.load()
+                h = imagehash.phash(img)  # 64-bit
+                sig.append(int(str(h), 16))
+                break
+            except Exception:
+                if attempt == 1:
+                    # both GPU and CPU failed → skip this frame
+                    pass
+                continue
 
     if len(sig) < max(2, frames // 2):
         return None
@@ -266,7 +281,6 @@ class HashCache:
         if path:
             self._load()
 
-    # ---------- I/O ----------
     def _load(self):
         p = Path(self.path).expanduser()
         if not p.exists():
@@ -333,7 +347,6 @@ class HashCache:
         if self._fh:
             try:
                 rec = {"path": str(path), "size": size, "mtime": mtime, "video_meta": video_meta}
-                # include optional phash if caller added it into video_meta
                 if "phash" in video_meta and isinstance(video_meta["phash"], (list, tuple)):
                     rec["phash"] = list(int(x) for x in video_meta["phash"])
                 self._fh.write(json.dumps(rec) + "\n")
@@ -348,11 +361,12 @@ class HashCache:
 
 class ProgressReporter:
     """Thread-safe counters + optional TermDash updates, with per-stage ETA and Elapsed."""
-    def __init__(self, enable_dash: bool, refresh_rate: float = 0.2):
+    def __init__(self, enable_dash: bool, *, refresh_rate: float = 0.2, banner: str = ""):
         self.enable_dash = enable_dash and TERMDASH_AVAILABLE and sys.stdout.isatty()
         self.refresh_rate = max(0.05, float(refresh_rate))
         self.lock = threading.Lock()
         self.start_ts = time.time()
+        self.banner = banner
 
         # High-level counters
         self.total_files = 0
@@ -369,6 +383,7 @@ class ProgressReporter:
         self.groups_hash = 0
         self.groups_meta = 0
         self.groups_phash = 0
+        self.groups_subset = 0
         self.dup_groups_total = 0
         self.losers_total = 0
         self.bytes_to_remove = 0
@@ -387,6 +402,7 @@ class ProgressReporter:
 
         # Pre-built lines (created in start())
         self._line_title = None
+        self._line_banner = None
         self._line_stage = None
         self._line_files = None
         self._line_hash = None
@@ -408,13 +424,17 @@ class ProgressReporter:
             max_col_width=None,  # no clipping
         )
 
-        # Title (single column)
+        # Title + banner
         self._line_title = Line(
             "title",
             stats=[Stat("title", "Video Deduper — Live", format_string="{}")],
             style="header",
         )
-        # Stage + Elapsed + ETA (3 columns, wider to avoid truncation)
+        self._line_banner = Line(
+            "banner",
+            stats=[Stat("banner", self.banner, format_string="{}", no_expand=True, display_width=120)],
+        )
+        # Stage + Elapsed + ETA
         self._line_stage = Line(
             "stage",
             stats=[
@@ -423,7 +443,7 @@ class ProgressReporter:
                 Stat("eta", "--:--:--", prefix="ETA: ", format_string="{}", no_expand=True, display_width=14),
             ],
         )
-        # Files + Videos (2 columns)
+        # Files + Videos
         self._line_files = Line(
             "files",
             stats=[
@@ -431,7 +451,7 @@ class ProgressReporter:
                 Stat("videos", 0, prefix="Videos: ", format_string="{}", no_expand=True, display_width=18),
             ],
         )
-        # Hashed + Cache hits (2 columns)
+        # Hashed + Cache hits
         self._line_hash = Line(
             "hash",
             stats=[
@@ -439,12 +459,12 @@ class ProgressReporter:
                 Stat("cache_hits", 0, prefix="Cache hits: ", format_string="{}", no_expand=True, display_width=18),
             ],
         )
-        # Scanned bytes (MiB)
+        # Scanned bytes
         self._line_scan = Line(
             "scan",
             stats=[Stat("scanned", "0 MiB", prefix="Scanned: ", format_string="{}", no_expand=True, display_width=22)],
         )
-        # Hash/meta groups (2 columns)
+        # Group counters
         self._line_groups1 = Line(
             "groups1",
             stats=[
@@ -452,15 +472,14 @@ class ProgressReporter:
                 Stat("g_meta", 0, prefix="Meta groups: ", format_string="{}", no_expand=True, display_width=22),
             ],
         )
-        # pHash/dup groups (2 columns)
         self._line_groups2 = Line(
             "groups2",
             stats=[
                 Stat("g_phash", 0, prefix="pHash groups: ", format_string="{}", no_expand=True, display_width=22),
-                Stat("dup_groups", 0, prefix="Dup groups: ", format_string="{}", no_expand=True, display_width=22),
+                Stat("g_subset", 0, prefix="Subset groups: ", format_string="{}", no_expand=True, display_width=22),
             ],
         )
-        # Dup files / To remove (2 columns)
+        # Results
         self._line_results = Line(
             "results",
             stats=[
@@ -468,7 +487,7 @@ class ProgressReporter:
                 Stat("bytes_rm", "0 MiB", prefix="To remove: ", format_string="{}", no_expand=True, display_width=22),
             ],
         )
-        # Total elapsed (single column)
+        # Total elapsed
         self._line_total = Line(
             "total",
             stats=[Stat("tot_elapsed", "00:00:00", prefix="Total elapsed: ", format_string="{}", no_expand=True, display_width=16)],
@@ -477,6 +496,7 @@ class ProgressReporter:
         # Start dashboard
         self.dash.__enter__()  # context-like start
         self.dash.add_line("title", self._line_title, at_top=True)
+        self.dash.add_line("banner", self._line_banner)
         self.dash.add_line("stage", self._line_stage)
         self.dash.add_line("files", self._line_files)
         self.dash.add_line("hash", self._line_hash)
@@ -519,6 +539,11 @@ class ProgressReporter:
         self.dash.update_stat("stage", "elapsed", elapsed_stage)
         self.dash.update_stat("total", "tot_elapsed", elapsed_total)
 
+    def set_banner(self, text: str):
+        self.banner = text
+        if self.enable_dash and self.dash:
+            self.dash.update_stat("banner", "banner", text)
+
     def flush(self):
         if not self.enable_dash or not self.dash:
             return
@@ -536,7 +561,7 @@ class ProgressReporter:
             self.dash.update_stat("groups1", "g_hash", self.groups_hash)
             self.dash.update_stat("groups1", "g_meta", self.groups_meta)
             self.dash.update_stat("groups2", "g_phash", self.groups_phash)
-            self.dash.update_stat("groups2", "dup_groups", self.dup_groups_total)
+            self.dash.update_stat("groups2", "g_subset", self.groups_subset)
             self.dash.update_stat("results", "dup_files", self.losers_total)
             self.dash.update_stat("results", "bytes_rm", f"{_bytes_to_mib(self.bytes_to_remove):.0f} MiB")
 
@@ -609,6 +634,8 @@ class ProgressReporter:
                 self.groups_meta += n
             elif mode == "phash":
                 self.groups_phash += n
+            elif mode == "subset":
+                self.groups_subset += n
         self.flush()
 
     def set_results(self, dup_groups: int, losers_count: int, bytes_total: int):
@@ -645,13 +672,6 @@ def iter_files(
     *,
     patterns: Optional[List[str]] = None,
 ) -> Iterable[Path]:
-    """
-    Backward-compatible iterator.
-
-    - Old style: iter_files(root, pattern="*.mp4", max_depth=None)
-    - New style: iter_files(root, patterns=["*.mp4", "*.mkv"], max_depth=None)
-    - Both can be used together; they'll be merged.
-    """
     merged: List[str] = []
     if patterns:
         merged.extend(patterns)
@@ -674,8 +694,30 @@ def iter_files(
 
 
 # ----------------------------
-# Grouping
+# Grouping + subset detection
 # ----------------------------
+
+def _alignable_distance(a_sig: Sequence[int], b_sig: Sequence[int], per_frame_thresh: int) -> Optional[float]:
+    """
+    Compute the best normalized distance between two signature sequences by allowing
+    a sliding alignment (to detect subset relations). Return the average Hamming
+    distance per aligned frame for the best offset; None if not alignable.
+    """
+    if not a_sig or not b_sig:
+        return None
+    # Let short be the sequence with fewer frames
+    A, B = (a_sig, b_sig) if len(a_sig) <= len(b_sig) else (b_sig, a_sig)
+    best = None
+    for offset in range(0, len(B) - len(A) + 1):
+        dist = 0
+        for i in range(len(A)):
+            x = (A[i] ^ B[i + offset])
+            dist += (x.bit_count() if hasattr(int, "bit_count") else bin(x).count("1"))
+        avg = dist / len(A)
+        if best is None or avg < best:
+            best = avg
+    # If best per-frame distance is below threshold, we consider it alignable
+    return best if (best is not None and best <= per_frame_thresh) else None
 
 class Grouper:
     def __init__(
@@ -691,6 +733,10 @@ class Grouper:
         threads: int = 8,
         cache: Optional[HashCache] = None,
         block_size: int = 1 << 20,
+        gpu: bool = False,
+        subset_detect: bool = False,
+        subset_min_ratio: float = 0.30,
+        subset_frame_threshold: Optional[int] = None,
     ):
         self.mode = mode  # 'hash' | 'meta' | 'phash' | 'all'
         self.duration_tolerance = duration_tolerance
@@ -703,6 +749,10 @@ class Grouper:
         self.block_size = max(64 * 1024, int(block_size))
         self._reporter: Optional[ProgressReporter] = None
         self._cache = cache
+        self.gpu = bool(gpu)
+        self.subset_detect = bool(subset_detect)
+        self.subset_min_ratio = max(0.05, float(subset_min_ratio))
+        self.subset_frame_threshold = int(subset_frame_threshold) if subset_frame_threshold is not None else self.phash_threshold
 
     def _collect_filemeta(self, path: Path) -> FileMeta:
         try:
@@ -725,7 +775,7 @@ class Grouper:
         if cache:
             meta = cache.get_meta(path, size, mtime)
             if meta:
-                vm = _extract_vmeta_from_ffprobe(path, meta.get("ffprobe"), size, mtime) if "ffprobe" in meta else VideoMeta(
+                vm = VideoMeta(
                     path=path,
                     size=size,
                     mtime=mtime,
@@ -746,16 +796,15 @@ class Grouper:
         fmt = _run_ffprobe_json(path)
         vm = _extract_vmeta_from_ffprobe(path, fmt, size, mtime)
 
-        # Optional pHash (can be quite expensive)
+        # Optional pHash (can be expensive)
         if want_phash:
-            sig = compute_phash_signature(path, frames=self.phash_frames)
+            sig = compute_phash_signature(path, frames=self.phash_frames, gpu=self.gpu)
             if sig:
                 object.__setattr__(vm, "phash_signature", sig)
 
-        # Store minimal, normalized meta for speed on restarts
+        # Store normalized meta for fast restarts
         if cache:
             meta_payload = {
-                # store a lean schema (no raw ffprobe unless desired)
                 "duration": vm.duration,
                 "width": vm.width,
                 "height": vm.height,
@@ -776,8 +825,8 @@ class Grouper:
         """
         self._reporter = reporter
         groups: Dict[str, List[Union[VideoMeta, FileMeta]]] = {}
-        want_meta = self.mode in ("meta", "phash", "all")
-        want_phash = self.mode in ("phash", "all")
+        want_meta = self.mode in ("meta", "phash", "all") or self.subset_detect
+        want_phash = self.mode in ("phash", "all") or self.subset_detect
 
         metas: List[Union[VideoMeta, FileMeta]] = []
         lock = threading.Lock()
@@ -847,7 +896,7 @@ class Grouper:
                     if self._reporter:
                         self._reporter.inc_group("hash", 1)
 
-        # Metadata grouping
+        # Metadata grouping (near-equal durations)
         if self.mode in ("meta", "all"):
             vids = [m for m in metas if isinstance(m, VideoMeta)]
             if vids:
@@ -907,7 +956,7 @@ class Grouper:
                         if self._reporter:
                             self._reporter.inc_group("meta", 1)
 
-        # pHash grouping
+        # pHash grouping (visually similar equal-ish length)
         if self.mode in ("phash", "all"):
             vids = [m for m in metas if isinstance(m, VideoMeta) and m.phash_signature]
             visited = set()
@@ -933,6 +982,33 @@ class Grouper:
                     gid += 1
                     if self._reporter:
                         self._reporter.inc_group("phash", 1)
+
+        # Subset detection (short cut-downs of longer videos)
+        if self.subset_detect:
+            vids = [m for m in metas if isinstance(m, VideoMeta)]
+            gid = 0
+            for i in range(len(vids)):
+                a = vids[i]
+                if not a.duration or not a.phash_signature:
+                    continue
+                for j in range(len(vids)):
+                    if i == j:
+                        continue
+                    b = vids[j]
+                    if not b.duration or not b.phash_signature:
+                        continue
+                    short, long = (a, b) if a.duration <= b.duration else (b, a)
+                    ratio = (short.duration or 0.0) / (long.duration or 1.0)
+                    if ratio < self.subset_min_ratio:
+                        continue
+                    # Best alignable average distance
+                    best = _alignable_distance(short.phash_signature, long.phash_signature, self.subset_frame_threshold)
+                    if best is not None:
+                        key = f"subset:{gid}"
+                        groups[key] = [long, short]  # order long first for later keep policy
+                        gid += 1
+                        if self._reporter:
+                            self._reporter.inc_group("subset", 1)
 
         if self._reporter:
             self._reporter.flush()
@@ -1008,7 +1084,7 @@ def print_groups(groups: Dict[str, List[FileMeta | VideoMeta]], winners: Optiona
         _print("[green]No duplicates detected.[/green]" if console else "No duplicates detected.")
         return
     if console:
-        table = Table(title="Duplicate Groups", show_lines=True)
+        table = Table(title="Duplicate/Subset Groups", show_lines=True)
         table.add_column("Group", style="cyan", no_wrap=True)
         table.add_column("Keep", style="green")
         table.add_column("Others", style="magenta")
@@ -1113,26 +1189,21 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     epilog = r"""
 Examples (PowerShell):
 
-  # Exact duplicates (fast), dry-run, all files:
+  # Fast exact duplicates (dry run, all files):
   python .\video_dedupe.py "D:\Pictures\Saved" -M hash -x
 
-  # All modes, MP4 only, recurse fully, write report:
-  python .\video_dedupe.py "D:\Pictures\Saved" -M all -p *.mp4 -r -x -R D:\report.json
+  # Maximize matches & prefer longer (recommended for mixed libraries):
+  python .\video_dedupe.py "D:\Videos" -M all -u 8 -F 9 -T 14 -s -m 0.30 -t 16 -C D:\vd-cache.jsonl -R D:\report.json -x -L
 
   # Apply a previously generated report (delete/move losers listed in it):
   python .\video_dedupe.py -A D:\report.json -f -b D:\Quarantine
 
-  # Live dashboard:
-  python .\video_dedupe.py "D:\Videos" -M all -p *.mp4 -r -x -L
-
-  # Using --dir instead of positional, two patterns:
-  python .\video_dedupe.py -D "D:\Videos" -p *.mp4 -p *.mkv -M meta -r -x
-
-  # Preset high tolerance, back up losers:
-  python .\video_dedupe.py "D:\Videos" -P high -b D:\quarantine -f
+Notes:
+- Use -g/--gpu to enable FFmpeg CUDA/NVDEC for pHash/subset (if your FFmpeg build supports it).
+- Keep policy defaults to favor LONGER, then RESOLUTION, VIDEO-BITRATE, NEWER, SMALLER, DEEPER.
 """
     p = argparse.ArgumentParser(
-        description="Find and remove duplicate/similar videos & files, or apply a saved report.",
+        description="Find and remove duplicate/similar videos & files (including subset cut-downs), or apply a saved report.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=epilog
     )
@@ -1156,19 +1227,26 @@ Examples (PowerShell):
     p.add_argument("-r", "--recursive", nargs="?", const=-1, type=int,
                    help="Recurse: omit for none; -r for unlimited; -r N for depth N")
 
-    # Metadata rules (kebab-case long names; keep underscore aliases for back-compat)
+    # Metadata rules
     p.add_argument("-u", "--duration-tolerance", dest="duration_tolerance", type=float, default=2.0,
-                   help="Duration tolerance in seconds (default: 2.0)")
-    p.add_argument("-S", "--same-res", dest="same_res", action="store_true", help="Require same resolution")
-    p.add_argument("-c", "--same-codec", dest="same_codec", action="store_true", help="Require same video codec")
-    p.add_argument("-O", "--same-container", dest="same_container", action="store_true", help="Require same container/format")
+                   help="Duration tolerance in seconds for metadata grouping (default: 2.0)")
+    p.add_argument("-S", "--same-res", dest="same_res", action="store_true", help="Require same resolution for meta grouping")
+    p.add_argument("-c", "--same-codec", dest="same_codec", action="store_true", help="Require same video codec for meta grouping")
+    p.add_argument("-O", "--same-container", dest="same_container", action="store_true", help="Require same container/format for meta grouping")
 
     # Perceptual hashing
     p.add_argument("-F", "--phash-frames", dest="phash_frames", type=int, default=5, help="Frames to sample for pHash (default: 5)")
     p.add_argument("-T", "--phash-threshold", dest="phash_threshold", type=int, default=12,
                    help="Per-frame Hamming distance threshold (64-bit, default: 12)")
 
-    # Keep policy (kebab-case terms inside list are supported)
+    # Subset detection (short versions of longer videos)
+    p.add_argument("-s", "--subset-detect", action="store_true", help="Enable subset detection via pHash sliding alignment")
+    p.add_argument("-m", "--subset-min-ratio", type=float, default=0.30,
+                   help="Minimum short/long duration ratio to consider a subset (default: 0.30)")
+    p.add_argument("-H", "--subset-frame-threshold", type=int,
+                   help="Per-frame Hamming distance threshold used for subset alignment (default: same as --phash-threshold)")
+
+    # Keep policy
     p.add_argument("-k", "--keep", type=str,
                    default="longer,resolution,video-bitrate,newer,smaller,deeper",
                    help="Order to keep best copy (comma list). Default: longer,resolution,video-bitrate,newer,smaller,deeper")
@@ -1188,26 +1266,14 @@ Examples (PowerShell):
     # Cache
     p.add_argument("-C", "--cache", type=str, help="Path to JSONL cache file (enables cache read/write)")
 
-    # Threading (single pool for all work)
+    # Threading / hashing I/O
     p.add_argument("-t", "--threads", type=int, default=_default_threads(),
                    help="Max worker threads for scanning/probing/hashing (default: ~2x CPU, capped)")
-
-    # Hash I/O
     p.add_argument("-B", "--block-size", type=int, default=(1 << 20),
                    help="Block size (bytes) for reading when hashing (default: 1048576)")
 
-    # ---- deprecated / back-compat aliases ----
-    # Old underscore long names still accepted; they map to the same dests.
-    p.add_argument("--duration_tolerance", dest="duration_tolerance", type=float, help=argparse.SUPPRESS)
-    p.add_argument("--same_res", dest="same_res", action="store_true", help=argparse.SUPPRESS)
-    p.add_argument("--same_codec", dest="same_codec", action="store_true", help=argparse.SUPPRESS)
-    p.add_argument("--same_container", dest="same_container", action="store_true", help=argparse.SUPPRESS)
-    p.add_argument("--phash_frames", dest="phash_frames", type=int, help=argparse.SUPPRESS)
-    p.add_argument("--phash_threshold", dest="phash_threshold", type=int, help=argparse.SUPPRESS)
-    p.add_argument("--refresh_rate", dest="refresh_rate", type=float, help=argparse.SUPPRESS)
-    # Old split worker flags map to unified threads
-    p.add_argument("--scan-workers", dest="threads", type=int, help=argparse.SUPPRESS)
-    p.add_argument("--hash-workers", dest="threads", type=int, help=argparse.SUPPRESS)
+    # GPU assist for pHash/subset
+    p.add_argument("-g", "--gpu", action="store_true", help="Enable FFmpeg CUDA/NVDEC when extracting frames for pHash/subset")
 
     return p.parse_args(argv)
 
@@ -1238,19 +1304,30 @@ def _apply_preset(args: argparse.Namespace):
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
 
+    # Run banner for UI
+    if args.apply_report:
+        run_type = f"Run: APPLY {'DRY' if args.dry_run else 'LIVE'} | Backup: {'YES' if args.backup else 'NO'}"
+    else:
+        run_type = f"Run: SCAN {'DRY' if args.dry_run else 'LIVE'} | Mode: {args.mode} | Threads: {args.threads} | GPU: {'ON' if args.gpu else 'OFF'} | Backup: {'YES' if args.backup else 'NO'}"
+
     # --apply-report mode (no scan dir required)
     if args.apply_report:
-        report_path = Path(args.apply_report).expanduser().resolve()
-        if not report_path.exists():
-            print(f"video_dedupe.py: error: report not found: {report_path}", file=sys.stderr)
-            return 2
-        base_root: Optional[Path] = None
-        if args.directory or args.dir_opt:
-            base_root = Path(args.directory or args.dir_opt).expanduser().resolve()
-        backup = Path(args.backup).expanduser().resolve() if args.backup else None
-        c, s = apply_report(report_path, dry_run=args.dry_run, force=args.force, backup=backup, base_root=base_root)
-        _print(f"Report applied: removed/moved={c}; size={s/1_048_576:.2f} MiB")
-        return 0
+        reporter = ProgressReporter(enable_dash=bool(args.live), refresh_rate=args.refresh_rate, banner=run_type)
+        reporter.start()
+        try:
+            report_path = Path(args.apply_report).expanduser().resolve()
+            if not report_path.exists():
+                print(f"video_dedupe.py: error: report not found: {report_path}", file=sys.stderr)
+                return 2
+            base_root: Optional[Path] = None
+            if args.directory or args.dir_opt:
+                base_root = Path(args.directory or args.dir_opt).expanduser().resolve()
+            backup = Path(args.backup).expanduser().resolve() if args.backup else None
+            c, s = apply_report(report_path, dry_run=args.dry_run, force=args.force, backup=backup, base_root=base_root)
+            _print(f"Report applied: removed/moved={c}; size={s/1_048_576:.2f} MiB")
+            return 0
+        finally:
+            reporter.stop()
 
     # Accept positional or --dir for scanning mode
     root_str = args.directory or args.dir_opt
@@ -1275,7 +1352,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     _apply_preset(args)
 
     # Live reporter & cache
-    reporter = ProgressReporter(enable_dash=bool(args.live), refresh_rate=args.refresh_rate)
+    reporter = ProgressReporter(enable_dash=bool(args.live), refresh_rate=args.refresh_rate, banner=run_type)
     reporter.start()
     cache = HashCache(Path(args.cache)) if args.cache else None
 
@@ -1299,11 +1376,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             threads=args.threads,
             cache=cache,
             block_size=args.block_size,
+            gpu=args.gpu,
+            subset_detect=args.subset_detect,
+            subset_min_ratio=args.subset_min_ratio,
+            subset_frame_threshold=args.subset_frame_threshold,
         )
 
         groups = g.collect(files, reporter=reporter)
         if not groups:
-            _print("No duplicate groups found.")
+            _print("No duplicate or subset groups found.")
             return 0
 
         keep_order = [t.strip() for t in args.keep.split(",") if t.strip()]
