@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
 import sys
 import argparse
@@ -9,7 +11,9 @@ from pathlib import Path
 import time
 import re
 
-# --- Bootstrap tomli/tomllib for TOML parsing ---
+# ─────────────────────────────────────────────────────────
+# Bootstrap tomllib/tomli for TOML parsing
+# ─────────────────────────────────────────────────────────
 try:
     import tomllib  # Py3.11+
 except Exception:
@@ -20,7 +24,9 @@ except Exception:
         print("[ERROR] Please install it:  pip install tomli", file=sys.stderr)
         sys.exit(1)
 
-# ========= Fallback UI + wrappers (compatible with/without standard_ui) =========
+# ─────────────────────────────────────────────────────────
+# Fallback UI + wrappers (compatible with or without standard_ui)
+# ─────────────────────────────────────────────────────────
 _is_verbose = ("--verbose" in sys.argv) or ("-v" in sys.argv)
 
 def _fb_log(level: str, message: str):
@@ -39,21 +45,21 @@ class _FBSection:
         self.title = title
         self._start = None
     def __enter__(self):
-        if _is_verbose:
-            print(f"\n\x1b[38;5;111m— {self.title} - START \x1b[0m")
         self._start = time.time()
+        if _is_verbose:
+            print(f"\n──── {self.title} - START ────")
         return self
     def __exit__(self, exc_type, exc_val, exc_tb):
         if _is_verbose:
-            elapsed = f"{(time.time() - self._start):.2f}s" if self._start else "?"
-            print(f"\x1b[38;5;111m— {self.title} - END (Elapsed: {elapsed}) \x1b[0m\n")
+            elapsed = time.time() - (self._start or time.time())
+            print(f"──── {self.title} - END (Elapsed: {elapsed:.2f}s) ────")
 
 def _fb_status_line(label: str, state: str | None = None, detail: str | None = None):
     prefix = {"unchanged": "•", "ok": "OK", "warn": "!", "fail": "X"}.get(state or "", "•")
     tail = f" — {detail}" if detail else ""
     print(f"[{prefix}] {label}{tail}")
 
-# Defaults (overridden if standard_ui is importable)
+# defaults (overridden if standard_ui imports)
 init_timer = lambda: None
 print_global_elapsed = lambda: None
 log_info, log_success, log_warning, log_error = _fb_log_info, _fb_log_success, _fb_log_warning, _fb_log_error
@@ -69,13 +75,13 @@ try:
     log_warning          = getattr(_sui, "log_warning", log_warning)
     log_error            = getattr(_sui, "log_error", log_error)
     _section_impl        = getattr(_sui, "section", _section_impl)
-    _status_impl         = getattr(_sui, "status_line", _status_impl)  # may have a different signature
+    _status_impl         = getattr(_sui, "status_line", _status_impl)  # may differ in signature
 except Exception:
     if _is_verbose:
         _fb_log_warning("standard_ui not available. Using fallback logging.")
 
 def sui_section(title: str, **kwargs):
-    """Context-manager wrapper: ignore extra kwargs if impl doesn't support them."""
+    """Context-manager wrapper: tolerate unknown kwargs (e.g. level=...)."""
     try:
         return _section_impl(title, **kwargs)
     except TypeError:
@@ -87,21 +93,41 @@ def status_line(label: str, state: str | None = None, detail: str | None = None)
     if impl is _fb_status_line:
         return impl(label, state, detail)
     try:
-        return impl(label, state, detail)  # try 3-arg
+        return impl(label, state, detail)      # try 3-arg
     except TypeError:
         pass
     try:
-        return impl(label, state)          # try 2-arg
+        return impl(label, state)              # try 2-arg
     except TypeError:
         pass
     prefix = {"unchanged": "•", "ok": "OK", "warn": "!", "fail": "X"}.get(state or "", "•")
     tail = f" — {detail}" if detail else ""
     try:
-        return impl(f"[{prefix}] {label}{tail}")  # 1-arg
+        return impl(f"[{prefix}] {label}{tail}")  # try 1-arg
     except TypeError:
         return _fb_status_line(label, state, detail)
 
-# ========= Paths & global state =========
+def _try_reload_standard_ui_globally():
+    """If standard_ui gets installed during this run, adopt its functions."""
+    global init_timer, print_global_elapsed, log_info, log_success, log_warning, log_error, _section_impl, _status_impl
+    try:
+        importlib.invalidate_caches()
+        import standard_ui.standard_ui as _sui2
+        init_timer           = getattr(_sui2, "init_timer", init_timer)
+        print_global_elapsed = getattr(_sui2, "print_global_elapsed", print_global_elapsed)
+        log_info             = getattr(_sui2, "log_info", log_info)
+        log_success          = getattr(_sui2, "log_success", log_success)
+        log_warning          = getattr(_sui2, "log_warning", log_warning)
+        log_error            = getattr(_sui2, "log_error", log_error)
+        _section_impl        = getattr(_sui2, "section", _section_impl)
+        _status_impl         = getattr(_sui2, "status_line", _status_impl)
+        log_success("Switched to standard_ui logging dynamically.")
+    except Exception as e:
+        log_warning(f"standard_ui installed but could not switch logging: {type(e).__name__}: {e}")
+
+# ─────────────────────────────────────────────────────────
+# Paths & global state
+# ─────────────────────────────────────────────────────────
 SCRIPTS_DIR = Path(__file__).resolve().parent
 MODULES_DIR = SCRIPTS_DIR / "modules"
 STANDARD_UI_SETUP_DIR = MODULES_DIR / "standard_ui"
@@ -109,24 +135,36 @@ CROSS_PLATFORM_DIR = MODULES_DIR / "cross_platform"
 SCRIPTS_SETUP_PACKAGE_DIR = SCRIPTS_DIR / "scripts_setup"
 
 ERROR_LOG = SCRIPTS_DIR / "setup_errors.log"
+SETUP_LOG = SCRIPTS_DIR / "setup.log"
 errors: list[str] = []
 warnings: list[str] = []
 
 def _append_unique(bucket: list[str], item: str):
-    if item not in bucket: bucket.append(item)
+    if item not in bucket:
+        bucket.append(item)
 
-def write_error_log_detail(title: str, stdout: str, stderr: str, returncode: int):
+def _append_setup_log(text: str):
+    try:
+        SETUP_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(SETUP_LOG, "a", encoding="utf-8") as f:
+            f.write(text)
+            if not text.endswith("\n"):
+                f.write("\n")
+    except Exception:
+        pass
+
+def write_error_log_detail(title: str, proc: subprocess.CompletedProcess):
     try:
         ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
     except Exception as e_mkdir:
         log_warning(f"Could not create parent directory for error log {ERROR_LOG.parent}: {e_mkdir}")
     msg_lines = [
         f"=== {title} ===",
-        f"Return code: {returncode}",
+        f"Return code: {proc.returncode}",
         "--- STDOUT ---",
-        stdout or "<none>",
+        proc.stdout or "<none>",
         "--- STDERR ---",
-        stderr or "<none>",
+        proc.stderr or "<none>",
         "",
     ]
     try:
@@ -135,7 +173,9 @@ def write_error_log_detail(title: str, stdout: str, stderr: str, returncode: int
     except Exception as e:
         log_error(f"Critical error: could not write detailed error to {ERROR_LOG}: {e}")
 
-# ========= pip install helper — detects editable/normal already-installed state =========
+# ─────────────────────────────────────────────────────────
+# Install helper — check editable vs normal current state and install
+# ─────────────────────────────────────────────────────────
 def _get_pkg_name_from_source(module_dir: Path, verbose: bool) -> str:
     pyproject_file = module_dir / "pyproject.toml"
     fallback = module_dir.name
@@ -145,10 +185,11 @@ def _get_pkg_name_from_source(module_dir: Path, verbose: bool) -> str:
                 data = tomllib.load(f)
             if "project" in data and "name" in data["project"]:
                 return data["project"]["name"]
-            if "tool" in data and "poetry" in data.get("tool", {}) and "name" in data["tool"]["poetry"]:
+            if "tool" in data and "poetry" in data["tool"] and "name" in data["tool"]["poetry"]:
                 return data["tool"]["poetry"]["name"]
         except Exception as e:
-            if verbose: log_warning(f"[{fallback}] pyproject.toml parse problem: {type(e).__name__}: {e}")
+            if verbose:
+                log_warning(f"[{fallback}] pyproject.toml parse problem: {type(e).__name__}: {e}")
     return fallback
 
 def _get_current_install_mode(module_dir: Path, verbose: bool) -> str | None:
@@ -182,67 +223,37 @@ def ensure_module_installed(module_display_name: str, install_path: Path,
                             soft_fail: bool = False):
     desired_mode = "editable" if editable else "normal"
     current_mode = _get_current_install_mode(install_path, verbose) if skip_reinstall else None
+
     if skip_reinstall and current_mode == desired_mode:
         status_line(f"{module_display_name}: already installed ({current_mode})", "unchanged", "skip")
+        # If we just confirmed standard_ui exists but wrappers are still fallback, try switching.
+        if module_display_name == "standard_ui":
+            _try_reload_standard_ui_globally()
         return
 
     install_cmd = [sys.executable, "-m", "pip", "install"]
-    if editable: install_cmd.append("-e")
+    if editable:
+        install_cmd.append("-e")
     install_cmd.append(str(install_path.resolve()))
-    # stream output while also capturing for logs
-    rc, out, err = _run_and_stream(install_cmd, _make_env_with_pip_sane(os.environ.copy()))
-    if rc == 0:
-        status_line(f"{module_display_name}: installed", "ok", desired_mode)
+    proc = subprocess.run(install_cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore")
+
+    if proc.returncode == 0:
+        status_line(f"{module_display_name}: installed", "ok", "editable" if editable else "normal")
+        if module_display_name == "standard_ui":
+            _try_reload_standard_ui_globally()
     else:
-        write_error_log_detail(f"Install {module_display_name}", out, err, rc)
+        write_error_log_detail(f"Install {module_display_name}", proc)
         if soft_fail:
             status_line(f"{module_display_name}: install failed; continuing", "warn", f"see {ERROR_LOG}")
-            _append_unique(warnings, f"Installation of {module_display_name} failed (rc: {rc})")
+            _append_unique(warnings, f"Installation of {module_display_name} failed (rc: {proc.returncode})")
         else:
             status_line(f"{module_display_name}: install failed", "fail", f"see {ERROR_LOG}")
-            _append_unique(errors, f"Installation of {module_display_name} failed (rc: {rc})")
+            _append_unique(errors, f"Installation of {module_display_name} failed (rc: {proc.returncode})")
 
-# ========= Streaming subprocess helper (prevents “hang” appearance) =========
-def _reader_thread(stream, buffer, is_err=False):
-    for line in iter(stream.readline, ''):
-        buffer.append(line)
-        try:
-            if is_err:
-                print(line, end='', file=sys.stderr, flush=True)
-            else:
-                print(line, end='', flush=True)
-        except Exception:
-            pass
-
-def _run_and_stream(cmd, env):
-    """
-    Run a subprocess, streaming stdout/stderr live to the console,
-    but also collecting them for logs and diagnostics.
-    Returns (returncode, stdout_text, stderr_text).
-    """
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, encoding="utf-8", errors="ignore", bufsize=1, env=env)
-    out_buf, err_buf = [], []
-    import threading
-    t_out = threading.Thread(target=_reader_thread, args=(proc.stdout, out_buf, False), daemon=True)
-    t_err = threading.Thread(target=_reader_thread, args=(proc.stderr, err_buf, True), daemon=True)
-    t_out.start(); t_err.start()
-    rc = proc.wait()
-    t_out.join(); t_err.join()
-    stdout = ''.join(out_buf)
-    stderr = ''.join(err_buf)
-    return rc, stdout, stderr
-
-def _make_env_with_pip_sane(env: dict) -> dict:
-    env = dict(env)
-    env.setdefault("PYTHONIOENCODING", "utf-8")
-    env.setdefault("PIP_NO_INPUT", "1")
-    env.setdefault("PIP_DISABLE_PIP_VERSION_CHECK", "1")
-    env.setdefault("PIP_PROGRESS_BAR", "off")
-    return env
-
-# ========= Sub-setup runner (now streams live output) =========
-def run_setup(script_path: Path, *args, soft_fail_modules: bool = False):
+# ─────────────────────────────────────────────────────────
+# Sub-setup runner (streams live output into console + setup.log)
+# ─────────────────────────────────────────────────────────
+def run_setup(script_path: Path, *args, soft_fail_modules: bool = False, passthrough: bool = False):
     resolved = script_path.resolve()
     if not resolved.exists():
         msg = f"Missing setup script: {resolved.name} at {resolved}"
@@ -250,37 +261,62 @@ def run_setup(script_path: Path, *args, soft_fail_modules: bool = False):
         _append_unique(warnings, msg)
         return
 
-    cmd = [sys.executable, str(resolved)]
-    cmd.extend(args)
+    cmd = [sys.executable, str(resolved), *args]
 
     env = os.environ.copy()
-    # Ensure sub-setups see project script/module roots and pip won't prompt
     python_path_parts = [str(SCRIPTS_DIR.resolve()), str((SCRIPTS_DIR / "modules").resolve())]
     existing_pp = env.get("PYTHONPATH")
-    if existing_pp: python_path_parts.extend(existing_pp.split(os.pathsep))
+    if existing_pp:
+        python_path_parts.extend(existing_pp.split(os.pathsep))
     env["PYTHONPATH"] = os.pathsep.join(list(dict.fromkeys(p for p in python_path_parts if p)))
-    env = _make_env_with_pip_sane(env)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["SETUP_LOG_PATH"] = str(SETUP_LOG)  # let children tee into the global log
 
-    rc, out, err = _run_and_stream(cmd, env)
+    _append_setup_log(f"\n=== RUN {resolved} ===")
+
+    if passthrough:
+        # Stream live
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+        try:
+            for line in iter(proc.stdout.readline, ""):
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                _append_setup_log(line.rstrip("\n"))
+        finally:
+            if proc.stdout:
+                proc.stdout.close()
+        rc = proc.wait()
+        stdout, stderr = "", ""
+    else:
+        # Buffer but still log
+        proc = subprocess.run(cmd, capture_output=True, text=True, env=env, encoding="utf-8", errors="ignore")
+        rc, stdout, stderr = proc.returncode, proc.stdout or "", proc.stderr or ""
+        if stdout:
+            _append_setup_log(stdout.rstrip("\n"))
+        if stderr:
+            _append_setup_log(stderr.rstrip("\n"))
 
     if rc == 0:
         status_line(f"{resolved.name} completed.", "ok")
+        if _is_verbose and stdout.strip(): log_info(stdout.strip())
+        if _is_verbose and stderr.strip(): log_warning(stderr.strip())
     else:
-        failed = re.findall(r"FAILED_MODULE:\s*([A-Za-z0-9_.\-]+)", out or "")
-        hint = f"failed (rc: {rc})"
-        if failed:
-            hint = f"failed for {', '.join(sorted(set(failed)))} (rc: {rc})"
+        failed = re.findall(r"FAILED_MODULE:\s*([A-Za-z0-9_.\-]+)", stdout or "")
+        hint = f"failed (rc: {rc})" if not failed else f"failed for {', '.join(sorted(set(failed)))} (rc: {rc})"
+        write_error_log_detail(f"Setup {resolved.name}", subprocess.CompletedProcess(cmd, rc, stdout, stderr))
         if soft_fail_modules:
             status_line(f"{resolved.name} {hint}; continuing", "warn", f"see {ERROR_LOG}")
             _append_unique(warnings, f"{resolved.name} {hint}")
         else:
             status_line(f"{resolved.name} {hint}", "fail", f"see {ERROR_LOG}")
             _append_unique(errors, f"{resolved.name} {hint}")
-        write_error_log_detail(f"Setup {resolved.name}", out, err, rc)
 
-# ========= Main =========
+# ─────────────────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────────────────
 def main():
     global _is_verbose
+
     parser = argparse.ArgumentParser(description="Master setup script for managing project components.")
     # Short + long for all args
     parser.add_argument("-R", "--scripts-dir", type=Path, required=False,
@@ -289,6 +325,7 @@ def main():
                         help="Root directory of dotfiles. Defaults to $DOTFILES.")
     parser.add_argument("-B", "--bin-dir", type=Path, required=False,
                         help="Target directory for symlinked executables. Defaults to <scripts-dir>/bin.")
+
     parser.add_argument("-s", "--skip-reinstall", action="store_true",
                         help="Skip re-installation if modules already match the desired install mode and path.")
     parser.add_argument("-p", "--production", action="store_true",
@@ -299,6 +336,11 @@ def main():
                         help="Suppress some fallback INFO logs.")
     parser.add_argument("-m", "--soft-fail-modules", action="store_true",
                         help="Do not halt when modules/setup.py fails; continue and record as a warning.")
+
+    # Pass-through flag ONLY for modules/setup.py to skip requirements.txt
+    parser.add_argument("-I", "--ignore-requirements", action="store_true",
+                        help="Pass to modules/setup.py to skip installing requirements.txt for each module.")
+
     args = parser.parse_args()
     _is_verbose = args.verbose
 
@@ -327,19 +369,25 @@ def main():
     if args.bin_dir:
         bin_dir = args.bin_dir
     else:
-        bin_dir = scripts_dir / "bin"
+        # default derived from scripts_dir
+        bin_dir = scripts_dir / ("bin" if os.name != "nt" else "bin")
 
-    try: init_timer()
-    except Exception: pass
+    # Initialize timer if standard_ui provides it
+    try:
+        init_timer()
+    except Exception:
+        pass
 
-    if ERROR_LOG.exists():
-        try:
-            ERROR_LOG.unlink()
-            if _is_verbose:
-                log_info(f"Cleared previous error log: {ERROR_LOG}")
-        except OSError as e:
-            log_warning(f"Could not clear previous error log {ERROR_LOG}: {e}")
+    # Clear previous logs
+    for p in (ERROR_LOG, SETUP_LOG):
+        if p.exists():
+            try:
+                p.unlink()
+            except OSError:
+                pass
+    _append_setup_log(f"=== Setup started at {time.strftime('%Y-%m-%d %H:%M:%S')} ===")
 
+    # Core modules (standard_ui, scripts_setup, cross_platform)
     with sui_section("Core Module Installation", level="major"):
         for name, path in [
             ("standard_ui", STANDARD_UI_SETUP_DIR),
@@ -378,18 +426,24 @@ def main():
     if args.skip_reinstall: common_setup_args.append("--skip-reinstall")
     if args.production:     common_setup_args.append("--production")
 
-    # Run sub-setups (streaming)
-    for full_script_path in [
-        SCRIPTS_DIR / "pyscripts" / "setup.py",
-        SCRIPTS_DIR / "shell-scripts" / "setup.py",
-        MODULES_DIR / "setup.py",
-    ]:
+    # Run sub-setups (only modules/setup.py receives -I/--ignore-requirements)
+    sub_setups = [
+        (SCRIPTS_DIR / "pyscripts" / "setup.py", []),
+        (SCRIPTS_DIR / "shell-scripts" / "setup.py", []),
+        (MODULES_DIR / "setup.py", (["-I"] if args.ignore_requirements else [])),
+    ]
+    for full_script_path, extra_args in sub_setups:
         try:
             title_rel_path = full_script_path.relative_to(SCRIPTS_DIR)
         except ValueError:
             title_rel_path = full_script_path.name
         with sui_section(f"Running sub-setup: {title_rel_path}", level="medium"):
-            run_setup(full_script_path, *common_setup_args, soft_fail_modules=args.soft_fail_modules)
+            run_setup(
+                full_script_path,
+                *(common_setup_args + extra_args),
+                soft_fail_modules=args.soft_fail_modules,
+                passthrough=(full_script_path == MODULES_DIR / "setup.py"),  # stream modules live
+            )
 
     with sui_section("Shell PATH Configuration (setup_path.py)", level="major"):
         setup_path_script = SCRIPTS_SETUP_PACKAGE_DIR / "setup_path.py"
@@ -397,8 +451,10 @@ def main():
         if args.verbose: path_args.append("--verbose")
         run_setup(setup_path_script, *path_args)
 
-    try: print_global_elapsed()
-    except Exception: pass
+    try:
+        print_global_elapsed()
+    except Exception:
+        pass
 
     if errors:
         if not ERROR_LOG.exists():

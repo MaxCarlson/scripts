@@ -1,372 +1,360 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
 import sys
 import argparse
 import subprocess
 from pathlib import Path
 import re
-from typing import List, Tuple
+import time
 
-# --- Ensure tomllib (via tomli) is available ---
+# ─────────────────────────────────────────────────────────
+# TOML support (tomllib on 3.11+, tomli otherwise)
+# ─────────────────────────────────────────────────────────
 try:
     import tomllib  # Py3.11+
-except ImportError:
+except Exception:
     try:
         import tomli as tomllib  # Py<=3.10
-    except ImportError:
+    except Exception:
         print("[ERROR] 'tomli' (for TOML parsing) is not installed.", file=sys.stderr)
-        print("[ERROR] Run project root setup.py, or: pip install tomli", file=sys.stderr)
+        print("[ERROR] Please run the root setup.py or: pip install tomli", file=sys.stderr)
         sys.exit(1)
 
-# --- Fallback logging & section wrappers (compatible with standard_ui) ---
+# ─────────────────────────────────────────────────────────
+# standard_ui fallbacks + wrappers
+# ─────────────────────────────────────────────────────────
 _is_verbose = ("--verbose" in sys.argv) or ("-v" in sys.argv)
 
-def _fb_info(msg):    print(f"[INFO] {msg}")      if _is_verbose else None
+def _fb_info(msg):
+    if _is_verbose:
+        print(f"[INFO] {msg}")
 def _fb_success(msg): print(f"[SUCCESS] {msg}")
 def _fb_warn(msg):    print(f"[WARNING] {msg}")
 def _fb_err(msg):     print(f"[ERROR] {msg}")
 
 class _FBSection:
-    def __init__(self, title): self.title = title
+    def __init__(self, title): self.title = title; self._t = None
     def __enter__(self):
-        if _is_verbose: print(f"\n--- {self.title} ---")
+        self._t = time.time()
+        if _is_verbose: print(f"\n──────── {self.title} - START ────────")
         return self
-    def __exit__(self, et, ev, tb):
-        if _is_verbose: print(f"--- End {self.title} ---\n")
+    def __exit__(self, *_):
+        if _is_verbose:
+            print(f"──────── {self.title} - END (Elapsed: {time.time()-self._t:.2f}s) ────────")
+
+def _fb_status(label: str, state: str | None = None, detail: str | None = None):
+    prefix = {"unchanged": "•", "ok": "OK", "warn": "!", "fail": "X"}.get(state or "", "•")
+    tail = f" — {detail}" if detail else ""
+    print(f"[{prefix}] {label}{tail}")
 
 log_info, log_success, log_warning, log_error, section = _fb_info, _fb_success, _fb_warn, _fb_err, _FBSection
+_status_impl = _fb_status
 
 try:
     from standard_ui.standard_ui import (
-        log_info as real_info,
-        log_success as real_success,
-        log_warning as real_warning,
-        log_error as real_error,
-        section as real_section,
+        log_info as _s_log_info,
+        log_success as _s_log_success,
+        log_warning as _s_log_warning,
+        log_error as _s_log_error,
+        section as _s_section,
+        status_line as _s_status_line
     )
-    log_info, log_success, log_warning, log_error, section = real_info, real_success, real_warning, real_error, real_section
+    log_info, log_success, log_warning, log_error, section = (
+        _s_log_info, _s_log_success, _s_log_warning, _s_log_error, _s_section
+    )
+    _status_impl = _s_status_line
 except Exception:
     if _is_verbose:
-        print("[WARNING] standard_ui not found in modules/setup.py. Using basic print for logging.")
+        print("[WARNING] standard_ui not available in modules/setup.py; using fallback logging.")
 
-# -------------------- Log file (always append) --------------------
-LOG_FILE: Path | None = None
-
-def _ensure_log_file(p: Path):
-    global LOG_FILE
-    LOG_FILE = p
+def status_line(label: str, state: str | None = None, detail: str | None = None):
+    impl = _status_impl
+    if impl is _fb_status:
+        return impl(label, state, detail)
     try:
-        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    except Exception:
+        return impl(label, state, detail)      # 3-arg
+    except TypeError:
         pass
+    try:
+        return impl(label, state)              # 2-arg
+    except TypeError:
+        pass
+    # 1-arg fallback
+    prefix = {"unchanged": "•", "ok": "OK", "warn": "!", "fail": "X"}.get(state or "", "•")
+    tail = f" — {detail}" if detail else ""
+    try:
+        return impl(f"[{prefix}] {label}{tail}")
+    except TypeError:
+        return _fb_status(label, state, detail)
 
-def _append_log(header: str, body: str = ""):
-    if not LOG_FILE:
+# ─────────────────────────────────────────────────────────
+# Global log (shared with parent) — optional but used if provided
+# ─────────────────────────────────────────────────────────
+GLOBAL_LOG = Path(os.environ.get("SETUP_LOG_PATH", "")).resolve() if os.environ.get("SETUP_LOG_PATH") else None
+
+def _glog(line: str):
+    if not GLOBAL_LOG:
         return
     try:
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(f"=== {header} ===\n")
-            if body:
-                f.write(body.rstrip() + "\n")
-            f.write("\n")
+        GLOBAL_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(GLOBAL_LOG, "a", encoding="utf-8") as f:
+            f.write(line)
+            if not line.endswith("\n"):
+                f.write("\n")
     except Exception:
         pass
 
-# -------------------- Subprocess helpers --------------------
-def _make_env_with_pip_sane(env: dict) -> dict:
-    env = dict(env)
-    env.setdefault("PYTHONIOENCODING", "utf-8")
-    env.setdefault("PIP_NO_INPUT", "1")
-    env.setdefault("PIP_DISABLE_PIP_VERSION_CHECK", "1")
-    env.setdefault("PIP_PROGRESS_BAR", "off")
-    return env
-
-def _stream_run(cmd, cwd: Path | None = None) -> Tuple[int, str, str]:
-    """
-    VERBOSE: Stream stdout/stderr live + collect buffers.
-    NON-VERBOSE: Do NOT use this (it would spam). Use _run_quiet_to_log.
-    """
-    env = _make_env_with_pip_sane(os.environ.copy())
-    proc = subprocess.Popen(
-        cmd, cwd=str(cwd) if cwd else None,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, encoding="utf-8", errors="ignore", bufsize=1, env=env
-    )
-    out_buf, err_buf = [], []
-    import threading
-
-    def _reader(stream, collector, is_err=False):
-        for line in iter(stream.readline, ''):
-            collector.append(line)
-            try:
-                if is_err: print(line, end='', file=sys.stderr, flush=True)
-                else:      print(line, end='', flush=True)
-            except Exception:
-                pass
-
-    t_out = threading.Thread(target=_reader, args=(proc.stdout, out_buf, False), daemon=True)
-    t_err = threading.Thread(target=_reader, args=(proc.stderr, err_buf, True), daemon=True)
-    t_out.start(); t_err.start()
-    rc = proc.wait()
-    t_out.join(); t_err.join()
-    return rc, ''.join(out_buf), ''.join(err_buf)
-
-def _run_quiet_to_log(cmd, module_name: str, step: str) -> int:
-    """
-    NON-VERBOSE: capture stdout/err and append to setup.log, keep console clean.
-    """
-    env = _make_env_with_pip_sane(os.environ.copy())
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, encoding="utf-8", errors="ignore", bufsize=1, env=env
-    )
-    out, err = proc.communicate()
-    _append_log(f"{module_name} :: {step} :: CMD", " ".join(cmd))
-    if out: _append_log(f"{module_name} :: {step} :: STDOUT", out)
-    if err: _append_log(f"{module_name} :: {step} :: STDERR", err)
-    return proc.returncode
-
-# -------------------- Console one-line updater --------------------
-class OneLine:
-    def __init__(self):
-        self.last_len = 0
-        self.active = False
-    def write(self, s: str):
-        self.active = True
-        pad = max(0, self.last_len - len(s))
-        sys.stdout.write("\r" + s + (" " * pad))
-        sys.stdout.flush()
-        self.last_len = len(s)
-    def done(self, newline=True):
-        if self.active and newline:
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-        self.last_len = 0
-        self.active = False
-
-# -------------------- Module helpers --------------------
-def _pkg_name_from_dir(module_source_path: Path, verbose: bool) -> str:
-    pyproject_file = module_source_path / "pyproject.toml"
-    package_name_from_dir = module_source_path.name
-    if pyproject_file.is_file():
+# ─────────────────────────────────────────────────────────
+# Helpers: package name detection & install status
+# ─────────────────────────────────────────────────────────
+def _pkg_name_from_source(module_dir: Path, verbose: bool) -> str:
+    pyproject = module_dir / "pyproject.toml"
+    fallback = module_dir.name
+    if pyproject.is_file():
         try:
-            with open(pyproject_file, "rb") as f:
+            with open(pyproject, "rb") as f:
                 data = tomllib.load(f)
             if "project" in data and "name" in data["project"]:
-                if verbose: log_info(f"[{package_name_from_dir}] project.name = {data['project']['name']}")
                 return data["project"]["name"]
             if "tool" in data and "poetry" in data["tool"] and "name" in data["tool"]["poetry"]:
-                if verbose: log_info(f"[{package_name_from_dir}] tool.poetry.name = {data['tool']['poetry']['name']}")
                 return data["tool"]["poetry"]["name"]
         except Exception as e:
-            if verbose: log_warning(f"[{package_name_from_dir}] Could not parse pyproject.toml: {type(e).__name__}: {e}")
-    return package_name_from_dir
+            if verbose:
+                log_warning(f"[{fallback}] pyproject.toml parse issue: {type(e).__name__}: {e}")
+    return fallback
 
-def _determine_install_status(module_source_path: Path, verbose: bool) -> str | None:
-    package_name_to_query = _pkg_name_from_dir(module_source_path, verbose)
+def _determine_install_status(module_dir: Path, verbose: bool) -> str | None:
+    pkg = _pkg_name_from_source(module_dir, verbose)
     try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "show", package_name_to_query],
-            capture_output=True, text=True, check=False, encoding='utf-8', errors='ignore'
+        out = subprocess.run(
+            [sys.executable, "-m", "pip", "show", pkg],
+            capture_output=True, text=True, check=False, encoding="utf-8", errors="ignore"
         )
-        if result.returncode != 0:
-            if verbose: log_info(f"'{package_name_to_query}' not found by 'pip show' (rc: {result.returncode}).")
+        if out.returncode != 0:
             return None
-        is_our_editable_install = False
-        for line in result.stdout.splitlines():
+        editable_here = False
+        for line in out.stdout.splitlines():
             if line.lower().startswith("editable project location:"):
-                location_path_str = line.split(":", 1)[1].strip()
-                if location_path_str and location_path_str.lower() != "none":
+                loc = line.split(":", 1)[1].strip()
+                if loc and loc.lower() != "none":
                     try:
-                        editable_loc = Path(location_path_str).resolve()
-                        source_loc = module_source_path.resolve()
-                        if editable_loc == source_loc:
-                            if verbose: log_info(f"'{package_name_to_query}' is editable from expected source: {source_loc}")
-                            is_our_editable_install = True
-                        else:
-                            if verbose: log_warning(f"'{package_name_to_query}' is editable at {editable_loc}, expected {source_loc}")
-                        break
-                    except Exception as e_path:
-                        if verbose: log_warning(f"Path comparison error for '{package_name_to_query}': {e_path}")
-                        break
-        if is_our_editable_install:
-            return "editable"
-        if verbose: log_info(f"'{package_name_to_query}' appears installed non-editable.")
-        return "normal"
+                        editable_here = (Path(loc).resolve() == module_dir.resolve())
+                    except Exception:
+                        pass
+                break
+        return "editable" if editable_here else "normal"
     except Exception as e:
-        if verbose: log_warning(f"Could not query 'pip show' for '{package_name_to_query}': {type(e).__name__}: {e}")
+        if verbose:
+            log_warning(f"pip show error for '{pkg}': {type(e).__name__}: {e}")
         return None
 
-# -------------------- Requirements then module install --------------------
-def _read_requirements(req_path: Path) -> List[str]:
-    lines = []
-    try:
-        for raw in req_path.read_text(encoding="utf-8").splitlines():
-            s = raw.strip()
-            if not s or s.startswith("#"): continue
-            if s.startswith("-"):  # ignore options like -r another.txt, -f, --extra-index-url etc
-                continue
-            lines.append(s)
-    except Exception:
-        pass
-    return lines
-
-def _install_requirements_progress(module_path: Path, module_name: str, verbose: bool, progress: OneLine) -> Tuple[bool, List[Tuple[str, bool]]]:
-    req_file = module_path / "requirements.txt"
-    if not req_file.is_file():
-        return True, []
-
-    reqs = _read_requirements(req_file)
-    total = len(reqs)
-    results: List[Tuple[str, bool]] = []
-    if total == 0:
-        return True, results
-
-    # Live progress (single line) in non-verbose
-    if not verbose:
-        progress.write(f"{module_name}: 0/{total}")
-
-    for i, req in enumerate(reqs, 1):
-        cmd = [sys.executable, "-m", "pip", "install", req]
-        step = f"pip install {req}"
-        if verbose:
-            log_info(f"[{module_name}] Installing requirement: {req}")
-            rc, out, err = _stream_run(cmd)
-            _append_log(f"{module_name} :: {step} :: CMD", " ".join(cmd))
-            if out: _append_log(f"{module_name} :: {step} :: STDOUT", out)
-            if err: _append_log(f"{module_name} :: {step} :: STDERR", err)
-        else:
-            rc = _run_quiet_to_log(cmd, module_name, step)
-            progress.write(f"{module_name}: {i}/{total}")
-
-        ok = (rc == 0)
-        results.append((req, ok))
-        if not ok and verbose:
-            log_error(f"[{module_name}] requirement failed: {req} (rc={rc})")
-
-    if not verbose:
-        # leave the last count on the line; final decision will replace it once module install completes
-        pass
-    all_ok = all(ok for _, ok in results)
-    return all_ok, results
-
-def _install_module_package(module_path: Path, *, production: bool, module_name: str, verbose: bool, progress: OneLine) -> bool:
-    cmd = [sys.executable, "-m", "pip", "install"]
-    if not production: cmd.append("-e")
-    cmd.append(str(module_path.resolve()))
-    step = f"pip install {'-e ' if not production else ''}{module_path.name}"
+# ─────────────────────────────────────────────────────────
+# Runner with tee into module log + global log
+# ─────────────────────────────────────────────────────────
+def _run_with_log(cmd: list[str], log_path: Path, *, verbose: bool) -> int:
+    """
+    If verbose=True: stream combined output to console and logs.
+    Else: keep console quiet (single-line per module), but tee all output to logs.
+    """
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    _glog(f"$ {' '.join(cmd)}")
 
     if verbose:
-        log_info(f"[{module_name}] Installing package in {'editable' if not production else 'production'} mode …")
-        rc, out, err = _stream_run(cmd)
-        _append_log(f"{module_name} :: {step} :: CMD", " ".join(cmd))
-        if out: _append_log(f"{module_name} :: {step} :: STDOUT", out)
-        if err: _append_log(f"{module_name} :: {step} :: STDERR", err)
+        with open(log_path, "ab") as lf:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="ignore"
+            )
+            try:
+                for line in iter(proc.stdout.readline, ""):
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+                    lf.write(line.encode("utf-8", "ignore"))
+                    _glog(line.rstrip("\n"))
+            finally:
+                if proc.stdout:
+                    proc.stdout.close()
+            return proc.wait()
     else:
-        rc = _run_quiet_to_log(cmd, module_name, step)
+        # quiet console, tee to logs
+        with open(log_path, "ab") as lf:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="ignore"
+            )
+            try:
+                for line in iter(proc.stdout.readline, ""):
+                    lf.write(line.encode("utf-8", "ignore"))
+                    _glog(line.rstrip("\n"))
+            finally:
+                if proc.stdout:
+                    proc.stdout.close()
+            return proc.wait()
 
-    return rc == 0
+# ─────────────────────────────────────────────────────────
+# Requirements handling
+# ─────────────────────────────────────────────────────────
+def _parse_requirements(req_file: Path) -> list[str]:
+    reqs: list[str] = []
+    try:
+        for raw in req_file.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if " #" in line:
+                line = line.split(" #", 1)[0].strip()
+            reqs.append(line)
+    except Exception:
+        pass
+    return reqs
 
-def _install_module(module_path: Path, *, production: bool, skip_reinstall: bool, verbose: bool, scripts_dir: Path) -> Tuple[bool, str]:
-    module_name = module_path.name
-    desired = "normal" if production else "editable"
-    current = _determine_install_status(module_path, verbose) if skip_reinstall else None
-    if current == desired:
-        print(f"[•] {module_name}: already ({current}) — skip")
-        return True, f"already ({current})"
+def _install_requirements(module_name: str, module_dir: Path, reqs: list[str], logs_dir: Path, verbose: bool) -> tuple[int, list[tuple[str, bool, int]]]:
+    """
+    Installs each requirement separately so we can show partial failures.
+    In non-verbose mode, we keep console silent; all details go to logs.
+    """
+    results: list[tuple[str, bool, int]] = []
+    total = len(reqs)
+    if total == 0:
+        return 0, results
 
-    # log file target
-    _ensure_log_file(scripts_dir / "setup.log")
+    log_file = logs_dir / f"{module_name}-pip.log"
+    try:
+        with open(log_file, "a", encoding="utf-8") as lf:
+            lf.write(f"\n=== Requirements for {module_name} ===\n")
+    except Exception:
+        pass
 
-    progress = OneLine()
+    num_fail = 0
+    for req in reqs:
+        cmd = [sys.executable, "-m", "pip", "install", "--no-input", "--disable-pip-version-check", req]
+        if not verbose:
+            cmd.insert(4, "-q")
+        rc = _run_with_log(cmd, log_file, verbose=verbose)
+        ok = (rc == 0)
+        results.append((req, ok, rc))
+        if not ok:
+            num_fail += 1
 
-    # 1) requirements (if any), with progress
-    ok_reqs, req_results = _install_requirements_progress(module_path, module_name, verbose, progress)
+    return num_fail, results
 
-    # 2) package install (only if reqs OK)
-    pkg_ok = False
-    if ok_reqs:
-        pkg_ok = _install_module_package(module_path, production=production, module_name=module_name, verbose=verbose, progress=progress)
-
-    # Finalize the single-line status (non-verbose)
+# ─────────────────────────────────────────────────────────
+# Install a module (editable/non-editable), quiet with log
+# ─────────────────────────────────────────────────────────
+def _install_module(module_name: str, module_dir: Path, *, editable: bool, logs_dir: Path, verbose: bool, no_deps: bool = False) -> int:
+    log_file = logs_dir / f"{module_name}-pip.log"
+    cmd = [sys.executable, "-m", "pip", "install", "--no-input", "--disable-pip-version-check"]
     if not verbose:
-        req_count = len(req_results)
-        if ok_reqs and pkg_ok:
-            progress.write(f"{module_name}: {req_count}/{req_count} installed! ✓")
-            progress.done(True)
-        elif not ok_reqs:
-            failed = sum(1 for _, ok in req_results if not ok)
-            progress.write(f"{module_name}: {req_count - failed}/{req_count} installed, {failed} failed ✗ (see setup.log)")
-            progress.done(True)
-            # Only expand detail if there was a requirement failure.
-            print(f"{module_name}:")
-            for req, ok in req_results:
-                mark = "✓" if ok else "✗"
-                tail = "" if ok else "  (see setup.log)"
-                print(f"  {mark} {req}{tail}")
-        else:
-            # reqs ok but package failed
-            progress.write(f"{module_name}: {req_count}/{req_count} requirements ok, package install failed ✗ (see setup.log)")
-            progress.done(True)
+        cmd.insert(4, "-q")
+    if no_deps:
+        cmd.append("--no-deps")
+    if editable:
+        cmd.append("-e")
+    cmd.append(str(module_dir.resolve()))
+    return _run_with_log(cmd, log_file, verbose=verbose)
 
-    if ok_reqs and pkg_ok:
-        return True, "installed"
-    if not ok_reqs:
-        return False, "failed (requirements)"
-    return False, "failed (package)"
-
-# -------------------- Scanner/installer --------------------
-def install_python_modules(modules_dir: Path, skip_reinstall: bool, production: bool, verbose: bool, include_hidden: bool, scripts_dir: Path) -> list[str]:
+# ─────────────────────────────────────────────────────────
+# Scan + install modules (one line per module in non-verbose)
+# ─────────────────────────────────────────────────────────
+def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall: bool, production: bool, verbose: bool, include_hidden: bool, ignore_requirements: bool) -> list[str]:
     errors_encountered: list[str] = []
+    hidden_skipped: list[str] = []
+
     if not modules_dir.exists() or not modules_dir.is_dir():
-        log_warning(f"Modules directory '{modules_dir}' not found. Skipping module installation.")
+        status_line(f"{modules_dir}: not found — skipped", "warn")
         return errors_encountered
 
-    log_info(f"Scanning for Python modules in: {modules_dir}")
-    skipped_hidden: list[str] = []
+    log_info(f"Scanning modules in: {modules_dir}")
 
+    # Build the candidate list first so we can at least show we made progress
+    entries = []
     for entry in sorted(modules_dir.iterdir(), key=lambda p: p.name.lower()):
         name = entry.name
 
-        # ignore our own folder if any
-        try:
-            if entry.resolve() == Path(__file__).resolve().parent:
-                print(f"[•] {name}: internal setup folder — skipped")
-                continue
-        except Exception:
-            pass
-
+        # Skip our own folder if this script lives under modules/
+        if entry.resolve() == Path(__file__).resolve().parent:
+            continue
         if not entry.is_dir():
-            print(f"[•] {name}: not a directory — skipped")
             continue
-
         if name.startswith(".") and not include_hidden:
-            skipped_hidden.append(name)
-            print(f"[•] {name}: ignored (hidden)")
+            hidden_skipped.append(name)
             continue
-
-        has_setup_py = (entry / "setup.py").exists()
-        has_pyproject = (entry / "pyproject.toml").exists()
-        if not has_setup_py and not has_pyproject:
-            print(f"[•] {name}: no installer (no setup.py/pyproject.toml) — skipped")
+        if not ((entry / "setup.py").exists() or (entry / "pyproject.toml").exists()):
             continue
+        entries.append(entry)
 
-        if not has_pyproject:
-            log_warning(f"[{name}] pyproject.toml not found — installing anyway (legacy setup)")
+    if not verbose:
+        status_line(f"Found {len(entries)} module(s) to process", "unchanged")
 
-        ok, what = _install_module(entry, production=production, skip_reinstall=skip_reinstall, verbose=verbose, scripts_dir=scripts_dir)
-        if not ok:
+    for entry in entries:
+        name = entry.name
+
+        # Show current install state if skipping reinstalls
+        desired = "normal" if production else "editable"
+        if skip_reinstall:
+            current = _determine_install_status(entry, verbose)
+            if current == desired:
+                status_line(f"{name}: already ({current})", "unchanged", "skip")
+                continue
+            elif current:
+                log_info(f"{name}: installed as '{current}', but '{desired}' requested → reinstalling.")
+            else:
+                log_info(f"{name}: not installed or unknown status → installing.")
+
+        # Requirements (only surface failures in non-verbose)
+        req_file = entry / "requirements.txt"
+        if not ignore_requirements and req_file.exists():
+            reqs = _parse_requirements(req_file)
+            if reqs:
+                num_fail, results = _install_requirements(name, entry, reqs, logs_dir, verbose)
+                if verbose:
+                    if num_fail == 0:
+                        status_line(f"{name}: requirements {len(reqs)}/{len(reqs)} installed", "ok")
+                    else:
+                        status_line(f"{name}: requirements installed with {num_fail} failure(s)", "warn", f"log: {logs_dir / (name + '-pip.log')}")
+                        for r, ok, _rc in results:
+                            mark = "✅" if ok else "❌"
+                            print(f"  {mark} {r}")
+                else:
+                    if num_fail > 0:
+                        status_line(f"{name}: some requirements failed", "warn", f"log: {logs_dir / (name + '-pip.log')}")
+                        for r, ok, _rc in results:
+                            if not ok:
+                                print(f"  ❌ {r}")
+        elif ignore_requirements:
+            if verbose:
+                status_line(f"{name}: requirements skipped by flag", "unchanged")
+
+        # ONE-LINE NON-VERBOSE PROGRESS PER MODULE
+        if not verbose:
+            print(f"[•] {name}: pip installing ({'editable' if not production else 'normal'}) …")
+
+        # Module install (editable unless production)
+        rc = _install_module(
+            name, entry,
+            editable=not production,
+            logs_dir=logs_dir,
+            verbose=verbose,
+            no_deps=ignore_requirements,  # --no-deps when -I is used
+        )
+
+        if rc == 0:
+            status_line(f"{name}: installed", "ok", "editable" if not production else "normal")
+        else:
+            status_line(f"{name}: install failed", "fail", f"log: {logs_dir / (name + '-pip.log')}")
             errors_encountered.append(name)
 
-    if skipped_hidden:
+    if hidden_skipped:
         print("\nHidden modules not processed:")
-        for n in skipped_hidden:
-            print(f"  - {n} (dot-prefixed; ignored)")
-
+        for h in hidden_skipped:
+            print(f"  - {h} (dot-prefixed; ignored)")
     return errors_encountered
 
-# -------------------- PYTHONPATH configuration (unchanged) --------------------
-import re as _re
+# ─────────────────────────────────────────────────────────
+# PYTHONPATH configuration (same behavior as before)
+# ─────────────────────────────────────────────────────────
 def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path, verbose: bool = False):
     modules_dir_abs = str(modules_dir.resolve())
     path_separator = os.pathsep
@@ -384,7 +372,7 @@ def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path, verbose: bool = Fal
                     if completed_process.returncode == 0 and completed_process.stdout:
                         regex_pattern = r"^\s*PYTHONPATH\s+REG_(?:EXPAND_)?SZ\s+(.*)$"
                         for line in completed_process.stdout.splitlines():
-                            match = _re.search(regex_pattern, line.strip(), _re.IGNORECASE)
+                            match = re.search(regex_pattern, line.strip(), re.IGNORECASE)
                             if match:
                                 current_user_pythonpath = match.group(1).strip()
                                 break
@@ -424,10 +412,12 @@ def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path, verbose: bool = Fal
                             pwsh_exe = "pwsh" if pwsh.stdout else "powershell"
                             ps_proc = subprocess.run(
                                 [pwsh_exe, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
-                                check=True, capture_output=True, text=True, encoding='utf-8', errors='ignore'
+                                check=True, capture_output=True, text=True, encoding="utf-8", errors="ignore",
                             )
-                            if verbose and ps_proc.stdout.strip(): log_info(f"PowerShell output: {ps_proc.stdout.strip()}")
-                            if verbose and ps_proc.stderr.strip(): log_warning(f"PowerShell stderr: {ps_proc.stderr.strip()}")
+                            if verbose and ps_proc.stdout.strip():
+                                log_info(f"PowerShell output: {ps_proc.stdout.strip()}")
+                            if verbose and ps_proc.stderr.strip():
+                                log_warning(f"PowerShell stderr: {ps_proc.stderr.strip()}")
                         else:
                             if verbose: log_info("PowerShell not found, attempting 'setx' for PYTHONPATH.")
                             subprocess.run(['setx', 'PYTHONPATH', new_pythonpath_value], check=True)
@@ -444,8 +434,10 @@ def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path, verbose: bool = Fal
 
                 current_config_content = ""
                 if pythonpath_config_file.exists():
-                    try: current_config_content = pythonpath_config_file.read_text(encoding="utf-8")
-                    except Exception as e_read: log_warning(f"Could not read {pythonpath_config_file}: {e_read}")
+                    try:
+                        current_config_content = pythonpath_config_file.read_text(encoding="utf-8")
+                    except Exception as e_read:
+                        log_warning(f"Could not read {pythonpath_config_file}: {e_read}")
 
                 is_already_configured = False
                 for line_in_file in current_config_content.splitlines():
@@ -455,7 +447,7 @@ def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path, verbose: bool = Fal
                         is_already_configured = True
                         break
 
-                if is_already_configured and f'export PYTHONPATH="{modules_dir_abs}{path_separator}${{PYTHONPATH}}"' in current_config_content :
+                if is_already_configured and f'export PYTHONPATH="{modules_dir_abs}{path_separator}${{PYTHONPATH}}"' in current_config_content:
                     log_success(f"PYTHONPATH configuration for '{modules_dir_abs}' already correctly exists in {pythonpath_config_file}")
                 else:
                     try:
@@ -484,75 +476,56 @@ def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path, verbose: bool = Fal
                             log_error(f"Failed to source {pythonpath_config_file} in a zsh sub-shell.")
                             zsh_err = e_source.stderr.strip() if e_source.stderr else (e_source.stdout.strip() if e_source.stdout else "No output.")
                             log_error(f"Zsh error: {zsh_err}")
+
                     except IOError as e:
                         log_error(f"Could not write PYTHONPATH configuration to {pythonpath_config_file}: {e}")
                         log_info(f"Please add the following line to your Zsh startup file manually:\n{export_line.strip()}")
 
-# -------------------- Orchestrator --------------------
-def main_modules_setup(scripts_dir_arg: Path, dotfiles_dir_arg: Path, bin_dir_arg: Path,
-                       skip_reinstall_arg: bool, production_arg: bool, verbose_arg: bool, include_hidden_arg: bool):
-    global _is_verbose
-    _is_verbose = verbose_arg
+# ─────────────────────────────────────────────────────────
+# Orchestrator
+# ─────────────────────────────────────────────────────────
+def main():
+    parser = argparse.ArgumentParser(description="Setup Python modules from the 'modules' directory and configure PYTHONPATH.")
+    parser.add_argument("-R", "--scripts-dir", type=Path, required=True, help="Base project scripts directory.")
+    parser.add_argument("-D", "--dotfiles-dir", type=Path, required=True, help="Root directory of dotfiles.")
+    parser.add_argument("-B", "--bin-dir", type=Path, required=True, help="Target directory for binaries.")
+    parser.add_argument("-s", "--skip-reinstall", action="store_true", help="Skip reinstall when already correct.")
+    parser.add_argument("-p", "--production", action="store_true", help="Install modules in production (non-editable).")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable detailed output.")
+    parser.add_argument("-a", "--include-hidden", action="store_true", help="Include dot-prefixed (hidden) module folders.")
+    parser.add_argument("-I", "--ignore-requirements", action="store_true", help="Do not install requirements.txt for each module.")
+    args = parser.parse_args()
 
+    global _is_verbose
+    _is_verbose = args.verbose
+
+    # log directory for per-module pip/stdout
+    logs_dir = args.scripts_dir / "setup_logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    all_errors = []
     with section("Python Modules Installation"):
-        current_modules_dir = scripts_dir_arg / "modules"
-        install_errors = install_python_modules(
-            current_modules_dir,
-            skip_reinstall_arg,
-            production_arg,
-            verbose_arg,
-            include_hidden_arg,
-            scripts_dir=scripts_dir_arg,
+        current_modules_dir = args.scripts_dir / "modules"
+        all_errors.extend(
+            install_python_modules(
+                current_modules_dir, logs_dir,
+                skip_reinstall=args.skip_reinstall,
+                production=args.production,
+                verbose=args.verbose,
+                include_hidden=args.include_hidden,
+                ignore_requirements=args.ignore_requirements,
+            )
         )
 
-    ensure_pythonpath(scripts_dir_arg / "modules", dotfiles_dir_arg, verbose_arg)
+    ensure_pythonpath(args.scripts_dir / "modules", args.dotfiles_dir, args.verbose)
 
-    if install_errors:
-        log_warning(f"Completed with {len(install_errors)} error(s) in module installation.")
-        for name in install_errors:
-            print(f"FAILED_MODULE: {name}")
+    if all_errors:
+        log_warning(f"Completed with {len(all_errors)} error(s) in module installation.")
+        for mod in all_errors:
+            print(f"FAILED_MODULE: {mod}")
         sys.exit(1)
     else:
         print("[OK] setup.py completed.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Setup Python modules from the 'modules' directory and configure PYTHONPATH.")
-    # Defaults from env; error only if missing.
-    default_scripts = os.environ.get("SCRIPTS")
-    default_dotfiles = os.environ.get("DOTFILES")
-    default_bin = str(Path(default_scripts).joinpath("bin")) if default_scripts else None
-
-    parser.add_argument("-R", "--scripts-dir", type=Path, required=False, default=Path(default_scripts) if default_scripts else None,
-                        help="Base project scripts directory. Defaults to $SCRIPTS.")
-    parser.add_argument("-D", "--dotfiles-dir", type=Path, required=False, default=Path(default_dotfiles) if default_dotfiles else None,
-                        help="Root directory of dotfiles. Defaults to $DOTFILES.")
-    parser.add_argument("-B", "--bin-dir", type=Path, required=False, default=Path(default_bin) if default_bin else None,
-                        help="Target directory for binaries. Defaults to <scripts-dir>/bin.")
-    parser.add_argument("-s", "--skip-reinstall", action="store_true", help="Skip reinstall when already correct.")
-    parser.add_argument("-p", "--production", action="store_true", help="Install modules in production (non-editable) mode.")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Enable detailed output.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="(Ignored; reserved).")
-    parser.add_argument("-a", "--include-hidden", action="store_true", help="Include dot-prefixed (hidden) module folders.")
-    args = parser.parse_args()
-
-    # Validate required roots
-    if not args.scripts_dir:
-        print("[ERROR] --scripts-dir not provided and $SCRIPTS is not set.", file=sys.stderr)
-        sys.exit(2)
-    if not args.dotfiles_dir:
-        print("[ERROR] --dotfiles-dir not provided and $DOTFILES is not set.", file=sys.stderr)
-        sys.exit(2)
-    bin_dir = args.bin_dir if args.bin_dir else args.scripts_dir / "bin"
-
-    # ensure log path
-    _ensure_log_file(args.scripts_dir / "setup.log")
-
-    main_modules_setup(
-        args.scripts_dir,
-        args.dotfiles_dir,
-        bin_dir,
-        args.skip_reinstall,
-        args.production,
-        args.verbose,
-        args.include_hidden,
-    )
+    main()
