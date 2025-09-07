@@ -10,6 +10,8 @@ import subprocess
 from pathlib import Path
 import time
 import re
+from datetime import datetime
+from threading import Thread, Lock
 
 # ─────────────────────────────────────────────────────────
 # Bootstrap tomllib/tomli for TOML parsing
@@ -25,12 +27,51 @@ except Exception:
         sys.exit(1)
 
 # ─────────────────────────────────────────────────────────
-# Fallback UI + wrappers (compatible with or without standard_ui)
+# Paths & global log
+# ─────────────────────────────────────────────────────────
+SCRIPTS_DIR = Path(__file__).resolve().parent
+MODULES_DIR = SCRIPTS_DIR / "modules"
+STANDARD_UI_SETUP_DIR = MODULES_DIR / "standard_ui"
+CROSS_PLATFORM_DIR = MODULES_DIR / "cross_platform"
+SCRIPTS_SETUP_PACKAGE_DIR = SCRIPTS_DIR / "scripts_setup"
+
+ERROR_LOG = SCRIPTS_DIR / "setup_errors.log"
+GLOBAL_LOG = SCRIPTS_DIR / "setup.log"
+
+def _log_init():
+    try:
+        GLOBAL_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(GLOBAL_LOG, "w", encoding="utf-8") as f:
+            f.write(f"=== setup.py run @ {datetime.now().isoformat()} ===\n")
+    except Exception:
+        pass
+
+def _log_append(text: str):
+    try:
+        with open(GLOBAL_LOG, "a", encoding="utf-8") as f:
+            f.write(text)
+            if not text.endswith("\n"):
+                f.write("\n")
+    except Exception:
+        pass
+
+# ─────────────────────────────────────────────────────────
+# Fallback UI + ASCII/Unicode handling
 # ─────────────────────────────────────────────────────────
 _is_verbose = ("--verbose" in sys.argv) or ("-v" in sys.argv)
 
+def _needs_ascii_ui() -> bool:
+    if os.environ.get("FORCE_ASCII_UI") == "1":
+        return True
+    enc = (getattr(sys.stdout, "encoding", "") or "").upper()
+    return os.name == "nt" and "UTF-8" not in enc
+
+_ASCII_UI = _needs_ascii_ui()
+
 def _fb_log(level: str, message: str):
-    print(f"[{level}] {message}")
+    msg = f"[{level}] {message}"
+    print(msg)
+    _log_append(msg)
 
 def _fb_log_info(message: str):
     if _is_verbose:
@@ -46,20 +87,28 @@ class _FBSection:
         self._start = None
     def __enter__(self):
         self._start = time.time()
+        banner = f"---- {self.title} - START ----" if _ASCII_UI else f"──── {self.title} - START ────"
         if _is_verbose:
-            print(f"\n──── {self.title} - START ────")
+            print("\n" + banner)
+        _log_append(banner)
         return self
     def __exit__(self, exc_type, exc_val, exc_tb):
+        elapsed = time.time() - (self._start or time.time())
+        banner = f"---- {self.title} - END (Elapsed: {elapsed:.2f}s) ----" if _ASCII_UI else f"──── {self.title} - END (Elapsed: {elapsed:.2f}s) ────"
         if _is_verbose:
-            elapsed = time.time() - (self._start or time.time())
-            print(f"──── {self.title} - END (Elapsed: {elapsed:.2f}s) ────")
+            print(banner)
+        _log_append(banner)
 
 def _fb_status_line(label: str, state: str | None = None, detail: str | None = None):
-    prefix = {"unchanged": "•", "ok": "OK", "warn": "!", "fail": "X"}.get(state or "", "•")
-    tail = f" — {detail}" if detail else ""
-    print(f"[{prefix}] {label}{tail}")
+    prefix = {"unchanged": "-", "ok": "OK", "warn": "!", "fail": "X"} if _ASCII_UI else \
+             {"unchanged": "•", "ok": "OK", "warn": "!", "fail": "X"}
+    lead = prefix.get(state or "", prefix["unchanged"])
+    tail = f" — {detail}" if (detail and not _ASCII_UI) else (f" - {detail}" if detail else "")
+    line = f"[{lead}] {label}{tail}"
+    print(line)
+    _log_append(line)
 
-# defaults (overridden if standard_ui imports)
+# defaults (may be overridden by standard_ui)
 init_timer = lambda: None
 print_global_elapsed = lambda: None
 log_info, log_success, log_warning, log_error = _fb_log_info, _fb_log_success, _fb_log_warning, _fb_log_error
@@ -67,43 +116,54 @@ _section_impl = _FBSection
 _status_impl = _fb_status_line
 
 try:
-    import standard_ui.standard_ui as _sui
-    init_timer           = getattr(_sui, "init_timer", init_timer)
-    print_global_elapsed = getattr(_sui, "print_global_elapsed", print_global_elapsed)
-    log_info             = getattr(_sui, "log_info", log_info)
-    log_success          = getattr(_sui, "log_success", log_success)
-    log_warning          = getattr(_sui, "log_warning", log_warning)
-    log_error            = getattr(_sui, "log_error", log_error)
-    _section_impl        = getattr(_sui, "section", _section_impl)
-    _status_impl         = getattr(_sui, "status_line", _status_impl)  # may differ in signature
+    if not _ASCII_UI:
+        import standard_ui.standard_ui as _sui
+        init_timer           = getattr(_sui, "init_timer", init_timer)
+        print_global_elapsed = getattr(_sui, "print_global_elapsed", print_global_elapsed)
+        log_info             = getattr(_sui, "log_info", log_info)
+        log_success          = getattr(_sui, "log_success", log_success)
+        log_warning          = getattr(_sui, "log_warning", log_warning)
+        log_error            = getattr(_sui, "log_error", log_error)
+        _section_impl        = getattr(_sui, "section", _section_impl)
+        _status_impl         = getattr(_sui, "status_line", _status_impl)
+    else:
+        if _is_verbose:
+            print("[WARNING] Non-UTF-8 console detected; using ASCII UI.")
+            _log_append("[WARNING] Non-UTF-8 console detected; using ASCII UI.")
 except Exception:
     if _is_verbose:
         _fb_log_warning("standard_ui not available. Using fallback logging.")
 
 def sui_section(title: str, **kwargs):
-    """Context-manager wrapper: tolerate unknown kwargs (e.g. level=...)."""
+    """Context-manager wrapper: tolerate unknown kwargs (e.g. level=...). Also logs to GLOBAL_LOG."""
     try:
-        return _section_impl(title, **kwargs)
+        ctx = _section_impl(title, **kwargs)
     except TypeError:
-        return _section_impl(title)
+        ctx = _section_impl(title)
+    return ctx
 
 def status_line(label: str, state: str | None = None, detail: str | None = None):
-    """Wrapper for status_line — safely supports 1/2/3-arg variants."""
+    """Wrapper for status_line — safely supports 1/2/3-arg variants, and logs to GLOBAL_LOG."""
     impl = _status_impl
+    prefix_map = {"unchanged": "-", "ok": "OK", "warn": "!", "fail": "X"} if _ASCII_UI else \
+                 {"unchanged": "•", "ok": "OK", "warn": "!", "fail": "X"}
+    line_for_log = f"[{prefix_map.get(state or '', prefix_map['unchanged'])}] {label}"
+    if detail:
+        line_for_log += (" - " if _ASCII_UI else " — ") + detail
+    _log_append(line_for_log)
+
     if impl is _fb_status_line:
         return impl(label, state, detail)
     try:
-        return impl(label, state, detail)      # try 3-arg
+        return impl(label, state, detail)
     except TypeError:
         pass
     try:
-        return impl(label, state)              # try 2-arg
+        return impl(label, state)
     except TypeError:
         pass
-    prefix = {"unchanged": "•", "ok": "OK", "warn": "!", "fail": "X"}.get(state or "", "•")
-    tail = f" — {detail}" if detail else ""
     try:
-        return impl(f"[{prefix}] {label}{tail}")  # try 1-arg
+        return impl(line_for_log)
     except TypeError:
         return _fb_status_line(label, state, detail)
 
@@ -125,17 +185,6 @@ def _try_reload_standard_ui_globally():
     except Exception as e:
         log_warning(f"standard_ui installed but could not switch logging: {type(e).__name__}: {e}")
 
-# ─────────────────────────────────────────────────────────
-# Paths & global state
-# ─────────────────────────────────────────────────────────
-SCRIPTS_DIR = Path(__file__).resolve().parent
-MODULES_DIR = SCRIPTS_DIR / "modules"
-STANDARD_UI_SETUP_DIR = MODULES_DIR / "standard_ui"
-CROSS_PLATFORM_DIR = MODULES_DIR / "cross_platform"
-SCRIPTS_SETUP_PACKAGE_DIR = SCRIPTS_DIR / "scripts_setup"
-
-ERROR_LOG = SCRIPTS_DIR / "setup_errors.log"
-SETUP_LOG = SCRIPTS_DIR / "setup.log"
 errors: list[str] = []
 warnings: list[str] = []
 
@@ -143,35 +192,142 @@ def _append_unique(bucket: list[str], item: str):
     if item not in bucket:
         bucket.append(item)
 
-def _append_setup_log(text: str):
-    try:
-        SETUP_LOG.parent.mkdir(parents=True, exist_ok=True)
-        with open(SETUP_LOG, "a", encoding="utf-8") as f:
-            f.write(text)
-            if not text.endswith("\n"):
-                f.write("\n")
-    except Exception:
-        pass
-
-def write_error_log_detail(title: str, proc: subprocess.CompletedProcess):
+def write_error_log_detail(title: str, proc: subprocess.CompletedProcess | None, stdout: str = "", stderr: str = ""):
     try:
         ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
     except Exception as e_mkdir:
         log_warning(f"Could not create parent directory for error log {ERROR_LOG.parent}: {e_mkdir}")
-    msg_lines = [
-        f"=== {title} ===",
-        f"Return code: {proc.returncode}",
-        "--- STDOUT ---",
-        proc.stdout or "<none>",
-        "--- STDERR ---",
-        proc.stderr or "<none>",
-        "",
-    ]
+    msg_lines = [f"=== {title} ==="]
+    if proc is not None:
+        msg_lines += [
+            f"Return code: {proc.returncode}",
+            "--- STDOUT ---",
+            proc.stdout or "<none>",
+            "--- STDERR ---",
+            proc.stderr or "<none>",
+            "",
+        ]
+    else:
+        msg_lines += ["--- STDOUT ---", stdout or "<none>", "--- STDERR ---", stderr or "<none>", ""]
     try:
         with open(ERROR_LOG, "a", encoding="utf-8") as f:
             f.write("\n".join(msg_lines) + "\n")
     except Exception as e:
         log_error(f"Critical error: could not write detailed error to {ERROR_LOG}: {e}")
+
+# ─────────────────────────────────────────────────────────
+# Child process runner with stall detection (fix for pwsh Y/N)
+# ─────────────────────────────────────────────────────────
+STALL_NOTICE_AFTER = int(os.environ.get("SETUP_STALL_NOTICE_SEC", "10"))
+STALL_AUTO_CONFIRM_AFTER = int(os.environ.get("SETUP_STALL_AUTOCONFIRM_SEC", "15"))
+AUTO_CONFIRM = os.environ.get("SETUP_AUTO_CONFIRM", "1") not in ("0", "false", "False")
+
+def _popen_stream_and_log(cmd, cwd=None, env=None, tag: str = ""):
+    """
+    Start a child process, stream stdout (merged with stderr) to console
+    and append to GLOBAL_LOG in real time.
+
+    On Windows PowerShell stalls (hidden Y/N), we print a visible hint after
+    STALL_NOTICE_AFTER seconds, and (if enabled) auto-send 'Y\\n' after
+    STALL_AUTO_CONFIRM_AFTER seconds.
+    """
+    if env is None:
+        env = os.environ.copy()
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+
+    header = f"=== RUN {tag or 'subprocess'}: {' '.join(cmd)} ==="
+    _log_append(header)
+
+    proc = subprocess.Popen(
+        cmd, cwd=cwd, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        stdin=subprocess.PIPE,  # allow us to inject Y/Enter if stuck
+        text=True, encoding="utf-8", errors="ignore", bufsize=1
+    )
+
+    last_out = time.time()
+    out_lock = Lock()
+    collected_lines: list[str] = []
+    notice_printed = False
+    autoyes_sent = False
+
+    def reader():
+        nonlocal last_out
+        try:
+            for line in iter(proc.stdout.readline, ""):
+                with out_lock:
+                    collected_lines.append(line)
+                    last_out = time.time()
+                # live to console
+                try:
+                    sys.stdout.write(line)
+                except Exception:
+                    pass
+                # and to log
+                _log_append(line.rstrip("\n"))
+        finally:
+            try:
+                if proc.stdout:
+                    proc.stdout.close()
+            except Exception:
+                pass
+
+    t = Thread(target=reader, daemon=True)
+    t.start()
+
+    try:
+        while True:
+            rc = proc.poll()
+            now = time.time()
+            silent_for = now - last_out
+
+            # Stall hint
+            if rc is None and not notice_printed and silent_for >= STALL_NOTICE_AFTER:
+                hint = (
+                    "\n[HINT] No output from child process for a while. "
+                    "If you're on PowerShell, a hidden confirmation prompt may be waiting (Y/N).\n"
+                    "      We'll try to auto-confirm shortly. To disable this behavior, set SETUP_AUTO_CONFIRM=0.\n"
+                )
+                print(hint, end="")
+                _log_append(hint.rstrip("\n"))
+                notice_printed = True
+
+            # Auto-confirm for PowerShell stalls
+            if (
+                rc is None
+                and os.name == "nt"
+                and AUTO_CONFIRM
+                and not autoyes_sent
+                and silent_for >= STALL_AUTO_CONFIRM_AFTER
+            ):
+                try:
+                    msg = "[ACTION] Auto-sending 'Y<Enter>' to child process (Windows stall heuristic)."
+                    print(msg)
+                    _log_append(msg)
+                    proc.stdin.write("Y\n")
+                    proc.stdin.flush()
+                    autoyes_sent = True
+                except Exception as e:
+                    _log_append(f"[WARN] Failed to auto-send input: {e}")
+                    autoyes_sent = True  # avoid retry loop
+
+            if rc is not None:
+                break
+            time.sleep(0.25)
+    except KeyboardInterrupt:
+        proc.kill()
+        rc = proc.wait()
+    finally:
+        try:
+            if proc.stdin:
+                proc.stdin.close()
+        except Exception:
+            pass
+        t.join(timeout=5)
+
+    footer = f"=== END {tag or 'subprocess'} (rc={rc}) ==="
+    _log_append(footer)
+    return rc, "".join(collected_lines), ""  # stderr merged into stdout
 
 # ─────────────────────────────────────────────────────────
 # Install helper — check editable vs normal current state and install
@@ -226,7 +382,6 @@ def ensure_module_installed(module_display_name: str, install_path: Path,
 
     if skip_reinstall and current_mode == desired_mode:
         status_line(f"{module_display_name}: already installed ({current_mode})", "unchanged", "skip")
-        # If we just confirmed standard_ui exists but wrappers are still fallback, try switching.
         if module_display_name == "standard_ui":
             _try_reload_standard_ui_globally()
         return
@@ -235,29 +390,29 @@ def ensure_module_installed(module_display_name: str, install_path: Path,
     if editable:
         install_cmd.append("-e")
     install_cmd.append(str(install_path.resolve()))
-    proc = subprocess.run(install_cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore")
-
-    if proc.returncode == 0:
+    rc, out, err = _popen_stream_and_log(install_cmd, cwd=None, tag=f"pip-install:{module_display_name}")
+    if rc == 0:
         status_line(f"{module_display_name}: installed", "ok", "editable" if editable else "normal")
         if module_display_name == "standard_ui":
             _try_reload_standard_ui_globally()
     else:
-        write_error_log_detail(f"Install {module_display_name}", proc)
+        write_error_log_detail(f"Install {module_display_name}", None, out, err)
         if soft_fail:
             status_line(f"{module_display_name}: install failed; continuing", "warn", f"see {ERROR_LOG}")
-            _append_unique(warnings, f"Installation of {module_display_name} failed (rc: {proc.returncode})")
+            _append_unique(warnings, f"Installation of {module_display_name} failed (rc: {rc})")
         else:
             status_line(f"{module_display_name}: install failed", "fail", f"see {ERROR_LOG}")
-            _append_unique(errors, f"Installation of {module_display_name} failed (rc: {proc.returncode})")
+            _append_unique(errors, f"Installation of {module_display_name} failed (rc: {rc})")
 
 # ─────────────────────────────────────────────────────────
-# Sub-setup runner (streams live output into console + setup.log)
+# Sub-setup runner (streams live output + logs; with stall fix)
 # ─────────────────────────────────────────────────────────
-def run_setup(script_path: Path, *args, soft_fail_modules: bool = False, passthrough: bool = False):
+def run_setup(script_path: Path, *args, soft_fail_modules: bool = False):
     resolved = script_path.resolve()
     if not resolved.exists():
         msg = f"Missing setup script: {resolved.name} at {resolved}"
         log_warning(msg + "; skipping.")
+        _log_append("WARN: " + msg)
         _append_unique(warnings, msg)
         return
 
@@ -270,62 +425,38 @@ def run_setup(script_path: Path, *args, soft_fail_modules: bool = False, passthr
         python_path_parts.extend(existing_pp.split(os.pathsep))
     env["PYTHONPATH"] = os.pathsep.join(list(dict.fromkeys(p for p in python_path_parts if p)))
     env["PYTHONIOENCODING"] = "utf-8"
-    env["SETUP_LOG_PATH"] = str(SETUP_LOG)  # let children tee into the global log
 
-    _append_setup_log(f"\n=== RUN {resolved} ===")
-
-    if passthrough:
-        # Stream live
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
-        try:
-            for line in iter(proc.stdout.readline, ""):
-                sys.stdout.write(line)
-                sys.stdout.flush()
-                _append_setup_log(line.rstrip("\n"))
-        finally:
-            if proc.stdout:
-                proc.stdout.close()
-        rc = proc.wait()
-        stdout, stderr = "", ""
-    else:
-        # Buffer but still log
-        proc = subprocess.run(cmd, capture_output=True, text=True, env=env, encoding="utf-8", errors="ignore")
-        rc, stdout, stderr = proc.returncode, proc.stdout or "", proc.stderr or ""
-        if stdout:
-            _append_setup_log(stdout.rstrip("\n"))
-        if stderr:
-            _append_setup_log(stderr.rstrip("\n"))
+    rc, out, _ = _popen_stream_and_log(cmd, env=env, tag=f"sub-setup:{resolved.name}")
 
     if rc == 0:
         status_line(f"{resolved.name} completed.", "ok")
-        if _is_verbose and stdout.strip(): log_info(stdout.strip())
-        if _is_verbose and stderr.strip(): log_warning(stderr.strip())
     else:
-        failed = re.findall(r"FAILED_MODULE:\s*([A-Za-z0-9_.\-]+)", stdout or "")
-        hint = f"failed (rc: {rc})" if not failed else f"failed for {', '.join(sorted(set(failed)))} (rc: {rc})"
-        write_error_log_detail(f"Setup {resolved.name}", subprocess.CompletedProcess(cmd, rc, stdout, stderr))
+        failed = re.findall(r"FAILED_MODULE:\s*([A-Za-z0-9_.\-]+)", out or "")
+        hint = f"failed (rc: {rc})"
+        if failed:
+            hint = f"failed for {', '.join(sorted(set(failed)))} (rc: {rc})"
         if soft_fail_modules:
             status_line(f"{resolved.name} {hint}; continuing", "warn", f"see {ERROR_LOG}")
             _append_unique(warnings, f"{resolved.name} {hint}")
         else:
             status_line(f"{resolved.name} {hint}", "fail", f"see {ERROR_LOG}")
             _append_unique(errors, f"{resolved.name} {hint}")
+        write_error_log_detail(f"Setup {resolved.name}", None, out, "")
 
 # ─────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────
 def main():
     global _is_verbose
+    _log_init()
 
     parser = argparse.ArgumentParser(description="Master setup script for managing project components.")
-    # Short + long for all args
     parser.add_argument("-R", "--scripts-dir", type=Path, required=False,
                         help="Base directory for the project scripts. Defaults to $SCRIPTS.")
     parser.add_argument("-D", "--dotfiles-dir", type=Path, required=False,
                         help="Root directory of dotfiles. Defaults to $DOTFILES.")
     parser.add_argument("-B", "--bin-dir", type=Path, required=False,
                         help="Target directory for symlinked executables. Defaults to <scripts-dir>/bin.")
-
     parser.add_argument("-s", "--skip-reinstall", action="store_true",
                         help="Skip re-installation if modules already match the desired install mode and path.")
     parser.add_argument("-p", "--production", action="store_true",
@@ -336,15 +467,13 @@ def main():
                         help="Suppress some fallback INFO logs.")
     parser.add_argument("-m", "--soft-fail-modules", action="store_true",
                         help="Do not halt when modules/setup.py fails; continue and record as a warning.")
-
-    # Pass-through flag ONLY for modules/setup.py to skip requirements.txt
     parser.add_argument("-I", "--ignore-requirements", action="store_true",
                         help="Pass to modules/setup.py to skip installing requirements.txt for each module.")
 
     args = parser.parse_args()
     _is_verbose = args.verbose
 
-    # Resolve directories from args or environment; error fast if missing
+    # Resolve directories
     env_scripts = os.environ.get("SCRIPTS", "").strip()
     env_dotfiles = os.environ.get("DOTFILES", "").strip()
 
@@ -366,28 +495,23 @@ def main():
         print("Hint: use -D/--dotfiles-dir or export DOTFILES=/path/to/dotfiles", file=sys.stderr)
         sys.exit(2)
 
-    if args.bin_dir:
-        bin_dir = args.bin_dir
-    else:
-        # default derived from scripts_dir
-        bin_dir = scripts_dir / ("bin" if os.name != "nt" else "bin")
+    bin_dir = args.bin_dir if args.bin_dir else scripts_dir / "bin"
 
-    # Initialize timer if standard_ui provides it
     try:
         init_timer()
     except Exception:
         pass
 
-    # Clear previous logs
-    for p in (ERROR_LOG, SETUP_LOG):
-        if p.exists():
-            try:
-                p.unlink()
-            except OSError:
-                pass
-    _append_setup_log(f"=== Setup started at {time.strftime('%Y-%m-%d %H:%M:%S')} ===")
+    # Clear previous error log
+    if ERROR_LOG.exists():
+        try:
+            ERROR_LOG.unlink()
+            if _is_verbose:
+                log_info(f"Cleared previous error log: {ERROR_LOG}")
+        except OSError as e:
+            log_warning(f"Could not clear previous error log {ERROR_LOG}: {e}")
 
-    # Core modules (standard_ui, scripts_setup, cross_platform)
+    # Core modules
     with sui_section("Core Module Installation", level="major"):
         for name, path in [
             ("standard_ui", STANDARD_UI_SETUP_DIR),
@@ -405,7 +529,7 @@ def main():
             else:
                 log_warning(f"{name} setup files not found in {path} or it's not a directory.")
 
-    # WSL2? (win32yank helper)
+    # WSL2?
     try:
         rel = platform.uname().release
     except Exception:
@@ -416,7 +540,7 @@ def main():
     else:
         status_line("Not WSL2; skipping win32yank setup.", "unchanged")
 
-    # Common args for sub-setup scripts
+    # Sub-setups (modules/setup.py receives -I only)
     common_setup_args = [
         "--scripts-dir", str(scripts_dir),
         "--dotfiles-dir", str(dotfiles_dir),
@@ -426,7 +550,6 @@ def main():
     if args.skip_reinstall: common_setup_args.append("--skip-reinstall")
     if args.production:     common_setup_args.append("--production")
 
-    # Run sub-setups (only modules/setup.py receives -I/--ignore-requirements)
     sub_setups = [
         (SCRIPTS_DIR / "pyscripts" / "setup.py", []),
         (SCRIPTS_DIR / "shell-scripts" / "setup.py", []),
@@ -438,12 +561,7 @@ def main():
         except ValueError:
             title_rel_path = full_script_path.name
         with sui_section(f"Running sub-setup: {title_rel_path}", level="medium"):
-            run_setup(
-                full_script_path,
-                *(common_setup_args + extra_args),
-                soft_fail_modules=args.soft_fail_modules,
-                passthrough=(full_script_path == MODULES_DIR / "setup.py"),  # stream modules live
-            )
+            run_setup(full_script_path, *(common_setup_args + extra_args), soft_fail_modules=args.soft_fail_modules)
 
     with sui_section("Shell PATH Configuration (setup_path.py)", level="major"):
         setup_path_script = SCRIPTS_SETUP_PACKAGE_DIR / "setup_path.py"
