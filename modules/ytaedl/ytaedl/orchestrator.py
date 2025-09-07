@@ -1,30 +1,13 @@
 #!/usr/bin/env python3
 """
-ytaedl.orchestrator — file-first coordinator that:
-  1) Scans two URL roots (main + ae) and estimates remaining viable downloads per URL file.
-  2) Picks the top N URL files (by remaining) and assigns each to a dedicated worker slot.
-  3) Each worker downloads up to --max-dl successful items from its current file, then picks the next best file.
-  4) Live TermDash UI shows one slot per worker (two lines each) via the existing TermdashUI.
-  5) Persists and incrementally updates a counts JSON (default: ./urlfile_dl_counts.txt).
+Parallel, file-first orchestrator.
 
-This module builds on the existing ytaedl package (downloaders, url_parser, ui, io, models).
-It can be used as a standalone CLI (`python -m ytaedl.orchestrator`) or imported.
-
-Design notes:
-- We deliberately use the existing downloader implementations and emit their events into TermdashUI.
-- We treat a URL as "counts toward --max-dl" ONLY if its DownloadResult is COMPLETED.
-  ALREADY_EXISTS and FAILED do not count toward the worker's per-file quota.
-- We guarantee *exclusive* assignment of a URL file to only one worker at any time.
-- The counts file stores per-URL-file stats and is updated atomically after every successful download.
-- If the counts file covers all discovered URL files and their mtimes match (no source changes),
-  we skip a re-scan and use the stored snapshot to prioritize work.
-
-Limitations:
-- Viability estimates for yt-dlp depend on --simulate --get-filename; if yt-dlp is missing,
-  we fall back to a coarse estimate (remaining = total_urls - completed_files_found).
-- For AEBN, viability is approximated via slug-based existence checks; "bad" counts are refined at runtime.
+- Scans URL roots, in parallel, with live UI during the scan phase
+- Writes/updates a counts JSON as it goes (atomic writes)
+- Picks the highest-remaining files for N worker slots
+- Each slot runs exactly one external process (yt-dlp or aebndl) at a time
+- Streams events to Termdash (or SimpleUI with --no-ui)
 """
-
 from __future__ import annotations
 
 import argparse
@@ -36,14 +19,13 @@ import signal
 import sys
 import threading
 import time
-from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 from .downloaders import get_downloader, terminate_all_active_procs, request_abort, abort_requested
-from .io import expand_url_dirs, read_urls_from_files
-from .models import DownloaderConfig, DownloadItem, DownloadResult, DownloadStatus, URLSource
+from .io import read_urls_from_files
+from .models import DownloaderConfig, DownloadItem, DownloadResult, DownloadStatus, URLSource, FinishEvent, StartEvent, LogEvent
 from .ui import SimpleUI, TermdashUI
 from .url_parser import is_aebn_url, get_url_slug
 
@@ -113,7 +95,7 @@ def _exists_with_dup(dest: Path, expected_filename: str) -> bool:
 def _aebn_file_exists_like(dest: Path, slug: str, exts: Iterable[str]) -> bool:
     if not dest.exists():
         return False
-    for e in exts:
+    for e in {x.lower().lstrip(".") for x in exts}:
         if (dest / f"{slug}.{e}").exists():
             return True
         # loose match: anything that contains the slug segment
@@ -154,14 +136,13 @@ class CountsSnapshot:
         cs.files = obj.get("files", {})
         return cs
 
-def _scan_one_file_main(url_file: Path, out_base: Path, exts: Iterable[str]) -> URLFileInfo:
+def _scan_one_file_main(url_file: Path, out_base: Path, exts: Iterable[str], ytdlp_template: str) -> URLFileInfo:
     urls = read_urls_from_files([url_file])
     dest = out_base / url_file.stem
     downloaded = 0
     bad = 0
-    # Try viability probe via yt-dlp get-filename
     for u in urls:
-        rc, got = _ytdlp_expected_filename(u)
+        rc, got = _ytdlp_expected_filename(u, ytdlp_template)
         if rc == 0:
             if _exists_with_dup(dest, got):
                 downloaded += 1
@@ -178,47 +159,9 @@ def _scan_one_file_ae(url_file: Path, out_base: Path, exts: Iterable[str]) -> UR
         slug = get_url_slug(u)
         if _aebn_file_exists_like(dest, slug, exts):
             downloaded += 1
-    # We don't probe viability for AE (cheap heuristic)
     bad = 0
     remaining = max(0, len(urls) - downloaded)
     return URLFileInfo(url_file, url_file.stem, "ae", dest, len(urls), downloaded, bad, remaining, False)
-
-def scan_all(main_url_dir: Path, ae_url_dir: Path, out_base: Path, exts: Iterable[str]) -> CountsSnapshot:
-    """
-    Scan both roots and return a fresh CountsSnapshot.
-    """
-    exts = {e.lower().lstrip(".") for e in exts}
-    snap = CountsSnapshot()
-    snap.sources = {
-        "main": {"url_dir": str(main_url_dir.resolve()), "out_dir": str(out_base.resolve())},
-        "ae": {"url_dir": str(ae_url_dir.resolve()), "out_dir": str(out_base.resolve())},  # AE merges into same out
-    }
-
-    # Gather url files (non-recursive)
-    def _iter_txt(d: Path) -> List[Path]:
-        return [p for p in sorted(Path(d).glob("*.txt")) if p.is_file()]
-
-    files: List[URLFileInfo] = []
-    for f in _iter_txt(main_url_dir):
-        files.append(_scan_one_file_main(f, out_base, exts))
-    for f in _iter_txt(ae_url_dir):
-        files.append(_scan_one_file_ae(f, out_base, exts))
-
-    # Build snap
-    for info in files:
-        snap.files[str(info.url_file.resolve())] = {
-            "stem": info.stem,
-            "source": info.source,
-            "out_dir": str(info.out_dir.resolve()),
-            "url_count": info.url_count,
-            "downloaded": info.downloaded,
-            "bad": info.bad,
-            "remaining": info.remaining,
-            "viable_checked": info.viable_checked,
-            "url_mtime": int(info.url_file.stat().st_mtime),
-            "url_size": int(info.url_file.stat().st_size),
-        }
-    return snap
 
 def _is_snapshot_complete(snap: CountsSnapshot, main_url_dir: Path, ae_url_dir: Path) -> bool:
     """
@@ -269,47 +212,98 @@ def _build_worklist(snap: CountsSnapshot, exts: Iterable[str]) -> List[_WorkFile
         )
     return work
 
-# ---------- workers ----------
-@dataclass
-class _WorkerState:
-    slot: int
-    completed_this_file: int = 0
-    assigned: Optional[_WorkFile] = None
-    next_local_id: int = 1
+# ---------- scan coordinator (parallel with UI & logging) ----------
+def _scan_all_parallel(
+    main_url_dir: Path,
+    ae_url_dir: Path,
+    out_base: Path,
+    exts: set[str],
+    n_workers: int,
+    ytdlp_template: str,
+    counts_path: Path,
+    ui,
+    olog,
+) -> CountsSnapshot:
+    def _iter_txt(d: Path) -> List[Path]:
+        return [p for p in sorted(Path(d).glob("*.txt")) if p.is_file()]
 
-class _Coordinator:
-    """
-    Thread-safe coordinator for assigning URL files to workers by highest remaining first.
-    """
-    def __init__(self, work: List[_WorkFile]):
-        self._lock = threading.Lock()
-        self._assigned: set[str] = set()
-        # start with highest remaining
-        self._work = sorted(work, key=lambda w: (w.remaining, w.stem), reverse=True)
+    main_files = [(f, "main") for f in _iter_txt(main_url_dir)]
+    ae_files = [(f, "ae") for f in _iter_txt(ae_url_dir)]
+    all_files = main_files + ae_files
 
-    def acquire_next(self) -> Optional[_WorkFile]:
-        with self._lock:
-            for wf in self._work:
-                key = str(wf.url_file.resolve())
-                if key in self._assigned:
-                    continue
-                if wf.remaining <= 0:
-                    continue
-                self._assigned.add(key)
-                return wf
-            return None
+    snap = CountsSnapshot()
+    snap.sources = {
+        "main": {"url_dir": str(main_url_dir.resolve()), "out_dir": str(out_base.resolve())},
+        "ae": {"url_dir": str(ae_url_dir.resolve()), "out_dir": str(out_base.resolve())},
+    }
 
-    def release(self, wf: _WorkFile, remaining_delta: int) -> None:
-        """
-        Put the file back (updated remaining) so someone else may take it later.
-        remaining_delta: negative if we downloaded some.
-        """
-        with self._lock:
-            wf.remaining = max(0, wf.remaining + remaining_delta)
-            key = str(wf.url_file.resolve())
-            self._assigned.discard(key)
-            # stable sort by new remaining
-            self._work.sort(key=lambda w: (w.remaining, w.stem), reverse=True)
+    # write an empty shell early so users see a file appear
+    try:
+        _atomic_write_json(counts_path, snap.to_json())
+    except Exception:
+        pass
+
+    if not all_files:
+        return snap
+
+    ui.begin_scan(n_workers, len(all_files))
+
+    q: "queue.Queue[tuple[Path,str]]" = queue.Queue()
+    for f, src in all_files:
+        q.put((f, src))
+
+    lock = threading.Lock()
+
+    def worker(slot: int):
+        while True:
+            try:
+                f, src = q.get_nowait()
+            except queue.Empty:
+                break
+            ui.set_scan_slot(slot, f"{src}:{f.stem}")
+            olog(f"SCAN start {src} {f}")
+            try:
+                if src == "main":
+                    info = _scan_one_file_main(f, out_base, exts, ytdlp_template)
+                else:
+                    info = _scan_one_file_ae(f, out_base, exts)
+            except Exception as ex:
+                # record as empty with error counted as bad=0, so we still make progress
+                info = URLFileInfo(f, f.stem, src, out_base / f.stem, 0, 0, 0, 0, False)
+                olog(f"SCAN error {f}: {ex}")
+
+            # stash + write JSON incrementally
+            with lock:
+                st = f.stat()
+                snap.files[str(f.resolve())] = {
+                    "stem": info.stem,
+                    "source": info.source,
+                    "out_dir": str(info.out_dir.resolve()),
+                    "url_count": info.url_count,
+                    "downloaded": info.downloaded,
+                    "bad": info.bad,
+                    "remaining": info.remaining,
+                    "viable_checked": info.viable_checked,
+                    "url_mtime": int(st.st_mtime),
+                    "url_size": int(st.st_size),
+                }
+                try:
+                    _atomic_write_json(counts_path, snap.to_json())
+                except Exception:
+                    pass
+            ui.advance_scan(1)
+            olog(f"SCAN done  {src} {f} urls={info.url_count} dl={info.downloaded} bad={info.bad} rem={info.remaining}")
+
+    threads: List[threading.Thread] = []
+    for i in range(max(1, n_workers)):
+        t = threading.Thread(target=worker, args=(i,), daemon=True)
+        threads.append(t)
+        t.start()
+    for t in threads:
+        t.join()
+
+    ui.end_scan()
+    return snap
 
 # ---------- main orchestrator ----------
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -336,131 +330,17 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("-Y", "--ytdlp-arg", action="append", help="Append raw arg to yt-dlp (repeatable).")
     return p.parse_args(argv)
 
-def _load_counts(path: Path) -> Optional[CountsSnapshot]:
-    try:
-        if path.exists():
-            obj = json.loads(_read_text(path))
-            return CountsSnapshot.from_json(obj)
-    except Exception:
-        return None
-    return None
-
-def _save_counts(path: Path, snap: CountsSnapshot) -> None:
-    try:
-        _atomic_write_json(path, snap.to_json())
-    except Exception:
-        pass
-
-def _save_counts_update(path: Path, k: str, field: str, delta: int) -> None:
-    """
-    Convenience: update one field by delta and write. Tolerates races by re-reading on each call.
-    """
-    try:
-        snap = _load_counts(path)
-        if not snap:
-            return
-        rec = snap.files.get(k)
-        if not rec:
-            return
-        rec[field] = int(rec.get(field, 0)) + int(delta)
-        if field == "remaining":
-            if rec["remaining"] < 0:
-                rec["remaining"] = 0
-        _atomic_write_json(path, snap.to_json())
-    except Exception:
-        pass
-
 def _build_config(args: argparse.Namespace) -> DownloaderConfig:
+    # Use correct fields of DownloaderConfig (frozen dataclass)
     return DownloaderConfig(
-        output_dir=args.output_dir,
-        jobs=max(1, args.jobs),
         work_dir=args.work_dir,
-        timeout_seconds=args.timeout,
-        keep_covers=False,
-        log_file=args.log_file,
+        timeout_seconds=int(args.timeout),
+        parallel_jobs=max(1, int(args.jobs)),
+        save_covers=False,
         extra_aebn_args=args.aebn_arg or [],
         extra_ytdlp_args=args.ytdlp_arg or [],
+        log_file=args.log_file,
     )
-
-def _precheck_exists(url: str, dest_dir: Path, exts: Iterable[str], ytdlp_template: str) -> bool:
-    try:
-        if is_aebn_url(url):
-            slug = get_url_slug(url)
-            return _aebn_file_exists_like(dest_dir, slug, exts)
-        rc, got = _ytdlp_expected_filename(url, ytdlp_template)
-        if rc == 0:
-            return _exists_with_dup(dest_dir, got)
-        # If we can't probe, fall back to "assume not present" so runner will decide (and may ALREADY).
-        return False
-    except Exception:
-        return False
-
-def _worker_thread(
-    slot: int,
-    coordinator: _Coordinator,
-    cfg: DownloaderConfig,
-    ui,
-    counts_file: Path,
-    exts: set[str],
-    ytdlp_template: str,
-    stop_evt: threading.Event,
-) -> None:
-    """
-    Each worker repeatedly acquires the next-best URL file and downloads up to max_dl successes,
-    updating the counts JSON after each COMPLETED item.
-    """
-    args_max_dl = getattr(cfg, "_orchestrator_max_dl", 3)
-    while not stop_evt.is_set():
-        wf = coordinator.acquire_next()
-        if not wf:
-            break  # nothing left
-        completed_for_this_assignment = 0
-        # sequentially iterate over URLs of this file
-        for idx, url in enumerate(wf.urls, start=1):
-            if stop_evt.is_set():
-                break
-            dest_dir = wf.out_dir
-            # quick skip if already present
-            try:
-                if _precheck_exists(url, dest_dir, exts, ytdlp_template):
-                    continue
-            except Exception:
-                pass
-
-            # Build item id so that slot is stable in UI
-            local_id = slot * 1_000_000 + idx
-            item = DownloadItem(
-                id=local_id,
-                url=url,
-                output_dir=dest_dir,
-                source=URLSource(file=wf.url_file, line_number=idx, original_url=url),
-                retries=3,
-            )
-            dl = get_downloader(url, cfg)
-            # stream events to UI and decide on counting
-            try:
-                for ev in dl.download(item):
-                    if stop_evt.is_set() or abort_requested():
-                        raise KeyboardInterrupt
-                    ui.handle_event(ev)
-            except KeyboardInterrupt:
-                break
-            except Exception:
-                # treat as failure
-                pass
-
-            # Post-check: if file now exists, count as COMPLETED
-            if _precheck_exists(url, dest_dir, exts, ytdlp_template):
-                completed_for_this_assignment += 1
-                k = str(wf.url_file.resolve())
-                _save_counts_update(counts_file, k, "downloaded", +1)
-                _save_counts_update(counts_file, k, "remaining", -1)
-
-            if completed_for_this_assignment >= args_max_dl:
-                break
-
-        # Release file back (with new remaining); coordinator will re-sort.
-        coordinator.release(wf, remaining_delta=-(completed_for_this_assignment))
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
@@ -468,41 +348,37 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not exts:
         exts = set(DEF_EXTS)
 
-    counts = _load_counts(args.counts_file)
-    if counts and _is_snapshot_complete(counts, args.url_dir, args.ae_url_dir):
-        snap = counts
-    else:
-        snap = scan_all(args.url_dir, args.ae_url_dir, args.output_dir, exts)
-        _save_counts(args.counts_file, snap)
+    # Open orchestrator log immediately (not runner log)
+    log_fp = None
+    if args.log_file:
+        try:
+            args.log_file.parent.mkdir(parents=True, exist_ok=True)
+            log_fp = open(args.log_file, "a", encoding="utf-8")
+        except Exception:
+            log_fp = None
 
-    work = _build_worklist(snap, exts)
-    if not work:
-        print("No URL files found under the specified roots.", file=sys.stderr)
-        return 0
+    def olog(line: str):
+        if log_fp:
+            try:
+                log_fp.write(f"[{_now_ts()}] {line}\n")
+                log_fp.flush()
+            except Exception:
+                pass
 
-    # UI
+    # UI early so we can display scanning
     use_ui = not args.no_ui
     if use_ui:
         try:
-            ui = TermdashUI(num_workers=max(1, args.threads), total_urls=sum(w.remaining for w in work))
-        except Exception:
+            ui = TermdashUI(num_workers=max(1, args.threads), total_urls=0)
+        except Exception as ex:
+            olog(f"UI fallback: {ex}")
             ui = SimpleUI()
             use_ui = False
     else:
         ui = SimpleUI()
 
-    # Build downloader config
-    cfg = _build_config(args)
-    # Carry max-dl via a private attribute (keeps config dataclass surface intact).
-    setattr(cfg, "_orchestrator_max_dl", int(args.max_dl))
-
-    # Coordinator + workers
-    coord = _Coordinator(work)
-    stop_evt = threading.Event()
-
     # SIGINT handling: graceful abort request; ensure child processes are torn down.
     def _handle_sigint(signum, frame):
-        stop_evt.set()
         request_abort()
         terminate_all_active_procs()
     try:
@@ -510,34 +386,200 @@ def main(argv: Optional[List[str]] = None) -> int:
     except Exception:
         pass
 
-    start = time.monotonic()
-    threads: List[threading.Thread] = []
-    for slot in range(max(1, int(args.threads))):
-        t = threading.Thread(
-            target=_worker_thread,
-            args=(slot, coord, cfg, ui, args.counts_file, exts, args.ytdlp_template, stop_evt),
-            daemon=True,
-        )
-        threads.append(t)
-        t.start()
+    with ui:
+        olog("orchestrator start")
 
-    try:
-        if use_ui and hasattr(ui, "dash"):
-            with ui.dash:
+        # Always (re)scan so the user gets progress feedback on first run
+        snap = _scan_all_parallel(
+            args.url_dir, args.ae_url_dir, args.output_dir, exts,
+            n_workers=max(1, args.threads),
+            ytdlp_template=args.ytdlp_template,
+            counts_path=args.counts_file,
+            ui=ui,
+            olog=olog,
+        )
+
+        work = _build_worklist(snap, exts)
+        if not work:
+            print("No URL files found under the specified roots.", file=sys.stderr)
+            olog("no work; exiting")
+            if log_fp:
+                log_fp.close()
+            return 0
+
+        # Build downloader config
+        cfg = _build_config(args)
+        # Carry max-dl via a private attribute (keeps config dataclass surface intact).
+        setattr(cfg, "_orchestrator_max_dl", int(args.max_dl))
+
+        stop_evt = threading.Event()
+        coord = _Coordinator(work)
+
+        def _worker_thread(
+            slot: int,
+            coordinator: _Coordinator,
+            cfg: DownloaderConfig,
+            ui,
+            counts_file: Path,
+            exts: set[str],
+            ytdlp_template: str,
+            stop_evt: threading.Event,
+        ) -> None:
+            args_max_dl = getattr(cfg, "_orchestrator_max_dl", 3)
+            while not stop_evt.is_set():
+                wf = coordinator.acquire_next()
+                if not wf:
+                    break  # nothing left
+                completed_for_this_assignment = 0
+
+                for idx, url in enumerate(wf.urls, start=1):
+                    if stop_evt.is_set() or abort_requested():
+                        break
+                    dest_dir = wf.out_dir
+
+                    # quick skip if already present
+                    try:
+                        if is_aebn_url(url):
+                            slug = get_url_slug(url)
+                            if _aebn_file_exists_like(dest_dir, slug, exts):
+                                continue
+                        else:
+                            rc, got = _ytdlp_expected_filename(url, ytdlp_template)
+                            if rc == 0 and _exists_with_dup(dest_dir, got):
+                                continue
+                    except Exception:
+                        pass
+
+                    local_id = slot * 1_000_000 + idx
+                    item = DownloadItem(
+                        id=local_id,
+                        url=url,
+                        output_dir=dest_dir,
+                        source=URLSource(file=wf.url_file, line_number=idx, original_url=url),
+                        retries=3,
+                    )
+                    dl = get_downloader(url, cfg)
+                    try:
+                        for ev in dl.download(item):
+                            # lightweight orchestrator log (mirrors runner)
+                            if isinstance(ev, StartEvent):
+                                olog(f"START {ev.item.id} {ev.item.url}")
+                            elif isinstance(ev, FinishEvent):
+                                olog(f"FINISH {ev.item.id} {ev.result.status.value} {ev.item.url}")
+                            elif isinstance(ev, LogEvent):
+                                olog(f"LOG {ev.item.id} {ev.message}")
+
+                            ui.handle_event(ev)
+                    except KeyboardInterrupt:
+                        break
+                    except Exception as ex:
+                        olog(f"DL error {url}: {ex}")
+
+                    # Post-check: if file now exists, count as COMPLETED
+                    did_complete = False
+                    try:
+                        if is_aebn_url(url):
+                            slug = get_url_slug(url)
+                            did_complete = _aebn_file_exists_like(dest_dir, slug, exts)
+                        else:
+                            rc, got = _ytdlp_expected_filename(url, ytdlp_template)
+                            did_complete = (rc == 0 and _exists_with_dup(dest_dir, got))
+                    except Exception:
+                        did_complete = False
+
+                    if did_complete:
+                        completed_for_this_assignment += 1
+                        k = str(wf.url_file.resolve())
+                        # Update counts JSON incrementally
+                        try:
+                            obj = json.loads(_read_text(counts_file))
+                            rec = obj.get("files", {}).get(k)
+                            if rec:
+                                rec["downloaded"] = int(rec.get("downloaded", 0)) + 1
+                                rec["remaining"] = max(0, int(rec.get("remaining", 0)) - 1)
+                                _atomic_write_json(counts_file, obj)
+                        except Exception:
+                            pass
+
+                    if completed_for_this_assignment >= args_max_dl:
+                        break
+
+                coordinator.release(wf, remaining_delta=-(completed_for_this_assignment))
+
+        threads: List[threading.Thread] = []
+        for slot in range(max(1, int(args.threads))):
+            t = threading.Thread(
+                target=_worker_thread,
+                args=(slot, coord, cfg, ui, args.counts_file, exts, args.ytdlp_template, stop_evt),
+                daemon=True,
+            )
+            threads.append(t)
+            t.start()
+
+        start = time.monotonic()
+        try:
+            if use_ui and hasattr(ui, "dash"):
+                with ui.dash:
+                    while any(t.is_alive() for t in threads):
+                        time.sleep(0.1)
+            else:
                 while any(t.is_alive() for t in threads):
                     time.sleep(0.1)
-        else:
-            while any(t.is_alive() for t in threads):
-                time.sleep(0.1)
-    finally:
-        stop_evt.set()
-        terminate_all_active_procs()
-        for t in threads:
-            t.join(timeout=1.0)
+        finally:
+            stop_evt.set()
+            terminate_all_active_procs()
+            for t in threads:
+                t.join(timeout=1.0)
 
-    elapsed = time.monotonic() - start
-    ui.summary({}, elapsed)
+        elapsed = time.monotonic() - start
+        ui.summary({}, elapsed)
+        olog(f"orchestrator done in {elapsed:.1f}s")
+
+    if log_fp:
+        try:
+            log_fp.close()
+        except Exception:
+            pass
     return 0
+
+
+# ---------- coordinator used above ----------
+@dataclass
+class _WorkFile:
+    url_file: Path
+    stem: str
+    source: str
+    out_dir: Path
+    urls: List[str]
+    remaining: int
+
+class _Coordinator:
+    """
+    Thread-safe coordinator for assigning URL files to workers by highest remaining first.
+    """
+    def __init__(self, work: List[_WorkFile]):
+        self._lock = threading.Lock()
+        self._assigned: set[str] = set()
+        self._work = sorted(work, key=lambda w: (w.remaining, w.stem), reverse=True)
+
+    def acquire_next(self) -> Optional[_WorkFile]:
+        with self._lock:
+            for wf in self._work:
+                key = str(wf.url_file.resolve())
+                if key in self._assigned:
+                    continue
+                if wf.remaining <= 0:
+                    continue
+                self._assigned.add(key)
+                return wf
+            return None
+
+    def release(self, wf: _WorkFile, remaining_delta: int) -> None:
+        with self._lock:
+            wf.remaining = max(0, wf.remaining + remaining_delta)
+            key = str(wf.url_file.resolve())
+            self._assigned.discard(key)
+            self._work.sort(key=lambda w: (w.remaining, w.stem), reverse=True)
 
 
 if __name__ == "__main__":

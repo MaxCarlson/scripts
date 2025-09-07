@@ -35,11 +35,20 @@ class UIBase(ABC):
     @abstractmethod
     def summary(self, stats: Dict[str, int], elapsed: float): ...
 
+    # ---- Optional scan-phase hooks (no-op defaults for back-compat) ----
+    def begin_scan(self, num_workers: int, total_files: int): ...
+    def set_scan_slot(self, slot: int, label: str): ...
+    def advance_scan(self, delta: int = 1): ...
+    def end_scan(self): ...
+
 
 class SimpleUI(UIBase):
     def __init__(self) -> None:
         self._start = time.monotonic()
         self._completed = 0
+        self._scan_total = 0
+        self._scan_done = 0
+        self._scan_slots: Dict[int, str] = {}
 
     def __enter__(self):
         return self
@@ -47,6 +56,24 @@ class SimpleUI(UIBase):
     def __exit__(self, exc_type, exc_val, exc_tb):
         ...
 
+    # ---- Scan-phase UI (console prints) ----
+    def begin_scan(self, num_workers: int, total_files: int):
+        self._scan_total = int(total_files)
+        self._scan_done = 0
+        print(f"[SCAN] Starting scan: {total_files} file(s), {num_workers} worker(s)")
+
+    def set_scan_slot(self, slot: int, label: str):
+        self._scan_slots[slot] = label
+        print(f"[SCAN] Worker {slot+1}: {label}")
+
+    def advance_scan(self, delta: int = 1):
+        self._scan_done += int(delta)
+        print(f"[SCAN] Progress: {self._scan_done}/{self._scan_total}")
+
+    def end_scan(self):
+        print(f"[SCAN] Completed: {self._scan_done}/{self._scan_total}")
+
+    # ---- Download-phase events ----
     def handle_event(self, event: DownloadEvent):
         if isinstance(event, StartEvent):
             print(f"[START] {event.item.id}: {event.item.url}")
@@ -76,7 +103,7 @@ class TermdashUI(UIBase):
             max_col_width=40,
             enable_separators=True,
             separator_style="rule",
-            reserve_extra_rows=6,
+            reserve_extra_rows=8,
         )
         self.start_time = time.monotonic()
         self.bytes_downloaded = 0.0
@@ -84,6 +111,10 @@ class TermdashUI(UIBase):
         self.already = 0
         self.bad = 0
         self._last_bytes_per_worker = {i: 0 for i in range(self.num_workers)}
+        # scan state
+        self._scan_total = 0
+        self._scan_done = 0
+        self._scan_lines: Dict[int, str] = {}
         self._setup()
 
     def __enter__(self):
@@ -93,6 +124,69 @@ class TermdashUI(UIBase):
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.dash.__exit__(exc_type, exc_val, exc_tb)
 
+    # --------------------- SCAN PHASE ---------------------
+    def _add_scan_lines(self, n_workers: int, total_files: int):
+        self._scan_total = int(total_files)
+        self._scan_done = 0
+        self.dash.add_line(
+            "scan_overall",
+            Line(
+                "scan_overall",
+                stats=[
+                    Stat("label", "Scanning"),
+                    Stat("files", (0, self._scan_total), prefix=" Files ", format_string="{}/{}"),
+                ],
+                style="header",
+            ),
+        )
+        for i in range(n_workers):
+            nm = f"scan_w{i+1}"
+            self._scan_lines[i] = nm
+            self.dash.add_line(
+                nm,
+                Line(
+                    nm,
+                    stats=[
+                        Stat("w", f"Scan {i+1}", no_expand=True),
+                        Stat("file", "", no_expand=True, display_width=40),
+                        Stat("status", "idle", no_expand=True),
+                    ],
+                ),
+            )
+        self.dash.add_separator()
+
+    def begin_scan(self, num_workers: int, total_files: int):
+        try:
+            self._add_scan_lines(num_workers, total_files)
+        except Exception:
+            pass  # keep UI resilient
+
+    def set_scan_slot(self, slot: int, label: str):
+        try:
+            nm = self._scan_lines.get(slot)
+            if nm:
+                self.dash.update_stat(nm, "file", label)
+                self.dash.update_stat(nm, "status", "working")
+        except Exception:
+            pass
+
+    def advance_scan(self, delta: int = 1):
+        try:
+            self._scan_done += int(delta)
+            self.dash.update_stat("scan_overall", "files", (self._scan_done, self._scan_total))
+        except Exception:
+            pass
+
+    def end_scan(self):
+        try:
+            self.dash.update_stat("scan_overall", "label", "Scanned")
+            for nm in self._scan_lines.values():
+                self.dash.update_stat(nm, "status", "done")
+            self.dash.add_separator()
+        except Exception:
+            pass
+
+    # --------------------- DOWNLOAD PHASE ---------------------
     def _setup(self):
         self.dash.add_line(
             "overall1",
