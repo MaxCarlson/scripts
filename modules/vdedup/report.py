@@ -349,7 +349,29 @@ def apply_report(
     C_KEEP = "92"    # green
     C_LOSE = "91"    # red
     C_VAULT = "95"   # magenta
+    C_LINK = "94"    # bright blue
     C_DIM = "2"
+
+    # stats: set sizes
+    set_sizes: List[int] = []
+
+    # helper: friendlier name for collapsed groups
+    def _friendly_gid(method: str, gid: str) -> str:
+        if method == "collapsed" and gid.startswith("collapsed:"):
+            try:
+                n = int(gid.split(":", 1)[1])
+                return f"Duplicate Set {n}"
+            except Exception:
+                return f"Duplicate Set ({gid})"
+        return f"{gid}"
+
+    # helper: group base (to trim repeated folders)
+    def _group_base(paths: List[str]) -> str:
+        if not paths:
+            return ""
+        prefix = os.path.commonprefix(paths)
+        i = max(prefix.rfind("/"), prefix.rfind("\\"))
+        return prefix[: i + 1] if i >= 0 else ""
 
     for gid, g in groups.items():
         keep = Path(g.get("keep", "")) if g.get("keep") else None
@@ -357,19 +379,31 @@ def apply_report(
         method = g.get("method", "unknown")
         evidence = g.get("evidence") or {}
 
+        # set size stat
+        set_sizes.append((1 if keep else 0) + len(losers))
+
+        # Resolve display-relative strings
+        rel_keep = rel(keep) if keep else ""
+        rel_losers = [rel(l) for l in losers]
+        gbase = _group_base([s for s in [rel_keep, *rel_losers] if s])
+        def _trim(s: str) -> str:
+            return s[len(gbase):] if gbase and s.startswith(gbase) else s
+
         # Per-group headers (V1+)
         if verbosity >= 1:
-            print(_c(f"[{method}] {gid}", C_HDR))
+            print(_c(f"[{_friendly_gid(method, gid)}]", C_HDR))
+            if gbase:
+                print(_c(f"  Base  : {gbase}", C_DIM))
             if keep:
-                print(f"  KEEP   : {_c(rel(keep), C_KEEP)}")
-            print(f"  LOSERS : {len(losers)}")
+                print(f"  KEEP  : {_c(_trim(rel_keep), C_KEEP)}")
+            print(f"  LOSERS: {len(losers)}")
 
         # Detailed diffs (V2)
         if verbosity >= 2 and keep:
             astats = _probe_stats(keep)
-            for l in losers:
+            for l, rl in zip(losers, rel_losers):
                 bstats = _probe_stats(l)
-                for line in _render_pair_diff(Path(rel(keep)), Path(rel(l)), astats, bstats):
+                for line in _render_pair_diff(Path(_trim(rel_keep)), Path(_trim(rl)), astats, bstats):
                     print(f"    {line}")
 
         # Vault planning
@@ -380,26 +414,26 @@ def apply_report(
             link_targets = [keep, *losers]
             link_targets = list(dict.fromkeys(link_targets))
             if verbosity >= 1:
-                print(f"  Vault  : {_c('MOVE', C_VAULT)} -> {rel(planned_vault_dest)}")
-                print(f"  Links  : {len(link_targets)} path(s) will point to the vaulted file")
+                print(f"  Vault : {_c('MOVE', C_VAULT)} -> {rel(planned_vault_dest)}")
+                print(f"  Links : {len(link_targets)} path(s) will point to the vaulted file")
         else:
             if verbosity >= 1:
-                print("  Action : delete losers" + (" (backup move)" if backup else ""))
+                print("  Action: delete losers" + (" (backup move)" if backup else ""))
 
         # Execute (or dry-run)
         if dry_run:
             if vault and planned_vault_dest and keep:
-                print(f"    {_c('[DRY] MOVE', C_DIM)} {rel(keep)} -> {rel(planned_vault_dest)}")
-                print(f"    {_c('[DRY] RECREATE HARDLINK', C_DIM)} at {rel(keep)} -> {rel(planned_vault_dest)}")
-                for l in losers:
-                    print(f"    {_c('[DRY] REPLACE', C_DIM)} {rel(l)} WITH HARDLINK -> {rel(planned_vault_dest)}")
+                print(f"    {_c('[DRY] MOVE', C_VAULT)} {_trim(rel_keep)} -> {rel(planned_vault_dest)}")
+                print(f"    {_c('[DRY] RECREATE HARDLINK', C_LINK)} at {_trim(rel_keep)} -> {rel(planned_vault_dest)}")
+                for rl in rel_losers:
+                    print(f"    {_c('[DRY] REPLACE', C_DIM)} {_trim(rl)} WITH {_c('HARDLINK', C_LINK)} -> {rel(planned_vault_dest)}")
                 link_ops += 1 + len(losers)
             else:
-                for l in losers:
+                for rl in rel_losers:
                     if backup:
-                        print(f"    {_c('[DRY] BACKUP MOVE', C_DIM)} {rel(l)} -> {backup}")
+                        print(f"    {_c('[DRY] BACKUP MOVE', C_DIM)} {_trim(rl)} -> {backup}")
                     else:
-                        print(f"    {_c('[DRY] DELETE', C_DIM)} {rel(l)}")
+                        print(f"    {_c('[DRY] DELETE', C_LOSE)} {_trim(rl)}")
             losers_processed += len(losers)
         else:
             try:
@@ -447,9 +481,9 @@ def apply_report(
 
         if verbosity == 0:
             # terse 1-liner per group
-            keep_name = rel(keep) if keep else "(missing)"
+            keep_name = _trim(rel_keep) if keep else "(missing)"
             links = (1 + len(losers)) if vault else 0
-            print(f"[{method}] {gid}  keep: {keep_name}  <- {len(losers)} losers; +{links} links")
+            print(f"[{_friendly_gid(method, gid)}] keep: {keep_name}  <- {len(losers)} losers; +{links} links")
 
         if reporter:
             reporter.inc_hashed(1, cache_hit=False)
@@ -463,5 +497,111 @@ def apply_report(
         if vault:
             print(f"  hardlinks created : {link_ops}" + (" (dry-run planned)" if dry_run else ""))
         print(f"  space reclaimable : { _fmt_bytes(total_size) }")
+        if set_sizes:
+            s = sorted(set_sizes)
+            n = len(s)
+            median = s[n//2] if n % 2 == 1 else (s[n//2 - 1] + s[n//2]) / 2
+            avg = sum(s) / n
+            print(f"  set size (min/median/avg/max): {s[0]} / {median:.2f} / {avg:.2f} / {s[-1]}")
 
     return (link_ops if vault else losers_processed, total_size)
+
+
+# -----------------------
+# Collapsing reports
+# -----------------------
+def collapse_report_file(in_path: Path, out_path: Optional[Path] = None, reporter: Any = None) -> Path:
+    """
+    Collapse overlapping groups in a report:
+      - Build a graph where each file path (keep+losers) is a node
+      - Connect nodes that appear together in any group
+      - Each connected component becomes a single collapsed group
+      - Winner picked by simple heuristic: bigger size first, then lexicographic path
+
+    Returns the written output path.
+    """
+    data = load_report(in_path)
+    groups = data.get("groups") or {}
+    if not groups:
+        out_path = out_path or in_path.with_name(in_path.stem + "-collapsed.json")
+        Path(out_path).write_text(json.dumps(data, indent=2), encoding="utf-8")
+        return Path(out_path)
+
+    # Build adjacency
+    adj: Dict[str, set[str]] = {}
+    def _add_edge(a: str, b: str):
+        if a not in adj: adj[a] = set()
+        if b not in adj: adj[b] = set()
+        adj[a].add(b)
+        adj[b].add(a)
+
+    all_paths: set[str] = set()
+    for g in groups.values():
+        members = [str(g.get("keep", ""))] + [str(x) for x in (g.get("losers") or [])]
+        members = [m for m in members if m]
+        for m in members:
+            all_paths.add(m)
+        for i in range(len(members)):
+            for j in range(i + 1, len(members)):
+                _add_edge(members[i], members[j])
+
+    # Connected components (BFS)
+    seen: set[str] = set()
+    comps: List[List[str]] = []
+    for n in list(all_paths):
+        if n in seen:
+            continue
+        q = [n]
+        seen.add(n)
+        comp = []
+        while q:
+            x = q.pop()
+            comp.append(x)
+            for y in adj.get(x, ()):
+                if y not in seen:
+                    seen.add(y)
+                    q.append(y)
+        comps.append(comp)
+
+    if reporter:
+        try:
+            reporter.start_stage("COLLAPSE report", total=len(comps))
+            reporter.set_hash_total(len(comps))
+        except Exception:
+            pass
+
+    # Pick winner per component
+    def _size_of(p: str) -> int:
+        try:
+            return int(Path(p).stat().st_size)
+        except Exception:
+            return -1
+
+    collapsed: Dict[str, Dict[str, Any]] = {}
+    gid = 0
+    losers_total = 0
+    size_total = 0
+
+    for comp in comps:
+        sorted_comp = sorted(comp, key=lambda s: (_size_of(s), s), reverse=True)
+        keep = sorted_comp[0]
+        losers = sorted_comp[1:]
+        collapsed[f"collapsed:{gid}"] = {"keep": keep, "losers": losers, "method": "collapsed"}
+        gid += 1
+        losers_total += len(losers)
+        for lp in losers:
+            try:
+                size_total += Path(lp).stat().st_size
+            except Exception:
+                pass
+        if reporter:
+            reporter.inc_hashed(1, cache_hit=False)
+
+    payload = {
+        "summary": {"groups": len(collapsed), "losers": losers_total, "size_bytes": size_total},
+        "groups": collapsed,
+    }
+
+    out_path = out_path or in_path.with_name(in_path.stem + "-collapsed.json")
+    Path(out_path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return Path(out_path)

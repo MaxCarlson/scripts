@@ -43,6 +43,7 @@ from vdedup.report import (
     pretty_print_reports,
     collect_exclusions,
     load_report,
+    collapse_report_file,
 )
 
 # -------- helpers --------
@@ -77,6 +78,104 @@ def _fmt_bytes(n: int) -> str:
     if n < 1024**3:
         return f"{n/1024**2:.2f} MiB"
     return f"{n/1024**3:.2f} GiB"
+
+
+# --- analysis helpers (kept here so tests can monkeypatch) ---
+
+def _fmt_dur(sec: Optional[float]) -> str:
+    try:
+        s = int(sec or 0)
+        return f"{s//3600:02d}:{(s%3600)//60:02d}:{s%60:02d}"
+    except Exception:
+        return "--:--:--"
+
+
+def _probe_stats(path: Path) -> Dict[str, Any]:
+    """
+    Lightweight probe used by analysis mode.
+    Returns dict: duration, width, height, overall_bitrate, video_bitrate, size.
+    """
+    size = 0
+    try:
+        st = path.stat()
+        size = int(st.st_size)
+    except Exception:
+        pass
+
+    duration = None
+    width = height = None
+    overall_bitrate = None
+    video_bitrate = None
+    try:
+        from vdedup.probe import run_ffprobe_json  # lazy
+        fmt = run_ffprobe_json(path)
+        if fmt:
+            try:
+                duration = float(fmt.get("format", {}).get("duration", 0.0))
+            except Exception:
+                duration = None
+            try:
+                br = fmt.get("format", {}).get("bit_rate", None)
+                overall_bitrate = int(br) if br is not None else None
+            except Exception:
+                overall_bitrate = None
+            for s in fmt.get("streams", []):
+                if s.get("codec_type") == "video":
+                    try:
+                        video_bitrate = int(s.get("bit_rate")) if s.get("bit_rate") is not None else None
+                    except Exception:
+                        video_bitrate = None
+                    try:
+                        width = int(s.get("width") or 0) or None
+                        height = int(s.get("height") or 0) or None
+                    except Exception:
+                        width = height = None
+                    break
+    except Exception:
+        pass
+
+    return {
+        "size": size,
+        "duration": duration,
+        "width": width,
+        "height": height,
+        "overall_bitrate": overall_bitrate,
+        "video_bitrate": video_bitrate,
+    }
+
+
+def _render_pair_diff(keep: Path, lose: Path, a: Dict[str, Any], b: Dict[str, Any]) -> List[str]:
+    """
+    Render left-justified stats with deltas.
+    """
+    lines: List[str] = []
+    lines.append(f"KEEP: {keep}")
+    lines.append(f"LOSE: {lose}")
+
+    def col(label: str, av: Any, bv: Any, fmt=lambda x: str(x)):
+        la = fmt(av) if av is not None else "—"
+        lb = fmt(bv) if bv is not None else "—"
+        delta = None
+        if isinstance(av, (int, float)) and isinstance(bv, (int, float)):
+            dv = av - bv
+            if abs(dv) > 0:
+                delta = f"{'+' if dv>=0 else ''}{dv}"
+        lines.append(f"  {label:<14}: {la:<12} vs {lb:<12}" + (f"  Δ {delta}" if delta is not None else ""))
+
+    # duration
+    col("duration", a.get("duration"), b.get("duration"), _fmt_dur)
+    # resolution
+    resa = f"{a.get('width','?')}x{a.get('height','?')}" if a.get("width") and a.get("height") else None
+    resb = f"{b.get('width','?')}x{b.get('height','?')}" if b.get("width") and b.get("height") else None
+    lines.append(f"  {'resolution':<14}: {resa or '—':<12} vs {resb or '—':<12}")
+    # video bitrate
+    col("v_bitrate", a.get("video_bitrate"), b.get("video_bitrate"))
+    # overall bitrate
+    col("overall_bps", a.get("overall_bitrate"), b.get("overall_bitrate"))
+    # size
+    col("size", a.get("size"), b.get("size"), _fmt_bytes)
+
+    return lines
 
 
 # ---------- robust single-line progress bar ----------
@@ -149,10 +248,10 @@ def render_analysis_for_reports(paths: List[Path], verbosity: int = 1, *, show_p
     Always ends with a global summary (groups, losers, space).
     While running, a textual progress bar is shown if show_progress=True and stdout is a TTY.
     """
-    out: List = []
+    out: List[str] = []
     total_pairs = 0
 
-    # new overall counters
+    # overall counters
     overall_groups = 0
     overall_losers = 0
     overall_space_bytes = 0
@@ -169,7 +268,6 @@ def render_analysis_for_reports(paths: List[Path], verbosity: int = 1, *, show_p
             continue
 
     prog: Optional[_TextProgress] = None
-    # only show progress when TTY to avoid spamming logs
     if show_progress and sys.stdout.isatty():
         prog = _TextProgress(planned_pairs, label="Analyzing report(s)")
 
@@ -201,7 +299,16 @@ def render_analysis_for_reports(paths: List[Path], verbosity: int = 1, *, show_p
                 out.append(f"  [{g.get('method', 'unknown')}] {gid}")
             for l in losers:
                 total_pairs += 1
-                # progress is visual only (avoid printing here)
+                a = _probe_stats(keep)
+                b = _probe_stats(l)
+                # If report summary didn't contain size_bytes, accumulate via probing
+                if not isinstance(data.get("summary"), dict) or "size_bytes" not in data["summary"]:
+                    try:
+                        overall_space_bytes += int(b.get("size") or 0)
+                    except Exception:
+                        pass
+                if verbosity >= 1:
+                    out.extend(f"    {line}" for line in _render_pair_diff(keep, l, a, b))
                 if prog:
                     prog.update(1)
         out.append("")
@@ -287,6 +394,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("-f", "--force", action="store_true", help="Do not prompt for deletion (apply-report mode)")
     p.add_argument("-x", "--dry-run", action="store_true", help="No changes; just print / write report")
 
+    # Collapse report
+    p.add_argument("-k", "--collapse-report", type=str, help="Collapse an existing report by merging overlapping groups.")
+    p.add_argument("-o", "--out", type=str, help="Output path for --collapse-report")
+
     return p.parse_args(argv)
 
 
@@ -320,6 +431,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     # UI layout preference
     stacked_pref: Optional[bool] = True if args.stacked_ui else (False if args.wide_ui else None)
+
+    # COLLAPSE REPORT mode
+    if args.collapse_report:
+        reporter = ProgressReporter(enable_dash=bool(args.live), refresh_rate=args.refresh_rate,
+                                    banner="Run: COLLAPSE REPORT", stacked_ui=stacked_pref)
+        reporter.start()
+        try:
+            in_path = Path(args.collapse_report).expanduser().resolve()
+            if not in_path.exists():
+                print(f"video-dedupe: error: report not found: {in_path}", file=sys.stderr)
+                return 2
+            out_path = Path(args.out).expanduser().resolve() if args.out else None
+            out = collapse_report_file(in_path, out_path, reporter=reporter)
+            print(f"Collapsed report written to: {out}")
+            return 0
+        finally:
+            reporter.stop()
 
     # APPLY REPORT mode
     if args.apply_report:
