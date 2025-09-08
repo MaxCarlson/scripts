@@ -6,18 +6,11 @@ import sys
 from pathlib import Path
 from types import ModuleType
 from typing import Any
-import pytest
 
 HERE = Path(__file__).resolve().parent
+# ytaedl repo root (this tests/ dir sits next to the 'ytaedl' package dir)
 ROOT = HERE.parent
-
-# Try common layouts so this test can run if ytaedl is present, otherwise skip.
-UI_CANDIDATES = [
-    ROOT / "yt_ae_dl" / "yt_ae_dl" / "ui.py",  # old layout
-    ROOT / "ytaedl" / "ui.py",                 # new/simple layout
-]
-
-UI_PATH = next((p for p in UI_CANDIDATES if p.is_file()), None)
+UI_PATH = ROOT / "ytaedl" / "ui.py"
 
 # ------------------------ Fake TermDash for tests ------------------------
 
@@ -55,7 +48,6 @@ class _FakeDash:
     def read_stat(self, line: str, stat: str):
         return self.lines.get(line, {}).get(stat, None)
 
-
 def _install_fake_termdash():
     mod = ModuleType("termdash")
     mod.TermDash = _FakeDash
@@ -76,20 +68,13 @@ def _install_fake_termdash():
     sys.modules["termdash"] = mod
     sys.modules["termdash.utils"] = utils
 
-
 def _import_ui():
-    if not UI_PATH:
-        pytest.skip(
-            "ytaedl UI not found in this repo. "
-            "Move this test into the ytaedl repo or vendor ytaedl next to termdash."
-        )
     spec = importlib.util.spec_from_file_location("yt_ui", UI_PATH)
     assert spec and spec.loader, f"Cannot load ui.py from {UI_PATH}"
     mod = importlib.util.module_from_spec(spec)
     sys.modules["yt_ui"] = mod
     spec.loader.exec_module(mod)  # type: ignore[attr-defined]
     return mod
-
 
 # ------------------------------ tests -----------------------------------
 
@@ -113,7 +98,7 @@ def test_header_and_workers_wired_test():
     # simulate StartEvent/FinishEvent via duck types
     class StartEvent:
         def __init__(self, id: int, url: str, stem: str):
-            class _Src:  # minimal source stub
+            class _Src:
                 def __init__(self, file): self.file = file
             class _Item:
                 def __init__(self, id, url, stem):
