@@ -3,21 +3,21 @@
 """
 Orchestrator — scan URL files and then download, with a Termdash UI.
 
-Key changes in this build:
-  • Scan phase now calls yt-dlp per URL to compute the expected filename and
-    checks for it under <out_dir>/<stem>/ (dup-aware), so progress is realistic.
-  • Top banner is driven with deltas via ui.scan_progress_delta(...) and per-file
-    summaries via ui.scan_file_done(...). Calls are guarded for SimpleUI/older UI.
-  • AE (aebndl) scanning is skipped for now (you asked to focus on yt-dlp).
-  • Frozen dataclass fix: object.__setattr__(cfg, "_orchestrator_max_dl", ...)
+This build focuses the SCAN phase on yt-dlp correctness and clear per-worker UI:
+- Each worker shows: Set <stem> • URLs i/total • ETA hh:mm:ss
+- Top banner (Termdash) shows cumulative scanned/already/bad/URLs/s
+- Destination for main URLs defaults to ./stars/<stem>  (matches your layout)
+- AE is discovered but currently skipped (requested focus on yt-dlp/main)
 
-The orchestrator keeps prior public surfaces used by tests.
+All UI calls are guarded, so SimpleUI/older TermdashUI won't crash.
+
+Author: you (+ ChatGPT)
 """
+
 from __future__ import annotations
 
 import argparse
 import dataclasses
-import json
 import os
 import queue
 import re
@@ -28,13 +28,9 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-from .downloaders import (
-    get_downloader,
-    request_abort,
-    terminate_all_active_procs,
-)
+from .downloaders import get_downloader, request_abort, terminate_all_active_procs
 from .io import read_urls_from_files
 from .models import (
     DownloaderConfig,
@@ -51,9 +47,13 @@ from .url_parser import get_url_slug
 
 DEF_URL_DIR = Path("files/downloads/stars")
 DEF_AE_URL_DIR = Path("files/downloads/ae-stars")
-DEF_OUT_DIR = Path("files/downloads/out")
+# NEW default: where finished videos live (your layout)
+DEF_OUT_DIR = Path("stars")
 DEF_COUNTS_FILE = Path("files/downloads/ytaedl-counts.json")
 DEF_EXTS = {"mp4", "mkv", "webm", "mp3", "m4a", "wav"}
+
+_YTDLP_NOT_FOUND = 127
+_DUP_SUFFIX_RE = re.compile(r"\s+\(\d+\)$")
 
 # ---------------------------------------------------------------------------
 
@@ -66,10 +66,15 @@ def _fmt_hms(seconds: Optional[float]) -> str:
     s = max(0, int(seconds))
     return f"{s//3600:02d}:{(s%3600)//60:02d}:{s%60:02d}"
 
-def _atomic_json(path: Path, obj: dict) -> None:
+def _atomic_write_text(path: Path, text: str) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.write_text(text, encoding="utf-8")
     tmp.replace(path)
+
+def _append_line(path: Path, line: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(line + "\n")
 
 # ---------------------------------------------------------------------------
 
@@ -92,23 +97,67 @@ class CountsSnapshot:
     sources: Dict[str, Dict[str, str]] = field(default_factory=dict)
     files: Dict[str, dict] = field(default_factory=dict)
 
-    def to_json(self) -> dict:
-        return {
-            "version": self.version,
-            "computed_at": self.computed_at,
-            "sources": self.sources,
-            "files": self.files,
-        }
+    def to_json(self) -> str:
+        import json
+        return json.dumps(
+            {
+                "version": self.version,
+                "computed_at": self.computed_at,
+                "sources": self.sources,
+                "files": self.files,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+
+# ---------------------------------------------------------------------------
+# PUBLIC helper for tests: is a snapshot complete for the given directories?
+
+def _is_snapshot_complete(
+    snap: Union[CountsSnapshot, Dict],
+    main_url_dir: Path,
+    ae_url_dir: Optional[Path] = None,
+) -> bool:
+    """
+    Return True if 'snap.files' contains an entry for every *.txt file found
+    under main_url_dir (and ae_url_dir, when provided).
+
+    - Accepts either a CountsSnapshot instance or a dict with a 'files' key.
+    - Paths are normalized via resolve() before comparison.
+    - If no *.txt files exist in the provided dirs, returns True.
+    """
+    def _collect(dir_path: Optional[Path]) -> List[str]:
+        if not dir_path:
+            return []
+        d = Path(dir_path)
+        if not d.exists():
+            return []
+        return [str(p.resolve()) for p in d.glob("*.txt") if p.is_file()]
+
+    expected = set(_collect(main_url_dir) + _collect(ae_url_dir))
+    if not expected:
+        return True
+
+    files_map = getattr(snap, "files", None)
+    if files_map is None and isinstance(snap, dict):
+        files_map = snap.get("files", {})
+
+    present = set()
+    for k in (files_map or {}).keys():
+        try:
+            present.add(str(Path(k).resolve()))
+        except Exception:
+            # keep raw key if it can't be resolved on this platform
+            present.add(str(k))
+
+    return expected.issubset(present)
 
 # ---------------------------------------------------------------------------
 # yt-dlp helpers used during the scan phase (main source)
 
-_YTDLP_NOT_FOUND = 127
-
 def _ytdlp_get_expected_filename(yt_dlp: str, url: str, template: str) -> Tuple[int, str]:
     """
-    Return (rc, value). When rc==0, value is the expected output filename
-    for the given template. Otherwise, value is a short error message.
+    (rc, value). When rc==0, value is the expected output filename.
     """
     cmd = [yt_dlp, "--simulate", "--get-filename", "-o", template, url]
     try:
@@ -127,12 +176,9 @@ def _ytdlp_get_expected_filename(yt_dlp: str, url: str, template: str) -> Tuple[
     msg = err if err else (out if out else "yt-dlp failed")
     return (proc.returncode, msg)
 
-_DUP_SUFFIX_RE = re.compile(r"\s+\(\d+\)$")
-
 def _exists_with_dup(dest_dir: Path, expected_filename: str) -> bool:
     """
-    True if expected exists OR a common duplicate variant exists:
-      "<stem> (N)<ext>"
+    True if expected exists OR a duplicate variant exists: "<stem> (N)<ext>"
     """
     target = dest_dir / expected_filename
     if target.exists():
@@ -143,7 +189,6 @@ def _exists_with_dup(dest_dir: Path, expected_filename: str) -> bool:
     for f in dest_dir.glob(f"*{exp.suffix.lower()}"):
         if not f.is_file() or f.suffix.lower() != exp.suffix.lower():
             continue
-        # exact stem match or duplicate form
         stem = f.stem
         base = exp.stem
         if stem == base:
@@ -154,54 +199,122 @@ def _exists_with_dup(dest_dir: Path, expected_filename: str) -> bool:
 
 # ---------------------------------------------------------------------------
 
+def _infer_dest_dir(out_root: Path, url_file: Path) -> Path:
+    """
+    For '.../files/downloads/stars/<stem>.txt' -> './stars/<stem>'
+    (Matches your layout. Users can still override --output-dir)
+    """
+    return (out_root / url_file.stem).resolve()
+
+# ----- guarded UI adapters (so we don't care which UI you run) --------------
+
+def _ui_set_worker_scan_progress(
+    ui,
+    slot: int,
+    set_name: str,
+    i: int,
+    total: int,
+    eta_s: Optional[float],
+) -> None:
+    """
+    Try modern scan progress API on worker lines; fall back to older ones.
+    """
+    try:
+        # Preferred single-call API if your TermdashUI provides it
+        if hasattr(ui, "set_worker_scan_progress"):
+            ui.set_worker_scan_progress(slot, set_name, i, total, _fmt_hms(eta_s))
+            return
+        # Older split API
+        if hasattr(ui, "set_worker_set"):
+            ui.set_worker_set(slot, set_name)
+        if hasattr(ui, "set_worker_urls"):
+            ui.set_worker_urls(slot, i, total)
+        if hasattr(ui, "set_worker_eta"):
+            ui.set_worker_eta(slot, _fmt_hms(eta_s))
+        # As a last resort, stuff something compact into the scan slots list
+        elif hasattr(ui, "set_scan_slot"):
+            ui.set_scan_slot(slot, f"{set_name} {i}/{total} {_fmt_hms(eta_s)}")
+    except Exception:
+        # Never break the scan if UI chokes
+        pass
+
+def _ui_scan_banner_delta(ui, seen: int, already: int, bad: int) -> None:
+    try:
+        if hasattr(ui, "scan_progress_delta"):
+            ui.scan_progress_delta(seen, already, bad)
+    except Exception:
+        pass
+
+def _ui_scan_file_done(ui, file_path: Path, total: int, downloaded: int, bad: int) -> None:
+    try:
+        if hasattr(ui, "scan_file_done"):
+            ui.scan_file_done(file_path, total=total, downloaded=downloaded, bad=bad)
+    except Exception:
+        pass
+
+# ---------------------------------------------------------------------------
+
 def _scan_one_file_main_with_ytdlp(
     url_file: Path,
-    out_base: Path,
+    out_root: Path,
     *,
     yt_dlp: str,
     template: str,
     pause_evt: threading.Event,
     stop_evt: threading.Event,
-    ui_set_label,         # callable(text)
-    ui_progress,          # callable(seen, total, already, bad, eta)
-    log_fn,               # callable(str)
+    ui: object,
+    slot: int,
+    log_fn,
 ) -> URLFileInfo:
     """Slow & correct scan: query yt-dlp per URL and check presence."""
     urls = read_urls_from_files([url_file])
     total = len(urls)
     stem = url_file.stem
-    dest = out_base / stem
+    dest = _infer_dest_dir(out_root, url_file)
 
     seen = 0
     already = 0
     bad = 0
     start = time.time()
-
-    ui_set_label(f"main:{stem}")
+    # Initial paint for the worker block
+    _ui_set_worker_scan_progress(ui, slot, stem, 0, total, None)
 
     for url in urls:
         if stop_evt.is_set():
             break
         while pause_evt.is_set() and not stop_evt.is_set():
+            ui.pump()
             time.sleep(0.05)
 
         rc, value = _ytdlp_get_expected_filename(yt_dlp, url, template)
+        exists_flag: Optional[bool]
         if rc == 0:
             expected = value
-            ok = _exists_with_dup(dest, expected)
-            if ok:
+            exists_flag = _exists_with_dup(dest, expected)
+            if exists_flag:
                 already += 1
         else:
+            exists_flag = None
             bad += 1
-            log_fn(f"SCAN main {url_file} yt-dlp rc={rc} msg={value}")
+            log_fn(
+                f"SCAN main {url_file} yt-dlp rc={rc} msg={value}"
+            )
 
         seen += 1
+
+        # UI deltas for the global banner
+        _ui_scan_banner_delta(ui, seen=1, already=(1 if exists_flag else 0), bad=(1 if exists_flag is None else 0))
+
+        # Update worker lines with i/total + ETA
         elapsed = max(0.001, time.time() - start)
         rate = seen / elapsed
         eta = (max(0, total - seen) / rate) if rate > 0 else None
-        ui_progress(seen, total, already, bad, eta)
+        _ui_set_worker_scan_progress(ui, slot, stem, seen, total, eta)
+        ui.pump()
 
     remaining = max(0, total - already - bad)
+    _ui_scan_file_done(ui, url_file, total=total, downloaded=already, bad=bad)
+
     return URLFileInfo(
         url_file=url_file,
         stem=stem,
@@ -233,14 +346,16 @@ def _build_worklist(snap: CountsSnapshot) -> List[_WorkFile]:
             urls = read_urls_from_files([url_file])
         except Exception:
             urls = []
+        out_dir = Path(rec.get("out_dir") or DEF_OUT_DIR / url_file.stem)
+        remaining = int(rec.get("remaining") or max(0, len(urls) - int(rec.get("downloaded", 0))))
         work.append(
             _WorkFile(
                 url_file=url_file,
                 stem=str(rec.get("stem") or url_file.stem),
                 source=str(rec.get("source") or "main"),
-                out_dir=Path(rec.get("out_dir") or DEF_OUT_DIR / url_file.stem),
+                out_dir=out_dir,
                 urls=urls,
-                remaining=int(rec.get("remaining") or max(0, len(urls) - int(rec.get("downloaded", 0)))),
+                remaining=remaining,
             )
         )
     return work
@@ -250,7 +365,7 @@ def _build_worklist(snap: CountsSnapshot) -> List[_WorkFile]:
 def _scan_all_parallel(
     main_url_dir: Path,
     ae_url_dir: Path,
-    out_base: Path,
+    out_root: Path,
     *,
     yt_dlp: str,
     ytdlp_template: str,
@@ -261,99 +376,76 @@ def _scan_all_parallel(
     stop_evt: threading.Event,
     pause_evt: threading.Event,
 ) -> CountsSnapshot:
-    """Scan MAIN using yt-dlp; AE is skipped (placeholder) for now."""
+    """Scan MAIN using yt-dlp; AE is discovered but skipped for now."""
     def _iter_txt(d: Path) -> List[Path]:
         return [p for p in sorted(Path(d).glob("*.txt")) if p.is_file()]
 
     main_files: List[Path] = _iter_txt(main_url_dir)
-    ae_files: List[Path] = _iter_txt(ae_url_dir)  # collected only to announce skip
+    ae_files: List[Path] = _iter_txt(ae_url_dir)
+
     all_files: List[Tuple[Path, str]] = [(p, "main") for p in main_files] + [(p, "ae") for p in ae_files]
 
     snap = CountsSnapshot()
     snap.sources = {
-        "main": {"url_dir": str(main_url_dir.resolve()), "out_dir": str(out_base.resolve())},
-        "ae": {"url_dir": str(ae_url_dir.resolve()), "out_dir": str(out_base.resolve())},
+        "main": {"url_dir": str(main_url_dir.resolve()), "out_dir": str(out_root.resolve())},
+        "ae": {"url_dir": str(ae_url_dir.resolve()), "out_dir": str(out_root.resolve())},
     }
+    _atomic_write_text(counts_path, snap.to_json())
 
-    # write stub counts early
-    try:
-        _atomic_json(counts_path, snap.to_json())
-    except Exception:
-        pass
-
+    # UI setup
     ui.begin_scan(n_workers, len(all_files))
     ui.set_footer("Keys: z pause/resume • q confirm quit • Q force quit")
-    # optional TSV path for UI side (guarded)
     try:
         ui.set_scan_log_path(counts_path.with_name("ytaedl-scan-results.tsv"))
     except Exception:
         pass
 
-    q: "queue.Queue[tuple[Path,str]]" = queue.Queue()
-    for f, src in all_files:
-        q.put((f, src))
+    # Queue files
+    q: "queue.Queue[tuple[int, Path, str]]" = queue.Queue()
+    for idx, (f, src) in enumerate(all_files):
+        q.put((idx, f, src))
 
     files_lock = threading.Lock()
-    # per-slot running tallies to compute deltas for the banner
-    banner_state: Dict[int, Dict[str, int]] = {}
 
     def worker(slot: int):
         while not stop_evt.is_set():
             try:
-                f, src = q.get_nowait()
+                _idx, f, src = q.get_nowait()
             except queue.Empty:
                 break
 
-            # UI hooks for this slot
-            def set_label(text: str):
-                ui.set_scan_slot(slot, text)
-
-            def set_progress(seen: int, total: int, already: int, bad: int, eta: Optional[float]):
-                # keep the slot label compact; let Termdash handle columns
-                ui.set_scan_slot(slot, f"{src}:{f.stem} {seen}/{total} ✓{already} ✗{bad} {_fmt_hms(eta)}")
-                # banner deltas (guarded)
-                try:
-                    prev = banner_state.setdefault(slot, {"seen": 0, "already": 0, "bad": 0})
-                    d_seen = max(0, int(seen) - prev["seen"])
-                    d_alr  = max(0, int(already) - prev["already"])
-                    d_bad  = max(0, int(bad) - prev["bad"])
-                    if d_seen or d_alr or d_bad:
-                        if hasattr(ui, "scan_progress_delta"):
-                            ui.scan_progress_delta(d_seen, d_alr, d_bad)
-                    prev["seen"], prev["already"], prev["bad"] = int(seen), int(already), int(bad)
-                except Exception:
-                    pass
-
+            # Always paint the worker with a set name on start
             if src == "ae":
-                # For now, you asked to focus on yt-dlp. Mark AE as skipped.
-                set_label(f"ae:{f.stem} (skipped)")
+                # Skipped for now
+                ui.set_scan_slot(slot, f"ae:{f.stem} (skipped)")
                 ui.advance_scan(1)
                 continue
 
             log_fn(f"SCAN start main {f}")
-
             try:
                 info = _scan_one_file_main_with_ytdlp(
-                    f, out_base,
+                    f,
+                    out_root,
                     yt_dlp=yt_dlp,
                     template=ytdlp_template,
                     pause_evt=pause_evt,
                     stop_evt=stop_evt,
-                    ui_set_label=set_label,
-                    ui_progress=set_progress,
+                    ui=ui,
+                    slot=slot,
                     log_fn=log_fn,
                 )
             except Exception as ex:
                 log_fn(f"SCAN error main {f}: {ex}")
-                info = URLFileInfo(f, f.stem, "main", out_base / f.stem, 0, 0, 0, 0, False)
+                info = URLFileInfo(f, f.stem, "main", _infer_dest_dir(out_root, f), 0, 0, 0, 0, False)
 
+            # Record into JSON, append TSV line
             with files_lock:
                 try:
                     st = f.stat()
                     snap.files[str(f.resolve())] = {
                         "stem": info.stem,
                         "source": info.source,
-                        "out_dir": str(info.out_dir.resolve()),
+                        "out_dir": str(info.out_dir),
                         "url_count": info.url_count,
                         "downloaded": info.downloaded,
                         "bad": info.bad,
@@ -362,20 +454,23 @@ def _scan_all_parallel(
                         "url_mtime": int(st.st_mtime),
                         "url_size": int(st.st_size),
                     }
-                    _atomic_json(counts_path, snap.to_json())
+                    _atomic_write_text(counts_path, snap.to_json())
                 except Exception:
                     pass
 
-            # per-file summary to UI for TSV (guarded)
-            try:
-                ui.scan_file_done(f, total=info.url_count, downloaded=info.downloaded, bad=info.bad)
-            except Exception:
-                pass
+                # TSV: urlfile \t total \t downloaded \t bad \t remaining
+                try:
+                    tsv = counts_path.with_name("ytaedl-scan-results.tsv")
+                    _append_line(tsv, f"{f}\t{info.url_count}\t{info.downloaded}\t{info.bad}\t{info.remaining}")
+                except Exception:
+                    pass
 
             ui.advance_scan(1)
             log_fn(
                 f"SCAN done  main {f} urls={info.url_count} dl={info.downloaded} bad={info.bad} rem={info.remaining}"
             )
+
+            q.task_done()
 
             if stop_evt.is_set():
                 break
@@ -386,7 +481,7 @@ def _scan_all_parallel(
         t.start()
         threads.append(t)
 
-    # pump UI while workers run (keeps pause from misaligning)
+    # Keep pumping UI so pause/resume doesn't jank columns
     while any(t.is_alive() for t in threads):
         if stop_evt.is_set():
             break
@@ -404,12 +499,12 @@ def _scan_all_parallel(
 
 class _Coordinator:
     """Simple work balancer; prefers items with more remaining."""
-    def __init__(self, work: List[_WorkFile]):
+    def __init__(self, work: List["_WorkFile"]):
         self._lock = threading.Lock()
         self._work: Dict[str, _WorkFile] = {str(w.url_file.resolve()): w for w in work}
         self._assigned: Dict[str, int] = {}
 
-    def acquire_next(self) -> Optional[_WorkFile]:
+    def acquire_next(self) -> Optional["_WorkFile"]:
         with self._lock:
             candidates = sorted(self._work.values(), key=lambda w: (-w.remaining, w.stem))
             for w in candidates:
@@ -420,7 +515,7 @@ class _Coordinator:
                 return w
             return None
 
-    def release(self, wf: _WorkFile, *, remaining_delta: int = 0) -> None:
+    def release(self, wf: "_WorkFile", *, remaining_delta: int = 0) -> None:
         with self._lock:
             key = str(wf.url_file.resolve())
             if key not in self._work:
@@ -439,20 +534,18 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         description="Orchestrate scanning and downloads with a Termdash UI.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("-t", "--threads", type=int, default=2, help="Concurrent worker slots.")
+    p.add_argument("-t", "--threads", type=int, default=4, help="Concurrent worker slots.")
     p.add_argument("-m", "--max-dl", type=int, default=3, help="Max successful URLs per assignment.")
     p.add_argument("--url-dir", type=Path, default=DEF_URL_DIR, help="Main URL dir (stars).")
     p.add_argument("--ae-url-dir", type=Path, default=DEF_AE_URL_DIR, help="AE URL dir (ae-stars).")
-    p.add_argument("-o", "--output-dir", type=Path, default=DEF_OUT_DIR, help="Base output dir.")
+    p.add_argument("-o", "--output-dir", type=Path, default=DEF_OUT_DIR, help="Destination root (default ./stars).")
     p.add_argument("-c", "--counts-file", type=Path, default=DEF_COUNTS_FILE, help="JSON counts file path.")
-    p.add_argument("-e", "--exts", default=",".join(sorted(DEF_EXTS)), help="Extensions considered 'downloaded'.")
-    p.add_argument("--no-ui", action="store_true", help="Disable Termdash UI.")
     p.add_argument("--ytdlp", default="yt-dlp", help="yt-dlp executable for scan.")
-    p.add_argument("--ytdlp-template", default="%(title)s.%(ext)s", help="Template used to derive filenames.")
-    # Downloader config (subset; unchanged)
+    p.add_argument("--ytdlp-template", default="%(title)s.%(ext)s", help="Filename template for yt-dlp.")
+    # downloader knobs (unchanged surface; many are forwarded into DownloaderConfig)
     p.add_argument("-j", "--jobs", type=int, default=1, help="Per-process jobs for downloader.")
     p.add_argument("--archive", type=Path, default=None, help="Optional archive path.")
-    p.add_argument("--log-file", "-L", type=Path, help="Append log to this file.")
+    p.add_argument("--log-file", "-L", type=Path, help="Append log here.")
     p.add_argument("--timeout", type=int, default=None)
     p.add_argument("--rate-limit", default=None)
     p.add_argument("--buffer-size", default=None)
@@ -463,6 +556,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--aria2-x-conn", type=int, default=None)
     p.add_argument("--aria2-min-split", default=None)
     p.add_argument("--aria2-timeout", type=int, default=None)
+    p.add_argument("--no-ui", action="store_true", help="Disable Termdash UI.")
     return p.parse_args(argv)
 
 def _build_config(args: argparse.Namespace) -> DownloaderConfig:
@@ -496,18 +590,18 @@ def _build_config(args: argparse.Namespace) -> DownloaderConfig:
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
 
-    # normalize paths
+    # normalize
     args.url_dir = Path(args.url_dir)
     args.ae_url_dir = Path(args.ae_url_dir)
     args.output_dir = Path(args.output_dir)
     args.counts_file = Path(args.counts_file)
 
-    # optional log file
+    # simple log
     log_fp = None
     if args.log_file:
         try:
             args.log_file.parent.mkdir(parents=True, exist_ok=True)
-            log_fp = open(args.log_file, "a", encoding="utf-8")
+            log_fp = args.log_file.open("a", encoding="utf-8")
         except Exception:
             log_fp = None
 
@@ -609,7 +703,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         olog("orchestrator start")
         threading.Thread(target=_key_reader, daemon=True, name="keys").start()
 
-        # ---- SCAN (yt-dlp per URL, main only) ----
+        # ---- SCAN (yt-dlp per URL, main only for now) ----
         snap = _scan_all_parallel(
             args.url_dir,
             args.ae_url_dir,
@@ -629,11 +723,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                 except Exception: pass
             return 130
 
-        # ---- Build work and run downloads (unchanged semantics) ----
+        # ---- Build work & download (unchanged semantics) ----
         work = sorted(_build_worklist(snap), key=lambda w: (w.remaining, w.stem))
         coord = _Coordinator(work)
 
         cfg = _build_config(args)
+        # frozen dataclass fix
         object.__setattr__(cfg, "_orchestrator_max_dl", int(args.max_dl))
 
         def worker(slot: int):
@@ -641,7 +736,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                 wf = coord.acquire_next()
                 if wf is None:
                     break
-                ui.set_scan_slot(slot, f"{wf.source}:{wf.stem} downloading (rem {wf.remaining})")
+                try:
+                    ui.set_scan_slot(slot, f"{wf.source}:{wf.stem} downloading (rem {wf.remaining})")
+                except Exception:
+                    pass
+
                 completed = 0
                 cap = getattr(cfg, "_orchestrator_max_dl", 3)
 
@@ -655,18 +754,20 @@ def main(argv: Optional[List[str]] = None) -> int:
                         break
 
                     dest_dir = wf.out_dir
-                    # fast skip if clearly present
                     try:
                         slug = get_url_slug(url)
-                        # simple slug existence check — keep behavior stable
                         present = any(p.name.startswith(slug) for p in dest_dir.glob("*"))
                     except Exception:
                         present = False
+
                     if present:
                         try:
-                            item = DownloadItem(id=idx, url=url,
-                                                source=URLSource.MAIN if wf.source == "main" else URLSource.AE,
-                                                out_dir=dest_dir)
+                            item = DownloadItem(
+                                id=idx,
+                                url=url,
+                                source=URLSource.MAIN if wf.source == "main" else URLSource.AE,
+                                out_dir=dest_dir,
+                            )
                             ui.handle_event(LogEvent(item=item, message="already_exists"))
                             ui.pump()
                         except Exception:
