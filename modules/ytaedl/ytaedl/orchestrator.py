@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
+# ---------- local imports ----------
 from .downloaders import (
     get_downloader,
     terminate_all_active_procs,
@@ -34,61 +35,47 @@ from .ui import SimpleUI, TermdashUI
 from .url_parser import is_aebn_url, get_url_slug
 
 # ---------- defaults ----------
-DEF_URL_DIR = Path("./files/downloads/stars")
-DEF_AE_URL_DIR = Path("./files/downloads/ae-stars")
-DEF_OUT_DIR = Path("./stars")
-DEF_COUNTS_FILE = Path("./urlfile_dl_counts.txt")  # JSON content
-DEF_EXTS = {"mp4", "mkv", "webm", "mov", "avi", "m4v", "flv", "wmv", "ts"}
+DEF_URL_DIR = Path("files/downloads/stars")
+DEF_AE_URL_DIR = Path("files/downloads/ae-stars")
+DEF_OUT_DIR = Path("files/downloads/out")
+DEF_COUNTS_FILE = Path("files/downloads/ytaedl-counts.json")
+DEF_EXTS = {"mp4", "mkv", "webm", "mp3", "m4a", "wav"}
 
 # ---------- helpers ----------
 def _now_ts() -> str:
-    import datetime as dt
-    return dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return time.strftime("%Y-%m-%d %H:%M:%S")
 
 def _fmt_hms(seconds: Optional[float]) -> str:
     if seconds is None:
         return "--:--:--"
-    try:
-        s = int(max(0, seconds))
-    except Exception:
-        s = 0
-    return f"{s//3600:02d}:{(s%3600)//60:02d}:{s%60:02d}"
+    s = int(max(0, seconds))
+    h, r = divmod(s, 3600)
+    m, s = divmod(r, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
 
 def _read_text(path: Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8", errors="ignore")
-    except Exception:
-        return path.read_text(errors="ignore")
+    return path.read_text(encoding="utf-8", errors="ignore")
 
 def _atomic_write_json(path: Path, obj: dict) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    tmp.write_text(json.dumps(obj, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
 
 def _count_downloaded_in_dir(dest: Path, exts: Iterable[str]) -> int:
-    """Fast count of existing video files in dest (case-insensitive)."""
     if not dest.exists():
         return 0
-    want = {("." + e.lower().lstrip(".")) for e in exts}
     cnt = 0
-    try:
-        for f in dest.rglob("*"):
-            if f.is_file():
-                try:
-                    if f.suffix.lower() in want:
-                        cnt += 1
-                except Exception:
-                    pass
-    except Exception:
-        pass
+    for p in dest.iterdir():
+        if p.is_file() and p.suffix.lower().lstrip(".") in exts:
+            cnt += 1
     return cnt
 
-# ---------- scanning ----------
-@dataclass
+# ---- data structures for scan & scheduling ----------------------------
+@dataclass(frozen=True)
 class URLFileInfo:
     url_file: Path
     stem: str
-    source: str
+    source: str  # "main" or "ae"
     out_dir: Path
     url_count: int
     downloaded: int
@@ -104,25 +91,23 @@ class CountsSnapshot:
     files: Dict[str, dict] = field(default_factory=dict)
 
     def to_json(self) -> dict:
-        return dataclasses.asdict(self)
+        return dict(
+            version=self.version,
+            computed_at=self.computed_at,
+            sources=self.sources,
+            files=self.files,
+        )
 
     @staticmethod
     def from_json(obj: dict) -> "CountsSnapshot":
         cs = CountsSnapshot()
         cs.version = int(obj.get("version", 1))
-        cs.computed_at = obj.get("computed_at", _now_ts())
-        cs.sources = obj.get("sources", {})
-        cs.files = obj.get("files", {})
+        cs.computed_at = str(obj.get("computed_at", _now_ts()))
+        cs.sources = dict(obj.get("sources", {}))
+        cs.files = dict(obj.get("files", {}))
         return cs
 
 def _is_snapshot_complete(snap: "CountsSnapshot", main_url_dir: Path, ae_url_dir: Path) -> bool:
-    """
-    A snapshot is "complete" if it lists every current *.txt under both roots
-    and each entry's stored mtime/size matches the file on disk.
-
-    Tests call this with (snap, tmp_path, tmp_path).
-    """
-
     def _iter_txt(d: Path) -> List[Path]:
         d = Path(d)
         return [p for p in sorted(d.glob("*.txt")) if p.is_file()]
@@ -154,55 +139,53 @@ def _fast_scan_urlfile(
     url_file: Path,
     status_cb,                   # callable(label: str)
     progress_cb,                 # callable(seen:int, urls:int, dl:int, bad:int, eta:float|None)
-    pause_evt: threading.Event,
-    stop_evt: threading.Event,
     *,
-    count_downloaded: int,
-) -> tuple[int, int, int]:
+    out_dir: Path,
+    exts: Iterable[str],
+    stop_evt: threading.Event,
+    pause_evt: threading.Event,
+) -> Tuple[int, int, int]:
     """
-    Single-pass line scanner:
-      - counts URL-ish lines (http/https) as 'urls'
-      - non-URL non-comment lines => 'bad'
-      - 'downloaded' is supplied up-front (quick dir walk)
-      - progress reported periodically via progress_cb
-    Returns: (urls_total, downloaded, bad)
+    Read & classify URLs by simple rules; count already-downloaded by matching files in
+    destination directory (by suffix only; *fast* approximation).
     """
-    urls = 0
+    try:
+        urls = read_urls_from_files([url_file])
+    except Exception:
+        urls = []
+    total = len(urls)
+    # pre-count existing files
+    count_downloaded = _count_downloaded_in_dir(out_dir, exts)
     bad = 0
     seen = 0
+
+    status_cb("reading")
+
     start = time.time()
-    last_tick = start
+    last_eta = None
+    for u in urls:
+        if stop_evt.is_set():
+            break
+        # pause gate (keeps UI aligned; pump is handled by caller)
+        while pause_evt.is_set() and not stop_evt.is_set():
+            time.sleep(0.05)
+        if stop_evt.is_set():
+            break
 
-    # display initial label
-    status_cb(f"working")
+        seen += 1
+        # fast "bad" heuristic
+        if not (u.startswith("http://") or u.startswith("https://")):
+            bad += 1
 
+        elapsed = max(0.001, time.time() - start)
+        rate = seen / elapsed
+        eta = (max(0, total - seen) / rate) if rate > 0 and total > 0 else None
+        last_eta = eta
+        progress_cb(seen, total, count_downloaded, bad, eta)
+
+    # log occasional heartbeat via caller throttle
     try:
-        with url_file.open("r", encoding="utf-8", errors="ignore") as fh:
-            for raw in fh:
-                if stop_evt.is_set():
-                    break
-                while pause_evt.is_set() and not stop_evt.is_set():
-                    time.sleep(0.05)
-
-                s = raw.strip()
-                if not s or s.startswith("#"):
-                    continue
-                if s.startswith("http://") or s.startswith("https://"):
-                    urls += 1
-                else:
-                    bad += 1
-                seen += 1
-
-                # periodic UI/progress update (~10Hz max)
-                now = time.time()
-                if now - last_tick >= 0.1:
-                    elapsed = max(0.001, now - start)
-                    rate = seen / elapsed
-                    eta = (max(0, urls - seen) / rate) if rate > 0 and urls > 0 else None
-                    progress_cb(seen, urls or seen, count_downloaded, bad, eta)
-                    last_tick = now
-    except FileNotFoundError:
-        pass
+        progress_cb(seen, total, count_downloaded, bad, last_eta)
     except Exception:
         # keep it resilient
         pass
@@ -210,9 +193,9 @@ def _fast_scan_urlfile(
     # final update
     elapsed = max(0.001, time.time() - start)
     rate = seen / elapsed
-    eta = (max(0, urls - seen) / rate) if rate > 0 and urls > 0 else None
-    progress_cb(seen, urls or seen, count_downloaded, bad, eta)
-    return urls, count_downloaded, bad
+    eta = (max(0, total - seen) / rate) if rate > 0 and total > 0 else None
+    progress_cb(seen, total or seen, count_downloaded, bad, eta)
+    return total, count_downloaded, bad
 
 def _scan_one_file_main(
     url_file: Path,
@@ -235,17 +218,27 @@ def _scan_one_file_main(
     def _progress(seen, urls, dl, bad, eta):
         ui_progress(seen, urls, dl, bad, eta)
 
-    urls_total, downloaded, bad = _fast_scan_urlfile(
+    total, already, bad = _fast_scan_urlfile(
         url_file,
-        _status,
-        _progress,
-        pause_evt,
-        stop_evt,
-        count_downloaded=dl_count,
+        status_cb=_status,
+        progress_cb=_progress,
+        out_dir=dest,
+        exts=exts,
+        stop_evt=stop_evt,
+        pause_evt=pause_evt,
     )
-
-    remaining = max(0, urls_total - downloaded - bad)
-    return URLFileInfo(url_file, url_file.stem, "main", dest, urls_total, downloaded, bad, remaining, True)
+    remaining = max(0, total - already - bad)
+    return URLFileInfo(
+        url_file=url_file,
+        stem=url_file.stem,
+        source="main",
+        out_dir=dest,
+        url_count=total,
+        downloaded=already,
+        bad=bad,
+        remaining=remaining,
+        viable_checked=True,
+    )
 
 def _scan_one_file_ae(
     url_file: Path,
@@ -254,11 +247,10 @@ def _scan_one_file_ae(
     *,
     pause_evt: threading.Event,
     stop_evt: threading.Event,
-    ui_set_label,      # callable(text)
-    ui_progress,       # callable(seen, urls, dl, bad, eta)
+    ui_set_label,  # callable(text)
+    ui_progress,   # callable(seen, urls, dl, bad, eta)
     olog,
 ) -> URLFileInfo:
-    """AE scan path — we still avoid slug-per-line FS hits; use quick dir walk."""
     dest = out_base / url_file.stem
     dl_count = _count_downloaded_in_dir(dest, exts)
 
@@ -268,20 +260,30 @@ def _scan_one_file_ae(
     def _progress(seen, urls, dl, bad, eta):
         ui_progress(seen, urls, dl, bad, eta)
 
-    urls_total, downloaded, bad = _fast_scan_urlfile(
+    total, already, bad = _fast_scan_urlfile(
         url_file,
-        _status,
-        _progress,
-        pause_evt,
-        stop_evt,
-        count_downloaded=dl_count,
+        status_cb=_status,
+        progress_cb=_progress,
+        out_dir=dest,
+        exts=exts,
+        stop_evt=stop_evt,
+        pause_evt=pause_evt,
+    )
+    remaining = max(0, total - already - bad)
+    return URLFileInfo(
+        url_file=url_file,
+        stem=url_file.stem,
+        source="ae",
+        out_dir=dest,
+        url_count=total,
+        downloaded=already,
+        bad=bad,
+        remaining=remaining,
+        viable_checked=True,
     )
 
-    remaining = max(0, urls_total - downloaded)  # 'bad' is informational for AE
-    return URLFileInfo(url_file, url_file.stem, "ae", dest, urls_total, downloaded, bad, remaining, False)
-
-# ---------- selection ----------
-@dataclass
+# ---------- build worklist ----------
+@dataclass(frozen=True)
 class _WorkFile:
     url_file: Path
     stem: str
@@ -292,9 +294,13 @@ class _WorkFile:
 
 def _build_worklist(snap: CountsSnapshot, exts: Iterable[str]) -> List[_WorkFile]:
     work: List[_WorkFile] = []
-    for k, rec in snap.files.items():
-        url_file = Path(k)
-        urls = read_urls_from_files([url_file])
+    files = snap.files
+    for key, rec in files.items():
+        url_file = Path(key)
+        try:
+            urls = read_urls_from_files([url_file])
+        except Exception:
+            urls = []
         work.append(
             _WorkFile(
                 url_file=url_file,
@@ -325,9 +331,9 @@ def _scan_all_parallel(
     def _iter_txt(d: Path) -> List[Path]:
         return [p for p in sorted(Path(d).glob("*.txt")) if p.is_file()]
 
-    main_files = [(f, "main") for f in _iter_txt(main_url_dir)]
-    ae_files = [(f, "ae") for f in _iter_txt(ae_url_dir)]
-    all_files = main_files + ae_files
+    all_files: List[Tuple[Path, str]] = [(p, "main") for p in _iter_txt(main_url_dir)] + [
+        (p, "ae") for p in _iter_txt(ae_url_dir)
+    ]
 
     snap = CountsSnapshot()
     snap.sources = {
@@ -345,6 +351,11 @@ def _scan_all_parallel(
         return snap
 
     ui.begin_scan(n_workers, len(all_files))
+    # Write scan results TSV next to counts file (guarded for SimpleUI/older UI)
+    try:
+        ui.set_scan_log_path(counts_path.with_name("ytaedl-scan-results.tsv"))
+    except Exception:
+        pass
     ui.set_footer("Keys: z pause/resume | q confirm quit | Q force quit")
 
     q: "queue.Queue[tuple[Path,str]]" = queue.Queue()
@@ -352,6 +363,8 @@ def _scan_all_parallel(
         q.put((f, src))
 
     lock = threading.Lock()
+    # per-slot progress tallies to compute deltas for the banner
+    progress_state: Dict[int, Dict[str, int]] = {}
 
     def _progress_logger_throttled(prefix: str, path: Path):
         last = 0.0
@@ -378,6 +391,18 @@ def _scan_all_parallel(
             def set_progress(seen: int, urls: int, dl: int, bad: int, eta: Optional[float]):
                 label = f"{src}:{f.stem} | {seen}/{urls} | dl {dl} | bad {bad} | ETA {_fmt_hms(eta)}"
                 ui.set_scan_slot(slot, label)
+                # update banner with deltas (guarded for SimpleUI/older UI)
+                try:
+                    prev = progress_state.setdefault(slot, {"seen": 0, "dl": 0, "bad": 0})
+                    d_seen = max(0, int(seen) - int(prev["seen"]))
+                    d_dl = max(0, int(dl) - int(prev["dl"]))
+                    d_bad = max(0, int(bad) - int(prev["bad"]))
+                    if d_seen or d_dl or d_bad:
+                        if hasattr(ui, "scan_progress_delta"):
+                            ui.scan_progress_delta(d_seen, d_dl, d_bad)
+                    prev["seen"], prev["dl"], prev["bad"] = int(seen), int(dl), int(bad)
+                except Exception:
+                    pass
 
             olog(f"SCAN start {src} {f}")
 
@@ -398,7 +423,7 @@ def _scan_all_parallel(
                     )
             except Exception as ex:
                 info = URLFileInfo(f, f.stem, src, out_base / f.stem, 0, 0, 0, 0, False)
-                olog(f"SCAN error {f}: {ex}")
+                olog(f"SCAN error {src} {f}: {ex}")
 
             with lock:
                 # If we were asked to stop, still persist what we have so far.
@@ -419,6 +444,12 @@ def _scan_all_parallel(
                     _atomic_write_json(counts_path, snap.to_json())
                 except Exception:
                     pass
+
+            # notify UI of per-file finalization for TSV & banner sync (guarded)
+            try:
+                ui.scan_file_done(f, total=info.url_count, downloaded=info.downloaded, bad=info.bad)
+            except Exception:
+                pass
 
             ui.advance_scan(1)
             olog(
@@ -467,62 +498,48 @@ def _key_listener(ui, pause_evt: threading.Event, stop_evt: threading.Event, olo
                 r, _, _ = select.select([fd], [], [], 0.1)
                 if not r:
                     continue
-                ch = os.read(fd, 1).decode(errors="ignore")
-                if ch:
-                    yield ch
+                ch = os.read(fd, 1)
+                if not ch:
+                    continue
+                yield ch.decode(errors="ignore")
         finally:
-            try:
-                termios.tcsetattr(fd, termios.TCSADRAIN, old)
-            except Exception:
-                pass
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
     def _read_char_win():
         import msvcrt
         while not stop_evt.is_set():
             if msvcrt.kbhit():
                 ch = msvcrt.getwch()
-                if ch:
-                    yield ch
+                yield ch
             else:
                 time.sleep(0.1)
 
     reader = _read_char_win if os.name == "nt" else _read_char_posix
 
-    ui.set_footer("Keys: z pause/resume | q confirm quit | Q force quit")
     for ch in reader():
-        if ch == "z":
-            paused = not pause_evt.is_set()
-            if paused:
-                pause_evt.set()
-            else:
+        if ch in ("z", "Z"):
+            if pause_evt.is_set():
                 pause_evt.clear()
-            ui.set_paused(paused)
-            olog(f"hotkey: pause={'on' if paused else 'off'}")
-
+                try: ui.set_paused(False)
+                except Exception: pass
+                olog("pause: off")
+            else:
+                pause_evt.set()
+                try: ui.set_paused(True)
+                except Exception: pass
+                olog("pause: on")
+        elif ch == "q":
+            stop_evt.set()
+            olog("quit requested (soft)")
+            break
         elif ch == "Q":
-            olog("hotkey: FORCE QUIT")
             stop_evt.set()
             request_abort()
             terminate_all_active_procs()
-            return
+            olog("quit requested (force)")
+            break
 
-        elif ch == "q":
-            ui.set_footer("Quit? press 'y' to confirm, any other key to cancel")
-            # wait one next keystroke
-            try:
-                nxt = next(reader())
-            except StopIteration:
-                nxt = None
-            if nxt and nxt.lower() == "y":
-                olog("hotkey: quit confirmed")
-                stop_evt.set()
-                request_abort()
-                terminate_all_active_procs()
-                return
-            else:
-                ui.set_footer("Cancelled. Keys: z pause/resume | q confirm quit | Q force quit")
-
-# ---------- main orchestrator ----------
+# ---------- CLI ----------
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="yt-ae-orchestrate",
@@ -540,55 +557,57 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--ytdlp-template", default="%(title)s.%(ext)s", help="Template used for yt-dlp expected names.")
     # pass-through to DownloaderConfig
     p.add_argument("-j", "--jobs", type=int, default=1, help="(per-process) jobs for yt-dlp/aebndl.")
-    p.add_argument("-w", "--work-dir", type=Path, default=Path("./tmp_dl"), help="Working directory for caches.")
-    p.add_argument("-tO", "--timeout", type=int, default=3600, help="Per-download timeout (seconds).")
-    p.add_argument("-L", "--log-file", type=Path, help="Append a text log of events to this file.")
-    p.add_argument("-A", "--aebn-arg", action="append", help="Append raw arg to aebndl (repeatable).")
-    p.add_argument("-Y", "--ytdlp-arg", action="append", help="Append raw arg to yt-dlp (repeatable).")
+    p.add_argument("--archive", type=Path, default=None, help="Optional archive file to skip known URLs.")
+    p.add_argument("--log-file", "-L", type=Path, help="Append a text log of events to this file.")
+    p.add_argument("--timeout", type=int, default=None, help="Downloader timeout (seconds).")
+    p.add_argument("--rate-limit", default=None, help="yt-dlp --throttled-rate.")
+    p.add_argument("--buffer-size", default=None, help="yt-dlp --buffer-size.")
+    p.add_argument("--retries", type=int, default=None, help="yt-dlp --retries.")
+    p.add_argument("--fragment-retries", type=int, default=None, help="yt-dlp --fragment-retries.")
+    p.add_argument("--ytdlp-connections", type=int, default=None, help="yt-dlp -N.")
+    p.add_argument("--aria2-splits", type=int, default=None, help="aria2 split count.")
+    p.add_argument("--aria2-x-conn", type=int, default=None, help="aria2 max connections per server.")
+    p.add_argument("--aria2-min-split", default=None, help="aria2 --min-split-size (e.g. 1M).")
+    p.add_argument("--aria2-timeout", type=int, default=None, help="aria2 --timeout seconds.")
     return p.parse_args(argv)
 
 def _build_config(args: argparse.Namespace) -> DownloaderConfig:
     return DownloaderConfig(
-        work_dir=args.work_dir,
-        timeout_seconds=int(args.timeout),
-        parallel_jobs=max(1, int(args.jobs)),
+        work_dir=args.output_dir,
+        archive_path=args.archive,
+        max_size_gb=10.0,
+        keep_oversized=False,
+        timeout_seconds=args.timeout,
+        parallel_jobs=max(1, args.jobs),
+        aebn_only=False,
+        scene_from_url=True,
         save_covers=False,
-        extra_aebn_args=args.aebn_arg or [],
-        extra_ytdlp_args=args.ytdlp_arg or [],
+        keep_covers_flag=False,
+        extra_aebn_args=[],
+        extra_ytdlp_args=[],
+        ytdlp_connections=args.ytdlp_connections,
+        ytdlp_rate_limit=args.rate_limit,
+        ytdlp_retries=args.retries,
+        ytdlp_fragment_retries=args.fragment_retries,
+        ytdlp_buffer_size=args.buffer_size,
+        aria2_splits=args.aria2_splits,
+        aria2_x_conn=args.aria2_x_conn,
+        aria2_min_split=args.aria2_min_split,
+        aria2_timeout=args.aria2_timeout,
         log_file=args.log_file,
     )
 
-class _Coordinator:
-    """Assign URL files to workers by highest `remaining` first (thread-safe)."""
-    def __init__(self, work: List[_WorkFile]):
-        self._lock = threading.Lock()
-        self._assigned: set[str] = set()
-        self._work = sorted(work, key=lambda w: (w.remaining, w.stem), reverse=True)
-
-    def acquire_next(self) -> Optional[_WorkFile]:
-        with self._lock:
-            for wf in self._work:
-                key = str(wf.url_file.resolve())
-                if key in self._assigned:
-                    continue
-                if wf.remaining <= 0:
-                    continue
-                self._assigned.add(key)
-                return wf
-            return None
-
-    def release(self, wf: _WorkFile, remaining_delta: int) -> None:
-        with self._lock:
-            wf.remaining = max(0, wf.remaining + remaining_delta)
-            key = str(wf.url_file.resolve())
-            self._assigned.discard(key)
-            self._work.sort(key=lambda w: (w.remaining, w.stem), reverse=True)
-
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
-    exts = {e.strip().lower().lstrip(".") for e in args.exts.split(",") if e.strip()} or set(DEF_EXTS)
 
-    # open orchestrator log early
+    # normalize paths
+    args.url_dir = Path(args.url_dir)
+    args.ae_url_dir = Path(args.ae_url_dir)
+    args.output_dir = Path(args.output_dir)
+    args.counts_file = Path(args.counts_file)
+    args.exts = set([s.strip().lstrip(".").lower() for s in str(args.exts).split(",") if s.strip()])
+
+    # logging shim: write to --log-file if set
     log_fp = None
     if args.log_file:
         try:
@@ -597,7 +616,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         except Exception:
             log_fp = None
 
-    def olog(line: str):
+    def olog(line: str) -> None:
         if log_fp:
             try:
                 log_fp.write(f"[{_now_ts()}] {line}\n")
@@ -612,17 +631,23 @@ def main(argv: Optional[List[str]] = None) -> int:
             ui = TermdashUI(num_workers=max(1, args.threads), total_urls=0)
         except Exception as ex:
             olog(f"UI fallback: {ex}")
-            ui = SimpleUI()
+            # Some SimpleUI variants take no args; be tolerant.
+            try:
+                ui = SimpleUI(num_workers=max(1, args.threads), total_urls=0)
+            except TypeError:
+                ui = SimpleUI()
             use_ui = False
     else:
-        ui = SimpleUI()
+        try:
+            ui = SimpleUI(num_workers=max(1, args.threads), total_urls=0)
+        except TypeError:
+            ui = SimpleUI()
 
     stop_evt = threading.Event()
-    pause_evt = threading.Event()  # when set => paused
+    pause_evt = threading.Event()
 
-    # signals
-    def _handle_sigint(signum, frame):
-        olog("SIGINT: stopping")
+    # SIGINT: stop + pass through to downloaders
+    def _handle_sigint(_sig, _frm):
         stop_evt.set()
         request_abort()
         terminate_all_active_procs()
@@ -638,6 +663,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         threading.Thread(target=_key_listener, args=(ui, pause_evt, stop_evt, olog), daemon=True).start()
 
         # scan phase (now responsive & visible)
+        exts = set(args.exts)
         snap = _scan_all_parallel(
             args.url_dir, args.ae_url_dir, args.output_dir, exts,
             n_workers=max(1, args.threads),
@@ -654,35 +680,30 @@ def main(argv: Optional[List[str]] = None) -> int:
             if log_fp:
                 try: log_fp.close()
                 except Exception: pass
-            return 0
+            return 130  # interrupted
 
-        work = _build_worklist(snap, exts)
-        if not work:
-            olog("no work; exiting")
-            if log_fp:
-                log_fp.close()
-            return 0
+        # build worklist (balanced by fewest remaining first)
+        work = sorted(_build_worklist(snap, exts), key=lambda w: (w.remaining, w.stem))
 
-        cfg = _build_config(args)
-        object.__setattr__(cfg, "_orchestrator_max_dl", int(args.max_dl))
-
+        # Coordinator balances assignments to different stems
         coord = _Coordinator(work)
 
-        def _worker_thread(slot: int):
-            max_dl = getattr(cfg, "_orchestrator_max_dl", 3)
-            while not stop_evt.is_set():
-                # pause gate
-                while pause_evt.is_set() and not stop_evt.is_set():
-                    ui.pump()
-                    time.sleep(0.1)
-                if stop_evt.is_set():
-                    break
+        # downloader config
+        cfg = _build_config(args)
+        # store per-assignment cap on successful downloads (frozen dataclass fix)
+        object.__setattr__(cfg, "_orchestrator_max_dl", int(args.max_dl))
 
+        # worker thread
+        def _worker_thread(slot: int):
+            while not stop_evt.is_set():
                 wf = coord.acquire_next()
-                if not wf:
-                    break
+                if wf is None:
+                    break  # nothing left
+
+                ui.set_scan_slot(slot, f"{wf.source}:{wf.stem} | downloading (rem {wf.remaining})")
 
                 completed_for_this_assignment = 0
+                max_dl = getattr(cfg, "_orchestrator_max_dl", 3)
 
                 for idx, url in enumerate(wf.urls, start=1):
                     if stop_evt.is_set():
@@ -698,30 +719,37 @@ def main(argv: Optional[List[str]] = None) -> int:
 
                     # quick skip if already present
                     try:
-                        if is_aebn_url(url):
-                            slug = get_url_slug(url)
-                            # Use quick dir walk instead of slug-by-slug checks during downloads
-                            # (downloaders will re-check accurately)
-                            if _count_downloaded_in_dir(dest_dir, exts) >= 1:
-                                pass  # fall through; still allow download attempt if mismatched
-                        else:
-                            # Fast presence check via directory count + name-agnostic heuristic
-                            if _count_downloaded_in_dir(dest_dir, exts) >= 1:
-                                pass
+                        slug = get_url_slug(url)
+                        any_present = any((dest_dir / f).exists() for f in os.listdir(dest_dir) if f.startswith(slug))
                     except Exception:
-                        pass
+                        any_present = False
+                    if any_present:
+                        # simulate Already event into UI
+                        try:
+                            item = DownloadItem(id=idx, url=url, source=URLSource.MAIN if wf.source=="main" else URLSource.AE, out_dir=dest_dir)
+                            ui.handle_event(LogEvent(item=item, message="already_exists"))
+                            ui.pump()
+                        except Exception:
+                            pass
+                        completed_for_this_assignment += 1
+                        continue
 
-                    local_id = slot * 1_000_000 + idx
+                    dl = get_downloader(url)
                     item = DownloadItem(
-                        id=local_id,
+                        id=idx,
                         url=url,
-                        output_dir=dest_dir,
-                        source=URLSource(file=wf.url_file, line_number=idx, original_url=url),
-                        retries=3,
+                        source=URLSource.MAIN if wf.source == "main" else URLSource.AE,
+                        out_dir=dest_dir,
                     )
-                    dl = get_downloader(url, cfg)
                     try:
-                        for ev in dl.download(item):
+                        ui.handle_event(StartEvent(item=item))
+                        ui.pump()
+
+                        # yield events from underlying downloader
+                        for ev in dl.download(item, cfg):
+                            if stop_evt.is_set():
+                                break
+                            # forward to UI + log summary style
                             if isinstance(ev, StartEvent):
                                 olog(f"START {ev.item.id} {ev.item.url}")
                             elif isinstance(ev, FinishEvent):
@@ -737,27 +765,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                         break
                     except Exception as ex:
                         olog(f"DL error {url}: {ex}")
+                    finally:
+                        ui.pump()
 
-                    # post-check for completion (lightweight heuristic)
-                    did_complete = False
-                    try:
-                        did_complete = _count_downloaded_in_dir(dest_dir, exts) >= 1
-                    except Exception:
-                        did_complete = False
-
-                    if did_complete:
-                        completed_for_this_assignment += 1
-                        k = str(wf.url_file.resolve())
-                        try:
-                            obj = json.loads(_read_text(args.counts_file))
-                            rec = obj.get("files", {}).get(k)
-                            if rec:
-                                rec["downloaded"] = int(rec.get("downloaded", 0)) + 1
-                                rec["remaining"] = max(0, int(rec.get("remaining", 0)) - 1)
-                                _atomic_write_json(args.counts_file, obj)
-                        except Exception:
-                            pass
-
+                    # consider a "successful" outcome; we count already/complete as a success for assignment pacing
+                    completed_for_this_assignment += 1
                     if completed_for_this_assignment >= max_dl:
                         break
 
@@ -772,13 +784,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         try:
             while any(t.is_alive() for t in threads) and not stop_evt.is_set():
                 ui.pump()
-                time.sleep(0.05)
+                time.sleep(0.1)
         finally:
-            stop_evt.set()
-            request_abort()
-            terminate_all_active_procs()
             for t in threads:
-                t.join(timeout=1.0)
+                try:
+                    t.join(timeout=1.0)
+                except Exception:
+                    pass
 
         ui.summary({}, time.monotonic())
 
@@ -789,6 +801,44 @@ def main(argv: Optional[List[str]] = None) -> int:
             pass
     return 0
 
+# ---------- work coordinator (tested in tests/test_orchestrator.py) ----------
+class _Coordinator:
+    """Pick next file to work on:
+       - prefer files with the largest remaining count,
+       - avoid assigning the same stem to two slots concurrently when possible.
+    """
+    def __init__(self, work: List[_WorkFile]):
+        self._lock = threading.Lock()
+        self._work: Dict[str, _WorkFile] = {str(w.url_file.resolve()): w for w in work}
+        self._assigned: Dict[str, int] = {}  # key -> #slots
+
+    def acquire_next(self) -> Optional[_WorkFile]:
+        with self._lock:
+            # prefer more remaining first; but avoid double-assigning the same stem
+            candidates = sorted(self._work.values(), key=lambda w: (-w.remaining, w.stem))
+            for w in candidates:
+                key = str(w.url_file.resolve())
+                # skip if already assigned to someone else and others exist
+                if any((other.stem != w.stem and other.remaining > 0) for other in candidates):
+                    if self._assigned.get(key, 0) > 0:
+                        continue
+                # assign
+                self._assigned[key] = self._assigned.get(key, 0) + 1
+                return w
+            return None
+
+    def release(self, wf: _WorkFile, *, remaining_delta: int = 0) -> None:
+        with self._lock:
+            key = str(wf.url_file.resolve())
+            if key not in self._work:
+                return
+            cur = self._work[key]
+            # update remaining
+            new_remaining = max(0, int(cur.remaining) + int(remaining_delta))
+            self._work[key] = dataclasses.replace(cur, remaining=new_remaining)
+            # drop assignment count
+            if key in self._assigned:
+                self._assigned[key] = max(0, self._assigned[key] - 1)
 
 if __name__ == "__main__":
     raise SystemExit(main())
