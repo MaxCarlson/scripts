@@ -25,12 +25,13 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import glob
+import os
 import shutil
 import sys
 import time
-import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 # NOTE: absolute imports so the CLI works whether installed or run from source
 from vdedup.pipeline import PipelineConfig, parse_pipeline, run_pipeline
@@ -326,6 +327,114 @@ def render_analysis_for_reports(paths: List[Path], verbosity: int = 1, *, show_p
     return "\n".join(out)
 
 
+# ========================
+# QoL: auto-named outputs
+# ========================
+
+def _q_tag(pipeline: str) -> str:
+    """
+    Build a compact 'q...' tag from a pipeline spec.
+    Examples: '1' -> 'q1', '1-2' -> 'q1-2', 'all' -> 'qall'
+    """
+    ps = (pipeline or "").strip()
+    if not ps:
+        return "q"
+    if any(ch.isdigit() for ch in ps):
+        keep = "".join(ch for ch in ps if (ch.isdigit() or ch == "-"))
+        return f"q{keep or ''}" if keep else "q"
+    return f"q{ps.replace(' ', '')}"
+
+
+def _auto_outputs(prefix: Optional[str], name: Optional[str], pipeline: str) -> Tuple[Optional[Path], Optional[Path]]:
+    """
+    Returns (cache_path, report_path) or (None, None) if insufficient info.
+    """
+    if not prefix or not name:
+        return (None, None)
+    tag = _q_tag(pipeline)
+    base = Path(prefix).expanduser().resolve()
+    base.mkdir(parents=True, exist_ok=True)
+    cache = base / f"{name}-{tag}-cache.jsonl"
+    report = base / f"{name}-{tag}-report.json"
+    return (cache, report)
+
+
+# =============================================
+# Per-directory recursion: DIR::dN / DIR::r / globs
+# =============================================
+
+def _parse_dir_spec(spec: str, default_depth: Optional[int]) -> Tuple[str, Optional[int]]:
+    """
+    Take a raw directory spec and return (pattern, depth).
+    pattern may contain glob characters (*, ?, []).
+    depth: None = unlimited, 0,1,2,..., or -1 treated as unlimited.
+    Syntax:
+      "<path>"             -> uses default_depth
+      "<path>::dN"         -> depth N
+      "<path>::r"          -> unlimited
+      "<glob>*::d0"        -> depth 0 applied to each match
+    """
+    s = spec
+    depth = default_depth
+    # split on the *last* '::' so Windows 'C:\' survives
+    if "::" in s:
+        left, right = s.rsplit("::", 1)
+        tag = right.lower().strip()
+        if tag == "r" or tag == "d-1":
+            depth = None
+        elif tag.startswith("d"):
+            try:
+                n = int(tag[1:])
+                depth = None if n < 0 else n
+            except Exception:
+                pass
+        s = left
+    return (s, depth)
+
+
+def _expand_glob(pattern: str) -> List[Path]:
+    """
+    Expand a directory pattern using glob. If no matches, return [pattern] so we can error later.
+    """
+    matches = [Path(p) for p in glob.glob(pattern)]
+    return matches or [Path(pattern)]
+
+
+def _walk_dirs_up_to(root: Path, max_depth: Optional[int]) -> Iterable[Path]:
+    """
+    Yield directories to scan honoring max_depth:
+      None -> unlimited (yield root itself; pipeline will recurse)
+      0    -> just root
+      N>0  -> root and all subdirs within distance <= N
+    """
+    if max_depth is None:
+        yield root
+        return
+    if max_depth == 0:
+        if root.is_dir():
+            yield root
+        return
+
+    # BFS up to depth N
+    if not root.is_dir():
+        return
+    yield root
+    cur: List[Path] = [root]
+    for _ in range(max_depth):
+        nxt: List[Path] = []
+        for d in cur:
+            try:
+                for child in d.iterdir():
+                    if child.is_dir():
+                        yield child
+                        nxt.append(child)
+            except Exception:
+                continue
+        cur = nxt
+        if not cur:
+            break
+
+
 # -------- CLI parsing --------
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
@@ -334,11 +443,19 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     # Directories (positional; 0+ so that --apply-report works without any)
-    p.add_argument("directories", nargs="*", help="One or more root directories to scan")
+    p.add_argument(
+        "directories",
+        nargs="*",
+        help=(
+            "One or more root directories to scan. "
+            "You can add a depth suffix per root like 'DIR::d0' (no recursion), 'DIR::d1', 'DIR::d2', or 'DIR::r' (unlimited). "
+            "Globs are supported and are expanded before scanning (e.g. '.\\stars\\*::d0')."
+        ),
+    )
 
     # Patterns & recursion
     p.add_argument("-p", "--pattern", action="append", help="Glob to include (repeatable), e.g. -p *.mp4 -p *.mkv")
-    p.add_argument("-r", "--recursive", action="store_true", help="Recurse into subdirectories (unlimited depth)")
+    p.add_argument("-r", "--recursive", action="store_true", help="Default: recurse into subdirectories (unlimited) for roots without a ::dN or ::r suffix")
 
     # Pipeline stages
     p.add_argument(
@@ -373,9 +490,13 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("-Z", "--stacked-ui", action="store_true", help="Force stacked UI (one metric per line)")
     p.add_argument("-W", "--wide-ui", action="store_true", help="Force wide UI (multi-column)")
 
-    # Cache & report
+    # Cache & report (manual)
     p.add_argument("-C", "--cache", type=str, help="Path to JSONL cache file (append-on-write, resumable)")
     p.add_argument("-R", "--report", type=str, help="Write JSON report to this path")
+
+    # QoL: auto-name outputs
+    p.add_argument("-S", "--scan-prefix", type=str, help="Directory to place auto-named outputs (used when -C/-R are not given)")
+    p.add_argument("-N", "--scan-name", type=str, help="Base name for auto-named outputs (e.g., 'scan' -> scan-q1-cache.jsonl, scan-q1-report.json)")
 
     # Report utilities
     p.add_argument("-P", "--print-report", action="append", help="Path to a JSON report to pretty-print (repeatable)")
@@ -385,7 +506,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     # Report analysis
     p.add_argument("-Y", "--analyze-report", action="append", help="Path to a JSON report to analyze (winner↔loser diffs). Repeatable.")
     p.add_argument("-D", "--diff-verbosity", type=int, default=1, choices=[0, 1], help="Analysis verbosity. 0=totals only, 1=pairs with stats.")
-    p.add_argument("-N", "--no-progress", action="store_true", help="Disable textual progress bar during report analysis.")
+    p.add_argument("-NQ", "--no-progress", dest="no_progress", action="store_true", help="Disable textual progress bar during report analysis.")
 
     # Apply report
     p.add_argument("-A", "--apply-report", type=str, help="Read a JSON report and delete/move all listed losers (or vault + hardlink if --vault is provided)")
@@ -466,7 +587,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if args.directories:
                 # when multiple directories are provided, compute a common base for backup layout
                 try:
-                    base_root = Path(os.path.commonpath([str(Path(d).expanduser().resolve()) for d in args.directories]))
+                    base_root = Path(os.path.commonpath([str(Path(d).expanduser().resolve().absolute()) for d in args.directories]))
                 except Exception:
                     base_root = None
 
@@ -497,14 +618,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("video-dedupe: error: the following arguments are required: one or more directories (or use -P/--print-report / -Y/--analyze-report)", file=sys.stderr)
         return 2
 
-    roots = [Path(d).expanduser().resolve() for d in args.directories]
-    for r in roots:
+    # Build (pattern, depth) per root, expand globs
+    default_depth: Optional[int] = None if args.recursive else 0
+    parsed_specs: List[Tuple[Path, Optional[int]]] = []
+    for spec in args.directories:
+        pat, depth = _parse_dir_spec(spec, default_depth)
+        for match in _expand_glob(pat):
+            parsed_specs.append((match.expanduser().resolve(), depth))
+
+    # Validate existence (pre-expansion will yield a concrete list)
+    for r, _d in parsed_specs:
         if not r.exists():
             print(f"video-dedupe: error: directory not found: {r}", file=sys.stderr)
             return 2
 
     patterns = _normalize_patterns(args.pattern)
-    max_depth = None if args.recursive else 0
+
+    # QoL auto-named outputs (only if -C/-R absent)
+    if (not args.cache or not args.report) and (args.scan_prefix and args.scan_name):
+        cache_auto, report_auto = _auto_outputs(args.scan_prefix, args.scan_name, args.pipeline)
+        if not args.cache and cache_auto:
+            args.cache = str(cache_auto)
+        if not args.report and report_auto:
+            args.report = str(report_auto)
 
     cfg = PipelineConfig(
         threads=max(1, int(args.threads)),
@@ -539,43 +675,102 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         stages = parse_pipeline(args.pipeline)
 
-        # Try to pass multiple roots if your pipeline supports it; else fall back to a single root run.
-        groups: Dict[str, Tuple[Any, List[Any]]]
-        try:
-            groups = run_pipeline(
-                roots=roots,                      # <— new: multiple roots, dedupes across them
-                patterns=patterns,
-                max_depth=max_depth,
-                selected_stages=stages,
-                cfg=cfg,
-                cache=cache,
-                reporter=reporter,
-                skip_paths=skip_paths,
-            )
-        except TypeError:
-            # Compatibility fallback: run the largest root (common parent) if it contains all roots,
-            # otherwise run the first root and warn that cross-root dedupe may be incomplete.
-            common: Optional[Path] = None
+        # Partition roots into: unlimited-depth batch (max_depth=None) and finite-depth batches expanded into max_depth=0
+        unlimited_roots: List[Path] = []
+        finite_expanded_roots: List[Path] = []
+        for root, depth in parsed_specs:
+            for d in _walk_dirs_up_to(root, depth):
+                # If depth is None (unlimited) and d==root, keep in unlimited bucket;
+                # otherwise we expand into finite list scanned at depth 0.
+                if depth is None and d == root:
+                    unlimited_roots.append(d)
+                else:
+                    finite_expanded_roots.append(d)
+
+        groups_all: Dict[str, Tuple[Any, List[Any]]] = {}
+
+        def _merge_groups(dst: Dict[str, Tuple[Any, List[Any]]], src: Dict[str, Tuple[Any, List[Any]]]):
+            # Avoid accidental key collisions by rewriting ids if necessary
+            for k, v in src.items():
+                nk = k
+                i = 1
+                while nk in dst and dst[nk] is not v:
+                    nk = f"{k}#{i}"
+                    i += 1
+                dst[nk] = v
+
+        # Run unlimited batch (if any)
+        if unlimited_roots:
             try:
-                common = Path(os.path.commonpath([str(r) for r in roots]))
-            except Exception:
-                common = None
-            root = common if common and common.exists() else roots[0]
-            if len(roots) > 1 and (common is None or common not in roots):
-                print("Warning: current pipeline doesn’t accept multiple roots; running on the first directory only. Cross-root duplicates may be missed.", file=sys.stderr)
-            groups = run_pipeline(
-                root=root,
-                patterns=patterns,
-                max_depth=max_depth,
-                selected_stages=stages,
-                cfg=cfg,
-                cache=cache,
-                reporter=reporter,
-                skip_paths=skip_paths,
-            )
+                g_unlim = run_pipeline(
+                    roots=unlimited_roots,
+                    patterns=patterns,
+                    max_depth=None,
+                    selected_stages=stages,
+                    cfg=cfg,
+                    cache=cache,
+                    reporter=reporter,
+                    skip_paths=skip_paths,
+                )
+            except TypeError:
+                # Fallback: if multiple, try common parent; else first
+                common: Optional[Path] = None
+                try:
+                    common = Path(os.path.commonpath([str(r) for r in unlimited_roots]))
+                except Exception:
+                    common = None
+                root = common if common and common.exists() else unlimited_roots[0]
+                if len(unlimited_roots) > 1 and (common is None or common not in unlimited_roots):
+                    print("Warning: current pipeline doesn’t accept multiple roots; running on the first directory only for unlimited-depth set. Cross-root duplicates may be missed.", file=sys.stderr)
+                g_unlim = run_pipeline(
+                    root=root,
+                    patterns=patterns,
+                    max_depth=None,
+                    selected_stages=stages,
+                    cfg=cfg,
+                    cache=cache,
+                    reporter=reporter,
+                    skip_paths=skip_paths,
+                )
+            _merge_groups(groups_all, g_unlim)
+
+        # Run finite-expanded batch in one go at depth=0 (if any)
+        if finite_expanded_roots:
+            try:
+                g_fin = run_pipeline(
+                    roots=finite_expanded_roots,
+                    patterns=patterns,
+                    max_depth=0,
+                    selected_stages=stages,
+                    cfg=cfg,
+                    cache=cache,
+                    reporter=reporter,
+                    skip_paths=skip_paths,
+                )
+            except TypeError:
+                # Fallback: try common parent
+                common: Optional[Path] = None
+                try:
+                    common = Path(os.path.commonpath([str(r) for r in finite_expanded_roots]))
+                except Exception:
+                    common = None
+                root = common if common and common.exists() else finite_expanded_roots[0]
+                if len(finite_expanded_roots) > 1 and (common is None or common not in finite_expanded_roots):
+                    print("Warning: pipeline doesn’t accept multiple roots; running on the first directory only for finite-depth set. Cross-root duplicates may be missed.", file=sys.stderr)
+                g_fin = run_pipeline(
+                    root=root,
+                    patterns=patterns,
+                    max_depth=0,
+                    selected_stages=stages,
+                    cfg=cfg,
+                    cache=cache,
+                    reporter=reporter,
+                    skip_paths=skip_paths,
+                )
+            _merge_groups(groups_all, g_fin)
 
         keep_order = ["longer", "resolution", "video-bitrate", "newer", "smaller", "deeper"]
-        winners = choose_winners(groups, keep_order)
+        winners = choose_winners(groups_all, keep_order)
 
         if args.report:
             write_report(Path(args.report), winners)
