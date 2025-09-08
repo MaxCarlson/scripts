@@ -664,7 +664,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 0
 
         cfg = _build_config(args)
-        setattr(cfg, "_orchestrator_max_dl", int(args.max_dl))
+        object.__setattr__(cfg, "_orchestrator_max_dl", int(args.max_dl))
 
         coord = _Coordinator(work)
 

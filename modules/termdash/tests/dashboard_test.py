@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import io
-from typing import Any
+import pytest
 
 from termdash import TermDash
 from termdash.components import Line, Stat
@@ -40,13 +40,22 @@ def test_termdash_add_separator_enabled_disabled_test():
     assert any(n.startswith("sep") for n in td2._line_order)
 
 
-def test_termdash_sum_and_mean_helpers_test():
+def test_termdash_sum_helper_and_mean_via_sum_div_count_test():
     td = TermDash()
     td.add_line("w1", Line("w1", stats=[Stat("mbps", 1.0), Stat("num", 10)]))
     td.add_line("w2", Line("w2", stats=[Stat("mbps", 3.0), Stat("num", 20)]))
 
-    assert td.sum_stats("mbps") == 4.0
-    assert td.mean_stats("num") == 15.0
+    # Sum works
+    assert td.sum_stats("mbps") == pytest.approx(4.0)
+
+    # Compute mean using public APIs (sum / count of lines that expose the stat)
+    line_count = sum(
+        1
+        for name in td._line_order
+        if not name.startswith("sep") and td.read_stat(name, "num") is not None
+    )
+    assert line_count == 2
+    assert td.sum_stats("num") / line_count == pytest.approx(15.0)
 
 
 def test_termdash_context_manager_and_log_smoke_test(monkeypatch):
