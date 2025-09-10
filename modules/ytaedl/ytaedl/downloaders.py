@@ -149,7 +149,7 @@ class YtDlpDownloader(DownloaderBase):
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
-                start_new_session=True,  # detached group for clean terminate/kill
+                start_new_session=True,
             )
             _register_proc(proc)
             assert proc.stdout is not None
@@ -162,18 +162,18 @@ class YtDlpDownloader(DownloaderBase):
                     continue
                 logs.append(line)
 
-                # Check for generic completion messages from yt-dlp
-                if "has already been downloaded" in line or "[Extracting] Nothing to download" in line:
+                if "has already been downloaded" in line:
                     saw_already = True
-                if "Deleting original file" in line or ("100%" in line and "ETA" in line):
-                    saw_completion_message = True
 
                 data = parse_ytdlp_line(line)
                 if not data:
                     yield LogEvent(item=item, message=line)
                     continue
+                
                 kind = data.get("event")
                 if kind == "progress":
+                    if data.get("percent") == 100.0:
+                        saw_completion_message = True
                     yield ProgressEvent(
                         item=item,
                         downloaded_bytes=int(data["downloaded"]),
