@@ -41,28 +41,24 @@ _PROGRESS_RE = re.compile(
         )
         \s*$
     """,
-    re.X | re.I,  # <— case-insensitive to match MiB/MB/mB/mib etc.
+    re.X | re.I,  # case-insensitive to match MiB/MB/mB/mib etc.
 )
 
 # ---- Helpers ---------------------------------------------------------------
 
-_SIZE_MULTS_1024 = {"KiB": 1024, "MiB": 1024**2, "GiB": 1024**3, "TiB": 1024**4}
-_SIZE_MULTS_1000 = {"KB": 1000, "MB": 1000**2, "GB": 1000**3, "TB": 1000**4}
+# Use UPPERCASE keys so we can .upper() incoming units (handles "mib", "mb", etc.)
+_SIZE_MULTS_1024_UPPER = {"KIB": 1024, "MIB": 1024**2, "GIB": 1024**3, "TIB": 1024**4}
+_SIZE_MULTS_1000_UPPER = {"KB": 1000, "MB": 1000**2, "GB": 1000**3, "TB": 1000**4}
 
 def _unit_to_bytes(value: float, unit: str) -> Optional[int]:
     unit = (unit or "").strip()
-    if unit == "B":
+    if unit.upper() == "B":
         return int(value)
-    if unit in _SIZE_MULTS_1024:
-        return int(value * _SIZE_MULTS_1024[unit])
-    if unit in _SIZE_MULTS_1000:
-        return int(value * _SIZE_MULTS_1000[unit])
-    # Normalize odd casing like "mib" / "mb"
     u = unit.upper()
-    if u in _SIZE_MULTS_1024:
-        return int(value * _SIZE_MULTS_1024[u])
-    if u in _SIZE_MULTS_1000:
-        return int(value * _SIZE_MULTS_1000[u])
+    if u in _SIZE_MULTS_1024_UPPER:
+        return int(value * _SIZE_MULTS_1024_UPPER[u])
+    if u in _SIZE_MULTS_1000_UPPER:
+        return int(value * _SIZE_MULTS_1000_UPPER[u])
     return None
 
 def _hms_to_seconds(hms: str) -> Optional[int]:
