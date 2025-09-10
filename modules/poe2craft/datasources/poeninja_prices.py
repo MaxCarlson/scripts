@@ -3,6 +3,7 @@ import json
 import logging
 import re
 from typing import Dict, Optional
+from urllib.parse import quote_plus
 
 import requests
 from bs4 import BeautifulSoup
@@ -23,10 +24,7 @@ def _slugify_league(name: str) -> str:
 
 
 def detect_active_league(session: Optional[requests.Session] = None) -> Optional[str]:
-    """
-    Best-effort: look at poe.ninja/poe2 landing for an economy link and infer the display name.
-    Returns the display name ("Rise of the Abyssal") if found, else None.
-    """
+    """Best-effort: find an economy link on poe.ninja/poe2 and un-slug its display name."""
     sess = session or requests.Session()
     try:
         r = sess.get(_POE2_ROOT, timeout=12)
@@ -34,8 +32,7 @@ def detect_active_league(session: Optional[requests.Session] = None) -> Optional
         m = re.search(r"/poe2/economy/([a-z0-9\-]+)/currency", r.text, flags=re.I)
         if m:
             slug = m.group(1)
-            disp = " ".join(w.capitalize() for w in slug.split("-"))
-            return disp
+            return " ".join(w.capitalize() for w in slug.split("-"))
     except Exception as e:
         LOG.debug("Active league detection failed: %s", e)
     return None
@@ -54,12 +51,12 @@ class PoENinjaPriceProvider:
         1) JSON API -> lines[].receive.value (preferred) or chaosEquivalent
         2) Fallback scrape __NEXT_DATA__ from the economy page
         """
-        # -- API path --
-        params = {"league": league, "type": "Currency", "game": "poe2"}
+        # Build URL (tests' _SessionMock.get() doesn't accept params=)
+        api_url = f"{_API_CURRENCY}?league={quote_plus(league)}&type=Currency&game=poe2"
         try:
-            r = self.session.get(_API_CURRENCY, params=params, timeout=self.timeout)
-            ct = (r.headers.get("content-type") or "").lower()
+            r = self.session.get(api_url, timeout=self.timeout)
             data = None
+            ct = (r.headers.get("content-type") or "").lower()
             if "application/json" in ct:
                 try:
                     data = r.json()
@@ -85,7 +82,7 @@ class PoENinjaPriceProvider:
         except Exception as e:
             LOG.warning("poe.ninja API error: %s", e)
 
-        # -- Fallback: scrape economy page --
+        # Fallback: scrape economy page
         league_slug = _slugify_league(league)
         url = _FALLBACK_PAGE.replace("{league_slug}", league_slug)
         try:
