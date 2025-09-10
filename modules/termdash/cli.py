@@ -2,19 +2,17 @@
 """
 TermDash CLI Demos
 
-Visual confirmation demos for TermDash features. Default behavior: do NOT clear
-the screen at the end; instead, print a compact plain snapshot so you can see
-the final state. Pass --clear to skip the snapshot.
+Visual confirmation demos for TermDash features. Default: do NOT clear the
+screen at the end; instead, print a compact plain snapshot so you can see the
+final state. Pass --clear to skip the snapshot.
 
 Usage:
-    python -m termdash --help
-
-Examples:
-    python -m termdash progress --total 50 --interval 0.05
-    python -m termdash stats --duration 3
-    python -m termdash multistats --processes 6 --duration 4 --proc ytdlp
-    python -m termdash threads --threads 6 --duration 4
-    python -m termdash seemake --steps 5 --with-bar
+    termdash --help
+    termdash progress --total 50 --interval 0.05
+    termdash stats --duration 3
+    termdash multistats --processes 6 --duration 4 --proc ytdlp
+    termdash threads --threads 6 --duration 4
+    termdash seemake --steps 5 --with-bar
 """
 from __future__ import annotations
 
@@ -31,8 +29,6 @@ from .progress import ProgressBar
 from .seemake import SeemakePrinter
 from .simpleboard import SimpleBoard
 
-
-# ---------------------------------------------------------------------------
 
 def _sleep(sec: float) -> None:
     if sec > 0:
@@ -215,7 +211,6 @@ def demo_threads(args: argparse.Namespace) -> int:
     update = max(0.01, args.update)
 
     if args.plain:
-        # Plain mode: simulate threaded updates with printed lines.
         t0 = time.time()
         counters = [0] * threads
         totals = [random.randint(60, 120) for _ in range(threads)]
@@ -248,7 +243,6 @@ def demo_threads(args: argparse.Namespace) -> int:
                 step = random.randint(1, 5)
                 done = min(total, done + step)
                 td.update_stat(name, "done", done)
-                # progress bar cell value is updated indirectly via Stat set (the bar binds when added)
                 _sleep(update)
 
         ts: List[threading.Thread] = [threading.Thread(target=worker, args=(i,), daemon=True) for i in range(threads)]
@@ -257,7 +251,6 @@ def demo_threads(args: argparse.Namespace) -> int:
         for t in ts:
             t.join()
 
-    # Snapshot omitted; each row is per-thread and visible above.
     return 0
 
 
@@ -287,7 +280,6 @@ def demo_seemake(args: argparse.Namespace) -> int:
             }[k]
             sm.step(msg, kind=k)
             _sleep(args.interval)
-
     return 0
 
 

@@ -8,18 +8,18 @@ version = "0.1.0"
 description = "Thread-safe, in-place terminal dashboard with stats, progress bars, and CMake-like build output."
 readme = "README.md"
 requires-python = ">=3.9"
-authors = [{ name = "Max Carlson" }]
+license = { text = "MIT" }
+authors = [{ name = "TermDash Authors" }]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "License :: OSI Approved :: MIT License",
-  "Operating System :: OS Independent",
   "Environment :: Console",
   "Topic :: Terminals",
   "Topic :: System :: Monitoring",
+  "Operating System :: OS Independent",
 ]
 
-dependencies = []  # keep lightweight; stdlib only
+dependencies = []
 
 [project.optional-dependencies]
 dev = [
@@ -33,7 +33,11 @@ dev = [
 termdash = "termdash.cli:main"
 
 [tool.setuptools]
+# Treat the *project root* as the 'termdash' package (no 'src/' and no 'termdash/' dir needed).
 packages = ["termdash"]
+
+[tool.setuptools.package-dir]
+termdash = "."
 
 [tool.pytest.ini_options]
 addopts = "-q"
