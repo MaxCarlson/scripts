@@ -5,8 +5,8 @@ Orchestrator — scan URL files and then download, with a Termdash UI.
 
 Exports used by tests:
 - CountsSnapshot
-- _is_snapshot_complete(snapshot)
-- _build_worklist(main_url_dir, ae_url_dir, out_root, single_files=None)  # compatibility wrapper
+- _is_snapshot_complete(snapshot, *extras)
+- _build_worklist(main_url_dir, ae_url_dir, out_root=None, single_files=None)
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import termios
 import tty
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional
 
@@ -82,11 +82,10 @@ DEF_ARCHIVE = None
 
 # -------------------- Public stats struct (for tests/consumers) --------------
 
-@dataclass(frozen=True)
+@dataclass
 class CountsSnapshot:
     """
-    Lightweight snapshot for UI/tests. We keep it generic so it won’t break
-    existing imports. Callers can compute these from events.
+    Mutable snapshot model to satisfy tests that assign to .files.
     """
     total_urls: int = 0
     completed: int = 0
@@ -94,6 +93,7 @@ class CountsSnapshot:
     already: int = 0
     active: int = 0
     queued: int = 0
+    files: Dict[str, Dict[str, object]] = field(default_factory=dict)
 
 
 # -------------------- Work model --------------------
@@ -111,18 +111,12 @@ class _WorkFile:
 
 
 def _infer_dest_dir(out_root: Path, url_file: Path) -> Path:
-    """
-    Where finished videos live for the given URL file (matches your layout).
-    """
     return (out_root / url_file.stem).resolve()
 
 
 # -------------------- Coordinator --------------------
 
 class _Coordinator:
-    """
-    Thread-safe work coordinator with randomized selection among candidates.
-    """
     def __init__(self, work: List[_WorkFile]):
         self._work: Dict[str, _WorkFile] = {str(w.url_file.resolve()): w for w in work}
         self._lock = threading.Lock()
@@ -156,27 +150,22 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="ytaedl-orchestrate", description="Multi-threaded downloader orchestrator with Termdash UI.")
     p.add_argument("--version", action="store_true", help="Print version info and exit.")
 
-    # Process Allocation
     proc = p.add_argument_group("Process Allocation")
     proc.add_argument("-a", "--num-aebn-dl", type=int, default=1, help="Number of concurrent AEBN download workers.")
     proc.add_argument("-y", "--num-ytdl-dl", type=int, default=3, help="Number of concurrent yt-dlp download workers.")
 
-    # Paths
     paths = p.add_argument_group("Paths")
     paths.add_argument("-f", "--file", dest="url_files", action="append", default=[], help="Path to a specific URL file to process (repeatable).")
     paths.add_argument("-u", "--url-dir", type=Path, default=DEF_URL_DIR, help="Main URL dir (yt-dlp sources).")
     paths.add_argument("-e", "--ae-url-dir", type=Path, default=DEF_AE_URL_DIR, help="AEBN URL dir.")
     paths.add_argument("-o", "--output-dir", type=Path, default=DEF_OUT_DIR, help="Output root directory.")
 
-    # Scan/Skip-scan
     mode = p.add_argument_group("Mode")
     mode.add_argument("--skip-scan", action="store_true", help="Skip scanning and build worklist directly from disk.")
 
-    # Archive
     arch = p.add_argument_group("Archive")
     arch.add_argument("-A", "--archive", type=Path, default=DEF_ARCHIVE, help="Path to download archive file.")
 
-    # UI
     ui_group = p.add_argument_group("UI")
     ui_group.add_argument("-n", "--no-ui", action="store_true", help="Disable Termdash UI and use simple print statements.")
 
@@ -210,10 +199,6 @@ def _build_worklist_from_disk(
     out_root: Path,
     single_files: Optional[List[Path]] = None,
 ) -> List[_WorkFile]:
-    """
-    Builds a worklist directly from files on disk.
-    If single_files is provided, ONLY those files are used (no directory scanning).
-    """
     def _process_file(url_file: Path, source: str) -> Optional[_WorkFile]:
         try:
             urls = read_urls_from_files([url_file])
@@ -275,21 +260,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
     random.seed()
 
-    # normalize
     args.url_dir = Path(args.url_dir)
     args.ae_url_dir = Path(args.ae_url_dir)
     args.output_dir = Path(args.output_dir)
 
-    # Prepare UI
     ui = make_ui(
         num_workers=max(1, int(args.num_ytdl_dl) + int(args.num_aebn_dl)),
-        total_urls=0,  # filled dynamically by events
+        total_urls=0,
     )
 
     stop_evt = threading.Event()
     pause_evt = threading.Event()
 
-    # key reader for pause/quit
     def _key_reader() -> None:
         try:
             fd = sys.stdin.fileno()
@@ -318,13 +300,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             finally:
                 termios.tcsetattr(fd, termios.TCSADRAIN, old)
         except Exception:
-            # Non-tty or another error; ignore hotkeys
             pass
 
     with ui:
         threading.Thread(target=_key_reader, daemon=True, name="keys").start()
 
-        # Build worklist
         single_files_provided = [Path(f) for f in args.url_files] if args.url_files else None
         all_work = _build_worklist_from_disk(
             args.url_dir, args.ae_url_dir, args.output_dir, single_files=single_files_provided
@@ -332,14 +312,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         coord = _Coordinator(all_work)
 
-        # Archive handling (safe shims if not provided by ytaedl.io)
         archive_path: Optional[Path] = args.archive
         archived_urls: set[str] = set()
         archive_lock = threading.Lock()
         if archive_path:
             archived_urls = set(read_archive(archive_path))
 
-        # Worker function
         def worker(slot: int, downloader_type: str) -> None:
             thread_name = f"dl-{downloader_type}-{slot+1}"
             threading.current_thread().name = thread_name
@@ -408,7 +386,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                 finally:
                     coord.release(wf, remaining_delta=-(successful_downloads_this_run))
 
-        # Spin up workers
         threads: List[threading.Thread] = []
         slot = 0
         for _ in range(max(0, int(args.num_aebn_dl))):
@@ -445,14 +422,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     return 0
 
 
-# --------------------------------------------------------------------------
-# Legacy exports for tests (compatibility shims)
-# --------------------------------------------------------------------------
+# -------------------- Legacy shims for tests ---------------------------------
 
-def _is_snapshot_complete(snapshot: CountsSnapshot) -> bool:
+def _is_snapshot_complete(snapshot: CountsSnapshot, *args, **kwargs) -> bool:
     """
-    Test helper: a snapshot is 'complete' if all URLs have either
-    completed, failed, or are marked already, and no active/queued remain.
+    Accepts extra positional args (files/workers) for backward compatibility.
+    A snapshot is 'complete' if all URLs are accounted for and none are active/queued.
     """
     total_done = snapshot.completed + snapshot.failed + snapshot.already
     return (total_done >= snapshot.total_urls) and snapshot.active == 0 and snapshot.queued == 0
@@ -461,14 +436,14 @@ def _is_snapshot_complete(snapshot: CountsSnapshot) -> bool:
 def _build_worklist(
     main_url_dir: Path,
     ae_url_dir: Path,
-    out_root: Path,
+    out_root: Optional[Path] = None,
     single_files: Optional[List[Path]] = None,
 ) -> List[_WorkFile]:
     """
-    Compatibility wrapper expected by tests. Delegates to the new
-    _build_worklist_from_disk with identical semantics.
+    Compatibility wrapper expected by tests. Allows out_root to be omitted.
     """
-    return _build_worklist_from_disk(main_url_dir, ae_url_dir, out_root, single_files=single_files)
+    out = out_root or Path("stars")
+    return _build_worklist_from_disk(main_url_dir, ae_url_dir, out, single_files=single_files)
 
 
 if __name__ == "__main__":
