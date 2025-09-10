@@ -24,29 +24,24 @@ _ALREADY_RES = [
     re.compile(r"^\[download\]\s+.+?\s+has\s+already\s+been\s+downloaded(?:\s+and\s+merged)?\s*$", re.I),
 ]
 
-# Progress lines usually look like:
+# Progress lines (robust to lowercase units and approximate totals):
 #   [download]  10.1% of 48.97MiB at 2.11MiB/s ETA 00:37
 #   [download] 100% of 25.00MB in 00:30
-# Accept mixed/lowercase units like "mB", "mib/s".
+#   [download]   8.6% of ~ 713.54MiB at 25.16MiB/s ETA 00:28
+#   [download] 100% of 348.09MiB                  <-- no "in ..." on some backends
 _PROGRESS_RE = re.compile(
     r"""^\[download\]\s+
         (?P<pct>\d{1,3}(?:\.\d+)?)%\s+of\s+
-        (?P<total_val>\d+(?:\.\d+)?)\s*(?P<total_unit>[KMGT]?i?B)\s*
-        (?:
-            \s+at\s+(?P<speed_val>\d+(?:\.\d+)?)\s*(?P<speed_unit>[KMGT]?i?B)/s\s*
-        )?
-        (?:
-            \s+ETA\s+(?P<eta>\d{2}:\d{2}(?::\d{2})?) |
-            \s+in\s+(?P<intime>\d{2}:\d{2}(?::\d{2})?)
-        )
+        ~?\s*(?P<total_val>\d+(?:\.\d+)?)\s*(?P<total_unit>[KMGT]?i?B)\s*
+        (?:\s+at\s+(?P<speed_val>\d+(?:\.\d+)?)\s*(?P<speed_unit>[KMGT]?i?B)/s\s*)?
+        (?:\s+(?:ETA\s+(?P<eta>\d{2}:\d{2}(?::\d{2})?)|in\s+(?P<intime>\d{2}:\d{2}(?::\d{2})?)))?
         \s*$
     """,
-    re.X | re.I,  # case-insensitive to match MiB/MB/mB/mib etc.
+    re.X | re.I,
 )
 
 # ---- Helpers ---------------------------------------------------------------
 
-# Use UPPERCASE keys so we can .upper() incoming units (handles "mib", "mb", etc.)
 _SIZE_MULTS_1024_UPPER = {"KIB": 1024, "MIB": 1024**2, "GIB": 1024**3, "TIB": 1024**4}
 _SIZE_MULTS_1000_UPPER = {"KB": 1000, "MB": 1000**2, "GB": 1000**3, "TB": 1000**4}
 
@@ -92,7 +87,7 @@ def parse_line(line: str) -> Optional[Dict]:
           'eta_s': int or None
         }
 
-    Unrecognized lines -> None (let caller log as raw).
+    Unrecognized lines -> None (caller can log as raw).
     """
     s = sanitize_line(line)
 
@@ -130,8 +125,13 @@ def parse_line(line: str) -> Optional[Dict]:
         if m.group("eta"):
             eta_s = _hms_to_seconds(m.group("eta"))
         elif m.group("intime"):
-            # final completion line: treat as eta 0
+            # explicit completion format "in 00:30"
             eta_s = 0
+        else:
+            # When no ETA/in is present, some backends print
+            # "[download] 100% of <size>" on a separate line -> treat as done.
+            if pct >= 100.0:
+                eta_s = 0
 
         return {
             "event": "progress",
