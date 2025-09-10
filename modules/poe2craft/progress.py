@@ -1,68 +1,53 @@
 #!/usr/bin/env python3
-from __future__ import annotations
-
-import contextlib
 import sys
 import time
-from dataclasses import dataclass
-from typing import Optional
-
-# Optional best-effort Termdash adapter (won't fail if not installed)
-try:
-    import termdash  # type: ignore
-except Exception:  # pragma: no cover
-    termdash = None  # sentinel
+from contextlib import contextmanager
+from typing import Iterator, Optional
 
 
-@dataclass
-class _State:
-    label: str
-    total: int
-    n: int = 0
-    start: float = 0.0
-    last_len: int = 0
-
-
-class _TTYBar:
-    def __init__(self, label: str, total: int):
-        self.state = _State(label=label, total=max(1, total), start=time.time())
-
-    def update(self, n: Optional[int] = None, info: str = "") -> None:
-        st = self.state
-        if n is None:
-            st.n += 1
-        else:
-            st.n = n
-        st.n = max(0, min(st.n, st.total))
-        elapsed = time.time() - st.start
-        pct = 100.0 * st.n / st.total
-        line = f"[{st.label}] {st.n}/{st.total}  {pct:4.1f}%   {elapsed:4.1f}s"
-        if info:
-            line += f" | {info}"
-        # erase previous line
-        pad = " " * max(0, st.last_len - len(line))
-        sys.stdout.write("\r" + line + pad)
-        sys.stdout.flush()
-        st.last_len = len(line)
-
-    def close(self, final_info: str = "") -> None:
-        self.update(info=final_info)
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-
-
-@contextlib.contextmanager
-def progress(label: str, total: int):
+@contextmanager
+def progress(label: str, total: Optional[int] = None, quiet: bool = False) -> Iterator["ProgressBar"]:
     """
-    Context manager yielding a progress object with .update([n], info)
-    Usage:
-        with progress("Download", 10) as bar:
-            ...
-            bar.update(info="parsed 3")
+    Minimal progress printer that writes to STDERR only so stdout stays clean for JSON.
     """
-    # If a compatible termdash API exists, feel free to adapt here.
-    bar = _TTYBar(label, total)
+    bar = ProgressBar(label, total, quiet=quiet)
     try:
+        bar._start()
         yield bar
     finally:
-        bar.close()
+        bar._finish()
+
+
+class ProgressBar:
+    def __init__(self, label: str, total: Optional[int], quiet: bool = False):
+        self.label = label
+        self.total = total
+        self.current = 0
+        self.start = None
+        self.quiet = quiet
+
+    def _start(self):
+        self.start = time.time()
+        if not self.quiet:
+            sys.stderr.write(f"[{self.label}] 0")
+            sys.stderr.flush()
+
+    def update(self, current: Optional[int] = None, info: Optional[str] = None):
+        if current is not None:
+            self.current = current
+        if self.quiet:
+            return
+        elapsed = time.time() - (self.start or time.time())
+        if self.total:
+            pct = (self.current / self.total) * 100.0
+            sys.stderr.write(f"\r[{self.label}] {self.current}/{self.total} {pct:5.1f}%  {elapsed:0.1f}s")
+        else:
+            sys.stderr.write(f"\r[{self.label}] {self.current}   {elapsed:0.1f}s")
+        if info:
+            sys.stderr.write(f" | {info}")
+        sys.stderr.flush()
+
+    def _finish(self):
+        if not self.quiet:
+            sys.stderr.write("\n")
+            sys.stderr.flush()
