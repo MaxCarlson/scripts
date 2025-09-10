@@ -5,23 +5,6 @@ SimpleBoard: a minimal row-based "stats + progress bars" builder atop TermDash.
 - You choose rows and drop in `Stat` and `ProgressBar.cell()` items.
 - No screen wipe; uses TermDash's in-place renderer.
 - Single-thread friendly: works without starting the renderer.
-
-Example
--------
-    from termdash import Stat
-    from termdash.progress import ProgressBar
-    from termdash.simpleboard import SimpleBoard
-
-    board = SimpleBoard(title="Demo")
-    board.add_row("r1",
-        Stat("files_done", 0, prefix="Done: "),
-        Stat("files_total", 10, prefix="Total: "),
-    )
-
-    pb = ProgressBar("bar1", total=10, width=24)
-    pb.bind(current_fn=lambda: board.read_stat("r1", "files_done"),
-            total_fn=lambda: board.read_stat("r1", "files_total"))
-    board.add_row("r2", pb.cell())
 """
 
 from __future__ import annotations
@@ -39,16 +22,19 @@ class SimpleBoard:
         self.td = TermDash(**termdash_kwargs)
 
         if self.title:
-            self.td.add_line("_title", Line("_title", stats=[
-                Stat("title", self.title, prefix="", format_string="{}", color="1;36", no_expand=True)
-            ], style="header"))
+            # IMPORTANT: Line expects an iterable of Stat, not a dict.
+            self.td.add_line(
+                "_title",
+                Line("_title", stats=[Stat("title", self.title, prefix="", format_string="{}", color="1;36", no_expand=True)],
+                     style="header"),
+            )
 
     def add_row(self, name: str, *cells: Stat) -> None:
         """Add a row with the given `Stat` cells (including `ProgressBar.cell()`)."""
         if not cells:
             raise ValueError("add_row requires at least one cell")
-        stats = {c.name: c for c in cells}
-        self.td.add_line(name, Line(name, stats=list(stats.values()), style="default"))
+        stats = list(cells)
+        self.td.add_line(name, Line(name, stats=stats, style="default"))
 
     # Convenience wrappers
     def update(self, line: str, stat: str, value: Any) -> None:
