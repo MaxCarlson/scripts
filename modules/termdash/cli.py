@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple
 
 from . import Stat, Line, TermDash
+from .components import DEFAULT_COLOR, RESET
 from .progress import ProgressBar
 from .seemake import SeemakePrinter
 
@@ -35,10 +36,7 @@ def _sleep(sec: float) -> None:
 def _print_snapshot(title: str, rows: List[Tuple[str, List[Stat]]]) -> None:
     print("\n=== TermDash Demo Snapshot:", title, "===")
     for name, stats in rows:
-        try:
-            line = " | ".join(s.prefix + (s.format_string.format(s.value)) + (s.unit or "") for s in stats)
-        except Exception:
-            line = " | ".join(f"<{s.name}>" for s in stats)
+        line = " | ".join(s.render() for s in stats)
         print(f"{name:>12}: {line}")
 
 
@@ -61,7 +59,7 @@ def _add_fullwidth_bar_line(td: TermDash, line_name: str,
 # MULTISTATS
 
 @dataclass
-class SimRow:
+class StatItem:
     name: str
     total: int
     done: int = 0
@@ -69,6 +67,35 @@ class SimRow:
     rate: float = 0.0
     errs: int = 0
 
+class StatItemStat(Stat):
+    def __init__(self, name, item, extra_stats=0, with_progress=False):
+        super().__init__(name, value=item)
+        self.item = item
+        self.extra_stats = extra_stats
+        self.with_progress = with_progress
+        if self.with_progress:
+            self.progress_bar = ProgressBar(f"{name}_bar", total=item.total, width=30, min_width_fraction=0.66)
+
+    def render(self, logger=None) -> str:
+        item = self.item
+        if self.with_progress:
+            self.progress_bar.set(item.done)
+        
+        parts = []
+        if self.with_progress:
+            parts.append(self.progress_bar.__str__())
+        
+        parts.append(f"{item.status:12}")
+        parts.append(f"Done: {item.done:4}")
+        parts.append(f"Total: {item.total:<4}")
+        if self.extra_stats >= 1:
+            parts.append(f"Rate: {item.rate:6.1f} u/s")
+        if self.extra_stats >= 2:
+            parts.append(f"Errs: {item.errs}")
+        
+        text = "  ".join(parts)
+        color_code = self.color_provider(self.value) or DEFAULT_COLOR
+        return f"\033[{color_code}m{text}{RESET}"
 
 def _profile(kind: str) -> Tuple[int, int]:
     return {
@@ -77,30 +104,40 @@ def _profile(kind: str) -> Tuple[int, int]:
         "compute": (1, 3),
     }.get(kind, (1, 5))
 
-
 def demo_multistats(args: argparse.Namespace) -> int:
-    rows = max(1, args.rows or args.processes)
+    stat_rows = max(1, args.stat_rows)
+    stat_cols = max(1, args.stat_cols)
     duration = max(0.1, args.duration)
     update = max(0.01, args.update)
     kind = args.proc
 
-    items = [SimRow(name=f"row-{i+1}", total=random.randint(60, 120)) for i in range(rows)]
+    # Create a grid of stats
+    stats_grid = []
+    for r in range(stat_rows):
+        row_items = []
+        for c in range(stat_cols):
+            item = StatItem(name=f"stat_{r}_{c}", total=random.randint(60, 120))
+            row_items.append(item)
+        stats_grid.append(row_items)
 
     td = None
     snap: List[Tuple[str, List[Stat]]] = []
 
     if args.plain:
         t0 = time.time()
-        while time.time() - t0 < duration and any(r.done < r.total for r in items):
-            for r in items:
-                if r.done < r.total:
-                    step = random.randint(*_profile(kind))
-                    r.done = min(r.total, r.done + step)
-                    r.rate = 0.6 * r.rate + 0.4 * (step / max(update, 1e-6))
-                    r.status = "downloading" if kind == "ytdlp" else "running"
-                else:
-                    r.status = "done"
-                print(f"{r.name:>8} | {r.status:12} | {r.done:4}/{r.total:<4} | {r.rate:6.1f} u/s | errs={r.errs}")
+        while time.time() - t0 < duration and any(item.done < item.total for row in stats_grid for item in row):
+            for r_idx, row in enumerate(stats_grid):
+                line_parts = []
+                for c_idx, item in enumerate(row):
+                    if item.done < item.total:
+                        step = random.randint(*_profile(kind))
+                        item.done = min(item.total, item.done + step)
+                        item.rate = 0.6 * item.rate + 0.4 * (step / max(update, 1e-6))
+                        item.status = "downloading" if kind == "ytdlp" else "running"
+                    else:
+                        item.status = "done"
+                    line_parts.append(f"{item.name:>12} | {item.status:12} | {item.done:4}/{item.total:<4} | {item.rate:6.1f} u/s | errs={item.errs}")
+                print(" | ".join(line_parts))
             _sleep(update)
         return 0
 
@@ -111,53 +148,37 @@ def demo_multistats(args: argparse.Namespace) -> int:
             if args.header_bar:
                 _add_fullwidth_bar_line(
                     td, "hdr",
-                    current_fn=lambda: float(sum(r.done for r in items)),
-                    total_fn=lambda: float(sum(r.total for r in items)),
+                    current_fn=lambda: float(sum(item.done for row in stats_grid for item in row)),
+                    total_fn=lambda: float(sum(item.total for row in stats_grid for item in row)),
                     width_hint=args.width,
                 )
 
-        # Rows
-        for r in items:
-            cells = [Stat("status", r.status),
-                     Stat("done", r.done, prefix="Done: "),
-                     Stat("total", r.total, prefix="Total: ")]
-            if args.extra_stats >= 1:
-                cells.append(Stat("rate", 0.0, prefix="Rate: ", format_string="{:.1f}", unit="u/s"))
-            if args.extra_stats >= 2:
-                cells.append(Stat("errs", 0, prefix="Errs: "))
-
-            td.add_line(r.name, Line(r.name, stats=cells))
-            snap.append((r.name, cells))
-
-            if args.bars:
-                _add_fullwidth_bar_line(
-                    td, r.name,
-                    current_fn=lambda r=r: r.done,
-                    total_fn=lambda r=r: r.total,
-                    width_hint=args.width,
-                )
+        # Create lines for each row of stats
+        for r_idx, row_items in enumerate(stats_grid):
+            line_name = f"line_{r_idx}"
+            cells = []
+            for c_idx, item in enumerate(row_items):
+                cells.append(StatItemStat(f"stat_{r_idx}_{c_idx}", item, args.extra_stats, args.progress_bar))
+            
+            td.add_line(line_name, Line(line_name, stats=cells))
+            snap.append((line_name, cells))
 
         # Drive updates
         t0 = time.time()
-        while time.time() - t0 < duration and any(r.done < r.total for r in items):
-            for r in items:
-                if r.done >= r.total:
-                    if r.status != "done":
-                        r.status = "done"
-                        td.update_stat(r.name, "status", r.status)
-                    continue
-                step = random.randint(*_profile(kind))
-                r.done = min(r.total, r.done + step)
-                r.rate = 0.6 * r.rate + 0.4 * (step / max(update, 1e-6))
-                r.status = "downloading" if kind == "ytdlp" else "running"
+        while time.time() - t0 < duration and any(item.done < item.total for row in stats_grid for item in row):
+            for r_idx, row_items in enumerate(stats_grid):
+                for c_idx, item in enumerate(row_items):
+                    if item.done >= item.total:
+                        if item.status != "done":
+                            item.status = "done"
+                    else:
+                        step = random.randint(*_profile(kind))
+                        item.done = min(item.total, item.done + step)
+                        item.rate = 0.6 * item.rate + 0.4 * (step / max(update, 1e-6))
+                        item.status = "downloading" if kind == "ytdlp" else "running"
 
-                td.update_stat(r.name, "status", r.status)
-                td.update_stat(r.name, "done", r.done)
-                if args.extra_stats >= 1:
-                    td.update_stat(r.name, "rate", r.rate)
-                if args.extra_stats >= 2 and random.random() < 0.03:
-                    r.errs += 1
-                    td.update_stat(r.name, "errs", r.errs)
+                    if args.extra_stats >= 2 and random.random() < 0.03:
+                        item.errs += 1
             _sleep(update)
 
     if not args.clear:
@@ -174,10 +195,7 @@ def demo_threads(args: argparse.Namespace) -> int:
     update = max(0.01, args.update)
     kind = args.proc
 
-    totals = [random.randint(60, 120) for _ in range(threads)]
-    dones = [0 for _ in range(threads)]
-    rates = [0.0 for _ in range(threads)]
-    errs = [0 for _ in range(threads)]
+    items = [StatItem(name=f"thr-{i+1:02d}", total=random.randint(60, 120)) for i in range(threads)]
 
     td = TermDash(status_line=True, refresh_rate=0.05)
     with td:
@@ -186,40 +204,27 @@ def demo_threads(args: argparse.Namespace) -> int:
             if args.header_bar:
                 _add_fullwidth_bar_line(
                     td, "hdr",
-                    current_fn=lambda: float(sum(dones)),
-                    total_fn=lambda: float(sum(totals)),
+                    current_fn=lambda: float(sum(item.done for item in items)),
+                    total_fn=lambda: float(sum(item.total for item in items)),
                     width_hint=args.width,
                 )
 
-        # one row per thread (equals a multistats row)
+        # one row per thread
         for i in range(threads):
-            name = f"thr-{i+1:02d}"
-            cells = [Stat("done", 0, prefix="Done: "),
-                     Stat("total", totals[i], prefix="Total: ")]
-            if args.extra_stats >= 1:
-                cells.append(Stat("rate", 0.0, prefix="Rate: ", format_string="{:.1f}", unit="u/s"))
-
-            td.add_line(name, Line(name, stats=cells))
-
-            if args.bars:
-                _add_fullwidth_bar_line(
-                    td, name,
-                    current_fn=lambda i=i: float(dones[i]),
-                    total_fn=lambda i=i: float(totals[i]),
-                    width_hint=args.width,
-                )
+            item = items[i]
+            line_name = f"thr-{i+1:02d}"
+            cells = [StatItemStat(f"stat_{i}", item, args.extra_stats, args.bars)]
+            td.add_line(line_name, Line(line_name, stats=cells))
 
         stop = time.time() + duration
 
         def worker(idx: int) -> None:
-            while time.time() < stop and dones[idx] < totals[idx]:
+            item = items[idx]
+            while time.time() < stop and item.done < item.total:
                 lo, hi = _profile(kind)
                 step = random.randint(lo, hi)
-                dones[idx] = min(totals[idx], dones[idx] + step)
-                rates[idx] = 0.6 * rates[idx] + 0.4 * (step / max(update, 1e-6))
-                td.update_stat(f"thr-{idx+1:02d}", "done", dones[idx])
-                if args.extra_stats >= 1:
-                    td.update_stat(f"thr-{idx+1:02d}", "rate", rates[idx])
+                item.done = min(item.total, item.done + step)
+                item.rate = 0.6 * item.rate + 0.4 * (step / max(update, 1e-6))
                 _sleep(update)
 
         ts = [threading.Thread(target=worker, args=(i,), daemon=True) for i in range(threads)]
@@ -279,16 +284,17 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("-S", "--seed", type=int, default=1234, help="Random seed for repeatability.")
 
     # multistats (canonical)
-    sp = sub.add_parser("multistats", help="Multiple rows; per-row stats; optional full-width bars below rows.")
+    sp = sub.add_parser("multistats", help="Single process with multiple stats in a grid.")
     add_common(sp)
-    sp.add_argument("-r", "--rows", type=int, default=0, help="Number of rows (alias of --processes).")
-    sp.add_argument("-p", "--processes", type=int, default=6, help="Number of rows.")
+    sp.add_argument("--stat-rows", type=int, default=3, help="Number of rows of stats.")
+    sp.add_argument("--stat-cols", type=int, default=2, help="Number of columns of stats.")
     sp.add_argument("-g", "--proc", choices=["ytdlp", "copy", "compute"], default="ytdlp", help="Profile of row updates.")
     sp.add_argument("-d", "--duration", type=float, default=5.0)
     sp.add_argument("-u", "--update", type=float, default=0.15)
     sp.add_argument("-w", "--width", type=int, default=26, help="Width hint for bars (full-width ignores this mostly).")
     sp.add_argument("-b", "--bars", action="store_true", help="Show a full-width bar on its own line below each row.")
-    sp.add_argument("-e", "--extra-stats", type=int, default=0, help="Extra stats per row (0..2).")
+    sp.add_argument("-e", "--extra-stats", type=int, default=0, help="Extra stats per cell (0..2).")
+    sp.add_argument("--progress-bar", action="store_true", help="Show a progress bar in each cell.")
     sp.add_argument("-H", "--header", action="store_true", help="Header with title.")
     sp.add_argument("-B", "--header-bar", action="store_true", help="Header progress bar (combined progress).")
     sp.set_defaults(func=demo_multistats)
@@ -327,7 +333,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=lambda a: demo_multistats(argparse.Namespace(
         cmd="multistats",
         clear=a.clear, plain=a.plain, seed=a.seed,
-        rows=1, processes=1, proc="ytdlp",
+        stat_rows=1, stat_cols=1, proc="ytdlp",
         duration=4.0, update=0.1, width=a.width,
         bars=a.bars, extra_stats=a.extra_stats, header=a.header, header_bar=a.header_bar,
     )))
