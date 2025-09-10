@@ -865,6 +865,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     setattr(item, 'total_in_set', len(wf.urls))
                     
                     downloader = get_downloader(url, cfg)
+                    url_was_successful = False
                     
                     try:
                         ui.handle_event(StartEvent(item=item))
@@ -873,12 +874,20 @@ def main(argv: Optional[List[str]] = None) -> int:
                         for ev in downloader.download(item):
                             if stop_evt.is_set():
                                 break
+                            
+                            if isinstance(ev, LogEvent):
+                                olog(f"Worker {slot} [URL: {url}]: {ev.message}")
+
                             ui.handle_event(ev)
+
                             if isinstance(ev, FinishEvent):
                                 result = ev.result
                                 olog(f"Worker {slot}: Finished URL '{url}' with status: {result.status.value}")
+                                if result.error_message:
+                                    olog(f"Worker {slot}: Error for '{url}': {result.error_message}")
+                                
                                 if result.status in (DownloadStatus.COMPLETED, DownloadStatus.ALREADY_EXISTS):
-                                    completed_in_wf += 1
+                                    url_was_successful = True
                                     if archive_path:
                                         with archive_lock:
                                             if url not in archived_urls:
@@ -898,12 +907,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                             pass
                     finally:
                         ui.pump()
+
+                    if url_was_successful:
+                        completed_in_wf += 1
                     
                     if completed_in_wf >= cap:
+                        olog(f"Worker {slot}: Reached cap of {cap} successful downloads for file '{wf.url_file.name}'. Releasing.")
                         break
 
                 coordinator.release(wf, remaining_delta=-(completed_in_wf))
-                olog(f"Worker {slot}: Released work file '{wf.url_file.name}'. Completed {completed_in_wf} downloads in this run.")
+                olog(f"Worker {slot}: Released work file '{wf.url_file.name}'. Completed {completed_in_wf} successful downloads in this run.")
             
             olog(f"Worker {slot}: No more work. Shutting down.")
 
