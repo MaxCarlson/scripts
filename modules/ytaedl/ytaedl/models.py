@@ -42,6 +42,7 @@ class ProgressEvent:
       - downloaded_bytes/total_bytes are segments_done/segments_total
       - speed_bps is iterations (segments) per second
     """
+
     item: "DownloadItem"
     downloaded_bytes: int
     total_bytes: Optional[int]
@@ -114,7 +115,13 @@ class DownloadItem:
     is_scene: bool = False
     scene_index: Optional[int] = None
 
+    # Legacy/general args bucket (still used in some places)
     extra_args: List[str] = field(default_factory=list)
+
+    # NEW: match orchestrator + downloaders which look for these attrs via getattr(...)
+    # Keeping them optional preserves backwards compatibility.
+    extra_ytdlp_args: List[str] = field(default_factory=list)
+    extra_aebn_args: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -156,10 +163,10 @@ class DownloaderConfig:
     ytdlp_buffer_size: Optional[str] = None  # e.g. "16M"
 
     # aria2 (external downloader) tuning
-    aria2_splits: Optional[int] = None       # e.g. 16
-    aria2_x_conn: Optional[int] = None       # e.g. 8
-    aria2_min_split: Optional[str] = None    # e.g. "1M"
-    aria2_timeout: Optional[int] = None      # seconds
+    aria2_splits: Optional[int] = None  # e.g. 16
+    aria2_x_conn: Optional[int] = None  # e.g. 8
+    aria2_min_split: Optional[str] = None  # e.g. "1M"
+    aria2_timeout: Optional[int] = None  # seconds
 
     # <— NEW: allow CLI to pass -L/--log-file without TypeError
     log_file: Optional[Path] = None
