@@ -40,8 +40,7 @@ def parse_clipboard_content(text: str) -> List[Dict[str, Any]]:
     file_pattern = re.compile(
         r"\[(START_FILE_CREATE|START_FILE_EDIT): (.+?)\]\n(.*?)\n\[END_FILE\]", re.DOTALL
     )
-    # CORRECTED: Made the final (.*?) group non-greedy and removed the leading newline
-    # requirement before the final delimiter to correctly handle empty replacement blocks.
+    # CORRECTED: Regex is robust for empty replacement blocks.
     replace_pattern = re.compile(
         r"<<<<<<< SEARCH\n(.*?)\n=======\n(.*?)\n>>>>>>> REPLACE", re.DOTALL
     )
@@ -50,50 +49,32 @@ def parse_clipboard_content(text: str) -> List[Dict[str, Any]]:
     )
 
     for match in file_pattern.finditer(text):
-        op_type, file_path_str, content = match.groups()
+        op_type, file_path_str, content_block = match.groups()
         file_path = Path(file_path_str.strip())
 
         if op_type == "START_FILE_CREATE":
             operations.append(
-                {"type": "create", "path": file_path, "content": content}
+                {"type": "create", "path": file_path, "content": content_block}
             )
         elif op_type == "START_FILE_EDIT":
-            edits_in_block = []
-            # Use a pointer to process the content block sequentially
-            last_pos = 0
-            full_content_block = content
+            # CORRECTED: Simplified parsing loop. Iterate through all possible matches.
+            # finditer will find non-overlapping matches in the order they appear.
+            # This correctly handles multiple edits within a single block.
+            for rep_match in replace_pattern.finditer(content_block):
+                search_block, replace_block = rep_match.groups()
+                operations.append(
+                    {"type": "replace", "path": file_path, "search": search_block, "replace": replace_block}
+                )
             
-            # Create a combined pattern to find all edit blocks in order
-            edit_pattern = re.compile(
-                r"(<<<<<<< SEARCH\n.*?\n=======\n.*?\n>>>>>>> REPLACE|<<<<<<< INSERT\n.*?\n=======\n(?:BEFORE|AFTER)\n<<<<<<< ANCHOR\n.*?\n>>>>>>> ANCHOR)",
-                re.DOTALL
-            )
-
-            for edit_match in edit_pattern.finditer(full_content_block):
-                edit_block_text = edit_match.group(1)
-
-                # Try to match as a REPLACE operation
-                rep_match = replace_pattern.match(edit_block_text)
-                if rep_match:
-                    search_block, replace_block = rep_match.groups()
-                    edits_in_block.append(
-                        {"type": "replace", "path": file_path, "search": search_block, "replace": replace_block}
-                    )
-                    continue
-
-                # Try to match as an INSERT operation
-                ins_match = insert_pattern.match(edit_block_text)
-                if ins_match:
-                    insert_content, position, anchor_block = ins_match.groups()
-                    edits_in_block.append({
-                        "type": "insert",
-                        "path": file_path,
-                        "content": insert_content,
-                        "position": position.lower(),
-                        "anchor": anchor_block,
-                    })
-            
-            operations.extend(edits_in_block)
+            for ins_match in insert_pattern.finditer(content_block):
+                insert_content, position, anchor_block = ins_match.groups()
+                operations.append({
+                    "type": "insert",
+                    "path": file_path,
+                    "content": insert_content,
+                    "position": position.lower(),
+                    "anchor": anchor_block,
+                })
 
     return operations
 
@@ -109,61 +90,65 @@ def preview_and_apply_changes(operations: List[Dict[str, Any]], dry_run: bool, a
 
     console.rule("[bold cyan]Planned Code Modifications[/bold cyan]", style="cyan")
     
+    # Store planned changes to apply them all after confirmation
+    planned_writes: Dict[Path, str] = {}
+    validation_passed = True
+
     for i, op in enumerate(operations):
+        path = op['path']
         op_type = op['type'].upper()
-        color = {
-            "CREATE": "green",
-            "REPLACE": "yellow",
-            "INSERT": "blue"
-        }.get(op_type, "white")
+        color = { "CREATE": "green", "REPLACE": "yellow", "INSERT": "blue" }.get(op_type, "white")
         
         console.print(Panel(
-            f"[bold {color}]{op_type}[/bold {color}] -> [cyan]{op['path']}[/cyan]",
-            title=f"Operation {i + 1}/{len(operations)}",
-            expand=False,
-            border_style=color
+            f"[bold {color}]{op_type}[/bold {color}] -> [cyan]{path}[/cyan]",
+            title=f"Operation {i + 1}/{len(operations)}", expand=False, border_style=color
         ))
         
-        if op['type'] == 'create':
-            console.print(Syntax(op['content'], "python", theme="monokai", line_numbers=True))
-        
-        elif op['type'] == 'replace':
-            try:
-                original_content = op['path'].read_text(encoding='utf-8')
-                new_content = original_content.replace(op['search'], op['replace'])
-                diff = difflib.unified_diff(
-                    original_content.splitlines(keepends=True),
-                    new_content.splitlines(keepends=True),
-                    fromfile=f"a/{op['path']}",
-                    tofile=f"b/{op['path']}"
-                )
-                console.print(Syntax(''.join(diff), "diff", theme="monokai"))
-            except FileNotFoundError:
-                console.print(f"[red]Original file not found for diffing.[/red]")
-            except Exception as e:
-                console.print(f"[red]Error generating diff: {e}[/red]")
+        try:
+            original_content = planned_writes.get(path)
+            if original_content is None and path.is_file():
+                 original_content = path.read_text('utf-8')
+            elif original_content is None:
+                 original_content = ""
+            
+            new_content = original_content
 
-        elif op['type'] == 'insert':
-            try:
-                original_content = op['path'].read_text(encoding='utf-8')
+            if op['type'] == 'create':
+                if path.exists():
+                    raise FileExistsError(f"File '{path}' already exists.")
+                new_content = op['content']
+            
+            elif op['type'] == 'replace':
+                anchor = op['search']
+                if not anchor: raise ValueError("SEARCH block cannot be empty.")
+                if original_content.count(anchor) != 1: raise ValueError(f"SEARCH block not unique (found {original_content.count(anchor)} times).")
+                new_content = original_content.replace(anchor, op['replace'])
+
+            elif op['type'] == 'insert':
+                anchor = op['anchor']
+                if not anchor: raise ValueError("ANCHOR block cannot be empty.")
+                if original_content.count(anchor) != 1: raise ValueError(f"ANCHOR block not unique (found {original_content.count(anchor)} times).")
                 if op['position'] == 'before':
-                    new_content = original_content.replace(op['anchor'], op['content'] + '\n' + op['anchor'])
+                    new_content = original_content.replace(anchor, op['content'] + '\n' + anchor)
                 else: # after
-                    new_content = original_content.replace(op['anchor'], op['anchor'] + '\n' + op['content'])
-                
-                diff = difflib.unified_diff(
-                    original_content.splitlines(keepends=True),
-                    new_content.splitlines(keepends=True),
-                    fromfile=f"a/{op['path']}",
-                    tofile=f"b/{op['path']}"
-                )
-                console.print(Syntax(''.join(diff), "diff", theme="monokai"))
-            except FileNotFoundError:
-                console.print(f"[red]Original file not found for diffing.[/red]")
-            except Exception as e:
-                console.print(f"[red]Error generating diff: {e}[/red]")
-    
+                    new_content = original_content.replace(anchor, anchor + '\n' + op['content'])
+            
+            planned_writes[path] = new_content
+            diff = difflib.unified_diff(
+                original_content.splitlines(keepends=True), new_content.splitlines(keepends=True),
+                fromfile=f"a/{path}", tofile=f"b/{path}"
+            )
+            console.print(Syntax(''.join(diff), "diff", theme="monokai"))
+
+        except Exception as e:
+            console.print(f"[bold red]Error previewing operation for '{path}': {e}[/bold red]")
+            validation_passed = False
+            break
+
     console.rule(style="cyan")
+    if not validation_passed:
+        console.print("[bold red]Aborting due to validation errors. No changes will be applied.[/bold red]")
+        return
 
     if dry_run:
         console.print("[bold yellow]DRY RUN MODE: No changes will be applied.[/bold yellow]")
@@ -175,61 +160,15 @@ def preview_and_apply_changes(operations: List[Dict[str, Any]], dry_run: bool, a
             return
     
     console.rule("[bold green]Applying Changes...[/bold green]", style="green")
-    
-    for op in operations:
+    for path, content in planned_writes.items():
         try:
-            path: Path = op['path']
-            op_type = op['type']
-
-            if op_type == 'create':
-                if path.exists():
-                    console.print(f"[yellow]SKIPPED CREATE:[/yellow] File '{path}' already exists.")
-                    continue
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(op['content'], encoding='utf-8')
-                console.print(f"[green]CREATED:[/green] New file at '{path}'")
-
-            elif op_type in ['replace', 'insert']:
-                if not path.exists():
-                    console.print(f"[red]ERROR {op_type.upper()}:[/red] File '{path}' not found.")
-                    continue
-                
-                original_content = path.read_text(encoding='utf-8')
-                
-                if op_type == 'replace':
-                    anchor = op['search']
-                    match_count = original_content.count(anchor)
-                    if match_count == 0:
-                        console.print(f"[red]ERROR REPLACE:[/red] SEARCH block not found in '{path}'.")
-                        continue
-                    if match_count > 1:
-                        console.print(f"[red]ERROR REPLACE:[/red] SEARCH block is not unique ({match_count} occurrences) in '{path}'.")
-                        continue
-                    new_content = original_content.replace(anchor, op['replace'])
-
-                else: # insert
-                    anchor = op['anchor']
-                    match_count = original_content.count(anchor)
-                    if match_count == 0:
-                        console.print(f"[red]ERROR INSERT:[/red] ANCHOR block not found in '{path}'.")
-                        continue
-                    if match_count > 1:
-                        console.print(f"[red]ERROR INSERT:[/red] ANCHOR block is not unique ({match_count} occurrences) in '{path}'.")
-                        continue
-                    
-                    if op['position'] == 'before':
-                        new_content = original_content.replace(anchor, op['content'] + '\n' + anchor)
-                    else: # after
-                        new_content = original_content.replace(anchor, anchor + '\n' + op['content'])
-
-                path.write_text(new_content, encoding='utf-8')
-                console.print(f"[green]MODIFIED:[/green] Applied {op_type} to '{path}'")
-
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding='utf-8')
+            console.print(f"[green]SUCCESS:[/green] Wrote changes to '{path}'")
         except Exception as e:
-            console.print(f"[bold red]FATAL ERROR applying operation to '{op.get('path')}': {e}[/bold red]")
+            console.print(f"[bold red]ERROR writing to '{path}': {e}[/bold red]")
             
     console.rule("[bold green]All operations complete.[/bold green]", style="green")
-
 
 def main():
     """Main entry point for the script."""
@@ -237,16 +176,8 @@ def main():
         description="Apply LLM-generated contextual search-and-replace edits from the clipboard.",
         formatter_class=argparse.RawTextHelpFormatter
     )
-    parser.add_argument(
-        "-d", "--dry-run",
-        action="store_true",
-        help="Parse the clipboard and preview all changes without applying them."
-    )
-    parser.add_argument(
-        "-y", "--yes",
-        action="store_true",
-        help="Apply all changes without asking for confirmation."
-    )
+    parser.add_argument("-d", "--dry-run", action="store_true", help="Parse and preview changes without applying.")
+    parser.add_argument("-y", "--yes", action="store_true", help="Apply all changes without confirmation.")
     args = parser.parse_args()
 
     try:

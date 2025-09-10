@@ -29,24 +29,20 @@ console = Console()
 
 # --- Change Application ---
 
-def _calculate_new_content(op: Dict[str, Any]) -> str:
+def _calculate_new_content(op: Dict[str, Any], current_content: str) -> str:
     """
-    Calculates the new content for a file based on a single operation.
-    This function does NOT write to disk and performs minimal validation,
-    making it safe for previews.
+    Calculates the new content for a file based on a single operation
+    and the file's current (potentially modified) state.
     """
     path = Path(op['file_path'])
     op_type = op['operation']
 
     if op_type == 'create_file':
+        if path.exists():
+             raise FileExistsError(f"File '{path}' already exists. Cannot create.")
         return op.get('content', '')
 
-    # For all edit operations, we need the original content.
-    if not path.is_file():
-        raise FileNotFoundError(f"Cannot apply edit, source file not found: '{path}'")
-    
-    original_full_content = path.read_text('utf-8')
-    lines = original_full_content.splitlines(keepends=True)
+    lines = current_content.splitlines(keepends=True)
     content = op.get('content', '')
     locator = op.get('locator')
 
@@ -63,7 +59,6 @@ def _calculate_new_content(op: Dict[str, Any]) -> str:
         elif op_type == 'insert_after':
             lines.insert(line_num + 1, content + '\n')
         elif op_type == 'replace_block':
-            # Handle replacing a block that may span multiple lines if we enhance schema
             lines[line_num] = content + '\n'
         elif op_type == 'delete_block':
             del lines[line_num]
@@ -73,17 +68,17 @@ def _calculate_new_content(op: Dict[str, Any]) -> str:
     elif locator['type'] == 'block_content':
         anchor = locator['value']
         
-        if original_full_content.count(anchor) != 1:
-            raise ValueError(f"Locator block_content is not unique (found {original_full_content.count(anchor)} times) in '{path}'.")
+        if current_content.count(anchor) != 1:
+            raise ValueError(f"Locator block_content is not unique (found {current_content.count(anchor)} times) in '{path}'.")
 
         if op_type == 'insert_before':
-            return original_full_content.replace(anchor, f"{content}\n{anchor}")
+            return current_content.replace(anchor, f"{content}\n{anchor}")
         elif op_type == 'insert_after':
-            return original_full_content.replace(anchor, f"{anchor}\n{content}")
+            return current_content.replace(anchor, f"{anchor}\n{content}")
         elif op_type == 'replace_block':
-            return original_full_content.replace(anchor, content)
+            return current_content.replace(anchor, content)
         elif op_type == 'delete_block':
-            return original_full_content.replace(anchor, "")
+            return current_content.replace(anchor, "")
         
     raise ValueError(f"Unsupported locator type: {locator['type']}")
 
@@ -115,18 +110,17 @@ def preview_and_apply_json(operations: List[Dict[str, Any]], dry_run: bool, auto
         ))
         
         try:
-            # Check for create operation on an existing file
-            if op['operation'] == 'create_file' and path.exists():
-                 raise FileExistsError(f"Cannot create '{path}' because it already exists.")
-
-            # Get the state of the file *before* this operation
-            # If multiple ops target the same file, use the last calculated state
-            original_content = planned_writes.get(path, "")
-            if not original_content and path.is_file():
-                 original_content = path.read_text('utf-8')
-
+            # CORRECTED: Get the state of the file *before* this operation.
+            # If multiple ops target the same file, use the last calculated state.
+            original_content = planned_writes.get(path)
+            if original_content is None: # First time seeing this file
+                if path.is_file():
+                    original_content = path.read_text('utf-8')
+                else:
+                    original_content = "" # For create_file or edits to a file that should exist
+            
             # Calculate the new state after this operation
-            new_content = _calculate_new_content(op)
+            new_content = _calculate_new_content(op, original_content)
             planned_writes[path] = new_content
 
             diff = difflib.unified_diff(
@@ -139,7 +133,7 @@ def preview_and_apply_json(operations: List[Dict[str, Any]], dry_run: bool, auto
         except Exception as e:
             console.print(f"[bold red]Error previewing operation: {e}[/bold red]")
             validation_passed = False
-            break # Stop on first error
+            break
             
     console.rule(style="cyan")
 
