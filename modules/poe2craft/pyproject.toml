@@ -8,9 +8,17 @@ version = "0.1.0"
 description = "PoE2 data & price utilities (definitions + economy)."
 requires-python = ">=3.9"
 dependencies = [
-    "requests>=2.31.0",
-    "beautifulsoup4>=4.12.2",
+  "requests>=2.31.0",
+  "beautifulsoup4>=4.12.2",
 ]
 
 [project.scripts]
 poe2craft = "poe2craft.cli:main"
+
+# 👇 Tell setuptools that THIS directory is the "poe2craft" package,
+# and subfolders here map to poe2craft.*
+[tool.setuptools]
+packages = ["poe2craft"]
+
+[tool.setuptools.package-dir]
+poe2craft = "."
