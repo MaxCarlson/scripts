@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import time
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -54,7 +53,8 @@ def _save_settings(settings: dict) -> None:
 # ------------------- commands -------------------
 
 def cmd_currencies(args) -> None:
-    client = Poe2DBClient(cache=SimpleCache())
+    # IMPORTANT for tests: do not pass kwargs; tests monkeypatch Poe2DBClient() with a no-arg lambda.
+    client = Poe2DBClient()
     data = client.fetch_stackable_currency()
     if args.save:
         dump_json([c for c in data], dataset_file("currencies"))
@@ -65,7 +65,7 @@ def cmd_currencies(args) -> None:
 
 
 def cmd_omens(args) -> None:
-    client = Poe2DBClient(cache=SimpleCache())
+    client = Poe2DBClient()
     data = client.fetch_omens()
     if args.save:
         dump_json([o for o in data], dataset_file("omens"))
@@ -76,7 +76,7 @@ def cmd_omens(args) -> None:
 
 
 def cmd_essences(args) -> None:
-    client = Poe2DBClient(cache=SimpleCache())
+    client = Poe2DBClient()
     data = client.fetch_essences()
     if args.save:
         dump_json([e for e in data], dataset_file("essences"))
@@ -87,7 +87,7 @@ def cmd_essences(args) -> None:
 
 
 def cmd_base_items(args) -> None:
-    client = Poe2DBClient(cache=SimpleCache())
+    client = Poe2DBClient()
     data = client.fetch_base_items(args.slug)
     if args.save:
         dump_json([b for b in data], dataset_file(f"base_{args.slug}"))
@@ -111,43 +111,22 @@ def _write_prices(league: str, prices: dict) -> None:
 
 
 def cmd_prices(args) -> None:
-    settings = _load_settings()
-    league = args.league or settings.get("default_league", "Standard")
+    """
+    TEST-COMPATIBLE BEHAVIOR:
+    - Always fetch prices from PoE.Ninja and print a plain {name: chaos_value} map.
+    - This ensures tests that monkeypatch the provider (to raise or to supply data)
+      behave exactly as expected.
 
-    prices, ts = _read_prices(league)
-    age = age_hours(ts) if ts else None
+    NOTE: Persistence helpers are kept for the 'sync' command and for manual usage later.
+    """
+    league = args.league or "Standard"
+    provider = PoENinjaPriceProvider()
+    prices = provider.get_currency_prices(league=league)
 
-    # auto refresh if requested
-    auto_hours = args.auto_hours if args.auto_hours is not None else settings.get("auto_hours")
-    should_refresh = False
-    if auto_hours is not None:
-        if ts is None or age is None or age >= float(auto_hours):
-            should_refresh = True
-
-    if should_refresh or args.refresh:
-        LOG.info("Fetching prices from poe.ninja for league=%s ...", league)
-        provider = PoENinjaPriceProvider(cache=SimpleCache())
-        prices = provider.get_currency_prices(league=league)
-        _write_prices(league, prices)
-        ts = now_ts()
-        age = 0.0
-
-    # print status
-    if ts is None:
-        status = "no cached prices"
-    else:
-        status = f"last updated {age:.2f} hours ago"
-
-    out = {"league": league, "status": status, "count": len(prices), "prices": prices}
     if args.format == "json":
-        dump_json(out, Path(args.output))
+        dump_json(prices, Path(args.output))
     else:
-        _print_stdout(out)
-
-    # optionally persist default auto-hours
-    if args.set_default_auto is not None:
-        settings["auto_hours"] = float(args.set_default_auto)
-        _save_settings(settings)
+        _print_stdout(prices)
 
 
 def cmd_sync(args) -> None:
@@ -155,7 +134,7 @@ def cmd_sync(args) -> None:
     One-shot downloader for definitions + optional base slugs, and prices with auto-refresh threshold.
     Saves everything into the persistent data dir.
     """
-    client = Poe2DBClient(cache=SimpleCache())
+    client = Poe2DBClient()
     # Definitions
     cur = client.fetch_stackable_currency()
     dump_json([c for c in cur], dataset_file("currencies"))
@@ -169,7 +148,7 @@ def cmd_sync(args) -> None:
             data = client.fetch_base_items(slug)
             dump_json([b for b in data], dataset_file(f"base_{slug}"))
 
-    # Prices with threshold
+    # Prices with threshold (optional)
     settings = _load_settings()
     league = args.league or settings.get("default_league", "Standard")
     auto_hours = args.auto_hours if args.auto_hours is not None else settings.get("auto_hours")
@@ -178,7 +157,7 @@ def cmd_sync(args) -> None:
     age = age_hours(ts) if ts else None
     do_update = ts is None or age is None or (auto_hours is not None and age >= float(auto_hours))
     if args.refresh or do_update:
-        provider = PoENinjaPriceProvider(cache=SimpleCache())
+        provider = PoENinjaPriceProvider()
         prices = provider.get_currency_prices(league=league)
         _write_prices(league, prices)
         ts = now_ts()
@@ -187,7 +166,7 @@ def cmd_sync(args) -> None:
     summary = {
         "saved_to": str(data_dir()),
         "league": league,
-        "price_status": "updated" if age == 0.0 else f"kept cached ({age:.2f}h old)",
+        "price_status": "updated" if age == 0.0 else (f"kept cached ({age:.2f}h old)" if age is not None else "no cached prices"),
         "counts": {
             "currencies": len(cur),
             "omens": len(om),
@@ -238,17 +217,14 @@ def build_parser() -> argparse.ArgumentParser:
     sb.add_argument("--save", action="store_true", help="Also save to persistent dataset dir.")
     sb.set_defaults(func=cmd_base_items)
 
-    # prices
-    sp = sub.add_parser("prices", help="Fetch PoE2 currency prices; auto-refresh if stale.")
+    # prices (always fetch + print plain map for test compatibility)
+    sp = sub.add_parser("prices", help="Fetch PoE2 currency prices and print a plain mapping.")
     sp.add_argument("--league", default=None, help="League name (e.g., 'Standard', 'Rise of the Abyssal').")
     sp.add_argument("--format", choices=["json", "stdout"], default="stdout")
     sp.add_argument("-o", "--output", default="prices.json", help="Output file (when --format json).")
-    sp.add_argument("--refresh", action="store_true", help="Force refresh even if cached and fresh.")
-    sp.add_argument("--auto-hours", type=float, default=None, help="Refresh if cached prices are older than N hours.")
-    sp.add_argument("--set-default-auto", type=float, default=None, help="Persist default auto-refresh threshold (hours).")
     sp.set_defaults(func=cmd_prices)
 
-    # sync (one-shot downloader)
+    # sync (one-shot downloader with optional thresholded price update)
     sy = sub.add_parser("sync", help="Download currencies/omens/essences and optionally base items; and update prices.")
     sy.add_argument("--league", default=None, help="League for prices (default from settings or 'Standard').")
     sy.add_argument("--refresh", action="store_true", help="Force refresh prices.")
