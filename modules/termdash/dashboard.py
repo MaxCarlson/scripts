@@ -86,6 +86,7 @@ class TermDash:
         separator_style: str = "rule",
         separator_custom: str | None = None,
         reserve_extra_rows: int = 6,
+        clear_screen: bool = False,
     ):
         self._lock = threading.RLock()
         self._render_thread = None
@@ -95,6 +96,7 @@ class TermDash:
         self.has_status_line = status_line
         self._debug_locks = debug_locks
         self._debug_rendering = debug_rendering
+        self.clear_screen = clear_screen
 
         self.align_columns = bool(align_columns)
         self.column_sep = str(column_sep)
@@ -242,7 +244,8 @@ class TermDash:
                 self._effective_reserve_rows = max(0, lines - visible)
                 dashboard_height = visible + self._effective_reserve_rows
 
-            sys.stdout.write(f"{CLEAR_SCREEN}{MOVE_TO_TOP_LEFT}")
+            if self.clear_screen:
+                sys.stdout.write(f"{CLEAR_SCREEN}{MOVE_TO_TOP_LEFT}")
             top_scroll = min(lines, dashboard_height + 1)
             if top_scroll < lines:
                 sys.stdout.write(f"{CSI}{top_scroll};{lines}r")
@@ -437,7 +440,8 @@ class TermDash:
             _, lines = os.get_terminal_size()
             sys.stdout.write(f"{CSI}1;{lines}r")
             sys.stdout.write(f"{CSI}{lines};1H")
-            sys.stdout.write(CLEAR_SCREEN)
+            if self.clear_screen:
+                sys.stdout.write(CLEAR_SCREEN)
             sys.stdout.write(MOVE_TO_TOP_LEFT)
             sys.stdout.write(SHOW_CURSOR)
             sys.stdout.flush()
