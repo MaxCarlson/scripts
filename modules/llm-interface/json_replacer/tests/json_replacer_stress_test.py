@@ -41,12 +41,7 @@ def complex_project(tmp_path: Path):
 def test_stress_json_multi_level_refactor(mock_confirm, complex_project):
     """
     Simulates a complex JSON-based refactor across a deep directory structure.
-    1. Create 3 new SQL migration files.
-    2. Edit all 10 user model files to add an email field.
-    3. Edit the Terraform file twice: once by line number, once by content.
-    Total: 3 creations, 12 edits = 15 operations
     """
-    
     ops = []
 
     # 1. Create 3 new SQL migration files
@@ -62,14 +57,11 @@ def test_stress_json_multi_level_refactor(mock_confirm, complex_project):
         ops.append({
             "file_path": f"services/auth/src/user_model_{i}.py",
             "operation": "insert_after",
-            "locator": {
-                "type": "block_content",
-                "value": f"    name: str = 'user_{i}'\n"
-            },
+            "locator": { "type": "block_content", "value": f"    name: str = 'user_{i}'\n" },
             "content": f"    email: str = 'user_{i}@example.com'"
         })
     
-    # 3. Edit Terraform file
+    # 3. Edit Terraform file twice
     tf_path = "infra/terraform/main.tf"
     ops.append({
         "file_path": tf_path,
@@ -80,10 +72,7 @@ def test_stress_json_multi_level_refactor(mock_confirm, complex_project):
     ops.append({
         "file_path": tf_path,
         "operation": "insert_after",
-        "locator": {
-            "type": "block_content",
-            "value": '  instance_type = "t3.large"\n'
-        },
+        "locator": { "type": "block_content", "value": '  instance_type = "t3.large"\n' },
         "content": '  tags = {\n    Name = "app-instance"\n  }'
     })
     
@@ -91,7 +80,7 @@ def test_stress_json_multi_level_refactor(mock_confirm, complex_project):
 
     json_replacer.preview_and_apply_json(ops, False, True)
 
-    # Verify changes
+    # Verify all changes were applied correctly
     for i in range(3):
         assert (complex_project / f"services/db/migrations/00{i}_add_table.sql").exists()
 

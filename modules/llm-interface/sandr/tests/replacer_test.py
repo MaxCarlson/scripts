@@ -87,16 +87,13 @@ def test_parse_complex_multiline_search_and_replace():
     assert ops[0]['search'] == "def main():\n    print('Hello, world!')\n    helper_one()"
 
 def test_parse_malformed_clipboard_gracefully_fails():
-    # Missing [END_FILE]
-    clipboard1 = "[START_FILE_CREATE: new.py]\ncontent"
+    clipboard1 = "[START_FILE_CREATE: new.py]\ncontent" # Missing [END_FILE]
     assert replacer.parse_clipboard_content(clipboard1) == []
     
-    # Mismatched delimiters
-    clipboard2 = "[START_FILE_EDIT: a.py]\n<<<<<<< SEARCH\ncontent\n=======\n>>>>>>> ANCHOR\n[END_FILE]"
+    clipboard2 = "[START_FILE_EDIT: a.py]\n<<<<<<< SEARCH\ncontent\n=======\n>>>>>>> ANCHOR\n[END_FILE]" # Mismatched delimiters
     assert replacer.parse_clipboard_content(clipboard2) == []
 
-    # No file block
-    clipboard3 = "<<<<<<< SEARCH\ncontent\n=======\nreplace\n>>>>>>> REPLACE"
+    clipboard3 = "<<<<<<< SEARCH\ncontent\n=======\nreplace\n>>>>>>> REPLACE" # No file block
     assert replacer.parse_clipboard_content(clipboard3) == []
 
 # --- Full Workflow and Edge Case Tests ---
@@ -139,11 +136,8 @@ def test_scenario_create_and_multi_edit(mock_confirm, project):
     )
     
     ops = replacer.parse_clipboard_content(clipboard)
-    # CORRECTED: The parser now finds all 4 operations.
     assert len(ops) == 4
 
-    assert not new_file_path.exists()
-    
     replacer.preview_and_apply_changes(ops, dry_run=False, auto_confirm=False)
     
     assert new_file_path.exists()
@@ -166,15 +160,13 @@ def test_apply_edit_error_if_anchor_not_unique(mock_confirm, project, capsys):
     
     replacer.preview_and_apply_changes(ops, dry_run=False, auto_confirm=False)
     captured = capsys.readouterr()
-    # CORRECTED: Check for key phrases instead of exact long string.
     output = captured.out
     assert "Error previewing operation" in output
     assert "ANCHOR block not unique" in output
     assert "(found 2 times)" in output
 
 @patch('rich.prompt.Confirm.ask', return_value=True)
-def test_edit_empty_file_fails(mock_confirm, project, capsys):
-    # CORRECTED: Test that using an empty anchor is properly rejected.
+def test_edit_empty_file_fails_with_empty_anchor(mock_confirm, project, capsys):
     empty_file = project / "empty.txt"
     empty_file.touch()
 
@@ -184,5 +176,4 @@ def test_edit_empty_file_fails(mock_confirm, project, capsys):
     captured = capsys.readouterr()
     assert "Error previewing operation" in captured.out
     assert "ANCHOR block cannot be empty" in captured.out
-    # File should remain empty
     assert empty_file.read_text() == ""

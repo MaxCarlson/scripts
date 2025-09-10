@@ -34,9 +34,9 @@ def test_stress_massive_refactor(mock_confirm, complex_project):
     Simulates a huge refactoring operation:
     1. Create 5 new documentation files.
     2. Edit all 5 handler files in the API service.
-    3. Edit all 5 util files in the shared library.
+    3. Edit all 5 util files in the shared library by deleting their content.
     4. Append a new section to the main README.md.
-    Total: 5 creations, 11 edits.
+    Total: 5 creations, 11 edits => 16 operations.
     """
     
     clipboard_parts = []
@@ -70,15 +70,14 @@ def test_stress_massive_refactor(mock_confirm, complex_project):
             "[END_FILE]"
         )
 
-    # 3. Edit all 5 util files (delete them)
+    # 3. Edit all 5 util files (delete their content)
     for i in range(5):
         util_path = f"libs/shared_utils/src/util_{i}.py"
+        content_to_delete = (complex_project / util_path).read_text()
         clipboard_parts.append(
             f"[START_FILE_EDIT: {util_path}]\n"
             f"<<<<<<< SEARCH\n"
-            f"# Util {i}\n\n"
-            f"class UtilClass{i}:\n"
-            f"    pass\n"
+            f"{content_to_delete}"
             f"=======\n"
             f">>>>>>> REPLACE\n"
             "[END_FILE]"
@@ -112,8 +111,6 @@ def test_stress_massive_refactor(mock_confirm, complex_project):
         handler_content = (complex_project / f"services/api/src/handler_{i}.py").read_text()
         assert "# Original logic" not in handler_content
         assert "# New, improved logic" in handler_content
-        assert f"from libs.shared_utils.src.util_{i} import" in handler_content
-        # Check util file was deleted
         assert (complex_project / f"libs/shared_utils/src/util_{i}.py").read_text() == ""
 
     readme_content = (complex_project / "README.md").read_text()

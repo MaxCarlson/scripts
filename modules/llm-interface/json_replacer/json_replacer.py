@@ -38,12 +38,11 @@ def _calculate_new_content(op: Dict[str, Any], current_content: str) -> str:
     op_type = op['operation']
 
     if op_type == 'create_file':
-        if path.exists():
-             raise FileExistsError(f"File '{path}' already exists. Cannot create.")
+        # This check is now done in the main loop before calling.
         return op.get('content', '')
 
     lines = current_content.splitlines(keepends=True)
-    content = op.get('content', '')
+    content_to_insert = op.get('content', '')
     locator = op.get('locator')
 
     if not locator:
@@ -55,11 +54,14 @@ def _calculate_new_content(op: Dict[str, Any], current_content: str) -> str:
             raise IndexError(f"Line number {locator['value']} is out of bounds for file '{path}' (1-{len(lines)}).")
         
         if op_type == 'insert_before':
-            lines.insert(line_num, content + '\n')
+            lines.insert(line_num, content_to_insert + '\n')
         elif op_type == 'insert_after':
-            lines.insert(line_num + 1, content + '\n')
+            lines.insert(line_num + 1, content_to_insert + '\n')
         elif op_type == 'replace_block':
-            lines[line_num] = content + '\n'
+            # Add a newline if the content doesn't already have one, preserving line structure
+            if not content_to_insert.endswith('\n'):
+                 content_to_insert += '\n'
+            lines[line_num] = content_to_insert
         elif op_type == 'delete_block':
             del lines[line_num]
         
@@ -72,11 +74,11 @@ def _calculate_new_content(op: Dict[str, Any], current_content: str) -> str:
             raise ValueError(f"Locator block_content is not unique (found {current_content.count(anchor)} times) in '{path}'.")
 
         if op_type == 'insert_before':
-            return current_content.replace(anchor, f"{content}\n{anchor}")
+            return current_content.replace(anchor, f"{content_to_insert}\n{anchor}")
         elif op_type == 'insert_after':
-            return current_content.replace(anchor, f"{anchor}\n{content}")
+            return current_content.replace(anchor, f"{anchor}\n{content_to_insert}")
         elif op_type == 'replace_block':
-            return current_content.replace(anchor, content)
+            return current_content.replace(anchor, content_to_insert)
         elif op_type == 'delete_block':
             return current_content.replace(anchor, "")
         
@@ -110,16 +112,18 @@ def preview_and_apply_json(operations: List[Dict[str, Any]], dry_run: bool, auto
         ))
         
         try:
-            # CORRECTED: Get the state of the file *before* this operation.
-            # If multiple ops target the same file, use the last calculated state.
+            # Corrected: State management for multi-edits on the same file.
             original_content = planned_writes.get(path)
-            if original_content is None: # First time seeing this file
-                if path.is_file():
+            if original_content is None: # First time we see this file.
+                if op['operation'] == 'create_file':
+                    if path.exists():
+                        raise FileExistsError(f"Cannot create '{path}' because it already exists.")
+                    original_content = ""
+                elif path.is_file():
                     original_content = path.read_text('utf-8')
                 else:
-                    original_content = "" # For create_file or edits to a file that should exist
+                    raise FileNotFoundError(f"Cannot edit '{path}' because it does not exist.")
             
-            # Calculate the new state after this operation
             new_content = _calculate_new_content(op, original_content)
             planned_writes[path] = new_content
 
@@ -162,7 +166,11 @@ def preview_and_apply_json(operations: List[Dict[str, Any]], dry_run: bool, auto
     console.rule("[bold green]All operations complete.[/bold green]", style="green")
 
 def main():
-    parser = argparse.ArgumentParser(description="Apply LLM-generated JSON-based edits from the clipboard.")
+    parser = argparse.ArgumentParser(
+        description="Apply LLM-generated JSON-based edits from the clipboard.",
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog="Use -y to auto-confirm changes, -d for a dry run."
+        )
     parser.add_argument("-d", "--dry-run", action="store_true", help="Preview changes without applying.")
     parser.add_argument("-y", "--yes", action="store_true", help="Apply changes without confirmation.")
     args = parser.parse_args()
