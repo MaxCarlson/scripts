@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
 from termdash.simpleboard import SimpleBoard
 from termdash.progress import ProgressBar
 from termdash import Stat

@@ -2,55 +2,35 @@
 """
 Progress bar helpers for TermDash.
 
-This module provides a `ProgressBar` class that renders a fixed-width,
-in-place safe progress bar string and exposes it as a TermDash `Stat`
-so you can drop it into any `Line`.
+`ProgressBar` renders a fixed-width, in-place safe textual bar and exposes
+it as a `Stat` (via `.cell()`), so you can drop it into any `Line`.
 
-Design goals:
-- No reliance on clearing the whole screen; just a single-cell string.
-- Width-stable via the same NOEXPAND markers TermDash already understands.
-- Easy to bind to other stats (via callables) or update manually.
+Design goals
+------------
+- Width-stable via `Stat(no_expand=True, display_width=...)`.
+- No full-screen wipes; safe to use under TermDash's renderer.
+- Bindable to callables so the bar reflects external state without manual `.set()`.
 
-Typical usage
--------------
-    from termdash import TermDash, Line, Stat
+Example
+-------
+    from termdash import Stat
     from termdash.progress import ProgressBar
 
-    pb = ProgressBar(name="dl_bar", total=100, width=30)
-    line = Line("downloads", stats={
+    pb = ProgressBar("bar", total=100, width=28, show_percent=True)
+    line_stats = {
         "done": Stat("done", 0, prefix="Done: "),
-        "total": Stat("total", 100, prefix="Total: "),
-        "bar": pb.cell(),  # drop the stat cell into the line
-    })
-
-    td = TermDash()
-    td.add_line("downloads", line)
-    # td.start()/stop() or use as a context manager elsewhere
-
-    # Update in your loop:
-    for i in range(101):
-        pb.set(i)      # updates the underlying Stat value with a new bar
-        td.update_stat("downloads", "done", i)
-
-You can also *bind* the bar to callables so it refreshes itself
-whenever it renders (useful when multiple places mutate state):
-
-    pb.bind(current_fn=lambda: state.files_done, total_fn=lambda: state.files_total)
-
-NOTE: keep widths modest for narrow terminals. The bar string includes the
-brackets `[]` and the internal fill area; `width` is the total cell width.
+        "bar": pb.cell(),
+    }
+    # Add the line to a TermDash and call pb.set()/pb.advance() as work progresses.
 """
 
 from __future__ import annotations
 
-import math
 from typing import Callable, Optional
 
-# Reuse Stat and the no-expand markers used by the TermDash aligner.
-from .components import Stat, NOEXPAND_L, NOEXPAND_R
 
-# ANSI reset (we don't color segments inside the bar by default)
-RESET = "\033[0m"
+from .components import Stat
+
 
 class ProgressBar:
     """A width-stable textual progress bar that plugs into a TermDash `Line`.
@@ -58,19 +38,18 @@ class ProgressBar:
     Parameters
     ----------
     name : str
-        The stat key used within a `Line`.
+        The `Stat` key for the bar inside a `Line`.
     total : float | int
-        The target total. If 0 or None, the bar will show 0%.
+        The target total. If 0/None, the bar displays 0%.
     current : float | int, default 0
         Initial progress value.
     width : int, default 30
-        Total cell width including brackets. Must be >= 6 to fit a useful bar.
+        Total cell width including brackets.
     charset : str, default "block"
-        - "block": uses unicode '█' for fill, '░' for empty.
-        - "ascii": uses '#' for fill, '-' for empty.
+        - "block": uses '█'/'░'
+        - "ascii": uses '#'/ '-'
     show_percent : bool, default True
-        When True, overlays a centered percent string inside the bar.
-        (keeps the overall width constant).
+        Overlay centered percent inside the bar while keeping width constant.
     """
 
     def __init__(
@@ -89,40 +68,37 @@ class ProgressBar:
         self._total = float(total or 0)
         self._current = max(0.0, float(current or 0))
         self.width = int(width)
-        self.charset = charset
+        self.charset = "ascii" if charset == "ascii" else "block"
         self.show_percent = bool(show_percent)
 
         self._current_fn: Optional[Callable[[], float]] = None
         self._total_fn: Optional[Callable[[], float]] = None
 
-        # The underlying Stat that will be added to a Line.
-        # We mark it no_expand with a display_width hint so TermDash aligns it as a fixed cell.
         self._stat = Stat(
             name=name,
             value=self._render_text(self._current, self._total),
             prefix="",
             format_string="{}",
             unit="",
-            color="",               # let the Line color, or keep default
+            color="",
             warn_if_stale_s=0,
             no_expand=True,
             display_width=self.width,
         )
 
-    # ----------------
-    # Public API
-    # ----------------
+    # Public API -----------------------------------------------------
     def cell(self) -> Stat:
-        """Return the underlying `Stat` to drop into a TermDash `Line`."""
+        """Return the underlying `Stat` to drop into a `Line`."""
         return self._stat
 
     def bind(self, current_fn: Callable[[], float], total_fn: Optional[Callable[[], float]] = None) -> None:
-        """Bind the bar to callables; values will be read at render time."""
+        """Bind to callables (bar refreshes on render)."""
         self._current_fn = current_fn
         self._total_fn = total_fn
 
     def set_total(self, total: float | int) -> None:
         self._total = max(0.0, float(total or 0))
+        self._refresh()
 
     def set(self, current: float | int) -> None:
         self._current = max(0.0, float(current or 0))
@@ -138,9 +114,7 @@ class ProgressBar:
             return 0.0
         return max(0.0, min(100.0, 100.0 * (self._read_current() / t)))
 
-    # ----------------
-    # Internals
-    # ----------------
+    # Internals ------------------------------------------------------
     def _read_current(self) -> float:
         if self._current_fn is not None:
             try:
@@ -158,41 +132,23 @@ class ProgressBar:
         return self._total
 
     def _refresh(self) -> None:
-        # Recompute bar text and set it as the Stat's value (render() will embed no-expand markers)
-        txt = self._render_text(self._read_current(), self._read_total())
-        self._stat.value = txt  # Stat will format with "{}" and wrap in NOEXPAND markers
+        self._stat.value = self._render_text(self._read_current(), self._read_total())
 
     def _render_text(self, current: float, total: float) -> str:
-        # clamp and compute ratio
         t = float(total or 0)
         c = max(0.0, float(current or 0))
         ratio = 0.0 if t <= 0 else max(0.0, min(1.0, c / t))
 
-        # characters
-        if self.charset == "ascii":
-            fill_char, empty_char = "#", "-"
-        else:
-            fill_char, empty_char = "█", "░"
+        fill_char, empty_char = ("#", "-") if self.charset == "ascii" else ("█", "░")
 
-        # we include brackets '[]' in the width
-        inner_w = max(1, self.width - 2)
+        inner_w = max(1, self.width - 2)  # brackets '[]'
         filled = int(round(ratio * inner_w))
         empty = max(0, inner_w - filled)
-
         bar_inner = (fill_char * filled) + (empty_char * empty)
 
         if self.show_percent:
             pct_text = f"{int(round(ratio * 100)):3d}%"
-            # Overlay centered into the bar_inner without changing length
             start = max(0, (len(bar_inner) - len(pct_text)) // 2)
-            bar_inner = (
-                bar_inner[:start] +
-                pct_text +
-                bar_inner[start + len(pct_text):]
-            )
+            bar_inner = bar_inner[:start] + pct_text + bar_inner[start + len(pct_text):]
 
-        bar = f"[{bar_inner}]"  # total length == self.width
-
-        # To keep column alignment stable in TermDash, apply the NOEXPAND markers
-        # with a width hint for the aligner to read.
-        return f"{NOEXPAND_L}[W{self.width}]{bar}{NOEXPAND_R}"
+        return f"[{bar_inner}]"
