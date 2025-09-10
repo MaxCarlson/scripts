@@ -102,6 +102,7 @@ class TermDash:
         self.max_col_width = int(max_col_width) if (max_col_width is not None and max_col_width > 0) else None
         self._reserve_extra_rows = max(0, int(reserve_extra_rows))
         self._effective_reserve_rows = self._reserve_extra_rows
+        self.warning_issued = False
 
         # separators
         self.enable_separators = bool(enable_separators)
@@ -337,6 +338,9 @@ class TermDash:
 
                 # Hard-clip w/ ellipsis if needed
                 if width > 0 and len(plain) > width:
+                    if not self.warning_issued:
+                        self.log("WARNING: columns truncated. Consider increasing terminal width.", level='warning')
+                        self.warning_issued = True
                     visible = plain[: max(1, width - 1)] + "…"
                 else:
                     visible = plain

@@ -59,6 +59,7 @@ class ProgressBar:
         show_percent: bool = True,
         full_width: bool = False,
         margin: int = 2,
+        min_width_fraction: Optional[float] = None,
     ) -> None:
         self.name = name
         self._total = max(0.0, float(total))
@@ -67,6 +68,7 @@ class ProgressBar:
         self.show_percent = bool(show_percent)
         self.full_width = bool(full_width)
         self.margin = max(0, int(margin))
+        self.min_width_fraction = min_width_fraction
 
         if isinstance(charset, tuple):
             self.fill_char, self.empty_char = charset
@@ -135,9 +137,12 @@ class ProgressBar:
             w = max(6, _term_cols() - self.margin)
         else:
             w = self.width
+            if self.min_width_fraction is not None:
+                min_w = int(_term_cols() * self.min_width_fraction)
+                w = max(w, min_w)
 
         inner = max(2, w - 2)  # reserve [ .. ]
-        filled = int(math.floor(inner * pct))
+        filled = int(round(inner * pct))
         empty = max(0, inner - filled)
 
         # Base bar
