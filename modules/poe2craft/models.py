@@ -111,9 +111,9 @@ class Modifier:
 class BaseItem:
     name: str
     item_class: ItemClass
-    reqs: Dict[str, Union[int, str]] = field(default_factory=dict)  # e.g., {"Level": 45, "Dex": 80}
+    reqs: Dict[str, Union[int, str]] = field(default_factory=dict)
     implicits: List[Modifier] = field(default_factory=list)
-    properties: Dict[str, Union[int, float, str]] = field(default_factory=dict)  # phys dmg, crit, aps...
+    properties: Dict[str, Union[int, float, str]] = field(default_factory=dict)
 
     def to_json(self) -> str:
         return json.dumps(as_serializable(asdict(self)), ensure_ascii=False)
@@ -124,7 +124,7 @@ class Currency:
     name: str
     stack_size: Optional[int] = None
     description: Optional[str] = None
-    min_modifier_level: Optional[int] = None  # e.g., "Minimum Modifier Level: 50"
+    min_modifier_level: Optional[int] = None
     meta: Dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> str:
@@ -144,7 +144,7 @@ class Omen:
 @dataclass
 class Essence:
     name: str
-    tier: Optional[str] = None  # "Lesser", "", "Perfect", etc.
+    tier: Optional[str] = None
     description: str = ""
     targets: List[ItemClass] = field(default_factory=list)
 
@@ -154,7 +154,7 @@ class Essence:
 
 @dataclass
 class Item:
-    """Runtime representation of a craftable item (stateful, ready for future simulation)."""
+    """Runtime representation of a craftable item."""
     base: BaseItem
     ilvl: int
     prefixes: List[Modifier] = field(default_factory=list)
