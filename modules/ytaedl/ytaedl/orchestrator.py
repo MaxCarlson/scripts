@@ -574,42 +574,48 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         description="Orchestrate scanning and downloads with a Termdash UI.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    # Core controls
-    p.add_argument("-t", "--threads", type=int, default=4, help="Total concurrent worker slots.")
-    p.add_argument("-m", "--max-dl-per-file", dest="max_dl", type=int, default=3, help="Max successful downloads per URL file assignment.")
-    p.add_argument("-S", "--skip-scan", action="store_true", help="Skip scanning and download directly from URL files.")
+    # Core Controls
+    core = p.add_argument_group("Core Controls")
+    core.add_argument("-t", "--threads", type=int, default=4, help="Total concurrent worker slots.")
+    core.add_argument("-m", "--max-dl-per-file", dest="max_dl", type=int, default=3, help="Max successful downloads per URL file assignment.")
+    core.add_argument("-S", "--skip-scan", action="store_true", help="Skip scanning and download directly from URL files.")
 
-    # Process allocation
-    p.add_argument("-a", "--num-aebn-dl", type=int, default=1, help="Number of concurrent AEBN download workers.")
-    p.add_argument("-y", "--num-ytdl-dl", type=int, default=3, help="Number of concurrent yt-dlp download workers.")
+    # Process Allocation
+    proc = p.add_argument_group("Process Allocation")
+    proc.add_argument("-a", "--num-aebn-dl", type=int, default=1, help="Number of concurrent AEBN download workers.")
+    proc.add_argument("-y", "--num-ytdl-dl", type=int, default=3, help="Number of concurrent yt-dlp download workers.")
     
     # Paths
-    p.add_argument("-u", "--url-dir", type=Path, default=DEF_URL_DIR, help="Main URL dir (yt-dlp sources).")
-    p.add_argument("-e", "--ae-url-dir", type=Path, default=DEF_AE_URL_DIR, help="AEBN URL dir.")
-    p.add_argument("-o", "--output-dir", type=Path, default=DEF_OUT_DIR, help="Destination root for downloads.")
-    p.add_argument("-c", "--counts-file", type=Path, default=DEF_COUNTS_FILE, help="JSON counts file path (for scanning).")
-    p.add_argument("-A", "--archive-file", dest="archive", type=Path, default=None, help="Archive file to skip already downloaded URLs.")
-    p.add_argument("-L", "--log-file", type=Path, help="Append detailed logs to this file.")
+    paths = p.add_argument_group("Paths")
+    paths.add_argument("-u", "--url-dir", type=Path, default=DEF_URL_DIR, help="Main URL dir (yt-dlp sources).")
+    paths.add_argument("-e", "--ae-url-dir", type=Path, default=DEF_AE_URL_DIR, help="AEBN URL dir.")
+    paths.add_argument("-o", "--output-dir", type=Path, default=DEF_OUT_DIR, help="Destination root for downloads.")
+    paths.add_argument("-c", "--counts-file", type=Path, default=DEF_COUNTS_FILE, help="JSON counts file path (for scanning).")
+    paths.add_argument("-A", "--archive-file", dest="archive", type=Path, default=None, help="Archive file to skip already downloaded URLs.")
+    paths.add_argument("-L", "--log-file", type=Path, help="Append detailed logs to this file.")
     
-    # Downloader executables
-    p.add_argument("-p", "--ytdlp-path", dest="ytdlp", default="yt-dlp", help="Path to yt-dlp executable (for scanning).")
-    p.add_argument("-T", "--ytdlp-template", default="%(title)s.%(ext)s", help="Filename template for yt-dlp.")
+    # Scanning
+    scan = p.add_argument_group("Scanning")
+    scan.add_argument("-p", "--ytdlp-path", dest="ytdlp", default="yt-dlp", help="Path to yt-dlp executable (for scanning).")
+    scan.add_argument("-T", "--ytdlp-template", default="%(title)s.%(ext)s", help="Filename template for yt-dlp.")
 
-    # Downloader performance tuning (passed to yt-dlp/aebndl)
-    p.add_argument("-j", "--jobs", type=int, default=1, help="Per-process jobs for the downloader itself.")
-    p.add_argument("-O", "--timeout", type=int, default=None, help="Per-process timeout in seconds.")
-    p.add_argument("-R", "--rate-limit", default=None, help="Download rate limit (e.g., 500K, 2M).")
-    p.add_argument("-B", "--buffer-size", default=None, help="Download buffer size (e.g., 16M).")
-    p.add_argument("-r", "--retries", type=int, default=None, help="Number of retries for downloads.")
-    p.add_argument("-F", "--fragment-retries", type=int, default=None, help="Number of retries for fragments.")
-    p.add_argument("-C", "--ytdlp-connections", type=int, default=None, help="Number of parallel connections for yt-dlp.")
-    p.add_argument("-s", "--aria2-splits", type=int, default=None, help="Number of splits for aria2.")
-    p.add_argument("-x", "--aria2-x-conn", type=int, default=None, help="Connections per server for aria2.")
-    p.add_argument("-M", "--aria2-min-split", default=None, help="Min split size for aria2 (e.g., 1M).")
-    p.add_argument("-Z", "--aria2-timeout", type=int, default=None, help="Timeout for aria2 in seconds.")
+    # Downloader Tuning
+    tune = p.add_argument_group("Downloader Tuning")
+    tune.add_argument("-j", "--jobs", type=int, default=1, help="Per-process jobs for the downloader itself.")
+    tune.add_argument("-O", "--timeout", type=int, default=None, help="Per-process timeout in seconds.")
+    tune.add_argument("-R", "--rate-limit", default=None, help="Download rate limit (e.g., 500K, 2M).")
+    tune.add_argument("-B", "--buffer-size", default=None, help="Download buffer size (e.g., 16M).")
+    tune.add_argument("-r", "--retries", type=int, default=None, help="Number of retries for downloads.")
+    tune.add_argument("-F", "--fragment-retries", type=int, default=None, help="Number of retries for fragments.")
+    tune.add_argument("-C", "--ytdlp-connections", type=int, default=None, help="Number of parallel connections for yt-dlp.")
+    tune.add_argument("-s", "--aria2-splits", type=int, default=None, help="Number of splits for aria2.")
+    tune.add_argument("-x", "--aria2-x-conn", type=int, default=None, help="Connections per server for aria2.")
+    tune.add_argument("-M", "--aria2-min-split", default=None, help="Min split size for aria2 (e.g., 1M).")
+    tune.add_argument("-Z", "--aria2-timeout", type=int, default=None, help="Timeout for aria2 in seconds.")
     
     # UI
-    p.add_argument("-n", "--no-ui", action="store_true", help="Disable Termdash UI and use simple print statements.")
+    ui_group = p.add_argument_group("UI")
+    ui_group.add_argument("-n", "--no-ui", action="store_true", help="Disable Termdash UI and use simple print statements.")
     
     return p.parse_args(argv)
 
@@ -855,6 +861,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                         source=URLSource(file=wf.url_file, line_number=idx, original_url=url),
                     )
                     
+                    # Add total_in_set for UI to prevent 4/0 display error
+                    setattr(item, 'total_in_set', len(wf.urls))
+                    
                     downloader = get_downloader(url, cfg)
                     
                     try:
@@ -866,7 +875,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                                 break
                             ui.handle_event(ev)
                             if isinstance(ev, FinishEvent):
-                                if ev.result.status in (DownloadStatus.COMPLETED, DownloadStatus.ALREADY_EXISTS):
+                                result = ev.result
+                                olog(f"Worker {slot}: Finished URL '{url}' with status: {result.status.value}")
+                                if result.status in (DownloadStatus.COMPLETED, DownloadStatus.ALREADY_EXISTS):
                                     completed_in_wf += 1
                                     if archive_path:
                                         with archive_lock:
