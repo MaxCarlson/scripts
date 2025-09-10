@@ -20,18 +20,28 @@ HEADERS = {
     "User-Agent": "poe2craft/0.1 (+https://example.local; research use; polite rate limiting)"
 }
 
+# Curated baseline of item-class page slugs that exist on PoE2DB.
+DEFAULT_BASE_SLUGS = [
+    "Bows",
+    "Boots",
+    "Gloves",
+    "Helmet",
+    "Body_Armour",
+    "Quivers",
+]
+
 
 class Poe2DBClient:
     """
-    PoE2DB scraper (US English locale).
+    PoE2DB scraper (US English).
     Scrapes:
       - Stackable Currency
       - Omens
       - Essences
-      - Base items for a given class-page slug (e.g., 'Bows', 'Boots_dex')
+      - Base items for a class-page slug (e.g., 'Bows') or many slugs
     """
 
-    def __init__(self, session: Optional[requests.Session] = None, cache: Optional[SimpleCache] = None, delay_s: float = 0.8):
+    def __init__(self, session: Optional[requests.Session] = None, cache: Optional[SimpleCache] = None, delay_s: float = 0.6):
         self.sess = session or requests.Session()
         self.sess.headers.update(HEADERS)
         self.cache = cache or SimpleCache()
@@ -58,64 +68,75 @@ class Poe2DBClient:
     # --------------- Parsers ---------------
 
     def fetch_stackable_currency(self) -> List[Currency]:
+        """
+        Strict parsing to avoid site nav noise:
+          - Only accept anchors where the very next <div> contains "Stack Size".
+          - Then take the following <div> (if any) as description.
+          - Enrich with item detail page for min modifier level.
+        """
         url = f"{BASE}/us/Stackable_Currency"
         soup = self._soup(url)
         results: List[Currency] = []
 
-        header = soup.find(string=re.compile(r"Stackable Currency", re.I))
-        anchors = header.find_all_next("a", href=True) if header else soup.find_all("a", href=True)
-
+        anchors = soup.find_all("a", href=True)
         seen = set()
         for a in anchors:
             name = a.get_text(strip=True)
             href = a.get("href", "")
             if not name or not href.startswith("/us/"):
                 continue
+
+            # Require immediate stack size div to reduce false positives
+            stack_div = self._find_next_div(a, pattern=r"Stack Size:\s*\d+\s*/\s*(\d+)", max_steps=2)
+            if not stack_div:
+                continue
+
             if name in seen:
                 continue
             seen.add(name)
 
-            stack_size = None
-            desc = None
+            m = re.search(r"Stack Size:\s*\d+\s*/\s*(\d+)", stack_div.get_text(" ", strip=True), flags=re.I)
+            stack_size = int(m.group(1)) if m else None
 
-            stack_div = self._find_next_div(a, pattern=r"Stack Size:\s*\d+\s*/\s*(\d+)")
-            if stack_div:
-                m = re.search(r"Stack Size:\s*\d+\s*/\s*(\d+)", stack_div.get_text(" ", strip=True), flags=re.I)
-                if m:
-                    stack_size = int(m.group(1))
-            desc_div = self._find_next_div(a, skip_if_contains="Stack Size:")
-            if desc_div:
-                desc = desc_div.get_text(" ", strip=True)
+            desc_div = self._find_next_div(stack_div, skip_if_contains="Stack Size:", max_steps=2)
+            desc = desc_div.get_text(" ", strip=True) if desc_div else ""
 
             meta, min_mod_level = self._currency_detail_meta(urljoin(BASE, href))
-            cur = Currency(name=name, stack_size=stack_size, description=desc, min_modifier_level=min_mod_level, meta=meta)
-            if desc or meta:
-                results.append(cur)
+            cur = Currency(name=name, stack_size=stack_size, description=desc or None, min_modifier_level=min_mod_level, meta=meta)
+            results.append(cur)
 
-            if len(results) > 90:
+            if len(results) > 150:
                 break
 
+        # de-dup
         uniq: Dict[str, Currency] = {}
         for c in results:
             if c.name not in uniq:
                 uniq[c.name] = c
         return list(uniq.values())
 
-    def _find_next_div(self, anchor: Tag, pattern: Optional[str] = None, skip_if_contains: Optional[str] = None) -> Optional[Tag]:
-        sib = anchor
-        for _ in range(10):
+    def _find_next_div(self, node: Tag, pattern: Optional[str] = None, skip_if_contains: Optional[str] = None, max_steps: int = 10) -> Optional[Tag]:
+        """
+        Walk forward through next siblings from the given node and return the first <div>
+        satisfying the constraints. Limit the scan by max_steps steps to prevent spillover.
+        """
+        sib = node
+        steps = 0
+        while steps < max_steps:
             sib = sib.find_next_sibling()
             if sib is None:
                 return None
             if isinstance(sib, Tag) and sib.name == "div":
                 txt = sib.get_text(" ", strip=True)
                 if skip_if_contains and skip_if_contains in txt:
+                    steps += 1
                     continue
                 if pattern:
                     if re.search(pattern, txt, flags=re.I):
                         return sib
                 else:
                     return sib
+            steps += 1
         return None
 
     def _currency_detail_meta(self, detail_url: str) -> Tuple[Dict[str, str], Optional[int]]:
@@ -135,38 +156,41 @@ class Poe2DBClient:
         return meta, min_level
 
     def fetch_omens(self) -> List[Omen]:
+        """
+        Only accept anchors whose href contains '/us/Omen' and have a following description div.
+        """
         url = f"{BASE}/us/Omen"
         soup = self._soup(url)
         out: List[Omen] = []
 
-        header = soup.find(string=re.compile(r"Omens", re.I))
-        anchors = header.find_all_next("a", href=True) if header else soup.find_all("a", href=True)
+        anchors = soup.find_all("a", href=True)
         seen = set()
         for a in anchors:
-            name = a.get_text(strip=True)
             href = a.get("href", "")
-            if not name or not href.startswith("/us/"):
+            if "/us/" not in href or "Omen" not in href:
                 continue
-            if name in seen:
+            name = a.get_text(strip=True)
+            if not name or name in seen:
                 continue
             seen.add(name)
 
+            desc_div = self._find_next_div(a, skip_if_contains="Stack Size:", max_steps=3)
+            desc = desc_div.get_text(" ", strip=True) if desc_div else ""
+            if not desc:
+                continue
+
             stack = None
-            stack_div = self._find_next_div(a, pattern=r"Stack Size:\s*\d+\s*/\s*(\d+)")
+            stack_div = self._find_next_div(a, pattern=r"Stack Size:\s*\d+\s*/\s*(\d+)", max_steps=3)
             if stack_div:
                 m = re.search(r"Stack Size:\s*\d+\s*/\s*(\d+)", stack_div.get_text(" ", strip=True), flags=re.I)
                 if m:
                     stack = int(m.group(1))
 
-            desc_div = self._find_next_div(a, skip_if_contains="Stack Size:")
-            desc = desc_div.get_text(" ", strip=True) if desc_div else ""
-
-            if name and desc:
-                out.append(Omen(name=name, description=desc, stack_size=stack))
-
-            if len(out) > 60:
+            out.append(Omen(name=name, description=desc, stack_size=stack))
+            if len(out) > 120:
                 break
 
+        # de-dup
         uniq: Dict[str, Omen] = {}
         for o in out:
             if o.name not in uniq:
@@ -174,30 +198,37 @@ class Poe2DBClient:
         return list(uniq.values())
 
     def fetch_essences(self) -> List[Essence]:
+        """
+        Accept anchors where name and href contain 'Essence', and reject known noise.
+        """
         url = f"{BASE}/us/Essence"
         soup = self._soup(url)
         out: List[Essence] = []
 
+        reject_terms = {" /", "Ref", "Stash Tab", "Acronym", "Essences", "Chance"}
         anchors = soup.find_all("a", href=True)
         seen = set()
         for a in anchors:
             name = a.get_text(strip=True)
-            if not name or "Essence" not in name:
+            href = a.get("href", "")
+            if not name or "Essence" not in name or "/us/" not in href or "Essence" not in href:
+                continue
+            if any(term in name for term in reject_terms):
                 continue
             if name in seen:
                 continue
             seen.add(name)
 
             tier = None
-            m = re.match(r"(Lesser|Perfect)\s+(Essence.*)", name, re.I)
+            m = re.match(r"(Lesser|Perfect|Greater)\s+(Essence.*)", name, re.I)
             if m:
                 tier = m.group(1).title()
 
-            desc_div = self._find_next_div(a, skip_if_contains="Stack Size:")
+            desc_div = self._find_next_div(a, skip_if_contains="Stack Size:", max_steps=2)
             desc = desc_div.get_text(" ", strip=True) if desc_div else ""
 
             out.append(Essence(name=name, tier=tier, description=desc))
-            if len(out) > 100:
+            if len(out) > 200:
                 break
 
         return out
@@ -278,22 +309,6 @@ class Poe2DBClient:
             return ItemClass.HELMET
         if "body" in s or "armour" in s or "armor" in s or "armors" in s:
             return ItemClass.BODY_ARMOUR
-        if "staff" in s:
-            return ItemClass.STAFF
-        if "sword" in s and "two" in s:
-            return ItemClass.TWO_HAND_SWORD
-        if "axe" in s and "two" in s:
-            return ItemClass.TWO_HAND_AXE
-        if "mace" in s and "two" in s:
-            return ItemClass.TWO_HAND_MACE
-        if "crossbow" in s:
-            return ItemClass.CROSSBOW
         if "quiver" in s:
             return ItemClass.QUIVER
-        if "ring" in s:
-            return ItemClass.RING
-        if "amulet" in s:
-            return ItemClass.AMULET
-        if "belt" in s:
-            return ItemClass.BELT
         return ItemClass.UNKNOWN
