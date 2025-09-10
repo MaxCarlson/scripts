@@ -3,312 +3,318 @@ from __future__ import annotations
 
 import logging
 import re
-import time
-from typing import Dict, List, Optional, Tuple
-from urllib.parse import urljoin
+from dataclasses import dataclass, asdict
+from typing import Dict, List, Optional, Iterable, Tuple
 
 import requests
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup, NavigableString, Tag
 
-from poe2craft.models import Currency, Essence, ItemClass, Omen, BaseItem
-from poe2craft.util.cache import SimpleCache
+from ..cache import SimpleCache
 
-LOG = logging.getLogger(__name__)
+log = logging.getLogger("poe2craft.datasources.poe2db")
 
-BASE = "https://poe2db.tw"
-HEADERS = {
-    "User-Agent": "poe2craft/0.1 (+https://example.local; research use; polite rate limiting)"
-}
+_POE2DB = "https://poe2db.tw"
 
-# Curated baseline of item-class page slugs that exist on PoE2DB.
-DEFAULT_BASE_SLUGS = [
-    "Bows",
-    "Boots",
-    "Gloves",
-    "Helmet",
-    "Body_Armour",
-    "Quivers",
-]
+
+@dataclass
+class Currency:
+    name: str
+    stack_size: Optional[str]
+    description: str
+    min_modifier_level: Optional[int]
+    meta: Dict[str, str]
+
+
+@dataclass
+class Omen:
+    name: str
+    description: str
+    stack_size: Optional[str]
+
+
+@dataclass
+class Essence:
+    name: str
+    tier: Optional[str]
+    description: str
+    targets: List[str]
+
+
+@dataclass
+class BaseItem:
+    name: str
+    item_class: str
+    url: str
+
+
+def _slugify_path_segment(s: str) -> str:
+    # For PoE2DB page segments we need exact case/underscores, so only trim spaces.
+    return s.strip()
+
+
+def _text(s: Optional[str]) -> str:
+    return (s or "").strip()
+
+
+def _first(it: Iterable[str]) -> Optional[str]:
+    for x in it:
+        if x:
+            return x
+    return None
+
+
+def _norm_space(s: str) -> str:
+    return re.sub(r"\s+", " ", s or "").strip()
 
 
 class Poe2DBClient:
     """
-    PoE2DB scraper (US English).
-    Scrapes:
-      - Stackable Currency
-      - Omens
-      - Essences
-      - Base items for a class-page slug (e.g., 'Bows') or many slugs
+    Minimal PoE2DB scraper for PoE2. Designed to be resilient to their markup,
+    avoiding brittle tag chains and instead scanning textual siblings.
     """
 
-    def __init__(self, session: Optional[requests.Session] = None, cache: Optional[SimpleCache] = None, delay_s: float = 0.6):
-        self.sess = session or requests.Session()
-        self.sess.headers.update(HEADERS)
+    def __init__(
+        self,
+        base_url: str = _POE2DB,
+        locale: Optional[str] = "us",
+        session: Optional[requests.Session] = None,
+        cache: Optional[SimpleCache] = None,
+        timeout: float = 12.0,
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.locale = locale
+        self.session = session or requests.Session()
         self.cache = cache or SimpleCache()
-        self.delay_s = delay_s
+        self.timeout = timeout
 
-    # --------------- HTTP helpers ---------------
+    # ---------- HTTP helpers ----------
+
+    def _url(self, path: str) -> str:
+        path = path.lstrip("/")
+        if self.locale:
+            return f"{self.base_url}/{self.locale}/{path}"
+        return f"{self.base_url}/{path}"
 
     def _get(self, url: str) -> str:
         cached = self.cache.get(url)
         if cached is not None:
-            return cached.decode("utf-8")
-
-        LOG.debug("GET %s", url)
-        r = self.sess.get(url, timeout=20)
+            return cached
+        r = self.session.get(url, timeout=self.timeout)
         r.raise_for_status()
-        text = r.text
-        self.cache.put(url, text.encode("utf-8"))
-        time.sleep(self.delay_s)
-        return text
+        self.cache.set(url, r.text)
+        return r.text
 
     def _soup(self, url: str) -> BeautifulSoup:
         return BeautifulSoup(self._get(url), "html.parser")
 
-    # --------------- Parsers ---------------
+    # ---------- Parsing utilities ----------
 
-    def fetch_stackable_currency(self) -> List[Currency]:
+    _re_stack = re.compile(r"\bStack Size:\s*(.+)", re.I)
+    _re_minmlvl = re.compile(r"\bMinimum Modifier Level:\s*(\d+)", re.I)
+
+    def _scan_following_text(self, anchor: Tag) -> Tuple[Optional[str], Optional[int], Optional[str]]:
         """
-        Strict parsing to avoid site nav noise:
-          - Only accept anchors where the very next <div> contains "Stack Size".
-          - Then take the following <div> (if any) as description.
-          - Enrich with item detail page for min modifier level.
+        From an <a> (item name), walk through its following siblings until the next <a> or 'Image'
+        marker, and extract:
+          - stack size (text like 'Stack Size: 1 / 20')
+          - min modifier level (if present)
+          - first non-empty descriptive text (not stack size or min level)
         """
-        url = f"{BASE}/us/Stackable_Currency"
+        stack: Optional[str] = None
+        minlvl: Optional[int] = None
+        description: Optional[str] = None
+
+        for sib in anchor.next_siblings:
+            if isinstance(sib, Tag) and sib.name == "a":
+                break  # next item
+            text = ""
+            if isinstance(sib, NavigableString):
+                text = str(sib)
+            elif isinstance(sib, Tag):
+                # Ignore image anchors; often the word "Image" is a link or plain text
+                if sib.get_text(strip=True) == "Image":
+                    break
+                text = sib.get_text(" ", strip=True)
+            text = _norm_space(text)
+            if not text:
+                continue
+
+            m = self._re_stack.search(text)
+            if m and not stack:
+                stack = m.group(1).strip()
+                continue
+
+            m2 = self._re_minmlvl.search(text)
+            if m2 and not minlvl:
+                try:
+                    minlvl = int(m2.group(1))
+                except ValueError:
+                    pass
+                continue
+
+            # first non-empty meaningful description
+            if description is None and not text.lower().startswith(("stack size:", "minimum modifier level:", "name", "drop level")):
+                description = text
+
+        return stack, minlvl, description
+
+    # ---------- Public APIs ----------
+
+    def fetch_currencies(self) -> List[Currency]:
+        """
+        Parse https://poe2db.tw/us/Stackable_Currency (US locale) and capture
+        name, stack size, description, and min modifier level if present.
+        """
+        url = self._url("Stackable_Currency")
         soup = self._soup(url)
+
         results: List[Currency] = []
-
-        anchors = soup.find_all("a", href=True)
-        seen = set()
-        for a in anchors:
-            name = a.get_text(strip=True)
-            href = a.get("href", "")
-            if not name or not href.startswith("/us/"):
+        # Heuristic: valid item anchors on this page link to concrete item pages, not headers.
+        for a in soup.find_all("a", href=True):
+            name = _norm_space(a.get_text())
+            href = a["href"]
+            if not name or name in {"Reset", "Edit"}:
+                continue
+            # PoE2DB item detail links often look like "/us/Gemcutters_Prism" or "/Gemcutters_Prism"
+            if not re.match(r"^/(?:[a-z]{2}/)?[A-Za-z0-9][A-Za-z0-9_%-]+$", href):
                 continue
 
-            # Require immediate stack size div to reduce false positives
-            stack_div = self._find_next_div(a, pattern=r"Stack Size:\s*\d+\s*/\s*(\d+)", max_steps=2)
-            if not stack_div:
-                continue
+            stack, minlvl, desc = self._scan_following_text(a)
 
-            if name in seen:
-                continue
-            seen.add(name)
+            # Require at least name + one of stack/desc for it to be a currency row
+            if stack or desc:
+                results.append(
+                    Currency(
+                        name=name,
+                        stack_size=_text(stack),
+                        description=_text(desc),
+                        min_modifier_level=minlvl,
+                        meta={},
+                    )
+                )
 
-            m = re.search(r"Stack Size:\s*\d+\s*/\s*(\d+)", stack_div.get_text(" ", strip=True), flags=re.I)
-            stack_size = int(m.group(1)) if m else None
-
-            desc_div = self._find_next_div(stack_div, skip_if_contains="Stack Size:", max_steps=2)
-            desc = desc_div.get_text(" ", strip=True) if desc_div else ""
-
-            meta, min_mod_level = self._currency_detail_meta(urljoin(BASE, href))
-            cur = Currency(name=name, stack_size=stack_size, description=desc or None, min_modifier_level=min_mod_level, meta=meta)
-            results.append(cur)
-
-            if len(results) > 150:
-                break
-
-        # de-dup
-        uniq: Dict[str, Currency] = {}
-        for c in results:
-            if c.name not in uniq:
-                uniq[c.name] = c
-        return list(uniq.values())
-
-    def _find_next_div(self, node: Tag, pattern: Optional[str] = None, skip_if_contains: Optional[str] = None, max_steps: int = 10) -> Optional[Tag]:
-        """
-        Walk forward through next siblings from the given node and return the first <div>
-        satisfying the constraints. Limit the scan by max_steps steps to prevent spillover.
-        """
-        sib = node
-        steps = 0
-        while steps < max_steps:
-            sib = sib.find_next_sibling()
-            if sib is None:
-                return None
-            if isinstance(sib, Tag) and sib.name == "div":
-                txt = sib.get_text(" ", strip=True)
-                if skip_if_contains and skip_if_contains in txt:
-                    steps += 1
-                    continue
-                if pattern:
-                    if re.search(pattern, txt, flags=re.I):
-                        return sib
-                else:
-                    return sib
-            steps += 1
-        return None
-
-    def _currency_detail_meta(self, detail_url: str) -> Tuple[Dict[str, str], Optional[int]]:
-        soup = self._soup(detail_url)
-        meta: Dict[str, str] = {}
-        min_level = None
-
-        text = soup.get_text("\n", strip=True)
-        m_min = re.search(r"Minimum Modifier Level\D+(\d+)", text, re.I)
-        if m_min:
-            min_level = int(m_min.group(1))
-
-        for m in re.finditer(r"(DropLevel|Drop Level|BaseType)\s*:\s*([^\n]+)", text, flags=re.I):
-            k, v = m.group(1), m.group(2).strip()
-            meta[k.replace(" ", "")] = v
-
-        return meta, min_level
+        log.info("Parsed %d currencies from %s", len(results), url)
+        return results
 
     def fetch_omens(self) -> List[Omen]:
         """
-        Only accept anchors whose href contains '/us/Omen' and have a following description div.
+        Parse https://poe2db.tw/Omens (no locale is more reliable for this page).
         """
-        url = f"{BASE}/us/Omen"
-        soup = self._soup(url)
+        # Prefer root page. If user changed locale, fall back to that.
+        root_url = f"{self.base_url}/Omens"
+        try:
+            soup = BeautifulSoup(self._get(root_url), "html.parser")
+        except Exception:
+            soup = self._soup("Omen")
+
         out: List[Omen] = []
-
-        anchors = soup.find_all("a", href=True)
-        seen = set()
-        for a in anchors:
-            href = a.get("href", "")
-            if "/us/" not in href or "Omen" not in href:
+        for a in soup.find_all("a", href=True):
+            name = _norm_space(a.get_text())
+            href = a["href"]
+            if not name or name in {"Reset", "Edit"}:
                 continue
-            name = a.get_text(strip=True)
-            if not name or name in seen:
+            if not re.match(r"^/(?:[a-z]{2}/)?[A-Za-z0-9][A-Za-z0-9_%-]+$", href):
                 continue
-            seen.add(name)
-
-            desc_div = self._find_next_div(a, skip_if_contains="Stack Size:", max_steps=3)
-            desc = desc_div.get_text(" ", strip=True) if desc_div else ""
-            if not desc:
+            if "Omen" not in name and "Omen" not in href:
+                # avoid random anchors
                 continue
 
-            stack = None
-            stack_div = self._find_next_div(a, pattern=r"Stack Size:\s*\d+\s*/\s*(\d+)", max_steps=3)
-            if stack_div:
-                m = re.search(r"Stack Size:\s*\d+\s*/\s*(\d+)", stack_div.get_text(" ", strip=True), flags=re.I)
-                if m:
-                    stack = int(m.group(1))
+            stack, _minlvl, desc = self._scan_following_text(a)
+            if stack or desc:
+                out.append(Omen(name=name, description=_text(desc), stack_size=_text(stack)))
 
-            out.append(Omen(name=name, description=desc, stack_size=stack))
-            if len(out) > 120:
-                break
-
-        # de-dup
-        uniq: Dict[str, Omen] = {}
-        for o in out:
-            if o.name not in uniq:
-                uniq[o.name] = o
-        return list(uniq.values())
+        log.info("Parsed %d omens", len(out))
+        return out
 
     def fetch_essences(self) -> List[Essence]:
         """
-        Accept anchors where name and href contain 'Essence', and reject known noise.
+        Parse https://poe2db.tw/Essence (root path works best).
         """
-        url = f"{BASE}/us/Essence"
-        soup = self._soup(url)
-        out: List[Essence] = []
+        url = f"{self.base_url}/Essence"
+        soup = BeautifulSoup(self._get(url), "html.parser")
+        res: List[Essence] = []
+        for a in soup.find_all("a", href=True):
+            name = _norm_space(a.get_text())
+            href = a["href"]
+            if not name or name in {"Reset", "Edit"}:
+                continue
+            if "Essence" not in name and "Essence" not in href:
+                continue
+            if not re.match(r"^/(?:[a-z]{2}/)?[A-Za-z0-9][A-Za-z0-9_%-]+$", href):
+                continue
 
-        reject_terms = {" /", "Ref", "Stash Tab", "Acronym", "Essences", "Chance"}
-        anchors = soup.find_all("a", href=True)
-        seen = set()
-        for a in anchors:
-            name = a.get_text(strip=True)
-            href = a.get("href", "")
-            if not name or "Essence" not in name or "/us/" not in href or "Essence" not in href:
-                continue
-            if any(term in name for term in reject_terms):
-                continue
-            if name in seen:
-                continue
-            seen.add(name)
+            stack, _minlvl, desc = self._scan_following_text(a)
 
+            # Attempt a tier from the name prefix (Lesser/Greater/Perfect/etc.)
             tier = None
-            m = re.match(r"(Lesser|Perfect|Greater)\s+(Essence.*)", name, re.I)
+            m = re.match(r"^(Lesser|Greater|Perfect)\s+Essence", name)
             if m:
-                tier = m.group(1).title()
+                tier = m.group(1)
 
-            desc_div = self._find_next_div(a, skip_if_contains="Stack Size:", max_steps=2)
-            desc = desc_div.get_text(" ", strip=True) if desc_div else ""
+            res.append(Essence(name=name, tier=tier, description=_text(desc), targets=[]))
 
-            out.append(Essence(name=name, tier=tier, description=desc))
-            if len(out) > 200:
-                break
+        log.info("Parsed %d essences", len(res))
+        return res
 
-        return out
-
-    def fetch_base_items(self, item_class_page_slug: str) -> List[BaseItem]:
-        url = f"{BASE}/us/{item_class_page_slug}"
+    def fetch_base_items(self, slug: str) -> List[BaseItem]:
+        """
+        Parse a base-item listing page (e.g., 'Bows', 'Helmets', 'Body_Armours', 'Boots', 'Gloves', 'Quivers').
+        """
+        slug = _slugify_path_segment(slug)
+        url = self._url(slug)
         soup = self._soup(url)
-        out: List[BaseItem] = []
 
-        anchors = soup.find_all("a", href=True)
-        for a in anchors:
-            name = a.get_text(strip=True)
-            href = a.get("href", "")
-            if not name or not href.startswith("/us/"):
+        items: List[BaseItem] = []
+        # Strategy: find anchors that link to detail base items under this category.
+        for a in soup.find_all("a", href=True):
+            name = _norm_space(a.get_text())
+            href = a["href"]
+            if not name or name in {"Reset", "Edit"}:
+                continue
+            # Typical base item detail urls look like /us/Recurve_Bow etc.
+            if not re.match(r"^/(?:[a-z]{2}/)?[A-Za-z0-9][A-Za-z0-9_%-]+$", href):
                 continue
 
-            divs: List[str] = []
-            sib = a
-            for _ in range(12):
-                sib = sib.find_next_sibling()
-                if sib is None:
-                    break
-                if isinstance(sib, Tag) and sib.name == "div":
-                    divs.append(sib.get_text(" ", strip=True))
-                if isinstance(sib, Tag) and sib.name == "a":
-                    break
-
-            block = " ".join(divs)
-            if not any(key in block for key in ("Physical Damage", "Evasion Rating", "Energy Shield", "Requires:")):
+            # Guard against clear non-item navigation anchors by requiring mixed-case-ish names
+            if len(name) < 3 or name.lower() == name:
                 continue
 
-            props: Dict[str, object] = {}
-            reqs: Dict[str, object] = {}
+            items.append(BaseItem(name=name, item_class=self.infer_item_class_from_slug(slug), url=self._absolute(href)))
 
-            m_phys = re.search(r"Physical Damage:\s*([0-9]+-?[0-9]*)", block, re.I)
-            if m_phys:
-                props["Physical Damage"] = m_phys.group(1)
-            m_crit = re.search(r"Critical Hit Chance:\s*([0-9.]+)%", block, re.I)
-            if m_crit:
-                try:
-                    props["Critical Hit Chance"] = float(m_crit.group(1))
-                except ValueError:
-                    pass
-            m_aps = re.search(r"Attacks per Second:\s*([0-9.]+)", block, re.I)
-            if m_aps:
-                try:
-                    props["Attacks per Second"] = float(m_aps.group(1))
-                except ValueError:
-                    pass
-            m_ev = re.search(r"Evasion Rating:\s*([0-9]+)", block, re.I)
-            if m_ev:
-                props["Evasion Rating"] = int(m_ev.group(1))
+        log.info("Parsed %d base items from slug '%s'", len(items), slug)
+        return items
 
-            m_req = re.search(r"Requires:\s*Level\s*([0-9]+)(?:,\s*(Str|Dex|Int)\s*([0-9]+))?", block, re.I)
-            if m_req:
-                reqs["Level"] = int(m_req.group(1))
-                if m_req.group(2) and m_req.group(3):
-                    reqs[m_req.group(2).title()] = int(m_req.group(3))
+    def _absolute(self, href: str) -> str:
+        if href.startswith("http"):
+            return href
+        href = href.lstrip("/")
+        # keep or remove locale component
+        if self.locale:
+            if re.match(r"^[a-z]{2}/", href):
+                return f"{self.base_url}/{href}"
+            return f"{self.base_url}/{self.locale}/{href}"
+        return f"{self.base_url}/{href}"
 
-            ic = self._infer_item_class_from_slug(item_class_page_slug)
-            out.append(BaseItem(name=name, item_class=ic, reqs=reqs, properties=props))
+    # ---------- Helpers ----------
 
-        uniq: Dict[str, BaseItem] = {}
-        for b in out:
-            if b.name not in uniq:
-                uniq[b.name] = b
-        return list(uniq.values())
-
-    def _infer_item_class_from_slug(self, slug: str) -> ItemClass:
+    @staticmethod
+    def infer_item_class_from_slug(slug: str) -> str:
         s = slug.lower()
         if "bow" in s:
-            return ItemClass.BOW
+            return "Bows"
         if "boots" in s:
-            return ItemClass.BOOTS
+            return "Boots"
         if "gloves" in s:
-            return ItemClass.GLOVES
-        if "helmet" in s:
-            return ItemClass.HELMET
-        if "body" in s or "armour" in s or "armor" in s or "armors" in s:
-            return ItemClass.BODY_ARMOUR
-        if "quiver" in s:
-            return ItemClass.QUIVER
-        return ItemClass.UNKNOWN
+            return "Gloves"
+        if "helmet" in s or "helmets" in s:
+            return "Helmets"
+        if "body_armour" in s or "body_armours" in s or "armour" in s:
+            return "Body Armours"
+        if "quiver" in s or "quivers" in s:
+            return "Quivers"
+        return slug
+
+    # Reasonable defaults for "download all base items"
+    @staticmethod
+    def default_base_slugs() -> List[str]:
+        return ["Bows", "Quivers", "Boots", "Gloves", "Helmets", "Body_Armours"]
