@@ -372,16 +372,18 @@ def _build_worklist_from_disk(
     main_url_dir: Path,
     ae_url_dir: Path,
     out_root: Path,
+    single_files: Optional[List[Path]] = None,
 ) -> List[_WorkFile]:
     """Builds a worklist directly from files on disk, skipping the scan."""
     work: List[_WorkFile] = []
+    seen_files = set()
 
-    def _process_dir(d: Path, source: str):
-        if not d.is_dir():
-            return
-        for url_file in sorted(d.glob("*.txt")):
-            if not url_file.is_file():
-                continue
+    def _process_file(url_file: Path, source: str):
+        try:
+            resolved_path = str(url_file.resolve())
+            if resolved_path in seen_files:
+                return
+            
             urls = read_urls_from_files([url_file])
             out_dir = _infer_dest_dir(out_root, url_file)
             work.append(
@@ -394,9 +396,32 @@ def _build_worklist_from_disk(
                     remaining=len(urls),
                 )
             )
+            seen_files.add(resolved_path)
+        except Exception:
+            pass
 
+    def _process_dir(d: Path, source: str):
+        if not d.is_dir():
+            return
+        for url_file in sorted(d.glob("*.txt")):
+            if url_file.is_file():
+                _process_file(url_file, source)
+
+    # Process directories first
     _process_dir(main_url_dir, "main")
     _process_dir(ae_url_dir, "ae")
+
+    # Process single files, checking their source
+    if single_files:
+        try:
+            resolved_ae_dir = str(ae_url_dir.resolve())
+            for f in single_files:
+                if f.is_file():
+                    source = "ae" if str(f.resolve()).startswith(resolved_ae_dir) else "main"
+                    _process_file(f, source)
+        except Exception:
+            pass
+            
     return work
 
 # ---------------------------------------------------------------------------
@@ -405,6 +430,7 @@ def _scan_all_parallel(
     main_url_dir: Path,
     ae_url_dir: Path,
     out_root: Path,
+    single_files: Optional[List[Path]],
     *,
     yt_dlp: str,
     ytdlp_template: str,
@@ -422,7 +448,24 @@ def _scan_all_parallel(
     main_files: List[Path] = _iter_txt(main_url_dir)
     ae_files: List[Path] = _iter_txt(ae_url_dir)
 
-    all_files: List[Tuple[Path, str]] = [(p, "main") for p in main_files] + [(p, "ae") for p in ae_files]
+    all_files_map: Dict[str, Tuple[Path, str]] = {}
+
+    for p in main_files:
+        all_files_map[str(p.resolve())] = (p, "main")
+    for p in ae_files:
+        all_files_map[str(p.resolve())] = (p, "ae")
+
+    if single_files:
+        resolved_ae_dir = str(ae_url_dir.resolve())
+        for f in single_files:
+            if f.is_file():
+                resolved_f = str(f.resolve())
+                if resolved_f not in all_files_map:
+                    source = "ae" if resolved_f.startswith(resolved_ae_dir) else "main"
+                    all_files_map[resolved_f] = (f, source)
+
+    all_files: List[Tuple[Path, str]] = list(all_files_map.values())
+
 
     snap = CountsSnapshot()
     snap.sources = {
@@ -587,6 +630,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     
     # Paths
     paths = p.add_argument_group("Paths")
+    paths.add_argument("-f", "--file", dest="url_files", action="append", help="Path to a specific URL file to process (repeatable).")
     paths.add_argument("-u", "--url-dir", type=Path, default=DEF_URL_DIR, help="Main URL dir (yt-dlp sources).")
     paths.add_argument("-e", "--ae-url-dir", type=Path, default=DEF_AE_URL_DIR, help="AEBN URL dir.")
     paths.add_argument("-o", "--output-dir", type=Path, default=DEF_OUT_DIR, help="Destination root for downloads.")
@@ -766,7 +810,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         all_work: List[_WorkFile]
         if args.skip_scan:
             olog("skip-scan enabled, building worklist from disk")
-            all_work = _build_worklist_from_disk(args.url_dir, args.ae_url_dir, args.output_dir)
+            all_work = _build_worklist_from_disk(
+                args.url_dir,
+                args.ae_url_dir,
+                args.output_dir,
+                single_files=[Path(f) for f in args.url_files] if args.url_files else None
+            )
             random.shuffle(all_work)
         else:
             olog("starting scan phase")
@@ -774,6 +823,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 args.url_dir,
                 args.ae_url_dir,
                 args.output_dir,
+                single_files=[Path(f) for f in args.url_files] if args.url_files else None,
                 yt_dlp=args.ytdlp,
                 ytdlp_template=args.ytdlp_template,
                 n_workers=max(1, args.threads),
