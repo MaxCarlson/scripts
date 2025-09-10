@@ -1,154 +1,154 @@
 #!/usr/bin/env python3
-"""
-Progress bar helpers for TermDash.
-
-`ProgressBar` renders a fixed-width, in-place safe textual bar and exposes
-it as a `Stat` (via `.cell()`), so you can drop it into any `Line`.
-
-Design goals
-------------
-- Width-stable via `Stat(no_expand=True, display_width=...)`.
-- No full-screen wipes; safe to use under TermDash's renderer.
-- Bindable to callables so the bar reflects external state without manual `.set()`.
-
-Example
--------
-    from termdash import Stat
-    from termdash.progress import ProgressBar
-
-    pb = ProgressBar("bar", total=100, width=28, show_percent=True)
-    line_stats = {
-        "done": Stat("done", 0, prefix="Done: "),
-        "bar": pb.cell(),
-    }
-    # Add the line to a TermDash and call pb.set()/pb.advance() as work progresses.
-"""
-
 from __future__ import annotations
 
-from typing import Callable, Optional
-
+import math
+import shutil
+from typing import Callable, Optional, Tuple, Union
 
 from .components import Stat
 
 
+CharSet = Tuple[str, str]  # (fill, empty)
+
+
+def _term_cols(default: int = 80) -> int:
+    try:
+        return shutil.get_terminal_size().columns
+    except Exception:
+        return default
+
+
 class ProgressBar:
-    """A width-stable textual progress bar that plugs into a TermDash `Line`.
+    """
+    Fixed or full-width textual progress bar that plugs into a Line as a Stat.
+
+    - Can be bound to functions returning (current, total) so it always
+      reflects the *actual* progress at render time.
+    - Uses no_expand=True so it won't distort column alignment.
+    - Full-width mode draws a bar that spans the entire terminal width
+      (useful for "bar below the row" layouts).
 
     Parameters
     ----------
     name : str
-        The `Stat` key for the bar inside a `Line`.
+        Unique stat name.
     total : float | int
-        The target total. If 0/None, the bar displays 0%.
-    current : float | int, default 0
-        Initial progress value.
-    width : int, default 30
-        Total cell width including brackets.
-    charset : str, default "block"
-        - "block": uses '█'/'░'
-        - "ascii": uses '#'/ '-'
-    show_percent : bool, default True
-        Overlay centered percent inside the bar while keeping width constant.
+        Total units of work.
+    current : float | int
+        Starting units completed.
+    width : int
+        Bar width when full_width=False (includes the [..] brackets).
+    charset : {"block", "ascii"} or CharSet
+        "block" -> ("█", "·"), "ascii" -> ("#", "-"), or a tuple (fill, empty).
+    show_percent : bool
+        Overlay a centered "xx%" in the bar.
+    full_width : bool
+        If True, bar spans the terminal width (computed on render).
+    margin : int
+        Horizontal margin to subtract from terminal width in full_width mode.
     """
 
     def __init__(
         self,
         name: str,
-        total: float | int,
-        current: float | int = 0,
+        total: Union[int, float],
+        current: Union[int, float] = 0,
         *,
         width: int = 30,
-        charset: str = "block",
+        charset: Union[str, CharSet] = "block",
         show_percent: bool = True,
+        full_width: bool = False,
+        margin: int = 2,
     ) -> None:
-        if width < 6:
-            raise ValueError("ProgressBar width must be >= 6")
         self.name = name
-        self._total = float(total or 0)
-        self._current = max(0.0, float(current or 0))
-        self.width = int(width)
-        self.charset = "ascii" if charset == "ascii" else "block"
+        self._total = max(0.0, float(total))
+        self._current = max(0.0, float(current))
+        self.width = max(6, int(width))
         self.show_percent = bool(show_percent)
+        self.full_width = bool(full_width)
+        self.margin = max(0, int(margin))
 
+        if isinstance(charset, tuple):
+            self.fill_char, self.empty_char = charset
+        elif charset == "ascii":
+            self.fill_char, self.empty_char = "#", "-"
+        else:
+            # Use a high-contrast empty so "0%" isn't invisible.
+            self.fill_char, self.empty_char = "█", "·"
+
+        # Stat that renders this bar; value is `self` so Stat->format->str(self)
+        self._stat = Stat(
+            name,
+            value=self,
+            format_string="{}",
+            no_expand=True,  # never push column widths
+            display_width=None,  # let the string carry its own width
+        )
+        # Optional live bindings
         self._current_fn: Optional[Callable[[], float]] = None
         self._total_fn: Optional[Callable[[], float]] = None
 
-        self._stat = Stat(
-            name=name,
-            value=self._render_text(self._current, self._total),
-            prefix="",
-            format_string="{}",
-            unit="",
-            color="",
-            warn_if_stale_s=0,
-            no_expand=True,
-            display_width=self.width,
-        )
+    # --------------- public API ----------------
 
-    # Public API -----------------------------------------------------
     def cell(self) -> Stat:
-        """Return the underlying `Stat` to drop into a `Line`."""
+        """Return the Stat to insert in a Line."""
         return self._stat
 
-    def bind(self, current_fn: Callable[[], float], total_fn: Optional[Callable[[], float]] = None) -> None:
-        """Bind to callables (bar refreshes on render)."""
-        self._current_fn = current_fn
-        self._total_fn = total_fn
+    def bind(
+        self,
+        *,
+        current_fn: Optional[Callable[[], Union[int, float]]] = None,
+        total_fn: Optional[Callable[[], Union[int, float]]] = None,
+    ) -> None:
+        self._current_fn = (lambda: float(current_fn())) if current_fn else None
+        self._total_fn = (lambda: float(total_fn())) if total_fn else None
 
-    def set_total(self, total: float | int) -> None:
-        self._total = max(0.0, float(total or 0))
-        self._refresh()
+    def set_total(self, total: Union[int, float]) -> None:
+        self._total = max(0.0, float(total))
 
-    def set(self, current: float | int) -> None:
-        self._current = max(0.0, float(current or 0))
-        self._refresh()
+    def set(self, current: Union[int, float]) -> None:
+        self._current = max(0.0, float(current))
 
-    def advance(self, delta: float | int = 1) -> None:
-        self._current = max(0.0, float(self._current + (delta or 0)))
-        self._refresh()
+    def advance(self, delta: Union[int, float] = 1) -> None:
+        self._current = max(0.0, self._current + float(delta))
 
     def percent(self) -> float:
-        t = self._read_total()
+        t = self._total_fn() if self._total_fn else self._total
+        c = self._current_fn() if self._current_fn else self._current
         if t <= 0:
             return 0.0
-        return max(0.0, min(100.0, 100.0 * (self._read_current() / t)))
+        return max(0.0, min(100.0, 100.0 * (c / t)))
 
-    # Internals ------------------------------------------------------
-    def _read_current(self) -> float:
-        if self._current_fn is not None:
-            try:
-                return max(0.0, float(self._current_fn() or 0))
-            except Exception:
-                return max(0.0, float(self._current))
-        return self._current
+    # -------------- rendering core -------------
 
-    def _read_total(self) -> float:
-        if self._total_fn is not None:
-            try:
-                return max(0.0, float(self._total_fn() or 0))
-            except Exception:
-                return max(0.0, float(self._total))
-        return self._total
+    def __str__(self) -> str:
+        """Build the bar string every time the Stat is rendered."""
+        t = self._total_fn() if self._total_fn else self._total
+        c = self._current_fn() if self._current_fn else self._current
+        t = max(0.0, float(t))
+        c = max(0.0, float(c))
 
-    def _refresh(self) -> None:
-        self._stat.value = self._render_text(self._read_current(), self._read_total())
+        pct = 0.0 if t <= 0 else max(0.0, min(1.0, c / t))
 
-    def _render_text(self, current: float, total: float) -> str:
-        t = float(total or 0)
-        c = max(0.0, float(current or 0))
-        ratio = 0.0 if t <= 0 else max(0.0, min(1.0, c / t))
+        # Width: fixed or full-terminal
+        if self.full_width:
+            w = max(6, _term_cols() - self.margin)
+        else:
+            w = self.width
 
-        fill_char, empty_char = ("#", "-") if self.charset == "ascii" else ("█", "░")
+        inner = max(2, w - 2)  # reserve [ .. ]
+        filled = int(math.floor(inner * pct))
+        empty = max(0, inner - filled)
 
-        inner_w = max(1, self.width - 2)  # brackets '[]'
-        filled = int(round(ratio * inner_w))
-        empty = max(0, inner_w - filled)
-        bar_inner = (fill_char * filled) + (empty_char * empty)
+        # Base bar
+        bar_chars = [self.fill_char] * filled + [self.empty_char] * empty
 
+        # Overlay percent text *inside* the bar if requested
         if self.show_percent:
-            pct_text = f"{int(round(ratio * 100)):3d}%"
-            start = max(0, (len(bar_inner) - len(pct_text)) // 2)
-            bar_inner = bar_inner[:start] + pct_text + bar_inner[start + len(pct_text):]
+            text = f"{int(round(100 * pct)):3d}%"
+            start = max(0, (inner - len(text)) // 2)
+            for i, ch in enumerate(text):
+                if 0 <= start + i < len(bar_chars):
+                    bar_chars[start + i] = ch
 
-        return f"[{bar_inner}]"
+        return "[" + "".join(bar_chars) + "]"
