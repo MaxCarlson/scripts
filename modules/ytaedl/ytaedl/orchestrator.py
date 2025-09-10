@@ -374,7 +374,11 @@ def _build_worklist_from_disk(
     out_root: Path,
     single_files: Optional[List[Path]] = None,
 ) -> List[_WorkFile]:
-    """Builds a worklist directly from files on disk, skipping the scan."""
+    """
+    Builds a worklist directly from files on disk.
+    If single_files is provided, ONLY those files are used.
+    Otherwise, scans the provided directories.
+    """
     work: List[_WorkFile] = []
     seen_files = set()
 
@@ -400,27 +404,25 @@ def _build_worklist_from_disk(
         except Exception:
             pass
 
-    def _process_dir(d: Path, source: str):
-        if not d.is_dir():
-            return
-        for url_file in sorted(d.glob("*.txt")):
-            if url_file.is_file():
-                _process_file(url_file, source)
-
-    # Process directories first
-    _process_dir(main_url_dir, "main")
-    _process_dir(ae_url_dir, "ae")
-
-    # Process single files, checking their source
+    # If single_files is provided, ONLY process them.
     if single_files:
-        try:
-            resolved_ae_dir = str(ae_url_dir.resolve())
-            for f in single_files:
-                if f.is_file():
-                    source = "ae" if str(f.resolve()).startswith(resolved_ae_dir) else "main"
-                    _process_file(f, source)
-        except Exception:
-            pass
+        resolved_ae_dir = str(ae_url_dir.resolve())
+        for f in single_files:
+            if f.is_file():
+                # Determine source based on whether it's in the ae dir path
+                source = "ae" if str(f.resolve()).startswith(resolved_ae_dir) else "main"
+                _process_file(f, source)
+    else:
+        # Otherwise, process the directories
+        def _process_dir(d: Path, source: str):
+            if not d.is_dir():
+                return
+            for url_file in sorted(d.glob("*.txt")):
+                if url_file.is_file():
+                    _process_file(url_file, source)
+
+        _process_dir(main_url_dir, "main")
+        _process_dir(ae_url_dir, "ae")
             
     return work
 
@@ -445,15 +447,14 @@ def _scan_all_parallel(
     def _iter_txt(d: Path) -> List[Path]:
         return [p for p in sorted(Path(d).glob("*.txt")) if p.is_file()]
 
-    main_files: List[Path] = _iter_txt(main_url_dir)
-    ae_files: List[Path] = _iter_txt(ae_url_dir)
-
+    # Deduplicate all files to be scanned from directories and single-file args
     all_files_map: Dict[str, Tuple[Path, str]] = {}
 
-    for p in main_files:
-        all_files_map[str(p.resolve())] = (p, "main")
-    for p in ae_files:
-        all_files_map[str(p.resolve())] = (p, "ae")
+    if not single_files: # Only scan dirs if no specific files were given
+        for p in _iter_txt(main_url_dir):
+            all_files_map[str(p.resolve())] = (p, "main")
+        for p in _iter_txt(ae_url_dir):
+            all_files_map[str(p.resolve())] = (p, "ae")
 
     if single_files:
         resolved_ae_dir = str(ae_url_dir.resolve())
@@ -588,15 +589,22 @@ class _Coordinator:
 
     def acquire_next(self) -> Optional["_WorkFile"]:
         with self._lock:
-            # When skipping scan, all 'remaining' are equal, so this effectively shuffles
-            candidates = sorted(self._work.values(), key=lambda w: (-w.remaining, w.stem))
-            for w in candidates:
-                key = str(w.url_file.resolve())
-                if self._assigned.get(key, 0) > 0:
-                    continue
-                self._assigned[key] = 1
-                return w
-        return None
+            # Get available candidates
+            candidates = [w for w in self._work.values() if self._assigned.get(str(w.url_file.resolve()), 0) == 0]
+            if not candidates:
+                return None
+            
+            # Shuffle them to randomize selection among files with the same 'remaining' count
+            random.shuffle(candidates)
+            
+            # Now sort by remaining (primary) and then stem (secondary, for stability after shuffle)
+            candidates.sort(key=lambda w: (-w.remaining, w.stem))
+            
+            # Pick the best one
+            best_choice = candidates[0]
+            key = str(best_choice.url_file.resolve())
+            self._assigned[key] = 1
+            return best_choice
 
     def release(self, wf: "_WorkFile", *, remaining_delta: int = 0) -> None:
         with self._lock:
@@ -693,6 +701,7 @@ def _build_config(args: argparse.Namespace) -> DownloaderConfig:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
+    random.seed() # Seed with current time for randomness
 
     # normalize
     args.url_dir = Path(args.url_dir)
@@ -808,13 +817,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         threading.Thread(target=_key_reader, daemon=True, name="keys").start()
 
         all_work: List[_WorkFile]
+        single_files_provided = [Path(f) for f in args.url_files] if args.url_files else None
+
         if args.skip_scan:
             olog("skip-scan enabled, building worklist from disk")
             all_work = _build_worklist_from_disk(
                 args.url_dir,
                 args.ae_url_dir,
                 args.output_dir,
-                single_files=[Path(f) for f in args.url_files] if args.url_files else None
+                single_files=single_files_provided
             )
             random.shuffle(all_work)
         else:
@@ -823,7 +834,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 args.url_dir,
                 args.ae_url_dir,
                 args.output_dir,
-                single_files=[Path(f) for f in args.url_files] if args.url_files else None,
+                single_files=single_files_provided,
                 yt_dlp=args.ytdlp,
                 ytdlp_template=args.ytdlp_template,
                 n_workers=max(1, args.threads),
@@ -877,6 +888,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 if wf is None:
                     break
                 
+                if hasattr(ui, 'reset_worker_stats'):
+                    ui.reset_worker_stats(slot)
+                
                 downloader_type = "AEBN" if wf.source == "ae" else "YT-DLP"
                 olog(f"Worker {slot} ({downloader_type}): Acquired work file '{wf.url_file.name}'. Remaining URLs: {wf.remaining}")
 
@@ -886,10 +900,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                 except Exception:
                     pass
 
-                completed_in_wf = 0
+                successful_downloads_this_run = 0
                 cap = getattr(cfg, "_orchestrator_max_dl", 3)
 
                 for idx, url in enumerate(wf.urls, start=1):
+                    if successful_downloads_this_run >= cap:
+                        olog(f"Worker {slot}: Reached cap of {cap} successful downloads for file '{wf.url_file.name}'. Releasing.")
+                        break
+
                     if stop_evt.is_set():
                         break
                     while pause_evt.is_set() and not stop_evt.is_set():
@@ -902,7 +920,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         olog(f"Worker {slot}: Skipping archived URL: {url}")
                         continue
                     
-                    olog(f"Worker {slot}: Starting download for URL: {url} from file '{wf.url_file.name}'")
+                    olog(f"Worker {slot}: Attempting download for URL ({idx}/{len(wf.urls)}): {url} from file '{wf.url_file.name}'")
 
                     item = DownloadItem(
                         id=get_next_item_id(),
@@ -959,14 +977,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                         ui.pump()
 
                     if url_was_successful:
-                        completed_in_wf += 1
+                        successful_downloads_this_run += 1
                     
-                    if completed_in_wf >= cap:
-                        olog(f"Worker {slot}: Reached cap of {cap} successful downloads for file '{wf.url_file.name}'. Releasing.")
-                        break
-
-                coordinator.release(wf, remaining_delta=-(completed_in_wf))
-                olog(f"Worker {slot}: Released work file '{wf.url_file.name}'. Completed {completed_in_wf} successful downloads in this run.")
+                coordinator.release(wf, remaining_delta=-(successful_downloads_this_run))
+                olog(f"Worker {slot}: Released work file '{wf.url_file.name}'. Completed {successful_downloads_this_run} successful downloads in this run.")
             
             olog(f"Worker {slot}: No more work. Shutting down.")
 
