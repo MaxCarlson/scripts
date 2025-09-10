@@ -30,8 +30,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-from .downloaders import get_downloader, request_abort, terminate_all_active_procs
-from .io import read_urls_from_files
+from .downloaders import get_downloader, request_abort, terminate_all_active_procs, DownloadStatus, DownloadResult
+from .io import read_urls_from_files, load_archive, write_to_archive
 from .models import (
     DownloaderConfig,
     DownloadItem,
@@ -54,8 +54,16 @@ DEF_EXTS = {"mp4", "mkv", "webm", "mp3", "m4a", "wav"}
 
 _YTDLP_NOT_FOUND = 127
 _DUP_SUFFIX_RE = re.compile(r"\s+\(\d+\)$")
+_item_id_counter = 0
+_item_id_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
+
+def get_next_item_id():
+    global _item_id_counter
+    with _item_id_lock:
+        _item_id_counter += 1
+        return _item_id_counter
 
 def _now_str() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
@@ -537,6 +545,7 @@ class _Coordinator:
 
     def acquire_next(self) -> Optional["_WorkFile"]:
         with self._lock:
+            # When skipping scan, all 'remaining' are equal, so this effectively shuffles
             candidates = sorted(self._work.values(), key=lambda w: (-w.remaining, w.stem))
             for w in candidates:
                 key = str(w.url_file.resolve())
@@ -764,6 +773,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                 return 130
             all_work = sorted(_build_worklist(snap), key=lambda w: (w.remaining, w.stem))
 
+        # ---- Archive Handling ----
+        archive_path = args.archive
+        archived_urls = set()
+        if archive_path:
+            archived_urls = load_archive(archive_path)
+        archive_lock = threading.Lock()
+
         # ---- Thread and Work Allocation ----
         aebn_work = [w for w in all_work if w.source == 'ae']
         ytdlp_work = [w for w in all_work if w.source == 'main']
@@ -794,11 +810,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                 if wf is None:
                     break
                 try:
-                    ui.set_scan_slot(slot, f"{wf.source}:{wf.stem} downloading (rem {wf.remaining})")
+                    if hasattr(ui, 'set_scan_slot'):
+                        ui.set_scan_slot(slot, f"{wf.source}:{wf.stem} downloading (rem {wf.remaining})")
                 except Exception:
                     pass
 
-                completed = 0
+                completed_in_wf = 0
                 cap = getattr(cfg, "_orchestrator_max_dl", 3)
 
                 for idx, url in enumerate(wf.urls, start=1):
@@ -810,58 +827,53 @@ def main(argv: Optional[List[str]] = None) -> int:
                     if stop_evt.is_set():
                         break
 
-                    dest_dir = wf.out_dir
-                    try:
-                        slug = get_url_slug(url)
-                        present = any(p.name.startswith(slug) for p in dest_dir.glob("*"))
-                    except Exception:
-                        present = False
-
-                    if present:
-                        try:
-                            item = DownloadItem(
-                                id=idx,
-                                url=url,
-                                source=URLSource.MAIN if wf.source == "main" else URLSource.AE,
-                                out_dir=dest_dir,
-                            )
-                            ui.handle_event(LogEvent(item=item, message="already_exists"))
-                            ui.pump()
-                        except Exception:
-                            pass
-                        completed += 1
-                        if completed >= cap:
-                            break
+                    if archive_path and url in archived_urls:
                         continue
 
-                    dl = get_downloader(url)
                     item = DownloadItem(
-                        id=idx,
+                        id=get_next_item_id(),
                         url=url,
-                        source=URLSource.MAIN if wf.source == "main" else URLSource.AE,
-                        out_dir=dest_dir,
+                        output_dir=wf.out_dir,
+                        source=URLSource(file=wf.url_file, line_number=idx, original_url=url),
                     )
+                    
+                    downloader = get_downloader(url, cfg)
+                    
                     try:
                         ui.handle_event(StartEvent(item=item))
                         ui.pump()
-                        for ev in dl.download(item, cfg):
+                        
+                        for ev in downloader.download(item):
                             if stop_evt.is_set():
                                 break
                             ui.handle_event(ev)
+                            if isinstance(ev, FinishEvent):
+                                if ev.result.status in (DownloadStatus.COMPLETED, DownloadStatus.ALREADY_EXISTS):
+                                    completed_in_wf += 1
+                                    if archive_path:
+                                        with archive_lock:
+                                            if url not in archived_urls:
+                                                write_to_archive(archive_path, url)
+                                                archived_urls.add(url)
                             ui.pump()
+
                     except KeyboardInterrupt:
                         stop_evt.set()
                         break
                     except Exception as ex:
-                        olog(f"DOWNLOAD error {url}: {ex}")
+                        olog(f"DOWNLOAD error url='{url}' exc='{ex}'")
+                        try:
+                            ui.handle_event(LogEvent(item=item, message=f"Error: {ex}"))
+                            ui.handle_event(FinishEvent(item=item, result=DownloadResult(item=item, status=DownloadStatus.FAILED, error_message=str(ex))))
+                        except:
+                            pass
                     finally:
                         ui.pump()
-
-                    completed += 1
-                    if completed >= cap:
+                    
+                    if completed_in_wf >= cap:
                         break
 
-                coordinator.release(wf, remaining_delta=-(completed))
+                coordinator.release(wf, remaining_delta=-(completed_in_wf))
 
         threads: List[threading.Thread] = []
         slot_counter = 0
