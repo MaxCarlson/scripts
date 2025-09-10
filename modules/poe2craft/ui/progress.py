@@ -54,11 +54,10 @@ class _Bar:
 
 class Progress:
     """
-    Minimal progress printer (stderr). It never pollutes stdout, so tests/scripts stay stable.
+    Minimal progress printer (to stderr). Keeps stdout clean for JSON piping and tests.
     """
 
     def __init__(self, enabled: Optional[bool] = None):
-        # enable when stderr is a TTY by default
         try:
             default_enabled = sys.stderr.isatty()
         except Exception:

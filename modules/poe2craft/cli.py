@@ -10,7 +10,7 @@ from typing import Any, List, Optional
 from poe2craft.datasources.poe2db_client import Poe2DBClient, DEFAULT_BASE_SLUGS
 from poe2craft.datasources.poeninja_prices import PoENinjaPriceProvider, detect_active_league
 from poe2craft.ui.progress import Progress
-from poe2craft.util.serde import as_serializable  # existing util in your tree
+from poe2craft.util.serde import as_serializable
 
 LOG = logging.getLogger("poe2craft")
 
@@ -38,14 +38,14 @@ def _print_stdout(obj: Any) -> None:
 
 def _league_resolve(val: Optional[str]) -> str:
     """
-    - None or 'C' -> try to auto-detect active league; fallback Standard
+    - None or 'C' -> auto-detect active league (fallback: Standard)
     - 'S'         -> Standard
-    - other       -> as provided
+    - any other   -> as provided
     """
     if not val or val.upper() == "C":
-        l = detect_active_league() or "Standard"
-        LOG.info("Using league: %s", l)
-        return l
+        league = detect_active_league() or "Standard"
+        LOG.info("Using league: %s", league)
+        return league
     if val.upper() == "S":
         return "Standard"
     return val
@@ -54,8 +54,7 @@ def _league_resolve(val: Optional[str]) -> str:
 # ------------------- commands -------------------
 
 def cmd_currencies(args) -> None:
-    # DO NOT pass kwargs; tests monkeypatch Poe2DBClient() with a zero-arg lambda.
-    client = Poe2DBClient()
+    client = Poe2DBClient()  # zero-arg: tests monkeypatch this symbol
     with Progress().task("Currencies"):
         data = client.fetch_stackable_currency()
     if args.save:
@@ -103,9 +102,8 @@ def cmd_base_items(args) -> None:
             all_items.extend(items)
             bar.update(detail=f"{slug} -> {len(items)} items")
     if args.save:
-        for slug in slugs:
-            items = [b for b in all_items if b.name]  # simple split; we still saved per-page above if desired
-            dump_json([b for b in items], Path(args.save))
+        # Save one combined file at the path provided
+        dump_json([b for b in all_items], Path(args.save))
     if args.format == "json":
         dump_json([b for b in all_items], Path(args.output))
     else:
@@ -118,7 +116,6 @@ def cmd_prices(args) -> None:
     with Progress().task(f"Prices [{league}]"):
         prices = provider.get_currency_prices(league=league)
 
-    # IMPORTANT for tests: print a plain {name: value} map when stdout
     if args.format == "json":
         dump_json(prices, Path(args.output))
     else:
@@ -126,7 +123,7 @@ def cmd_prices(args) -> None:
 
 
 def cmd_consumables(args) -> None:
-    """Download currencies + omens + essences together."""
+    """Download currencies + omens + essences in one go."""
     client = Poe2DBClient()
     p = Progress()
     out = {}
@@ -141,9 +138,11 @@ def cmd_consumables(args) -> None:
         out["essences"] = ess
 
     if args.save:
-        dump_json([c for c in cur], Path(args.save).with_name("currencies.json"))
-        dump_json([o for o in om], Path(args.save).with_name("omens.json"))
-        dump_json([e for e in ess], Path(args.save).with_name("essences.json"))
+        base = Path(args.save)
+        base.parent.mkdir(parents=True, exist_ok=True)
+        dump_json([c for c in cur], base.with_name("currencies.json"))
+        dump_json([o for o in om], base.with_name("omens.json"))
+        dump_json([e for e in ess], base.with_name("essences.json"))
 
     if args.format == "json":
         dump_json(out, Path(args.output))
@@ -152,7 +151,7 @@ def cmd_consumables(args) -> None:
 
 
 def cmd_all(args) -> None:
-    """Download everything: currencies, omens, essences, base items (curated), and prices."""
+    """Download currencies, omens, essences, base items (curated), and prices."""
     client = Poe2DBClient()
     league = _league_resolve(args.league)
     p = Progress()
@@ -185,57 +184,49 @@ def cmd_all(args) -> None:
         if args.save:
             dump_json(prices, Path(args.save).with_name(f"prices_{league.replace(' ', '_').lower()}.json"))
 
-    # Brief summary to stdout
+    # Summary
     _print_stdout({
         "saved": bool(args.save),
         "league": league,
         "base_slugs": DEFAULT_BASE_SLUGS,
-        "counts": {
-            "currencies": len(cur),
-            "omens": len(om),
-            "essences": len(ess),
-        },
     })
 
 
 # ------------------- parser -------------------
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="poe2craft", description="PoE2 data & price utilities (definitions + economy).")
+    p = argparse.ArgumentParser(
+        prog="poe2craft",
+        description="PoE2 data & price utilities (definitions + economy).",
+    )
     p.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity (-v, -vv).")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    # Small helper to keep options consistent
     def add_common_io(sp):
         sp.add_argument("-f", "--format", choices=["json", "stdout"], default="json", help="Output format (default: json).")
         sp.add_argument("-o", "--output", default="out.json", help="Output file when --format json.")
-        sp.add_argument("-S", "--save", help="Also save JSON to this directory/file path (varies per command).")
+        sp.add_argument("-S", "--save", help="Also save JSON to this path (file or dir, depending on command).")
 
-    # currencies
     sc = sub.add_parser("currencies", help="Fetch PoE2 stackable currencies from PoE2DB.")
     add_common_io(sc)
     sc.set_defaults(func=cmd_currencies)
 
-    # omens
     so = sub.add_parser("omens", help="Fetch PoE2 Omens from PoE2DB.")
     add_common_io(so)
     so.set_defaults(func=cmd_omens)
 
-    # essences
     se = sub.add_parser("essences", help="Fetch PoE2 Essences from PoE2DB.")
     add_common_io(se)
     se.set_defaults(func=cmd_essences)
 
-    # base items
     sb = sub.add_parser(
         "base-items",
-        help="Fetch base items. Default is all curated slugs; pass one or more slugs to limit (e.g., 'Bows').",
+        help="Fetch base items. Default is all curated slugs; pass slugs to limit (e.g., 'Bows Helmets').",
     )
     add_common_io(sb)
     sb.add_argument("slug", nargs="*", help="Optional PoE2DB page slugs (e.g., Bows, Boots, Helmets, Body_Armours).")
     sb.set_defaults(func=cmd_base_items)
 
-    # prices (always fetch + print plain map when --format stdout)
     sp = sub.add_parser(
         "prices",
         help="Fetch PoE2 currency prices and print a plain mapping (use -l C to auto-detect current league).",
@@ -245,12 +236,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("-o", "--output", default="prices.json", help="Output file when --format json.")
     sp.set_defaults(func=cmd_prices)
 
-    # consumables
     sm = sub.add_parser("consumables", help="Download currencies + omens + essences together.")
     add_common_io(sm)
     sm.set_defaults(func=cmd_consumables)
 
-    # all
     sa = sub.add_parser("all", help="Download currencies, omens, essences, base items (curated), and prices.")
     sa.add_argument("-l", "--league", default=None, help="League name or shorthand (S=Standard, C=Current).")
     sa.add_argument("-S", "--save", help="Directory to save JSON outputs.")
