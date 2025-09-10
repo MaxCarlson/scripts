@@ -10,7 +10,6 @@ This build focuses the SCAN phase on yt-dlp correctness and clear per-worker UI:
 - AE is discovered but currently skipped (requested focus on yt-dlp/main)
 
 All UI calls are guarded, so SimpleUI/older TermdashUI won't crash.
-
 Author: you (+ ChatGPT)
 """
 
@@ -20,6 +19,7 @@ import argparse
 import dataclasses
 import os
 import queue
+import random
 import re
 import signal
 import subprocess
@@ -112,7 +112,6 @@ class CountsSnapshot:
 
 # ---------------------------------------------------------------------------
 # PUBLIC helper for tests: is a snapshot complete for the given directories?
-
 def _is_snapshot_complete(
     snap: Union[CountsSnapshot, Dict],
     main_url_dir: Path,
@@ -157,7 +156,8 @@ def _is_snapshot_complete(
 
 def _ytdlp_get_expected_filename(yt_dlp: str, url: str, template: str) -> Tuple[int, str]:
     """
-    (rc, value). When rc==0, value is the expected output filename.
+    (rc, value).
+    When rc==0, value is the expected output filename.
     """
     cmd = [yt_dlp, "--simulate", "--get-filename", "-o", template, url]
     try:
@@ -360,6 +360,37 @@ def _build_worklist(snap: CountsSnapshot) -> List[_WorkFile]:
         )
     return work
 
+def _build_worklist_from_disk(
+    main_url_dir: Path,
+    ae_url_dir: Path,
+    out_root: Path,
+) -> List[_WorkFile]:
+    """Builds a worklist directly from files on disk, skipping the scan."""
+    work: List[_WorkFile] = []
+
+    def _process_dir(d: Path, source: str):
+        if not d.is_dir():
+            return
+        for url_file in sorted(d.glob("*.txt")):
+            if not url_file.is_file():
+                continue
+            urls = read_urls_from_files([url_file])
+            out_dir = _infer_dest_dir(out_root, url_file)
+            work.append(
+                _WorkFile(
+                    url_file=url_file,
+                    stem=url_file.stem,
+                    source=source,
+                    out_dir=out_dir,
+                    urls=urls,
+                    remaining=len(urls),
+                )
+            )
+
+    _process_dir(main_url_dir, "main")
+    _process_dir(ae_url_dir, "ae")
+    return work
+
 # ---------------------------------------------------------------------------
 
 def _scan_all_parallel(
@@ -513,7 +544,7 @@ class _Coordinator:
                     continue
                 self._assigned[key] = 1
                 return w
-            return None
+        return None
 
     def release(self, wf: "_WorkFile", *, remaining_delta: int = 0) -> None:
         with self._lock:
@@ -542,6 +573,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("-c", "--counts-file", type=Path, default=DEF_COUNTS_FILE, help="JSON counts file path.")
     p.add_argument("--ytdlp", default="yt-dlp", help="yt-dlp executable for scan.")
     p.add_argument("--ytdlp-template", default="%(title)s.%(ext)s", help="Filename template for yt-dlp.")
+    p.add_argument("--skip-scan", action="store_true", help="Skip scanning and download directly from URL files.")
+    p.add_argument("-a", "--num-aebn-dl", type=int, default=1, help="Number of concurrent AEBN download workers.")
+    p.add_argument("-y", "--num-ytdl-dl", type=int, default=3, help="Number of concurrent yt-dlp download workers.")
     # downloader knobs (unchanged surface; many are forwarded into DownloaderConfig)
     p.add_argument("-j", "--jobs", type=int, default=1, help="Per-process jobs for downloader.")
     p.add_argument("--archive", type=Path, default=None, help="Optional archive path.")
@@ -703,37 +737,60 @@ def main(argv: Optional[List[str]] = None) -> int:
         olog("orchestrator start")
         threading.Thread(target=_key_reader, daemon=True, name="keys").start()
 
-        # ---- SCAN (yt-dlp per URL, main only for now) ----
-        snap = _scan_all_parallel(
-            args.url_dir,
-            args.ae_url_dir,
-            args.output_dir,
-            yt_dlp=args.ytdlp,
-            ytdlp_template=args.ytdlp_template,
-            n_workers=max(1, args.threads),
-            counts_path=args.counts_file,
-            ui=ui,
-            log_fn=olog,
-            stop_evt=stop_evt,
-            pause_evt=pause_evt,
-        )
-        if stop_evt.is_set():
-            if log_fp:
-                try: log_fp.close()
-                except Exception: pass
-            return 130
+        all_work: List[_WorkFile]
+        if args.skip_scan:
+            olog("skip-scan enabled, building worklist from disk")
+            all_work = _build_worklist_from_disk(args.url_dir, args.ae_url_dir, args.output_dir)
+            random.shuffle(all_work)
+        else:
+            olog("starting scan phase")
+            snap = _scan_all_parallel(
+                args.url_dir,
+                args.ae_url_dir,
+                args.output_dir,
+                yt_dlp=args.ytdlp,
+                ytdlp_template=args.ytdlp_template,
+                n_workers=max(1, args.threads),
+                counts_path=args.counts_file,
+                ui=ui,
+                log_fn=olog,
+                stop_evt=stop_evt,
+                pause_evt=pause_evt,
+            )
+            if stop_evt.is_set():
+                if log_fp:
+                    try: log_fp.close()
+                    except Exception: pass
+                return 130
+            all_work = sorted(_build_worklist(snap), key=lambda w: (w.remaining, w.stem))
 
-        # ---- Build work & download (unchanged semantics) ----
-        work = sorted(_build_worklist(snap), key=lambda w: (w.remaining, w.stem))
-        coord = _Coordinator(work)
+        # ---- Thread and Work Allocation ----
+        aebn_work = [w for w in all_work if w.source == 'ae']
+        ytdlp_work = [w for w in all_work if w.source == 'main']
+
+        num_a = args.num_aebn_dl
+        num_y = args.num_ytdl_dl
+        total_req = num_a + num_y
+        total_allowed = args.threads
+
+        if total_req > total_allowed:
+            aebn_threads = round(total_allowed * (num_a / total_req)) if total_req > 0 else 0
+            ytdlp_threads = total_allowed - aebn_threads
+        else:
+            aebn_threads = num_a
+            ytdlp_threads = num_y
+        
+        olog(f"Thread allocation: AEBN={aebn_threads}, yt-dlp={ytdlp_threads} (Total={total_allowed})")
+
+        aebn_coord = _Coordinator(aebn_work)
+        ytdlp_coord = _Coordinator(ytdlp_work)
 
         cfg = _build_config(args)
-        # frozen dataclass fix
         object.__setattr__(cfg, "_orchestrator_max_dl", int(args.max_dl))
 
-        def worker(slot: int):
+        def worker(slot: int, coordinator: _Coordinator):
             while not stop_evt.is_set():
-                wf = coord.acquire_next()
+                wf = coordinator.acquire_next()
                 if wf is None:
                     break
                 try:
@@ -804,13 +861,22 @@ def main(argv: Optional[List[str]] = None) -> int:
                     if completed >= cap:
                         break
 
-                coord.release(wf, remaining_delta=-(completed))
+                coordinator.release(wf, remaining_delta=-(completed))
 
         threads: List[threading.Thread] = []
-        for i in range(max(1, int(args.threads))):
-            t = threading.Thread(target=worker, args=(i,), daemon=True, name=f"dl-{i+1}")
-            t.start()
+        slot_counter = 0
+        for i in range(aebn_threads):
+            t = threading.Thread(target=worker, args=(slot_counter, aebn_coord), daemon=True, name=f"dl-ae-{i+1}")
             threads.append(t)
+            slot_counter += 1
+        
+        for i in range(ytdlp_threads):
+            t = threading.Thread(target=worker, args=(slot_counter, ytdlp_coord), daemon=True, name=f"dl-yt-{i+1}")
+            threads.append(t)
+            slot_counter += 1
+            
+        for t in threads:
+            t.start()
 
         try:
             while any(t.is_alive() for t in threads) and not stop_evt.is_set():
