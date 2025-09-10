@@ -3,9 +3,10 @@
 """
 Orchestrator — scan URL files and then download, with a Termdash UI.
 
-Hardened imports:
-- read_archive / write_to_archive are optional; safe shims included to avoid
-  import-time failures in environments where ytaedl.io lacks them.
+Exports used by tests:
+- CountsSnapshot
+- _is_snapshot_complete(snapshot)
+- _build_worklist(main_url_dir, ae_url_dir, out_root, single_files=None)  # compatibility wrapper
 """
 from __future__ import annotations
 
@@ -77,6 +78,22 @@ DEF_URL_DIR = Path("files/downloads/stars")
 DEF_AE_URL_DIR = Path("files/downloads/ae-stars")
 DEF_OUT_DIR = Path("stars")
 DEF_ARCHIVE = None
+
+
+# -------------------- Public stats struct (for tests/consumers) --------------
+
+@dataclass(frozen=True)
+class CountsSnapshot:
+    """
+    Lightweight snapshot for UI/tests. We keep it generic so it won’t break
+    existing imports. Callers can compute these from events.
+    """
+    total_urls: int = 0
+    completed: int = 0
+    failed: int = 0
+    already: int = 0
+    active: int = 0
+    queued: int = 0
 
 
 # -------------------- Work model --------------------
@@ -426,6 +443,32 @@ def main(argv: Optional[List[str]] = None) -> int:
             pass
 
     return 0
+
+
+# --------------------------------------------------------------------------
+# Legacy exports for tests (compatibility shims)
+# --------------------------------------------------------------------------
+
+def _is_snapshot_complete(snapshot: CountsSnapshot) -> bool:
+    """
+    Test helper: a snapshot is 'complete' if all URLs have either
+    completed, failed, or are marked already, and no active/queued remain.
+    """
+    total_done = snapshot.completed + snapshot.failed + snapshot.already
+    return (total_done >= snapshot.total_urls) and snapshot.active == 0 and snapshot.queued == 0
+
+
+def _build_worklist(
+    main_url_dir: Path,
+    ae_url_dir: Path,
+    out_root: Path,
+    single_files: Optional[List[Path]] = None,
+) -> List[_WorkFile]:
+    """
+    Compatibility wrapper expected by tests. Delegates to the new
+    _build_worklist_from_disk with identical semantics.
+    """
+    return _build_worklist_from_disk(main_url_dir, ae_url_dir, out_root, single_files=single_files)
 
 
 if __name__ == "__main__":
