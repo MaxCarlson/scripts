@@ -18,19 +18,37 @@ from __future__ import annotations
 import argparse
 import random
 import sys
-import termios
-import tty
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 from typing import Dict, Iterator, List, Optional, Any
 
+# cross-platform console input
+try:
+    import termios  # POSIX
+    import tty
+    import select
+
+    _HAVE_TERMIOS = True
+except Exception:
+    _HAVE_TERMIOS = False
+    try:
+        import msvcrt  # Windows
+    except Exception:
+        msvcrt = None  # type: ignore
+# -----------------------------------------------------------------------------
+
+
+# (… keep the rest of the file as-is down to your `main()`; inside main(),
+#  replace just the _key_reader() function with the version below.)
 # --- IO imports with safe fallbacks ------------------------------------------
 try:
     from .io import read_urls_from_files, expand_url_dirs  # type: ignore
 except Exception as ex:  # pragma: no cover
-    raise ImportError(f"ytaedl.orchestrator requires ytaedl.io.read_urls_from_files/expand_url_dirs: {ex}")
+    raise ImportError(
+        f"ytaedl.orchestrator requires ytaedl.io.read_urls_from_files/expand_url_dirs: {ex}"
+    )
 
 try:
     from .io import read_archive as _read_archive, write_to_archive as _write_to_archive  # type: ignore
@@ -38,13 +56,19 @@ except Exception:
     _read_archive = None
     _write_to_archive = None
 
+
 def _shim_read_archive(path: Path) -> List[str]:
     try:
         if not path.exists():
             return []
-        return [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        return [
+            ln.strip()
+            for ln in path.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
     except Exception:
         return []
+
 
 def _shim_write_to_archive(path: Path, url: str) -> None:
     try:
@@ -53,6 +77,7 @@ def _shim_write_to_archive(path: Path, url: str) -> None:
             f.write(url.strip() + "\n")
     except Exception:
         pass
+
 
 read_archive = _read_archive or _shim_read_archive
 write_to_archive = _write_to_archive or _shim_write_to_archive
@@ -87,11 +112,13 @@ DEF_ARCHIVE = None
 
 # -------------------- Public stats struct (for tests/consumers) --------------
 
+
 @dataclass
 class CountsSnapshot:
     """
     Mutable snapshot model; tests write into .files.
     """
+
     total_urls: int = 0
     completed: int = 0
     failed: int = 0
@@ -102,6 +129,7 @@ class CountsSnapshot:
 
 
 # -------------------- Work model --------------------
+
 
 @dataclass
 class _WorkFile:
@@ -121,6 +149,7 @@ def _infer_dest_dir(out_root: Path, url_file: Path) -> Path:
 
 # -------------------- Coordinator --------------------
 
+
 class _Coordinator:
     def __init__(self, work: List[_WorkFile]):
         self._work: Dict[str, _WorkFile] = {str(w.url_file.resolve()): w for w in work}
@@ -131,14 +160,17 @@ class _Coordinator:
         with self._lock:
             # Prefer unassigned items that still have work remaining
             ready = [
-                w for w in self._work.values()
-                if self._assigned.get(str(w.url_file.resolve()), 0) == 0 and w.remaining > 0
+                w
+                for w in self._work.values()
+                if self._assigned.get(str(w.url_file.resolve()), 0) == 0
+                and w.remaining > 0
             ]
             pool = ready
             if not pool:
                 # Fallback: any unassigned item (tests expect a non-None even if remaining == 0)
                 pool = [
-                    w for w in self._work.values()
+                    w
+                    for w in self._work.values()
                     if self._assigned.get(str(w.url_file.resolve()), 0) == 0
                 ]
                 if not pool:
@@ -165,28 +197,82 @@ class _Coordinator:
 
 # -------------------- CLI --------------------
 
+
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(prog="ytaedl-orchestrate", description="Multi-threaded downloader orchestrator with Termdash UI.")
-    p.add_argument("--version", action="store_true", help="Print version info and exit.")
+    p = argparse.ArgumentParser(
+        prog="ytaedl-orchestrate",
+        description="Multi-threaded downloader orchestrator with Termdash UI.",
+    )
+    p.add_argument(
+        "--version", action="store_true", help="Print version info and exit."
+    )
 
     proc = p.add_argument_group("Process Allocation")
-    proc.add_argument("-a", "--num-aebn-dl", type=int, default=1, help="Number of concurrent AEBN download workers.")
-    proc.add_argument("-y", "--num-ytdl-dl", type=int, default=3, help="Number of concurrent yt-dlp download workers.")
+    proc.add_argument(
+        "-a",
+        "--num-aebn-dl",
+        type=int,
+        default=1,
+        help="Number of concurrent AEBN download workers.",
+    )
+    proc.add_argument(
+        "-y",
+        "--num-ytdl-dl",
+        type=int,
+        default=3,
+        help="Number of concurrent yt-dlp download workers.",
+    )
 
     paths = p.add_argument_group("Paths")
-    paths.add_argument("-f", "--file", dest="url_files", action="append", default=[], help="Path to a specific URL file to process (repeatable).")
-    paths.add_argument("-u", "--url-dir", type=Path, default=DEF_URL_DIR, help="Main URL dir (yt-dlp sources).")
-    paths.add_argument("-e", "--ae-url-dir", type=Path, default=DEF_AE_URL_DIR, help="AEBN URL dir.")
-    paths.add_argument("-o", "--output-dir", type=Path, default=DEF_OUT_DIR, help="Output root directory.")
+    paths.add_argument(
+        "-f",
+        "--file",
+        dest="url_files",
+        action="append",
+        default=[],
+        help="Path to a specific URL file to process (repeatable).",
+    )
+    paths.add_argument(
+        "-u",
+        "--url-dir",
+        type=Path,
+        default=DEF_URL_DIR,
+        help="Main URL dir (yt-dlp sources).",
+    )
+    paths.add_argument(
+        "-e", "--ae-url-dir", type=Path, default=DEF_AE_URL_DIR, help="AEBN URL dir."
+    )
+    paths.add_argument(
+        "-o",
+        "--output-dir",
+        type=Path,
+        default=DEF_OUT_DIR,
+        help="Output root directory.",
+    )
 
     mode = p.add_argument_group("Mode")
-    mode.add_argument("--skip-scan", action="store_true", help="Skip scanning and build worklist directly from disk.")
+    mode.add_argument(
+        "--skip-scan",
+        action="store_true",
+        help="Skip scanning and build worklist directly from disk.",
+    )
 
     arch = p.add_argument_group("Archive")
-    arch.add_argument("-A", "--archive", type=Path, default=DEF_ARCHIVE, help="Path to download archive file.")
+    arch.add_argument(
+        "-A",
+        "--archive",
+        type=Path,
+        default=DEF_ARCHIVE,
+        help="Path to download archive file.",
+    )
 
     ui_group = p.add_argument_group("UI")
-    ui_group.add_argument("-n", "--no-ui", action="store_true", help="Disable Termdash UI and use simple print statements.")
+    ui_group.add_argument(
+        "-n",
+        "--no-ui",
+        action="store_true",
+        help="Disable Termdash UI and use simple print statements.",
+    )
 
     return p.parse_args(argv)
 
@@ -211,6 +297,7 @@ def _build_config(args: argparse.Namespace) -> DownloaderConfig:
 
 
 # -------------------- Worklist builders --------------------
+
 
 def _build_worklist_from_disk(
     main_url_dir: Path,
@@ -275,6 +362,7 @@ def _build_worklist_from_disk(
 
 # -------------------- Main --------------------
 
+
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
     random.seed()
@@ -291,42 +379,83 @@ def main(argv: Optional[List[str]] = None) -> int:
     stop_evt = threading.Event()
     pause_evt = threading.Event()
 
+    # --- _key_reader inside main() (replace your existing nested _key_reader) -----
     def _key_reader() -> None:
-        try:
-            fd = sys.stdin.fileno()
-            old = termios.tcgetattr(fd)
+        if _HAVE_TERMIOS:
+            # POSIX: non-blocking read using select + cbreak
             try:
-                tty.setcbreak(fd)
+                fd = sys.stdin.fileno()
+                old = termios.tcgetattr(fd)
+                try:
+                    tty.setcbreak(fd)
+                    while not stop_evt.is_set():
+                        r, _, _ = select.select([sys.stdin], [], [], 0.1)
+                        if not r:
+                            continue
+                        ch = sys.stdin.read(1)
+                        if ch == "z":
+                            if pause_evt.is_set():
+                                pause_evt.clear()
+                            else:
+                                pause_evt.set()
+                            try:
+                                ui.set_paused(pause_evt.is_set())
+                            except Exception:
+                                pass
+                        elif ch == "q":
+                            stop_evt.set()
+                            break
+                        elif ch == "Q":
+                            request_abort()
+                            terminate_all_active_procs()
+                            stop_evt.set()
+                            break
+                finally:
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            except Exception:
+                # If stdin isn't a TTY or anything else fails, just stop reading keys
+                pass
+        else:
+            # Windows: use msvcrt if available
+            if msvcrt is None:
+                return
+            try:
                 while not stop_evt.is_set():
-                    ch = sys.stdin.read(1)
-                    if ch == "z":
-                        if pause_evt.is_set():
-                            pause_evt.clear()
-                        else:
-                            pause_evt.set()
-                        try:
-                            ui.set_paused(pause_evt.is_set())
-                        except Exception:
-                            pass
-                    elif ch == "q":
-                        stop_evt.set()
-                        break
-                    elif ch == "Q":
-                        request_abort()
-                        terminate_all_active_procs()
-                        stop_evt.set()
-                        break
-            finally:
-                termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        except Exception:
-            pass
+                    if msvcrt.kbhit():
+                        ch = msvcrt.getwch()  # unicode char
+                        if ch == "z":
+                            if pause_evt.is_set():
+                                pause_evt.clear()
+                            else:
+                                pause_evt.set()
+                            try:
+                                ui.set_paused(pause_evt.is_set())
+                            except Exception:
+                                pass
+                        elif ch == "q":
+                            stop_evt.set()
+                            break
+                        elif ch == "Q":
+                            request_abort()
+                            terminate_all_active_procs()
+                            stop_evt.set()
+                            break
+                    else:
+                        time.sleep(0.05)
+            except Exception:
+                pass
 
     with ui:
         threading.Thread(target=_key_reader, daemon=True, name="keys").start()
 
-        single_files_provided = [Path(f) for f in args.url_files] if args.url_files else None
+        single_files_provided = (
+            [Path(f) for f in args.url_files] if args.url_files else None
+        )
         all_work = _build_worklist_from_disk(
-            args.url_dir, args.ae_url_dir, args.output_dir, single_files=single_files_provided
+            args.url_dir,
+            args.ae_url_dir,
+            args.output_dir,
+            single_files=single_files_provided,
         )
 
         coord = _Coordinator(all_work)
@@ -368,12 +497,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                             id=(slot * 10_000_000) + i,
                             url=url,
                             output_dir=wf.out_dir,
-                            source=URLSource(file=wf.url_file, line_number=i, original_url=url),
+                            source=URLSource(
+                                file=wf.url_file, line_number=i, original_url=url
+                            ),
                             extra_ytdlp_args=[],
                             extra_aebn_args=[],
                         )
 
-                        events: Iterator = (aebn.download(item) if is_aebn else ytdl.download(item))
+                        events: Iterator = (
+                            aebn.download(item) if is_aebn else ytdl.download(item)
+                        )
                         url_ok = False
                         for ev in events:
                             try:
@@ -383,7 +516,10 @@ def main(argv: Optional[List[str]] = None) -> int:
 
                             if isinstance(ev, FinishEvent):
                                 res: DownloadResult = ev.result
-                                if res.status in (DownloadStatus.COMPLETED, DownloadStatus.ALREADY_EXISTS):
+                                if res.status in (
+                                    DownloadStatus.COMPLETED,
+                                    DownloadStatus.ALREADY_EXISTS,
+                                ):
                                     url_ok = True
 
                         try:
@@ -408,11 +544,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         threads: List[threading.Thread] = []
         slot = 0
         for _ in range(max(0, int(args.num_aebn_dl))):
-            t = threading.Thread(target=worker, args=(slot, "ae"), daemon=True, name=f"dl-ae-{slot+1}")
+            t = threading.Thread(
+                target=worker, args=(slot, "ae"), daemon=True, name=f"dl-ae-{slot+1}"
+            )
             threads.append(t)
             slot += 1
         for _ in range(max(1, int(args.num_ytdl_dl))):
-            t = threading.Thread(target=worker, args=(slot, "yt"), daemon=True, name=f"dl-yt-{slot+1}")
+            t = threading.Thread(
+                target=worker, args=(slot, "yt"), daemon=True, name=f"dl-yt-{slot+1}"
+            )
             threads.append(t)
             slot += 1
 
@@ -443,6 +583,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 # -------------------- Legacy shims for tests ---------------------------------
 
+
 def _is_snapshot_complete(snapshot: CountsSnapshot, *args, **kwargs) -> bool:
     """
     Test rule match:
@@ -453,7 +594,11 @@ def _is_snapshot_complete(snapshot: CountsSnapshot, *args, **kwargs) -> bool:
         return False
 
     total_done = snapshot.completed + snapshot.failed + snapshot.already
-    return (total_done >= snapshot.total_urls) and snapshot.active == 0 and snapshot.queued == 0
+    return (
+        (total_done >= snapshot.total_urls)
+        and snapshot.active == 0
+        and snapshot.queued == 0
+    )
 
 
 def _build_worklist(*args: Any, **kwargs: Any) -> List[_WorkFile]:
@@ -489,9 +634,13 @@ def _build_worklist(*args: Any, **kwargs: Any) -> List[_WorkFile]:
         ae_url_dir = Path(args[1])
         out_root = Path(args[2])
     else:
-        raise TypeError("_build_worklist requires (main_url_dir, out_root) or (main_url_dir, ae_url_dir, out_root)")
+        raise TypeError(
+            "_build_worklist requires (main_url_dir, out_root) or (main_url_dir, ae_url_dir, out_root)"
+        )
 
-    return _build_worklist_from_disk(main_url_dir, ae_url_dir, out_root, single_files=single_files)
+    return _build_worklist_from_disk(
+        main_url_dir, ae_url_dir, out_root, single_files=single_files
+    )
 
 
 if __name__ == "__main__":
