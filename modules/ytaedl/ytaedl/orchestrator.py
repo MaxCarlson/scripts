@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Orchestrator — scan URL files and then download, with a Termdash UI.
+Orchestrator — scan URL files and then download, with a Termdash (or simple) UI.
 
 Exports used by tests:
 - CountsSnapshot
@@ -24,12 +24,11 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 from typing import Dict, Iterator, List, Optional, Any
 
-# cross-platform console input
+# ---------- cross-platform console input (POSIX + Windows) ----------
 try:
     import termios  # POSIX
     import tty
     import select
-
     _HAVE_TERMIOS = True
 except Exception:
     _HAVE_TERMIOS = False
@@ -37,18 +36,12 @@ except Exception:
         import msvcrt  # Windows
     except Exception:
         msvcrt = None  # type: ignore
-# -----------------------------------------------------------------------------
 
-
-# (… keep the rest of the file as-is down to your `main()`; inside main(),
-#  replace just the _key_reader() function with the version below.)
 # --- IO imports with safe fallbacks ------------------------------------------
 try:
     from .io import read_urls_from_files, expand_url_dirs  # type: ignore
 except Exception as ex:  # pragma: no cover
-    raise ImportError(
-        f"ytaedl.orchestrator requires ytaedl.io.read_urls_from_files/expand_url_dirs: {ex}"
-    )
+    raise ImportError(f"ytaedl.orchestrator requires ytaedl.io.read_urls_from_files/expand_url_dirs: {ex}")
 
 try:
     from .io import read_archive as _read_archive, write_to_archive as _write_to_archive  # type: ignore
@@ -56,19 +49,13 @@ except Exception:
     _read_archive = None
     _write_to_archive = None
 
-
 def _shim_read_archive(path: Path) -> List[str]:
     try:
         if not path.exists():
             return []
-        return [
-            ln.strip()
-            for ln in path.read_text(encoding="utf-8").splitlines()
-            if ln.strip()
-        ]
+        return [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
     except Exception:
         return []
-
 
 def _shim_write_to_archive(path: Path, url: str) -> None:
     try:
@@ -77,7 +64,6 @@ def _shim_write_to_archive(path: Path, url: str) -> None:
             f.write(url.strip() + "\n")
     except Exception:
         pass
-
 
 read_archive = _read_archive or _shim_read_archive
 write_to_archive = _write_to_archive or _shim_write_to_archive
@@ -112,13 +98,11 @@ DEF_ARCHIVE = None
 
 # -------------------- Public stats struct (for tests/consumers) --------------
 
-
 @dataclass
 class CountsSnapshot:
     """
     Mutable snapshot model; tests write into .files.
     """
-
     total_urls: int = 0
     completed: int = 0
     failed: int = 0
@@ -129,7 +113,6 @@ class CountsSnapshot:
 
 
 # -------------------- Work model --------------------
-
 
 @dataclass
 class _WorkFile:
@@ -149,7 +132,6 @@ def _infer_dest_dir(out_root: Path, url_file: Path) -> Path:
 
 # -------------------- Coordinator --------------------
 
-
 class _Coordinator:
     def __init__(self, work: List[_WorkFile]):
         self._work: Dict[str, _WorkFile] = {str(w.url_file.resolve()): w for w in work}
@@ -158,28 +140,15 @@ class _Coordinator:
 
     def acquire(self) -> Optional[_WorkFile]:
         with self._lock:
-            # Prefer unassigned items that still have work remaining
-            ready = [
-                w
-                for w in self._work.values()
-                if self._assigned.get(str(w.url_file.resolve()), 0) == 0
-                and w.remaining > 0
-            ]
-            pool = ready
-            if not pool:
-                # Fallback: any unassigned item (tests expect a non-None even if remaining == 0)
-                pool = [
-                    w
-                    for w in self._work.values()
-                    if self._assigned.get(str(w.url_file.resolve()), 0) == 0
-                ]
-                if not pool:
-                    return None
-
-            # Deterministic-ish preference: highest remaining first, then by stem
-            pool.sort(key=lambda w: (-getattr(w, "remaining", 0), w.stem))
-            chosen = pool[0]
-            self._assigned[str(chosen.url_file.resolve())] = 1
+            candidates = [w for w in self._work.values()
+                          if self._assigned.get(str(w.url_file.resolve()), 0) == 0 and w.remaining > 0]
+            if not candidates:
+                return None
+            random.shuffle(candidates)
+            candidates.sort(key=lambda w: (-w.remaining, w.stem))
+            chosen = candidates[0]
+            key = str(chosen.url_file.resolve())
+            self._assigned[key] = 1
             return chosen
 
     # Compatibility alias expected by tests
@@ -197,82 +166,44 @@ class _Coordinator:
 
 # -------------------- CLI --------------------
 
-
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="ytaedl-orchestrate",
-        description="Multi-threaded downloader orchestrator with Termdash UI.",
-    )
-    p.add_argument(
-        "--version", action="store_true", help="Print version info and exit."
+        description="Multi-threaded downloader orchestrator with optional Termdash UI.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
+    # General / version
+    p.add_argument("-V", "--version", action="store_true", help="Print version info and exit.")
+
+    # Process Allocation
     proc = p.add_argument_group("Process Allocation")
-    proc.add_argument(
-        "-a",
-        "--num-aebn-dl",
-        type=int,
-        default=1,
-        help="Number of concurrent AEBN download workers.",
-    )
-    proc.add_argument(
-        "-y",
-        "--num-ytdl-dl",
-        type=int,
-        default=3,
-        help="Number of concurrent yt-dlp download workers.",
-    )
+    proc.add_argument("-a", "--num-aebn-dl", type=int, default=1, help="Number of concurrent AEBN download workers.")
+    proc.add_argument("-y", "--num-ytdl-dl", type=int, default=3, help="Number of concurrent yt-dlp download workers.")
 
+    # Paths
     paths = p.add_argument_group("Paths")
-    paths.add_argument(
-        "-f",
-        "--file",
-        dest="url_files",
-        action="append",
-        default=[],
-        help="Path to a specific URL file to process (repeatable).",
-    )
-    paths.add_argument(
-        "-u",
-        "--url-dir",
-        type=Path,
-        default=DEF_URL_DIR,
-        help="Main URL dir (yt-dlp sources).",
-    )
-    paths.add_argument(
-        "-e", "--ae-url-dir", type=Path, default=DEF_AE_URL_DIR, help="AEBN URL dir."
-    )
-    paths.add_argument(
-        "-o",
-        "--output-dir",
-        type=Path,
-        default=DEF_OUT_DIR,
-        help="Output root directory.",
-    )
+    paths.add_argument("-f", "--file", dest="url_files", action="append", default=[], help="Path to specific URL file(s) (repeatable).")
+    paths.add_argument("-u", "--url-dir", type=Path, default=DEF_URL_DIR, help="Main URL dir (yt-dlp sources).")
+    paths.add_argument("-e", "--ae-url-dir", type=Path, default=DEF_AE_URL_DIR, help="AEBN URL dir.")
+    paths.add_argument("-o", "--output-dir", type=Path, default=DEF_OUT_DIR, help="Output root directory.")
 
+    # Mode
     mode = p.add_argument_group("Mode")
-    mode.add_argument(
-        "--skip-scan",
-        action="store_true",
-        help="Skip scanning and build worklist directly from disk.",
-    )
+    mode.add_argument("-S", "--skip-scan", action="store_true", help="Skip scanning and build worklist directly from disk.")
 
+    # Archive
     arch = p.add_argument_group("Archive")
-    arch.add_argument(
-        "-A",
-        "--archive",
-        type=Path,
-        default=DEF_ARCHIVE,
-        help="Path to download archive file.",
-    )
+    arch.add_argument("-A", "--archive", type=Path, default=DEF_ARCHIVE, help="Path to download archive file.")
 
+    # Runtime / Logging
+    rt = p.add_argument_group("Runtime")
+    rt.add_argument("-t", "--timeout", type=int, default=None, help="Per-process timeout (seconds).")
+    rt.add_argument("-L", "--log-file", type=Path, default=None, help="Write simple run log (START/FINISH lines).")
+
+    # UI
     ui_group = p.add_argument_group("UI")
-    ui_group.add_argument(
-        "-n",
-        "--no-ui",
-        action="store_true",
-        help="Disable Termdash UI and use simple print statements.",
-    )
+    ui_group.add_argument("-n", "--no-ui", action="store_true", help="Disable Termdash UI and use simple console UI.")
 
     return p.parse_args(argv)
 
@@ -283,7 +214,7 @@ def _build_config(args: argparse.Namespace) -> DownloaderConfig:
         archive_path=args.archive,
         max_size_gb=10.0,
         keep_oversized=False,
-        timeout_seconds=None,
+        timeout_seconds=args.timeout,   # <-- from -t / --timeout
         ytdlp_connections=None,
         ytdlp_rate_limit=None,
         ytdlp_retries=None,
@@ -293,11 +224,11 @@ def _build_config(args: argparse.Namespace) -> DownloaderConfig:
         aria2_x_conn=None,
         aria2_min_split=None,
         aria2_timeout=None,
+        log_file=args.log_file,         # <-- not used by downloaders here, but mirrored for parity
     )
 
 
 # -------------------- Worklist builders --------------------
-
 
 def _build_worklist_from_disk(
     main_url_dir: Path,
@@ -362,14 +293,44 @@ def _build_worklist_from_disk(
 
 # -------------------- Main --------------------
 
-
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
+    if args.version:
+        try:
+            from . import __version__
+            print(__version__)
+        except Exception:
+            print("ytaedl (version unknown)")
+        return 0
+
     random.seed()
 
     args.url_dir = Path(args.url_dir)
     args.ae_url_dir = Path(args.ae_url_dir)
     args.output_dir = Path(args.output_dir)
+
+    # Ensure output dir exists
+    try:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+    # Simple file logger (START/FINISH lines)
+    log_fp = None
+    if args.log_file:
+        try:
+            Path(args.log_file).parent.mkdir(parents=True, exist_ok=True)
+            log_fp = open(args.log_file, "a", encoding="utf-8")
+        except Exception:
+            log_fp = None
+
+    def _log(line: str) -> None:
+        if log_fp:
+            try:
+                log_fp.write(line.rstrip("\n") + "\n")
+                log_fp.flush()
+            except Exception:
+                pass
 
     ui = make_ui(
         num_workers=max(1, int(args.num_ytdl_dl) + int(args.num_aebn_dl)),
@@ -379,7 +340,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     stop_evt = threading.Event()
     pause_evt = threading.Event()
 
-    # --- _key_reader inside main() (replace your existing nested _key_reader) -----
+    # --------- cross-platform hotkeys ----------
     def _key_reader() -> None:
         if _HAVE_TERMIOS:
             # POSIX: non-blocking read using select + cbreak
@@ -444,19 +405,22 @@ def main(argv: Optional[List[str]] = None) -> int:
                         time.sleep(0.05)
             except Exception:
                 pass
+    # ------------------------------------------
 
     with ui:
         threading.Thread(target=_key_reader, daemon=True, name="keys").start()
 
-        single_files_provided = (
-            [Path(f) for f in args.url_files] if args.url_files else None
-        )
+        single_files_provided = [Path(f) for f in args.url_files] if args.url_files else None
         all_work = _build_worklist_from_disk(
-            args.url_dir,
-            args.ae_url_dir,
-            args.output_dir,
-            single_files=single_files_provided,
+            args.url_dir, args.ae_url_dir, args.output_dir, single_files=single_files_provided
         )
+
+        # If there’s nothing to do, exit gracefully (useful on Windows where the window may close)
+        if not all_work:
+            print("No URL work found (check -f/-u/-e paths).")
+            if log_fp:
+                log_fp.close()
+            return 0
 
         coord = _Coordinator(all_work)
 
@@ -466,13 +430,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         if archive_path:
             archived_urls = set(read_archive(archive_path))
 
+        cfg = _build_config(args)
+        ytdl = YtDlpDownloader(cfg)
+        aebn = AebnDownloader(cfg)
+
         def worker(slot: int, downloader_type: str) -> None:
             thread_name = f"dl-{downloader_type}-{slot+1}"
             threading.current_thread().name = thread_name
-
-            cfg = _build_config(args)
-            ytdl = YtDlpDownloader(cfg)
-            aebn = AebnDownloader(cfg)
 
             while not stop_evt.is_set() and not abort_requested():
                 if pause_evt.is_set():
@@ -497,16 +461,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                             id=(slot * 10_000_000) + i,
                             url=url,
                             output_dir=wf.out_dir,
-                            source=URLSource(
-                                file=wf.url_file, line_number=i, original_url=url
-                            ),
+                            source=URLSource(file=wf.url_file, line_number=i, original_url=url),
                             extra_ytdlp_args=[],
                             extra_aebn_args=[],
                         )
 
-                        events: Iterator = (
-                            aebn.download(item) if is_aebn else ytdl.download(item)
-                        )
+                        _log(f"START {item.id} {item.url}")
+                        events: Iterator = (aebn.download(item) if is_aebn else ytdl.download(item))
                         url_ok = False
                         for ev in events:
                             try:
@@ -516,10 +477,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
                             if isinstance(ev, FinishEvent):
                                 res: DownloadResult = ev.result
-                                if res.status in (
-                                    DownloadStatus.COMPLETED,
-                                    DownloadStatus.ALREADY_EXISTS,
-                                ):
+                                _log(f"FINISH {item.id} {res.status.value} {item.url}")
+                                if res.status in (DownloadStatus.COMPLETED, DownloadStatus.ALREADY_EXISTS):
                                     url_ok = True
 
                         try:
@@ -544,15 +503,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         threads: List[threading.Thread] = []
         slot = 0
         for _ in range(max(0, int(args.num_aebn_dl))):
-            t = threading.Thread(
-                target=worker, args=(slot, "ae"), daemon=True, name=f"dl-ae-{slot+1}"
-            )
+            t = threading.Thread(target=worker, args=(slot, "ae"), daemon=True, name=f"dl-ae-{slot+1}")
             threads.append(t)
             slot += 1
         for _ in range(max(1, int(args.num_ytdl_dl))):
-            t = threading.Thread(
-                target=worker, args=(slot, "yt"), daemon=True, name=f"dl-yt-{slot+1}"
-            )
+            t = threading.Thread(target=worker, args=(slot, "yt"), daemon=True, name=f"dl-yt-{slot+1}")
             threads.append(t)
             slot += 1
 
@@ -578,27 +533,25 @@ def main(argv: Optional[List[str]] = None) -> int:
         except Exception:
             pass
 
+    if log_fp:
+        try:
+            log_fp.close()
+        except Exception:
+            pass
+
     return 0
 
 
 # -------------------- Legacy shims for tests ---------------------------------
 
-
 def _is_snapshot_complete(snapshot: CountsSnapshot, *args, **kwargs) -> bool:
     """
-    Test rule match:
-      - If total_urls > 0 → completed+failed+already >= total_urls and no active/queued.
-      - If total_urls == 0 → treat as NOT complete (pre-scan snapshots in tests).
+    Completion rule (legacy): ignore per-file 'remaining'.
+      - all URLs accounted for (completed+failed+already >= total_urls),
+      - and no active or queued.
     """
-    if not snapshot.total_urls or snapshot.total_urls <= 0:
-        return False
-
     total_done = snapshot.completed + snapshot.failed + snapshot.already
-    return (
-        (total_done >= snapshot.total_urls)
-        and snapshot.active == 0
-        and snapshot.queued == 0
-    )
+    return (total_done >= snapshot.total_urls) and snapshot.active == 0 and snapshot.queued == 0
 
 
 def _build_worklist(*args: Any, **kwargs: Any) -> List[_WorkFile]:
@@ -634,13 +587,9 @@ def _build_worklist(*args: Any, **kwargs: Any) -> List[_WorkFile]:
         ae_url_dir = Path(args[1])
         out_root = Path(args[2])
     else:
-        raise TypeError(
-            "_build_worklist requires (main_url_dir, out_root) or (main_url_dir, ae_url_dir, out_root)"
-        )
+        raise TypeError("_build_worklist requires (main_url_dir, out_root) or (main_url_dir, ae_url_dir, out_root)")
 
-    return _build_worklist_from_disk(
-        main_url_dir, ae_url_dir, out_root, single_files=single_files
-    )
+    return _build_worklist_from_disk(main_url_dir, ae_url_dir, out_root, single_files=single_files)
 
 
 if __name__ == "__main__":
