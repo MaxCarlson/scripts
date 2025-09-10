@@ -143,7 +143,7 @@ def demo_multistats(args: argparse.Namespace) -> int:
             _sleep(update)
         return 0
 
-    td = TermDash(status_line=True, refresh_rate=0.05)
+    td = TermDash(status_line=True, refresh_rate=0.05, clear_screen=args.clear_screen)
     with td:
         if args.header:
             _add_header(td, "hdr", f"Multi-Stats Demo ({kind})")
@@ -356,7 +356,7 @@ def demo_threads(args: argparse.Namespace) -> int:
 
     items = [StatItem(name=f"thr-{i+1:02d}", total=random.randint(60, 120)) for i in range(threads)]
 
-    td = TermDash(status_line=True, refresh_rate=0.05)
+    td = TermDash(status_line=True, refresh_rate=0.05, clear_screen=args.clear_screen)
     with td:
         if args.header:
             _add_header(td, "hdr", "Multi-Threaded Demo")
@@ -408,7 +408,7 @@ def demo_seemake(args: argparse.Namespace) -> int:
         return 0
 
     # Leaner TermDash config to reduce flicker and avoid the "lock" feel.
-    td = TermDash(status_line=False, refresh_rate=0.05, reserve_extra_rows=0)
+    td = TermDash(status_line=False, refresh_rate=0.05, reserve_extra_rows=0, clear_screen=args.clear_screen)
     with td:
         sm = SeemakePrinter(
             total=steps, td=td, with_bar=args.header_bar,
@@ -439,6 +439,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     def add_common(sp: argparse.ArgumentParser):
         sp.add_argument("-c", "--clear", action="store_true", help="Clear screen at exit (default: print snapshot).")
+        sp.add_argument("--clear-screen", action="store_true", help="Clear screen before starting the dashboard.")
         sp.add_argument("-P", "--plain", action="store_true", help="Run without live dashboard; print plain text.")
         sp.add_argument("-S", "--seed", type=int, default=1234, help="Random seed for repeatability.")
 
