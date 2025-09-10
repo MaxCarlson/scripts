@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import is_dataclass, asdict
 from enum import Enum
-from typing import Any, Dict, List
+from typing import Any
 
 
 def _convert(obj: Any) -> Any:
@@ -11,7 +11,6 @@ def _convert(obj: Any) -> Any:
     if is_dataclass(obj):
         return _convert(asdict(obj))
     if isinstance(obj, Enum):
-        # Prefer .value (human string) over enum name
         return obj.value
     if isinstance(obj, dict):
         return {k: _convert(v) for k, v in obj.items()}
@@ -21,8 +20,5 @@ def _convert(obj: Any) -> Any:
 
 
 def as_serializable(obj: Any) -> Any:
-    """
-    Public entrypoint: turn nested dataclasses/enums into plain Python data
-    that json.dumps can serialize without a custom encoder.
-    """
+    """Public entrypoint for json.dumps(obj) without a custom encoder."""
     return _convert(obj)
