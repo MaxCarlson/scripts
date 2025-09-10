@@ -574,32 +574,43 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         description="Orchestrate scanning and downloads with a Termdash UI.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("-t", "--threads", type=int, default=4, help="Concurrent worker slots.")
-    p.add_argument("-m", "--max-dl", type=int, default=3, help="Max successful URLs per assignment.")
-    p.add_argument("--url-dir", type=Path, default=DEF_URL_DIR, help="Main URL dir (stars).")
-    p.add_argument("--ae-url-dir", type=Path, default=DEF_AE_URL_DIR, help="AE URL dir (ae-stars).")
-    p.add_argument("-o", "--output-dir", type=Path, default=DEF_OUT_DIR, help="Destination root (default ./stars).")
-    p.add_argument("-c", "--counts-file", type=Path, default=DEF_COUNTS_FILE, help="JSON counts file path.")
-    p.add_argument("--ytdlp", default="yt-dlp", help="yt-dlp executable for scan.")
-    p.add_argument("--ytdlp-template", default="%(title)s.%(ext)s", help="Filename template for yt-dlp.")
-    p.add_argument("--skip-scan", action="store_true", help="Skip scanning and download directly from URL files.")
+    # Core controls
+    p.add_argument("-t", "--threads", type=int, default=4, help="Total concurrent worker slots.")
+    p.add_argument("-m", "--max-dl-per-file", dest="max_dl", type=int, default=3, help="Max successful downloads per URL file assignment.")
+    p.add_argument("-S", "--skip-scan", action="store_true", help="Skip scanning and download directly from URL files.")
+
+    # Process allocation
     p.add_argument("-a", "--num-aebn-dl", type=int, default=1, help="Number of concurrent AEBN download workers.")
     p.add_argument("-y", "--num-ytdl-dl", type=int, default=3, help="Number of concurrent yt-dlp download workers.")
-    # downloader knobs (unchanged surface; many are forwarded into DownloaderConfig)
-    p.add_argument("-j", "--jobs", type=int, default=1, help="Per-process jobs for downloader.")
-    p.add_argument("--archive", type=Path, default=None, help="Optional archive path.")
-    p.add_argument("--log-file", "-L", type=Path, help="Append log here.")
-    p.add_argument("--timeout", type=int, default=None)
-    p.add_argument("--rate-limit", default=None)
-    p.add_argument("--buffer-size", default=None)
-    p.add_argument("--retries", type=int, default=None)
-    p.add_argument("--fragment-retries", type=int, default=None)
-    p.add_argument("--ytdlp-connections", type=int, default=None)
-    p.add_argument("--aria2-splits", type=int, default=None)
-    p.add_argument("--aria2-x-conn", type=int, default=None)
-    p.add_argument("--aria2-min-split", default=None)
-    p.add_argument("--aria2-timeout", type=int, default=None)
-    p.add_argument("--no-ui", action="store_true", help="Disable Termdash UI.")
+    
+    # Paths
+    p.add_argument("-u", "--url-dir", type=Path, default=DEF_URL_DIR, help="Main URL dir (yt-dlp sources).")
+    p.add_argument("-e", "--ae-url-dir", type=Path, default=DEF_AE_URL_DIR, help="AEBN URL dir.")
+    p.add_argument("-o", "--output-dir", type=Path, default=DEF_OUT_DIR, help="Destination root for downloads.")
+    p.add_argument("-c", "--counts-file", type=Path, default=DEF_COUNTS_FILE, help="JSON counts file path (for scanning).")
+    p.add_argument("-A", "--archive-file", dest="archive", type=Path, default=None, help="Archive file to skip already downloaded URLs.")
+    p.add_argument("-L", "--log-file", type=Path, help="Append detailed logs to this file.")
+    
+    # Downloader executables
+    p.add_argument("-p", "--ytdlp-path", dest="ytdlp", default="yt-dlp", help="Path to yt-dlp executable (for scanning).")
+    p.add_argument("-T", "--ytdlp-template", default="%(title)s.%(ext)s", help="Filename template for yt-dlp.")
+
+    # Downloader performance tuning (passed to yt-dlp/aebndl)
+    p.add_argument("-j", "--jobs", type=int, default=1, help="Per-process jobs for the downloader itself.")
+    p.add_argument("-O", "--timeout", type=int, default=None, help="Per-process timeout in seconds.")
+    p.add_argument("-R", "--rate-limit", default=None, help="Download rate limit (e.g., 500K, 2M).")
+    p.add_argument("-B", "--buffer-size", default=None, help="Download buffer size (e.g., 16M).")
+    p.add_argument("-r", "--retries", type=int, default=None, help="Number of retries for downloads.")
+    p.add_argument("-F", "--fragment-retries", type=int, default=None, help="Number of retries for fragments.")
+    p.add_argument("-C", "--ytdlp-connections", type=int, default=None, help="Number of parallel connections for yt-dlp.")
+    p.add_argument("-s", "--aria2-splits", type=int, default=None, help="Number of splits for aria2.")
+    p.add_argument("-x", "--aria2-x-conn", type=int, default=None, help="Connections per server for aria2.")
+    p.add_argument("-M", "--aria2-min-split", default=None, help="Min split size for aria2 (e.g., 1M).")
+    p.add_argument("-Z", "--aria2-timeout", type=int, default=None, help="Timeout for aria2 in seconds.")
+    
+    # UI
+    p.add_argument("-n", "--no-ui", action="store_true", help="Disable Termdash UI and use simple print statements.")
+    
     return p.parse_args(argv)
 
 def _build_config(args: argparse.Namespace) -> DownloaderConfig:
@@ -771,7 +782,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     try: log_fp.close()
                     except Exception: pass
                 return 130
-            all_work = sorted(_build_worklist(snap), key=lambda w: (w.remaining, w.stem))
+            all_work = sorted(_build_worklist(snap), key=lambda w: (-w.remaining, w.stem))
 
         # ---- Archive Handling ----
         archive_path = args.archive
@@ -809,9 +820,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                 wf = coordinator.acquire_next()
                 if wf is None:
                     break
+                
+                downloader_type = "AEBN" if wf.source == "ae" else "YT-DLP"
+                olog(f"Worker {slot} ({downloader_type}): Acquired work file '{wf.url_file.name}'. Remaining URLs: {wf.remaining}")
+
                 try:
                     if hasattr(ui, 'set_scan_slot'):
-                        ui.set_scan_slot(slot, f"{wf.source}:{wf.stem} downloading (rem {wf.remaining})")
+                        ui.set_scan_slot(slot, f"{downloader_type}: {wf.stem} (rem {wf.remaining})")
                 except Exception:
                     pass
 
@@ -828,7 +843,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                         break
 
                     if archive_path and url in archived_urls:
+                        olog(f"Worker {slot}: Skipping archived URL: {url}")
                         continue
+                    
+                    olog(f"Worker {slot}: Starting download for URL: {url} from file '{wf.url_file.name}'")
 
                     item = DownloadItem(
                         id=get_next_item_id(),
@@ -874,6 +892,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                         break
 
                 coordinator.release(wf, remaining_delta=-(completed_in_wf))
+                olog(f"Worker {slot}: Released work file '{wf.url_file.name}'. Completed {completed_in_wf} downloads in this run.")
+            
+            olog(f"Worker {slot}: No more work. Shutting down.")
+
 
         threads: List[threading.Thread] = []
         slot_counter = 0
