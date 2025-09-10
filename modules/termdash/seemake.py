@@ -4,9 +4,11 @@ SeemakePrinter: CMake-like scrolling build output for TermDash.
 
 Features
 --------
-- Left-justified lines with `[ xx%]` prefix and colored action text.
+- Left-justified lines with "[ xx%]" prefix and colored action text.
 - Optional bottom in-place progress line with percent + bar + count.
-- Works with or without a running `TermDash` (falls back to `print`).
+- Works with or without a running `TermDash`.
+- NEW: optional `out` stream to mirror output in plain text (useful for tests
+  and non-TTY environments).
 
 Usage
 -----
@@ -24,14 +26,11 @@ Usage
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, TextIO
 
 from .dashboard import TermDash
 from .components import Line, Stat
 from .progress import ProgressBar
-
-
-CSI = "\033["
 
 
 def _color(text: str, code: str) -> str:
@@ -41,7 +40,7 @@ def _color(text: str, code: str) -> str:
 _KIND_TO_COLOR = {
     "scan": "1;35",      # bright magenta
     "build": "0;34",     # blue
-    "compile": "0;34",   # alias of build
+    "compile": "0;34",
     "link": "0;32",      # green
     "install": "0;36",   # cyan
     "test": "1;33",      # bright yellow
@@ -63,6 +62,7 @@ class SeemakePrinter:
         with_bar: bool = False,
         bar_width: int = 28,
         label: str = "Build",
+        out: Optional[TextIO] = None,
     ) -> None:
         if total <= 0:
             raise ValueError("total must be > 0")
@@ -71,12 +71,13 @@ class SeemakePrinter:
         self.td = td
         self.with_bar = bool(with_bar)
         self.label = label
+        self.out = out
 
         self._bar: Optional[ProgressBar] = None
         if self.with_bar and self.td is not None:
             # Bottom progress line: "[ xx%]" + bar + "i/N" + label
             pct = Stat("pct", "[  0%]", prefix="", format_string="{}", no_expand=True, display_width=6)
-            count = Stat("count", "0/{}".format(self.total), prefix="", format_string="{}", no_expand=True, display_width=12)
+            count = Stat("count", f"0/{self.total}", prefix="", format_string="{}", no_expand=True, display_width=12)
             lab = Stat("label", label, prefix="", format_string="{}", no_expand=False)
 
             self._bar = ProgressBar("bar", total=self.total, width=bar_width, show_percent=False)
@@ -101,21 +102,24 @@ class SeemakePrinter:
     # Internals ------------------------------------------------------
     def _emit(self, message: str, *, kind: str, percent: int) -> None:
         pfx = f"[{percent:3d}%] "
-        body = _color(message, _KIND_TO_COLOR.get(kind, "0;37"))
+        colored = _color(message, _KIND_TO_COLOR.get(kind, "0;37"))
+        line = pfx + colored
 
-        line = pfx + body
         if self.td is not None:
-            # Use TermDash's log so we don't disturb the dashboard.
+            # Use TermDash's scrolling log
             self.td.log(line, level="info")
-        else:
-            # Fallback: print without control sequences.
-            print(line)
+
+        # Always mirror to plain stream if provided
+        if self.out is not None:
+            try:
+                self.out.write(pfx + message + "\n")
+            except Exception:
+                pass
 
     def _update_bar(self, percent: int) -> None:
         if not (self.with_bar and self.td is not None):
             return
         try:
-            # Set percent & count cells
             self.td.update_stat("seemake:progress", "pct", f"[{percent:3d}%]")
             self.td.update_stat("seemake:progress", "count", f"{self.current}/{self.total}")
             if self._bar is not None:
