@@ -11,7 +11,7 @@ import difflib
 import re
 import sys
 from pathlib import Path
-from typing import List, Dict, Any, Literal
+from typing import List, Dict, Any
 
 try:
     from cross_platform.clipboard_utils import get_clipboard
@@ -53,7 +53,7 @@ def parse_clipboard_content(text: str) -> List[Dict[str, Any]]:
                 {"type": "create", "path": file_path, "content": content_block}
             )
         elif op_type == "START_FILE_EDIT":
-            # Corrected: Combine patterns and find all edits in order.
+            # Corrected: Combine patterns to find all edits in the order they appear.
             combined_pattern = re.compile(
                 r"(<<<<<<< SEARCH\n.*?\n=======\n.*?\n>>>>>>> REPLACE|<<<<<<< INSERT\n.*?\n=======\n(?:BEFORE|AFTER)\n<<<<<<< ANCHOR\n.*?\n>>>>>>> ANCHOR)",
                 re.DOTALL
@@ -61,7 +61,6 @@ def parse_clipboard_content(text: str) -> List[Dict[str, Any]]:
             for edit_match in combined_pattern.finditer(content_block):
                 full_edit_block = edit_match.group(1)
                 
-                # Check if it's a REPLACE block
                 rep_match = replace_pattern.fullmatch(full_edit_block)
                 if rep_match:
                     search_block, replace_block = rep_match.groups()
@@ -70,7 +69,6 @@ def parse_clipboard_content(text: str) -> List[Dict[str, Any]]:
                     )
                     continue
 
-                # Check if it's an INSERT block
                 ins_match = insert_pattern.fullmatch(full_edit_block)
                 if ins_match:
                     insert_content, position, anchor_block = ins_match.groups()
@@ -96,7 +94,7 @@ def preview_and_apply_changes(operations: List[Dict[str, Any]], dry_run: bool, a
 
     console.rule("[bold cyan]Planned Code Modifications[/bold cyan]", style="cyan")
     
-    # Corrected: Handle state changes between operations on the same file.
+    # Corrected: Manages state of files between operations.
     planned_writes: Dict[Path, str] = {}
     validation_passed = True
 
@@ -115,7 +113,7 @@ def preview_and_apply_changes(operations: List[Dict[str, Any]], dry_run: bool, a
             if original_content is None: # First time seeing this file
                 if path.is_file():
                     original_content = path.read_text('utf-8')
-                else: # File doesn't exist yet
+                else:
                     original_content = ""
             
             new_content = original_content
@@ -127,13 +125,13 @@ def preview_and_apply_changes(operations: List[Dict[str, Any]], dry_run: bool, a
             
             elif op['type'] == 'replace':
                 anchor = op['search']
-                if not anchor: raise ValueError("SEARCH block cannot be empty.")
+                if not anchor: raise ValueError("SEARCH block cannot be empty for replace operation.")
                 if original_content.count(anchor) != 1: raise ValueError(f"SEARCH block not unique (found {original_content.count(anchor)} times).")
                 new_content = original_content.replace(anchor, op['replace'])
 
             elif op['type'] == 'insert':
                 anchor = op['anchor']
-                if not anchor: raise ValueError("ANCHOR block cannot be empty.")
+                if not anchor: raise ValueError("ANCHOR block cannot be empty for insert operation.")
                 if original_content.count(anchor) != 1: raise ValueError(f"ANCHOR block not unique (found {original_content.count(anchor)} times).")
                 if op['position'] == 'before':
                     new_content = original_content.replace(anchor, op['content'] + '\n' + anchor)

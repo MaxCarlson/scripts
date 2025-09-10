@@ -38,7 +38,6 @@ def _calculate_new_content(op: Dict[str, Any], current_content: str) -> str:
     op_type = op['operation']
 
     if op_type == 'create_file':
-        # This check is now done in the main loop before calling.
         return op.get('content', '')
 
     lines = current_content.splitlines(keepends=True)
@@ -49,7 +48,7 @@ def _calculate_new_content(op: Dict[str, Any], current_content: str) -> str:
         raise ValueError(f"Operation '{op_type}' on existing file '{path}' requires a 'locator'.")
 
     if locator['type'] == 'line_number':
-        line_num = int(locator['value']) - 1  # 1-indexed to 0-indexed
+        line_num = int(locator['value']) - 1
         if not (0 <= line_num < len(lines)):
             raise IndexError(f"Line number {locator['value']} is out of bounds for file '{path}' (1-{len(lines)}).")
         
@@ -58,7 +57,6 @@ def _calculate_new_content(op: Dict[str, Any], current_content: str) -> str:
         elif op_type == 'insert_after':
             lines.insert(line_num + 1, content_to_insert + '\n')
         elif op_type == 'replace_block':
-            # Add a newline if the content doesn't already have one, preserving line structure
             if not content_to_insert.endswith('\n'):
                  content_to_insert += '\n'
             lines[line_num] = content_to_insert
@@ -93,6 +91,7 @@ def preview_and_apply_json(operations: List[Dict[str, Any]], dry_run: bool, auto
 
     console.rule("[bold cyan]Planned JSON-Based Modifications[/bold cyan]", style="cyan")
     
+    # Corrected: Manages state of files between operations.
     planned_writes: Dict[Path, str] = {}
     validation_passed = True
 
@@ -112,9 +111,8 @@ def preview_and_apply_json(operations: List[Dict[str, Any]], dry_run: bool, auto
         ))
         
         try:
-            # Corrected: State management for multi-edits on the same file.
             original_content = planned_writes.get(path)
-            if original_content is None: # First time we see this file.
+            if original_content is None:
                 if op['operation'] == 'create_file':
                     if path.exists():
                         raise FileExistsError(f"Cannot create '{path}' because it already exists.")
@@ -170,7 +168,7 @@ def main():
         description="Apply LLM-generated JSON-based edits from the clipboard.",
         formatter_class=argparse.RawTextHelpFormatter,
         epilog="Use -y to auto-confirm changes, -d for a dry run."
-        )
+    )
     parser.add_argument("-d", "--dry-run", action="store_true", help="Preview changes without applying.")
     parser.add_argument("-y", "--yes", action="store_true", help="Apply changes without confirmation.")
     args = parser.parse_args()
