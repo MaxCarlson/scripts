@@ -24,17 +24,23 @@ _ALREADY_RES = [
     re.compile(r"^\[download\]\s+.+?\s+has\s+already\s+been\s+downloaded(?:\s+and\s+merged)?\s*$", re.I),
 ]
 
-# Progress lines (robust to lowercase units and approximate totals):
+# Progress lines have MANY shapes. We support:
 #   [download]  10.1% of 48.97MiB at 2.11MiB/s ETA 00:37
 #   [download] 100% of 25.00MB in 00:30
-#   [download]   8.6% of ~ 713.54MiB at 25.16MiB/s ETA 00:28
-#   [download] 100% of 348.09MiB                  <-- no "in ..." on some backends
+#   [download]  8.6% of ~ 713.54MiB at 25.16MiB/s ETA 00:28
+#   [download] 100% of 348.09MiB                           <-- no ETA/in/speed
+#   [download]   3.1% of ~ 548.13MiB at 13.18MiB/s ETA Unknown
 _PROGRESS_RE = re.compile(
     r"""^\[download\]\s+
         (?P<pct>\d{1,3}(?:\.\d+)?)%\s+of\s+
-        ~?\s*(?P<total_val>\d+(?:\.\d+)?)\s*(?P<total_unit>[KMGT]?i?B)\s*
+        (?:~\s*)?                                          # approximate size marker
+        (?P<total_val>\d+(?:\.\d+)?)\s*(?P<total_unit>[KMGT]?i?B)\s*
         (?:\s+at\s+(?P<speed_val>\d+(?:\.\d+)?)\s*(?P<speed_unit>[KMGT]?i?B)/s\s*)?
-        (?:\s+(?:ETA\s+(?P<eta>\d{2}:\d{2}(?::\d{2})?)|in\s+(?P<intime>\d{2}:\d{2}(?::\d{2})?)))?
+        (?:
+            \s+ETA\s+(?P<eta>(?:\d{2}:\d{2}(?::\d{2})?|Unknown)) |
+            \s+in\s+(?P<intime>\d{2}:\d{2}(?::\d{2})?)          |
+            \s*                                                 # allow nothing (final 100% line)
+        )
         \s*$
     """,
     re.X | re.I,
@@ -48,16 +54,18 @@ _SIZE_MULTS_1000_UPPER = {"KB": 1000, "MB": 1000**2, "GB": 1000**3, "TB": 1000**
 def _unit_to_bytes(value: float, unit: str) -> Optional[int]:
     unit = (unit or "").strip()
     if unit.upper() == "B":
-        return int(value)
+        return int(round(value))
     u = unit.upper()
     if u in _SIZE_MULTS_1024_UPPER:
-        return int(value * _SIZE_MULTS_1024_UPPER[u])
+        return int(round(value * _SIZE_MULTS_1024_UPPER[u]))
     if u in _SIZE_MULTS_1000_UPPER:
-        return int(value * _SIZE_MULTS_1000_UPPER[u])
+        return int(round(value * _SIZE_MULTS_1000_UPPER[u]))
     return None
 
 def _hms_to_seconds(hms: str) -> Optional[int]:
     if not hms:
+        return None
+    if hms.strip().lower() == "unknown":
         return None
     parts = [int(x) for x in hms.split(":")]
     if len(parts) == 2:
@@ -87,7 +95,7 @@ def parse_line(line: str) -> Optional[Dict]:
           'eta_s': int or None
         }
 
-    Unrecognized lines -> None (caller can log as raw).
+    Unrecognized lines -> None (let caller log as raw).
     """
     s = sanitize_line(line)
 
@@ -125,11 +133,10 @@ def parse_line(line: str) -> Optional[Dict]:
         if m.group("eta"):
             eta_s = _hms_to_seconds(m.group("eta"))
         elif m.group("intime"):
-            # explicit completion format "in 00:30"
+            # final completion line with "in HH:MM(:SS)"
             eta_s = 0
         else:
-            # When no ETA/in is present, some backends print
-            # "[download] 100% of <size>" on a separate line -> treat as done.
+            # allow bare "100% of XXX" with no timing -> treat as complete
             if pct >= 100.0:
                 eta_s = 0
 
