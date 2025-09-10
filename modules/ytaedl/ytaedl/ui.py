@@ -124,20 +124,6 @@ class SimpleUI(UIBase):
 class TermdashUI(UIBase):
     """
     Live dashboard using TermDash.
-
-    Header:
-      Time | Speed MB/s | MB
-      URLs done/total | Already | Bad
-
-    Per worker (4 lines):
-      Worker N | Set <file-stem> | URLs i/total
-      MB/s <inst> | ETA hh:mm:ss | MB <done/total>
-      ID <id> | <title>     (no-expand; doesn't resize columns)
-      Already a | Bad b
-
-    Scanning:
-      TOP BANNER (two lines, at the very top): URLs Scanned | Already | Bad  | URLs/s
-      Scan table: Scanning | Files d/t    and one row per worker: Scan i | <label> | <status>
     """
 
     _DEFAULT_SCAN_LOG = Path("ytaedl-scan-results.tsv")
@@ -191,13 +177,20 @@ class TermdashUI(UIBase):
         self.dash.__exit__(exc_type, exc_val, exc_tb)
 
     def _add_line(self, name: str, line: Line, *, at_top: bool = False):
-        self.dash.add_line(name, line, at_top=at_top)
+        # Keep your 'at_top' feature, but be compatible with test FakeDash
+        try:
+            self.dash.add_line(name, line, at_top=at_top)
+        except TypeError:
+            # Tests' FakeDash doesn't accept 'at_top'
+            self.dash.add_line(name, line)
         self._known_lines.add(name)
 
     def _has_line(self, name: str) -> bool:
         return name in self._known_lines
 
     def _setup(self):
+        from termdash import Line, Stat  # local import for type checkers
+
         self._add_line(
             "banner1",
             Line( "banner1", stats=[

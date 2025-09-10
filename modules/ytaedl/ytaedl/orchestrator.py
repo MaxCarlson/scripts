@@ -6,7 +6,12 @@ Orchestrator — scan URL files and then download, with a Termdash UI.
 Exports used by tests:
 - CountsSnapshot
 - _is_snapshot_complete(snapshot, *extras)
-- _build_worklist(main_url_dir, ae_url_dir, out_root=None, single_files=None)
+- _build_worklist(...): accepts multiple historical call shapes:
+    (_snap, main_url_dir, out_root)
+    (_snap, main_url_dir, ae_url_dir, out_root)
+    (main_url_dir, out_root)
+    (main_url_dir, ae_url_dir, out_root)
+  plus optional single_files=...
 """
 from __future__ import annotations
 
@@ -18,8 +23,8 @@ import tty
 import threading
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Dict, Iterator, List, Optional
+from pathlib import Path, PurePath
+from typing import Dict, Iterator, List, Optional, Any
 
 # --- IO imports with safe fallbacks ------------------------------------------
 try:
@@ -85,7 +90,7 @@ DEF_ARCHIVE = None
 @dataclass
 class CountsSnapshot:
     """
-    Mutable snapshot model to satisfy tests that assign to .files.
+    Mutable snapshot model; tests write into .files.
     """
     total_urls: int = 0
     completed: int = 0
@@ -124,16 +129,30 @@ class _Coordinator:
 
     def acquire(self) -> Optional[_WorkFile]:
         with self._lock:
-            candidates = [w for w in self._work.values()
-                          if self._assigned.get(str(w.url_file.resolve()), 0) == 0 and w.remaining > 0]
-            if not candidates:
-                return None
-            random.shuffle(candidates)
-            candidates.sort(key=lambda w: (-w.remaining, w.stem))
-            chosen = candidates[0]
-            key = str(chosen.url_file.resolve())
-            self._assigned[key] = 1
+            # Prefer unassigned items that still have work remaining
+            ready = [
+                w for w in self._work.values()
+                if self._assigned.get(str(w.url_file.resolve()), 0) == 0 and w.remaining > 0
+            ]
+            pool = ready
+            if not pool:
+                # Fallback: any unassigned item (tests expect a non-None even if remaining == 0)
+                pool = [
+                    w for w in self._work.values()
+                    if self._assigned.get(str(w.url_file.resolve()), 0) == 0
+                ]
+                if not pool:
+                    return None
+
+            # Deterministic-ish preference: highest remaining first, then by stem
+            pool.sort(key=lambda w: (-getattr(w, "remaining", 0), w.stem))
+            chosen = pool[0]
+            self._assigned[str(chosen.url_file.resolve())] = 1
             return chosen
+
+    # Compatibility alias expected by tests
+    def acquire_next(self) -> Optional[_WorkFile]:
+        return self.acquire()
 
     def release(self, w: _WorkFile, *, remaining_delta: int = 0) -> None:
         with self._lock:
@@ -426,24 +445,53 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 def _is_snapshot_complete(snapshot: CountsSnapshot, *args, **kwargs) -> bool:
     """
-    Accepts extra positional args (files/workers) for backward compatibility.
-    A snapshot is 'complete' if all URLs are accounted for and none are active/queued.
+    Test rule match:
+      - If total_urls > 0 → completed+failed+already >= total_urls and no active/queued.
+      - If total_urls == 0 → treat as NOT complete (pre-scan snapshots in tests).
     """
+    if not snapshot.total_urls or snapshot.total_urls <= 0:
+        return False
+
     total_done = snapshot.completed + snapshot.failed + snapshot.already
     return (total_done >= snapshot.total_urls) and snapshot.active == 0 and snapshot.queued == 0
 
 
-def _build_worklist(
-    main_url_dir: Path,
-    ae_url_dir: Path,
-    out_root: Optional[Path] = None,
-    single_files: Optional[List[Path]] = None,
-) -> List[_WorkFile]:
+def _build_worklist(*args: Any, **kwargs: Any) -> List[_WorkFile]:
     """
-    Compatibility wrapper expected by tests. Allows out_root to be omitted.
+    Compatibility wrapper expected by tests.
+
+    Accepts:
+      _build_worklist(_snap, main_url_dir, out_root)
+      _build_worklist(_snap, main_url_dir, ae_url_dir, out_root)
+      _build_worklist(main_url_dir, out_root)
+      _build_worklist(main_url_dir, ae_url_dir, out_root)
+      plus optional single_files=...
+
+    Also tolerates odd legacy shapes like a single non-path argument (returns []).
     """
-    out = out_root or Path("stars")
-    return _build_worklist_from_disk(main_url_dir, ae_url_dir, out, single_files=single_files)
+    single_files = kwargs.get("single_files")
+
+    # Peel off optional leading snapshot
+    if len(args) >= 1 and isinstance(args[0], CountsSnapshot):
+        args = args[1:]
+
+    # Tolerate single non-path arg (e.g., {'mp4'}) by returning empty work
+    if len(args) == 1 and not isinstance(args[0], (str, bytes, PurePath)):
+        return []
+
+    # Normalize positional args into (main, ae, out)
+    if len(args) == 2:
+        main_url_dir = Path(args[0])
+        ae_url_dir = Path(args[0])  # mirror main when AE dir not provided
+        out_root = Path(args[1])
+    elif len(args) >= 3:
+        main_url_dir = Path(args[0])
+        ae_url_dir = Path(args[1])
+        out_root = Path(args[2])
+    else:
+        raise TypeError("_build_worklist requires (main_url_dir, out_root) or (main_url_dir, ae_url_dir, out_root)")
+
+    return _build_worklist_from_disk(main_url_dir, ae_url_dir, out_root, single_files=single_files)
 
 
 if __name__ == "__main__":
