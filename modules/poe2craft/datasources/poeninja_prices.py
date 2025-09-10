@@ -4,158 +4,109 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Dict, List, Optional
+import time
+from typing import Dict, Optional
 
 import requests
+from bs4 import BeautifulSoup
 
-from poe2craft.util.cache import InMemoryCache, SimpleCache
+log = logging.getLogger("poe2craft.datasources.poeninja")
 
-LOG = logging.getLogger(__name__)
-
-NINJA_WEB_BASE = "https://poe.ninja"
-NINJA_POE2_ECON = NINJA_WEB_BASE + "/poe2/economy/{league}/{category}"  # league slug like "rise-of-the-abyssal"
-
-
-def _slugify_league(name: str) -> str:
-    s = (name or "").strip().lower()
-    s = re.sub(r"[’'`]", "", s)                # remove apostrophes
-    s = re.sub(r"\s+", "-", s)                 # spaces -> hyphens
-    s = re.sub(r"[^a-z0-9\-]", "", s)          # strip punctuation
-    return s
+_API_CURRENCY = "https://poe.ninja/api/data/currencyoverview"
+_FALLBACK_PAGE = "https://poe.ninja/poe2/economy/{league_slug}/currency"
+_POE2_LADDERS = "https://pathofexile2.com/ladders"
 
 
-def detect_active_league(session: Optional[requests.Session] = None) -> Optional[str]:
-    """
-    Best-effort: read poe.ninja /poe2/ landing and try to discover the current league slug.
-    Returns the *display* name ("Rise of the Abyssal") if found, else None.
-    """
-    sess = session or requests.Session()
-    try:
-        r = sess.get(f"{NINJA_WEB_BASE}/poe2", timeout=15)
-        r.raise_for_status()
-        # Look for /poe2/economy/<slug>/ links and infer a display name by un-slugging.
-        m = re.search(r"/poe2/economy/([a-z0-9\-]+)/currency", r.text, flags=re.I)
-        if m:
-            slug = m.group(1)
-            disp = " ".join(w.capitalize() for w in slug.split("-"))
-            return disp
-    except Exception as e:
-        LOG.debug("Active league detection failed: %s", e)
-    return None
+def _slugify(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", s.strip().lower()).strip("-")
 
 
 class PoENinjaPriceProvider:
     """
-    Fetch PoE2 economy data from poe.ninja.
-    Strategy:
-      1) Try JSON API (with a 'game' dimension). If that fails, fall back to scraping the economy page.
+    Currency prices for PoE2 via poe.ninja.
+    - Primary: official API
+    - Fallback: scrape economy page __NEXT_DATA__ blob
     """
 
-    def __init__(self, session: Optional[requests.Session] = None, cache: Optional[object] = None):
-        self.sess = session or requests.Session()
-        self.cache = cache if cache is not None else InMemoryCache(ttl_seconds=3600)
+    def __init__(self, session: Optional[requests.Session] = None, timeout: float = 12.0):
+        self.session = session or requests.Session()
+        self.timeout = timeout
 
     def get_currency_prices(self, league: str = "Standard") -> Dict[str, float]:
-        api_url = f"{NINJA_WEB_BASE}/api/data/currencyoverview?league={league}&type=Currency&game=poe2"
+        # 1) API path
+        params = {"league": league, "type": "Currency", "language": "en"}
         try:
-            data = self._get_json_nocache(api_url)
-            if data and "lines" in data:
-                out: Dict[str, float] = {}
-                for line in data["lines"]:
+            r = self.session.get(_API_CURRENCY, params=params, timeout=self.timeout)
+            if "application/json" in r.headers.get("content-type", ""):
+                data = r.json()
+                result: Dict[str, float] = {}
+                for line in data.get("lines", []):
                     name = line.get("currencyTypeName")
-                    chaos_eq = None
-                    receive = line.get("receive", {})
-                    if isinstance(receive, dict):
-                        val = receive.get("value")
-                        if isinstance(val, (int, float)) and val > 0:
-                            chaos_eq = val
-                    if name and chaos_eq is not None:
-                        out[name] = float(chaos_eq)
-                if out:
-                    return out
+                    value = None
+                    # Prefer the "receive" price if present (matches your tests)
+                    receive = line.get("receive") or {}
+                    if isinstance(receive, dict) and "value" in receive:
+                        value = receive.get("value")
+                    if value is None:
+                        value = line.get("chaosEquivalent")
+                    if name and isinstance(value, (int, float)):
+                        result[name] = float(value)
+                if result:
+                    return result
         except Exception as e:
-            LOG.debug("Currency API probe failed: %s", e)
+            log.warning("poe.ninja API error: %s", e)
 
-        return self._scrape_currency_page(league)
-
-    # -------------- internals --------------
-
-    def _get_json_nocache(self, url: str) -> Optional[dict]:
-        r = self.sess.get(url, timeout=20)
-        ct = (r.headers.get("content-type") or "").split(";")[0].strip().lower()
-        if r.status_code != 200 or not ct.startswith("application/json"):
-            raise RuntimeError(f"Non-JSON or bad status from {url}")
+        # 2) Fallback: scrape economy page for PoE2 (requires slugified league)
+        league_slug = _slugify(league)
+        url = _FALLBACK_PAGE.format(league_slug=league_slug)
         try:
-            return r.json()  # type: ignore[attr-defined]
-        except Exception:
-            try:
-                if getattr(r, "text", None):
-                    return json.loads(r.text)
-                if getattr(r, "content", None):
-                    return json.loads(r.content.decode("utf-8"))
-            except Exception as e:
-                raise RuntimeError(f"Invalid JSON body from {url}") from e
-        return None
+            r = self.session.get(url, timeout=self.timeout)
+            # Try to find __NEXT_DATA__ blob
+            if "text/html" in r.headers.get("content-type", ""):
+                soup = BeautifulSoup(r.text, "html.parser")
+                blob = soup.find("script", id="__NEXT_DATA__")
+                if not blob or not blob.string:
+                    log.warning("Could not find embedded JSON on %s; returning empty price map", url)
+                    return {}
+                try:
+                    j = json.loads(blob.string)
+                    # The blob structure is not stable; attempt common shapes.
+                    page_props = ((j.get("props") or {}).get("pageProps") or {})
+                    arr = page_props.get("data") or page_props.get("items") or []
+                    out: Dict[str, float] = {}
+                    for it in arr:
+                        n = it.get("name")
+                        v = it.get("chaosValue")
+                        if n and isinstance(v, (int, float)):
+                            out[n] = float(v)
+                    return out
+                except Exception as e:
+                    log.warning("Error parsing __NEXT_DATA__ on %s: %s", url, e)
+                    return {}
+        except Exception as e:
+            log.warning("poe.ninja economy fallback failed for %s: %s", url, e)
 
-    def _scrape_currency_page(self, league: str) -> Dict[str, float]:
-        league_slug = _slugify_league(league)
-        url = NINJA_POE2_ECON.format(league=league_slug, category="currency")
-        cached = self.cache.get(url)
-        if cached is not None:
-            html = cached.decode("utf-8")
-        else:
-            r = self.sess.get(url, timeout=20)
+        return {}
+
+    # -------- current league detection (PoE2) --------
+
+    def detect_current_league(self) -> Optional[str]:
+        """
+        Scrape PoE2 ladders page, select a challenge league name (first non-permanent).
+        """
+        try:
+            r = self.session.get(_POE2_LADDERS, timeout=self.timeout)
             r.raise_for_status()
-            html = r.text
-            if isinstance(self.cache, (InMemoryCache, SimpleCache)):
-                self.cache.put(url, html.encode("utf-8"))
-
-        blob = self._extract_json_like_blob(html)
-        if not blob:
-            LOG.warning("Could not find embedded JSON on %s; returning empty price map", url)
-            return {}
-        prices: Dict[str, float] = {}
-        for item in self._walk_json_for_objects(blob):
-            name = item.get("name") or item.get("currencyTypeName")
-            val = item.get("chaosValue")
-            if val is None and isinstance(item.get("receive"), dict):
-                val = item["receive"].get("value")
-            if name and isinstance(val, (int, float)):
-                prices[name] = float(val)
-        return prices
-
-    def _extract_json_like_blob(self, html: str) -> Optional[dict]:
-        m = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(\{.*?\})</script>', html, flags=re.S)
-        if m:
-            try:
-                return json.loads(m.group(1))
-            except Exception:
-                pass
-        m = re.search(r"window\.__NUXT__\s*=\s*(\{.*?\});", html, flags=re.S)
-        if m:
-            try:
-                return json.loads(m.group(1))
-            except Exception:
-                pass
-        m = re.search(r"(\{[^<>{}]{200,}\})", html, flags=re.S)
-        if m:
-            try:
-                return json.loads(m.group(1))
-            except Exception:
-                pass
+            soup = BeautifulSoup(r.text, "html.parser")
+            # The page lists league names as words separated by dots/links.
+            txt = soup.get_text(" ", strip=True)
+            # Known permanent PoE2 leagues:
+            permanent = {"Standard", "Hardcore", "Solo Self-Found", "Hardcore SSF"}
+            # Extract phrases that look like league names (title-case words with spaces)
+            candidates = set(re.findall(r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+", txt))
+            for name in sorted(candidates, key=lambda s: (-len(s), s)):
+                if name not in permanent:
+                    return name
+        except Exception as e:
+            log.warning("Failed to detect current league: %s", e)
         return None
-
-    def _walk_json_for_objects(self, root: dict) -> List[dict]:
-        out: List[dict] = []
-
-        def rec(v):
-            if isinstance(v, dict):
-                out.append(v)
-                for vv in v.values():
-                    rec(vv)
-            elif isinstance(v, list):
-                for vv in v:
-                    rec(vv)
-
-        rec(root)
-        return out
