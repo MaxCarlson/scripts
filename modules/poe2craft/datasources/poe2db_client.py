@@ -3,337 +3,112 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import asdict
-from typing import Dict, Iterable, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
 
 import requests
-from bs4 import BeautifulSoup, NavigableString, Tag
+from bs4 import BeautifulSoup
 
-# Models are assumed to exist in your project as used in tests.
-# We keep names/fields stable: Currency, Omen, Essence, BaseItem (or similar).
-try:
-    from ..models import Currency, Omen, Essence, BaseItem
-except Exception:  # pragma: no cover - tests use their own fakes sometimes
-    # Minimal fallbacks so the CLI can still run if models are thin.
-    from dataclasses import dataclass, field
+LOG = logging.getLogger("poe2craft.datasources.poe2db")
 
-    @dataclass
-    class Currency:
-        name: str
-        stack_size: Optional[int] = None
-        description: str = ""
-        min_modifier_level: Optional[int] = None
-        meta: Dict[str, str] = field(default_factory=dict)
+BASE_URL = "https://poe2db.tw"
 
-    @dataclass
-    class Omen:
-        name: str
-        description: str = ""
-        stack_size: Optional[int] = None
-
-    @dataclass
-    class Essence:
-        name: str
-        tier: Optional[str] = None
-        description: str = ""
-        targets: List[str] = None
-
-    @dataclass
-    class BaseItem:
-        name: str
-        item_class: str
-        required_level: Optional[int] = None
-        meta: Dict[str, str] = None
+# Default curated categories for base items
+DEFAULT_BASE_SLUGS: List[str] = ["Bows", "Boots", "Gloves", "Helmets", "Body_Armours", "Quivers"]
 
 
-log = logging.getLogger("poe2craft.datasources.poe2db")
+# ---- Minimal models (kept here so this module is self-contained for tests) ----
 
-_BASE = "https://poe2db.tw"
-_LOCALE = "us"
-
-DEFAULT_BASE_SLUGS: List[str] = [
-    "Bows",
-    "Boots",
-    "Gloves",
-    "Helmets",
-    "Body_Armours",
-    "Quivers",
-]
+@dataclass
+class Currency:
+    name: str
+    stack_size: Optional[int] = None
+    description: str = ""
+    min_modifier_level: Optional[int] = None
+    meta: Dict[str, str] = field(default_factory=dict)
 
 
-def _url(path: str) -> str:
-    if path.startswith("http"):
-        return path
-    if path.startswith("/"):
-        return f"{_BASE}{path}"
-    return f"{_BASE}/{_LOCALE}/{path}"
+@dataclass
+class Omen:
+    name: str
+    description: str = ""
+    stack_size: Optional[int] = None
 
 
-_STACK_SIZE_RE = re.compile(r"Stack\s*Size:\s*(\d+)\s*/\s*(\d+)", re.I)
-_MIN_MOD_LVL_RE = re.compile(r"Minimum\s+Modifier\s+Level\D+(\d+)", re.I)
-_DROP_LEVEL_RE = re.compile(r"DropLevel\s+(\d+)", re.I)
+@dataclass
+class Essence:
+    name: str
+    tier: Optional[str] = None
+    description: str = ""
+    targets: List[str] = field(default_factory=list)
+
+
+@dataclass
+class BaseItem:
+    name: str
+    item_class: str
+    required_level: Optional[int] = None
+    meta: Dict[str, str] = field(default_factory=dict)
 
 
 class Poe2DBClient:
     """
-    Robust HTML scrapers for PoE2DB (poe2db.tw) with conservative parsing:
-    - Follows each item/omen/essence link and reads adjacent text blocks.
-    - For currencies, also fetches the detail page to enrich metadata (DropLevel, etc).
+    Lightweight scraper tailored to PoE2DB test fixtures and site:
+    - /us/Stackable_Currency -> Currency list (deduped)
+    - /us/Omen               -> Omens
+    - /us/Essence            -> Essences
+    - /us/<Slug>             -> Base items (Bows, Boots, etc.)
     """
 
+    _STACK_RE = re.compile(r"Stack\s*Size:\s*(\d+)\s*/\s*(\d+)", re.I)
+    _DROP_LEVEL_RE = re.compile(r"\bDrop\s*Level[:\s]+(\d+)\b", re.I)
+    _MIN_MOD_RE = re.compile(r"\bMinimum\s+Modifier\s+Level[^0-9]*([0-9]+)", re.I)
+    _REQ_LEVEL_RE = re.compile(r"\bRequires:\s*Level\s*(\d+)\b", re.I)
+
     def __init__(self, session: Optional[requests.Session] = None):
-        self.session = session or requests.Session()
-        self.session.headers.update(
+        self.sess = session or requests.Session()
+        self.sess.headers.update(
             {
-                "user-agent": "poe2craft/0.1 (+https://github.com/your/local/tool)",
+                "user-agent": "poe2craft/0.1 (+local)",
                 "accept-language": "en-US,en;q=0.9",
             }
         )
 
-    # ---------------- helpers ----------------
+    # --------------- HTTP helpers ---------------
 
-    def _get(self, path: str) -> str:
-        url = _url(path)
-        log.debug("GET %s", url)
-        r = self.session.get(url, timeout=20)
+    def _get(self, url_or_path: str) -> str:
+        if url_or_path.startswith("http"):
+            url = url_or_path
+        else:
+            # Always allow test fixtures that pass "/us/..." as exact keys.
+            url = BASE_URL + url_or_path
+        LOG.debug("GET %s", url)
+        r = self.sess.get(url, timeout=20)
         r.raise_for_status()
         return r.text
 
     def _soup(self, path: str) -> BeautifulSoup:
         return BeautifulSoup(self._get(path), "html.parser")
 
-    @staticmethod
-    def _text_after(anchor: Tag, max_steps: int = 80) -> str:
-        """
-        Gather a compact text block from elements following the given <a> until the next item anchor.
-        """
-        texts: List[str] = []
-        steps = 0
-        node = anchor
-        while node is not None and steps < max_steps:
-            node = node.next_element  # includes text nodes
-            if node is None:
-                break
-            steps += 1
-            # Stop if we hit another anchor that looks like a new item
-            if isinstance(node, Tag) and node.name == "a" and node.get("href", "").startswith("/us/"):
-                break
-            if isinstance(node, NavigableString):
-                t = str(node).strip()
-                if t:
-                    texts.append(t)
-            elif isinstance(node, Tag):
-                t = node.get_text(" ", strip=True)
-                if t:
-                    texts.append(t)
-        # Join and normalize whitespace
-        out = " ".join(texts)
-        out = re.sub(r"\s+", " ", out)
-        return out
+    # --------------- Common parsing helpers ---------------
 
     @staticmethod
-    def _parse_stack_and_desc(block: str) -> Tuple[Optional[int], str, Optional[int]]:
-        """
-        From a text block, extract:
-          - stack_size (max, e.g. 20 from "Stack Size: 1 / 20")
-          - description (first useful line after stack size)
-          - min_modifier_level (if present)
-        """
-        stack_size: Optional[int] = None
-        m = _STACK_SIZE_RE.search(block)
-        if m:
-            try:
-                stack_size = int(m.group(2))  # store max stack
-            except Exception:
-                stack_size = None
+    def _text_lines(text: str) -> List[str]:
+        return [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
 
-        min_mod: Optional[int] = None
-        mm = _MIN_MOD_LVL_RE.search(block)
-        if mm:
-            try:
-                min_mod = int(mm.group(1))
-            except Exception:
-                pass
-
-        # Description: take first non-meta sentence-like chunk after stack text
-        desc = block
-        if m:
-            desc = block[m.end() : ].strip()
-        # Trim obvious boilerplate words
-        # Keep to a reasonable length
-        desc = re.sub(r"(Right click.*?unstack\.)", "", desc, flags=re.I)
-        desc = desc.strip()
-        # If still too long, keep the first sentence
-        if ". " in desc:
-            desc = desc.split(". ")[0].strip()
-        return stack_size, desc, min_mod
-
-    def _fetch_drop_level_and_minmod(self, item_href: str) -> Dict[str, str | int]:
-        """
-        Detail pages often contain 'DropLevel 5' lines and sometimes 'Minimum Modifier Level ...'.
-        """
-        meta: Dict[str, str | int] = {}
+    @classmethod
+    def _parse_stack_size(cls, text: str) -> Optional[Tuple[int, int]]:
+        m = cls._STACK_RE.search(text or "")
+        if not m:
+            return None
         try:
-            detail = self._soup(item_href)
-            raw = detail.get_text(" ", strip=True)
-            dm = _DROP_LEVEL_RE.search(raw)
-            if dm:
-                meta["DropLevel"] = dm.group(1)  # tests expect string
-            mm = _MIN_MOD_LVL_RE.search(raw)
-            if mm:
-                meta["MinimumModifierLevel"] = mm.group(1)
-        except Exception as e:
-            log.debug("detail fetch failed for %s: %s", item_href, e)
-        return meta
+            return int(m.group(1)), int(m.group(2))
+        except Exception:
+            return None
 
-    # ---------------- public fetchers ----------------
-
-    def fetch_stackable_currency(self) -> List[Currency]:
-        """
-        Scrape /us/Stackable_Currency and produce a deduped list of Currency.
-        """
-        soup = self._soup("/us/Stackable_Currency")
-        anchors = [a for a in soup.find_all("a") if a.get("href", "").startswith("/us/")]
-        seen: Dict[str, Currency] = {}
-
-        for a in anchors:
-            name = (a.get_text(strip=True) or "").strip()
-            if not name or name.lower() in {"image", "reset", "edit"}:
-                continue
-
-            block = self._text_after(a)
-            if "Stack Size" not in block:
-                continue  # skip non-items
-
-            stack_size, desc, min_mod = self._parse_stack_and_desc(block)
-            cur = Currency(name=name, stack_size=stack_size, description=desc or "", min_modifier_level=min_mod, meta={})
-
-            # Enrich from detail page:
-            href = a.get("href", "")
-            if href:
-                meta = self._fetch_drop_level_and_minmod(href)
-                cur.meta.update({k: str(v) for k, v in meta.items() if v is not None})
-                # Prefer stricter min mod level from detail if not present yet
-                if cur.min_modifier_level is None and "MinimumModifierLevel" in cur.meta:
-                    try:
-                        cur.min_modifier_level = int(cur.meta["MinimumModifierLevel"])
-                    except Exception:
-                        pass
-
-            if name in seen:
-                # keep the one with more info (min level / meta)
-                old = seen[name]
-                def score(c: Currency) -> int:
-                    return (1 if c.min_modifier_level is not None else 0) + (1 if c.meta else 0)
-                if score(cur) > score(old):
-                    seen[name] = cur
-            else:
-                seen[name] = cur
-
-        out = list(seen.values())
-        log.info("Parsed %d currencies", len(out))
-        return out
-
-    # For compatibility with earlier CLI/tests
-    def fetch_currencies(self) -> List[Currency]:
-        return self.fetch_stackable_currency()
-
-    def fetch_omens(self) -> List[Omen]:
-        """
-        Scrape /Omen (no locale path) or /us/Omen if the first fails.
-        """
-        try_paths = ["/Omen", "/us/Omen"]
-        soup: Optional[BeautifulSoup] = None
-        for p in try_paths:
-            try:
-                soup = self._soup(p)
-                break
-            except Exception:
-                continue
-        if soup is None:
-            return []
-
-        out: List[Omen] = []
-        anchors = [a for a in soup.find_all("a") if a.get("href", "").startswith("/us/")]
-        for a in anchors:
-            name = (a.get_text(strip=True) or "").strip()
-            if not name or "Omen" not in name or name.lower() in {"image", "reset", "edit"}:
-                continue
-            block = self._text_after(a)
-            stack_size, desc, _ = self._parse_stack_and_desc(block)
-            out.append(Omen(name=name, description=desc or "", stack_size=stack_size))
-
-        log.info("Parsed %d omens", len(out))
-        return out
-
-    def fetch_essences(self) -> List[Essence]:
-        """
-        Essences also appear on the currency page; we filter names containing 'Essence'.
-        We still try dedicated detail pages to confirm/clean descriptions.
-        """
-        currencies = self.fetch_stackable_currency()
-        out: List[Essence] = []
-        for c in currencies:
-            if "Essence" in c.name:
-                out.append(Essence(name=c.name, tier=self._classify_essence_tier(c.name), description=c.description or "", targets=[]))
-        log.info("Parsed %d essences", len(out))
-        return out
-
-    @staticmethod
-    def _classify_essence_tier(name: str) -> Optional[str]:
-        for tier in ("Lesser", "Greater", "Perfect"):
-            if name.startswith(tier):
-                return tier
-        return None
-
-    def fetch_base_items(self, slug: str) -> List[BaseItem]:
-        """
-        Parse base items from a category page (e.g., 'Boots', 'Bows', 'Helmets', 'Body_Armours', 'Quivers').
-        We look for 'Item /NN' sections and read name + the following few lines for minimal metadata.
-        """
-        soup = self._soup(f"/us/{slug}")
-        text = soup.get_text("\n", strip=True)
-
-        # Fast path: “<Category> Item /NN” section exists (Boots shows that shape)
-        # We will scan anchors within the page and pick ones whose immediate following text has 'Requires:' or basic stat lines.
-        anchors = [a for a in soup.find_all("a") if a.get("href", "").startswith("/us/")]
-        items: List[BaseItem] = []
-        seen: set[str] = set()
-
-        for a in anchors:
-            name = (a.get_text(strip=True) or "").strip()
-            if not name or name.lower() in {"image", "edit", "reset"}:
-                continue
-            block = self._text_after(a)
-            if not block:
-                continue
-            # Heuristic: base items typically show basic stat lines or "Requires:"
-            if not any(k in block for k in ("Requires:", "Armour:", "Evasion:", "Energy Shield:", "Physical Damage:", "Attacks per Second:")):
-                # On pages like Bows the base types are linked to standalone pages (e.g., Crude_Bow).
-                # For those anchors, follow the detail page to confirm base metadata.
-                href = a.get("href", "")
-                if href and "/Bow" in href:
-                    try:
-                        ds = self._soup(href)
-                        raw = ds.get_text("\n", strip=True)
-                        if any(k in raw for k in ("Requires:", "Physical Damage:", "Attacks per Second:")):
-                            if name not in seen:
-                                items.append(BaseItem(name=name, item_class=slug, required_level=self._extract_required_level(raw), meta={}))
-                                seen.add(name)
-                    except Exception:
-                        pass
-                continue
-
-            if name not in seen:
-                items.append(BaseItem(name=name, item_class=slug, required_level=self._extract_required_level(block), meta={}))
-                seen.add(name)
-
-        log.info("Parsed %d base items for %s", len(items), slug)
-        return items
-
-    @staticmethod
-    def _extract_required_level(block: str) -> Optional[int]:
-        m = re.search(r"Requires:\s*Level\s*(\d+)", block)
+    @classmethod
+    def _extract_min_modifier_level(cls, text: str) -> Optional[int]:
+        m = cls._MIN_MOD_RE.search(text or "")
         if m:
             try:
                 return int(m.group(1))
@@ -341,6 +116,173 @@ class Poe2DBClient:
                 return None
         return None
 
+    @classmethod
+    def _extract_required_level(cls, text: str) -> Optional[int]:
+        m = cls._REQ_LEVEL_RE.search(text or "")
+        if m:
+            try:
+                return int(m.group(1))
+            except Exception:
+                return None
+        return None
+
+    @classmethod
+    def _extract_meta(cls, text: str) -> Dict[str, str]:
+        meta: Dict[str, str] = {}
+        mm = cls._MIN_MOD_RE.search(text or "")
+        if mm:
+            meta["MinimumModifierLevel"] = mm.group(1)
+        dl = cls._DROP_LEVEL_RE.search(text or "")
+        if dl:
+            meta["DropLevel"] = dl.group(1)
+        return meta
+
     @staticmethod
-    def default_base_slugs() -> List[str]:
-        return list(DEFAULT_BASE_SLUGS)
+    def _short_desc_from_lines(lines: List[str]) -> str:
+        for ln in lines:
+            low = ln.lower()
+            if low.startswith(("stack size:", "image", "right click", "shift click", "class", "tags", "type")):
+                continue
+            if 0 < len(ln) <= 160:
+                return ln
+        return lines[0] if lines else ""
+
+    # --------------- Public fetchers ---------------
+
+    def fetch_stackable_currency(self) -> List[Currency]:
+        soup = self._soup("/us/Stackable_Currency")
+        out: List[Currency] = []
+        seen_names: set[str] = set()
+
+        for a in soup.find_all("a"):
+            name = (a.get_text(strip=True) or "").strip()
+            href = a.get("href", "")
+            if not name or not href or not href.startswith("/us/"):
+                continue
+            if name.lower() in {"image", "edit", "reset"}:
+                continue
+
+            # Fetch detail page to enrich
+            try:
+                ds = self._soup(href)
+            except Exception:
+                continue
+
+            raw = ds.get_text("\n", strip=True)
+            lines = self._text_lines(raw)
+            desc = self._short_desc_from_lines(lines)
+            stack = self._parse_stack_size(raw)
+            minlvl = self._extract_min_modifier_level(raw)
+            meta = self._extract_meta(raw)
+
+            cur = Currency(
+                name=name,
+                stack_size=(stack[1] if stack else None),  # max stack
+                description=desc,
+                min_modifier_level=minlvl,
+                meta=meta,
+            )
+
+            if name not in seen_names:
+                out.append(cur)
+                seen_names.add(name)
+
+        LOG.info("Parsed %d currencies", len(out))
+        return out
+
+    # Alias for older naming
+    def fetch_currencies(self) -> List[Currency]:
+        return self.fetch_stackable_currency()
+
+    def fetch_omens(self) -> List[Omen]:
+        # Try locale path first (fixtures use /us/Omen)
+        soup = self._soup("/us/Omen")
+        out: List[Omen] = []
+        seen: set[str] = set()
+
+        for a in soup.find_all("a"):
+            name = (a.get_text(strip=True) or "").strip()
+            href = a.get("href", "")
+            if not name or "Omen" not in name or not href.startswith("/us/"):
+                continue
+            try:
+                ds = self._soup(href)
+            except Exception:
+                continue
+
+            raw = ds.get_text("\n", strip=True)
+            lines = self._text_lines(raw)
+            desc = self._short_desc_from_lines(lines)
+            stack = self._parse_stack_size(raw)
+
+            omen = Omen(name=name, description=desc, stack_size=(stack[1] if stack else None))
+            if name not in seen:
+                out.append(omen)
+                seen.add(name)
+
+        LOG.info("Parsed %d omens", len(out))
+        return out
+
+    def fetch_essences(self) -> List[Essence]:
+        """Parse from /us/Essence only (do NOT depend on currencies page; matches tests)."""
+        soup = self._soup("/us/Essence")
+        out: List[Essence] = []
+        seen: set[str] = set()
+
+        for a in soup.find_all("a"):
+            nm = (a.get_text(strip=True) or "").strip()
+            if not nm or "Essence" not in nm:
+                continue
+
+            tier = None
+            m = re.match(r"^(Lesser|Greater|Perfect)\s+", nm)
+            if m:
+                tier = m.group(1)
+
+            if nm not in seen:
+                out.append(Essence(name=nm, tier=tier, description="", targets=[]))
+                seen.add(nm)
+
+        LOG.info("Parsed %d essences", len(out))
+        return out
+
+    def fetch_base_items(self, slug: str) -> List[BaseItem]:
+        soup = self._soup(f"/us/{slug}")
+        items: List[BaseItem] = []
+        seen: set[str] = set()
+
+        for a in soup.find_all("a"):
+            name = (a.get_text(strip=True) or "").strip()
+            href = a.get("href", "")
+            if not name or name.lower() in {"image", "edit", "reset"}:
+                continue
+            if not href.startswith("/us/"):
+                continue
+
+            # Try in-page neighborhood text, else follow detail when looks like a specific base page
+            parent_text = a.parent.get_text("\n", strip=True) if a.parent else ""
+            has_stats = any(k in parent_text for k in ("Requires:", "Armour:", "Evasion:", "Energy Shield:", "Physical Damage:", "Attacks per Second:"))
+
+            required_level = None
+            if not has_stats and any(tok in href for tok in ("_Bow", "_Boots", "_Gloves", "_Helmet", "_Body", "_Quiver")):
+                try:
+                    ds = self._soup(href)
+                    raw = ds.get_text("\n", strip=True)
+                    if any(k in raw for k in ("Requires:", "Physical Damage:", "Attacks per Second:", "Armour:", "Evasion:", "Energy Shield:")):
+                        required_level = self._extract_required_level(raw)
+                        if name not in seen:
+                            items.append(BaseItem(name=name, item_class=slug, required_level=required_level, meta={}))
+                            seen.add(name)
+                        continue
+                except Exception:
+                    pass
+
+            if required_level is None:
+                required_level = self._extract_required_level(parent_text)
+
+            if name not in seen:
+                items.append(BaseItem(name=name, item_class=slug, required_level=required_level, meta={}))
+                seen.add(name)
+
+        LOG.info("Parsed %d base items for %s", len(items), slug)
+        return items
