@@ -13,16 +13,15 @@ LOG = logging.getLogger("poe2craft.datasources.poe2db")
 
 BASE_URL = "https://poe2db.tw"
 
-# Default curated categories for base items
 DEFAULT_BASE_SLUGS: List[str] = ["Bows", "Boots", "Gloves", "Helmets", "Body_Armours", "Quivers"]
 
 
-# ---- Minimal models (kept here so this module is self-contained for tests) ----
+# ---- Minimal models for tests/fakes ----
 
 @dataclass
 class Currency:
     name: str
-    stack_size: Optional[int] = None
+    stack_size: Optional[int] = None  # max stack (e.g. 20)
     description: str = ""
     min_modifier_level: Optional[int] = None
     meta: Dict[str, str] = field(default_factory=dict)
@@ -48,22 +47,16 @@ class BaseItem:
     name: str
     item_class: str
     required_level: Optional[int] = None
+    properties: Dict[str, float] = field(default_factory=dict)
     meta: Dict[str, str] = field(default_factory=dict)
 
 
 class Poe2DBClient:
-    """
-    Lightweight scraper tailored to PoE2DB test fixtures and site:
-    - /us/Stackable_Currency -> Currency list (deduped)
-    - /us/Omen               -> Omens
-    - /us/Essence            -> Essences
-    - /us/<Slug>             -> Base items (Bows, Boots, etc.)
-    """
-
     _STACK_RE = re.compile(r"Stack\s*Size:\s*(\d+)\s*/\s*(\d+)", re.I)
     _DROP_LEVEL_RE = re.compile(r"\bDrop\s*Level[:\s]+(\d+)\b", re.I)
     _MIN_MOD_RE = re.compile(r"\bMinimum\s+Modifier\s+Level[^0-9]*([0-9]+)", re.I)
     _REQ_LEVEL_RE = re.compile(r"\bRequires:\s*Level\s*(\d+)\b", re.I)
+    _APS_RE = re.compile(r"\bAttacks\s+per\s+Second:\s*([0-9]+(?:\.[0-9]+)?)\b", re.I)
 
     def __init__(self, session: Optional[requests.Session] = None):
         self.sess = session or requests.Session()
@@ -74,13 +67,12 @@ class Poe2DBClient:
             }
         )
 
-    # --------------- HTTP helpers ---------------
+    # ---- Script/fixture-friendly HTTP ----
 
     def _get(self, url_or_path: str) -> str:
         if url_or_path.startswith("http"):
             url = url_or_path
         else:
-            # Always allow test fixtures that pass "/us/..." as exact keys.
             url = BASE_URL + url_or_path
         LOG.debug("GET %s", url)
         r = self.sess.get(url, timeout=20)
@@ -90,7 +82,7 @@ class Poe2DBClient:
     def _soup(self, path: str) -> BeautifulSoup:
         return BeautifulSoup(self._get(path), "html.parser")
 
-    # --------------- Common parsing helpers ---------------
+    # ---- Utilities ----
 
     @staticmethod
     def _text_lines(text: str) -> List[str]:
@@ -137,6 +129,17 @@ class Poe2DBClient:
             meta["DropLevel"] = dl.group(1)
         return meta
 
+    @classmethod
+    def _extract_properties(cls, text: str) -> Dict[str, float]:
+        props: Dict[str, float] = {}
+        m = cls._APS_RE.search(text or "")
+        if m:
+            try:
+                props["Attacks per Second"] = float(m.group(1))
+            except Exception:
+                pass
+        return props
+
     @staticmethod
     def _short_desc_from_lines(lines: List[str]) -> str:
         for ln in lines:
@@ -147,7 +150,11 @@ class Poe2DBClient:
                 return ln
         return lines[0] if lines else ""
 
-    # --------------- Public fetchers ---------------
+    def _infer_item_class_from_slug(self, slug: str) -> str:
+        # simple fallback used by edgecase test
+        return slug
+
+    # ---- Public fetchers ----
 
     def fetch_stackable_currency(self) -> List[Currency]:
         soup = self._soup("/us/Stackable_Currency")
@@ -162,7 +169,6 @@ class Poe2DBClient:
             if name.lower() in {"image", "edit", "reset"}:
                 continue
 
-            # Fetch detail page to enrich
             try:
                 ds = self._soup(href)
             except Exception:
@@ -177,7 +183,7 @@ class Poe2DBClient:
 
             cur = Currency(
                 name=name,
-                stack_size=(stack[1] if stack else None),  # max stack
+                stack_size=(stack[1] if stack else None),
                 description=desc,
                 min_modifier_level=minlvl,
                 meta=meta,
@@ -190,12 +196,10 @@ class Poe2DBClient:
         LOG.info("Parsed %d currencies", len(out))
         return out
 
-    # Alias for older naming
     def fetch_currencies(self) -> List[Currency]:
         return self.fetch_stackable_currency()
 
     def fetch_omens(self) -> List[Omen]:
-        # Try locale path first (fixtures use /us/Omen)
         soup = self._soup("/us/Omen")
         out: List[Omen] = []
         seen: set[str] = set()
@@ -212,9 +216,17 @@ class Poe2DBClient:
 
             raw = ds.get_text("\n", strip=True)
             lines = self._text_lines(raw)
-            desc = self._short_desc_from_lines(lines)
-            stack = self._parse_stack_size(raw)
 
+            # Prefer lines that look like the “effect” text (contains “Exalt” etc.)
+            desc = ""
+            for ln in lines:
+                if re.search(r"\b(Exalt|Exalted|Next)\b", ln, flags=re.I):
+                    desc = ln
+                    break
+            if not desc:
+                desc = self._short_desc_from_lines(lines)
+
+            stack = self._parse_stack_size(raw)
             omen = Omen(name=name, description=desc, stack_size=(stack[1] if stack else None))
             if name not in seen:
                 out.append(omen)
@@ -224,7 +236,6 @@ class Poe2DBClient:
         return out
 
     def fetch_essences(self) -> List[Essence]:
-        """Parse from /us/Essence only (do NOT depend on currencies page; matches tests)."""
         soup = self._soup("/us/Essence")
         out: List[Essence] = []
         seen: set[str] = set()
@@ -259,19 +270,22 @@ class Poe2DBClient:
             if not href.startswith("/us/"):
                 continue
 
-            # Try in-page neighborhood text, else follow detail when looks like a specific base page
             parent_text = a.parent.get_text("\n", strip=True) if a.parent else ""
-            has_stats = any(k in parent_text for k in ("Requires:", "Armour:", "Evasion:", "Energy Shield:", "Physical Damage:", "Attacks per Second:"))
+            has_stats = any(
+                k in parent_text for k in ("Requires:", "Armour:", "Evasion:", "Energy Shield:", "Physical Damage:", "Attacks per Second:")
+            )
 
             required_level = None
+            properties: Dict[str, float] = {}
             if not has_stats and any(tok in href for tok in ("_Bow", "_Boots", "_Gloves", "_Helmet", "_Body", "_Quiver")):
                 try:
                     ds = self._soup(href)
                     raw = ds.get_text("\n", strip=True)
                     if any(k in raw for k in ("Requires:", "Physical Damage:", "Attacks per Second:", "Armour:", "Evasion:", "Energy Shield:")):
                         required_level = self._extract_required_level(raw)
+                        properties = self._extract_properties(raw)
                         if name not in seen:
-                            items.append(BaseItem(name=name, item_class=slug, required_level=required_level, meta={}))
+                            items.append(BaseItem(name=name, item_class=slug, required_level=required_level, properties=properties, meta={}))
                             seen.add(name)
                         continue
                 except Exception:
@@ -279,9 +293,11 @@ class Poe2DBClient:
 
             if required_level is None:
                 required_level = self._extract_required_level(parent_text)
+            if not properties:
+                properties = self._extract_properties(parent_text)
 
             if name not in seen:
-                items.append(BaseItem(name=name, item_class=slug, required_level=required_level, meta={}))
+                items.append(BaseItem(name=name, item_class=slug, required_level=required_level, properties=properties, meta={}))
                 seen.add(name)
 
         LOG.info("Parsed %d base items for %s", len(items), slug)

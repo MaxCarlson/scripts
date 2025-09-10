@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "poe2craft"
+version = "0.1.0"
+description = "PoE2 data & price utilities (definitions + economy)."
+requires-python = ">=3.9"
+dependencies = [
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.2",
+]
+
+[project.scripts]
+poe2craft = "poe2craft.cli:main"

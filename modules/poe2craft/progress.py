@@ -7,9 +7,7 @@ from typing import Iterator, Optional
 
 @contextmanager
 def progress(label: str, total: Optional[int] = None, quiet: bool = False) -> Iterator["ProgressBar"]:
-    """
-    Minimal progress printer that writes to STDERR only so stdout stays clean for JSON.
-    """
+    """Progress that writes to STDERR only (keeps stdout clean for JSON)."""
     bar = ProgressBar(label, total, quiet=quiet)
     try:
         bar._start()
@@ -29,7 +27,7 @@ class ProgressBar:
     def _start(self):
         self.start = time.time()
         if not self.quiet:
-            sys.stderr.write(f"[{self.label}] 0")
+            sys.stderr.write(f"[{self.label}] 0\n")
             sys.stderr.flush()
 
     def update(self, current: Optional[int] = None, info: Optional[str] = None):
@@ -40,14 +38,14 @@ class ProgressBar:
         elapsed = time.time() - (self.start or time.time())
         if self.total:
             pct = (self.current / self.total) * 100.0
-            sys.stderr.write(f"\r[{self.label}] {self.current}/{self.total} {pct:5.1f}%  {elapsed:0.1f}s")
+            line = f"[{self.label}] {self.current}/{self.total} {pct:5.1f}%  {elapsed:0.1f}s"
         else:
-            sys.stderr.write(f"\r[{self.label}] {self.current}   {elapsed:0.1f}s")
+            line = f"[{self.label}] {self.current}   {elapsed:0.1f}s"
         if info:
-            sys.stderr.write(f" | {info}")
+            line += f" | {info}"
+        sys.stderr.write(line + "\n")
         sys.stderr.flush()
 
     def _finish(self):
         if not self.quiet:
-            sys.stderr.write("\n")
             sys.stderr.flush()
