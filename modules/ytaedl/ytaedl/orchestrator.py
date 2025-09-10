@@ -17,12 +17,17 @@ from __future__ import annotations
 
 import argparse
 import random
-import sys
-import threading
 import time
+import subprocess, sys, threading
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
-from typing import Dict, Iterator, List, Optional, Any
+from typing import Dict, Iterator, List, Optional, Any, Tuple
+
+# parsers (moved to procparsers module)
+from procparsers import parse_ytdlp_line
+
+# run logger with program-runtime timestamps & counters
+from .runlogger import RunLogger
 
 # ---------- cross-platform console input (POSIX + Windows) ----------
 try:
@@ -199,7 +204,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     # Runtime / Logging
     rt = p.add_argument_group("Runtime")
     rt.add_argument("-t", "--timeout", type=int, default=None, help="Per-process timeout (seconds).")
-    rt.add_argument("-L", "--log-file", type=Path, default=None, help="Write simple run log (START/FINISH lines).")
+    rt.add_argument("-L", "--log-file", type=Path, default=None, help="Write detailed run log (START/FINISH with status).")
 
     # UI
     ui_group = p.add_argument_group("UI")
@@ -224,7 +229,7 @@ def _build_config(args: argparse.Namespace) -> DownloaderConfig:
         aria2_x_conn=None,
         aria2_min_split=None,
         aria2_timeout=None,
-        log_file=args.log_file,         # <-- not used by downloaders here, but mirrored for parity
+        log_file=args.log_file,         # mirrored for parity
     )
 
 
@@ -291,6 +296,105 @@ def _build_worklist_from_disk(
     return work
 
 
+# -------------------- yt-dlp single-run wrapper (parser-aware) ----------------
+
+def run_single_ytdlp(
+    logger: RunLogger,
+    url: str,
+    url_index: int,
+    out_tpl: str,
+    extra_args: Optional[List[str]] = None,
+    retries: int = 3,
+) -> Tuple[str, str]:
+    """
+    Returns (status, note)
+      status ∈ {'Finished DL', 'Exists', 'Bad URL', 'Internal Stop', 'External Stop'}
+      note: optional details
+    """
+    cmd = [
+        "yt-dlp",
+        "--newline",
+        "--print", "TDMETA\t%(id)s\t%(title)s",
+        "-o", out_tpl,
+        "--retries", str(retries),
+        url,
+    ]
+    if extra_args:
+        cmd = cmd[:-1] + extra_args + [url]  # keep URL last
+
+    attempt_id = logger.start(url_index, url)
+
+    # State gathered from parsing
+    saw_already = False
+    saw_progress = False
+    finished_progress = False
+    saw_destination = False
+    last_error_line = None
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            universal_newlines=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except Exception as ex:
+        logger.finish(url_index, url, "External Stop", f"spawn-error: {ex!r}")
+        return "External Stop", f"spawn-error: {ex!r}"
+
+    try:
+        assert proc.stdout is not None
+        for raw in proc.stdout:
+            evt = parse_ytdlp_line(raw)
+            if not evt:
+                if raw.strip().startswith("ERROR:"):
+                    last_error_line = raw.strip()
+                continue
+            kind = evt["event"]
+            if kind == "already":
+                saw_already = True
+            elif kind == "destination":
+                saw_destination = True
+            elif kind == "progress":
+                saw_progress = True
+                if evt.get("percent", 0.0) >= 100.0 or evt.get("eta_s") == 0:
+                    finished_progress = True
+
+        ret = proc.wait()
+    except KeyboardInterrupt:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        logger.finish(url_index, url, "Internal Stop", "keyboard interrupt")
+        return "Internal Stop", "keyboard interrupt"
+
+    # Classification
+    if ret != 0:
+        note = last_error_line or f"exit code {ret}"
+        logger.finish(url_index, url, "Bad URL", note)
+        return "Bad URL", note
+
+    # ret == 0
+    if saw_already:
+        logger.finish(url_index, url, "Exists")
+        return "Exists", ""
+
+    if finished_progress:
+        logger.finish(url_index, url, "Finished DL")
+        return "Finished DL", ""
+
+    if saw_destination or saw_progress:
+        logger.finish(url_index, url, "Finished DL", "no explicit 100% marker")
+        return "Finished DL", "no explicit 100% marker"
+
+    logger.finish(url_index, url, "Finished DL", "ret=0 but no parseable markers")
+    return "Finished DL", "ret=0 but no parseable markers"
+
+
 # -------------------- Main --------------------
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -315,22 +419,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     except Exception:
         pass
 
-    # Simple file logger (START/FINISH lines)
-    log_fp = None
-    if args.log_file:
-        try:
-            Path(args.log_file).parent.mkdir(parents=True, exist_ok=True)
-            log_fp = open(args.log_file, "a", encoding="utf-8")
-        except Exception:
-            log_fp = None
-
-    def _log(line: str) -> None:
-        if log_fp:
-            try:
-                log_fp.write(line.rstrip("\n") + "\n")
-                log_fp.flush()
-            except Exception:
-                pass
+    # Detailed run logger (program-runtime timestamps)
+    runlog = RunLogger(args.log_file)
 
     ui = make_ui(
         num_workers=max(1, int(args.num_ytdl_dl) + int(args.num_aebn_dl)),
@@ -343,7 +433,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     # --------- cross-platform hotkeys ----------
     def _key_reader() -> None:
         if _HAVE_TERMIOS:
-            # POSIX: non-blocking read using select + cbreak
             try:
                 fd = sys.stdin.fileno()
                 old = termios.tcgetattr(fd)
@@ -374,10 +463,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 finally:
                     termios.tcsetattr(fd, termios.TCSADRAIN, old)
             except Exception:
-                # If stdin isn't a TTY or anything else fails, just stop reading keys
                 pass
         else:
-            # Windows: use msvcrt if available
             if msvcrt is None:
                 return
             try:
@@ -418,8 +505,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         # If there’s nothing to do, exit gracefully (useful on Windows where the window may close)
         if not all_work:
             print("No URL work found (check -f/-u/-e paths).")
-            if log_fp:
-                log_fp.close()
+            runlog.close()
             return 0
 
         coord = _Coordinator(all_work)
@@ -450,49 +536,84 @@ def main(argv: Optional[List[str]] = None) -> int:
                 successful_downloads_this_run = 0
 
                 try:
-                    for i, url in enumerate(list(wf.urls), start=1):
+                    for i, url in enumerate(list(wf.urls), start=0):  # url_index in file: 0-based
                         if stop_evt.is_set() or abort_requested():
                             break
                         if archive_path and url in archived_urls:
+                            # still generate a FINISH entry so the counter is consistent
+                            attempt_id = runlog.start(i, url)
+                            runlog.finish(i, url, "Exists", "archive-hit")
                             continue
 
-                        is_aebn = is_aebn_url(url)
-                        item = DownloadItem(
-                            id=(slot * 10_000_000) + i,
-                            url=url,
-                            output_dir=wf.out_dir,
-                            source=URLSource(file=wf.url_file, line_number=i, original_url=url),
-                            extra_ytdlp_args=[],
-                            extra_aebn_args=[],
-                        )
+                        out_tpl = str(wf.out_dir / "%(title)s.%(ext)s")
+                        wf.out_dir.mkdir(parents=True, exist_ok=True)
 
-                        _log(f"START {item.id} {item.url}")
-                        events: Iterator = (aebn.download(item) if is_aebn else ytdl.download(item))
-                        url_ok = False
-                        for ev in events:
+                        if is_aebn_url(url):
+                            # AEBN path: wrap with START/FINISH logging but use existing downloader
+                            runlog.start(i, url)
+                            item = DownloadItem(
+                                id=(slot * 10_000_000) + (i + 1),
+                                url=url,
+                                output_dir=wf.out_dir,
+                                source=URLSource(file=wf.url_file, line_number=i + 1, original_url=url),
+                                extra_ytdlp_args=[],
+                                extra_aebn_args=[],
+                            )
+                            ok = False
+                            events: Iterator = aebn.download(item)
+                            last_status: Optional[str] = None
                             try:
-                                ui.handle_event(ev)
-                            except Exception:
-                                pass
+                                for ev in events:
+                                    try:
+                                        ui.handle_event(ev)
+                                    except Exception:
+                                        pass
+                                    if isinstance(ev, FinishEvent):
+                                        res: DownloadResult = ev.result
+                                        if res.status in (DownloadStatus.COMPLETED, DownloadStatus.ALREADY_EXISTS):
+                                            ok = True
+                                        last_status = res.status.value
+                            except KeyboardInterrupt:
+                                runlog.finish(i, url, "Internal Stop", "keyboard interrupt")
+                                stop_evt.set()
+                                break
 
-                            if isinstance(ev, FinishEvent):
-                                res: DownloadResult = ev.result
-                                _log(f"FINISH {item.id} {res.status.value} {item.url}")
-                                if res.status in (DownloadStatus.COMPLETED, DownloadStatus.ALREADY_EXISTS):
-                                    url_ok = True
+                            if ok:
+                                runlog.finish(i, url, "Finished DL")
+                                successful_downloads_this_run += 1
+                                if archive_path:
+                                    with archive_lock:
+                                        if url not in archived_urls:
+                                            write_to_archive(archive_path, url)
+                                            archived_urls.add(url)
+                            else:
+                                runlog.finish(i, url, "Bad URL", last_status or "aebn-dl failure")
+                        else:
+                            # yt-dlp path (parser-aware + tolerant of quiet success)
+                            try:
+                                status, note = run_single_ytdlp(
+                                    logger=runlog,
+                                    url=url,
+                                    url_index=i,
+                                    out_tpl=out_tpl,
+                                    extra_args=None,
+                                    retries=3,
+                                )
+                                if status in ("Finished DL", "Exists"):
+                                    successful_downloads_this_run += 1
+                                    if archive_path:
+                                        with archive_lock:
+                                            if url not in archived_urls:
+                                                write_to_archive(archive_path, url)
+                                                archived_urls.add(url)
+                            except KeyboardInterrupt:
+                                stop_evt.set()
+                                break
 
                         try:
                             ui.pump()
                         except Exception:
                             pass
-
-                        if url_ok:
-                            successful_downloads_this_run += 1
-                            if archive_path:
-                                with archive_lock:
-                                    if url not in archived_urls:
-                                        write_to_archive(archive_path, url)
-                                        archived_urls.add(url)
 
                 except KeyboardInterrupt:
                     stop_evt.set()
@@ -533,12 +654,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         except Exception:
             pass
 
-    if log_fp:
-        try:
-            log_fp.close()
-        except Exception:
-            pass
-
+    runlog.close()
     return 0
 
 
