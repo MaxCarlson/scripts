@@ -1,12 +1,11 @@
-#!/usr/bin/env python3
-"""Downloader implementations and process control utilities."""
+"""Downloader implementations and process control utilities (using procparsers)."""
 from __future__ import annotations
 
 import time
 import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Iterator, List, Optional, Set
+from typing import Callable, Iterator, List, Optional, Set, Tuple
 
 from .models import (
     DownloadEvent,
@@ -22,20 +21,25 @@ from .models import (
     LogEvent,
     FinishEvent,
 )
-from .parsers import parse_ytdlp_line, parse_aebndl_line, sanitize_line
+from procparsers import parse_ytdlp_line, parse_aebndl_line, sanitize_line
 from .url_parser import parse_aebn_scene_controls, is_aebn_url
 
-# ------------ global abort flag + process registry ------------
-_ABORT_REQUESTED: bool = False
+
+# -------------------- abort / process tracking --------------------
+
+_ABORT_REQUESTED = False
+_ACTIVE_PROCS: Set[subprocess.Popen] = set()
+
 
 def request_abort() -> None:
+    """Signal all downloaders to abort ASAP."""
     global _ABORT_REQUESTED
     _ABORT_REQUESTED = True
+
 
 def abort_requested() -> bool:
     return _ABORT_REQUESTED
 
-_ACTIVE_PROCS: Set[subprocess.Popen] = set()
 
 def _register_proc(p: subprocess.Popen) -> None:
     try:
@@ -43,242 +47,345 @@ def _register_proc(p: subprocess.Popen) -> None:
     except Exception:
         pass
 
-def _unregister_proc(p: Optional[subprocess.Popen]) -> None:
-    if not p:
-        return
+
+def _unregister_proc(p: subprocess.Popen) -> None:
     try:
         _ACTIVE_PROCS.discard(p)
     except Exception:
         pass
 
-def terminate_all_active_procs(timeout: float = 1.5) -> None:
-    """Best-effort terminate → kill everything we spawned."""
+
+def terminate_all_active_procs() -> None:
+    """Best-effort terminate of all tracked child processes."""
     procs = list(_ACTIVE_PROCS)
     for p in procs:
         try:
-            p.terminate()
+            if p.poll() is None:
+                p.terminate()
         except Exception:
             pass
-    t0 = time.monotonic()
+    # Give them a moment; then kill whatever remains
+    deadline = time.time() + 1.5
     for p in procs:
         try:
-            while p.poll() is None:
-                if time.monotonic() - t0 > timeout:
-                    p.kill()
-                    break
-                time.sleep(0.05)
+            if p.poll() is None and time.time() > deadline:
+                p.kill()
         except Exception:
             pass
     _ACTIVE_PROCS.clear()
 
+
 # -------------------- Base --------------------
+
 class DownloaderBase(ABC):
     def __init__(self, config: DownloaderConfig):
         self.config = config
 
     @abstractmethod
     def download(self, item: DownloadItem) -> Iterator[DownloadEvent]:
-        ...
+        """Yield DownloadEvent objects as the download progresses."""
+        raise NotImplementedError
+
+
+# -------------------- Utilities --------------------
+
+def _exists_with_dup(dest_path: Path) -> bool:
+    """
+    Returns True if dest_path exists OR a duplicate variant exists: "<stem> (N)<ext>".
+    """
+    if dest_path and dest_path.exists():
+        return True
+    if not dest_path or not dest_path.parent.exists():
+        return False
+    exp = dest_path
+    base = exp.stem
+    for f in exp.parent.glob(f"*{exp.suffix.lower()}"):
+        if not f.is_file() or f.suffix.lower() != exp.suffix.lower():
+            continue
+        stem = f.stem
+        if stem == base:
+            return True
+        if stem.startswith(base):
+            tail = stem[len(base):]
+            if tail.startswith(" (") and tail.endswith(")") and tail[2:-1].isdigit():
+                return True
+    return False
+
+
+def _apply_yt_args(cmd: List[str], cfg: DownloaderConfig) -> None:
+    # External downloader (aria2)
+    aria2_args: List[str] = []
+    if cfg.aria2_splits:
+        aria2_args += [f"--split={int(cfg.aria2_splits)}"]
+    if cfg.aria2_x_conn:
+        aria2_args += [f"--max-connection-per-server={int(cfg.aria2_x_conn)}"]
+    if cfg.aria2_min_split:
+        aria2_args += [f"--min-split-size={cfg.aria2_min_split}"]
+    if cfg.aria2_timeout:
+        aria2_args += [f"--timeout={int(cfg.aria2_timeout)}"]
+    if aria2_args:
+        cmd += ["--external-downloader", "aria2c", "--external-downloader-args", " ".join(aria2_args)]
+
+    # yt-dlp tuning
+    if cfg.ytdlp_connections:
+        cmd += ["-N", str(cfg.ytdlp_connections)]
+    if cfg.ytdlp_buffer_size:
+        cmd += ["--buffer-size", cfg.ytdlp_buffer_size]
+    if cfg.ytdlp_rate_limit:
+        cmd += ["--throttled-rate", cfg.ytdlp_rate_limit]
+    if cfg.ytdlp_retries is not None:
+        cmd += ["--retries", str(cfg.ytdlp_retries)]
+    if cfg.ytdlp_fragment_retries is not None:
+        cmd += ["--fragment-retries", str(cfg.ytdlp_fragment_retries)]
+
 
 # -------------------- yt-dlp --------------------
+
 class YtDlpDownloader(DownloaderBase):
+    """
+    Robust success detection:
+      Success iff:
+        • We saw an 'already downloaded' marker, OR
+        • We saw a Destination: <path> AND, after process exit rc==0, the final file
+          exists (directly or via duplicate-suffix variant).
+      Otherwise (including rc==0 with no markers) → FAILED with an explicit message.
+    """
+
     def download(self, item: DownloadItem) -> Iterator[DownloadEvent]:
         if abort_requested():
             return
         item.output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Event bookkeeping
         yield StartEvent(item=item)
-        start = time.monotonic()
-        logs: List[str] = []
+        start_ts = time.monotonic()
 
+        # Build command
         out_tmpl = item.output_dir / "%(title)s.%(ext)s"
         cmd: List[str] = [
             "yt-dlp",
             "--newline",
-            "--print",
-            "TDMETA\t%(id)s\t%(title)s",
-            "-o",
-            str(out_tmpl),
+            "--print", "TDMETA\t%(id)s\t%(title)s",
+            "-o", str(out_tmpl),
+            item.url,
         ]
+        _apply_yt_args(cmd, self.config)
 
-        # External downloader & args (aria2c)
-        aria2_args: List[str] = []
-        if self.config.aria2_x_conn:
-            aria2_args += ["-x", str(self.config.aria2_x_conn)]
-        if self.config.aria2_splits:
-            aria2_args += ["-s", str(self.config.aria2_splits)]
-        if self.config.aria2_min_split:
-            aria2_args += [f"--min-split-size={self.config.aria2_min_split}"]
-        if self.config.ytdlp_rate_limit:
-            aria2_args += [f"--lowest-speed-limit={self.config.ytdlp_rate_limit}"]
-        if self.config.aria2_timeout:
-            aria2_args += [f"--timeout={int(self.config.aria2_timeout)}"]
-        if aria2_args:
-            cmd += ["--external-downloader", "aria2c", "--external-downloader-args", " ".join(aria2_args)]
+        # Optional rate limit / retries coming from item
+        if getattr(item, "rate_limit", None):
+            cmd += ["--throttled-rate", item.rate_limit]
+        if getattr(item, "retries", None) is not None:
+            cmd += ["--retries", str(int(item.retries))]
 
-        if self.config.ytdlp_connections:
-            cmd += ["-N", str(self.config.ytdlp_connections)]
-        if self.config.ytdlp_buffer_size:
-            cmd += ["--buffer-size", self.config.ytdlp_buffer_size]
-        if self.config.ytdlp_rate_limit:
-            cmd += ["--throttled-rate", self.config.ytdlp_rate_limit]
-        if self.config.ytdlp_retries is not None:
-            cmd += ["--retries", str(self.config.ytdlp_retries)]
-        if self.config.ytdlp_fragment_retries is not None:
-            cmd += ["--fragment-retries", str(self.config.ytdlp_fragment_retries)]
-        if item.retries is not None and self.config.ytdlp_retries is None:
-            cmd += ["--retries", str(item.retries)]
-
-        cmd += self.config.extra_ytdlp_args
-        cmd += item.extra_args
-        cmd.append(item.url)
-
-        yield LogEvent(item=item, message=f"SPAWN yt-dlp: {' '.join(cmd)}")
-
-        status = DownloadStatus.FAILED
-        err: Optional[str] = None
+        # Run
         proc: Optional[subprocess.Popen] = None
+        logs: List[str] = []
         saw_already = False
-        saw_completion_message = False
+        saw_destination: Optional[Path] = None
+        saw_any_progress = False
+        last_meta: Tuple[str, str] | None = None  # (id, title)
+
         try:
             proc = subprocess.Popen(
                 cmd,
+                cwd=str(self.config.work_dir) if self.config.work_dir else None,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                bufsize=1,
-                start_new_session=True,
             )
             _register_proc(proc)
+
             assert proc.stdout is not None
-
-            for raw in iter(proc.stdout.readline, ""):
+            for raw in proc.stdout:
                 if abort_requested():
-                    raise KeyboardInterrupt
-                line = sanitize_line(raw)
-                if not line:
-                    continue
-                logs.append(line)
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                    break
 
-                if "has already been downloaded" in line:
-                    saw_already = True
+                line = sanitize_line(raw)
+                logs.append(line)
 
                 data = parse_ytdlp_line(line)
                 if not data:
                     yield LogEvent(item=item, message=line)
                     continue
-                
+
                 kind = data.get("event")
-                if kind == "progress":
-                    if data.get("percent") == 100.0:
-                        saw_completion_message = True
-                    yield ProgressEvent(
-                        item=item,
-                        downloaded_bytes=int(data["downloaded"]),
-                        total_bytes=int(data["total"]) if data.get("total") else None,
-                        speed_bps=float(data["speed_bps"]) if data.get("speed_bps") else None,
-                        eta_seconds=int(data["eta_s"]) if data.get("eta_s") else None,
-                        unit="bytes",
-                    )
-                elif kind == "meta":
-                    yield MetaEvent(item=item, video_id=data.get("id", "") or "", title=data.get("title", "") or "")
+                if kind == "meta":
+                    last_meta = (data.get("id", "") or "", data.get("title", "") or "")
+                    yield MetaEvent(item=item, video_id=last_meta[0], title=last_meta[1])
                 elif kind == "destination":
-                    yield DestinationEvent(item=item, path=Path(data.get("path", "") or ""))
+                    p = Path(data.get("path", "") or "")
+                    if p:
+                        saw_destination = p
+                        yield DestinationEvent(item=item, path=p)
                 elif kind == "already":
                     saw_already = True
                     yield AlreadyEvent(item=item)
+                elif kind == "progress":
+                    saw_any_progress = True
+                    total_b = data.get("total")
+                    yield ProgressEvent(
+                        item=item,
+                        downloaded_bytes=int(data.get("downloaded", 0) or 0),
+                        total_bytes=int(total_b) if total_b is not None else None,
+                        speed_bps=float(data["speed_bps"]) if data.get("speed_bps") is not None else None,
+                        eta_seconds=int(data["eta_s"]) if data.get("eta_s") is not None else None,
+                        unit="bytes",
+                    )
                 else:
                     yield LogEvent(item=item, message=line)
 
-            rc = proc.wait(self.config.timeout_seconds)
-            if rc == 0:
-                if saw_already:
-                    status = DownloadStatus.ALREADY_EXISTS
-                elif saw_completion_message:
-                    status = DownloadStatus.COMPLETED
-                else:
-                    status = DownloadStatus.FAILED
-                    err = "yt-dlp exited successfully but no completion message was found."
-            else:
-                err = f"non-zero exit code: {rc}"
+            rc = proc.wait(self.config.timeout_seconds) if self.config.timeout_seconds else proc.wait()
+            duration = max(0.0, time.monotonic() - start_ts)
+
+            # Determine final status
+            if rc != 0:
+                result = DownloadResult(
+                    item=item,
+                    status=DownloadStatus.FAILED,
+                    final_path=saw_destination,
+                    error_message=f"non-zero exit code: {rc}",
+                    log_output=logs,
+                    duration=duration,
+                )
+                yield FinishEvent(item=item, result=result)
+                return
+
+            if saw_already:
+                result = DownloadResult(
+                    item=item,
+                    status=DownloadStatus.ALREADY_EXISTS,
+                    final_path=saw_destination,
+                    log_output=logs,
+                    duration=duration,
+                )
+                yield FinishEvent(item=item, result=result)
+                return
+
+            # Positive completion requires destination (and a real file)
+            if saw_destination and _exists_with_dup(saw_destination):
+                result = DownloadResult(
+                    item=item,
+                    status=DownloadStatus.COMPLETED,
+                    final_path=saw_destination,
+                    log_output=logs,
+                    duration=duration,
+                )
+                yield FinishEvent(item=item, result=result)
+                return
+
+            # If we saw progress but no destination, still treat as failure (safer).
+            msg = "yt-dlp exited successfully but no completion/destination/progress markers were seen."
+            if saw_any_progress:
+                msg = "yt-dlp exited successfully but no destination/final file was observed."
+
+            result = DownloadResult(
+                item=item,
+                status=DownloadStatus.FAILED,
+                final_path=saw_destination,
+                error_message=msg,
+                log_output=logs,
+                duration=duration,
+            )
+            yield FinishEvent(item=item, result=result)
+
         except KeyboardInterrupt:
-            err = "interrupted"
-            status = DownloadStatus.FAILED
-            raise
-        except Exception as e:
-            err = str(e)
+            result = DownloadResult(
+                item=item,
+                status=DownloadStatus.FAILED,
+                final_path=saw_destination,
+                error_message="interrupted",
+                log_output=logs,
+                duration=max(0.0, time.monotonic() - start_ts),
+            )
+            yield FinishEvent(item=item, result=result)
+        except FileNotFoundError as ex:
+            result = DownloadResult(
+                item=item,
+                status=DownloadStatus.FAILED,
+                error_message=f"executable not found: {ex}",
+                log_output=logs,
+                duration=max(0.0, time.monotonic() - start_ts),
+            )
+            yield FinishEvent(item=item, result=result)
+        except Exception as ex:
+            result = DownloadResult(
+                item=item,
+                status=DownloadStatus.FAILED,
+                error_message=str(ex),
+                log_output=logs,
+                duration=max(0.0, time.monotonic() - start_ts),
+            )
+            yield FinishEvent(item=item, result=result)
         finally:
             if proc is not None:
                 _unregister_proc(proc)
 
-        dur = time.monotonic() - start
-        yield FinishEvent(
-            item=item,
-            result=DownloadResult(item=item, status=status, duration=dur, error_message=err, log_output=logs),
-        )
 
+# -------------------- aebn-dl --------------------
 
-# -------------------- aebndl --------------------
 class AebnDownloader(DownloaderBase):
+    """
+    Minimal aebn-dl wrapper that streams lines through procparsers.aebndl to give Progress.
+    Treat non-zero exit codes as failures; otherwise assume success if any segment progress observed.
+    """
+
     def download(self, item: DownloadItem) -> Iterator[DownloadEvent]:
         if abort_requested():
             return
         item.output_dir.mkdir(parents=True, exist_ok=True)
-        self.config.work_dir.mkdir(parents=True, exist_ok=True)
 
         yield StartEvent(item=item)
-        start = time.monotonic()
-        logs: List[str] = []
+        start_ts = time.monotonic()
 
-        cmd: List[str] = ["aebndl", "-o", str(item.output_dir), "-w", str(self.config.work_dir), "-t", "4"]
+        # Derive extra args (scene selection, etc.)
+        extra = getattr(item, "extra_aebn_args", []) or []
+        scene_ctl = parse_aebn_scene_controls(item.url)
+        if scene_ctl.get("scene_index") is not None:
+            extra += ["--scene", str(scene_ctl["scene_index"])]
 
-        if self.config.scene_from_url:
-            sc = parse_aebn_scene_controls(item.url)
-            if sc.get("scene_index"):
-                cmd += ["-s", sc["scene_index"]]
+        cmd = ["aebn-dl", "--newline", "-o", str(item.output_dir), *extra, item.url]
 
-        if self.config.save_covers:
-            cmd.append("-c")
-        cmd += self.config.extra_aebn_args
-        cmd.append(item.url)
-
-        yield LogEvent(item=item, message=f"SPAWN aebndl: {' '.join(cmd)}")
-
-        status = DownloadStatus.FAILED
-        err: Optional[str] = None
         proc: Optional[subprocess.Popen] = None
+        logs: List[str] = []
+        saw_progress = False
+        dest_path: Optional[Path] = None
+
         try:
             proc = subprocess.Popen(
                 cmd,
+                cwd=str(self.config.work_dir) if self.config.work_dir else None,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                bufsize=1,
-                start_new_session=True,
             )
             _register_proc(proc)
-            assert proc.stdout is not None
 
-            for raw in iter(proc.stdout.readline, ""):
+            assert proc.stdout is not None
+            for raw in proc.stdout:
                 if abort_requested():
-                    raise KeyboardInterrupt
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                    break
+
                 line = sanitize_line(raw)
-                if not line:
-                    continue
                 logs.append(line)
                 data = parse_aebndl_line(line)
                 if not data:
                     yield LogEvent(item=item, message=line)
                     continue
 
-                ev = data.get("event")
-                if ev == "destination":
-                    yield DestinationEvent(item=item, path=Path(data["path"]))
-                elif ev == "aebn_progress":
+                if data["event"] == "aebn_progress":
+                    saw_progress = True
                     yield ProgressEvent(
                         item=item,
                         downloaded_bytes=int(data["segments_done"]),
@@ -287,29 +394,35 @@ class AebnDownloader(DownloaderBase):
                         eta_seconds=int(data["eta_s"]),
                         unit="segments",
                     )
+                elif data["event"] == "destination":
+                    dest_path = Path(data["path"])
+                    yield DestinationEvent(item=item, path=dest_path)
                 else:
                     yield LogEvent(item=item, message=line)
 
-            rc = proc.wait(self.config.timeout_seconds)
-            if rc == 0:
-                status = DownloadStatus.COMPLETED
+            rc = proc.wait(self.config.timeout_seconds) if self.config.timeout_seconds else proc.wait()
+            duration = max(0.0, time.monotonic() - start_ts)
+
+            if rc != 0:
+                result = DownloadResult(item=item, status=DownloadStatus.FAILED, error_message=f"non-zero exit code: {rc}", final_path=dest_path, log_output=logs, duration=duration)
             else:
-                err = f"non-zero exit code: {rc}"
-        except KeyboardInterrupt:
-            err = "interrupted"
-            status = DownloadStatus.FAILED
-            raise
-        except Exception as e:
-            err = str(e)
+                result = DownloadResult(item=item, status=DownloadStatus.COMPLETED if saw_progress else DownloadStatus.FAILED, final_path=dest_path, log_output=logs, duration=duration)
+            yield FinishEvent(item=item, result=result)
+
+        except Exception as ex:
+            result = DownloadResult(item=item, status=DownloadStatus.FAILED, error_message=str(ex), final_path=dest_path, log_output=logs, duration=max(0.0, time.monotonic() - start_ts))
+            yield FinishEvent(item=item, result=result)
         finally:
             if proc is not None:
                 _unregister_proc(proc)
 
-        dur = time.monotonic() - start
-        yield FinishEvent(
-            item=item,
-            result=DownloadResult(item=item, status=status, duration=dur, error_message=err, log_output=logs),
-        )
+
+# -------------------- Router (for legacy/tests) --------------------
 
 def get_downloader(url: str, config: DownloaderConfig) -> DownloaderBase:
+    """
+    Legacy-compatible factory expected by tests and runner modules.
+
+    Returns an AebnDownloader for AEBN URLs, otherwise YtDlpDownloader.
+    """
     return AebnDownloader(config) if is_aebn_url(url) else YtDlpDownloader(config)
