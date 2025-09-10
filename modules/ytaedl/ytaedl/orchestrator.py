@@ -590,7 +590,7 @@ class _Coordinator:
     def acquire_next(self) -> Optional["_WorkFile"]:
         with self._lock:
             # Get available candidates
-            candidates = [w for w in self._work.values() if self._assigned.get(str(w.url_file.resolve()), 0) == 0]
+            candidates = [w for w in self._work.values() if self._assigned.get(str(w.url_file.resolve()), 0) == 0 and w.remaining > 0]
             if not candidates:
                 return None
             
@@ -827,7 +827,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                 args.output_dir,
                 single_files=single_files_provided
             )
-            random.shuffle(all_work)
         else:
             olog("starting scan phase")
             snap = _scan_all_parallel(
@@ -929,7 +928,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                         source=URLSource(file=wf.url_file, line_number=idx, original_url=url),
                     )
                     
-                    # Add total_in_set for UI to prevent 4/0 display error
                     setattr(item, 'total_in_set', len(wf.urls))
                     
                     downloader = get_downloader(url, cfg)
