@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Downloader implementations and process control utilities."""
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from .models import (
     DestinationEvent,
     AlreadyEvent,
     LogEvent,
-    FinishEvent,  # <-- was missing and caused NameError in tests
+    FinishEvent,
 )
 from .parsers import parse_ytdlp_line, parse_aebndl_line, sanitize_line
 from .url_parser import parse_aebn_scene_controls, is_aebn_url
@@ -27,25 +28,20 @@ from .url_parser import parse_aebn_scene_controls, is_aebn_url
 # ------------ global abort flag + process registry ------------
 _ABORT_REQUESTED: bool = False
 
-
 def request_abort() -> None:
     global _ABORT_REQUESTED
     _ABORT_REQUESTED = True
 
-
 def abort_requested() -> bool:
     return _ABORT_REQUESTED
 
-
 _ACTIVE_PROCS: Set[subprocess.Popen] = set()
-
 
 def _register_proc(p: subprocess.Popen) -> None:
     try:
         _ACTIVE_PROCS.add(p)
     except Exception:
         pass
-
 
 def _unregister_proc(p: Optional[subprocess.Popen]) -> None:
     if not p:
@@ -54,7 +50,6 @@ def _unregister_proc(p: Optional[subprocess.Popen]) -> None:
         _ACTIVE_PROCS.discard(p)
     except Exception:
         pass
-
 
 def terminate_all_active_procs(timeout: float = 1.5) -> None:
     """Best-effort terminate → kill everything we spawned."""
@@ -76,7 +71,6 @@ def terminate_all_active_procs(timeout: float = 1.5) -> None:
             pass
     _ACTIVE_PROCS.clear()
 
-
 # -------------------- Base --------------------
 class DownloaderBase(ABC):
     def __init__(self, config: DownloaderConfig):
@@ -85,7 +79,6 @@ class DownloaderBase(ABC):
     @abstractmethod
     def download(self, item: DownloadItem) -> Iterator[DownloadEvent]:
         ...
-
 
 # -------------------- yt-dlp --------------------
 class YtDlpDownloader(DownloaderBase):
@@ -146,6 +139,7 @@ class YtDlpDownloader(DownloaderBase):
         err: Optional[str] = None
         proc: Optional[subprocess.Popen] = None
         saw_already = False
+        saw_completion_message = False
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -160,7 +154,6 @@ class YtDlpDownloader(DownloaderBase):
             _register_proc(proc)
             assert proc.stdout is not None
 
-            # IMPORTANT: line-by-line to satisfy tests' MagicMock(stdout.readline)
             for raw in iter(proc.stdout.readline, ""):
                 if abort_requested():
                     raise KeyboardInterrupt
@@ -168,6 +161,13 @@ class YtDlpDownloader(DownloaderBase):
                 if not line:
                     continue
                 logs.append(line)
+
+                # Check for generic completion messages from yt-dlp
+                if "has already been downloaded" in line or "[Extracting] Nothing to download" in line:
+                    saw_already = True
+                if "Deleting original file" in line or ("100%" in line and "ETA" in line):
+                    saw_completion_message = True
+
                 data = parse_ytdlp_line(line)
                 if not data:
                     yield LogEvent(item=item, message=line)
@@ -194,7 +194,13 @@ class YtDlpDownloader(DownloaderBase):
 
             rc = proc.wait(self.config.timeout_seconds)
             if rc == 0:
-                status = DownloadStatus.ALREADY_EXISTS if saw_already else DownloadStatus.COMPLETED
+                if saw_already:
+                    status = DownloadStatus.ALREADY_EXISTS
+                elif saw_completion_message:
+                    status = DownloadStatus.COMPLETED
+                else:
+                    status = DownloadStatus.FAILED
+                    err = "yt-dlp exited successfully but no completion message was found."
             else:
                 err = f"non-zero exit code: {rc}"
         except KeyboardInterrupt:
@@ -226,13 +232,12 @@ class AebnDownloader(DownloaderBase):
         start = time.monotonic()
         logs: List[str] = []
 
-        # aebndl thread count (-t) left at 4; change if needed
         cmd: List[str] = ["aebndl", "-o", str(item.output_dir), "-w", str(self.config.work_dir), "-t", "4"]
 
         if self.config.scene_from_url:
             sc = parse_aebn_scene_controls(item.url)
             if sc.get("scene_index"):
-                cmd += ["-s", sc["scene_index"]]  # only when index is small (<=200)
+                cmd += ["-s", sc["scene_index"]]
 
         if self.config.save_covers:
             cmd.append("-c")
@@ -258,7 +263,6 @@ class AebnDownloader(DownloaderBase):
             _register_proc(proc)
             assert proc.stdout is not None
 
-            # Line-by-line for test mocks
             for raw in iter(proc.stdout.readline, ""):
                 if abort_requested():
                     raise KeyboardInterrupt
@@ -307,7 +311,5 @@ class AebnDownloader(DownloaderBase):
             result=DownloadResult(item=item, status=status, duration=dur, error_message=err, log_output=logs),
         )
 
-
 def get_downloader(url: str, config: DownloaderConfig) -> DownloaderBase:
-    # Route *.aebn.com links to AEBN; everything else to yt-dlp.
     return AebnDownloader(config) if is_aebn_url(url) else YtDlpDownloader(config)
