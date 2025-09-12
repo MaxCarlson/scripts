@@ -5,8 +5,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, Generator, List, Optional
-
+from typing import Any, Dict, Generator, List, Optional, Tuple
 
 import requests
 
@@ -39,11 +38,13 @@ class WebAIClient:
         model: Optional[str] = None,
         provider: Optional[str] = None,
         timeout: Optional[int] = None,
+        verbose: bool = False,
     ):
         self.base_url = (base_url or os.getenv("WAI_API_URL") or "http://localhost:6969").rstrip("/")
         self.model = model or os.getenv("WAI_MODEL")
         self.provider = provider or os.getenv("WAI_PROVIDER") or None
         self.timeout = int(timeout or os.getenv("WAI_TIMEOUT") or 300)
+        self.verbose = verbose
 
     # ---------- URLs ----------
     @property
@@ -59,20 +60,40 @@ class WebAIClient:
         return f"{self.base_url}/v1/providers"
 
     # ---------- Probes ----------
-    def health(self) -> bool:
+    def health_detail(self) -> Tuple[bool, str]:
+        """
+        Returns (ok, detail). Tries /v1/models then /v1/providers.
+        """
         try:
+            if self.verbose:
+                print(f"[debug] GET {self._models_url}")
             r = requests.get(self._models_url, timeout=10)
             r.raise_for_status()
-            return True
-        except Exception:
-            return False
+            return True, "models ok"
+        except Exception as e1:
+            try:
+                if self.verbose:
+                    print(f"[debug] GET {self._providers_url} (fallback)")
+                r = requests.get(self._providers_url, timeout=10)
+                r.raise_for_status()
+                return True, "providers ok"
+            except Exception as e2:
+                return False, f"{type(e1).__name__}: {e1}"
+
+    def health(self) -> bool:
+        ok, _ = self.health_detail()
+        return ok
 
     def list_models(self) -> Dict[str, Any]:
+        if self.verbose:
+            print(f"[debug] GET {self._models_url}")
         r = requests.get(self._models_url, timeout=10)
         r.raise_for_status()
         return r.json()
 
     def list_providers(self) -> Dict[str, Any]:
+        if self.verbose:
+            print(f"[debug] GET {self._providers_url}")
         r = requests.get(self._providers_url, timeout=10)
         r.raise_for_status()
         return r.json()
@@ -86,10 +107,9 @@ class WebAIClient:
         provider: Optional[str] = None,
         stream: bool = False,
     ) -> Dict[str, Any]:
-        """
-        Non-streaming call. Returns the full JSON response.
-        """
         payload = self._payload(messages, model=model, provider=provider, stream=False)
+        if self.verbose:
+            print(f"[debug] POST {self._chat_url} stream=False")
         r = requests.post(self._chat_url, json=payload, timeout=self.timeout)
         r.raise_for_status()
         return r.json()
@@ -101,14 +121,9 @@ class WebAIClient:
         model: Optional[str] = None,
         provider: Optional[str] = None,
     ) -> Generator[Dict[str, Any], None, None]:
-        """
-        Streaming call as typed events:
-          {"event":"content","text":"..."}
-          {"event":"reasoning","text":"..."}        # if server sends it
-          {"event":"usage","usage":{...}}           # if server sends usage
-          {"event":"done"}
-        """
         payload = self._payload(messages, model=model, provider=provider, stream=True)
+        if self.verbose:
+            print(f"[debug] POST {self._chat_url} stream=True")
         with requests.post(self._chat_url, json=payload, stream=True) as r:
             r.raise_for_status()
             for line in r.iter_lines(decode_unicode=True):
@@ -123,21 +138,17 @@ class WebAIClient:
                 try:
                     obj = json.loads(data)
                 except Exception:
-                    # unknown line; ship as text
                     yield {"event": "content", "text": line + "\n"}
                     continue
                 ch = obj.get("choices", [{}])[0]
                 delta = ch.get("delta", {})
                 if isinstance(delta, dict):
-                    # content
                     if "content" in delta and delta["content"]:
                         yield {"event": "content", "text": delta["content"]}
-                    # reasoning variants some servers send
                     if "reasoning" in delta and delta["reasoning"]:
                         yield {"event": "reasoning", "text": delta["reasoning"]}
                     if "reasoning_content" in delta and delta["reasoning_content"]:
                         yield {"event": "reasoning", "text": delta["reasoning_content"]}
-                # Some servers send usage during/after stream
                 if "usage" in obj and isinstance(obj["usage"], dict):
                     yield {"event": "usage", "usage": obj["usage"]}
 
