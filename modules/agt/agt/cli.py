@@ -12,48 +12,43 @@ from .tui import TUI
 from .tokens import count_messages_tokens, count_text_tokens
 
 
-# ---------- parser builders (so we can print help without exiting) ----------
+# ---------- parser builders (explicit subparser; custom help that doesn't exit) ----------
 def _add_common(parser: argparse.ArgumentParser):
     parser.add_argument("-u", "--url", default=None, help="Base URL (e.g., http://localhost:6969)")
     parser.add_argument("-m", "--model", default=None, help="Model name (server-dependent)")
     parser.add_argument("-p", "--provider", default=None, help="Provider (gpt4free mode)")
     parser.add_argument("-s", "--stream", action="store_true", help="Stream responses")
     parser.add_argument("-t", "--thinking", action="store_true", help="Show/stream 'thinking' if available")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose HTTP/debug logs")
 
 
 def _build_parsers() -> Tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
-    # Root parser with custom -h/--help that does not exit
-    p = argparse.ArgumentParser(prog="agt", description="agt – lightweight WebAI-to-API client", add_help=False)
-    p.add_argument("-h", "--help", action="store_true", help="Show this help message and exit")
-    _add_common(p)
-    p.add_argument("-H", "--health", action="store_true", help="Check server health and exit")
-    p.add_argument("-a", "--ask", metavar="TEXT", help="One-shot ask (no TUI). Supports @file and globs.")
+    root = argparse.ArgumentParser(prog="agt", description="agt – lightweight WebAI-to-API client", add_help=False)
+    root.add_argument("-h", "--help", action="store_true", help="Show this help message and exit")
+    _add_common(root)
+    root.add_argument("-H", "--health", action="store_true", help="Check server health and exit")
+    root.add_argument("-a", "--ask", metavar="TEXT", help="One-shot ask (no TUI). Supports @file and globs.")
 
-    sub = p.add_subparsers(dest="cmd")
+    subs = root.add_subparsers(dest="cmd")
 
-    # Subcommand: gemini
-    g = argparse.ArgumentParser(prog="agt gemini", description="Gemini-focused client options", add_help=False)
-    g.add_argument("-h", "--help", action="store_true", help="Show this help message and exit")
-    _add_common(g)
-    g.add_argument("--list-models", action="store_true", help="List models and exit")
-    g.add_argument("--list-providers", action="store_true", help="List providers and exit")
-    g.add_argument("-a", "--ask", metavar="TEXT", help="One-shot ask for Gemini profile")
-    g.add_argument("-H", "--health", action="store_true", help="Check server health and exit")
-    # attach subparser
-    sub._name_parser_map["gemini"] = g  # avoid ArgumentParser.add_subparsers().add_parser() to keep object ref
+    gem = subs.add_parser("gemini", prog="agt gemini", description="Gemini-focused client options", add_help=False)
+    gem.add_argument("-h", "--help", action="store_true", help="Show this help message and exit")
+    _add_common(gem)
+    gem.add_argument("--list-models", action="store_true", help="List models and exit")
+    gem.add_argument("--list-providers", action="store_true", help="List providers and exit")
+    gem.add_argument("-a", "--ask", metavar="TEXT", help="One-shot ask for Gemini profile")
+    gem.add_argument("-H", "--health", action="store_true", help="Check server health and exit")
 
-    return p, g
+    return root, gem
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    p, g = _build_parsers()
-    # Manually dispatch to subparser if present so -h doesn't SystemExit
-    # We let ArgumentParser parse normally; our -h flags are store_true, not the default help action.
-    ns, extras = p.parse_known_args(argv)
+    root, gem = _build_parsers()
+    # Parse once; subparser is recognized because we added it via add_parser().
+    ns, extras = root.parse_known_args(argv)
+    # If subcommand present, reparse its args (without the command token)
     if ns.cmd == "gemini":
-        # Reparse gemini-specific flags into the same namespace
-        g_ns = g.parse_args([a for a in (argv or [])[1:]])  # skip 'gemini'
-        # Merge fields back into ns
+        g_ns = gem.parse_args([a for a in (argv or [])[1:]])
         for k, v in vars(g_ns).items():
             setattr(ns, k, v)
     return ns
@@ -61,17 +56,18 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 
 def one_shot(client: WebAIClient, *, text: str, model: Optional[str], provider: Optional[str],
-             stream: bool, thinking: bool) -> int:
+             stream: bool, thinking: bool, verbose: bool) -> int:
     messages: List[Dict[str, str]] = [
         {"role": "system", "content": "You are a helpful assistant. Return tool JSON when acting."}
     ]
     cleaned, atts = expand_attachments(text)
     messages.append({"role": "user", "content": build_prompt_with_attachments(cleaned, atts)})
 
-    # basic prompt token accounting
     prompt_tokens = count_messages_tokens(messages, model)
 
     try:
+        if verbose:
+            print(f"[debug] one-shot -> url={client.base_url} model={model or client.model} provider={provider or client.provider}")
         if stream or thinking:
             agg: List[str] = []
             for evt in client.chat_stream_events(messages, model=model, provider=provider):  # type: ignore[arg-type]
@@ -81,7 +77,6 @@ def one_shot(client: WebAIClient, *, text: str, model: Optional[str], provider: 
                     print(chunk, end="")
                     agg.append(chunk)
                 elif event == "reasoning" and thinking:
-                    # Print reasoning inline (no prefix/newline) so tests can expect "AZB"
                     print(evt.get("text", ""), end="")
                     agg.append(evt.get("text", ""))
                 elif event == "usage":
@@ -122,23 +117,27 @@ def one_shot(client: WebAIClient, *, text: str, model: Optional[str], provider: 
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser, gparser = _build_parsers()
+    root_parser, gem_parser = _build_parsers()
     args = parse_args(argv)
 
     # Help handling without SystemExit
     if getattr(args, "help", False):
         if args.cmd == "gemini":
-            print(gparser.format_help())
+            print(gem_parser.format_help())
         else:
-            print(parser.format_help())
+            print(root_parser.format_help())
         return 0
+
+    client = WebAIClient(base_url=args.url, model=args.model, provider=args.provider, verbose=args.verbose)
 
     # Subcommand behavior
     if args.cmd == "gemini":
-        client = WebAIClient(base_url=args.url, model=args.model, provider=args.provider)
         if args.health:
-            print("OK" if client.health() else "DOWN")
-            return 0 if client.health() else 1
+            ok, detail = client.health_detail()
+            print("OK" if ok else "DOWN")
+            if args.verbose:
+                print(f"[debug] health: {detail}")
+            return 0 if ok else 1
         if getattr(args, "list_models", False):
             print(json.dumps(client.list_models(), ensure_ascii=False, indent=2))
             return 0
@@ -147,22 +146,26 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 0
         if args.ask:
             return one_shot(client, text=args.ask, model=args.model, provider=args.provider,
-                            stream=args.stream, thinking=args.thinking)
-        # Fall through to TUI
-        tui = TUI(client, model=args.model, provider=args.provider, stream=args.stream, thinking=args.thinking)
+                            stream=args.stream, thinking=args.thinking, verbose=args.verbose)
+        # TUI
+        tui = TUI(client, model=args.model, provider=args.provider, stream=args.stream,
+                  thinking=args.thinking, verbose=args.verbose)
         tui.run()
         return 0
 
     # Default (no subcommand)
-    client = WebAIClient(base_url=args.url, model=args.model, provider=args.provider)
     if args.health:
-        print("OK" if client.health() else "DOWN")
-        return 0 if client.health() else 1
+        ok, detail = client.health_detail()
+        print("OK" if ok else "DOWN")
+        if args.verbose:
+            print(f"[debug] health: {detail}")
+        return 0 if ok else 1
     if args.ask:
         return one_shot(client, text=args.ask, model=args.model, provider=args.provider,
-                        stream=args.stream, thinking=args.thinking)
+                        stream=args.stream, thinking=args.thinking, verbose=args.verbose)
 
-    tui = TUI(client, model=args.model, provider=args.provider, stream=args.stream, thinking=args.thinking)
+    tui = TUI(client, model=args.model, provider=args.provider, stream=args.stream,
+              thinking=args.thinking, verbose=args.verbose)
     tui.run()
     return 0
 
