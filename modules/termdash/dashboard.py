@@ -87,6 +87,9 @@ class TermDash:
         separator_custom: str | None = None,
         reserve_extra_rows: int = 6,
         clear_screen: bool = False,
+        log_to_screen: bool = True,
+        log_region_start_row: int = 0,
+        log_region_end_row: int = 0,
     ):
         self._lock = threading.RLock()
         self._render_thread = None
@@ -97,6 +100,10 @@ class TermDash:
         self._debug_locks = debug_locks
         self._debug_rendering = debug_rendering
         self.clear_screen = clear_screen
+        self.log_to_screen = log_to_screen
+        self.log_region_start_row = log_region_start_row
+        self.log_region_end_row = log_region_end_row
+        self._log_line_no = 0
 
         self.align_columns = bool(align_columns)
         self.column_sep = str(column_sep)
@@ -219,10 +226,32 @@ class TermDash:
     def log(self, message, level='info'):
         if self.logger:
             getattr(self.logger, level, self.logger.info)(message)
+        if not self.log_to_screen:
+            return
         with self._lock_context("log_screen"):
             try:
                 cols, lines = os.get_terminal_size()
-                sys.stdout.write(f"{CSI}s{CSI}{lines};1H\r{CLEAR_LINE}{message}\n{CSI}u")
+                # Save cursor position
+                sys.stdout.write(f"{CSI}s")
+                
+                # Move cursor to the log region
+                if self.log_region_start_row > 0 and self.log_region_end_row > self.log_region_start_row:
+                    # Move to the bottom of the log region
+                    sys.stdout.write(f"{CSI}{self.log_region_end_row};1H")
+                    # Scroll up one line
+                    sys.stdout.write(f"{CSI}L") # Insert one line
+                    # Move to the newly inserted line
+                    sys.stdout.write(f"{CSI}{self.log_region_end_row};1H")
+                else:
+                    # Move to the bottom of the screen
+                    sys.stdout.write(f"{CSI}{lines};1H")
+                    # Clear the current line
+                    sys.stdout.write(CLEAR_LINE)
+
+                sys.stdout.write(f"{message}")
+                
+                # Restore cursor position
+                sys.stdout.write(f"{CSI}u")
                 sys.stdout.flush()
             except OSError:
                 pass
@@ -246,6 +275,12 @@ class TermDash:
 
             if self.clear_screen:
                 sys.stdout.write(f"{CLEAR_SCREEN}{MOVE_TO_TOP_LEFT}")
+            else:
+                # Set scrolling region
+                if self.log_region_start_row > 0 and self.log_region_end_row > self.log_region_start_row:
+                    sys.stdout.write(f"{CSI}{self.log_region_start_row};{self.log_region_end_row}r")
+                sys.stdout.write(MOVE_TO_TOP_LEFT)
+
             top_scroll = min(lines, dashboard_height + 1)
             if top_scroll < lines:
                 sys.stdout.write(f"{CSI}{top_scroll};{lines}r")
@@ -438,7 +473,7 @@ class TermDash:
 
         try:
             _, lines = os.get_terminal_size()
-            sys.stdout.write(f"{CSI}1;{lines}r")
+            sys.stdout.write(f"{CSI}1;{lines}r") # Reset scrolling region
             sys.stdout.write(f"{CSI}{lines};1H")
             if self.clear_screen:
                 sys.stdout.write(CLEAR_SCREEN)
