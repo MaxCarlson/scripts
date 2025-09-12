@@ -1,6 +1,6 @@
 # agt/cli.py
 from __future__ import annotations
-import argparse, os, sys, json, time, logging, shutil
+import argparse, os, sys, json, time, logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -13,17 +13,11 @@ LOG = logging.getLogger("agt")
 def setup_logging(level: int=logging.INFO, logfile: Optional[str]=None):
     handlers = [logging.StreamHandler(sys.stderr)]
     if logfile:
-        # ensure folder exists
         Path(logfile).expanduser().parent.mkdir(parents=True, exist_ok=True)
         handlers.append(logging.FileHandler(logfile, encoding="utf-8"))
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s | %(levelname)s | %(name)s: %(message)s",
-        handlers=handlers,
-    )
+    logging.basicConfig(level=level, format="%(asctime)s | %(levelname)s | %(name)s: %(message)s", handlers=handlers)
 
 def read_prompt_arg(val: str) -> str:
-    # if val points to a file, read it; else return as literal
     p = Path(val)
     if p.exists() and p.is_file():
         return p.read_text(encoding="utf-8", errors="replace")
@@ -34,10 +28,8 @@ def build_messages(user_text: str, *, cwd: Path, attach_root_hint: Optional[str]
     clean, files = materialize_at_refs(user_text, cwd=cwd)
     preface = render_attachments_block(files, root_hint=str(cwd) if attach_root_hint is None else attach_root_hint)
     msgs: List[Dict[str,Any]] = []
-    # resume
     if session_msgs:
         msgs.extend(session_msgs)
-    # inject attachments as a system prelude so model sees the file contents
     if preface.strip():
         msgs.append({"role":"system","content":preface})
     msgs.append({"role":"user","content":clean})
@@ -50,7 +42,7 @@ def spinner(label="thinking"):
         yield f"{frames[i%len(frames)]} {label}..."
         i += 1
 
-# ---------- one-shot helpers
+# ---------- one-shot (used by tests)
 
 def one_shot(client: WebAIClient, *, text: str, model: str, session: Optional[str],
              stream: bool, verbose: bool, cwd: Path, attach_root_hint: Optional[str], log_events: bool) -> int:
@@ -64,36 +56,28 @@ def one_shot(client: WebAIClient, *, text: str, model: str, session: Optional[st
         spin = spinner()
         sys.stderr.write(next(spin))
         sys.stderr.flush()
-        out_chunks: List[str] = []
         for ev in client.chat_stream_events(messages, model=model):
             if ev.get("event") == "content":
-                # clear spinner line
-                sys.stderr.write("\r" + " " * 80 + "\r")
-                sys.stderr.flush()
-                sys.stdout.write(ev.get("text",""))
-                sys.stdout.flush()
+                sys.stderr.write("\r" + " " * 80 + "\r"); sys.stderr.flush()
+                sys.stdout.write(ev.get("text","")); sys.stdout.flush()
             elif ev.get("event") == "done":
-                sys.stdout.write("\n")
-                break
+                sys.stdout.write("\n"); break
             else:
-                # update spinner
-                sys.stderr.write("\r" + next(spin))
-                sys.stderr.flush()
-        reply_text = ""  # not available in this stub stream path
+                sys.stderr.write("\r" + next(spin)); sys.stderr.flush()
+        reply_text = ""
     else:
         obj = client.chat_once(messages, model=model, stream=False)
         ch = obj.get("choices", [{}])[0]
         reply_text = ch.get("message", {}).get("content", "") or ""
         print(reply_text)
 
-    # persist session
     if session:
         append_session(session, {"role":"user","content":text})
         append_session(session, {"role":"assistant","content":reply_text})
 
     return 0
 
-# ---------- REPL
+# ---------- REPL/TUI
 
 def repl(client: WebAIClient, *, model: str, session: Optional[str],
          cwd: Path, attach_root_hint: Optional[str], log_events: bool):
@@ -106,8 +90,7 @@ def repl(client: WebAIClient, *, model: str, session: Optional[str],
         try:
             user = input("> ").rstrip("\n")
         except KeyboardInterrupt:
-            print()
-            break
+            print(); break
         if not user.strip():
             continue
         if user.strip() in {"/quit","/exit"}:
@@ -118,13 +101,10 @@ def repl(client: WebAIClient, *, model: str, session: Optional[str],
         if log_events:
             LOG.info("POST /v1/chat/completions model=%s", model)
 
-        # simple “thinking…” spinner while we wait
         spin = spinner()
-        sys.stderr.write(next(spin))
-        sys.stderr.flush()
+        sys.stderr.write(next(spin)); sys.stderr.flush()
         obj = client.chat_once(messages, model=model, stream=False)
-        sys.stderr.write("\r" + " " * 80 + "\r")
-        sys.stderr.flush()
+        sys.stderr.write("\r" + " " * 80 + "\r"); sys.stderr.flush()
         ch = obj.get("choices", [{}])[0]
         reply = ch.get("message",{}).get("content","") or ""
         print(reply)
@@ -132,12 +112,9 @@ def repl(client: WebAIClient, *, model: str, session: Optional[str],
         if session:
             append_session(session, {"role":"user","content":user})
             append_session(session, {"role":"assistant","content":reply})
-            # also update in-memory
             if sess_msgs is None: sess_msgs = []
             sess_msgs.append({"role":"user","content":user})
             sess_msgs.append({"role":"assistant","content":reply})
-
-# ---------- argparse
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="agt", description="AI tools.")
@@ -152,10 +129,11 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--session", help="Resume/save conversation under this name.")
     g.add_argument("--new-session", action="store_true", help="Start fresh even if session exists.")
     g.add_argument("--attach-root-hint", default=None, help="Shown in the ReadManyFiles header. Default: CWD.")
+    g.add_argument("--ui", choices=["tui","repl"], default="tui", help="Choose interface (default: tui).")
     g.add_argument("-v","--verbose", action="store_true", help="Verbose logging to stderr.")
     g.add_argument("--log", default=str((Path.home()/".config/agt/agt.log") if os.name!="nt" else (Path.home()/"AppData/Roaming/agt/agt.log")),
                    help="Log file path (default: ~/.config/agt/agt.log)")
-    g.add_argument("message", nargs="*", help="Prompt text (if -p not used). In REPL mode if none provided.")
+    g.add_argument("message", nargs="*", help="Prompt text (if -p not used).")
 
     return p
 
@@ -164,25 +142,25 @@ def main(argv: Optional[List[str]]=None) -> int:
     setup_logging(logging.DEBUG if args.verbose else logging.INFO, logfile=args.log)
 
     if args.sub == "gemini":
-        base = args.url
-        client = WebAIClient(base)
+        client = WebAIClient(args.url)
 
         if args.new_session and args.session:
-            # Start fresh: ignore any old messages by writing an empty file
             from .sessions import session_path
-            sp = session_path(args.session)
-            sp.parent.mkdir(parents=True, exist_ok=True)
+            sp = session_path(args.session); sp.parent.mkdir(parents=True, exist_ok=True)
             if sp.exists(): sp.unlink()
 
-        # prompt text
         if args.prompt:
             prompt_text = read_prompt_arg(args.prompt)
         else:
-            # join positional words
             prompt_text = " ".join(args.message).strip()
 
-        cwd = Path.cwd()
+        if args.ui == "tui" and not prompt_text:
+            # full TUI (Gemini-like)
+            from .tui import TUI
+            TUI(client, model=args.model, provider=None, stream=True, thinking=True, verbose=args.verbose).run()
+            return 0
 
+        cwd = Path.cwd()
         if prompt_text:
             return one_shot(
                 client, text=prompt_text, model=args.model, session=args.session,
