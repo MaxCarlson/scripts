@@ -22,10 +22,9 @@ class WebAIClient:
     """
     Thin client for a local OpenAI-compatible server (e.g., WebAI-to-API).
 
-    Endpoints:
-      - GET  /v1/models
-      - GET  /v1/providers
-      - POST /v1/chat/completions  (supports stream=True SSE)
+    Modes:
+      - WebAI (Gemini): exposes /docs and /v1/chat/completions (no /v1/models)
+      - g4f: exposes /v1/models and /v1/providers as discovery endpoints
 
     Env overrides:
       WAI_API_URL, WAI_MODEL, WAI_PROVIDER, WAI_TIMEOUT
@@ -40,7 +39,9 @@ class WebAIClient:
         timeout: Optional[int] = None,
         verbose: bool = False,
     ):
-        self.base_url = (base_url or os.getenv("WAI_API_URL") or "http://localhost:6969").rstrip("/")
+        self.base_url = (
+            base_url or os.getenv("WAI_API_URL") or "http://192.168.50.100:6969"
+        ).rstrip("/")
         self.model = model or os.getenv("WAI_MODEL")
         self.provider = provider or os.getenv("WAI_PROVIDER") or None
         self.timeout = int(timeout or os.getenv("WAI_TIMEOUT") or 300)
@@ -59,26 +60,60 @@ class WebAIClient:
     def _providers_url(self) -> str:
         return f"{self.base_url}/v1/providers"
 
+    @property
+    def _docs_url(self) -> str:
+        return f"{self.base_url}/docs"
+
     # ---------- Probes ----------
     def health_detail(self) -> Tuple[bool, str]:
         """
-        Returns (ok, detail). Tries /v1/models then /v1/providers.
+        Returns (ok, detail).
+        Logic:
+          1) /docs == 200 -> healthy (works for WebAI/Gemini)
+          2) /v1/models or /v1/providers == 200 -> healthy (g4f)
+          3) 404s on models/providers are treated as 'expected in WebAI' (not fatal)
         """
+        # 1) docs
+        try:
+            if self.verbose:
+                print(f"[debug] GET {self._docs_url}")
+            r = requests.get(self._docs_url, timeout=10)
+            if r.status_code == 200:
+                return True, "docs ok (WebAI mode likely)"
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {e}"
+        else:
+            last_err = f"http {r.status_code} on /docs"
+
+        # 2) discovery endpoints (present in g4f mode)
+        models_404 = providers_404 = False
         try:
             if self.verbose:
                 print(f"[debug] GET {self._models_url}")
             r = requests.get(self._models_url, timeout=10)
-            r.raise_for_status()
-            return True, "models ok"
-        except Exception as e1:
-            try:
-                if self.verbose:
-                    print(f"[debug] GET {self._providers_url} (fallback)")
-                r = requests.get(self._providers_url, timeout=10)
-                r.raise_for_status()
-                return True, "providers ok"
-            except Exception as e2:
-                return False, f"{type(e1).__name__}: {e1}"
+            if r.ok:
+                return True, "models ok (g4f mode)"
+            if r.status_code == 404:
+                models_404 = True
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {e}"
+
+        try:
+            if self.verbose:
+                print(f"[debug] GET {self._providers_url}")
+            r = requests.get(self._providers_url, timeout=10)
+            if r.ok:
+                return True, "providers ok (g4f mode)"
+            if r.status_code == 404:
+                providers_404 = True
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {e}"
+
+        if models_404 and providers_404:
+            # Expected in WebAI (Gemini) mode; we already failed /docs, but connectivity is likely ok.
+            return True, "webai mode (models/providers 404 as expected)"
+
+        return False, last_err
 
     def health(self) -> bool:
         ok, _ = self.health_detail()
@@ -131,7 +166,7 @@ class WebAIClient:
                     continue
                 if not line.startswith("data:"):
                     continue
-                data = line[len("data:"):].strip()
+                data = line[len("data:") :].strip()
                 if data == "[DONE]":
                     yield {"event": "done"}
                     break

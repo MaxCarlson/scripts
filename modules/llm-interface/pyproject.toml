@@ -1,0 +1,15 @@
+[project]
+name = "llm-interface"
+version = "0.1.0"
+description = "Tools for interacting with LLM APIs and managing documentation."
+
+ dependencies = [
+    "requests",
+    "prompt-toolkit",
+    "rich",
+]
+
+[project.scripts]
+wai-cli = "llm-interface.wai_cli:main"
+api-validator = "llm-interface.api_validator:main"
+api-doc-generator = "llm-interface.api_doc_generator:main"

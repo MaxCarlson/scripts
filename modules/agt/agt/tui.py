@@ -12,8 +12,9 @@ from prompt_toolkit.widgets import TextArea, Frame, Label
 from prompt_toolkit.styles import Style
 from prompt_toolkit.shortcuts import prompt
 from prompt_toolkit.application.current import get_app
+from prompt_toolkit.filters import has_focus
 
-# Clipboard: prefer your cross_platform module; otherwise fall back gracefully.
+# Clipboard: prefer cross_platform; fallback to pyperclip/no-op.
 try:  # pragma: no cover
     from cross_platform.clipboard_utils import set_clipboard  # type: ignore
 except Exception:  # pragma: no cover
@@ -22,7 +23,6 @@ except Exception:  # pragma: no cover
             import pyperclip  # type: ignore
             pyperclip.copy(text)
         except Exception:
-            # Best-effort no-op fallback
             pass
 
 from .agent import (
@@ -39,17 +39,21 @@ class TUI:
     """
     Two-pane TUI:
       - Top: scrollable output
-      - Bottom: input text box (Enter sends, Ctrl+J newline)
-    Tracks token usage and can stream 'thinking' if available.
+      - Bottom: input box
+
+    Controls:
+      - Enter: send message  (Termux-friendly; no Ctrl required)
+      - Ctrl+J: insert newline
     """
 
     def __init__(self, client: WebAIClient, *, model: Optional[str], provider: Optional[str],
-                 stream: bool, thinking: bool):
+                 stream: bool, thinking: bool, verbose: bool = False):
         self.client = client
         self.model = model
         self.provider = provider
         self.stream = stream
         self.thinking = thinking
+        self.verbose = verbose
 
         self.messages: List[Dict[str, str]] = [
             {"role": "system", "content": "You are a helpful assistant. Return tool JSON when acting."}
@@ -57,7 +61,9 @@ class TUI:
         self.outputs: List[str] = []
         self.prompt_tokens_total = 0
         self.completion_tokens_total = 0
+        self.server_down = False
 
+        # UI widgets
         self.output = TextArea(
             text="WebAI-to-API Client\nType /help for commands.\n",
             scrollbar=True,
@@ -65,6 +71,7 @@ class TUI:
             read_only=True,
             focusable=False,
         )
+        # Keep multiline True so we can still insert manual newlines with Ctrl+J.
         self.input = TextArea(height=3, prompt="> ", multiline=True, wrap_lines=True)
         self.status = Label(text=self._status_text())
 
@@ -78,7 +85,17 @@ class TUI:
                                mouse_support=False,
                                style=self._style())
 
+        # Enter sends:
         self.input.accept_handler = self._on_submit
+
+        # Initial health check
+        ok, detail = self.client.health_detail()
+        if not ok:
+            self.server_down = True
+            self._append_output(f"[warning] Server appears DOWN: {detail}")
+            self._refresh_status()
+        elif self.verbose:
+            self._append_output("[debug] Health OK")
 
     def _style(self) -> Style:
         return Style.from_dict({
@@ -87,19 +104,25 @@ class TUI:
         })
 
     def _status_text(self) -> str:
-        return (f"Enter=send | Ctrl+J=new line | /help | model={self.model or '(unset)'} "
-                f"| tokens: prompt={self.prompt_tokens_total}, completion={self.completion_tokens_total}")
+        base = (f"Enter=send | Ctrl+J=new line | /help | "
+                f"model={self.model or '(unset)'} | "
+                f"tokens: prompt={self.prompt_tokens_total}, completion={self.completion_tokens_total}")
+        if self.server_down:
+            base += "  |  [SERVER DOWN]"
+        return base
 
     def _bindings(self) -> KeyBindings:
         kb = KeyBindings()
 
-        @kb.add("c-j")
+        # Enter -> accept/submit (works even with multiline=True)
+        @kb.add("enter", filter=has_focus(self.input))
+        def _(event):
+            event.app.layout.current_buffer.validate_and_handle()
+
+        # Ctrl+J -> insert newline
+        @kb.add("c-j", filter=has_focus(self.input))
         def _(event):
             self.input.buffer.insert_text("\n")
-
-        @kb.add("enter")
-        def _(event):
-            pass  # handled by accept_handler
 
         @kb.add("c-c")
         @kb.add("escape")
@@ -241,7 +264,11 @@ class TUI:
                 self._append_output("Unknown command. Try /help.")
             return True
 
-        # Count prompt tokens BEFORE sending
+        # Mark attempt
+        if self.verbose:
+            self._append_output(f"[debug] sending -> url={self.client.base_url} model={self.model or self.client.model} provider={self.provider or self.client.provider}")
+
+        # Count prompt tokens BEFORE sending (approx)
         preview_msgs = self.messages + [{"role": "user", "content": text}]
         self.prompt_tokens_total += count_messages_tokens(preview_msgs, self.model)
         self._refresh_status()
@@ -253,22 +280,21 @@ class TUI:
 
         try:
             if self.stream or self.thinking:
-                # Use event stream so we can surface 'reasoning' and (if present) usage
-                agg = []
+                agg: List[str] = []
                 for evt in self.client.chat_stream_events(self.messages, model=self.model, provider=self.provider):  # type: ignore[arg-type]
-                    if evt.get("event") == "content":
+                    event = evt.get("event")
+                    if event == "content":
                         part = evt.get("text", "")
                         agg.append(part)
                         self._append_output(part)
-                    elif evt.get("event") == "reasoning" and self.thinking:
+                    elif event == "reasoning" and self.thinking:
                         self._append_output("[thinking] " + evt.get("text", ""))
-                    elif evt.get("event") == "usage":
+                    elif event == "usage":
                         u = evt.get("usage", {})
                         self.prompt_tokens_total += int(u.get("prompt_tokens", 0))
                         self.completion_tokens_total += int(u.get("completion_tokens", 0))
                         self._refresh_status()
                 content = "".join(agg)
-                # If server didn't provide usage, approximate completion tokens
                 if content:
                     self.completion_tokens_total += count_text_tokens(content, self.model)
                 self._refresh_status()
@@ -276,6 +302,9 @@ class TUI:
                 self.outputs.append(content)
                 for outcome in apply_tools(content, self._ask_permission):
                     self._append_output(outcome)
+                if self.server_down:
+                    self.server_down = False
+                    self._refresh_status()
             else:
                 resp = self.client.chat_once(self.messages, model=self.model, provider=self.provider, stream=False)  # type: ignore[arg-type]
                 rsn = extract_reasoning(resp) if self.thinking else None
@@ -290,16 +319,19 @@ class TUI:
                     self.outputs.append(content)
                     for outcome in apply_tools(content, self._ask_permission):
                         self._append_output(outcome)
-                # Usage (if provided by API)
                 usage = resp.get("usage", {})
                 self.prompt_tokens_total += int(usage.get("prompt_tokens", 0))
                 self.completion_tokens_total += int(usage.get("completion_tokens", 0))
                 if not usage and content:
-                    # estimate
                     self.completion_tokens_total += count_text_tokens(content, self.model)
                 self._refresh_status()
+                if self.server_down:
+                    self.server_down = False
+                    self._refresh_status()
         except Exception as e:
-            self._append_output(f"Error: {e}")
+            self._append_output(f"[error] {e}")
+            self.server_down = True
+            self._refresh_status()
 
         return True
 
