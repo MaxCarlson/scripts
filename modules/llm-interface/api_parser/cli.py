@@ -1,6 +1,7 @@
 import argparse
 from api_parser import api_doc_generator
 from api_parser import api_validator
+from api_parser.sync import run_sync
 
 def main():
     parser = argparse.ArgumentParser(
@@ -21,11 +22,15 @@ def main():
     )
     gen_parser.add_argument(
         "-m", "--module-path", type=str, required=True,
-        help="Path to the Python module directory."
+        help="Path to the root directory containing Python modules."
     )
     gen_parser.add_argument(
         "-d", "--debug", action="store_true",
         help="Print the parsed API dictionary for debugging."
+    )
+    gen_parser.add_argument(
+        "-f", "--force-overwrite", action="store_true",
+        help="Force regeneration of API_DOC.md even if it exists, validating first."
     )
     gen_parser.set_defaults(func=api_doc_generator.run_generator)
 
@@ -37,13 +42,29 @@ def main():
     )
     val_parser.add_argument(
         "-m", "--module-path", type=str, required=True,
-        help="Path to the Python module directory."
+        help="Path to the root directory containing Python modules."
     )
     val_parser.add_argument(
         "-d", "--debug", action="store_true",
         help="Print the parsed API dictionaries for debugging."
     )
     val_parser.set_defaults(func=api_validator.run_validator)
+
+    # Subcommand for API Sync/Audit
+    sync_parser = subparsers.add_parser(
+        "sync",
+        help="Synchronize API documentation: generate missing, validate existing, and regenerate if out of sync.",
+        formatter_class=argparse.RawTextHelpFormatter
+    )
+    sync_parser.add_argument(
+        "-m", "--module-path", type=str, required=True,
+        help="Path to the root directory containing Python modules."
+    )
+    sync_parser.add_argument(
+        "-d", "--debug", action="store_true",
+        help="Print debug information during the sync process."
+    )
+    sync_parser.set_defaults(func=run_sync)
 
     args = parser.parse_args()
 
