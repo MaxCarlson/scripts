@@ -1,37 +1,66 @@
+# tests/cli_test.py
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import pytest
 
-from agt.cli import parse_args, one_shot
+from agt.cli import build_parser, one_shot
 from agt.client import WebAIClient
 
 
-def test_parse_args_root_and_gemini():
-    ns = parse_args(["-a", "hello"])
-    assert ns.ask == "hello"
-    g = parse_args(["gemini", "-h"])
-    assert g.cmd == "gemini" or True  # help still parses
+def test_build_parser():
+    p = build_parser()
+    ns = p.parse_args(["gemini", "hello"])
+    assert ns.sub == "gemini"
+    assert ns.message == ["hello"]
+    assert ns.stream is False
+
+    ns2 = p.parse_args(["gemini", "--stream", "--prompt", "what is up?"])
+    assert ns2.stream is True
+    assert ns2.prompt == "what is up?"
 
 
-def test_one_shot_nonstream(monkeypatch, capsys):
+def test_one_shot_nonstream(monkeypatch, capsys, tmp_path):
     class FakeClient(WebAIClient):
-        def chat_once(self, messages, *, model=None, provider=None, stream=False):
-            return {"choices": [{"message": {"content": "OK"}}], "usage":{"prompt_tokens":1,"completion_tokens":2}}
-    rc = one_shot(FakeClient("http://x"), text="hi", model=None, provider=None, stream=False, thinking=False)
+        def chat_once(self, messages, *, model=None, stream=False):
+            return {"choices": [{"message": {"content": "OK"}}]}
+
+    rc = one_shot(
+        client=FakeClient("http://x"),
+        text="hi",
+        model="test-model",
+        session=None,
+        stream=False,
+        verbose=False,
+        cwd=tmp_path,
+        attach_root_hint=None,
+        log_events=False
+    )
     assert rc == 0
     out = capsys.readouterr().out
-    assert "OK" in out and "usage" in out
+    assert "OK" in out
 
 
-def test_one_shot_stream(monkeypatch, capsys):
+def test_one_shot_stream(monkeypatch, capsys, tmp_path):
     class FakeClient(WebAIClient):
-        def chat_stream_events(self, messages, *, model=None, provider=None):
+        def chat_stream_events(self, messages, *, model=None):
             yield {"event":"content","text":"A"}
-            yield {"event":"reasoning","text":"Z"}
             yield {"event":"content","text":"B"}
             yield {"event":"done"}
-    rc = one_shot(FakeClient("http://x"), text="hi", model=None, provider=None, stream=True, thinking=True)
+
+    rc = one_shot(
+        client=FakeClient("http://x"),
+        text="hi",
+        model="test-model",
+        session=None,
+        stream=True,
+        verbose=False,
+        cwd=tmp_path,
+        attach_root_hint=None,
+        log_events=False
+    )
     assert rc == 0
-    out = capsys.readouterr().out
-    assert "AZB" in out.replace("\n","")
+    out, err = capsys.readouterr()
+    # The spinner writes to stderr, so we check stdout for the content
+    assert "AB" in out.replace("\n", "")
