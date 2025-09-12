@@ -26,6 +26,7 @@ func : output_to_clipboard.py : otc : "Runs a command and copies its output to t
 func : output_to_clipboard.py : otcw : "Runs a command and copies its output to the clipboard, wrapped in a code block." : -w
 func : output_to_clipboard.py : otca : "Runs a command and copies its output to the clipboard, wrapped in a code block." : -a
 func : output_to_clipboard.py : otcwa : "Runs a command and copies its output to the clipboard, wrapped in a code block." : -w -a
+func : pytest output_to_clipboard.py : otcwp : "Runs a command and copies its output to the clipboard, wrapped in a code block." : -w 
 
 func : print_clipboard.py : pclip : "Prints the current clipboard contents to the terminal." :
 
