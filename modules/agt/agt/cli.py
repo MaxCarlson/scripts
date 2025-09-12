@@ -1,199 +1,201 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# agt/cli.py
 from __future__ import annotations
+import argparse, os, sys, json, time, logging, shutil
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-import argparse
-import json
-from typing import Any, Dict, List, Optional, Tuple
+from .client import WebAIClient, DEFAULT_URL
+from .ingest import materialize_at_refs, render_attachments_block
+from .sessions import load_session, append_session
 
-from .agent import (
-    build_prompt_with_attachments,
-    expand_attachments,
-    apply_tools,
-    extract_reasoning,
-)
-from .client import WebAIClient
-from .tui import TUI
-from .tokens import count_messages_tokens, count_text_tokens
+LOG = logging.getLogger("agt")
 
-
-def _add_common(parser: argparse.ArgumentParser):
-    parser.add_argument(
-        "-u", "--url", default=None, help="Base URL (e.g., http://192.168.50.100:6969)"
-    )
-    parser.add_argument("-m", "--model", default=None, help="Model name")
-    parser.add_argument("-p", "--provider", default=None, help="Provider (gpt4free)")
-    parser.add_argument("-s", "--stream", action="store_true", help="Stream responses")
-    parser.add_argument("-t", "--thinking", action="store_true", help="Show/stream 'thinking'")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose HTTP/debug logs")
-
-
-def _build_parsers() -> Tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
-    root = argparse.ArgumentParser(
-        prog="agt", description="agt – lightweight WebAI-to-API client", add_help=False
-    )
-    root.add_argument("-h", "--help", action="store_true", help="Show help and exit")
-    _add_common(root)
-    root.add_argument("-H", "--health", action="store_true", help="Check server health and exit")
-    root.add_argument("-a", "--ask", metavar="TEXT", help="One-shot ask (supports @file/globs)")
-
-    subs = root.add_subparsers(dest="cmd")
-    gem = subs.add_parser("gemini", prog="agt gemini", description="Gemini subcommands", add_help=False)
-    gem.add_argument("-h", "--help", action="store_true", help="Show help and exit")
-    _add_common(gem)
-    gem.add_argument("--list-models", action="store_true", help="List models and exit")
-    gem.add_argument("--list-providers", action="store_true", help="List providers and exit")
-    gem.add_argument("-a", "--ask", metavar="TEXT", help="One-shot ask for Gemini profile")
-    gem.add_argument("-H", "--health", action="store_true", help="Check server health and exit")
-    return root, gem
-
-
-def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    root, gem = _build_parsers()
-    ns, extras = root.parse_known_args(argv)
-    if ns.cmd == "gemini":
-        g_ns = gem.parse_args([a for a in (argv or [])[1:]])
-        for k, v in vars(g_ns).items():
-            setattr(ns, k, v)
-    return ns
-
-
-def one_shot(
-    client: WebAIClient,
-    *,
-    text: str,
-    model: Optional[str],
-    provider: Optional[str],
-    stream: bool,
-    thinking: bool,
-    verbose: bool,
-) -> int:
-    messages: List[Dict[str, str]] = [
-        {"role": "system", "content": "You are a helpful assistant. Return tool JSON when acting."}
-    ]
-    cleaned, atts = expand_attachments(text)
-    messages.append({"role": "user", "content": build_prompt_with_attachments(cleaned, atts)})
-
-    prompt_tokens = count_messages_tokens(messages, model)
-
-    try:
-        if verbose:
-            print(f"[debug] one-shot -> url={client.base_url} model={model or client.model} provider={provider or client.provider}")
-        if stream or thinking:
-            agg: List[str] = []
-            for evt in client.chat_stream_events(messages, model=model, provider=provider):  # type: ignore[arg-type]
-                event = evt.get("event")
-                if event == "content":
-                    chunk = evt.get("text", "")
-                    print(chunk, end="")
-                    agg.append(chunk)
-                elif event == "reasoning" and thinking:
-                    print(evt.get("text", ""), end="")
-                    agg.append(evt.get("text", ""))
-                elif event == "usage":
-                    u = evt.get("usage", {})
-                    if "prompt_tokens" in u or "completion_tokens" in u:
-                        print(f"\n[usage] prompt={u.get('prompt_tokens',0)} completion={u.get('completion_tokens',0)} total={u.get('total_tokens',0)}")
-            print()
-            content = "".join(agg)
-            comp_tokens = count_text_tokens(content, model) if content else 0
-            print(f"[tokens] prompt≈{prompt_tokens} completion≈{comp_tokens}")
-            for outcome in apply_tools(content, ask=lambda *_: False):
-                print(outcome)
-            return 0
-        resp = client.chat_once(messages, model=model, provider=provider, stream=False)  # type: ignore[arg-type]
-        if thinking:
-            rsn = extract_reasoning(resp) or ""
-            if rsn:
-                print(rsn)
-        content = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
-        if content:
-            print(content)
-            for outcome in apply_tools(content, ask=lambda *_: False):
-                print(outcome)
-        else:
-            print(json.dumps(resp, ensure_ascii=False, indent=2))
-        usage = resp.get("usage", {})
-        if usage:
-            print(f"[usage] prompt={usage.get('prompt_tokens',0)} completion={usage.get('completion_tokens',0)} total={usage.get('total_tokens',0)}")
-        else:
-            comp_tokens = count_text_tokens(content, model) if content else 0
-            print(f"[tokens] prompt≈{prompt_tokens} completion≈{comp_tokens}")
-        return 0
-    except Exception as e:
-        print(f"Error: {e}")
-        return 2
-
-
-def main(argv: Optional[List[str]] = None) -> int:
-    root_parser, gem_parser = _build_parsers()
-    args = parse_args(argv)
-
-    # Manual help (no SystemExit)
-    if getattr(args, "help", False):
-        if args.cmd == "gemini":
-            print(gem_parser.format_help())
-        else:
-            print(root_parser.format_help())
-        return 0
-
-    client = WebAIClient(
-        base_url=args.url,
-        model=args.model,
-        provider=args.provider,
-        verbose=args.verbose,
+def setup_logging(level: int=logging.INFO, logfile: Optional[str]=None):
+    handlers = [logging.StreamHandler(sys.stderr)]
+    if logfile:
+        # ensure folder exists
+        Path(logfile).expanduser().parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(logfile, encoding="utf-8"))
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s | %(levelname)s | %(name)s: %(message)s",
+        handlers=handlers,
     )
 
-    if args.cmd == "gemini":
-        if args.health:
-            ok, detail = client.health_detail()
-            print("OK" if ok else "DOWN")
-            if args.verbose:
-                print(f"[debug] health: {detail}")
-            return 0 if ok else 1
-        if getattr(args, "list_models", False):
-            print(json.dumps(client.list_models(), ensure_ascii=False, indent=2))
-            return 0
-        if getattr(args, "list_providers", False):
-            print(json.dumps(client.list_providers(), ensure_ascii=False, indent=2))
-            return 0
-        if args.ask:
-            return one_shot(
-                client,
-                text=args.ask,
-                model=args.model,
-                provider=args.provider,
-                stream=args.stream,
-                thinking=args.thinking,
-                verbose=args.verbose,
-            )
-        tui = TUI(client, model=args.model, provider=args.provider, stream=args.stream, thinking=args.thinking, verbose=args.verbose)
-        tui.run()
-        return 0
+def read_prompt_arg(val: str) -> str:
+    # if val points to a file, read it; else return as literal
+    p = Path(val)
+    if p.exists() and p.is_file():
+        return p.read_text(encoding="utf-8", errors="replace")
+    return val
 
-    if args.health:
-        ok, detail = client.health_detail()
-        print("OK" if ok else "DOWN")
-        if args.verbose:
-            print(f"[debug] health: {detail}")
-        return 0 if ok else 1
+def build_messages(user_text: str, *, cwd: Path, attach_root_hint: Optional[str], model: str,
+                   session_msgs: Optional[List[Dict[str,Any]]] = None) -> List[Dict[str,Any]]:
+    clean, files = materialize_at_refs(user_text, cwd=cwd)
+    preface = render_attachments_block(files, root_hint=str(cwd) if attach_root_hint is None else attach_root_hint)
+    msgs: List[Dict[str,Any]] = []
+    # resume
+    if session_msgs:
+        msgs.extend(session_msgs)
+    # inject attachments as a system prelude so model sees the file contents
+    if preface.strip():
+        msgs.append({"role":"system","content":preface})
+    msgs.append({"role":"user","content":clean})
+    return msgs
 
-    if args.ask:
-        return one_shot(
-            client,
-            text=args.ask,
-            model=args.model,
-            provider=args.provider,
-            stream=args.stream,
-            thinking=args.thinking,
-            verbose=args.verbose,
-        )
+def spinner(label="thinking"):
+    frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
+    i = 0
+    while True:
+        yield f"{frames[i%len(frames)]} {label}..."
+        i += 1
 
-    tui = TUI(client, model=args.model, provider=args.provider, stream=args.stream, thinking=args.thinking, verbose=args.verbose)
-    tui.run()
+# ---------- one-shot helpers
+
+def one_shot(client: WebAIClient, *, text: str, model: str, session: Optional[str],
+             stream: bool, verbose: bool, cwd: Path, attach_root_hint: Optional[str], log_events: bool) -> int:
+    sess_msgs = load_session(session) if session else None
+    messages = build_messages(text, cwd=cwd, attach_root_hint=attach_root_hint, model=model, session_msgs=sess_msgs)
+
+    if log_events:
+        LOG.info("POST /v1/chat/completions model=%s", model)
+
+    if stream:
+        spin = spinner()
+        sys.stderr.write(next(spin))
+        sys.stderr.flush()
+        out_chunks: List[str] = []
+        for ev in client.chat_stream_events(messages, model=model):
+            if ev.get("event") == "content":
+                # clear spinner line
+                sys.stderr.write("\r" + " " * 80 + "\r")
+                sys.stderr.flush()
+                sys.stdout.write(ev.get("text",""))
+                sys.stdout.flush()
+            elif ev.get("event") == "done":
+                sys.stdout.write("\n")
+                break
+            else:
+                # update spinner
+                sys.stderr.write("\r" + next(spin))
+                sys.stderr.flush()
+        reply_text = ""  # not available in this stub stream path
+    else:
+        obj = client.chat_once(messages, model=model, stream=False)
+        ch = obj.get("choices", [{}])[0]
+        reply_text = ch.get("message", {}).get("content", "") or ""
+        print(reply_text)
+
+    # persist session
+    if session:
+        append_session(session, {"role":"user","content":text})
+        append_session(session, {"role":"assistant","content":reply_text})
+
     return 0
 
+# ---------- REPL
+
+def repl(client: WebAIClient, *, model: str, session: Optional[str],
+         cwd: Path, attach_root_hint: Optional[str], log_events: bool):
+    os.system("cls" if os.name == "nt" else "clear")
+    print(f"agt — Gemini client  (server: {client.base_url}, model: {model})")
+    print("Type @path / @glob / @folder to attach files. Ctrl+C to exit.\n")
+
+    sess_msgs = load_session(session) if session else None
+    while True:
+        try:
+            user = input("> ").rstrip("\n")
+        except KeyboardInterrupt:
+            print()
+            break
+        if not user.strip():
+            continue
+        if user.strip() in {"/quit","/exit"}:
+            break
+
+        messages = build_messages(user, cwd=cwd, attach_root_hint=attach_root_hint, model=model, session_msgs=sess_msgs)
+
+        if log_events:
+            LOG.info("POST /v1/chat/completions model=%s", model)
+
+        # simple “thinking…” spinner while we wait
+        spin = spinner()
+        sys.stderr.write(next(spin))
+        sys.stderr.flush()
+        obj = client.chat_once(messages, model=model, stream=False)
+        sys.stderr.write("\r" + " " * 80 + "\r")
+        sys.stderr.flush()
+        ch = obj.get("choices", [{}])[0]
+        reply = ch.get("message",{}).get("content","") or ""
+        print(reply)
+
+        if session:
+            append_session(session, {"role":"user","content":user})
+            append_session(session, {"role":"assistant","content":reply})
+            # also update in-memory
+            if sess_msgs is None: sess_msgs = []
+            sess_msgs.append({"role":"user","content":user})
+            sess_msgs.append({"role":"assistant","content":reply})
+
+# ---------- argparse
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="agt", description="AI tools.")
+    sub = p.add_subparsers(dest="sub", required=True)
+
+    g = sub.add_parser("gemini", help="Interact with a WebAI-to-API server (Gemini).")
+    g.add_argument("--url", default=DEFAULT_URL, help=f"Server base URL (default: {DEFAULT_URL})")
+    g.add_argument("--model", default=os.environ.get("AGT_MODEL","gemini-2.0-flash"),
+                   help="Model name (default: env AGT_MODEL or gemini-2.0-flash)")
+    g.add_argument("-p","--prompt", help="Prompt text OR path to a file containing the prompt.")
+    g.add_argument("-s","--stream", action="store_true", help="Stream assistant output.")
+    g.add_argument("--session", help="Resume/save conversation under this name.")
+    g.add_argument("--new-session", action="store_true", help="Start fresh even if session exists.")
+    g.add_argument("--attach-root-hint", default=None, help="Shown in the ReadManyFiles header. Default: CWD.")
+    g.add_argument("-v","--verbose", action="store_true", help="Verbose logging to stderr.")
+    g.add_argument("--log", default=str((Path.home()/".config/agt/agt.log") if os.name!="nt" else (Path.home()/"AppData/Roaming/agt/agt.log")),
+                   help="Log file path (default: ~/.config/agt/agt.log)")
+    g.add_argument("message", nargs="*", help="Prompt text (if -p not used). In REPL mode if none provided.")
+
+    return p
+
+def main(argv: Optional[List[str]]=None) -> int:
+    args = build_parser().parse_args(argv)
+    setup_logging(logging.DEBUG if args.verbose else logging.INFO, logfile=args.log)
+
+    if args.sub == "gemini":
+        base = args.url
+        client = WebAIClient(base)
+
+        if args.new_session and args.session:
+            # Start fresh: ignore any old messages by writing an empty file
+            from .sessions import session_path
+            sp = session_path(args.session)
+            sp.parent.mkdir(parents=True, exist_ok=True)
+            if sp.exists(): sp.unlink()
+
+        # prompt text
+        if args.prompt:
+            prompt_text = read_prompt_arg(args.prompt)
+        else:
+            # join positional words
+            prompt_text = " ".join(args.message).strip()
+
+        cwd = Path.cwd()
+
+        if prompt_text:
+            return one_shot(
+                client, text=prompt_text, model=args.model, session=args.session,
+                stream=args.stream, verbose=args.verbose, cwd=cwd,
+                attach_root_hint=args.attach_root_hint, log_events=True
+            )
+        else:
+            repl(client, model=args.model, session=args.session,
+                 cwd=cwd, attach_root_hint=args.attach_root_hint, log_events=True)
+            return 0
+
+    print("No subcommand. Try: agt gemini -h", file=sys.stderr)
+    return 2
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

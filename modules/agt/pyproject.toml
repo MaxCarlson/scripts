@@ -4,16 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agt"
-version = "0.2.0"
-description = "Lightweight terminal client for WebAI-to-API (text box TUI, token tracking, Gemini profile)"
+version = "0.3.0"
+description = "Lightweight terminal client for WebAI-to-API (Gemini profile, streaming, tokens, TUI)"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
   "requests>=2.31",
   "prompt_toolkit>=3.0.38",
   "rich>=13.7",
-  # Optional but recommended for accurate token counts:
-  # "tiktoken>=0.7.0"
 ]
 authors = [{name="You"}]
 
@@ -21,9 +19,10 @@ authors = [{name="You"}]
 agt = "agt.cli:main"
 
 [tool.setuptools]
-packages = ["agt"]   # explicit, avoids flat-layout autodiscovery issues
+packages = ["agt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["*_test.py"]
 addopts = "-q"
+
