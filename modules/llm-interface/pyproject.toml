@@ -1,5 +1,5 @@
 [project]
-name = "llm-interface"
+name = "api-parser"
 version = "0.1.0"
 description = "Tools for interacting with LLM APIs and managing documentation."
 
@@ -10,6 +10,7 @@ description = "Tools for interacting with LLM APIs and managing documentation."
 ]
 
 [project.scripts]
-wai-cli = "llm-interface.wai_cli:main"
-api-validator = "llm-interface.api_validator:main"
-api-doc-generator = "llm-interface.api_doc_generator:main"
+api-parser = "api_parser.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["api_parser", "json_replacer", "sandr"]

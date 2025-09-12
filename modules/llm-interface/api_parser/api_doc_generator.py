@@ -114,12 +114,7 @@ def generate_api_doc(module_path: Path, code_api: Dict[str, Dict[str, Any]]) -> 
 # --- Main Execution ---
 import json
 
-def main():
-    parser = argparse.ArgumentParser(description="Generate API_DOC.md for a Python module.")
-    parser.add_argument("module_path", type=str, help="Path to the Python module directory.")
-    parser.add_argument("--debug", action="store_true", help="Print the parsed API dictionary for debugging.")
-    args = parser.parse_args()
-
+def run_generator(args):
     module_path = Path(args.module_path).resolve()
     if not module_path.is_dir():
         print(f"Error: {module_path} is not a directory.")
@@ -144,6 +139,3 @@ def main():
         f.write(markdown_content)
 
     print(f"Successfully generated API documentation at: {output_path}")
-
-if __name__ == "__main__":
-    main()
