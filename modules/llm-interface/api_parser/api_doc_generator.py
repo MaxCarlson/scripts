@@ -4,6 +4,9 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
+from api_parser.utils import find_python_modules
+from api_parser import api_validator
+
 # --- Corrected Signature Generation ---
 def get_signature_from_node(node: ast.FunctionDef) -> str:
     """Creates a normalized, correct function signature from an AST node."""
@@ -115,27 +118,53 @@ def generate_api_doc(module_path: Path, code_api: Dict[str, Dict[str, Any]]) -> 
 import json
 
 def run_generator(args):
-    module_path = Path(args.module_path).resolve()
-    if not module_path.is_dir():
-        print(f"Error: {module_path} is not a directory.")
+    root_path = Path(args.module_path).resolve() # Renamed from module_path to root_path
+    if not root_path.is_dir():
+        print(f"Error: {root_path} is not a directory.")
         return
 
-    print(f"Parsing source code in: {module_path}")
-    code_api = parse_python_module(module_path)
+    modules_to_process = find_python_modules(root_path)
 
-    if args.debug:
-        def set_serializer(obj):
-            if isinstance(obj, set):
-                return sorted(list(obj))
-            raise TypeError
-        print("--- CODE API (DEBUG) ---")
-        print(json.dumps(code_api, indent=2, default=set_serializer))
+    if not modules_to_process:
+        print(f"No Python modules found in {root_path}")
+        return
 
-    print("Generating API documentation...")
-    markdown_content = generate_api_doc(module_path, code_api)
+    for module_path in modules_to_process:
+        api_doc_path = module_path / "API_DOC.md"
+        should_generate = True
 
-    output_path = module_path / "API_DOC.md"
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(markdown_content)
+        if api_doc_path.exists():
+            if not args.force_overwrite:
+                print(f"Skipping {module_path.name}: API_DOC.md already exists. Use --force-overwrite to regenerate.")
+                should_generate = False
+            else:
+                print(f"API_DOC.md exists for {module_path.name}. Validating before overwriting...")
+                doc_api = api_validator.parse_api_doc(api_doc_path)
+                code_api = api_validator.parse_python_module(module_path)
+                missing, changed = api_validator.compare_apis(doc_api, code_api)
 
-    print(f"Successfully generated API documentation at: {output_path}")
+                if not any(missing.values()) and not any(changed.values()):
+                    print(f"API_DOC.md for {module_path.name} is in sync. Skipping regeneration.")
+                    should_generate = False
+                else:
+                    print(f"API_DOC.md for {module_path.name} is out of sync. Regenerating...")
+
+        if should_generate:
+            print(f"\nParsing source code in: {module_path}")
+            code_api = parse_python_module(module_path)
+
+            if args.debug:
+                def set_serializer(obj):
+                    if isinstance(obj, set):
+                        return sorted(list(obj))
+                    raise TypeError
+                print("--- CODE API (DEBUG) ---")
+                print(json.dumps(code_api, indent=2, default=set_serializer))
+
+            print("Generating API documentation...")
+            markdown_content = generate_api_doc(module_path, code_api)
+
+            with open(api_doc_path, "w", encoding="utf-8") as f:
+                f.write(markdown_content)
+
+            print(f"Successfully generated API documentation at: {api_doc_path}")

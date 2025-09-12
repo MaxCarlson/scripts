@@ -21,6 +21,19 @@ def get_signature_from_node(node: ast.FunctionDef) -> str:
         signature += f" -> {ast.unparse(node.returns)}"
     signature += ":"
     return signature
+    """Creates a normalized, correct function signature from an AST node."""
+    args_list = []
+    for arg in node.args.args:
+        arg_str = arg.arg
+        if arg.annotation:
+            arg_str += f": {ast.unparse(arg.annotation)}"
+        args_list.append(arg_str)
+
+    signature = f"def {node.name}({', '.join(args_list)})"
+    if node.returns:
+        signature += f" -> {ast.unparse(node.returns)}"
+    signature += ":"
+    return signature
 
 # --- Parsers ---
 def parse_api_doc(api_doc_path: Path) -> Dict[str, Dict[str, Any]]:
@@ -174,12 +187,7 @@ def generate_report(module_path: Path, missing: Dict, changed: Dict, code_api: D
 
     print("\n--- End of Report ---")
 
-def main():
-    parser = argparse.ArgumentParser(description="Validate a module's API_DOC.md against its source code.")
-    parser.add_argument("module_path", type=str, help="Path to the Python module directory.")
-    parser.add_argument("--debug", action="store_true", help="Print the parsed API dictionaries for debugging.")
-    args = parser.parse_args()
-
+def run_validator(args):
     module_path = Path(args.module_path).resolve()
     api_doc_path = module_path / "API_DOC.md"
 
@@ -206,6 +214,3 @@ def main():
 
     missing, changed = compare_apis(doc_api, code_api)
     generate_report(module_path, missing, changed, code_api)
-
-if __name__ == "__main__":
-    main()
