@@ -20,11 +20,11 @@ class Usage:
 
 class WebAIClient:
     """
-    Thin client for a local OpenAI-compatible server (e.g., WebAI-to-API).
+    Thin client for WebAI-to-API.
 
     Modes:
-      - WebAI (Gemini): exposes /docs and /v1/chat/completions (no /v1/models)
-      - g4f: exposes /v1/models and /v1/providers as discovery endpoints
+      - WebAI (Gemini): /docs and /v1/chat/completions are present; /v1/models may 404.
+      - g4f: /v1/models and /v1/providers available.
 
     Env overrides:
       WAI_API_URL, WAI_MODEL, WAI_PROVIDER, WAI_TIMEOUT
@@ -39,6 +39,7 @@ class WebAIClient:
         timeout: Optional[int] = None,
         verbose: bool = False,
     ):
+        # Default host is your LAN server; can be overridden by WAI_API_URL or -u
         self.base_url = (
             base_url or os.getenv("WAI_API_URL") or "http://192.168.50.100:6969"
         ).rstrip("/")
@@ -68,24 +69,22 @@ class WebAIClient:
     def health_detail(self) -> Tuple[bool, str]:
         """
         Returns (ok, detail).
-        Logic:
-          1) /docs == 200 -> healthy (works for WebAI/Gemini)
-          2) /v1/models or /v1/providers == 200 -> healthy (g4f)
-          3) 404s on models/providers are treated as 'expected in WebAI' (not fatal)
+        Order:
+          1) /docs == 200 → healthy (WebAI / Gemini)
+          2) /v1/models or /v1/providers == 200 → healthy (g4f)
+          3) 404 on models/providers is OK in WebAI mode if /docs was fine
         """
-        # 1) docs
+        last_err = "unknown"
         try:
             if self.verbose:
                 print(f"[debug] GET {self._docs_url}")
             r = requests.get(self._docs_url, timeout=10)
             if r.status_code == 200:
                 return True, "docs ok (WebAI mode likely)"
+            last_err = f"http {r.status_code} on /docs"
         except Exception as e:
             last_err = f"{type(e).__name__}: {e}"
-        else:
-            last_err = f"http {r.status_code} on /docs"
 
-        # 2) discovery endpoints (present in g4f mode)
         models_404 = providers_404 = False
         try:
             if self.verbose:
@@ -110,9 +109,8 @@ class WebAIClient:
             last_err = f"{type(e).__name__}: {e}"
 
         if models_404 and providers_404:
-            # Expected in WebAI (Gemini) mode; we already failed /docs, but connectivity is likely ok.
+            # Expected in WebAI (Gemini) mode; connectivity is probably fine.
             return True, "webai mode (models/providers 404 as expected)"
-
         return False, last_err
 
     def health(self) -> bool:
@@ -162,9 +160,7 @@ class WebAIClient:
         with requests.post(self._chat_url, json=payload, stream=True) as r:
             r.raise_for_status()
             for line in r.iter_lines(decode_unicode=True):
-                if not line:
-                    continue
-                if not line.startswith("data:"):
+                if not line or not line.startswith("data:"):
                     continue
                 data = line[len("data:") :].strip()
                 if data == "[DONE]":
@@ -204,3 +200,4 @@ class WebAIClient:
         if stream:
             payload["stream"] = True
         return payload
+
