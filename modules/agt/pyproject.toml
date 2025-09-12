@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agt"
+version = "0.3.0"
+description = "Lightweight terminal client for WebAI-to-API (Gemini profile, streaming, tokens, TUI)"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "requests>=2.31",
+  "prompt_toolkit>=3.0.38",
+  "rich>=13.7",
+]
+authors = [{name="You"}]
+
+[project.scripts]
+agt = "agt.cli:main"
+
+[tool.setuptools]
+packages = ["agt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["*_test.py"]
+addopts = "-q"
+
