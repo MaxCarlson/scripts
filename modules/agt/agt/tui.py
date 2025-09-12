@@ -42,7 +42,7 @@ class TUI:
       - Bottom: input box
 
     Controls:
-      - Enter: send message  (Termux-friendly; no Ctrl required)
+      - Enter: send message  (Termux-friendly)
       - Ctrl+J: insert newline
     """
 
@@ -63,7 +63,6 @@ class TUI:
         self.completion_tokens_total = 0
         self.server_down = False
 
-        # UI widgets
         self.output = TextArea(
             text="WebAI-to-API Client\nType /help for commands.\n",
             scrollbar=True,
@@ -71,7 +70,6 @@ class TUI:
             read_only=True,
             focusable=False,
         )
-        # Keep multiline True so we can still insert manual newlines with Ctrl+J.
         self.input = TextArea(height=3, prompt="> ", multiline=True, wrap_lines=True)
         self.status = Label(text=self._status_text())
 
@@ -114,13 +112,11 @@ class TUI:
     def _bindings(self) -> KeyBindings:
         kb = KeyBindings()
 
-        # Enter -> accept/submit (works even with multiline=True)
-        @kb.add("enter", filter=has_focus(self.input))
+        @kb.add("enter", filter=has_focus(self.input))   # Enter = send
         def _(event):
             event.app.layout.current_buffer.validate_and_handle()
 
-        # Ctrl+J -> insert newline
-        @kb.add("c-j", filter=has_focus(self.input))
+        @kb.add("c-j", filter=has_focus(self.input))     # Ctrl+J = newline
         def _(event):
             self.input.buffer.insert_text("\n")
 
@@ -264,11 +260,9 @@ class TUI:
                 self._append_output("Unknown command. Try /help.")
             return True
 
-        # Mark attempt
         if self.verbose:
             self._append_output(f"[debug] sending -> url={self.client.base_url} model={self.model or self.client.model} provider={self.provider or self.client.provider}")
 
-        # Count prompt tokens BEFORE sending (approx)
         preview_msgs = self.messages + [{"role": "user", "content": text}]
         self.prompt_tokens_total += count_messages_tokens(preview_msgs, self.model)
         self._refresh_status()
@@ -324,10 +318,9 @@ class TUI:
                 self.completion_tokens_total += int(usage.get("completion_tokens", 0))
                 if not usage and content:
                     self.completion_tokens_total += count_text_tokens(content, self.model)
-                self._refresh_status()
                 if self.server_down:
                     self.server_down = False
-                    self._refresh_status()
+                self._refresh_status()
         except Exception as e:
             self._append_output(f"[error] {e}")
             self.server_down = True
@@ -337,3 +330,4 @@ class TUI:
 
     def run(self):
         self.app.run()
+

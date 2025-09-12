@@ -11,7 +11,6 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-
 # -------- Attachments (@path / globs) --------
 def expand_attachments(user_text: str) -> Tuple[str, List[Tuple[str, str]]]:
     attachments: List[Tuple[str, str]] = []
@@ -149,3 +148,4 @@ def extract_reasoning(resp_obj: Dict[str, Any]) -> str | None:
     except Exception:
         pass
     return None
+
