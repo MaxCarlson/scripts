@@ -1,418 +1,498 @@
-# agt/tui.py
+# Textual-based TUI for agt, with slash commands, @path completion,
+# expandable dropdown, and robust status/logging.
 from __future__ import annotations
 
-import json, threading, re
-from typing import Any, Dict, List, Optional
+import asyncio
+import glob
+import io
+import logging
+import os
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, Iterator, List, Optional, Tuple
 
-from prompt_toolkit.application import Application
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import HSplit, Layout
-from prompt_toolkit.widgets import TextArea, Frame, Label
-from prompt_toolkit.styles import Style
-from prompt_toolkit.shortcuts import prompt
-from prompt_toolkit.application.current import get_app
-from prompt_toolkit.filters import has_focus
+from rich.markdown import Markdown
+from rich.text import Text
+from textual import on
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
+from textual.message import Message
+from textual.reactive import reactive
+from textual.widgets import Input, Label, ListItem, ListView, Static, TextLog
 
-# Clipboard: best-effort
-try:  # pragma: no cover
-    from cross_platform.clipboard_utils import set_clipboard  # type: ignore
-except Exception:  # pragma: no cover
-    def set_clipboard(text: str) -> None:
+# ---- logging ---------------------------------------------------------------
+
+LOG = logging.getLogger("agt.tui")
+if not LOG.handlers:
+    # If caller configured logging already, don't touch it.
+    level = os.environ.get("AGT_TUI_LOGLEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, level, logging.INFO),
+        format="%(asctime)s | %(levelname)s | %(name)s: %(message)s",
+    )
+LOG.debug("==== agt.tui logger initialized ====")
+
+# ---- client (lazy import, avoid hard dependency at import time) ------------
+
+DEFAULT_BASE = os.environ.get("WAI_API_URL", "http://localhost:6969")
+
+try:
+    from .client import WebAIClient  # type: ignore
+except Exception:  # pragma: no cover - fallback stub
+    WebAIClient = None  # will error at runtime if actually used
+
+
+# ---- helpers ----------------------------------------------------------------
+
+
+@dataclass
+class IngestSpec:
+    display: List[str]
+    blocks: List[Tuple[str, str]]  # (path, text_content)
+
+
+SLASH_COMMANDS: List[Tuple[str, str]] = [
+    ("/help", "show help"),
+    ("/clear", "clear the screen and conversation history"),
+    ("/about", "show version info"),
+]
+
+
+def iter_path_candidates(prefix: str) -> Iterable[str]:
+    """
+    Return candidate paths for a partial after '@'.
+    If a directory, append '/' to indicate that.
+    """
+    if prefix.startswith("~/"):
+        base = Path.home() / prefix[2:]
+    else:
+        base = Path(prefix)
+
+    # Expand parent and list entries
+    parent = base.parent if base.name else base
+    pattern = str((parent if parent.exists() else Path(".")) / (base.name + "*"))
+    for p in sorted(glob.glob(pattern)):
         try:
-            import pyperclip  # type: ignore
-            pyperclip.copy(text)
+            if os.path.isdir(p):
+                yield p.rstrip(os.sep) + os.sep
+            else:
+                yield p
+        except Exception:
+            continue
+
+
+def gather_ingest_from_tokens(message: str, cwd: Path | None = None) -> IngestSpec:
+    """
+    Find tokens that start with '@' and resolve them to files/folders.
+    - '@file' ingests the file
+    - '@dir/' ingests all files under dir recursively
+    - globs like '@src/*.py' are supported
+    """
+    cwd = cwd or Path.cwd()
+    display: List[str] = []
+    blocks: List[Tuple[str, str]] = []
+
+    for raw in message.split():
+        if not raw.startswith("@"):
+            continue
+        pat = raw[1:]
+        # If it's clearly a directory token with trailing slash, expand recursively
+        candidates: List[str] = []
+        if pat.endswith(os.sep) or pat.endswith("/"):
+            root = (cwd / pat).expanduser()
+            if root.is_dir():
+                candidates = [str(p) for p in root.rglob("*") if p.is_file()]
+        else:
+            candidates = glob.glob(str((cwd / pat).expanduser()))
+
+        for path in sorted(set(candidates)):
+            try:
+                p = Path(path)
+                if p.is_file():
+                    # Limit each file to ~100 KB
+                    with io.open(p, "r", encoding="utf-8", errors="ignore") as fh:
+                        text = fh.read(100_000)
+                    display.append(str(p))
+                    blocks.append((str(p), text))
+            except Exception as e:  # keep UI resilient
+                LOG.warning("Failed to read %s: %s", path, e)
+
+    return IngestSpec(display=display, blocks=blocks)
+
+
+def render_ingest_summary(ing: IngestSpec) -> str:
+    if not ing.display:
+        return ""
+    lines = ["### Attached files", ""]
+    for p in ing.display:
+        lines.append(f"- `{p}`")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_ingest_blocks(ing: IngestSpec) -> str:
+    if not ing.blocks:
+        return ""
+    out: List[str] = ["", "---"]
+    for path, text in ing.blocks:
+        out.append(f"#### BEGIN FILE: {path}")
+        out.append("```text")
+        out.append(text)
+        out.append("```")
+        out.append(f"#### END FILE: {path}")
+        out.append("")
+    out.append("---")
+    return "\n".join(out)
+
+
+# ---- TUI --------------------------------------------------------------------
+
+
+class TUIApp(App):
+    """Interactive chat UI with dropdown completion for '/' and '@'."""
+
+    CSS = """
+    #root {
+        height: 100%;
+    }
+    #history {
+        height: 1fr;
+        border: tall $secondary;
+        padding: 1 1;
+    }
+    #input-row {
+        height: 3;
+    }
+    #status {
+        padding-left: 1;
+        color: $text-muted;
+    }
+    #dropdown {
+        dock: bottom;
+        height: auto;
+        max-height: 12;
+        border: round $accent;
+        background: $panel;
+        padding: 0;
+        offset-y: -3;     /* hover over input */
+        visibility: hidden;
+    }
+    """
+
+    BINDINGS = [
+        Binding("ctrl+j", "newline", "newline"),
+        Binding("escape", "cancel", "cancel"),
+    ]
+
+    # reactive state
+    busy: bool = reactive(False, init=False)
+    server_down: bool = reactive(False, init=False)
+    prompt_tokens: int = reactive(0, init=False)
+    completion_tokens: int = reactive(0, init=False)
+
+    def __init__(
+        self, base_url: str | None = None, model: str = "gemini-2.0-flash"
+    ) -> None:
+        super().__init__()
+        self.base_url = base_url or DEFAULT_BASE
+        self.model = model
+        self.client = None
+        if WebAIClient:
+            try:
+                self.client = WebAIClient(self.base_url)
+            except Exception as e:
+                LOG.warning("Failed to construct WebAIClient: %s", e)
+
+        # dropdown state
+        self._dropdown_kind: Optional[str] = None  # "slash" | "at" | None
+        self._dropdown_prefix: str = ""
+        self._cancel_requested = False
+
+    # ----- composition and mount -----
+
+    def compose(self) -> ComposeResult:
+        # Top status note
+        yield Label("accepting edits (shift + tab to toggle)")
+
+        # Conversation area
+        with Vertical(id="root"):
+            yield TextLog(id="history", highlight=True, markup=True, wrap=True)
+
+            with Horizontal(id="input-row"):
+                yield Input(
+                    placeholder="Type your message or @path/to/file", id="input"
+                )
+                yield Label(self._status_text(), id="status")
+
+        # Dropdown overlay (initially hidden)
+        yield Static(id="dropdown")
+
+    async def on_mount(self) -> None:
+        self.query_one(Input).focus()
+        LOG.debug("TUI mounted; probing server health…")
+        ok, detail = (False, "no client")
+        if self.client:
+            try:
+                ok, detail = self.client.health_detail()
+            except Exception as e:
+                ok, detail = False, f"health probe failed: {e}"
+        self.server_down = not ok
+        LOG.debug("Server health: ok=%s detail=%s", ok, detail)
+        self._status_refresh()
+
+    # ----- UI helpers -----
+
+    def _status_text(self) -> str:
+        parts = [
+            f"model={self.model}",
+            f"tokens: prompt={self.prompt_tokens}, completion={self.completion_tokens}",
+        ]
+        if self.busy:
+            parts.append("[thinking…]")
+        if self.server_down:
+            parts.append("[SERVER?]")
+        return "  •  ".join(parts)
+
+    def _status_refresh(self) -> None:
+        try:
+            self.query_one("#status", Label).update(self._status_text())
         except Exception:
             pass
 
-from .completion import CombinedCompleter
-from .agent import (
-    apply_tools,
-    build_prompt_with_attachments,
-    expand_attachments,
-    extract_reasoning,
-)
-from .client import WebAIClient
-from .tokens import count_messages_tokens, count_text_tokens
+    def watch_busy(self, busy: bool) -> None:
+        self._status_refresh()
 
+    def watch_server_down(self, server_down: bool) -> None:
+        self._status_refresh()
 
-class TUI:
-    """
-    Gemini-like two-pane TUI:
-      - Top: scrollable output (history stays visible)
-      - Bottom: input with completions
-    Behavior:
-      • Tab-completion for /commands and @paths (files, folders, globs)
-      • Streaming runs in the background — you can keep typing
-      • ESC cancels the current generation (does NOT exit)
-      • Always asks before tools that write/edit/run
-        - 'a' remembers per resource (e.g., “run → python” remembers python only)
-    """
+    def watch_prompt_tokens(self, _: int) -> None:
+        self._status_refresh()
 
-    # How many lines of a diff to show automatically / expand chunk size
-    DIFF_SHOW = 30
-    DIFF_EXPAND = 50
+    def watch_completion_tokens(self, _: int) -> None:
+        self._status_refresh()
 
-    def __init__(self, client: WebAIClient, *, model: Optional[str], provider: Optional[str],
-                 stream: bool = True, thinking: bool = True, verbose: bool = False):
-        self.client = client
-        self.model = model
-        self.provider = provider
-        self.stream = stream
-        self.thinking = thinking
-        self.verbose = verbose
+    # ----- dropdown logic -----
 
-        self.messages: List[Dict[str, str]] = [
-            {"role": "system", "content": "You are a helpful assistant. Return tool JSON when acting."}
-        ]
-        self.outputs: List[str] = []
-        self.prompt_tokens_total = 0
-        self.completion_tokens_total = 0
-        self.server_down = False
+    def _dropdown(self) -> Static:
+        return self.query_one("#dropdown", Static)
 
-        # Remembered permissions
-        self._allow_write_paths: set[str] = set()
-        self._allow_edit_paths: set[str] = set()
-        self._allow_run_bins: set[str] = set()
+    def _history(self) -> TextLog:
+        return self.query_one("#history", TextLog)
 
-        self._busy = False
-        self._cancel = False
+    def _input(self) -> Input:
+        return self.query_one("#input", Input)
 
-        self.output = TextArea(
-            text="accepting edits (shift + tab to toggle)\n",
-            scrollbar=True,
-            wrap_lines=True,
-            read_only=True,
-            focusable=False,
-        )
-        self.input = TextArea(
-            height=3,
-            prompt="> ",
-            multiline=True,
-            wrap_lines=True,
-            completer=CombinedCompleter(),
-            complete_while_typing=True,
-        )
-        self.status = Label(text=self._status_text())
+    def _rebuild_dropdown(self, items: List[str]) -> None:
+        dd = self._dropdown()
+        dd.remove_children()
+        if not items:
+            dd.styles.visibility = "hidden"
+            return
+        lst = ListView(*[ListItem(Label(it)) for it in items])
+        dd.mount(lst)
+        dd.styles.visibility = "visible"
 
-        self.container = HSplit([Frame(self.output, title="Conversation"),
-                                 Frame(self.input, title="Message"),
-                                 self.status])
-        self.kb = self._bindings()
-        self.app = Application(layout=Layout(self.container),
-                               key_bindings=self.kb,
-                               full_screen=True,
-                               mouse_support=False,
-                               style=self._style())
+    def _hide_dropdown(self) -> None:
+        dd = self._dropdown()
+        dd.remove_children()
+        dd.styles.visibility = "hidden"
 
-        # Let Enter send
-        self.input.accept_handler = self._on_submit
-
-        # Initial health probe (non-fatal)
+    def _update_dropdown(self, text: str, cursor: int) -> None:
+        """Recompute dropdown based on token at the cursor."""
         try:
-            ok, detail = self.client.health_detail()
-            if not ok:
-                self.server_down = True
-                self._append_output(f"[warning] Server appears DOWN: {detail}")
-                self._refresh_status()
-        except Exception:
-            self.server_down = True
-            self._refresh_status()
+            prefix_space = text[:cursor]
+            token = prefix_space.split()[-1] if prefix_space.split() else ""
+            items: List[str] = []
 
-    # --- Styling / status -----------------------------------------------------
-
-    def _style(self) -> Style:
-        return Style.from_dict({
-            "frame.border": "#5f5f5f",
-            "frame.label": "bold",
-        })
-
-    def _status_text(self) -> str:
-        base = (f"Enter=send • Ctrl+J=newline • ESC=cancel "
-                f"• model={self.model or '(unset)'} "
-                f"• tokens: prompt={self.prompt_tokens_total}, completion={self.completion_tokens_total}")
-        if self._busy: base += "  |  [thinking…]"
-        if self.server_down: base += "  |  [SERVER DOWN]"
-        return base
-
-    def _refresh_status(self):
-        self.status.text = self._status_text()
-
-    # --- Key bindings ---------------------------------------------------------
-
-    def _bindings(self) -> KeyBindings:
-        kb = KeyBindings()
-
-        @kb.add("enter", filter=has_focus(self.input))
-        def _(event):
-            # Non-blocking: handler will spawn a worker thread
-            event.app.layout.current_buffer.validate_and_handle()
-
-        @kb.add("c-j", filter=has_focus(self.input))
-        def _(event):
-            self.input.buffer.insert_text("\n")
-
-        @kb.add("escape")
-        def _(event):
-            # ESC cancels the current run but leaves the app alive
-            if self._busy:
-                self._cancel = True
-                self._append_output("[cancel] Stopping…")
+            if token.startswith("/"):
+                self._dropdown_kind = "slash"
+                self._dropdown_prefix = token
+                items = [
+                    cmd for (cmd, _desc) in SLASH_COMMANDS if cmd.startswith(token)
+                ]
+            elif token.startswith("@"):
+                self._dropdown_kind = "at"
+                self._dropdown_prefix = token
+                raw = token[1:]
+                items = ["@" + p for p in iter_path_candidates(raw)]
             else:
-                # No active job: treat as a no-op (Gemini keeps the UI open)
-                pass
-            self._refresh_status()
+                self._dropdown_kind = None
+                self._dropdown_prefix = ""
+                self._hide_dropdown()
+                return
 
-        @kb.add("c-c")
-        def _(event):
-            # Hard exit
-            event.app.exit()
-
-        return kb
-
-    # --- Output helpers -------------------------------------------------------
-
-    def _append_output(self, text: str):
-        self.output.text += (text if text.endswith("\n") else text + "\n")
-        self.output.buffer.cursor_position = len(self.output.text)
-
-    # --- Permission prompts ---------------------------------------------------
-
-    def _remember_key(self, kind: str, summary: str) -> str:
-        """
-        Extract a resource key for 'allow always' decisions.
-          run → /usr/bin/python …  → key: run:/usr/bin/python
-          write_file → /path/file  → key: write:/path/file
-          edit_file → /path/file   → key: edit:/path/file
-        """
-        # summary styles from agent:
-        #  "write_file → /p/file (N bytes)"
-        #  "edit_file → /p/file\n<diff…>"
-        #  "run → /bin/cmd args…"
-        m = re.match(r"^(write_file|edit_file|run)\s+→\s+([^\s]+)", summary)
-        if not m:
-            return f"{kind}:*"
-        tool, target = m.group(1), m.group(2)
-        if tool == "run":
-            # Remember by binary only
-            target = target.split()[0]
-            return f"run:{target}"
-        if tool == "write_file":
-            return f"write:{target}"
-        if tool == "edit_file":
-            return f"edit:{target}"
-        return f"{kind}:{target}"
-
-    def _ask_permission(self, kind: str, summary: str) -> bool:
-        key = self._remember_key(kind, summary)
-        allowed_sets = {
-            "run": self._allow_run_bins,
-            "write_file": self._allow_write_paths,
-            "edit_file": self._allow_edit_paths,
-        }
-        # fast path: previously allowed
-        bucket = allowed_sets.get(kind)
-        if bucket and key.split(":", 1)[1] in bucket:
-            return True
-
-        # pretty, with expandable preview (Ctrl+S metaphor: here 's' expands)
-        preview = summary
-        lines = summary.splitlines()
-        if len(lines) > self.DIFF_SHOW:
-            preview = "\n".join(lines[:self.DIFF_SHOW]) + f"\n… ({len(lines)-self.DIFF_SHOW} more; press 's' to show more)"
-
-        app = get_app()
-        result = {"ans": "n"}
-
-        def ask():
-            print(f"\n? {kind} {key}\n{preview}\n")
-            while True:
-                ans = prompt("Allow? [y]es / [n]o / [a]lways / [s]how-all > ").strip().lower() or "n"
-                if ans in {"y", "n", "a"}:
-                    result["ans"] = ans
-                    break
-                if ans == "s":
-                    print("\n" + summary + "\n")
-                else:
-                    print("Please answer y/n/a or s.")
-
-        app.run_in_terminal(ask)
-
-        ans = result["ans"]
-        if ans == "a":
-            # stash in per-kind bucket
-            if bucket is not None:
-                bucket.add(key.split(":", 1)[1])
-            return True
-        return ans == "y"
-
-    # --- Send flow ------------------------------------------------------------
-
-    def _send_background(self, user_text: str):
-        """
-        Background worker: runs streaming request and updates the UI.
-        """
-        self._busy = True
-        self._cancel = False
-        self._refresh_status()
-
-        # Build final prompt with attachments
-        cleaned, atts = expand_attachments(user_text)
-        final_text = build_prompt_with_attachments(cleaned, atts)
-        self.messages.append({"role": "user", "content": final_text})
-        self._append_output("> " + (cleaned if cleaned else "(attachments)"))
-
-        # account tokens
-        preview_msgs = self.messages[:]  # already includes the new user msg
-        self.prompt_tokens_total += count_messages_tokens(preview_msgs, self.model)
-        self._refresh_status()
-
-        try:
-            if self.stream or self.thinking:
-                agg: List[str] = []
-
-                for evt in self.client.chat_stream_events(self.messages, model=self.model, provider=self.provider):  # type: ignore[arg-type]
-                    if self._cancel:
-                        break
-                    event = evt.get("event")
-                    if event == "content":
-                        part = evt.get("text", "")
-                        if part:
-                            agg.append(part)
-                            self._append_output(part)
-                    elif event == "reasoning" and self.thinking:
-                        self._append_output("[thinking] " + evt.get("text", ""))
-                    elif event == "usage":
-                        u = evt.get("usage", {})
-                        self.prompt_tokens_total += int(u.get("prompt_tokens", 0))
-                        self.completion_tokens_total += int(u.get("completion_tokens", 0))
-                        self._refresh_status()
-
-                content = "".join(agg) if not self._cancel else ""
-                if content:
-                    self.completion_tokens_total += count_text_tokens(content, self.model)
-                    self.messages.append({"role": "assistant", "content": content})
-                    self.outputs.append(content)
-                    for outcome in apply_tools(content, self._ask_permission):
-                        self._append_output(outcome)
-
-            else:
-                resp = self.client.chat_once(self.messages, model=self.model, provider=self.provider, stream=False)  # type: ignore[arg-type]
-                rsn = extract_reasoning(resp) if self.thinking else None
-                if rsn:
-                    self._append_output("[thinking]\n" + rsn)
-                content = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
-                if not content:
-                    self._append_output(json.dumps(resp, ensure_ascii=False, indent=2))
-                else:
-                    self._append_output(content)
-                    self.messages.append({"role": "assistant", "content": content})
-                    self.outputs.append(content)
-                    for outcome in apply_tools(content, self._ask_permission):
-                        self._append_output(outcome)
-                usage = resp.get("usage", {})
-                self.prompt_tokens_total += int(usage.get("prompt_tokens", 0))
-                self.completion_tokens_total += int(usage.get("completion_tokens", 0))
-                if not usage and content:
-                    self.completion_tokens_total += count_text_tokens(content, self.model)
-
-            if self.server_down:
-                self.server_down = False
-
+            self._rebuild_dropdown(items)
         except Exception as e:
-            self._append_output(f"[error] {e}")
-            self.server_down = True
-        finally:
-            self._busy = False
-            self._refresh_status()
+            LOG.exception("_update_dropdown failed: %s", e)
+            self._hide_dropdown()
 
-    def _on_submit(self, buf) -> bool:
-        text = self.input.text.strip()
-        self.input.text = ""
+    # ----- events -----
+
+    def action_newline(self) -> None:
+        """Insert newline into the input."""
+        inp = self._input()
+        val = inp.value
+        cur = getattr(inp, "cursor_position", len(val))
+        inp.value = val[:cur] + "\n" + val[cur:]
+        inp.cursor_position = cur + 1
+
+    def action_cancel(self) -> None:
+        """Cancel any in-flight streaming."""
+        self._cancel_requested = True
+        self.busy = False
+        self._status_refresh()
+
+    @on(Input.Changed)
+    def on_input_changed(self, ev: Input.Changed) -> None:
+        """Update dropdown on every keystroke."""
+        try:
+            inp = self._input()
+            cursor = getattr(inp, "cursor_position", None)
+            if cursor is None:
+                cursor = getattr(ev, "caret_position", 0)  # some Textual builds
+            self._update_dropdown(ev.value, int(cursor or 0))
+        except Exception as e:
+            LOG.exception("on_input_changed failed: %s", e)
+
+    @on(Input.Submitted)
+    async def on_input_submitted(self, ev: Input.Submitted) -> None:
+        text = ev.value.strip()
         if not text:
-            return True
-
-        # Slash commands handled synchronously
+            return
+        # Handle slash commands locally
         if text.startswith("/"):
-            parts = text.split()
-            cmd = parts[0].lower()
-            args = parts[1:]
-            if cmd == "/help":
-                self._append_output(
-                    "Commands: /help  /new  /models  /providers  /set model <m>  /set provider <p>\n"
-                    "/save <file.jsonl>  /load <file.jsonl>  /cp [n]  /stats  /quit"
-                )
-            elif cmd == "/new":
-                self.messages = self.messages[:1]
-                self._append_output("Started a new conversation.")
-            elif cmd == "/models":
-                try:
-                    data = self.client.list_models()
-                    self._append_output(json.dumps(data, ensure_ascii=False, indent=2))
-                except Exception as e:
-                    self._append_output(f"Error: {e}")
-            elif cmd == "/providers":
-                try:
-                    data = self.client.list_providers()
-                    self._append_output(json.dumps(data, ensure_ascii=False, indent=2))
-                except Exception as e:
-                    self._append_output(f"Error: {e}")
-            elif cmd == "/set" and len(args) >= 2:
-                if args[0].lower() == "model":
-                    self.model = args[1]; self._append_output(f"Model set: {self.model}")
-                elif args[0].lower() == "provider":
-                    self.provider = args[1]; self._append_output(f"Provider set: {self.provider}")
-                else:
-                    self._append_output("Usage: /set model <name>  |  /set provider <name>")
-                self._refresh_status()
-            elif cmd == "/save" and args:
-                path = args[0]
-                try:
-                    with open(path, "w", encoding="utf-8") as f:
-                        for m in self.messages:
-                            f.write(json.dumps(m, ensure_ascii=False) + "\n")
-                    self._append_output(f"Saved {path}")
-                except Exception as e:
-                    self._append_output(f"Save failed: {e}")
-            elif cmd == "/load" and args:
-                path = args[0]
-                try:
-                    msgs: List[Dict[str, str]] = []
-                    with open(path, "r", encoding="utf-8") as f:
-                        for line in f:
-                            line = line.strip()
-                            if line:
-                                msgs.append(json.loads(line))
-                    self.messages = msgs
-                    self._append_output(f"Loaded {path} ({len(msgs)} messages)")
-                except Exception as e:
-                    self._append_output(f"Load failed: {e}")
-            elif cmd == "/cp":
-                n = int(args[0]) if args else 1
-                if not self.outputs:
-                    self._append_output("Nothing to copy.")
-                else:
-                    try:
-                        set_clipboard(self.outputs[-n])
-                        self._append_output("Copied to clipboard.")
-                    except Exception as e:
-                        self._append_output(f"Copy failed: {e}")
-            elif cmd == "/stats":
-                self._append_output(self._status_text())
-            elif cmd == "/quit":
-                get_app().exit()
-            else:
-                self._append_output("Unknown command. Try /help.")
+            handled = await self._handle_slash(text)
+            if handled:
+                self._input().value = ""
+                self._hide_dropdown()
+                return
+
+        await self._send_message(text)
+        self._input().value = ""
+        self._hide_dropdown()
+
+    @on(ListView.Selected)
+    async def on_list_view_selected(self, ev: ListView.Selected) -> None:
+        """Insert the selected dropdown item at the cursor."""
+        try:
+            lbl = ev.item.query_one(Label)
+            selection = str(getattr(lbl, "renderable", "")).strip()
+            if not selection:
+                return
+            inp = self._input()
+            text = inp.value
+            cursor = int(getattr(inp, "cursor_position", len(text)))
+            before = text[:cursor]
+            # Replace current token
+            token = before.split()[-1] if before.split() else ""
+            start = cursor - len(token)
+            new_value = text[:start] + selection + text[cursor:]
+            inp.value = new_value
+            inp.cursor_position = start + len(selection)
+            self._hide_dropdown()
+            LOG.debug("Dropdown insert: %r", selection)
+        except Exception as e:
+            LOG.exception("on_list_view_selected failed: %s", e)
+
+    # ----- high level actions -----
+
+    async def _handle_slash(self, text: str) -> bool:
+        cmd = text.strip().split()[0]
+        hist = self._history()
+
+        if cmd == "/help":
+            items = "\n".join([f"- {c} — {d}" for (c, d) in SLASH_COMMANDS])
+            hist.write(Markdown(f"### Commands\n\n{items}"))
             return True
 
-        # Spawn streaming worker; UI stays interactive
-        if not self._busy:
-            threading.Thread(target=self._send_background, args=(text,), daemon=True).start()
-        else:
-            self._append_output("[busy] Please wait or press ESC to cancel.")
-        return True
+        if cmd == "/about":
+            hist.write(Markdown("**agt** TUI • Textual UI for WebAI-to-API"))
+            return True
 
-    def run(self):
-        # full-screen “Gemini-like” start
-        from os import system, name
-        system("cls" if name == "nt" else "clear")
-        self.app.run()
+        if cmd == "/clear":
+            hist.clear()
+            return True
+
+        return False
+
+    async def _send_message(self, text: str) -> None:
+        """Send a message to the server; stream result to the history."""
+        hist = self._history()
+
+        # Ingest files referenced with '@'
+        ingest = gather_ingest_from_tokens(text)
+        preface = render_ingest_summary(ingest) + render_ingest_blocks(ingest)
+        full_prompt = text
+        if preface:
+            full_prompt = f"{text}\n\n{preface}"
+
+        # Show user message
+        hist.write(Markdown(f"**You**\n\n{Text.from_markup(full_prompt)}"))
+        self.busy = True
+        self._cancel_requested = False
+
+        if not self.client:
+            hist.write(Markdown("_No client available; cannot contact server._"))
+            self.busy = False
+            return
+
+        try:
+            # Stream events (the client returns a simple two-event sequence if streaming unsupported)
+            content_chunks: List[str] = []
+            hist.write(Markdown("**Assistant**\n\n_Thinking…_"))
+            async for event in self._stream_events_async(full_prompt):
+                if self._cancel_requested:
+                    break
+                if event.get("event") == "content":
+                    content_chunks.append(event.get("text", ""))
+                    # Update last line
+                    hist.write(Markdown("".join(content_chunks)))
+                elif event.get("event") == "usage":
+                    usage = event.get("usage", {})
+                    self.prompt_tokens = int(
+                        usage.get("prompt_tokens", self.prompt_tokens)
+                    )
+                    self.completion_tokens = int(
+                        usage.get("completion_tokens", self.completion_tokens)
+                    )
+            self.busy = False
+        except Exception as e:
+            LOG.exception("Chat failed: %s", e)
+            self.busy = False
+            hist.write(Markdown(f"_Error: {e}_"))
+
+    async def _stream_events_async(self, prompt: str) -> Iterator[dict]:
+        """
+        Async wrapper around the sync client to keep the UI responsive.
+        """
+        loop = asyncio.get_running_loop()
+
+        def _sync_iter():
+            try:
+                msgs = [{"role": "user", "content": prompt}]
+                for ev in self.client.chat_stream_events(msgs, model=self.model):  # type: ignore[attr-defined]
+                    yield ev
+            except Exception as e:
+                LOG.exception("stream failed: %s", e)
+                yield {"event": "content", "text": f"(stream error: {e})"}
+                yield {"event": "done"}
+
+        it = _sync_iter()
+
+        # Bridge a blocking iterator into async iteration
+        while True:
+            ev = await loop.run_in_executor(None, lambda: next(it, None))
+            if ev is None:
+                break
+            yield ev
+
+
+# ---- convenience runner ------------------------------------------------------
+
+
+def run_tui(base_url: Optional[str] = None, model: str = "gemini-2.0-flash") -> None:
+    """Entry point used by CLI."""
+    app = TUIApp(base_url=base_url or DEFAULT_BASE, model=model)
+    app.run()
