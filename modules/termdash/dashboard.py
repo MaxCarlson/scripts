@@ -376,8 +376,14 @@ class TermDash:
 
                 # Hard-clip w/ ellipsis if needed
                 if width > 0 and len(plain) > width:
+                    # Only warn on truly narrow screens; 62+ cols is our supported floor.
                     if not self.warning_issued:
-                        self.log("WARNING: columns truncated. Consider increasing terminal width.", level='warning')
+                        try:
+                            cols_now, _ = os.get_terminal_size()
+                        except OSError:
+                            cols_now = 80
+                        if cols_now < 62:
+                            self.log("WARNING: columns truncated. Consider increasing terminal width.", level='warning')
                         self.warning_issued = True
                     visible = plain[: max(1, width - 1)] + "…"
                 else:
