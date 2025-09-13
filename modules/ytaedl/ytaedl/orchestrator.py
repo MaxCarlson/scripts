@@ -13,20 +13,24 @@ Exports used by tests:
     (main_url_dir, ae_url_dir, out_root)
   plus optional single_files=...
 """
+
 from __future__ import annotations
 
 import argparse
 import random
+import subprocess
+import sys
+import threading
 import time
-import subprocess, sys, threading
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
-from typing import Dict, Iterator, List, Optional, Any, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-# parsers (moved to procparsers module)
+# -------------------- parsers --------------------
+# (In your tree this lives in the standalone 'procparsers' module.)
 from procparsers import parse_ytdlp_line
 
-# run logger with program-runtime timestamps & counters
+# -------------------- run logger --------------------
 from .runlogger import RunLogger
 
 # ---------- cross-platform console input (POSIX + Windows) ----------
@@ -34,6 +38,7 @@ try:
     import termios  # POSIX
     import tty
     import select
+
     _HAVE_TERMIOS = True
 except Exception:
     _HAVE_TERMIOS = False
@@ -46,21 +51,25 @@ except Exception:
 try:
     from .io import read_urls_from_files, expand_url_dirs  # type: ignore
 except Exception as ex:  # pragma: no cover
-    raise ImportError(f"ytaedl.orchestrator requires ytaedl.io.read_urls_from_files/expand_url_dirs: {ex}")
+    raise ImportError(
+        f"ytaedl.orchestrator requires ytaedl.io.read_urls_from_files/expand_url_dirs: {ex}"
+    )
 
 try:
     from .io import read_archive as _read_archive, write_to_archive as _write_to_archive  # type: ignore
-except Exception:
+except Exception:  # pragma: no cover
     _read_archive = None
     _write_to_archive = None
 
+
 def _shim_read_archive(path: Path) -> List[str]:
     try:
-        if not path.exists():
+        if not path or not path.exists():
             return []
         return [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    except Exception:
+    except Exception:  # pragma: no cover
         return []
+
 
 def _shim_write_to_archive(path: Path, url: str) -> None:
     try:
@@ -70,10 +79,11 @@ def _shim_write_to_archive(path: Path, url: str) -> None:
     except Exception:
         pass
 
+
 read_archive = _read_archive or _shim_read_archive
 write_to_archive = _write_to_archive or _shim_write_to_archive
-# ------------------------------------------------------------------------------
 
+# -------------------- model & downloaders --------------------
 from .models import (
     DownloadItem,
     DownloadResult,
@@ -92,17 +102,13 @@ from .downloaders import (
 )
 from .ui import make_ui
 
-
 # -------------------- Defaults --------------------
-
 DEF_URL_DIR = Path("files/downloads/stars")
 DEF_AE_URL_DIR = Path("files/downloads/ae-stars")
 DEF_OUT_DIR = Path("stars")
-DEF_ARCHIVE = None
-
+DEF_ARCHIVE: Optional[Path] = None  # set by caller if desired
 
 # -------------------- Public stats struct (for tests/consumers) --------------
-
 @dataclass
 class CountsSnapshot:
     """
@@ -118,7 +124,6 @@ class CountsSnapshot:
 
 
 # -------------------- Work model --------------------
-
 @dataclass
 class _WorkFile:
     url_file: Path
@@ -136,8 +141,15 @@ def _infer_dest_dir(out_root: Path, url_file: Path) -> Path:
 
 
 # -------------------- Coordinator --------------------
-
 class _Coordinator:
+    """
+    Very small scheduler for handing out one _WorkFile at a time to workers.
+
+    Methods:
+      - acquire_next() -> Optional[_WorkFile]
+      - release(work_file, *, remaining_delta: int = 0) -> None
+    """
+
     def __init__(self, work: List[_WorkFile]):
         self._work: Dict[str, _WorkFile] = {str(w.url_file.resolve()): w for w in work}
         self._lock = threading.Lock()
@@ -145,10 +157,14 @@ class _Coordinator:
 
     def acquire(self) -> Optional[_WorkFile]:
         with self._lock:
-            candidates = [w for w in self._work.values()
-                          if self._assigned.get(str(w.url_file.resolve()), 0) == 0 and w.remaining > 0]
+            candidates = [
+                w
+                for w in self._work.values()
+                if self._assigned.get(str(w.url_file.resolve()), 0) == 0 and w.remaining > 0
+            ]
             if not candidates:
                 return None
+            # Favor larger remaining; stable by stem
             random.shuffle(candidates)
             candidates.sort(key=lambda w: (-w.remaining, w.stem))
             chosen = candidates[0]
@@ -170,7 +186,6 @@ class _Coordinator:
 
 
 # -------------------- CLI --------------------
-
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="ytaedl-orchestrate",
@@ -219,7 +234,7 @@ def _build_config(args: argparse.Namespace) -> DownloaderConfig:
         archive_path=args.archive,
         max_size_gb=10.0,
         keep_oversized=False,
-        timeout_seconds=args.timeout,   # <-- from -t / --timeout
+        timeout_seconds=args.timeout,  # from -t/--timeout
         ytdlp_connections=None,
         ytdlp_rate_limit=None,
         ytdlp_retries=None,
@@ -229,12 +244,11 @@ def _build_config(args: argparse.Namespace) -> DownloaderConfig:
         aria2_x_conn=None,
         aria2_min_split=None,
         aria2_timeout=None,
-        log_file=args.log_file,         # mirrored for parity
+        log_file=args.log_file,
     )
 
 
 # -------------------- Worklist builders --------------------
-
 def _build_worklist_from_disk(
     main_url_dir: Path,
     ae_url_dir: Path,
@@ -246,7 +260,7 @@ def _build_worklist_from_disk(
             urls = read_urls_from_files([url_file])
         except Exception:
             urls = []
-        out_dir = _infer_dest_dir(out_root, url_file)
+        out_dir = _infer_dest_dir(out_root, url_file) if source == "main" else out_root
         return _WorkFile(
             url_file=url_file,
             stem=url_file.stem,
@@ -264,12 +278,13 @@ def _build_worklist_from_disk(
     if single_files:
         for f in single_files:
             p = Path(f)
-            if p.is_file() and p.suffix.lower() == ".txt":
+            if p.is_file() and p.suffix.lower() in (".txt", ".urls", ".list", ""):
                 key = str(p.resolve())
                 if key in seen:
                     continue
                 seen.add(key)
-                src = "ae" if p.parent.resolve() == ae_url_dir.resolve() else "main"
+                # Heuristic: treat as AE if it's in the AE dir; otherwise "main"
+                src = "ae" if ae_url_dir and p.parent.resolve() == ae_url_dir.resolve() else "main"
                 wf = _process_file(p, src)
                 if wf:
                     work.append(wf)
@@ -297,7 +312,6 @@ def _build_worklist_from_disk(
 
 
 # -------------------- yt-dlp single-run wrapper (parser-aware) ----------------
-
 def run_single_ytdlp(
     logger: RunLogger,
     url: str,
@@ -310,17 +324,29 @@ def run_single_ytdlp(
     Returns (status, note)
       status ∈ {'Finished DL', 'Exists', 'Bad URL', 'Internal Stop', 'External Stop'}
       note: optional details
+
+    Priority #1 (added): mirror EVERY yt-dlp stdout line to a "raw" companion log
+    using the same attempt counter and url_index schema via RunLogger.raw_write().
     """
-    cmd = [
+    if not url or not url.strip():
+        logger.finish(url_index, url, "Bad URL", "empty URL")
+        return "Bad URL", "empty URL"
+
+    # Build command with URL LAST (even when extra args are present)
+    cmd: List[str] = [
         "yt-dlp",
         "--newline",
-        "--print", "TDMETA\t%(id)s\t%(title)s",
-        "-o", out_tpl,
-        "--retries", str(retries),
+        "--print",
+        "TDMETA\t%(id)s\t%(title)s",
+        "-o",
+        out_tpl,
+        "--retries",
+        str(retries),
         url,
     ]
     if extra_args:
-        cmd = cmd[:-1] + extra_args + [url]  # keep URL last
+        # keep URL last
+        cmd = cmd[:-1] + list(extra_args) + [url]
 
     attempt_id = logger.start(url_index, url)
 
@@ -329,7 +355,7 @@ def run_single_ytdlp(
     saw_progress = False
     finished_progress = False
     saw_destination = False
-    last_error_line = None
+    last_error_line: Optional[str] = None
 
     try:
         proc = subprocess.Popen(
@@ -337,9 +363,9 @@ def run_single_ytdlp(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            universal_newlines=True,
             encoding="utf-8",
             errors="replace",
+            bufsize=1,
         )
     except Exception as ex:
         logger.finish(url_index, url, "External Stop", f"spawn-error: {ex!r}")
@@ -348,6 +374,14 @@ def run_single_ytdlp(
     try:
         assert proc.stdout is not None
         for raw in proc.stdout:
+            # RAW mirror to companion log with same attempt/index markers
+            raw_write = getattr(logger, "raw_write", None)
+            if callable(raw_write):
+                try:
+                    raw_write(attempt_id, url_index, raw)
+                except Exception:
+                    pass  # logging must never break the run
+
             evt = parse_ytdlp_line(raw)
             if not evt:
                 if raw.strip().startswith("ERROR:"):
@@ -372,7 +406,7 @@ def run_single_ytdlp(
         logger.finish(url_index, url, "Internal Stop", "keyboard interrupt")
         return "Internal Stop", "keyboard interrupt"
 
-    # Classification
+    # Classification (preserve legacy wording)
     if ret != 0:
         note = last_error_line or f"exit code {ret}"
         logger.finish(url_index, url, "Bad URL", note)
@@ -396,7 +430,6 @@ def run_single_ytdlp(
 
 
 # -------------------- Main --------------------
-
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
     if args.version:
@@ -492,6 +525,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         time.sleep(0.05)
             except Exception:
                 pass
+
     # ------------------------------------------
 
     with ui:
@@ -541,7 +575,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                             break
                         if archive_path and url in archived_urls:
                             # still generate a FINISH entry so the counter is consistent
-                            attempt_id = runlog.start(i, url)
+                            runlog.start(i, url)
                             runlog.finish(i, url, "Exists", "archive-hit")
                             continue
 
@@ -560,7 +594,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                                 extra_aebn_args=[],
                             )
                             ok = False
-                            events: Iterator = aebn.download(item)
+                            events: Iterator[object] = aebn.download(item)
                             last_status: Optional[str] = None
                             try:
                                 for ev in events:
@@ -659,7 +693,6 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 # -------------------- Legacy shims for tests ---------------------------------
-
 def _is_snapshot_complete(snapshot: CountsSnapshot, *args, **kwargs) -> bool:
     """
     Completion rule (legacy): ignore per-file 'remaining'.
@@ -703,7 +736,9 @@ def _build_worklist(*args: Any, **kwargs: Any) -> List[_WorkFile]:
         ae_url_dir = Path(args[1])
         out_root = Path(args[2])
     else:
-        raise TypeError("_build_worklist requires (main_url_dir, out_root) or (main_url_dir, ae_url_dir, out_root)")
+        raise TypeError(
+            "_build_worklist requires (main_url_dir, out_root) or (main_url_dir, ae_url_dir, out_root)"
+        )
 
     return _build_worklist_from_disk(main_url_dir, ae_url_dir, out_root, single_files=single_files)
 
