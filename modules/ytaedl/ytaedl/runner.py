@@ -7,22 +7,21 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Set
 
 from .downloaders import get_downloader, terminate_all_active_procs, request_abort, abort_requested
-from .io import read_urls_from_files, load_archive, write_to_archive
+from .io import read_urls_from_files, load_archive, save_archive
 from .models import (
     DownloaderConfig,
     DownloadItem,
+    URLSource,
     DownloadResult,
     DownloadStatus,
     FinishEvent,
     StartEvent,
     DownloadEvent,
 )
-from .ui import UIBase
 
+# (rest of the class unchanged above this point)
 
 class DownloadRunner:
-    # Keep signature compatible with tests (only cfg, ui are used).
-    # If a third arg was passed earlier, we ignore it; we now read log_file from cfg.
     def __init__(self, config: DownloaderConfig, ui: Optional[UIBase] = None, *_ignore):
         self.config = config
         self.ui = ui
@@ -39,7 +38,6 @@ class DownloadRunner:
                 self._log_fp = None
 
         # --- Archive support (needed for tests) ---
-        self._archive_lock = threading.Lock()
         self._archived: Set[str] = set()
         if self.config.archive_path:
             self._archived = load_archive(self.config.archive_path)
@@ -56,7 +54,7 @@ class DownloadRunner:
         if isinstance(ev, StartEvent):
             self._log(f"START {ev.item.id} {ev.item.url}")
         elif isinstance(ev, FinishEvent):
-            self._log(f"FINISH {ev.item.id} {ev.result.status.value} {ev.item.url}")
+            self._log(f"FINISH {ev.item.id} {getattr(ev.result.status, 'value', '')}")
         else:
             msg = getattr(ev, "message", None)
             if msg is not None:
@@ -85,7 +83,8 @@ class DownloadRunner:
                         id=next_id,
                         url=url,
                         output_dir=dest,
-                        source=None,  # could set URLSource if desired; tests don't need it
+                        source=URLSource(file=url_file, line_number=_ln, original_url=url),
+                        total_in_set=len(urls),
                         retries=3,
                     )
                 )
@@ -112,45 +111,43 @@ class DownloadRunner:
 
         # On success/exists, append to archive
         if self.config.archive_path and result.status in (DownloadStatus.COMPLETED, DownloadStatus.ALREADY_EXISTS):
-            with self._archive_lock:
-                if item.url not in self._archived:
-                    write_to_archive(self.config.archive_path, item.url)
-                    self._archived.add(item.url)
+            try:
+                self._archived.add(item.url)
+                save_archive(self.config.archive_path, self._archived)
+            except Exception:
+                pass
 
         return result
 
-    def run_from_files(self, url_files: Iterable[Path], base_out: Path, per_file_subdirs: bool = True) -> None:
-        items = self._iter_items(url_files, base_out, per_file_subdirs=per_file_subdirs)
+    def run_from_files(self, url_files: Iterable[Path], base_out: Path) -> None:
+        items = self._iter_items(url_files, base_out, self.config.per_file_subdirs)
         if not items:
             return
 
-        maxw = max(1, getattr(self.config, "parallel_jobs", 1))
-        with cf.ThreadPoolExecutor(max_workers=maxw) as ex:
-            it = iter(items)
+        maxw = max(1, int(self.config.max_workers))
+        with cf.ThreadPoolExecutor(max_workers=maxw, thread_name_prefix="ytaedl") as ex:
             pending: Set[cf.Future] = set()
             try:
                 # Prime the pool
                 for _ in range(maxw):
-                    item = next(it)
+                    item = next(iter(items), None)
+                    if item is None:
+                        break
+                # Re-create iterator (above preview consumed nothing)
+                it = iter(items)
+                for _ in range(maxw):
+                    try:
+                        item = next(it)
+                    except StopIteration:
+                        break
                     pending.add(ex.submit(self._worker, item))
-            except StopIteration:
-                pass
 
-            try:
                 while pending:
                     done, pending = cf.wait(pending, return_when=cf.FIRST_COMPLETED)
                     for d in done:
                         d.result()  # surface exceptions
                     if abort_requested():
                         break
-                    while len(pending) < maxw:
-                        try:
-                            nxt = next(it)
-                        except StopIteration:
-                            break
-                        if abort_requested():
-                            break
-                        pending.add(ex.submit(self._worker, nxt))
             except KeyboardInterrupt:
                 request_abort()
                 terminate_all_active_procs()
