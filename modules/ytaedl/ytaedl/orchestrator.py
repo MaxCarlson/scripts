@@ -66,7 +66,11 @@ def _shim_read_archive(path: Path) -> List[str]:
     try:
         if not path or not path.exists():
             return []
-        return [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        return [
+            ln.strip()
+            for ln in path.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
     except Exception:  # pragma: no cover
         return []
 
@@ -108,12 +112,14 @@ DEF_AE_URL_DIR = Path("files/downloads/ae-stars")
 DEF_OUT_DIR = Path("stars")
 DEF_ARCHIVE: Optional[Path] = None  # set by caller if desired
 
+
 # -------------------- Public stats struct (for tests/consumers) --------------
 @dataclass
 class CountsSnapshot:
     """
     Mutable snapshot model; tests write into .files.
     """
+
     total_urls: int = 0
     completed: int = 0
     failed: int = 0
@@ -160,7 +166,8 @@ class _Coordinator:
             candidates = [
                 w
                 for w in self._work.values()
-                if self._assigned.get(str(w.url_file.resolve()), 0) == 0 and w.remaining > 0
+                if self._assigned.get(str(w.url_file.resolve()), 0) == 0
+                and w.remaining > 0
             ]
             if not candidates:
                 return None
@@ -194,36 +201,95 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
 
     # General / version
-    p.add_argument("-V", "--version", action="store_true", help="Print version info and exit.")
+    p.add_argument(
+        "-V", "--version", action="store_true", help="Print version info and exit."
+    )
 
     # Process Allocation
     proc = p.add_argument_group("Process Allocation")
-    proc.add_argument("-a", "--num-aebn-dl", type=int, default=1, help="Number of concurrent AEBN download workers.")
-    proc.add_argument("-y", "--num-ytdl-dl", type=int, default=3, help="Number of concurrent yt-dlp download workers.")
+    proc.add_argument(
+        "-a",
+        "--num-aebn-dl",
+        type=int,
+        default=1,
+        help="Number of concurrent AEBN download workers.",
+    )
+    proc.add_argument(
+        "-y",
+        "--num-ytdl-dl",
+        type=int,
+        default=3,
+        help="Number of concurrent yt-dlp download workers.",
+    )
 
     # Paths
     paths = p.add_argument_group("Paths")
-    paths.add_argument("-f", "--file", dest="url_files", action="append", default=[], help="Path to specific URL file(s) (repeatable).")
-    paths.add_argument("-u", "--url-dir", type=Path, default=DEF_URL_DIR, help="Main URL dir (yt-dlp sources).")
-    paths.add_argument("-e", "--ae-url-dir", type=Path, default=DEF_AE_URL_DIR, help="AEBN URL dir.")
-    paths.add_argument("-o", "--output-dir", type=Path, default=DEF_OUT_DIR, help="Output root directory.")
+    paths.add_argument(
+        "-f",
+        "--file",
+        dest="url_files",
+        action="append",
+        default=[],
+        help="Path to specific URL file(s) (repeatable).",
+    )
+    paths.add_argument(
+        "-u",
+        "--url-dir",
+        type=Path,
+        default=DEF_URL_DIR,
+        help="Main URL dir (yt-dlp sources).",
+    )
+    paths.add_argument(
+        "-e", "--ae-url-dir", type=Path, default=DEF_AE_URL_DIR, help="AEBN URL dir."
+    )
+    paths.add_argument(
+        "-o",
+        "--output-dir",
+        type=Path,
+        default=DEF_OUT_DIR,
+        help="Output root directory.",
+    )
 
     # Mode
     mode = p.add_argument_group("Mode")
-    mode.add_argument("-S", "--skip-scan", action="store_true", help="Skip scanning and build worklist directly from disk.")
+    mode.add_argument(
+        "-S",
+        "--skip-scan",
+        action="store_true",
+        help="Skip scanning and build worklist directly from disk.",
+    )
 
     # Archive
     arch = p.add_argument_group("Archive")
-    arch.add_argument("-A", "--archive", type=Path, default=DEF_ARCHIVE, help="Path to download archive file.")
+    arch.add_argument(
+        "-A",
+        "--archive",
+        type=Path,
+        default=DEF_ARCHIVE,
+        help="Path to download archive file.",
+    )
 
     # Runtime / Logging
     rt = p.add_argument_group("Runtime")
-    rt.add_argument("-t", "--timeout", type=int, default=None, help="Per-process timeout (seconds).")
-    rt.add_argument("-L", "--log-file", type=Path, default=None, help="Write detailed run log (START/FINISH with status).")
+    rt.add_argument(
+        "-t", "--timeout", type=int, default=None, help="Per-process timeout (seconds)."
+    )
+    rt.add_argument(
+        "-L",
+        "--log-file",
+        type=Path,
+        default=None,
+        help="Write detailed run log (START/FINISH with status).",
+    )
 
     # UI
     ui_group = p.add_argument_group("UI")
-    ui_group.add_argument("-n", "--no-ui", action="store_true", help="Disable Termdash UI and use simple console UI.")
+    ui_group.add_argument(
+        "-n",
+        "--no-ui",
+        action="store_true",
+        help="Disable Termdash UI and use simple console UI.",
+    )
 
     return p.parse_args(argv)
 
@@ -284,7 +350,11 @@ def _build_worklist_from_disk(
                     continue
                 seen.add(key)
                 # Heuristic: treat as AE if it's in the AE dir; otherwise "main"
-                src = "ae" if ae_url_dir and p.parent.resolve() == ae_url_dir.resolve() else "main"
+                src = (
+                    "ae"
+                    if ae_url_dir and p.parent.resolve() == ae_url_dir.resolve()
+                    else "main"
+                )
                 wf = _process_file(p, src)
                 if wf:
                     work.append(wf)
@@ -336,7 +406,6 @@ def run_single_ytdlp(
     cmd: List[str] = [
         "yt-dlp",
         "--newline",
-        "--print",
         "TDMETA\t%(id)s\t%(title)s",
         "-o",
         out_tpl,
@@ -435,6 +504,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.version:
         try:
             from . import __version__
+
             print(__version__)
         except Exception:
             print("ytaedl (version unknown)")
@@ -531,9 +601,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     with ui:
         threading.Thread(target=_key_reader, daemon=True, name="keys").start()
 
-        single_files_provided = [Path(f) for f in args.url_files] if args.url_files else None
+        single_files_provided = (
+            [Path(f) for f in args.url_files] if args.url_files else None
+        )
         all_work = _build_worklist_from_disk(
-            args.url_dir, args.ae_url_dir, args.output_dir, single_files=single_files_provided
+            args.url_dir,
+            args.ae_url_dir,
+            args.output_dir,
+            single_files=single_files_provided,
         )
 
         # If there’s nothing to do, exit gracefully (useful on Windows where the window may close)
@@ -570,7 +645,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 successful_downloads_this_run = 0
 
                 try:
-                    for i, url in enumerate(list(wf.urls), start=0):  # url_index in file: 0-based
+                    for i, url in enumerate(
+                        list(wf.urls), start=0
+                    ):  # url_index in file: 0-based
                         if stop_evt.is_set() or abort_requested():
                             break
                         if archive_path and url in archived_urls:
@@ -589,7 +666,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                                 id=(slot * 10_000_000) + (i + 1),
                                 url=url,
                                 output_dir=wf.out_dir,
-                                source=URLSource(file=wf.url_file, line_number=i + 1, original_url=url),
+                                source=URLSource(
+                                    file=wf.url_file,
+                                    line_number=i + 1,
+                                    original_url=url,
+                                ),
                                 extra_ytdlp_args=[],
                                 extra_aebn_args=[],
                             )
@@ -604,11 +685,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                                         pass
                                     if isinstance(ev, FinishEvent):
                                         res: DownloadResult = ev.result
-                                        if res.status in (DownloadStatus.COMPLETED, DownloadStatus.ALREADY_EXISTS):
+                                        if res.status in (
+                                            DownloadStatus.COMPLETED,
+                                            DownloadStatus.ALREADY_EXISTS,
+                                        ):
                                             ok = True
                                         last_status = res.status.value
                             except KeyboardInterrupt:
-                                runlog.finish(i, url, "Internal Stop", "keyboard interrupt")
+                                runlog.finish(
+                                    i, url, "Internal Stop", "keyboard interrupt"
+                                )
                                 stop_evt.set()
                                 break
 
@@ -621,7 +707,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                                             write_to_archive(archive_path, url)
                                             archived_urls.add(url)
                             else:
-                                runlog.finish(i, url, "Bad URL", last_status or "aebn-dl failure")
+                                runlog.finish(
+                                    i, url, "Bad URL", last_status or "aebn-dl failure"
+                                )
                         else:
                             # yt-dlp path (parser-aware + tolerant of quiet success)
                             try:
@@ -658,11 +746,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         threads: List[threading.Thread] = []
         slot = 0
         for _ in range(max(0, int(args.num_aebn_dl))):
-            t = threading.Thread(target=worker, args=(slot, "ae"), daemon=True, name=f"dl-ae-{slot+1}")
+            t = threading.Thread(
+                target=worker, args=(slot, "ae"), daemon=True, name=f"dl-ae-{slot+1}"
+            )
             threads.append(t)
             slot += 1
         for _ in range(max(1, int(args.num_ytdl_dl))):
-            t = threading.Thread(target=worker, args=(slot, "yt"), daemon=True, name=f"dl-yt-{slot+1}")
+            t = threading.Thread(
+                target=worker, args=(slot, "yt"), daemon=True, name=f"dl-yt-{slot+1}"
+            )
             threads.append(t)
             slot += 1
 
@@ -700,7 +792,11 @@ def _is_snapshot_complete(snapshot: CountsSnapshot, *args, **kwargs) -> bool:
       - and no active or queued.
     """
     total_done = snapshot.completed + snapshot.failed + snapshot.already
-    return (total_done >= snapshot.total_urls) and snapshot.active == 0 and snapshot.queued == 0
+    return (
+        (total_done >= snapshot.total_urls)
+        and snapshot.active == 0
+        and snapshot.queued == 0
+    )
 
 
 def _build_worklist(*args: Any, **kwargs: Any) -> List[_WorkFile]:
@@ -740,7 +836,9 @@ def _build_worklist(*args: Any, **kwargs: Any) -> List[_WorkFile]:
             "_build_worklist requires (main_url_dir, out_root) or (main_url_dir, ae_url_dir, out_root)"
         )
 
-    return _build_worklist_from_disk(main_url_dir, ae_url_dir, out_root, single_files=single_files)
+    return _build_worklist_from_disk(
+        main_url_dir, ae_url_dir, out_root, single_files=single_files
+    )
 
 
 if __name__ == "__main__":
