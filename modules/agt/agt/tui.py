@@ -1,249 +1,211 @@
-# Textual-based TUI for agt, with slash commands, @path completion,
-# expandable dropdown, and robust status/logging.
+# file: agt/tui.py
 from __future__ import annotations
 
-import asyncio
 import glob
-import io
 import logging
 import os
-import sys
-from dataclasses import dataclass
+import re
+import threading
 from pathlib import Path
-from typing import Iterable, Iterator, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
-from rich.markdown import Markdown
-from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
-from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
-from textual.message import Message
+from textual.containers import Container, Vertical
+from textual.events import Key
 from textual.reactive import reactive
-from textual.widgets import Input, Label, ListItem, ListView, Static, TextLog
+from textual.widgets import Input, Label, ListItem, ListView, Static
 
-# ---- logging ---------------------------------------------------------------
-
-LOG = logging.getLogger("agt.tui")
-if not LOG.handlers:
-    # If caller configured logging already, don't touch it.
-    level = os.environ.get("AGT_TUI_LOGLEVEL", "INFO").upper()
-    logging.basicConfig(
-        level=getattr(logging, level, logging.INFO),
-        format="%(asctime)s | %(levelname)s | %(name)s: %(message)s",
-    )
-LOG.debug("==== agt.tui logger initialized ====")
-
-# ---- client (lazy import, avoid hard dependency at import time) ------------
-
-DEFAULT_BASE = os.environ.get("WAI_API_URL", "http://localhost:6969")
-
+# Prefer RichLog (newer Textual); fall back to Log for older installs.
 try:
-    from .client import WebAIClient  # type: ignore
-except Exception:  # pragma: no cover - fallback stub
-    WebAIClient = None  # will error at runtime if actually used
+    from textual.widgets import RichLog as _LogWidget
+except Exception:  # pragma: no cover
+    from textual.widgets import Log as _LogWidget
+
+from .client import WebAIClient
 
 
-# ---- helpers ----------------------------------------------------------------
+# ---------------- helpers ----------------
 
-
-@dataclass
-class IngestSpec:
-    display: List[str]
-    blocks: List[Tuple[str, str]]  # (path, text_content)
-
-
-SLASH_COMMANDS: List[Tuple[str, str]] = [
-    ("/help", "show help"),
-    ("/clear", "clear the screen and conversation history"),
-    ("/about", "show version info"),
+_SLASH_COMMANDS = [
+    ("help", "Show help for commands"),
+    ("about", "Show version info"),
+    ("clear", "Clear the screen and conversation history"),
 ]
 
+def _filter_cmds(prefix: str):
+    p = prefix.lower()
+    return [c for c in _SLASH_COMMANDS if c[0].startswith(p)]
 
-def iter_path_candidates(prefix: str) -> Iterable[str]:
-    """
-    Return candidate paths for a partial after '@'.
-    If a directory, append '/' to indicate that.
-    """
-    if prefix.startswith("~/"):
-        base = Path.home() / prefix[2:]
-    else:
-        base = Path(prefix)
+def _safe_read_file(p: Path, max_bytes: int = 120_000) -> str:
+    try:
+        b = p.read_bytes()
+    except Exception as e:  # pragma: no cover
+        return f"<<error reading {p}: {e}>>"
+    tail = ""
+    if len(b) > max_bytes:
+        b = b[:max_bytes]
+        tail = "\n\n[...truncated...]"
+    try:
+        txt = b.decode("utf-8", errors="replace")
+    except Exception:
+        txt = b.decode("latin-1", errors="replace")
+    return txt + tail
 
-    # Expand parent and list entries
-    parent = base.parent if base.name else base
-    pattern = str((parent if parent.exists() else Path(".")) / (base.name + "*"))
-    for p in sorted(glob.glob(pattern)):
-        try:
-            if os.path.isdir(p):
-                yield p.rstrip(os.sep) + os.sep
-            else:
-                yield p
-        except Exception:
-            continue
+def _files_from_at_expr(expr: str) -> List[Path]:
+    # Support @file, @dir/, and @glob/**/*.py
+    expr = os.path.expandvars(os.path.expanduser(expr))
+    p = Path(expr)
+    out: List[Path] = []
+    if p.exists() and p.is_dir():
+        for fp in p.rglob("*"):
+            if fp.is_file():
+                out.append(fp)
+        return out
+    for g in glob.glob(expr, recursive=True):
+        gp = Path(g)
+        if gp.is_file():
+            out.append(gp)
+    return out
 
-
-def gather_ingest_from_tokens(message: str, cwd: Path | None = None) -> IngestSpec:
-    """
-    Find tokens that start with '@' and resolve them to files/folders.
-    - '@file' ingests the file
-    - '@dir/' ingests all files under dir recursively
-    - globs like '@src/*.py' are supported
-    """
-    cwd = cwd or Path.cwd()
-    display: List[str] = []
-    blocks: List[Tuple[str, str]] = []
-
-    for raw in message.split():
-        if not raw.startswith("@"):
-            continue
-        pat = raw[1:]
-        # If it's clearly a directory token with trailing slash, expand recursively
-        candidates: List[str] = []
-        if pat.endswith(os.sep) or pat.endswith("/"):
-            root = (cwd / pat).expanduser()
-            if root.is_dir():
-                candidates = [str(p) for p in root.rglob("*") if p.is_file()]
-        else:
-            candidates = glob.glob(str((cwd / pat).expanduser()))
-
-        for path in sorted(set(candidates)):
-            try:
-                p = Path(path)
-                if p.is_file():
-                    # Limit each file to ~100 KB
-                    with io.open(p, "r", encoding="utf-8", errors="ignore") as fh:
-                        text = fh.read(100_000)
-                    display.append(str(p))
-                    blocks.append((str(p), text))
-            except Exception as e:  # keep UI resilient
-                LOG.warning("Failed to read %s: %s", path, e)
-
-    return IngestSpec(display=display, blocks=blocks)
+def _log_write(widget: _LogWidget, text: str) -> None:
+    # RichLog has write(); older Log had write_line()
+    if hasattr(widget, "write"):
+        widget.write(text)
+    elif hasattr(widget, "write_line"):  # pragma: no cover
+        widget.write_line(text)
+    else:  # pragma: no cover
+        widget.log(text)
 
 
-def render_ingest_summary(ing: IngestSpec) -> str:
-    if not ing.display:
-        return ""
-    lines = ["### Attached files", ""]
-    for p in ing.display:
-        lines.append(f"- `{p}`")
-    lines.append("")
-    return "\n".join(lines)
+# ---------------- TUI ----------------
 
-
-def render_ingest_blocks(ing: IngestSpec) -> str:
-    if not ing.blocks:
-        return ""
-    out: List[str] = ["", "---"]
-    for path, text in ing.blocks:
-        out.append(f"#### BEGIN FILE: {path}")
-        out.append("```text")
-        out.append(text)
-        out.append("```")
-        out.append(f"#### END FILE: {path}")
-        out.append("")
-    out.append("---")
-    return "\n".join(out)
-
-
-# ---- TUI --------------------------------------------------------------------
-
-
-class TUIApp(App):
-    """Interactive chat UI with dropdown completion for '/' and '@'."""
+class TUI(App):
+    """Interactive terminal UI for agt."""
 
     CSS = """
-    #root {
+    #main {
         height: 100%;
     }
     #history {
         height: 1fr;
-        border: tall $secondary;
+        border: round $primary;
         padding: 1 1;
     }
-    #input-row {
-        height: 3;
-    }
     #status {
-        padding-left: 1;
-        color: $text-muted;
+        dock: bottom;
+        padding: 0 1;
+        height: 1;
+    }
+    #input {
+        dock: bottom;
     }
     #dropdown {
         dock: bottom;
         height: auto;
-        max-height: 12;
+        max-height: 8;
         border: round $accent;
-        background: $panel;
-        padding: 0;
-        offset-y: -3;     /* hover over input */
-        visibility: hidden;
+        padding: 0 1;
     }
     """
 
     BINDINGS = [
-        Binding("ctrl+j", "newline", "newline"),
-        Binding("escape", "cancel", "cancel"),
+        ("enter", "send", "send"),
+        ("ctrl+j", "newline", "newline"),
+        ("escape", "cancel", "cancel/thinking"),
+        ("tab", "complete", "complete"),
+        ("ctrl+tab", "complete", "complete"),
+        ("right", "complete_if_dropdown", "accept dropdown"),
+        ("ctrl+l", "clear", "clear"),
+        ("up", "dropdown_up", "select up"),
+        ("down", "dropdown_down", "select down"),
     ]
 
-    # reactive state
-    busy: bool = reactive(False, init=False)
-    server_down: bool = reactive(False, init=False)
-    prompt_tokens: int = reactive(0, init=False)
-    completion_tokens: int = reactive(0, init=False)
+    busy: bool = reactive(False)
+    server_down: bool = reactive(False)
+    prompt_tokens: int = reactive(0)
+    completion_tokens: int = reactive(0)
 
     def __init__(
-        self, base_url: str | None = None, model: str = "gemini-2.0-flash"
+        self,
+        client: WebAIClient,
+        model: str = "gemini-2.0-flash",
+        log_file: Optional[str] = None,
+        **_ignore,   # swallow extra CLI kwargs (provider/stream/thinking/verbose/etc.)
     ) -> None:
-        super().__init__()
-        self.base_url = base_url or DEFAULT_BASE
+        super().__init__()  # don't pass CLI kwargs to App
+        self.client = client
         self.model = model
-        self.client = None
-        if WebAIClient:
-            try:
-                self.client = WebAIClient(self.base_url)
-            except Exception as e:
-                LOG.warning("Failed to construct WebAIClient: %s", e)
+
+        # lifecycle / race guards
+        self._mounted = False
 
         # dropdown state
-        self._dropdown_kind: Optional[str] = None  # "slash" | "at" | None
-        self._dropdown_prefix: str = ""
+        self._dropdown_mode: str = ""  # "slash" | "at" | ""
+        self._at_prefix: str = ""
+        self._slash_prefix: str = ""
+
+        # streaming / cancel
         self._cancel_requested = False
+        self._send_thread: Optional[threading.Thread] = None
 
-    # ----- composition and mount -----
+        # logging
+        self._log = logging.getLogger("agt.tui")
+        self._configure_logging(log_file)
 
+    # ---------- logging ----------
+    def _configure_logging(self, log_file: Optional[str]) -> None:
+        self._log.setLevel(logging.DEBUG)
+        if log_file:
+            abspath = os.path.abspath(log_file)
+            if not any(
+                isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", "") == abspath
+                for h in self._log.handlers
+            ):
+                fh = logging.FileHandler(abspath, encoding="utf-8")
+                fh.setLevel(logging.DEBUG)
+                fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s: %(message)s")
+                fh.setFormatter(fmt)
+                self._log.addHandler(fh)
+        self._log.debug("==== agt.tui logger initialized ====")
+
+    # ---------- compose / mount ----------
     def compose(self) -> ComposeResult:
-        # Top status note
-        yield Label("accepting edits (shift + tab to toggle)")
+        yield Container(
+            Vertical(
+                _LogWidget(id="history"),
+                ListView(id="dropdown"),
+                Input(
+                    placeholder="Type your message or @path/to/file (Tab to complete)  —  / for commands",
+                    id="input",
+                ),
+                Label(self._status_text(), id="status"),
+                id="main",
+            )
+        )
 
-        # Conversation area
-        with Vertical(id="root"):
-            yield TextLog(id="history", highlight=True, markup=True, wrap=True)
-
-            with Horizontal(id="input-row"):
-                yield Input(
-                    placeholder="Type your message or @path/to/file", id="input"
-                )
-                yield Label(self._status_text(), id="status")
-
-        # Dropdown overlay (initially hidden)
-        yield Static(id="dropdown")
-
-    async def on_mount(self) -> None:
-        self.query_one(Input).focus()
-        LOG.debug("TUI mounted; probing server health…")
-        ok, detail = (False, "no client")
-        if self.client:
-            try:
-                ok, detail = self.client.health_detail()
-            except Exception as e:
-                ok, detail = False, f"health probe failed: {e}"
+    def on_mount(self) -> None:
+        self.query_one("#dropdown", ListView).display = False
+        _log = self.query_one("#history", _LogWidget)
+        _log_write(_log, "accepting edits (shift + tab to toggle)")
+        # probe server
+        ok, detail = (True, "unknown")
+        try:
+            ok, detail = self.client.health_detail()
+        except Exception as e:  # pragma: no cover
+            ok, detail = False, f"{type(e).__name__}: {e}"
         self.server_down = not ok
-        LOG.debug("Server health: ok=%s detail=%s", ok, detail)
-        self._status_refresh()
+        self._log.debug("TUI mounted; probing server health…")
+        self._log.debug("Server health: ok=%s detail=%s", ok, detail)
+        self._mounted = True
+        self._update_status()
+        # focus input
+        try:
+            self.query_one(Input).focus()
+        except Exception:  # pragma: no cover
+            pass
 
-    # ----- UI helpers -----
-
+    # ---------- status ----------
     def _status_text(self) -> str:
         parts = [
             f"model={self.model}",
@@ -252,247 +214,287 @@ class TUIApp(App):
         if self.busy:
             parts.append("[thinking…]")
         if self.server_down:
-            parts.append("[SERVER?]")
+            parts.append("[SERVER DOWN]")
         return "  •  ".join(parts)
 
-    def _status_refresh(self) -> None:
+    def _update_status(self) -> None:
+        # Guard: during early compose, status label may not exist yet
         try:
             self.query_one("#status", Label).update(self._status_text())
         except Exception:
             pass
 
     def watch_busy(self, busy: bool) -> None:
-        self._status_refresh()
-
-    def watch_server_down(self, server_down: bool) -> None:
-        self._status_refresh()
-
-    def watch_prompt_tokens(self, _: int) -> None:
-        self._status_refresh()
-
-    def watch_completion_tokens(self, _: int) -> None:
-        self._status_refresh()
-
-    # ----- dropdown logic -----
-
-    def _dropdown(self) -> Static:
-        return self.query_one("#dropdown", Static)
-
-    def _history(self) -> TextLog:
-        return self.query_one("#history", TextLog)
-
-    def _input(self) -> Input:
-        return self.query_one("#input", Input)
-
-    def _rebuild_dropdown(self, items: List[str]) -> None:
-        dd = self._dropdown()
-        dd.remove_children()
-        if not items:
-            dd.styles.visibility = "hidden"
+        if not self._mounted:
             return
-        lst = ListView(*[ListItem(Label(it)) for it in items])
-        dd.mount(lst)
-        dd.styles.visibility = "visible"
+        self._update_status()
 
-    def _hide_dropdown(self) -> None:
-        dd = self._dropdown()
-        dd.remove_children()
-        dd.styles.visibility = "hidden"
+    def watch_server_down(self, down: bool) -> None:
+        if not self._mounted:
+            return
+        self._update_status()
 
-    def _update_dropdown(self, text: str, cursor: int) -> None:
-        """Recompute dropdown based on token at the cursor."""
-        try:
-            prefix_space = text[:cursor]
-            token = prefix_space.split()[-1] if prefix_space.split() else ""
-            items: List[str] = []
+    # ---------- dropdown helpers ----------
+    def _update_dropdown(self, value: str, caret: int) -> None:
+        dd = self.query_one("#dropdown", ListView)
+        dd.clear()
+        dd.display = False
+        self._dropdown_mode = ""
+        self._at_prefix = ""
+        self._slash_prefix = ""
 
-            if token.startswith("/"):
-                self._dropdown_kind = "slash"
-                self._dropdown_prefix = token
-                items = [
-                    cmd for (cmd, _desc) in SLASH_COMMANDS if cmd.startswith(token)
-                ]
-            elif token.startswith("@"):
-                self._dropdown_kind = "at"
-                self._dropdown_prefix = token
-                raw = token[1:]
-                items = ["@" + p for p in iter_path_candidates(raw)]
-            else:
-                self._dropdown_kind = None
-                self._dropdown_prefix = ""
-                self._hide_dropdown()
-                return
+        # `/command` completion (only at line start)
+        if value.startswith("/"):
+            prefix = value[1:caret - 1 if caret > 1 else 1]
+            self._slash_prefix = prefix
+            matches = _filter_cmds(prefix)
+            if matches:
+                for name, desc in matches[:20]:
+                    dd.append(ListItem(Static(f"[b]{name}[/b] — {desc}")))
+                dd.index = 0
+                dd.display = True
+                self._dropdown_mode = "slash"
+            return
 
-            self._rebuild_dropdown(items)
-        except Exception as e:
-            LOG.exception("_update_dropdown failed: %s", e)
-            self._hide_dropdown()
+        # `@path` completion — find last @ before caret
+        left = value[:caret]
+        m = re.search(r"@([^\s]*)$", left)
+        if m:
+            tail = m.group(1)
+            self._at_prefix = tail
+            base = os.path.expanduser(os.path.expandvars(tail or "."))
+            dirname = base if base.endswith(os.sep) else (os.path.dirname(base) or ".")
+            try:
+                for entry in sorted(os.listdir(dirname))[:200]:
+                    cand = os.path.join(dirname, entry)
+                    if tail and not cand.startswith(base):
+                        continue
+                    label = cand + (os.sep if os.path.isdir(cand) else "")
+                    dd.append(ListItem(Static(label)))
+                if dd.children:
+                    dd.index = 0
+                    dd.display = True
+                    self._dropdown_mode = "at"
+            except Exception as e:
+                self._log.debug("dropdown os.listdir error for %r: %s", dirname, e)
 
-    # ----- events -----
-
-    def action_newline(self) -> None:
-        """Insert newline into the input."""
-        inp = self._input()
-        val = inp.value
-        cur = getattr(inp, "cursor_position", len(val))
-        inp.value = val[:cur] + "\n" + val[cur:]
-        inp.cursor_position = cur + 1
-
-    def action_cancel(self) -> None:
-        """Cancel any in-flight streaming."""
-        self._cancel_requested = True
-        self.busy = False
-        self._status_refresh()
-
+    # ---------- input events ----------
     @on(Input.Changed)
-    def on_input_changed(self, ev: Input.Changed) -> None:
-        """Update dropdown on every keystroke."""
-        try:
-            inp = self._input()
-            cursor = getattr(inp, "cursor_position", None)
-            if cursor is None:
-                cursor = getattr(ev, "caret_position", 0)  # some Textual builds
-            self._update_dropdown(ev.value, int(cursor or 0))
-        except Exception as e:
-            LOG.exception("on_input_changed failed: %s", e)
+    def _on_input_changed(self, ev: Input.Changed) -> None:
+        # Some Textual builds omit cursor_position on Changed; fall back gracefully.
+        caret = getattr(ev, "cursor_position", None)
+        if caret is None:
+            caret = getattr(ev, "caret_position", None)
+        if caret is None:
+            caret = len(ev.value)
+        self._log.debug("input changed; caret=%s value=%r", caret, ev.value)
+        self._update_dropdown(ev.value, int(caret))
 
     @on(Input.Submitted)
-    async def on_input_submitted(self, ev: Input.Submitted) -> None:
-        text = ev.value.strip()
+    def _on_input_submitted(self, _ev: Input.Submitted) -> None:
+        # Ensure Enter sends even if Input consumes the key.
+        self.action_send()
+
+    # Intercept keys so Tab does NOT move focus when dropdown is open,
+    # and Right Arrow can accept completion.
+    def on_key(self, event: Key) -> None:  # type: ignore[override]
+        try:
+            dd = self.query_one("#dropdown", ListView)
+        except Exception:
+            dd = None
+        if event.key == "tab":
+            if dd and dd.display and dd.children:
+                event.stop()
+                self.action_complete()
+        elif event.key == "ctrl+tab":
+            if dd and dd.display and dd.children:
+                event.stop()
+                self.action_complete()
+        elif event.key == "right":
+            if dd and dd.display and dd.children:
+                event.stop()
+                self.action_complete()
+
+    # ---------- actions ----------
+    def action_newline(self) -> None:
+        # Insert newline at caret (works across Textual versions)
+        inp = self.query_one(Input)
+        val = inp.value
+        pos = getattr(inp, "cursor_position", len(val))
+        new_val = (val[:pos] if pos else val) + "\n" + (val[pos:] if pos is not None else "")
+        inp.value = new_val
+        try:
+            inp.cursor_position = (pos or 0) + 1
+        except Exception:
+            pass
+
+    def action_clear(self) -> None:
+        h = self.query_one("#history", _LogWidget)
+        try:
+            h.clear()
+        except Exception:  # pragma: no cover
+            _log_write(h, "\n" * 50)
+        self._update_status()
+
+    def action_cancel(self) -> None:
+        # Request cancel of an in-flight stream
+        self._cancel_requested = True
+        self.busy = False
+        self._update_status()
+
+    def action_dropdown_up(self) -> None:
+        dd = self.query_one("#dropdown", ListView)
+        if dd.display and dd.children:
+            try:
+                dd.index = max(0, dd.index - 1)
+            except Exception:  # pragma: no cover
+                pass
+
+    def action_dropdown_down(self) -> None:
+        dd = self.query_one("#dropdown", ListView)
+        if dd.display and dd.children:
+            try:
+                dd.index = min(len(dd.children) - 1, dd.index + 1)
+            except Exception:  # pragma: no cover
+                pass
+
+    def action_complete_if_dropdown(self) -> None:
+        dd = self.query_one("#dropdown", ListView)
+        if dd.display and dd.children:
+            self.action_complete()
+
+    def action_complete(self) -> None:
+        dd = self.query_one("#dropdown", ListView)
+        if not dd.display or not dd.children:
+            return
+        selected = dd.index or 0
+        # Extract text from the ListItem -> Static
+        try:
+            text = str(dd.children[selected].query_one(Static).renderable)
+        except Exception:  # pragma: no cover
+            text = ""
         if not text:
             return
-        # Handle slash commands locally
-        if text.startswith("/"):
-            handled = await self._handle_slash(text)
-            if handled:
-                self._input().value = ""
-                self._hide_dropdown()
-                return
+        inp = self.query_one(Input)
+        val = inp.value
+        caret = inp.cursor_position
 
-        await self._send_message(text)
-        self._input().value = ""
-        self._hide_dropdown()
+        if self._dropdown_mode == "slash":
+            new = "/" + text.split(" —", 1)[0]
+            newval = new + val[caret:]
+            inp.value = newval
+            inp.cursor_position = len(new)
+            dd.display = False
 
-    @on(ListView.Selected)
-    async def on_list_view_selected(self, ev: ListView.Selected) -> None:
-        """Insert the selected dropdown item at the cursor."""
-        try:
-            lbl = ev.item.query_one(Label)
-            selection = str(getattr(lbl, "renderable", "")).strip()
-            if not selection:
-                return
-            inp = self._input()
-            text = inp.value
-            cursor = int(getattr(inp, "cursor_position", len(text)))
-            before = text[:cursor]
-            # Replace current token
-            token = before.split()[-1] if before.split() else ""
-            start = cursor - len(token)
-            new_value = text[:start] + selection + text[cursor:]
-            inp.value = new_value
-            inp.cursor_position = start + len(selection)
-            self._hide_dropdown()
-            LOG.debug("Dropdown insert: %r", selection)
-        except Exception as e:
-            LOG.exception("on_list_view_selected failed: %s", e)
+        elif self._dropdown_mode == "at":
+            left = val[:caret]
+            right = val[caret:]
+            left = re.sub(r"@([^\s]*)$", "@" + text, left)
+            inp.value = left + right
+            inp.cursor_position = len(left)
+            if text.endswith(os.sep):
+                self._update_dropdown(inp.value, inp.cursor_position)
+            else:
+                dd.display = False
 
-    # ----- high level actions -----
+    # ---------- send ----------
+    def _append_history(self, text: str) -> None:
+        _log_write(self.query_one("#history", _LogWidget), text)
 
-    async def _handle_slash(self, text: str) -> bool:
-        cmd = text.strip().split()[0]
-        hist = self._history()
+    def _render_ingest_summary(self, files: List[Path]) -> str:
+        if not files:
+            return ""
+        lines = []
+        lines.append("✓ ReadManyFiles will attempt to read and concatenate…\n")
+        lines.append("### ReadManyFiles Result\n")
+        lines.append(f"Successfully read and concatenated content from **{len(files)} file(s)**.\n")
+        lines.append("**Processed Files:**")
+        for fp in files[:50]:
+            lines.append(f"- `{fp.as_posix()}`")
+        if len(files) > 50:
+            lines.append(f"- …(+{len(files)-50} more)")
+        lines.append("")
+        return "\n".join(lines)
 
-        if cmd == "/help":
-            items = "\n".join([f"- {c} — {d}" for (c, d) in SLASH_COMMANDS])
-            hist.write(Markdown(f"### Commands\n\n{items}"))
+    def _extract_at_refs(self, text: str) -> Tuple[str, List[Path]]:
+        refs = re.findall(r"@([^\s]+)", text)
+        files: List[Path] = []
+        for r in refs:
+            files.extend(_files_from_at_expr(r))
+        cleaned = re.sub(r"@([^\s]+)", "", text).strip()
+        return cleaned, files
+
+    def _handle_slash_local(self, text: str) -> bool:
+        """Return True if the slash command was handled locally."""
+        cmd = text.strip().split()[0].lstrip("/")
+        if cmd == "help":
+            items = "\n".join([f"- /{name} — {desc}" for name, desc in _SLASH_COMMANDS])
+            self._append_history("### Commands\n\n" + items + "\n")
             return True
-
-        if cmd == "/about":
-            hist.write(Markdown("**agt** TUI • Textual UI for WebAI-to-API"))
+        if cmd == "about":
+            self._append_history("**agt** TUI — Textual UI for WebAI-to-API\n")
             return True
-
-        if cmd == "/clear":
-            hist.clear()
+        if cmd == "clear":
+            self.action_clear()
             return True
-
         return False
 
-    async def _send_message(self, text: str) -> None:
-        """Send a message to the server; stream result to the history."""
-        hist = self._history()
-
-        # Ingest files referenced with '@'
-        ingest = gather_ingest_from_tokens(text)
-        preface = render_ingest_summary(ingest) + render_ingest_blocks(ingest)
-        full_prompt = text
-        if preface:
-            full_prompt = f"{text}\n\n{preface}"
-
-        # Show user message
-        hist.write(Markdown(f"**You**\n\n{Text.from_markup(full_prompt)}"))
-        self.busy = True
-        self._cancel_requested = False
-
-        if not self.client:
-            hist.write(Markdown("_No client available; cannot contact server._"))
-            self.busy = False
+    def action_send(self) -> None:
+        inp = self.query_one(Input)
+        text = inp.value.strip()
+        if not text:
             return
 
-        try:
-            # Stream events (the client returns a simple two-event sequence if streaming unsupported)
-            content_chunks: List[str] = []
-            hist.write(Markdown("**Assistant**\n\n_Thinking…_"))
-            async for event in self._stream_events_async(full_prompt):
-                if self._cancel_requested:
-                    break
-                if event.get("event") == "content":
-                    content_chunks.append(event.get("text", ""))
-                    # Update last line
-                    hist.write(Markdown("".join(content_chunks)))
-                elif event.get("event") == "usage":
-                    usage = event.get("usage", {})
-                    self.prompt_tokens = int(
-                        usage.get("prompt_tokens", self.prompt_tokens)
-                    )
-                    self.completion_tokens = int(
-                        usage.get("completion_tokens", self.completion_tokens)
-                    )
-            self.busy = False
-        except Exception as e:
-            LOG.exception("Chat failed: %s", e)
-            self.busy = False
-            hist.write(Markdown(f"_Error: {e}_"))
+        # slash commands handled locally
+        if text.startswith("/") and self._handle_slash_local(text):
+            inp.value = ""
+            self.query_one("#dropdown", ListView).display = False
+            return
 
-    async def _stream_events_async(self, prompt: str) -> Iterator[dict]:
-        """
-        Async wrapper around the sync client to keep the UI responsive.
-        """
-        loop = asyncio.get_running_loop()
+        # show user message
+        self._append_history(f"> {text}\n")
+        self._log.debug("send: %r", text)
 
-        def _sync_iter():
+        # collect @file/@dir/glob attachments
+        clean_text, files = self._extract_at_refs(text)
+        attach_blobs: List[str] = []
+        for fp in files:
+            attach_blobs.append(f"\n\n# File: {fp.name}\n```\n{_safe_read_file(fp)}\n```")
+        messages = [{"role": "user", "content": clean_text + "".join(attach_blobs)}]
+
+        # thinking + stream in background
+        self.busy = True
+        self._cancel_requested = False
+        self._update_status()
+        if files:
+            self._append_history(self._render_ingest_summary(files))
+        self._append_history("**Assistant**\n\n_Thinking…_\n")
+
+        def _worker():
             try:
-                msgs = [{"role": "user", "content": prompt}]
-                for ev in self.client.chat_stream_events(msgs, model=self.model):  # type: ignore[attr-defined]
-                    yield ev
+                for event in self.client.chat_stream_events(messages, model=self.model):
+                    if self._cancel_requested:
+                        break
+                    et = event.get("event")
+                    if et == "content":
+                        chunk = event.get("text", "")
+                        self.call_from_thread(self._append_history, chunk)
+                    elif et == "usage":
+                        usage = event.get("usage", {})
+                        self.prompt_tokens = int(usage.get("prompt_tokens", self.prompt_tokens))
+                        self.completion_tokens = int(usage.get("completion_tokens", self.completion_tokens))
+                        self.call_from_thread(self._update_status)
             except Exception as e:
-                LOG.exception("stream failed: %s", e)
-                yield {"event": "content", "text": f"(stream error: {e})"}
-                yield {"event": "done"}
+                self._log.exception("send error")
+                self.call_from_thread(self._append_history, f"\n\n❌ Error: {type(e).__name__}: {e}\n")
+            finally:
+                self.busy = False
+                self.call_from_thread(self._update_status)
+                # reset input & dropdown in UI thread
+                def _reset():
+                    inp.value = ""
+                    self.query_one("#dropdown", ListView).display = False
+                self.call_from_thread(_reset)
 
-        it = _sync_iter()
-
-        # Bridge a blocking iterator into async iteration
-        while True:
-            ev = await loop.run_in_executor(None, lambda: next(it, None))
-            if ev is None:
-                break
-            yield ev
-
-
-# ---- convenience runner ------------------------------------------------------
-
-
-def run_tui(base_url: Optional[str] = None, model: str = "gemini-2.0-flash") -> None:
-    """Entry point used by CLI."""
-    app = TUIApp(base_url=base_url or DEFAULT_BASE, model=model)
-    app.run()
+        self._send_thread = threading.Thread(target=_worker, daemon=True)
+        self._send_thread.start()
