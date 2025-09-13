@@ -275,11 +275,10 @@ class YtDlpDownloader(DownloaderBase):
                     saw_progress = True
                     yield ProgressEvent(
                         item=item,
-                        percent=data.get("percent"),
-                        speed=data.get("speed"),
-                        eta=data.get("eta"),
-                        downloaded=data.get("downloaded"),
-                        total=data.get("total"),
+                        downloaded_bytes=int(data.get("downloaded") or 0),
+                        total_bytes=int(data.get("total") or 0),
+                        speed_bps=float(data.get("speed_bps") or 0.0),
+                        eta_seconds=data.get("eta_s"),
                         unit="bytes",
                     )
                 elif kind == "meta":
@@ -421,16 +420,30 @@ class AebnDownloader(DownloaderBase):
                     continue
 
                 kind = data.get("event")
-                if kind == "progress":
-                    yield ProgressEvent(
-                        item=item,
-                        percent=data.get("percent"),
-                        speed=data.get("speed"),
-                        eta=data.get("eta"),
-                        downloaded=data.get("downloaded"),
-                        total=data.get("total"),
-                        unit="bytes",
-                    )
+                if kind in ("aebn_progress", "progress"):
+                    # Normalize aebn fields to ProgressEvent
+                    if kind == "aebn_progress":
+                        done = int(data.get("segments_done") or 0)
+                        total = int(data.get("segments_total") or 0)
+                        rate = float(data.get("rate_itps") or 0.0)
+                        eta = data.get("eta_s")
+                        yield ProgressEvent(
+                            item=item,
+                            downloaded_bytes=done,
+                            total_bytes=total,
+                            speed_bps=rate,
+                            eta_seconds=eta,
+                            unit="segments",
+                        )
+                    else:
+                        yield ProgressEvent(
+                            item=item,
+                            downloaded_bytes=int(data.get("downloaded") or 0),
+                            total_bytes=int(data.get("total") or 0),
+                            speed_bps=float(data.get("speed_bps") or 0.0),
+                            eta_seconds=data.get("eta_s"),
+                            unit="bytes",
+                        )
                 elif kind == "destination":
                     yield DestinationEvent(item=item, path=Path(data.get("path", "") or ""))
                 elif kind == "already":
