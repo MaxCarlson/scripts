@@ -1,331 +1,224 @@
 #!/usr/bin/env python3
-"""
-poe2craft CLI
-
-- Progress/logs -> STDERR only (clean JSON on STDOUT).
-- `-C/--current` resolves active PoE2 league automatically (prices).
-- `all` runs {currencies, omens, essences, base-items, prices}.
-  * --format stdout   -> one JSON object with keys: currencies, omens, essences, base_items, prices
-  * --format json -o DIR -> writes files in DIR:
-        currencies.json, omens.json, essences.json, base-items.json, prices.json
-- Verbose logging via -v (repeatable) and optional --log-file.
-"""
 from __future__ import annotations
 
 import argparse
 import json
 import logging
+import os
 import sys
 from dataclasses import asdict, is_dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-# Allow running directly (without package install)
-if __package__ is None and __name__ == "__main__":
-    sys.path.append(str(Path(__file__).resolve().parent.parent))
-
-# ---- imports with safe fallback for DEFAULT_BASE_SLUGS
-from poe2craft.datasources.poe2db_client import Poe2DBClient  # type: ignore
-try:
-    from poe2craft.datasources.poe2db_client import DEFAULT_BASE_SLUGS  # type: ignore
-except Exception:
-    DEFAULT_BASE_SLUGS = ["Bows", "Boots", "Gloves", "Helmets", "Body_Armours", "Quivers"]
-
-from poe2craft.datasources.poeninja_prices import PoENinjaPriceProvider  # type: ignore
+from .datasources.poe2db_client import Poe2DBClient
+from .datasources.poeninja_prices import PoENinjaPriceProvider, detect_active_league
 
 LOG = logging.getLogger("poe2craft.cli")
 
-# ---------- logging & progress ----------
+DEFAULT_BASE_SLUGS = ["Bows", "Boots", "Gloves", "Helmets", "Body_Armours", "Quivers"]
 
-def _setup_logging(verbosity: int, log_file: Optional[str]) -> None:
+# ---------- utilities ----------
+
+def _setup_logging(verbosity: int, log_file: Optional[str]):
     level = logging.WARNING
     if verbosity == 1:
         level = logging.INFO
     elif verbosity >= 2:
         level = logging.DEBUG
-
     handlers: List[logging.Handler] = [logging.StreamHandler(sys.stderr)]
     if log_file:
         handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
-
     logging.basicConfig(
         level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        format="%(levelname)s %(name)s:%(lineno)d %(message)s",
         handlers=handlers,
+        force=True,
     )
 
-def _progress(label: str, current: int, total: int, extra: str = "") -> None:
-    pct = (current / total * 100.0) if total else 0.0
-    msg = f"[{label}] {current}/{total} {pct:5.1f}%"
-    if extra:
-        msg += f" | {extra}"
-    print(msg, file=sys.stderr)
+def _progress(prefix: str, i: int, n: int, suffix: str = ""):
+    pct = int((i / max(1, n)) * 100)
+    left = f"[{prefix}] {i}/{n} {pct:3d}.0%"
+    if suffix:
+        left += f" | {suffix}"
+    print(left, file=sys.stderr)
 
-# ---------- JSON helpers ----------
-
-def _json_default(o: Any) -> Any:
+def _safe_default(o: Any):
     if is_dataclass(o):
         return asdict(o)
     if isinstance(o, Enum):
-        return getattr(o, "name", o.value)
-    if hasattr(o, "to_dict") and callable(getattr(o, "to_dict")):
-        try:
-            return o.to_dict()
-        except Exception:
-            pass
-    if hasattr(o, "__dict__"):
-        try:
-            return dict(o.__dict__)
-        except Exception:
-            pass
-    return str(o)
+        return o.value
+    if isinstance(o, (set,)):
+        return list(o)
+    raise TypeError(f"Object of type {o.__class__.__name__} is not JSON serializable")
 
-def _stdout_json(obj: Any) -> None:
-    print(json.dumps(obj, ensure_ascii=False, indent=2, default=_json_default))
+def _stdout_json(obj: Any):
+    print(json.dumps(obj, ensure_ascii=False, indent=2, default=_safe_default))
 
-def _save_json(path: Path, obj: Any) -> None:
+def _write_json(path: Path, obj: Any):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False, indent=2, default=_json_default)
-    LOG.info("Wrote %s (%d bytes)", str(path), path.stat().st_size)
+        json.dump(obj, f, ensure_ascii=False, indent=2, default=_safe_default)
 
-# ---------- fetch helpers ----------
-
-def _fetch_currencies(client: Poe2DBClient) -> List[dict]:
-    fn = getattr(client, "fetch_stackable_currency", None) or getattr(client, "fetch_currencies", None)
-    if not fn:
-        LOG.error("No currency fetcher found on Poe2DBClient.")
-        return []
-    out = fn()
-    _progress("Currencies", 1, 1, f"parsed {len(out)}")
-    return out
-
-def _fetch_omens(client: Poe2DBClient) -> List[dict]:
-    out = client.fetch_omens()
-    _progress("Omens", 1, 1, f"parsed {len(out)}")
-    return out
-
-def _fetch_essences(client: Poe2DBClient) -> List[dict]:
-    out = client.fetch_essences()
-    _progress("Essences", 1, 1, f"parsed {len(out)}")
-    return out
-
-def _fetch_base_items(client: Poe2DBClient, slugs: Iterable[str]) -> List[dict]:
-    slugs = list(slugs) if slugs else DEFAULT_BASE_SLUGS
-    all_items: List[dict] = []
-    total = len(slugs)
-    for i, slug in enumerate(slugs, start=1):
-        items = client.fetch_base_items(slug)
-        all_items.extend(items)
-        _progress("Base Items (slugs)", i, total, f"{slug} -> {len(items)} items")
-    return all_items
-
-def _fetch_prices(provider: PoENinjaPriceProvider, league_arg: Optional[str], use_current_flag: bool) -> Dict[str, float]:
-    league = "Standard"
-
-    # treat -l C or --league C as "current" too
-    if league_arg and league_arg.strip().lower() in {"c", "current"}:
-        use_current_flag = True
-
-    if use_current_flag:
-        detected = provider.detect_current_league()
+def _resolve_league(arg: str, provider: PoENinjaPriceProvider) -> str:
+    if arg and arg.lower() in {"c", "current"}:
+        detected = detect_active_league(provider.session)
         if detected:
-            league = detected
-            LOG.info("Using current league detected: %s", league)
-        else:
-            LOG.warning("Could not detect current league; falling back to Standard")
-    elif league_arg:
-        league = league_arg
+            LOG.info("Detected active league: %s", detected)
+            return detected
+        LOG.warning("Could not detect active league; falling back to Standard")
+        return "Standard"
+    return arg or "Standard"
 
-    prices = provider.get_currency_prices(league=league)
+# ---------- commands ----------
+
+def cmd_currencies(args):
+    c = Poe2DBClient()
+    items = c.fetch_currencies()
+    _progress("Currencies", 1, 1, f"parsed {len(items)}")
+    if args.format == "stdout":
+        _stdout_json(items)
+    else:
+        _write_json(Path(args.output or "currencies.json"), items)
+
+def cmd_omens(args):
+    c = Poe2DBClient()
+    items = c.fetch_omens()
+    _progress("Omens", 1, 1, f"parsed {len(items)}")
+    if args.format == "stdout":
+        _stdout_json(items)
+    else:
+        _write_json(Path(args.output or "omens.json"), items)
+
+def cmd_essences(args):
+    c = Poe2DBClient()
+    items = c.fetch_essences()
+    _progress("Essences", 1, 1, f"parsed {len(items)}")
+    if args.format == "stdout":
+        _stdout_json(items)
+    else:
+        _write_json(Path(args.output or "essences.json"), items)
+
+def cmd_base_items(args):
+    c = Poe2DBClient()
+    slugs = args.slugs or DEFAULT_BASE_SLUGS
+    all_items: List[Dict[str, Any]] = []
+    for i, slug in enumerate(slugs, 1):
+        items = c.fetch_base_items(slug)
+        _progress("Base Items (slugs)", i, len(slugs), f"{slug} -> {len(items)} items")
+        all_items.extend(items)
+    if args.format == "stdout":
+        _stdout_json(all_items)
+    else:
+        _write_json(Path(args.output or "base-items.json"), all_items)
+
+def cmd_prices(args):
+    prov = PoENinjaPriceProvider()
+    league = _resolve_league(args.league, prov)
+    prices = prov.get_currency_prices(league=league)
     _progress(f"Prices [{league}]", 1, 1, f"{len(prices)} entries")
-    return prices
+    if args.format == "stdout":
+        _stdout_json(prices)
+    else:
+        _write_json(Path(args.output or "prices.json"), prices)
 
-# ---------- argparse + handlers ----------
+def cmd_all(args):
+    # Decide stdout vs files
+    to_stdout = (args.format == "stdout") or (args.output is None and args.format == "json")
+    out_dir = Path(args.output) if args.output else Path(os.getcwd())
+
+    # Run each subcommand in sequence with progress
+    c = Poe2DBClient()
+    currencies = c.fetch_currencies()
+    _progress("Currencies", 1, 1, f"parsed {len(currencies)}")
+
+    omens = c.fetch_omens()
+    _progress("Omens", 1, 1, f"parsed {len(omens)}")
+
+    essences = c.fetch_essences()
+    _progress("Essences", 1, 1, f"parsed {len(essences)}")
+
+    base_all: List[Dict[str, Any]] = []
+    for i, slug in enumerate(DEFAULT_BASE_SLUGS, 1):
+        items = c.fetch_base_items(slug)
+        _progress("Base Items (slugs)", i, len(DEFAULT_BASE_SLUGS), f"{slug} -> {len(items)} items")
+        base_all.extend(items)
+
+    prov = PoENinjaPriceProvider()
+    league = _resolve_league(args.league, prov)
+    prices = prov.get_currency_prices(league=league)
+    _progress(f"Prices [{league}]", 1, 1, f"{len(prices)} entries")
+
+    if to_stdout:
+        # Print a structured object with sections to STDOUT
+        _stdout_json(
+            {
+                "currencies": currencies,
+                "omens": omens,
+                "essences": essences,
+                "base_items": base_all,
+                "prices": prices,
+                "league": league,
+            }
+        )
+    else:
+        _write_json(out_dir / "currencies.json", currencies)
+        _write_json(out_dir / "omens.json", omens)
+        _write_json(out_dir / "essences.json", essences)
+        _write_json(out_dir / "base-items.json", base_all)
+        _write_json(out_dir / "prices.json", prices)
+        # mimic your “sizes” footer
+        for fname in ("currencies.json", "omens.json", "essences.json", "base-items.json", "prices.json"):
+            p = out_dir / fname
+            try:
+                print(f"{p.stat().st_size:<6}  -I  {fname}", file=sys.stderr)
+            except Exception:
+                pass
+
+# ---------- main ----------
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="poe2craft", description="Path of Exile 2 data scraper/CLI")
-    p.add_argument("-v", action="count", default=0, help="Increase verbosity (repeat for more)")
-    p.add_argument("--log-file", default=None, help="Write logs to this file (in addition to STDERR)")
-
+    p = argparse.ArgumentParser(prog="poe2craft", description="PoE2 data scrapers & price fetchers")
+    p.add_argument("-v", action="count", default=0, help="Increase verbosity (-v, -vv)")
+    p.add_argument("--log-file", default=None, help="Write logs to this file")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    # currencies
-    sp = sub.add_parser("currencies", help="Fetch stackable currencies")
-    sp.add_argument("-f", "--format", choices=["stdout", "json"], default="stdout")
-    sp.add_argument("-o", "--output", default=None, help="Output file when --format json")
-    sp.set_defaults(handler=cmd_currencies)
+    def add_common(sp):
+        sp.add_argument("-f", "--format", choices=("json", "stdout"), default="json")
+        sp.add_argument("-o", "--output", default=None, help="Output file (json) or directory for 'all'")
 
-    # omens
-    sp = sub.add_parser("omens", help="Fetch omens")
-    sp.add_argument("-f", "--format", choices=["stdout", "json"], default="stdout")
-    sp.add_argument("-o", "--output", default=None, help="Output file when --format json")
-    sp.set_defaults(handler=cmd_omens)
+    sp = sub.add_parser("currencies"); add_common(sp); sp.set_defaults(func=cmd_currencies)
+    sp = sub.add_parser("omens");      add_common(sp); sp.set_defaults(func=cmd_omens)
+    sp = sub.add_parser("essences");   add_common(sp); sp.set_defaults(func=cmd_essences)
 
-    # essences
-    sp = sub.add_parser("essences", help="Fetch essences")
-    sp.add_argument("-f", "--format", choices=["stdout", "json"], default="stdout")
-    sp.add_argument("-o", "--output", default=None, help="Output file when --format json")
-    sp.set_defaults(handler=cmd_essences)
+    sp = sub.add_parser("base-items")
+    add_common(sp)
+    sp.add_argument("slugs", nargs="*", help="One or more category slugs (default: common armour/weapon classes)")
+    sp.set_defaults(func=cmd_base_items)
 
-    # base-items
-    sp = sub.add_parser("base-items", help="Fetch base items for one or more slugs")
-    sp.add_argument("slugs", nargs="*", help="Item class slugs (default: curated set)")
-    sp.add_argument("-f", "--format", choices=["stdout", "json"], default="stdout")
-    sp.add_argument("-o", "--output", default=None, help="Output file when --format json")
-    sp.set_defaults(handler=cmd_base_items)
+    sp = sub.add_parser("prices")
+    add_common(sp)
+    sp.add_argument("-l", "--league", default="Standard", help="League name, or 'C'/'Current' for the active league")
+    sp.set_defaults(func=cmd_prices)
 
-    # prices
-    sp = sub.add_parser("prices", help="Fetch poe.ninja currency prices for PoE2")
-    sp.add_argument("-l", "--league", default="Standard", help="League name (use -C or -l C for active league)")
-    sp.add_argument("-C", "--current", action="store_true", help="Use currently active league")
-    sp.add_argument("-f", "--format", choices=["stdout", "json"], default="stdout")
-    sp.add_argument("-o", "--output", default=None, help="Output file when --format json")
-    sp.set_defaults(handler=cmd_prices)
-
-    # all
-    sp = sub.add_parser("all", help="Run currencies, omens, essences, base-items, prices")
-    sp.add_argument("-l", "--league", default="Standard", help="League name for prices (use -C or -l C for active league)")
-    sp.add_argument("-C", "--current", action="store_true", help="Use currently active league (prices)")
-    sp.add_argument("-f", "--format", choices=["stdout", "json"], default="stdout",
-                    help="stdout = single JSON object; json = write individual files")
-    sp.add_argument("-o", "--output", default=None,
-                    help="When --format json: directory (or any path whose parent will be used) to write files into")
-    sp.add_argument("--base-slugs", nargs="*", default=None,
-                    help="Custom slugs for base-items; defaults to curated set")
-    sp.set_defaults(handler=cmd_all)
+    sp = sub.add_parser("all")
+    add_common(sp)
+    sp.add_argument("-l", "--league", default="Standard", help="League name, or 'C'/'Current' for the active league")
+    sp.set_defaults(func=cmd_all)
 
     return p
 
-def cmd_currencies(args: argparse.Namespace) -> int:
-    client = Poe2DBClient()
-    data = _fetch_currencies(client)
-    if args.format == "stdout":
-        _stdout_json(data)
-    else:
-        if not args.output:
-            print("ERROR: --output required with --format json", file=sys.stderr)
-            return 2
-        _save_json(Path(args.output), data)
-    return 0
-
-def cmd_omens(args: argparse.Namespace) -> int:
-    client = Poe2DBClient()
-    data = _fetch_omens(client)
-    if args.format == "stdout":
-        _stdout_json(data)
-    else:
-        if not args.output:
-            print("ERROR: --output required with --format json", file=sys.stderr)
-            return 2
-        _save_json(Path(args.output), data)
-    return 0
-
-def cmd_essences(args: argparse.Namespace) -> int:
-    client = Poe2DBClient()
-    data = _fetch_essences(client)
-    if args.format == "stdout":
-        _stdout_json(data)
-    else:
-        if not args.output:
-            print("ERROR: --output required with --format json", file=sys.stderr)
-            return 2
-        _save_json(Path(args.output), data)
-    return 0
-
-def cmd_base_items(args: argparse.Namespace) -> int:
-    client = Poe2DBClient()
-    slugs = args.slugs if args.slugs else DEFAULT_BASE_SLUGS
-    data = _fetch_base_items(client, slugs)
-    if args.format == "stdout":
-        _stdout_json(data)
-    else:
-        if not args.output:
-            print("ERROR: --output required with --format json", file=sys.stderr)
-            return 2
-        _save_json(Path(args.output), data)
-    return 0
-
-def cmd_prices(args: argparse.Namespace) -> int:
-    provider = PoENinjaPriceProvider()
-    data = _fetch_prices(provider, args.league, args.current)
-    if args.format == "stdout":
-        _stdout_json(data)
-    else:
-        if not args.output:
-            print("ERROR: --output required with --format json", file=sys.stderr)
-            return 2
-        _save_json(Path(args.output), data)
-    return 0
-
-def cmd_all(args: argparse.Namespace) -> int:
-    client = Poe2DBClient()
-    provider = PoENinjaPriceProvider()
-
-    base_slugs = args.base_slugs if args.base_slugs else DEFAULT_BASE_SLUGS
-
-    currencies = _fetch_currencies(client)
-    omens = _fetch_omens(client)
-    essences = _fetch_essences(client)
-    base_items = _fetch_base_items(client, base_slugs)
-    prices = _fetch_prices(provider, args.league, args.current)
-
-    if args.format == "stdout":
-        bundle = {
-            "currencies": currencies,
-            "omens": omens,
-            "essences": essences,
-            "base_items": base_items,
-            "prices": prices,
-        }
-        _stdout_json(bundle)
-        return 0
-
-    # --format json: write individual files
-    outdir: Path
-    if not args.output:
-        outdir = Path(".")
-    else:
-        outpath = Path(args.output)
-        outdir = outpath if outpath.is_dir() else outpath.parent
-
-    files = {
-        "currencies.json": currencies,
-        "omens.json": omens,
-        "essences.json": essences,
-        "base-items.json": base_items,
-        "prices.json": prices,
-    }
-    for fname, payload in files.items():
-        _save_json(outdir / fname, payload)
-
-    # Summary to STDERR
-    for fname in files.keys():
-        f = outdir / fname
-        try:
-            size = f.stat().st_size
-        except Exception:
-            size = 0
-        print(f"{size:>6}  -I  {fname}", file=sys.stderr)
-
-    return 0
-
-def main_cli(argv: Optional[List[str]] = None) -> int:
-    argv = argv if argv is not None else sys.argv[1:]
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    _setup_logging(args.v, args.log_file)
+def main(argv: Optional[List[str]] = None) -> int:
     try:
-        return args.handler(args)
-    except Exception as e:
-        LOG.exception("Command failed: %s", e)
+        args = build_parser().parse_args(argv)
+        _setup_logging(args.v, args.log_file)
+        args.func(args)
+        return 0
+    except SystemExit as e:
+        return int(e.code)
+    except Exception:
+        LOG.exception("Command failed")
         return 2
 
-# tests and older console-scripts may import `main`
-def main(argv: Optional[List[str]] = None) -> int:  # noqa: D401
-    """Backward-compatible entrypoint used by tests and old wrappers."""
-    return main_cli(argv)
-
 if __name__ == "__main__":
-    raise SystemExit(main_cli())
+    raise SystemExit(main())
