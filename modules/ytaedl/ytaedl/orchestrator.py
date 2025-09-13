@@ -406,7 +406,7 @@ def run_single_ytdlp(
     cmd: List[str] = [
         "yt-dlp",
         "--newline",
-        "TDMETA\t%(id)s\t%(title)s",
+        "--print", "TDMETA\t%(id)s\t%(title)s",
         "-o",
         out_tpl,
         "--retries",
@@ -711,26 +711,51 @@ def main(argv: Optional[List[str]] = None) -> int:
                                     i, url, "Bad URL", last_status or "aebn-dl failure"
                                 )
                         else:
-                            # yt-dlp path (parser-aware + tolerant of quiet success)
+                            # yt-dlp path — use the event-streaming downloader so the UI updates live
+                            runlog.start(i, url)
+                            item = DownloadItem(
+                                id=(slot * 10_000_000) + (i + 1),
+                                url=url,
+                                output_dir=wf.out_dir,
+                                source=URLSource(
+                                    file=wf.url_file,
+                                    line_number=i + 1,
+                                    original_url=url,
+                                ),
+                                extra_ytdlp_args=[],
+                                extra_aebn_args=[],
+                            )
+                            ok = False
+                            last_status: Optional[str] = None
                             try:
-                                status, note = run_single_ytdlp(
-                                    logger=runlog,
-                                    url=url,
-                                    url_index=i,
-                                    out_tpl=out_tpl,
-                                    extra_args=None,
-                                    retries=3,
-                                )
-                                if status in ("Finished DL", "Exists"):
-                                    successful_downloads_this_run += 1
-                                    if archive_path:
-                                        with archive_lock:
-                                            if url not in archived_urls:
-                                                write_to_archive(archive_path, url)
-                                                archived_urls.add(url)
+                                for ev in ytdl.download(item):
+                                    try:
+                                        ui.handle_event(ev)
+                                    except Exception:
+                                        pass
+                                    if isinstance(ev, FinishEvent):
+                                        res: DownloadResult = ev.result
+                                        last_status = res.status.value
+                                        if res.status in (
+                                            DownloadStatus.COMPLETED,
+                                            DownloadStatus.ALREADY_EXISTS,
+                                        ):
+                                            ok = True
                             except KeyboardInterrupt:
+                                runlog.finish(i, url, "Internal Stop", "keyboard interrupt")
                                 stop_evt.set()
                                 break
+
+                            if ok:
+                                runlog.finish(i, url, "Finished DL")
+                                successful_downloads_this_run += 1
+                                if archive_path:
+                                    with archive_lock:
+                                        if url not in archived_urls:
+                                            write_to_archive(archive_path, url)
+                                            archived_urls.add(url)
+                            else:
+                                runlog.finish(i, url, "Bad URL", last_status or "yt-dlp failure")
 
                         try:
                             ui.pump()

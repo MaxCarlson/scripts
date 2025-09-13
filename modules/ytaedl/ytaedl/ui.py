@@ -159,7 +159,7 @@ class TermdashUI(UIBase):
             align_columns=True,
             column_sep="|",
             min_col_pad=2,
-            max_col_width=None,   # don't hard-limit; let title row handle width
+            max_col_width=None,
             enable_separators=True,
             separator_style="rule",
             reserve_extra_rows=6,
@@ -247,11 +247,12 @@ class TermdashUI(UIBase):
         for i in range(self.num_workers):
             w = i + 1
             ln_main, ln_s1, ln_s1b, ln_s2, ln_s3 = f"w{w}:main", f"w{w}:s1", f"w{w}:s1b", f"w{w}:s2", f"w{w}:s3"
+            # 62-col friendly: compact prefixes + conservative width hints
             self._add_line(ln_main, Line(ln_main, stats=[
-                Stat("w", f"Worker {w}", prefix="", no_expand=True, display_width=10),
-                Stat("set", "", prefix=" Set ", no_expand=True, display_width=18),
-                Stat("urls", (0, 0), prefix=" URLs ", format_string="{}/{}", no_expand=True, display_width=9),
-                Stat("elapsed", "00:00:00", prefix=" Elapsed ", no_expand=True, display_width=10),
+                Stat("w", f"W{w}", prefix="", no_expand=True, display_width=4),
+                Stat("set", "", prefix=" S ", no_expand=True, display_width=16),
+                Stat("urls", (0, 0), prefix=" U ", format_string="{}/{}", no_expand=True, display_width=8),
+                Stat("elapsed", "00:00:00", prefix=" t ", no_expand=True, display_width=10),
             ]))
             self._add_line(ln_s1, Line(ln_s1, stats=[
                 Stat("mbps", 0.0, prefix="MB/s ", format_string="{:.1f}"),
@@ -262,8 +263,8 @@ class TermdashUI(UIBase):
                 Stat("mb", (0.0, 0.0), prefix=" MB ", format_string="{:.1f}/{:.1f}"),
             ]))
             self._add_line(ln_s2, Line(ln_s2, stats=[
-                Stat("id", "", prefix="ID ", no_expand=True, display_width=12),
-                Stat("title", "", prefix="", no_expand=True, display_width=40),
+                Stat("id", "", prefix="ID ", no_expand=True, display_width=10),
+                Stat("title", "", prefix="", no_expand=True, display_width=28),
             ]))
             self._add_line(ln_s3, Line(ln_s3, stats=[
                 Stat("already", 0, prefix="Already "),

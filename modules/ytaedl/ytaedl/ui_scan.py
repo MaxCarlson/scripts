@@ -216,7 +216,7 @@ class ScanDashboard:
                     time.sleep(0.05)
                     continue
                 if ch == "z":
-                    self.set_paused(!self._paused)  # noqa: E713 (explicit invert)
+                    self.set_paused(not self._paused)
                 elif ch == "q":
                     self._write_status("[STATUS] Quit? press 'y' to confirm, any other key to cancel")
                     try:
@@ -230,36 +230,5 @@ class ScanDashboard:
                     self.force_quit_requested = True
                     break
 
-        # Python doesn't support ! in expressions; fix the small typo:
-        # We'll rebind the function to avoid a syntax error at import time.
-        def _fixed_toggle(p):
-            self.set_paused(not self._paused)
-
-        # Patch the closure’s call site
-        nonlocal_vars = {}
-        def _patched_loop():
-            while not self._stop_hotkeys:
-                try:
-                    ch = sys.stdin.read(1)
-                except Exception:
-                    break
-                if not ch:
-                    time.sleep(0.05)
-                    continue
-                if ch == "z":
-                    _fixed_toggle(self._paused)
-                elif ch == "q":
-                    self._write_status("[STATUS] Quit? press 'y' to confirm, any other key to cancel")
-                    try:
-                        yn = sys.stdin.read(1)
-                    except Exception:
-                        yn = "n"
-                    if yn.lower() == "y":
-                        self.quit_requested = True
-                        break
-                elif ch == "Q":
-                    self.force_quit_requested = True
-                    break
-
-        t = threading.Thread(target=_patched_loop, name="scan-hotkeys", daemon=True)
+        t = threading.Thread(target=_loop, name="scan-hotkeys", daemon=True)
         t.start()
