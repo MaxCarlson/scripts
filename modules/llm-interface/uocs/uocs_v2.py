@@ -4,13 +4,11 @@ UOCS v2 applier (Python focus)
 
 - Parses a single UOCS v2 JSON document from a file or stdin.
 - Applies unit-level edits to Python files using AST-first matching
-  with text fallbacks (anchors), plus basic file ops.
-- Dry-run by default; write only with --confirm.
+  with text anchors. Dry-run by default; write only with --confirm.
 
 Env targets: Windows 11 (PS/WSL), Termux, WSL2.
 
-Stdlib only. Optional: if LIBCST is installed, we could preserve formatting,
-but this reference keeps zero-dep semantics-focused behavior.
+Stdlib only; formatting preservation is best-effort.
 """
 from __future__ import annotations
 
@@ -117,16 +115,14 @@ def sha256_normalized_block(text: str) -> str:
     """
     lines = []
     for line in text.splitlines():
-        # naive: strip trailing inline comments not inside quotes
+        # Remove trailing inline comments that are not in quotes (quick heuristic)
         if "#" in line:
-            # very rough check: if hash appears before any quote
             qpos_candidates = [i for i in (line.find("'"), line.find('"')) if i >= 0]
             first_quote = min(qpos_candidates) if qpos_candidates else 10**9
             hashpos = line.find("#")
-            if hashpos >= 0 and hashpos < first_quote:
+            if 0 <= hashpos < first_quote:
                 line = line[:hashpos]
         if line.strip():
-            # collapse inner whitespace
             lines.append(" ".join(line.strip().split()))
     normalized = "\n".join(lines).strip()
     return "sha256:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()
@@ -146,7 +142,6 @@ def read_text(path: Path) -> str:
 
 def write_text(path: Path, text: str) -> None:
     ensure_dirs(path)
-    # Ensure trailing newline for POSIX friendliness
     if text and not text.endswith("\n"):
         text += "\n"
     path.write_text(text, encoding="utf-8", newline="\n")
@@ -161,9 +156,6 @@ class NodeSpan:
     end_line: int
     indent: str
 
-def parse_python_ast(src: str) -> ast.AST:
-    return ast.parse(src)
-
 def _infer_indent(text: str, lineno: int) -> str:
     lines = text.splitlines(True)
     if 1 <= lineno <= len(lines):
@@ -172,7 +164,6 @@ def _infer_indent(text: str, lineno: int) -> str:
     return ""
 
 def _slice_by_span(text: str, span: NodeSpan) -> Tuple[str, str, str]:
-    """Return (head, mid, tail) where mid is the span slice (line-based)."""
     lines = text.splitlines(True)
     head = "".join(lines[:span.start_line-1])
     mid  = "".join(lines[span.start_line-1:span.end_line])
@@ -185,36 +176,40 @@ def _replace_span(text: str, span: NodeSpan, new_block: str) -> str:
         new_block += "\n"
     return head + new_block + tail
 
-def _find_class_node(text: str, tree: ast.AST, qual: str) -> Optional[Tuple[ast.ClassDef, NodeSpan]]:
-    # Qual may include module path; we only need the simple name for Python.
-    _, _, simple = qual.rpartition(".")
-    target = simple or qual
+def _parse_python(text: str) -> ast.AST:
+    return ast.parse(text)
+
+def _simple_name(qualified: str) -> str:
+    _pkg, _dot, simple = qualified.rpartition(".")
+    return simple or qualified
+
+def _find_class_nodes(text: str, tree: ast.AST, qual: str) -> List[Tuple[ast.ClassDef, NodeSpan]]:
+    target = _simple_name(qual)
+    hits: List[Tuple[ast.ClassDef, NodeSpan]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef) and node.name == target:
             span = NodeSpan(node.lineno, getattr(node, "end_lineno", node.lineno), _infer_indent(text, node.lineno))
-            return node, span
-    return None
+            hits.append((node, span))
+    return hits
 
-def _find_function_node(text: str, tree: ast.AST, qual: str, class_name: Optional[str]) -> Optional[Tuple[ast.AST, NodeSpan]]:
-    _, _, simple = qual.rpartition(".")
-    fn = simple or qual
+def _find_function_nodes(text: str, tree: ast.AST, qual: str, class_name: Optional[str]) -> List[Tuple[ast.AST, NodeSpan]]:
+    fn = _simple_name(qual)
+    hits: List[Tuple[ast.AST, NodeSpan]] = []
 
     if class_name:
-        c = _find_class_node(text, tree, class_name)
-        if not c:
-            return None
-        cls, _ = c
-        for node in cls.body:
-            if isinstance(node, ast.FunctionDef) and node.name == fn:
-                span = NodeSpan(node.lineno, getattr(node, "end_lineno", node.lineno), _infer_indent(text, node.lineno))
-                return node, span
-        return None
+        class_hits = _find_class_nodes(text, tree, class_name)
+        for cls, _ in class_hits:
+            for node in getattr(cls, "body", []):
+                if isinstance(node, ast.FunctionDef) and node.name == fn:
+                    span = NodeSpan(node.lineno, getattr(node, "end_lineno", node.lineno), _infer_indent(text, node.lineno))
+                    hits.append((node, span))
+        return hits
 
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == fn:
             span = NodeSpan(node.lineno, getattr(node, "end_lineno", node.lineno), _infer_indent(text, node.lineno))
-            return node, span
-    return None
+            hits.append((node, span))
+    return hits
 
 # ------------------------
 # Applier
@@ -300,7 +295,7 @@ class UOCSApplicator:
         text = read_text(path)
 
         try:
-            tree = parse_python_ast(text)
+            tree = _parse_python(text)
         except SyntaxError as se:
             self.results.append(OpResult("failed", f"syntax error parsing file: {se}", str(path), idx))
             return
@@ -310,12 +305,10 @@ class UOCSApplicator:
             res = self._apply_unit_op(text, tree, path, u, uidx)
             self.results.append(res)
             if res.status == "applied" and not self.dry_run:
-                # Refresh after write
                 text = read_text(path)
                 try:
-                    tree = parse_python_ast(text)
+                    tree = _parse_python(text)
                 except SyntaxError:
-                    # leave parsing error for optional validation
                     pass
 
     def _apply_unit_op(self, text: str, tree: ast.AST, path: Path, u: Dict[str, Any], op_index: int) -> OpResult:
@@ -349,49 +342,68 @@ class UOCSApplicator:
 
     def _match_unit(self, text: str, tree: ast.AST, ref: UnitRef, anchor: Optional[Anchor]) -> Optional[NodeSpan]:
         """
-        Ladder: AST by symbol → AST by kind/name → unique text anchor.
-        Returns NodeSpan if matched; None otherwise.
+        Matching policy:
+        - If anchor is provided: it must be <= max_lines and match exactly once (no AST fallback).
+        - Else: AST by symbol; if multiple candidates, disambiguate with old_hash, then sig_old.
         """
-        # 1) AST by symbol
-        if ref.kind == "class":
-            found = _find_class_node(text, tree, ref.qualified)
-        else:
-            found = _find_function_node(text, tree, ref.qualified, ref.class_name)
-
-        if found:
-            node, span = found
-            # Verify header if provided
-            head, mid, _tail = _slice_by_span(text, span)
-            if ref.sig_old:
-                first_line = (mid.splitlines(True)[0] if mid else "").strip()
-                if ref.sig_old.strip() not in first_line:
-                    # Allow via old_hash if provided and matches
-                    if ref.old_hash and sha256_normalized_block(mid) == ref.old_hash:
-                        return span
-                    return None
-            if ref.old_hash and sha256_normalized_block(mid) != ref.old_hash:
-                return None
-            return span
-
-        # 2) Unique text anchor fallback
+        # 1) Authoritative anchor
         if anchor and anchor.by == "text":
             snippet = anchor.value
-            # Limit lines
+            # Enforce line-cap
             if snippet.count("\n") + 1 > anchor.max_lines:
                 return None
-            # Count all matches to ensure uniqueness
+            # Require exactly one match
             matches = list(re.finditer(re.escape(snippet), text))
             if len(matches) != 1:
                 return None
             m = matches[0]
-            # Compute 1-based line numbers
             start_idx = m.start()
             pre_lines = text[:start_idx].splitlines(True)
             start_line = len(pre_lines) + 1
             end_line = start_line + (snippet.count("\n") or 0)
             return NodeSpan(start_line, end_line, _infer_indent(text, start_line))
 
-        return None
+        # 2) AST by symbol name/kind
+        candidates: List[Tuple[Any, NodeSpan]]
+        if ref.kind == "class":
+            candidates = _find_class_nodes(text, tree, ref.qualified)
+        else:
+            candidates = _find_function_nodes(text, tree, ref.qualified, ref.class_name)
+
+        if not candidates:
+            return None
+
+        # If multiple: try old_hash then sig_old to pick exactly one
+        if len(candidates) > 1:
+            chosen: Optional[NodeSpan] = None
+            if ref.old_hash:
+                hits = []
+                for _node, span in candidates:
+                    _h = sha256_normalized_block(_slice_by_span(text, span)[1])
+                    if _h == ref.old_hash:
+                        hits.append(span)
+                if len(hits) == 1:
+                    chosen = hits[0]
+            if chosen is None and ref.sig_old:
+                hits = []
+                for _node, span in candidates:
+                    _, mid, _ = _slice_by_span(text, span)
+                    first = (mid.splitlines(True)[0] if mid else "").strip()
+                    if ref.sig_old.strip() in first:
+                        hits.append(span)
+                if len(hits) == 1:
+                    chosen = hits[0]
+            return chosen  # may be None -> ambiguous
+
+        # Exactly one candidate
+        node, span = candidates[0]
+        # old_hash check (authoritative)
+        if ref.old_hash:
+            _, mid, _ = _slice_by_span(text, span)
+            if sha256_normalized_block(mid) != ref.old_hash:
+                return None
+        # If sig_old mismatches in unique case, still allow (e.g., earlier ops changed signature)
+        return span
 
     # ---------- ops ----------
 
@@ -407,11 +419,9 @@ class UOCSApplicator:
         head, mid, tail = _slice_by_span(text, span)
         before_hash = sha256_normalized_block(mid)
 
-        # Idempotency
         if sha256_normalized_block(new.code) == before_hash:
             return OpResult("noop", "already applied", str(path), op_index, before_hash, before_hash)
 
-        # Basic header guard
         first_line = new.code.splitlines(True)[0] if new.code else ""
         if new.sig.strip() not in first_line:
             return OpResult("failed", "new.sig does not match code header", str(path), op_index)
@@ -438,7 +448,6 @@ class UOCSApplicator:
                 block += "\n"
             return "".join(lines[:idx]) + block + "".join(lines[idx:])
 
-        updated = None
         if where.insert == "top":
             updated = insert_at_line(0)
         elif where.insert == "bottom":
@@ -446,7 +455,6 @@ class UOCSApplicator:
         elif where.insert in ("before_symbol", "after_symbol"):
             if not where.symbol:
                 return OpResult("failed", "where.symbol required", str(path), op_index)
-            # Determine symbol kind heuristically from ref.kind
             sym_kind = "method" if ref.kind == "method" else "function"
             sym_ref = UnitRef(kind=sym_kind, qualified=where.symbol, class_name=None)
             span = self._match_unit(text, tree, sym_ref, None)
@@ -500,7 +508,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     app = UOCSApplicator(root=Path(args.root).resolve(), dry_run=not args.confirm)
     results = app.apply(doc)
 
-    # Output
     if args.format == "json":
         print(json.dumps([dataclasses.asdict(r) for r in results], indent=2))
     else:
@@ -510,10 +517,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 msg += f" :: {r.reason}"
             print(msg)
 
-    # Optional validation
     if args.validate and args.confirm:
         try:
-            import compileall  # stdlib
+            import compileall
             ok = compileall.compile_dir(args.root, quiet=1)
             if not ok:
                 logging.error("Validation failed (py_compile).")
