@@ -1,4 +1,5 @@
-# ytaedl/ui.py
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import queue
@@ -6,14 +7,17 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Set, Tuple
+from typing import Any, Dict, Optional, Set, Tuple, Iterable, Sequence
 
 try:
+    # Use the real Termdash in the repo if available
     from termdash import TermDash, Line, Stat  # type: ignore
     TERMDASH_AVAILABLE = True
 except Exception:
     TERMDASH_AVAILABLE = False
 
+
+# -------------------- Lightweight event item ref --------------------
 
 @dataclass(frozen=True)
 class DownloadItemRef:
@@ -43,11 +47,18 @@ class DownloadItemRef:
         )
 
 
+# -------------------- UI base contracts (preserve interface) --------------------
+
 class UIBase:
+    # scan phase
+    def set_scan_log_path(self, path: str | Path) -> None: ...
     def begin_scan(self, num_workers: int, total_files: int) -> None: ...
     def set_scan_slot(self, slot: int, label: str) -> None: ...
     def advance_scan(self, delta: int = 1) -> None: ...
+    def scan_file_done(self, urlfile: str | Path, total: int, downloaded: int, bad: int) -> None: ...
     def end_scan(self) -> None: ...
+
+    # download phase
     def reset_worker_stats(self, slot: int) -> None: ...
     def handle_event(self, event: Any) -> None: ...
     def set_footer(self, text: str) -> None: ...
@@ -55,6 +66,8 @@ class UIBase:
     def pump(self) -> None: ...
     def summary(self, stats: Dict[str, int], elapsed: float) -> None: ...
 
+
+# -------------------- Simple (fallback) UI --------------------
 
 class SimpleUI(UIBase):
     """Very simple console output; used when TermDash isn't available."""
@@ -66,13 +79,14 @@ class SimpleUI(UIBase):
         self._num_workers = int(num_workers)
         self._total_urls = int(total_urls)
 
-    # ---- context manager (fixes orchestrator "with ui:" crash) ----
+    # context manager support (orchestrator uses "with ui:")
     def __enter__(self):
         return self
     def __exit__(self, exc_type, exc, tb):
-        return False  # don’t suppress exceptions
-    # ---------------------------------------------------------------
+        return False  # don't suppress exceptions
 
+    # ---- scan API ----
+    def set_scan_log_path(self, path: str | Path) -> None: ...
     def begin_scan(self, num_workers: int, total_files: int):
         self._scan_total = int(total_files)
         self._scan_done = 0
@@ -85,9 +99,14 @@ class SimpleUI(UIBase):
         self._scan_done += int(delta)
         print(f"[SCAN] Progress: {self._scan_done}/{self._scan_total}")
 
+    def scan_file_done(self, urlfile: str | Path, total: int, downloaded: int, bad: int) -> None:
+        ready = max(0, int(total) - int(downloaded) - int(bad))
+        print(f"[SCAN] {Path(urlfile).name}: total={total} already={downloaded} bad={bad} ready={ready}")
+
     def end_scan(self):
         print(f"[SCAN] Completed: {self._scan_done}/{self._scan_total}")
 
+    # ---- download API ----
     def reset_worker_stats(self, slot: int) -> None:
         print(f"[UI] Resetting stats for worker {slot+1}")
 
@@ -117,6 +136,14 @@ class SimpleUI(UIBase):
         print(f"Completed: {self._completed} in {elapsed:.2f}s")
 
 
+# -------------------- Termdash UI --------------------
+
+@dataclass
+class _ScanFileRow:
+    name: str
+    status: str = "pending"
+
+
 class TermdashUI(UIBase):
     _DEFAULT_SCAN_LOG = Path("ytaedl-scan-results.tsv")
 
@@ -125,6 +152,12 @@ class TermdashUI(UIBase):
             raise ImportError("TermDash is not installed/available.")
         self.num_workers = max(1, int(num_workers))
         self.total_urls = max(0, int(total_urls))
+        # Clear screen once at startup for a clean board
+        try:
+            print("\033[2J\033[H", end="")
+        except Exception:
+            pass
+
         self.dash = TermDash(
             refresh_rate=0.05,
             status_line=False,
@@ -142,6 +175,10 @@ class TermdashUI(UIBase):
         self.already = 0
         self.bad = 0
 
+        # timers per worker (for elapsed per-URL)
+        self._dl_start_ts: Dict[int, float] = {}
+
+        # scan state
         self._scan_total_files = 0
         self._scan_done_files = 0
         self._scan_active = False
@@ -154,11 +191,12 @@ class TermdashUI(UIBase):
         self._scan_log_lock = threading.Lock()
         self._ops: "queue.Queue[tuple[str, tuple, dict]]" = queue.Queue()
 
-        self._line_names: Dict[int, Tuple[str, str, str, str]] = {}
+        self._line_names: Dict[int, Tuple[str, str, str, str, str]] = {}
         self._known_lines: Set[str] = set()
 
         self._setup()
 
+    # context manager passthrough
     def __enter__(self):
         self.dash.__enter__()
         return self
@@ -166,6 +204,7 @@ class TermdashUI(UIBase):
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.dash.__exit__(exc_type, exc_val, exc_tb)
 
+    # internals
     def _add_line(self, name: str, line, *, at_top: bool = False):
         try:
             self.dash.add_line(name, line, at_top=at_top)
@@ -177,7 +216,7 @@ class TermdashUI(UIBase):
         return name in self._known_lines
 
     def _setup(self):
-        from termdash import Line, Stat
+        # Banner: scan stats summary + URLs/s
         self._add_line(
             "banner1",
             Line("banner1", stats=[
@@ -185,21 +224,22 @@ class TermdashUI(UIBase):
                 Stat("sb_already", 0, prefix=" Already "),
                 Stat("sb_bad", 0, prefix=" Bad "),
                 Stat("sb_speed", "0.0", prefix=" URLs/s "),
-            ], style="header"),
+            ]),
             at_top=True,
         )
         self._add_line(
             "banner2",
-            Line("banner2", stats=[Stat("sb_hint", "Scanning phase statistics", prefix="")], style="header"),
+            Line("banner2", stats=[Stat("sb_hint", "Scanning phase statistics", prefix="")]),
             at_top=True,
         )
+        # Overall aggregates (kept names to preserve tests)
         self._add_line(
             "overall1",
             Line("overall1", stats=[
                 Stat("time", "00:00:00", prefix="Time "),
                 Stat("speed", 0.0, prefix=" Speed MB/s ", format_string="{:.1f}"),
                 Stat("mbytes", 0.0, prefix=" MB ", format_string="{:.1f}"),
-            ], style="header"),
+            ]),
         )
         self._add_line(
             "overall2",
@@ -207,21 +247,26 @@ class TermdashUI(UIBase):
                 Stat("urls", (0, self.total_urls), prefix="URLs ", format_string="{}/{}"),
                 Stat("already", 0, prefix=" Already "),
                 Stat("bad", 0, prefix=" Bad "),
-            ], style="header"),
+            ]),
         )
         self.dash.add_separator()
 
+        # Per-worker sections
         for i in range(self.num_workers):
             w = i + 1
-            ln_main, ln_s1, ln_s2, ln_s3 = f"w{w}:main", f"w{w}:s1", f"w{w}:s2", f"w{w}:s3"
+            ln_main, ln_s1, ln_s1b, ln_s2, ln_s3 = f"w{w}:main", f"w{w}:s1", f"w{w}:s1b", f"w{w}:s2", f"w{w}:s3"
             self._add_line(ln_main, Line(ln_main, stats=[
                 Stat("w", f"Worker {w}", prefix="", no_expand=True, display_width=10),
                 Stat("set", "", prefix=" Set ", no_expand=True, display_width=18),
                 Stat("urls", (0, 0), prefix=" URLs ", format_string="{}/{}", no_expand=True, display_width=9),
+                Stat("elapsed", "00:00:00", prefix=" Elapsed ", no_expand=True, display_width=10),
             ]))
             self._add_line(ln_s1, Line(ln_s1, stats=[
                 Stat("mbps", 0.0, prefix="MB/s ", format_string="{:.1f}"),
                 Stat("eta", "--:--:--", prefix=" ETA "),
+            ]))
+            self._add_line(ln_s1b, Line(ln_s1b, stats=[
+                Stat("pct", 0.0, prefix=" Pct ", format_string="{:.1f}%"),
                 Stat("mb", (0.0, 0.0), prefix=" MB ", format_string="{:.1f}/{:.1f}"),
             ]))
             self._add_line(ln_s2, Line(ln_s2, stats=[
@@ -233,12 +278,14 @@ class TermdashUI(UIBase):
                 Stat("bad", 0, prefix=" Bad "),
             ]))
             self.dash.add_separator()
-            self._line_names[i] = (ln_main, ln_s1, ln_s2, ln_s3)
+            self._line_names[i] = (ln_main, ln_s1, ln_s1b, ln_s2, ln_s3)
 
         self._add_line(
             "status",
             Line("status", stats=[Stat("msg", "▶ running  •  z pause/resume  •  q confirm quit  •  Q force quit", prefix="")]),
         )
+
+    # -------------------- Scan helpers --------------------
 
     def set_scan_log_path(self, path: str | Path) -> None:
         self._scan_log_path = Path(path)
@@ -255,7 +302,6 @@ class TermdashUI(UIBase):
 
         if not self._has_line("scan:hdr"):
             self.dash.add_separator()
-            from termdash import Line, Stat
             self._add_line("scan:hdr", Line("scan:hdr", stats=[
                 Stat("label", "Scanning", prefix=""),
                 Stat("files", (0, self._scan_total_files), prefix=" Files ", format_string="{}/{}"),
@@ -270,13 +316,14 @@ class TermdashUI(UIBase):
 
     def set_scan_slot(self, slot: int, label: str):
         if not self._scan_active:
+            # If scan isn't active, repurpose label as current set for the worker
             try:
                 name = f"scan:{int(slot)}"
                 if self._has_line(name):
                     self.dash.update_stat(name, "label", str(label))
                     self.dash.update_stat(name, "status", "downloading")
                 else:
-                    ln_main, _, _, _ = self._line_names[slot]
+                    ln_main, *_ = self._line_names[slot]
                     self.dash.update_stat(ln_main, "set", label)
             except Exception:
                 pass
@@ -329,13 +376,14 @@ class TermdashUI(UIBase):
         self.dash.update_stat("banner1", "sb_speed", f"{speed:.1f}")
 
     def end_scan(self):
-        if not self._scan_active:
-            return
         self._scan_active = False
-        for i in range(self.num_workers):
-            nm = f"scan:{i}"
-            if self._has_line(nm):
-                self.dash.update_stat(nm, "status", "done")
+        # keep lines on screen; just mark finished
+        try:
+            self.dash.update_stat("banner2", "sb_hint", "Downloads phase")
+        except Exception:
+            pass
+
+    # -------------------- Download phase --------------------
 
     def _slot_for_item(self, item_id: int) -> int:
         return int(item_id) % self.num_workers if self.num_workers else 0
@@ -343,12 +391,15 @@ class TermdashUI(UIBase):
     def reset_worker_stats(self, slot: int):
         if slot not in self._line_names:
             return
-        ln_main, ln_s1, ln_s2, ln_s3 = self._line_names[slot]
+        ln_main, ln_s1, ln_s1b, ln_s2, ln_s3 = self._line_names[slot]
+        self._dl_start_ts.pop(slot, None)
         self.dash.update_stat(ln_main, "set", "")
         self.dash.update_stat(ln_main, "urls", (0, 0))
+        self.dash.update_stat(ln_main, "elapsed", "00:00:00")
         self.dash.update_stat(ln_s1, "mbps", 0.0)
         self.dash.update_stat(ln_s1, "eta", "--:--:--")
-        self.dash.update_stat(ln_s1, "mb", (0.0, 0.0))
+        self.dash.update_stat(ln_s1b, "pct", 0.0)
+        self.dash.update_stat(ln_s1b, "mb", (0.0, 0.0))
         self.dash.update_stat(ln_s2, "id", "")
         self.dash.update_stat(ln_s2, "title", "")
         self.dash.update_stat(ln_s3, "already", 0)
@@ -359,39 +410,66 @@ class TermdashUI(UIBase):
         if etype == "StartEvent":
             item = DownloadItemRef.from_event(event)
             slot = self._slot_for_item(item.id)
-            ln_main, ln_s1, ln_s2, _ = self._line_names[slot]
+            ln_main, ln_s1, ln_s1b, ln_s2, _ = self._line_names[slot]
             self.urls_started += 1
+            # track start time for elapsed
+            try:
+                self._dl_start_ts[slot] = time.monotonic()
+            except Exception:
+                self._dl_start_ts[slot] = None
             cur_tuple = self.dash.read_stat(ln_main, "urls")
             cur = cur_tuple[0] if isinstance(cur_tuple, tuple) else 0
             set_total = getattr(getattr(event, "item", None), "total_in_set", None)
             total = set_total if isinstance(set_total, int) and set_total >= 0 else 0
             self.dash.update_stat(ln_main, "set", item.source_file_stem)
             self.dash.update_stat(ln_main, "urls", (cur + 1, total or 0))
+            self.dash.update_stat(ln_main, "elapsed", "00:00:00")
+            # reset progress lines
             self.dash.update_stat(ln_s1, "mbps", 0.0)
             self.dash.update_stat(ln_s1, "eta", "--:--:--")
-            self.dash.update_stat(ln_s1, "mb", (0.0, 0.0))
+            self.dash.update_stat(ln_s1b, "pct", 0.0)
+            self.dash.update_stat(ln_s1b, "mb", (0.0, 0.0))
             self.dash.update_stat(ln_s2, "id", str(item.id))
             if item.title:
                 self.dash.update_stat(ln_s2, "title", item.title)
         elif etype == "ProgressEvent":
             item = DownloadItemRef.from_event(event)
             slot = self._slot_for_item(item.id)
-            _, ln_s1, _, _ = self._line_names[slot]
-            speed = float(getattr(event, "speed_bps", 0.0)) / (1024.0 * 1024.0)
-            done = float(getattr(event, "downloaded_bytes", 0.0)) / (1024.0 * 1024.0)
-            total = float(getattr(event, "total_bytes", 0.0)) / (1024.0 * 1024.0)
+            ln_main, ln_s1, ln_s1b, _, _ = self._line_names[slot]
+            unit = getattr(event, "unit", "bytes") or "bytes"
+            speed_bps = float(getattr(event, "speed_bps", 0.0) or 0.0)
+            if unit != "bytes":
+                # keep MB/s meaningful; segments are iterations/second → omit speed
+                speed_mb = 0.0
+            else:
+                speed_mb = speed_bps / (1024.0 * 1024.0)
+            done_b = float(getattr(event, "downloaded_bytes", 0.0) or 0.0)
+            total_b = float(getattr(event, "total_bytes", 0.0) or 0.0)
+            done = done_b / (1024.0 * 1024.0)
+            total = (total_b / (1024.0 * 1024.0)) if total_b > 0 else 0.0
             eta = getattr(event, "eta_seconds", None)
-            self.dash.update_stat(ln_s1, "mbps", speed)
-            self.dash.update_stat(ln_s1, "mb", (done, total))
+            pct = (done_b / total_b * 100.0) if total_b > 0 else 0.0
+
+            # per-worker elapsed
+            st = self._dl_start_ts.get(slot)
+            if st:
+                elapsed = time.monotonic() - st
+                self.dash.update_stat(ln_main, "elapsed", self._fmt_eta(elapsed))
+
+            self.dash.update_stat(ln_s1, "mbps", speed_mb)
             self.dash.update_stat(ln_s1, "eta", self._fmt_eta(eta))
+            self.dash.update_stat(ln_s1b, "pct", pct)
+            self.dash.update_stat(ln_s1b, "mb", (done, total))
         elif etype == "FinishEvent":
             res = getattr(event, "result", None)
             status = getattr(getattr(res, "status", None), "value", "").lower()
             item = DownloadItemRef.from_event(event)
             slot = self._slot_for_item(item.id)
-            _, _, _, ln_s3 = self._line_names[slot]
+            _, _, _, _, ln_s3 = self._line_names[slot]
+            # clear timer
+            self._dl_start_ts.pop(slot, None)
             if status in ("completed", "success", "ok"):
-                self.bytes_downloaded += float(getattr(res, "bytes_downloaded", 0.0))
+                self.bytes_downloaded += float(getattr(res, "bytes_downloaded", 0.0) or 0.0)
             elif status in ("already_exists", "already"):
                 self.already += 1
                 self.dash.update_stat(ln_s3, "already", (self.dash.read_stat(ln_s3, "already") or 0) + 1)
@@ -428,11 +506,23 @@ class TermdashUI(UIBase):
         self._header_tick()
 
     def _header_tick(self):
-        from termdash.utils import fmt_hms, bytes_to_mib
+        # Use Termdash util helpers when available
+        try:
+            from termdash.utils import fmt_hms, bytes_to_mib
+        except Exception:
+            def fmt_hms(secs: float) -> str:
+                secs = max(0, int(secs))
+                h = secs // 3600
+                m = (secs % 3600) // 60
+                s = secs % 60
+                return f"{h:02d}:{m:02d}:{s:02d}"
+            def bytes_to_mib(n: float) -> float:
+                return float(n) / (1024.0 * 1024.0)
+
         elapsed = time.monotonic() - self.start_time
         speed_sum = 0.0
         for i in range(self.num_workers):
-            _, s1, _, _ = self._line_names[i]
+            _, s1, _, _, _ = self._line_names[i]
             try:
                 v = float(self.dash.read_stat(s1, "mbps") or 0.0)
                 speed_sum += v
@@ -446,6 +536,7 @@ class TermdashUI(UIBase):
         self.dash.update_stat("overall2", "already", self.already)
         self.dash.update_stat("overall2", "bad", self.bad)
 
+    # helpers
     @staticmethod
     def _fmt_eta(eta_s: Optional[float]) -> str:
         if eta_s is None or eta_s < 0:
