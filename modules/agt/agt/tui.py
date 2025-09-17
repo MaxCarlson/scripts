@@ -1,6 +1,7 @@
 # file: agt/tui.py
 from __future__ import annotations
 
+import fnmatch
 import glob
 import json
 import logging
@@ -26,7 +27,7 @@ except Exception:  # pragma: no cover
 from .client import WebAIClient
 from .tools import (
     PermissionRegistry, apply_unified_diff, browse_url, run_command,
-    write_text_file, read_text_file
+    write_text_file
 )
 
 # ---------------- helpers ----------------
@@ -56,18 +57,103 @@ def _safe_read_file(p: Path, max_bytes: int = 120_000) -> str:
         txt = b.decode("latin-1", errors="replace")
     return txt + tail
 
+# ---- .gitignore aware attachment discovery ----
+
+_DEFAULT_IGNORES = [
+    "__pycache__/",
+    "*.pyc",
+    ".pytest_cache/",
+    ".git/",
+    ".gitignore",
+    ".DS_Store",
+    "node_modules/",
+    ".venv/",
+    "dist/",
+    "build/",
+    "*.so",
+    "*.o",
+    "*.a",
+    "*.zip",
+    "*.tar",
+    "*.gz",
+    "*.png",
+    "*.jpg",
+    "*.jpeg",
+    "*.gif",
+    "*.pdf",
+]
+
+def _find_vcs_root(start: Path) -> Path:
+    cur = start.resolve()
+    while True:
+        if (cur / ".git").exists():
+            return cur
+        if cur.parent == cur:
+            return start.resolve()
+        cur = cur.parent
+
+def _load_gitignore(root: Path) -> List[str]:
+    pats: List[str] = []
+    gi = root / ".gitignore"
+    if gi.exists():
+        try:
+            for line in gi.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                pats.append(line)
+        except Exception:
+            pass
+    return pats
+
+def _is_ignored(path: Path, root: Path, patterns: List[str]) -> bool:
+    rel = path.relative_to(root).as_posix()
+    for pat in _DEFAULT_IGNORES + patterns:
+        # normalize leading slash in .gitignore-style patterns
+        pat = pat.lstrip("/")
+        if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(rel + "/", pat):
+            return True
+    return False
+
 def _files_from_at_expr(expr: str) -> List[Path]:
+    """
+    Supports:
+      @file.ext               -> include that file (even if ignored)
+      @dir/                   -> include all non-ignored files under dir/
+      @pat/**/glob.py         -> include matches, applying ignore filters
+    """
     expr = os.path.expandvars(os.path.expanduser(expr))
     p = Path(expr)
+
+    # Decide whether to apply ignore filters
+    is_glob = any(ch in expr for ch in "*?[")
+    apply_ignore = False
+
+    if p.exists() and p.is_dir():
+        apply_ignore = True
+    elif is_glob:
+        apply_ignore = True
+    else:
+        # specific file path; include regardless
+        return [p] if p.exists() and p.is_file() else []
+
+    # For dir/glob, walk and filter
+    root = _find_vcs_root(Path.cwd())
+    patterns = _load_gitignore(root)
+
     out: List[Path] = []
     if p.exists() and p.is_dir():
         for fp in p.rglob("*"):
-            if fp.is_file():
+            if not fp.is_file():
+                continue
+            if not _is_ignored(fp, root, patterns):
                 out.append(fp)
         return out
+
+    # glob case
     for g in glob.glob(expr, recursive=True):
         gp = Path(g)
-        if gp.is_file():
+        if gp.is_file() and not _is_ignored(gp, root, patterns):
             out.append(gp)
     return out
 
@@ -255,6 +341,12 @@ class TUI(App):
 
     # ---------- dropdown helpers ----------
     def _update_dropdown(self, value: str, caret: int) -> None:
+        """
+        Show filtered suggestions for:
+          - /slash commands (only at line start)
+          - @path completion: uses the last segment as a needle, and
+            narrows the list as the user types (fix for '@a' disappearing).
+        """
         dd = self.query_one("#dropdown", ListView)
         dd.clear()
         dd.display = False
@@ -262,8 +354,9 @@ class TUI(App):
         self._at_prefix = ""
         self._slash_prefix = ""
 
+        # Slash commands (only at start)
         if value.startswith("/"):
-            prefix = value[1:caret - 1 if caret > 1 else 1]
+            prefix = value[1: caret - 1 if caret > 1 else 1]
             self._slash_prefix = prefix
             matches = _filter_cmds(prefix)
             if matches:
@@ -274,18 +367,29 @@ class TUI(App):
                 self._dropdown_mode = "slash"
             return
 
+        # @path completion — filter by last segment typed
         left = value[:caret]
         m = re.search(r"@([^\s]*)$", left)
         if m:
-            tail = m.group(1)
+            tail = m.group(1)  # e.g. 'agt/tu' or 'a'
             self._at_prefix = tail
+
             base = os.path.expanduser(os.path.expandvars(tail or "."))
-            dirname = base if base.endswith(os.sep) else (os.path.dirname(base) or ".")
+            # Determine directory to list and the needle (last segment)
+            if base.endswith(os.sep) or base == "":
+                dirname = base if base else "."
+                needle = ""
+            else:
+                dirname = os.path.dirname(base) or "."
+                needle = os.path.basename(base)
+
             try:
-                for entry in sorted(os.listdir(dirname))[:200]:
-                    cand = os.path.join(dirname, entry)
-                    if tail and not cand.startswith(base):
+                entries = sorted(os.listdir(dirname))[:400]
+                # Filter by needle against entry *name*, not the './' path
+                for entry in entries:
+                    if needle and not entry.startswith(needle):
                         continue
+                    cand = os.path.join(dirname, entry)
                     label = cand + (os.sep if os.path.isdir(cand) else "")
                     dd.append(ListItem(Static(label)))
                 if dd.children:
