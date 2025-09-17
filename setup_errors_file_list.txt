@@ -1,0 +1,4 @@
+pyscripts/setup.py
+shell-scripts/setup.py
+modules/standard_ui/standard_ui.py
+modules/clip_tools/pyproject.toml

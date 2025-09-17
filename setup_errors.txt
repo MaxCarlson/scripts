@@ -1,0 +1,258 @@
+=== Setup setup.py ===
+Return code: 1
+--- STDOUT ---
+<none>
+--- STDERR ---
+Traceback (most recent call last):
+  File "C:\Users\mcarls\Repos\scripts\pyscripts\setup.py", line 12, in <module>
+    from standard_ui.standard_ui import (
+  File "C:\Users\mcarls\Repos\scripts\modules\standard_ui\__init__.py", line 9, in <module>
+    from .standard_ui import (
+ImportError: cannot import name 'blank' from 'standard_ui.standard_ui' (C:\Users\mcarls\Repos\scripts\modules\standard_ui\standard_ui.py)
+
+
+=== Setup setup.py ===
+Return code: 1
+--- STDOUT ---
+<none>
+--- STDERR ---
+Traceback (most recent call last):
+  File "C:\Users\mcarls\Repos\scripts\shell-scripts\setup.py", line 7, in <module>
+    from standard_ui.standard_ui import log_info, log_warning, log_success, log_error, section
+  File "C:\Users\mcarls\Repos\scripts\modules\standard_ui\__init__.py", line 9, in <module>
+    from .standard_ui import (
+ImportError: cannot import name 'blank' from 'standard_ui.standard_ui' (C:\Users\mcarls\Repos\scripts\modules\standard_ui\standard_ui.py)
+
+
+=== Setup setup.py ===
+Return code: 1
+--- STDOUT ---
+[WARNING] standard_ui not found in modules/setup.py. Using basic print for logging.
+
+--- Section: Python Modules Installation ---
+[INFO] Scanning for Python modules in: C:\Users\mcarls\Repos\scripts\modules
+
+--- Section: Module: clipboard_utils ---
+[INFO] Processing module: clipboard_utils
+[INFO] Found package name 'clipboard_utils' in C:\Users\mcarls\Repos\scripts\modules\clipboard_utils\pyproject.toml
+[INFO] Running: C:\Users\mcarls\mambaforge\envs\dlpn\python.exe -m pip show clipboard_utils
+[INFO] 'clipboard_utils' is editable from expected source: C:\Users\mcarls\Repos\scripts\modules\clipboard_utils
+[SUCCESS] Module 'clipboard_utils' is already installed in the desired 'editable' mode from C:\Users\mcarls\Repos\scripts\modules\clipboard_utils. Skipping.
+--- End Section: Module: clipboard_utils ---
+
+
+--- Section: Module: clip_tools ---
+[INFO] Processing module: clip_tools
+[INFO] Found package name 'clip_tools' in C:\Users\mcarls\Repos\scripts\modules\clip_tools\pyproject.toml
+[INFO] Running: C:\Users\mcarls\mambaforge\envs\dlpn\python.exe -m pip show clip_tools
+[INFO] 'clip_tools' not found by 'pip show' (rc: 1). Assuming not installed.
+[INFO] Module 'clip_tools' (from C:\Users\mcarls\Repos\scripts\modules\clip_tools) not found or status unknown. Proceeding with installation.
+[INFO] Installing 'clip_tools' in development (editable) mode from C:\Users\mcarls\Repos\scripts\modules\clip_tools...
+[ERROR] Error installing module 'clip_tools'.
+[ERROR] Command: C:\Users\mcarls\mambaforge\envs\dlpn\python.exe -m pip install -e C:\Users\mcarls\Repos\scripts\modules\clip_tools
+[ERROR] Stdout:
+Obtaining file:///C:/Users/mcarls/Repos/scripts/modules/clip_tools
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Checking if build backend supports build_editable: started
+  Checking if build backend supports build_editable: finished with status 'done'
+  Getting requirements to build editable: started
+  Getting requirements to build editable: finished with status 'done'
+  Installing backend dependencies: started
+  Installing backend dependencies: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Preparing editable metadata (pyproject.toml): finished with status 'error'
+
+[ERROR] Stderr:
+  error: subprocess-exited-with-error
+  
+  × Preparing editable metadata (pyproject.toml) did not run successfully.
+  │ exit code: 1
+  ╰─> [25 lines of output]
+      Traceback (most recent call last):
+        File "C:\Users\mcarls\mambaforge\envs\dlpn\lib\site-packages\pip\_vendor\pyproject_hooks\_in_process\_in_process.py", line 195, in prepare_metadata_for_build_editable
+          hook = backend.prepare_metadata_for_build_editable
+      AttributeError: module 'hatchling.build' has no attribute 'prepare_metadata_for_build_editable'
+      
+      During handling of the above exception, another exception occurred:
+      
+      Traceback (most recent call last):
+        File "C:\Users\mcarls\mambaforge\envs\dlpn\lib\site-packages\pip\_vendor\pyproject_hooks\_in_process\_in_process.py", line 389, in <module>
+          main()
+        File "C:\Users\mcarls\mambaforge\envs\dlpn\lib\site-packages\pip\_vendor\pyproject_hooks\_in_process\_in_process.py", line 373, in main
+          json_out["return_val"] = hook(**hook_input["kwargs"])
+        File "C:\Users\mcarls\mambaforge\envs\dlpn\lib\site-packages\pip\_vendor\pyproject_hooks\_in_process\_in_process.py", line 204, in prepare_metadata_for_build_editable
+          whl_basename = build_hook(metadata_directory, config_settings)
+        File "C:\Users\mcarls\AppData\Local\Temp\pip-build-env-kobobqan\overlay\Lib\site-packages\hatchling\build.py", line 83, in build_editable
+          return os.path.basename(next(builder.build(directory=wheel_directory, versions=['editable'])))
+        File "C:\Users\mcarls\AppData\Local\Temp\pip-build-env-kobobqan\overlay\Lib\site-packages\hatchling\builders\plugin\interface.py", line 90, in build
+          self.metadata.validate_fields()
+        File "C:\Users\mcarls\AppData\Local\Temp\pip-build-env-kobobqan\overlay\Lib\site-packages\hatchling\metadata\core.py", line 266, in validate_fields
+          self.core.validate_fields()
+        File "C:\Users\mcarls\AppData\Local\Temp\pip-build-env-kobobqan\overlay\Lib\site-packages\hatchling\metadata\core.py", line 1366, in validate_fields
+          getattr(self, attribute)
+        File "C:\Users\mcarls\AppData\Local\Temp\pip-build-env-kobobqan\overlay\Lib\site-packages\hatchling\metadata\core.py", line 531, in readme
+          raise OSError(message)
+      OSError: Readme file does not exist: README.md
+      [end of output]
+  
+  note: This error originates from a subprocess, and is likely not a problem with pip.
+error: metadata-generation-failed
+
+× Encountered error while generating package metadata.
+╰─> See above for output.
+
+note: This is an issue with the package mentioned above, not pip.
+hint: See above for details.
+
+--- End Section: Module: clip_tools ---
+
+
+--- Section: Module: code_tools ---
+[INFO] Processing module: code_tools
+[INFO] Found package name 'rgcodeblock_suite' in C:\Users\mcarls\Repos\scripts\modules\code_tools\pyproject.toml
+[INFO] Running: C:\Users\mcarls\mambaforge\envs\dlpn\python.exe -m pip show rgcodeblock_suite
+[INFO] 'rgcodeblock_suite' is editable from expected source: C:\Users\mcarls\Repos\scripts\modules\code_tools
+[SUCCESS] Module 'code_tools' is already installed in the desired 'editable' mode from C:\Users\mcarls\Repos\scripts\modules\code_tools. Skipping.
+--- End Section: Module: code_tools ---
+
+
+--- Section: Module: cross_platform ---
+[INFO] Processing module: cross_platform
+[INFO] Found package name 'cross_platform' in C:\Users\mcarls\Repos\scripts\modules\cross_platform\pyproject.toml
+[INFO] Running: C:\Users\mcarls\mambaforge\envs\dlpn\python.exe -m pip show cross_platform
+[INFO] 'cross_platform' is editable from expected source: C:\Users\mcarls\Repos\scripts\modules\cross_platform
+[SUCCESS] Module 'cross_platform' is already installed in the desired 'editable' mode from C:\Users\mcarls\Repos\scripts\modules\cross_platform. Skipping.
+--- End Section: Module: cross_platform ---
+
+[INFO] Skipping 'debug_utils', no setup.py or pyproject.toml found.
+
+--- Section: Module: diff_utils ---
+[INFO] Processing module: diff_utils
+[INFO] Found package name 'directory-diff' in C:\Users\mcarls\Repos\scripts\modules\diff_utils\pyproject.toml
+[INFO] Running: C:\Users\mcarls\mambaforge\envs\dlpn\python.exe -m pip show directory-diff
+[INFO] 'directory-diff' is editable from expected source: C:\Users\mcarls\Repos\scripts\modules\diff_utils
+[SUCCESS] Module 'diff_utils' is already installed in the desired 'editable' mode from C:\Users\mcarls\Repos\scripts\modules\diff_utils. Skipping.
+--- End Section: Module: diff_utils ---
+
+
+--- Section: Module: edit_commands ---
+[INFO] Processing module: edit_commands
+[INFO] Found package name 'edit_commands' in C:\Users\mcarls\Repos\scripts\modules\edit_commands\pyproject.toml
+[INFO] Running: C:\Users\mcarls\mambaforge\envs\dlpn\python.exe -m pip show edit_commands
+[INFO] 'edit_commands' is editable from expected source: C:\Users\mcarls\Repos\scripts\modules\edit_commands
+[SUCCESS] Module 'edit_commands' is already installed in the desired 'editable' mode from C:\Users\mcarls\Repos\scripts\modules\edit_commands. Skipping.
+--- End Section: Module: edit_commands ---
+
+
+--- Section: Module: file_utils ---
+[INFO] Processing module: file_utils
+[INFO] Found package name 'file_utils' in C:\Users\mcarls\Repos\scripts\modules\file_utils\pyproject.toml
+[INFO] Running: C:\Users\mcarls\mambaforge\envs\dlpn\python.exe -m pip show file_utils
+[INFO] 'file_utils' is editable from expected source: C:\Users\mcarls\Repos\scripts\modules\file_utils
+[SUCCESS] Module 'file_utils' is already installed in the desired 'editable' mode from C:\Users\mcarls\Repos\scripts\modules\file_utils. Skipping.
+--- End Section: Module: file_utils ---
+
+
+--- Section: Module: history_watcher ---
+[INFO] Processing module: history_watcher
+[INFO] Found package name 'zsh-history-watcher' in C:\Users\mcarls\Repos\scripts\modules\history_watcher\pyproject.toml
+[INFO] Running: C:\Users\mcarls\mambaforge\envs\dlpn\python.exe -m pip show zsh-history-watcher
+[INFO] 'zsh-history-watcher' is editable from expected source: C:\Users\mcarls\Repos\scripts\modules\history_watcher
+[SUCCESS] Module 'history_watcher' is already installed in the desired 'editable' mode from C:\Users\mcarls\Repos\scripts\modules\history_watcher. Skipping.
+--- End Section: Module: history_watcher ---
+
+
+--- Section: Module: knowledge_manager ---
+[INFO] Processing module: knowledge_manager
+[INFO] Found package name 'knowledge_manager' in C:\Users\mcarls\Repos\scripts\modules\knowledge_manager\pyproject.toml
+[INFO] Running: C:\Users\mcarls\mambaforge\envs\dlpn\python.exe -m pip show knowledge_manager
+[INFO] 'knowledge_manager' is editable from expected source: C:\Users\mcarls\Repos\scripts\modules\knowledge_manager
+[SUCCESS] Module 'knowledge_manager' is already installed in the desired 'editable' mode from C:\Users\mcarls\Repos\scripts\modules\knowledge_manager. Skipping.
+--- End Section: Module: knowledge_manager ---
+
+[INFO] Skipping 'obfuscator', no setup.py or pyproject.toml found.
+
+--- Section: Module: parallel_runner ---
+[INFO] Processing module: parallel_runner
+[INFO] Found package name 'parallel_runner' in C:\Users\mcarls\Repos\scripts\modules\parallel_runner\pyproject.toml
+[INFO] Running: C:\Users\mcarls\mambaforge\envs\dlpn\python.exe -m pip show parallel_runner
+[INFO] 'parallel_runner' is editable from expected source: C:\Users\mcarls\Repos\scripts\modules\parallel_runner
+[SUCCESS] Module 'parallel_runner' is already installed in the desired 'editable' mode from C:\Users\mcarls\Repos\scripts\modules\parallel_runner. Skipping.
+--- End Section: Module: parallel_runner ---
+
+[INFO] Skipping 'README.md', as it's not a directory.
+
+--- Section: Module: script_manager ---
+[INFO] Processing module: script_manager
+[INFO] Found package name 'script_manager' in C:\Users\mcarls\Repos\scripts\modules\script_manager\pyproject.toml
+[INFO] Running: C:\Users\mcarls\mambaforge\envs\dlpn\python.exe -m pip show script_manager
+[INFO] 'script_manager' is editable from expected source: C:\Users\mcarls\Repos\scripts\modules\script_manager
+[SUCCESS] Module 'script_manager' is already installed in the desired 'editable' mode from C:\Users\mcarls\Repos\scripts\modules\script_manager. Skipping.
+--- End Section: Module: script_manager ---
+
+[INFO] Skipping 'setup.py', as it's not a directory.
+
+--- Section: Module: standard_ui ---
+[INFO] Processing module: standard_ui
+[INFO] Found package name 'standard_ui' in C:\Users\mcarls\Repos\scripts\modules\standard_ui\pyproject.toml
+[INFO] Running: C:\Users\mcarls\mambaforge\envs\dlpn\python.exe -m pip show standard_ui
+[INFO] 'standard_ui' is editable from expected source: C:\Users\mcarls\Repos\scripts\modules\standard_ui
+[SUCCESS] Module 'standard_ui' is already installed in the desired 'editable' mode from C:\Users\mcarls\Repos\scripts\modules\standard_ui. Skipping.
+--- End Section: Module: standard_ui ---
+
+
+--- Section: Module: system_tools ---
+[INFO] Processing module: system_tools
+[INFO] Found package name 'system_tools' in C:\Users\mcarls\Repos\scripts\modules\system_tools\pyproject.toml
+[INFO] Running: C:\Users\mcarls\mambaforge\envs\dlpn\python.exe -m pip show system_tools
+[INFO] 'system_tools' is editable from expected source: C:\Users\mcarls\Repos\scripts\modules\system_tools
+[SUCCESS] Module 'system_tools' is already installed in the desired 'editable' mode from C:\Users\mcarls\Repos\scripts\modules\system_tools. Skipping.
+--- End Section: Module: system_tools ---
+
+
+--- Section: Module: termdash ---
+[INFO] Processing module: termdash
+[INFO] Found package name 'termdash' in C:\Users\mcarls\Repos\scripts\modules\termdash\pyproject.toml
+[INFO] Running: C:\Users\mcarls\mambaforge\envs\dlpn\python.exe -m pip show termdash
+[INFO] 'termdash' is editable from expected source: C:\Users\mcarls\Repos\scripts\modules\termdash
+[SUCCESS] Module 'termdash' is already installed in the desired 'editable' mode from C:\Users\mcarls\Repos\scripts\modules\termdash. Skipping.
+--- End Section: Module: termdash ---
+
+
+--- Section: Module: tmux_control ---
+[INFO] Processing module: tmux_control
+[INFO] Found package name 'tmux-control' in C:\Users\mcarls\Repos\scripts\modules\tmux_control\pyproject.toml
+[INFO] Running: C:\Users\mcarls\mambaforge\envs\dlpn\python.exe -m pip show tmux-control
+[INFO] 'tmux-control' is editable from expected source: C:\Users\mcarls\Repos\scripts\modules\tmux_control
+[SUCCESS] Module 'tmux_control' is already installed in the desired 'editable' mode from C:\Users\mcarls\Repos\scripts\modules\tmux_control. Skipping.
+--- End Section: Module: tmux_control ---
+
+
+--- Section: Module: web_ai_automator ---
+[INFO] Processing module: web_ai_automator
+[INFO] Found package name 'web-ai-automator' in C:\Users\mcarls\Repos\scripts\modules\web_ai_automator\pyproject.toml
+[INFO] Running: C:\Users\mcarls\mambaforge\envs\dlpn\python.exe -m pip show web-ai-automator
+[INFO] 'web-ai-automator' is editable from expected source: C:\Users\mcarls\Repos\scripts\modules\web_ai_automator
+[SUCCESS] Module 'web_ai_automator' is already installed in the desired 'editable' mode from C:\Users\mcarls\Repos\scripts\modules\web_ai_automator. Skipping.
+--- End Section: Module: web_ai_automator ---
+
+--- End Section: Python Modules Installation ---
+
+
+--- Section: PYTHONPATH Configuration ---
+
+--- Section: Windows PYTHONPATH Update ---
+[INFO] Windows OS detected for PYTHONPATH setup.
+[INFO] Current User PYTHONPATH from registry: 'C:\Users\mcarls\Repos\scripts\modules'
+[SUCCESS] C:\Users\mcarls\Repos\scripts\modules is already in the User PYTHONPATH.
+--- End Section: Windows PYTHONPATH Update ---
+
+--- End Section: PYTHONPATH Configuration ---
+
+[ERROR] Modules setup completed with 1 error(s):
+[ERROR]   - Installation of clip_tools from C:\Users\mcarls\Repos\scripts\modules\clip_tools failed (rc: 1)
+
+--- STDERR ---
+<none>
+

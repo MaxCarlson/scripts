@@ -1,0 +1,1 @@
+Your next major goal is to get this AGT to a point where it can run a gently with tools for multiple minutes and work on a problem and not get too stuck which I know is totally possible. That's your goal figure out how to achieve it and work towards it

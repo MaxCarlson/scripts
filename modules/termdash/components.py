@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 """
-Components for the TermDash module (Line, Stat).
+TermDash components: Stat, Line (supports custom separators), AggregatedLine.
 """
+
 import time
 from collections.abc import Callable
 
-# ANSI escape sequences
+# ANSI
 RESET = "\033[0m"
 DEFAULT_COLOR = "0;37"  # white
 
+# Non-printing markers to tag cells that should NOT expand columns
+NOEXPAND_L = "\x1e"  # Record Separator
+NOEXPAND_R = "\x1f"  # Unit Separator
+
+
 class Stat:
-    """Represents a single, named piece of data within a Line."""
+    """A single named metric rendered inside a Line."""
     def __init__(
         self,
         name,
@@ -19,7 +25,10 @@ class Stat:
         format_string="{}",
         unit="",
         color="",
-        warn_if_stale_s=0
+        warn_if_stale_s=0,
+        *,
+        no_expand: bool = False,
+        display_width: int | None = None,  # soft width hint for no_expand columns
     ):
         self.name = name
         self.initial_value = value
@@ -27,25 +36,20 @@ class Stat:
         self.prefix = prefix
         self.format_string = format_string
         self.unit = unit
-        # color_provider returns an ANSI code string; default to literal or callback
+        # color can be a string ("0;32") or a callable(value)->str
         self.color_provider = color if isinstance(color, Callable) else (lambda v, c=color: c)
         self.warn_if_stale_s = warn_if_stale_s
         self.last_updated = time.time()
         self.is_warning_active = False
         self._grace_period_until = 0
-        # holds the last fully rendered "prefix+value+unit" text
-        self._last_text = None
+        self._last_text = None  # last rendered plain text (for value=None fallback)
+        self.no_expand = bool(no_expand)
+        self.display_width = display_width if (isinstance(display_width, int) and display_width > 0) else None
 
-    def render(self, logger=None):
-        if logger:
-            logger.debug(f"DEBUG: Stat Name: {self.name}, Value: {self.value}, Format String: {self.format_string}, Type of Value: {type(self.value)}") # DEBUG
-
-        # Decide which text to show:
+    def render(self, logger=None) -> str:
         if self.value is None:
-            # use last-known text if available, else show placeholder
             text = self._last_text or f"{self.prefix}--{self.unit}"
         else:
-            # format the current value
             try:
                 if isinstance(self.value, tuple):
                     formatted = self.format_string.format(*self.value)
@@ -53,90 +57,96 @@ class Stat:
                     formatted = self.format_string.format(self.value)
             except Exception as e:
                 if logger:
-                    logger.error(f"ERROR in Stat.render() for stat '{self.name}':")
-                    logger.error(f"  Value: {self.value} (type: {type(self.value)})")
-                    logger.error(f"  Format String: '{self.format_string}'")
-                    logger.error(f"  Error: {e}")
+                    logger.error(
+                        f"Stat.render error for '{self.name}': {e} "
+                        f"(value={self.value!r}, fmt={self.format_string!r})"
+                    )
                 formatted = "FMT_ERR"
             text = f"{self.prefix}{formatted}{self.unit}"
-            # remember for later
             self._last_text = text
 
-        # Determine color code (fallback to DEFAULT_COLOR)
+        if self.no_expand:
+            # Width hint stays invisible, the aligner reads it and strips it.
+            hint = f"[W{self.display_width}]" if self.display_width else ""
+            text = f"{NOEXPAND_L}{hint}{text}{NOEXPAND_R}"
+
         color_code = self.color_provider(self.value) or DEFAULT_COLOR
+        return f"\033[{color_code}m{text}{RESET}"
 
-        # Wrap everything in start/reset so no bleed
-        rendered = f"\033[{color_code}m{text}{RESET}"
-
-        if logger:
-            logger.debug(f"Rendering stat '{self.name}': {repr(rendered)}")
-
-        return rendered
 
 class Line:
-    """Represents one line in the dashboard, containing one or more Stat objects."""
-    def __init__(self, name, stats=None, style='default'):
+    """
+    A renderable line composed of Stats.
+
+    style:
+      - 'default' : normal joined stats
+      - 'header'  : bright/cyan
+      - 'separator': prints a horizontal rule using sep_pattern (repeated to width)
+    """
+    def __init__(self, name, stats=None, style='default', sep_pattern: str = "-"):
         self.name = name
         self._stats = {s.name: s for s in (stats or [])}
         self._stat_order = [s.name for s in (stats or [])]
         self.style = style
+        self.sep_pattern = sep_pattern or "-"
 
     def update_stat(self, name, value):
-        """Updates a specific stat within this line."""
         if name in self._stats:
-            stat = self._stats[name]
-            stat.value = value
-            stat.last_updated = time.time()
-            stat.is_warning_active = False
+            st = self._stats[name]
+            st.value = value
+            st.last_updated = time.time()
+            st.is_warning_active = False
 
     def reset_stat(self, name, grace_period_s=0):
-        """Resets a stat to its initial value, with optional grace period."""
         if name in self._stats:
-            stat = self._stats[name]
-            stat.value = stat.initial_value
-            stat.last_updated = time.time()
-            stat.is_warning_active = False
+            st = self._stats[name]
+            st.value = st.initial_value
+            st.last_updated = time.time()
+            st.is_warning_active = False
             if grace_period_s > 0:
-                stat._grace_period_until = time.time() + grace_period_s
+                st._grace_period_until = time.time() + grace_period_s
 
-    def render(self, width, logger=None):
-        """Renders the entire line by rendering and joining its stats."""
-        rendered = []
-        for n in self._stat_order:
-            if logger:
-                logger.debug(f"DEBUG: Line '{self.name}' rendering Stat: {n}")
-            rendered.append(self._stats[n].render(logger=logger))
-        content = " ".join(rendered)
+    def render(self, width: int, logger=None) -> str:
         if self.style == 'separator':
-            return "-" * width
+            pat = self.sep_pattern or "-"
+            # repeat pattern across width; slice exact width
+            return (pat * ((width // max(1, len(pat))) + 2))[:width]
+
+        rendered = [self._stats[n].render(logger=logger) for n in self._stat_order]
+        # Use a literal '|' between stats so the dashboard aligner sees columns.
+        content = " | ".join(rendered)
         if self.style == 'header':
             return f"\033[1;36m{content}{RESET}"
         return content
 
+
 class AggregatedLine(Line):
     """
-    A special Line that calculates its stats by aggregating from other lines.
-    This aggregation is performed safely during the render call.
+    Aggregates numeric stats from a dict of source Line objects.
+    Non-numeric values are treated as 0. Aggregation happens during render().
     """
-    def __init__(self, name, source_lines, stats=None, style='default'):
-        super().__init__(name, stats, style)
-        self.source_lines = source_lines
+    def __init__(self, name, source_lines, stats=None, style='default', sep_pattern: str = "-"):
+        super().__init__(name, stats, style, sep_pattern=sep_pattern)
+        self.source_lines = source_lines  # dict[str, Line]
+
+    @staticmethod
+    def _to_number(value):
+        try:
+            if value is None:
+                return 0
+            if isinstance(value, (int, float)):
+                return value
+            return float(value)
+        except Exception:
+            return 0
 
     def render(self, width, logger=None):
-        """
-        Overrides the default render to first aggregate data from source lines
-        and then render itself. This is thread-safe because it happens inside
-        the main render loop's lock.
-        """
-        # Aggregate the values from all source lines
-        for stat_name in self._stats:
-            # Sum up the value of the stat with the same name from all source lines
-            aggregated_value = sum(
-                source_line._stats.get(stat_name).value
-                for source_line in self.source_lines.values()
-                if source_line._stats.get(stat_name) is not None
-            )
-            self.update_stat(stat_name, aggregated_value)
-
-        # Now that this line's stats are updated, call the parent render method
+        # recompute each stat as sum of same stat from all source lines
+        for stat_name, st in self._stats.items():
+            agg = 0
+            for src in self.source_lines.values():
+                s = src._stats.get(stat_name)
+                if s is not None:
+                    agg += self._to_number(s.value)
+            self.update_stat(stat_name, agg)
         return super().render(width, logger)

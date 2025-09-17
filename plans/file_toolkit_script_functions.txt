@@ -1,0 +1,228 @@
+**Functionalities of scripts for `pyprjs/file-toolkit`:**
+
+---
+
+**1. `downloads_dlpn/scripts/scan-downloads.py`**
+*   **Purpose:** Checks URL list files against downloaded outputs, performing either a quick check or an advanced verification using `yt-dlp`. It also includes functionality for cleaning up `.part` files.
+*   **Key Functionalities:**
+    *   **Quick Mode:** Scans URL list files (`.txt`) in specified directories and compares them against downloaded files in corresponding download directories. Counts URLs, downloaded files, and remaining files. Supports dual-source scanning (main and "AE" directories).
+    *   **Advanced Mode:** Uses `yt-dlp` to verify the existence of expected filenames for each URL without actually downloading. This is a more robust check.
+    *   **Part File Cleanup:** Identifies and optionally deletes `.part` files that are either erroneous (a completed twin file exists) or all `.part` files. Supports dry-run mode.
+    *   **Reporting:** Generates a JSON report summarizing the scan results (quick and advanced).
+    *   **UI (TermDash):** Provides a multi-worker, live-updating terminal dashboard using `termdash` to show progress, rates, and ETAs during advanced scanning.
+    *   **Configuration:** Highly configurable via command-line arguments for paths, templates, extensions, threading, UI options, and deletion modes.
+
+---
+
+**2. `downloads_dlpn/scripts/scan_by_date.py`**
+*   **Purpose:** Scans files and/or folders by date (creation, modified, accessed) and lists them with various sorting, filtering, and display options. It includes an interactive TUI (Terminal User Interface) for dynamic exploration.
+*   **Key Functionalities:**
+    *   **Scanning:** Collects file and directory information from a specified base path, with options for recursion and excluding directories by glob patterns.
+    *   **Date Filtering:** Filters items based on age (older than, newer than) using specified date types (creation, modified, accessed).
+    *   **Sorting:** Sorts items by date, size, name, or type, with primary and secondary sort keys and ascending/descending order.
+    *   **Display:** Builds a tabular output with columns for Name, Type, Date, Size, and optional date differences. Supports hiding the date column.
+    *   **Output to File:** Can write the table to an output file with absolute, full-length paths (no truncation).
+    *   **Interactive TUI (curses):** Provides an interactive terminal interface with:
+        *   Paging (scroll up/down, page up/down).
+        *   Dynamic sorting and filtering.
+        *   Extension drill-down (list files by specific extension).
+        *   Cycling through date types and age filters.
+        *   Dynamic adjustment of column widths based on terminal size.
+    *   **Utilities:** Includes helper functions for human-readable size formatting, datetime formatting, and terminal width detection.
+
+---
+
+**3. `modules/file_utils/duplicate_finder.py`**
+*   **Purpose:** Finds duplicate files within a specified directory, either by name or by content hash, and provides options for deleting them.
+*   **Key Functionalities:**
+    *   **Duplicate Detection:**
+        *   Groups files by name.
+        *   Optionally uses SHA-256 hashing to verify content identity for files with the same name.
+    *   **Deletion:**
+        *   Deletes duplicate files, keeping one original.
+        *   Supports dry-run mode to preview deletions without actual removal.
+    *   **Statistics:** Summarizes the scan results, including total files scanned, unique files, duplicates found, and total size to be deleted.
+    *   **Dependencies:** Relies on `calculate_file_hash` and `write_debug` from `modules.file_utils.utils`.
+
+---
+
+**4. `modules/file_utils/file_manager.py`**
+*   **Purpose:** Provides core file system management utilities, including finding files, hashing, and organizing files by type or date.
+*   **Key Functionalities:**
+    *   `calculate_file_hash`: Computes the SHA-256 hash of a file.
+    *   `find_duplicates`: Finds duplicate files in a directory, optionally using hashes for content-based comparison.
+    *   `delete_files`: Deletes identified duplicate files, with dry-run support and statistics tracking.
+    *   `organize_files`: Organizes files within a directory by moving them into subdirectories based on file type (extension) or creation date.
+    *   **CLI:** Provides a command-line interface to execute these functionalities, allowing users to specify directories, use hashing, perform dry runs, and choose organization modes.
+
+---
+
+**5. `modules/file_utils/file_organizer.py`**
+*   **Purpose:** Organizes files within a directory by moving them into subdirectories based on file type (extension) or creation date.
+*   **Key Functionalities:**
+    *   `organize_files`:
+        *   Scans a specified directory recursively.
+        *   For each file, determines its extension or creation date.
+        *   Creates new subdirectories (e.g., `jpg/`, `2023-10-26/`) if they don't exist.
+        *   Moves files into their respective type- or date-based subdirectories.
+    *   **Dependencies:** Uses `os.walk`, `os.path.splitext`, `os.path.getctime`, `time.strftime`, `os.makedirs`, `os.rename`.
+
+---
+
+**6. `modules/file_utils/file_utils.py`**
+*   **Purpose:** A comprehensive command-line utility for finding, managing, and analyzing files and directories. It offers subcommands for various tasks like finding largest files, recent/old files, duplicates, summarizing disk usage by type, and showing disk free space.
+*   **Key Functionalities (via subcommands):**
+    *   **`top-size` (deprecated, see `largest`):** Finds the top N largest files matching a glob pattern.
+    *   **`find-recent`:** Finds large files accessed within a specified number of days.
+    *   **`find-old`:** Finds large files untouched since a cutoff date.
+    *   **`find-dupes`:** Finds files with identical content using hashing (supports pre-hashing for efficiency and configurable hash algorithms).
+    *   **`summarize`:** Shows disk usage breakdown by file extension.
+    *   **`du`:** Summarizes directory sizes (like Unix `du`), with depth limits and sorting.
+    *   **`largest`:** A more advanced version of `top-size`, finding largest files with flexible filtering by glob patterns, type groups (images, videos, code, etc.), and minimum size. Supports CSV/JSON output.
+    *   **`df`:** Shows disk free/used/total space per drive/mount, with sorting, filtering, and CSV/JSON output. Supports both POSIX and Windows systems.
+    *   **Common Options:** Supports recursive search, absolute paths, output to file, and custom encoding.
+    *   **Utilities:** Includes helper functions for parsing human-readable sizes, formatting bytes, and configuring stdout encoding.
+
+---
+
+**7. `modules/file_utils/utils.py`**
+*   **Purpose:** Provides utility functions for file operations, specifically for calculating file hashes and writing debug messages.
+*   **Key Functionalities:**
+    *   `calculate_file_hash`: Computes the SHA-256 hash of a file in blocks for memory efficiency.
+    *   `write_debug`: Prints debug messages to the console, optionally filtered by a condition and channel.
+
+---
+
+**8. `pscripts/video/FileMerger.py`**
+*   **Purpose:** Merges the contents of multiple files within a directory into a single output file, with advanced options for filtering lines, applying transformations, and including headers.
+*   **Key Functionalities:**
+    *   **File Collection:** Gathers files based on a base folder and glob pattern, or from a specific list of files.
+    *   **Content Filtering:** Filters lines based on a regex pattern, line ranges (Python slice syntax), and start/end patterns.
+    *   **Transformations:** Applies Vim-like `s/pattern/replacement/` transformations to lines.
+    *   **Output:** Writes merged content to a specified output file or prints to stdout.
+    *   **Headers:** Can include file headers in the merged content.
+    *   **Order:** Supports reversing the order of files before merging.
+    *   **Debugging:** Includes debug logging.
+
+---
+
+**9. `pyscripts/deduplicator.py`**
+*   **Purpose:** Finds and optionally deletes duplicate files within a directory, using either file names or content hashes for comparison.
+*   **Key Functionalities:**
+    *   **Duplicate Finding:**
+        *   Groups files by name.
+        *   Optionally, for files with the same name, calculates SHA-256 hashes to identify true content duplicates.
+    *   **Deletion:**
+        *   Deletes duplicate files, keeping the first encountered as the original.
+        *   Supports dry-run mode to preview deletions.
+    *   **Statistics:** Provides a summary of the operation, including total files scanned, unique files, duplicates found, and total size deleted.
+    *   **Note:** This script has significant overlap with `modules/file_utils/duplicate_finder.py` and `modules/file_utils/file_manager.py`.
+
+---
+
+**10. `pyscripts/delete_files.py`**
+*   **Purpose:** Deletes files matching a specified pattern within a base directory, with options for recursion and dry-run.
+*   **Key Functionalities:**
+    *   **File Finding:** Locates files matching a given filename pattern (e.g., `*.log`).
+    *   **Deletion:** Deletes the identified files.
+    *   **Recursion:** Supports recursive search into subdirectories, with an optional depth limit.
+    *   **Dry Run:** Allows previewing which files would be deleted without actually performing the deletion.
+    *   **Reporting:** Prints messages indicating which files are being processed (found, deleted, or would be deleted in dry-run).
+
+---
+
+**11. `pyscripts/file_kit.py`**
+*   **Purpose:** A command-line utility for finding and listing files by size/date and related tasks. It is a foundational script for file management.
+*   **Key Functionalities:**
+    *   **`top-size`:** Finds the top N largest files.
+    *   **`find-recent`:** Finds large files accessed recently.
+    *   **`find-old`:** Finds large files untouched since a cutoff date.
+    *   **`find-dupes`:** Finds files with identical content using hashing.
+    *   **`summarize`:** Shows disk usage by file type.
+    *   **`du`:** Summarizes directory sizes.
+    *   **`largest`:** Shows the largest files (any/glob/type groups).
+    *   **`df`:** Shows disk free/used/total per drive/mount.
+    *   **Common Options:** Supports recursive search, absolute paths, output to file, and custom encoding.
+    *   **Note:** This script appears to be the main CLI entry point for a file utility toolkit, integrating various functionalities. It has significant overlap with `modules/file_utils/file_utils.py` and seems to be an older version or a parallel development.
+
+---
+
+**12. `pyscripts/folder_matcher.py`**
+*   **Purpose:** Compares two folders based on the presence and size of files with a specific extension. It can move or delete source folders if they match a target folder.
+*   **Key Functionalities:**
+    *   **Folder Comparison:** Compares files within two folders based on a specified extension. Checks if the set of filenames and their sizes are identical.
+    *   **Matching Folder Identification:** Recursively scans a source directory to find folders that contain at least a minimum number of files with a given extension.
+    *   **Action on Match:**
+        *   If a matching folder is found in the target and doesn't exist, the source folder is moved to the target.
+        *   If a matching folder exists in the target and is identical, the source folder can optionally be deleted.
+        *   If a matching folder exists but contents don't match, a warning is printed.
+    *   **Configuration:** Configurable via command-line arguments for source/target directories, extension to match, minimum file count, and deletion flag.
+
+---
+
+**13. `pyscripts/folder_similarity.py`**
+*   **Purpose:** Compares the similarity of two directories based on the SHA-256 hashes of their contained files, using Jaccard similarity. It can optionally delete target directories that are above a certain similarity threshold.
+*   **Key Functionalities:**
+    *   **Hash Computation:** Recursively computes SHA-256 hashes for all files within a given folder.
+    *   **Jaccard Similarity:** Calculates the Jaccard similarity (intersection over union) between the sets of file hashes from source and target folders.
+    *   **Folder Comparison:** Scans source and target directories for immediate subdirectories with matching names.
+    *   **Similarity Reporting:** Reports the similarity percentage for matching folders.
+    *   **Optional Deletion:** If a deletion threshold is provided, it can delete target directories whose similarity to the corresponding source folder exceeds the threshold.
+    *   **Dry Run:** Supports a dry-run mode to show what would be deleted without actual removal.
+
+---
+
+**14. `pyscripts/folder_stats.py`**
+*   **Purpose:** Scans a directory and reports file-type statistics, including total size and count per extension. It also supports identifying "hotspots" (top folders by size) and displaying a hierarchical tree view of disk usage.
+*   **Key Functionalities:**
+    *   **File Scanning:** Recursively scans a directory to gather statistics on files.
+    *   **Extension-based Statistics:** Aggregates file counts and total sizes per file extension.
+    *   **Date Tracking:** Optionally tracks oldest/newest access, modify, or creation dates per category.
+    *   **Exclusion:** Supports excluding files/folders by glob patterns.
+    *   **Hotspot Analysis:**
+        *   Identifies top K folders by size or file count.
+        *   Can display a hierarchical tree view of disk usage, showing heavy root folders and their top children.
+        *   Supports filtering by specific extensions for hotspot analysis.
+    *   **Presentation:** Formats output into rich tables using `rich` library. Supports auto-unit conversion for sizes.
+    *   **Progress Bar:** Optionally displays a live progress bar during scanning.
+
+---
+
+**15. `pyscripts/llm_project_parser.py`**
+*   **Purpose:** Parses an input text file (assumed to be an LLM output describing a project structure and file contents) and recreates that folder hierarchy and files in a specified output directory.
+*   **Key Functionalities:**
+    *   **Text Parsing:** Splits the input text into sections based on delimiters (e.g., `---`).
+    *   **Folder Structure Extraction:** Identifies and parses a "Folder Structure" section to extract directory and file paths.
+    *   **File Content Extraction:** Identifies and parses "File" sections to extract file paths and their corresponding content.
+    *   **Directory Creation:** Creates the necessary directories in the output location.
+    *   **File Writing:** Writes the extracted file content to the appropriate paths, creating parent directories as needed.
+    *   **Dry Run:** Supports a dry-run mode to preview actions without actual file system modifications.
+    *   **Verbose Output:** Provides verbose logging of parsing and creation steps.
+
+---
+
+**16. `pyscripts/repo_processor.py`**
+*   **Purpose:** Processes a repository by either creating a ZIP archive or generating a textual representation for LLMs, applying inclusion/exclusion rules.
+*   **Key Functionalities:**
+    *   **Exclusion/Inclusion:** Applies comprehensive rules for excluding directories, file extensions, specific filenames, and glob patterns. Supports "keep" patterns to override exclusions.
+    *   **ZIP Archiving:** Creates a ZIP archive of the filtered repository content.
+    *   **LLM Text Output:** Generates a detailed text file containing the filtered directory tree and the content of included files, formatted for LLM consumption.
+    *   **Note:** This script appears to be a more basic version of `pyscripts/zip_for_llms.py`.
+
+---
+
+**17. `pyscripts/zip_for_llms.py`**
+*   **Purpose:** Packages a repository for LLM consumption, either as a ZIP archive or a consolidated text file, with extensive filtering, flattening, and size-trimming options. It also integrates with the Gemini CLI for analysis.
+*   **Key Functionalities:**
+    *   **Packaging Modes:** Supports creating a ZIP archive (`zip-mode`) or a consolidated text file (`file-mode`) of the repository.
+    *   **Exclusion/Inclusion:** Comprehensive filtering based on default and user-defined exclude directories, extensions, filenames, and glob patterns (remove/keep patterns).
+    *   **Flattening:** Can flatten the directory structure, copying included files to a temporary staging area, optionally renaming them by their original relative path.
+    *   **Size Trimming:** Allows specifying a maximum size for the output ZIP. If exceeded, it deletes files (prioritizing certain extensions) to meet the size limit.
+    *   **Gemini CLI Integration:** Can prepare a filtered workspace and run the `gemini` CLI tool for analysis, optionally including Git commit history and showing memory usage.
+    *   **Presets:** Provides language-specific presets (e.g., Python, Node, Rust) for common exclusion patterns, inspired by `.gitignore` templates.
+    *   **Verbose Output:** Offers verbose logging for detailed processing steps and exclusion evaluations.
+    *   **Colorized Output:** Uses ANSI colors for human-readable output (auto-disables for non-TTY).
+    *   **Git Integration:** Can include a compact Git commit snapshot in the analysis workspace.
+    *   **Note:** This script appears to be a more advanced and feature-rich version of `pyscripts/repo_processor.py`, consolidating and expanding its functionalities.
+
+---

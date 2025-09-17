@@ -1,0 +1,21 @@
+Project Summary: ytaedl Downloader Orchestrator
+1. High-Level Goal:
+The primary goal is to create a robust, multi-threaded downloader orchestrator (ytaedl-orchestrate) that can process a large number of URLs organized into multiple text files. It serves as a wrapper around downloader backends like yt-dlp and aebn-dl, distributing the workload across several concurrent processes to maximize efficiency. The system must feature a real-time terminal dashboard (Termdash) for monitoring and be configurable via the command line.
+2. Current State & Key Features Implemented:
+ * Dual-Downloader Support: The system is designed to route URLs to different downloaders based on their source (currently yt-dlp for general URLs and aebn-dl for AEBN URLs).
+ * Multi-Threading: The application uses a thread pool to run multiple download processes concurrently.
+ * Two-Phase Operation: It has a "scan" phase to count existing files and a "download" phase.
+ * Skip-Scan Mode: A --skip-scan flag allows the user to bypass the lengthy scanning process and start downloading immediately, which is the primary mode of operation we are currently debugging.
+ * UI: It uses the termdash library to provide a real-time dashboard showing the status of each worker thread.
+ * Configuration: Process allocation (--num-ytdl-dl, --num-aebn-dl), file/directory paths, and downloader-specific tuning can be controlled via CLI arguments.
+3. The Core Struggle & Current Bugs:
+The project is currently stuck in a persistent failure loop that prevents any actual downloads from completing. The log files show the orchestrator attempting to download a few URLs from a file, failing silently, and then incorrectly marking those attempts as successes. This leads to a cascade of problems:
+ * The Critical Bug: The YtDlpDownloader class does not correctly verify a successful download. It assumes any process that exits with code 0 is a success, even if yt-dlp failed to extract a video and downloaded nothing.
+ * Consequence - Infinite Loop: Because failures are counted as successes, the orchestrator reaches its download cap (--max-dl-per-file) for a given URL file and releases it. It then immediately re-acquires the same file (or another one) and retries the same failing URLs, getting stuck in a loop without making progress.
+4. Specific Bugs to Address Immediately:
+ * Faulty Success Detection (in ytaedl/downloaders.py): The logic must be rewritten to positively confirm a download by parsing yt-dlp's stdout for explicit success messages (e.g., seeing "100%" progress or "already been downloaded"), not just by checking the exit code.
+ * Forcing Single File (-f) is Ignored (in ytaedl/orchestrator.py): The logic for building the work queue does not properly prioritize the -f flag. When a user specifies a file, the program should only process that file, ignoring the default directories.
+ * Lack of Randomization (in ytaedl/orchestrator.py): When not using -f, the orchestrator picks URL files in a deterministic order (alphabetical). It should instead select files randomly to ensure varied testing and processing on each run.
+ * Incorrect UI Counter (in ytaedl/ui.py): The "URLs X/Y" counter in the dashboard does not reset when a worker switches to a new URL file, leading to confusing and incorrect numbers.
+5. Next Steps:
+The immediate priority is to fix the four bugs listed above. This requires targeted changes to three key files: ytaedl/downloaders.py, ytaedl/orchestrator.py, and ytaedl/ui.py. Once these fixes are implemented, the program should be able to successfully download a file to completion.

@@ -24,7 +24,7 @@ from github_repos_info import (
     get_repo_details,
     fetch_all_repo_data,
     get_loc_stats,
-    print_loc_summary,
+    print_table,
 )
 
 # --- Fixtures ---
@@ -188,7 +188,7 @@ def test_print_loc_summary(capsys, sample_tokei_output):
         {'full_name': 'user/no-loc', 'isPrivate': False, 'loc_stats': None},
         {'full_name': 'user/empty-loc', 'isPrivate': False, 'loc_stats': {}},
     ]
-    print_loc_summary(repo_data)
+    print_table("Lines of Code Summary", repo_data)
     out = capsys.readouterr().out
 
     assert "Lines of Code Summary (Public Repos)" in out

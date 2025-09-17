@@ -1,147 +1,172 @@
-#!/usr/bin/env python3
-"""
-func_replacer.py: Replaces a function/class in a target file with
-                  content from clipboard or a source file.
-"""
+# File: scripts/modules/code_tools/func_replacer.py
+from __future__ import annotations
+
 import argparse
+import shutil
 import sys
-import os
 import re
-import shutil # <<< IMPORT ADDED HERE
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
 
-import rgcodeblock_lib as rgc_lib
 try:
-    from cross_platform.clipboard_utils import get_clipboard
-except ImportError:
-    sys.stderr.write("Error: Could not import 'cross_platform.clipboard_utils'. Check installation/PYTHONPATH.\n")
-    def get_clipboard(): sys.stderr.write("Warning: get_clipboard not available.\n"); return None
+    import pyperclip  # optional
+except Exception:
+    pyperclip = None  # type: ignore
 
-def extract_entity_name_from_code_heuristic(code_block_text: str, lang_type: str) -> str | None:
-    lines = code_block_text.splitlines();
-    if not lines: return None
-    for line_idx, line_content_orig in enumerate(lines):
-        if line_idx > 5 and lang_type != "python": break
-        first_significant_line = line_content_orig.lstrip()
-        if not first_significant_line or first_significant_line.startswith(('#', '//', '--', '/*')): continue
-        if lang_type == "python":
-            match = re.match(r"^\s*(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)", first_significant_line)
-            if match: return match.group(1)
-        elif lang_type == "ruby":
-            match = re.match(r"^\s*(?:def|class|module)\s+([A-Za-z_][A-Za-z0-9_:]*(?:\s*<.*)?)" , first_significant_line)
-            if match: return match.group(1).split('<')[0].strip()
-        elif lang_type == "lua":
-            match = re.match(r"^\s*(?:local\s+)?function\s+([A-Za-z_][A-Za-z0-9_.:]*)", first_significant_line)
-            if match: return match.group(1)
-        elif lang_type == "brace":
-            m_keyword = re.match(r"^\s*(?:class|struct|interface|enum|function)\s+([A-Za-z_][A-Za-z0-9_]*)", first_significant_line)
-            if m_keyword: return m_keyword.group(1)
-            m_func_like = re.search(r"(?:\b(?:void|int|float|double|char|bool|string|static|public|private|protected|final|virtual|override|async|Task|List<[^>]+>|std::\w+)\s+)?\b([A-Za-z_][A-Za-z0-9_<>:]+)\s*\(", first_significant_line)
-            if m_func_like:
-                potential_name = m_func_like.group(1)
-                if potential_name not in ["if", "for", "while", "switch", "return", "new"]: return potential_name
-        # Removed potentially problematic locals().get() check
+from .rgcodeblock_lib.language_defs import get_language_type_from_filename
+from .rgcodeblock_lib import (
+    extract_python_block_ast,
+    extract_brace_block,
+    extract_json_block,
+    extract_yaml_block,
+    extract_xml_block,
+    extract_ruby_block,
+    extract_lua_block,
+)
+
+@dataclass
+class ReplacePlan:
+    target_path: Path
+    backup_path: Optional[Path]
+    start_line: int
+    end_line: int
+    new_block: str
+    detected_name: Optional[str]
+    language: str
+
+def _read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="ignore")
+
+def _write_text(path: Path, content: str) -> None:
+    path.write_text(content, encoding="utf-8")
+
+def _infer_name_from_block(code: str, language: str) -> Optional[str]:
+    first_nonempty = None
+    for ln in code.splitlines():
+        s = ln.strip()
+        if s:
+            first_nonempty = s; break
+    if not first_nonempty:
+        return None
+    if language == "python":
+        m = re.match(r"(async\s+def|def)\s+([A-Za-z_][\w]*)\s*\(", first_nonempty)
+        if m: return m.group(2)
+        m = re.match(r"class\s+([A-Za-z_][\w]*)\s*\(", first_nonempty)
+        if m: return m.group(1)
+    elif language == "ruby":
+        m = re.match(r"def\s+([A-Za-z_][\w!?=]*)", first_nonempty)
+        if m: return m.group(1)
+        m = re.match(r"class\s+([A-Za-z_][\w:]*)", first_nonempty)
+        if m: return m.group(1)
+    elif language == "lua":
+        m = re.match(r"function\s+([A-Za-z_][\w\.:]*)\s*\(", first_nonempty)
+        if m: return m.group(1)
+    elif language == "brace":
+        m = re.search(r"\b([A-Za-z_][\w:]*)\s*\(.*\)\s*\{", code)
+        if m: return m.group(1)
+        m = re.search(r"\bclass\s+([A-Za-z_][\w:]*)\s*\{", code)
+        if m: return m.group(1)
     return None
 
-def main():
-    parser = argparse.ArgumentParser(prog="func_replacer", description="Replaces function/class in file.", formatter_class=argparse.RawTextHelpFormatter)
-    parser.add_argument("target_file", help="File to modify.")
-    parser.add_argument("-n", "--name", help="Name to replace (inferred if omitted).")
-    parser.add_argument("-s", "--source-file", help="File with replacement code (uses clipboard if omitted).")
-    parser.add_argument("-l", "--line", type=int, help="Approximate 1-based line number of definition to replace.")
-    parser.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt.")
-    parser.add_argument("--lang", choices=list(rgc_lib.LANGUAGE_DEFINITIONS.keys()), help="Manually specify target file language type.")
-    parser.add_argument("--backup", action="store_true", help="Create a .bak backup before replacing.")
-    args = parser.parse_args()
+def _find_block_range(text: str, language: str, *, name: Optional[str], line: Optional[int]):
+    block = None
+    if language == "python": block = extract_python_block_ast(text, name=name, line=line)
+    elif language == "brace": block = extract_brace_block(text, name=name, line=line)
+    elif language == "json": block = extract_json_block(text, line=line)
+    elif language == "yaml": block = extract_yaml_block(text, line=line, name=name)
+    elif language == "xml": block = extract_xml_block(text, line=line, name=name)
+    elif language == "ruby": block = extract_ruby_block(text, line=line, name=name)
+    elif language == "lua": block = extract_lua_block(text, line=line, name=name)
+    if block:
+        return block.start, block.end, block.name
+    return None
 
-    new_block_content_str = ""; source_description = ""
-    if args.source_file:
-        try:
-            with open(args.source_file, 'r', encoding='utf-8') as f: new_block_content_str = f.read()
-            source_description = f"file '{args.source_file}'"
-        except Exception as e: sys.stderr.write(f"Error reading source: {e}\n"); sys.exit(1)
-    else:
-        if get_clipboard is None: sys.stderr.write("Clipboard unavailable. Use --source-file.\n"); sys.exit(1)
-        try: new_block_content_str = get_clipboard(); source_description = "clipboard"
-        except Exception as e: sys.stderr.write(f"Error getting clipboard: {e}\n"); sys.exit(1)
-        if new_block_content_str is None: # Explicit check if dummy returns None
-            sys.stderr.write("Error: Clipboard function returned None. Aborting.\n"); sys.exit(1)
-    if not new_block_content_str.strip(): sys.stderr.write(f"Error: Content from {source_description} empty.\n"); sys.exit(1)
+def _indent_of_line(text: str, line_no_1based: int) -> str:
+    lines = text.splitlines()
+    if 1 <= line_no_1based <= len(lines):
+        ln = lines[line_no_1based - 1]
+        return ln[: len(ln) - len(ln.lstrip())]
+    return ""
 
-    if args.lang: target_lang_type = args.lang
-    else: target_lang_type, _ = rgc_lib.get_language_type_from_filename(args.target_file)
-    if target_lang_type == "unknown": sys.stderr.write(f"Error: Cannot determine language for '{args.target_file}'. Use --lang.\n"); sys.exit(1)
+def _reindent_block(block: str, indent: str) -> str:
+    lines = block.splitlines()
+    while lines and not lines[0].strip(): lines.pop(0)
+    min_indent = None
+    for ln in lines:
+        if ln.strip():
+            leading = len(ln) - len(ln.lstrip())
+            min_indent = leading if min_indent is None else min(min_indent, leading)
+    if min_indent is None: min_indent = 0
+    normalized = [ln[min_indent:] if len(ln) >= min_indent else ln for ln in lines]
+    return "\n".join((indent + ln if ln.strip() else ln) for ln in normalized)
 
-    target_entity_name = args.name
-    if not target_entity_name:
-        target_entity_name = extract_entity_name_from_code_heuristic(new_block_content_str, target_lang_type)
-        if not target_entity_name: sys.stderr.write(f"Error: Cannot infer name from {source_description} for '{target_lang_type}'. Use --name.\n"); sys.exit(1)
-        print(f"Inferred entity name to replace: '{target_entity_name}' (from {source_description})")
+def plan_replacement(target_path: Path, new_code: str, *, entity_name: Optional[str] = None, approx_line: Optional[int] = None,
+                     backup: bool = True) -> ReplacePlan:
+    target_text = _read_text(target_path)
+    language, _ = get_language_type_from_filename(target_path)
+    inferred = _infer_name_from_block(new_code, language) or entity_name
+    rng = _find_block_range(target_text, language, name=inferred, line=approx_line)
+    if not rng:
+        raise ValueError(f"Could not locate target block in {target_path} using name={inferred!r} line={approx_line!r}")
+    start, end, found_name = rng
+    indent = _indent_of_line(target_text, start)
+    reindented = _reindent_block(new_code, indent)
+    backup_path = target_path.with_suffix(target_path.suffix + ".bak") if backup else None
+    return ReplacePlan(target_path, backup_path, start, end, reindented, found_name or inferred, language)
 
+def apply_replacement(plan: ReplacePlan, *, assume_yes: bool = False) -> None:
+    content = _read_text(plan.target_path)
+    lines = content.splitlines()
+    before = lines[: plan.start_line - 1]
+    after = lines[plan.end_line :]
+    new_text = "\n".join(before + [plan.new_block] + after)
+    if not assume_yes:
+        print(f"About to replace lines {plan.start_line}-{plan.end_line} in {plan.target_path} (lang={plan.language}).\n"
+              f"Detected entity: {plan.detected_name or '<unknown>'}. Proceed? [y/N] ", end="")
+        ans = sys.stdin.readline().strip().lower()
+        if ans not in {"y", "yes"}:
+            print("Aborted.")
+            return
+    if plan.backup_path:
+        shutil.copy2(plan.target_path, plan.backup_path)
+    _write_text(plan.target_path, new_text)
+    print(f"Replaced lines {plan.start_line}-{plan.end_line} in {plan.target_path}.")
+    if plan.backup_path:
+        print(f"Backup saved to {plan.backup_path}.")
+
+def _read_source_code(args: argparse.Namespace) -> str:
+    if args.source:
+        p = Path(args.source)
+        if not p.exists():
+            raise FileNotFoundError(f"Source file not found: {p}")
+        return _read_text(p)
+    if pyperclip is None:
+        raise RuntimeError("pyperclip not available. Install it or use --source to specify a file.")
     try:
-        with open(args.target_file, 'r', encoding='utf-8', errors='surrogateescape') as f:
-            original_lines_with_newlines = f.readlines(); f.seek(0); original_file_content_str = f.read()
-    except FileNotFoundError: sys.stderr.write(f"Error: Target file '{args.target_file}' not found.\n"); sys.exit(1)
-    except Exception as e: sys.stderr.write(f"Error reading target: {e}\n"); sys.exit(1)
+        return pyperclip.paste()
+    except Exception as e:
+        raise RuntimeError(f"Failed to read clipboard: {e}")
 
-    old_block_lines, old_block_start_0idx, old_block_end_0idx = None, -1, -1
-    extractor_func = rgc_lib.EXTRACTOR_DISPATCH_MAP.get(target_lang_type)
-    if not extractor_func: sys.stderr.write(f"Error: No extractor for '{target_lang_type}'.\n"); sys.exit(1)
+def main(argv: Optional[list[str]] = None) -> int:
+    ap = argparse.ArgumentParser(description="Replace a function/class/block in a code file with new content.")
+    ap.add_argument("target")
+    ap.add_argument("-s", "--source")
+    ap.add_argument("-n", "--entity_name")
+    ap.add_argument("-l", "--line", type=int)
+    ap.add_argument("-y", "--yes", action="store_true")
+    ap.add_argument("-b", "--backup", action="store_true")
+    ap.add_argument("-B", "--no-backup", dest="no_backup", action="store_true")
+    args = ap.parse_args(argv)
     try:
-        if args.line:
-            target_line_1idx_for_extraction = args.line
-            if target_lang_type == "python": old_block_lines, old_block_start_0idx, old_block_end_0idx = extractor_func(original_lines_with_newlines, original_file_content_str, target_entity_name=target_entity_name, target_line_1idx=target_line_1idx_for_extraction)
-            elif target_lang_type in ["json", "yaml", "xml"]: old_block_lines, old_block_start_0idx, old_block_end_0idx = extractor_func(original_lines_with_newlines, target_line_1idx_for_extraction - 1, original_file_content_str)
-            else: old_block_lines, old_block_start_0idx, old_block_end_0idx = extractor_func(original_lines_with_newlines, target_line_1idx_for_extraction - 1, target_entity_name=target_entity_name)
-        elif target_entity_name:
-            if target_lang_type == "python": old_block_lines, old_block_start_0idx, old_block_end_0idx = extractor_func(original_lines_with_newlines, original_file_content_str, target_entity_name=target_entity_name)
-            else: # Heuristic scan
-                found_declaration_line_0idx = -1
-                for idx, line_txt in enumerate(original_lines_with_newlines):
-                    is_declaration_line = False; stripped_line = line_txt.lstrip()
-                    if target_lang_type == "ruby" and re.match(r"^\s*(def|class|module)\s+" + re.escape(target_entity_name) + r"\b", stripped_line): is_declaration_line = True
-                    elif target_lang_type == "lua" and re.match(r"^\s*(?:local\s+)?function\s+" + re.escape(target_entity_name) + r"\b", stripped_line): is_declaration_line = True
-                    elif target_lang_type == "brace" and re.search(r"\b" + re.escape(target_entity_name) + r"\b", stripped_line):
-                         if "(" in stripped_line or "{" in stripped_line or "class" in stripped_line or "struct" in stripped_line: is_declaration_line=True
-                    if is_declaration_line: found_declaration_line_0idx = idx; break
-                if found_declaration_line_0idx != -1:
-                    if target_lang_type in ["json", "yaml", "xml"]: old_block_lines, old_block_start_0idx, old_block_end_0idx = extractor_func(original_lines_with_newlines, found_declaration_line_0idx, original_file_content_str)
-                    else: old_block_lines, old_block_start_0idx, old_block_end_0idx = extractor_func(original_lines_with_newlines, found_declaration_line_0idx, target_entity_name=target_entity_name)
-                else: sys.stderr.write(f"Warning: Could not find declaration line for '{target_entity_name}'.\n")
-        else: sys.stderr.write("Error: No name or line specified.\n"); sys.exit(1)
-    except Exception as e_extract_replace: sys.stderr.write(f"Error during block location: {e_extract_replace}\n")
-
-    if not old_block_lines or old_block_start_0idx == -1:
-        sys.stderr.write(f"Error: Could not find or extract block for '{target_entity_name}' {('near line ' + str(args.line)) if args.line else ''} in '{args.target_file}'. Lang: {target_lang_type}\n")
-        if rgc_lib.OPTIONAL_LIBRARY_NOTES: [sys.stderr.write(f"Note: {note}\n") for note in rgc_lib.OPTIONAL_LIBRARY_NOTES]
-        sys.exit(1)
-
-    print(f"Found block for '{target_entity_name}' in '{args.target_file}' (lines {old_block_start_0idx + 1} - {old_block_end_0idx + 1}).")
-    print("--- Current Block (first 5 lines) ---"); [print(line.rstrip()) for line in old_block_lines[:5]]; print("---")
-    print(f"\n--- New Block (from {source_description}, first 5 lines) ---"); [print(line) for line in new_block_content_str.splitlines()[:5]]; print("---")
-    if not args.yes:
-        try: confirm = input(f"\nReplace content for '{target_entity_name}' in '{args.target_file}'? (y/N): ")
-        except EOFError: confirm = 'n'
-        if confirm.lower() != 'y': print("Replacement aborted by user."); sys.exit(0)
-
-    old_block_first_line_indent_str = re.match(r"^(\s*)", old_block_lines[0]).group(1) if old_block_lines else ""
-    new_block_intermediate_lines = new_block_content_str.rstrip('\n').split('\n')
-    new_block_lines_with_preserved_indent = []
-    for line_new in new_block_intermediate_lines:
-        new_block_lines_with_preserved_indent.append((old_block_first_line_indent_str + line_new.lstrip() + "\n") if line_new.strip() else "\n")
-    if not any(line.strip() for line in new_block_lines_with_preserved_indent) and new_block_content_str.strip() == "":
-        new_block_lines_with_preserved_indent = [old_block_first_line_indent_str + "\n"]
-    final_file_lines = original_lines_with_newlines[:old_block_start_0idx] + new_block_lines_with_preserved_indent + original_lines_with_newlines[old_block_end_0idx + 1:]
-
-    if args.backup:
-        backup_file_path = args.target_file + ".bak"
-        try:
-            shutil.copy2(args.target_file, backup_file_path) # shutil imported at top
-            print(f"Backup created: {backup_file_path}")
-        except Exception as e_backup: sys.stderr.write(f"Warning: Could not create backup: {e_backup}\n")
-    try:
-        with open(args.target_file, 'w', encoding='utf-8') as f: f.writelines(final_file_lines)
-        print(f"Successfully replaced '{target_entity_name}' in '{args.target_file}'.")
-    except Exception as e: sys.stderr.write(f"Error writing target file: {e}\n"); sys.exit(1)
+        new_code = _read_source_code(args)
+        backup = False if args.no_backup else True
+        plan = plan_replacement(Path(args.target), new_code, entity_name=args.entity_name, approx_line=args.line, backup=backup)
+        apply_replacement(plan, assume_yes=args.yes)
+        return 0
+    except Exception as e:
+        print(f"[ERROR] {e}", file=sys.stderr)
+        return 2
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
