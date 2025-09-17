@@ -9,37 +9,29 @@ from .utils import sanitize_line
 
 # ---- Patterns --------------------------------------------------------------
 
-# Custom meta line we print via: --print "TDMETA\t%(id)s\t%(title)s"
+# Optional custom meta line people sometimes add via --print "TDMETA\t%(id)s\t%(title)s"
 _META_RE = re.compile(r"^TDMETA\t(?P<id>[^\t]+)\t(?P<title>.+)$")
 
 # Destination emitted by yt-dlp
-_DEST_RE = re.compile(r"^\[download\]\s+Destination:\s*(?P<path>.+)$")
+_DEST_RE = re.compile(r"^download\s+Destination:\s*(?P<path>.+)$", re.I)
 
-# "Already" variants:
-#   [download] File is already downloaded and merged
-#   [download] <file.ext> has already been downloaded
-#   [download] <file.ext> has already been downloaded and merged
+# "Already downloaded" variants
 _ALREADY_RES = [
-    re.compile(r"^\[download\]\s+File\s+is\s+already\s+downloaded\s+and\s+merged\s*$", re.I),
-    re.compile(r"^\[download\]\s+.+?\s+has\s+already\s+been\s+downloaded(?:\s+and\s+merged)?\s*$", re.I),
+    re.compile(r"^download\s+File\s+is\s+already\s+downloaded\s+and\s+merged\s*$", re.I),
+    re.compile(r"^download\s+.+?\s+has\s+already\s+been\s+downloaded(?:\s+and\s+merged)?\s*$", re.I),
 ]
 
-# Progress lines have MANY shapes. We support:
-#   [download]  10.1% of 48.97MiB at 2.11MiB/s ETA 00:37
-#   [download] 100% of 25.00MB in 00:30
-#   [download]  8.6% of ~ 713.54MiB at 25.16MiB/s ETA 00:28
-#   [download] 100% of 348.09MiB                           <-- no ETA/in/speed
-#   [download]   3.1% of ~ 548.13MiB at 13.18MiB/s ETA Unknown
+# Progress lines (several shapes)
 _PROGRESS_RE = re.compile(
-    r"""^\[download\]\s+
+    r"""^download\s+
         (?P<pct>\d{1,3}(?:\.\d+)?)%\s+of\s+
-        (?:~\s*)?                                          # approximate size marker
+        (?:~\s*)?
         (?P<total_val>\d+(?:\.\d+)?)\s*(?P<total_unit>[KMGT]?i?B)\s*
         (?:\s+at\s+(?P<speed_val>\d+(?:\.\d+)?)\s*(?P<speed_unit>[KMGT]?i?B)/s\s*)?
         (?:
             \s+ETA\s+(?P<eta>(?:\d{2}:\d{2}(?::\d{2})?|Unknown)) |
-            \s+in\s+(?P<intime>\d{2}:\d{2}(?::\d{2})?)          |
-            \s*                                                 # allow nothing (final 100% line)
+            \s+in\s+(?P<intime>\d{2}:\d{2}(?::\d{2})?) |
+            \s*
         )
         \s*$
     """,
@@ -82,39 +74,26 @@ def parse_line(line: str) -> Optional[Dict]:
     """
     Parse a single yt-dlp line into a normalized dict (or None if not relevant).
 
-    Returns a dict with at least an 'event' key in:
-      - {'event':'meta', 'id':..., 'title':...}
+    Returns one of:
+      - {'event':'meta', 'id':..., 'title':...}          # only if you used --print TDMETA...
       - {'event':'destination', 'path':...}
       - {'event':'already'}
-      - {
-          'event':'progress',
-          'percent': float,
-          'total': int (bytes),
-          'downloaded': int (bytes),
-          'speed_bps': float or None,
-          'eta_s': int or None
-        }
-
-    Unrecognized lines -> None (let caller log as raw).
+      - {'event':'progress','percent','total','downloaded','speed_bps','eta_s'}
     """
     s = sanitize_line(line)
 
-    # 1) metadata
     m = _META_RE.match(s)
     if m:
         return {"event": "meta", "id": m.group("id"), "title": m.group("title")}
 
-    # 2) destination
     m = _DEST_RE.match(s)
     if m:
         return {"event": "destination", "path": m.group("path")}
 
-    # 3) already
     for rx in _ALREADY_RES:
         if rx.match(s):
             return {"event": "already"}
 
-    # 4) progress
     m = _PROGRESS_RE.match(s)
     if m:
         pct = float(m.group("pct"))
@@ -133,12 +112,9 @@ def parse_line(line: str) -> Optional[Dict]:
         if m.group("eta"):
             eta_s = _hms_to_seconds(m.group("eta"))
         elif m.group("intime"):
-            # final completion line with "in HH:MM(:SS)"
             eta_s = 0
-        else:
-            # allow bare "100% of XXX" with no timing -> treat as complete
-            if pct >= 100.0:
-                eta_s = 0
+        elif pct >= 100.0:
+            eta_s = 0
 
         return {
             "event": "progress",
@@ -149,5 +125,4 @@ def parse_line(line: str) -> Optional[Dict]:
             "eta_s": eta_s,
         }
 
-    # 5) nothing matched
     return None
