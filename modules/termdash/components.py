@@ -8,7 +8,7 @@ from collections.abc import Callable
 
 # ANSI
 RESET = "\033[0m"
-DEFAULT_COLOR = "0;37"  # white
+DEFAULT_COLOR = ""  # no color by default to avoid ANSI width issues
 
 # Non-printing markers to tag cells that should NOT expand columns
 NOEXPAND_L = "\x1e"  # Record Separator
@@ -70,8 +70,11 @@ class Stat:
             hint = f"[W{self.display_width}]" if self.display_width else ""
             text = f"{NOEXPAND_L}{hint}{text}{NOEXPAND_R}"
 
-        color_code = self.color_provider(self.value) or DEFAULT_COLOR
-        return f"\033[{color_code}m{text}{RESET}"
+        color_code = self.color_provider(self.value)
+        if color_code:
+            return f"\033[{color_code}m{text}{RESET}"
+        # No color wrapping by default for stable column widths
+        return text
 
 
 class Line:
