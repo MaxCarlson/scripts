@@ -1,8 +1,8 @@
-#!/usr/bin/env python3
+# File: poe2craft/datasources/poeninja_prices.py
 from __future__ import annotations
 
-import json
 import logging
+import os
 import re
 from typing import Dict, Optional
 
@@ -11,22 +11,28 @@ from bs4 import BeautifulSoup
 
 LOG = logging.getLogger("poe2craft.datasources.poeninja")
 
-_API_CURRENCY = "https://poe.ninja/api/data/currencyoverview"
-_FALLBACK_PAGE = "https://poe.ninja/poe2/economy/{league_slug}/currency"
 _POE2_ROOT = "https://poe.ninja/poe2"
+_API_BASE = "https://poe.ninja/api/data"
 
 
 def _slugify_league(name: str) -> str:
-    s = (name or "").strip().lower()
-    s = re.sub(r"[’'`]", "", s)
-    s = re.sub(r"\s+", "-", s)
-    s = re.sub(r"[^a-z0-9\-]", "", s)
-    return s
+    return name.strip().lower().replace(" ", "-")
+
+
+def _env_or_settings_default() -> Optional[str]:
+    """
+    Escape hatch when front page parsing changes. Tests or callers can set POE2_LEAGUE.
+    """
+    env = os.getenv("POE2_LEAGUE")
+    if env:
+        return env
+    return None
 
 
 def detect_active_league(session: Optional[requests.Session] = None) -> Optional[str]:
     """
-    Heuristic: read poe.ninja/poe2 landing for an economy/currency link and invert to Title Case.
+    Heuristic: read poe.ninja/poe2 landing for a /poe2/economy/<slug>/currency link
+    and return a display name ("Slug Words") for the current economy.
     """
     sess = session or requests.Session()
     try:
@@ -35,97 +41,66 @@ def detect_active_league(session: Optional[requests.Session] = None) -> Optional
         m = re.search(r"/poe2/economy/([a-z0-9\-]+)/currency", r.text, flags=re.I)
         if m:
             slug = m.group(1)
-            # Titleize slug as a display name
             disp = " ".join(w.capitalize() for w in slug.split("-"))
             return disp
     except Exception as e:
         LOG.debug("Active league detection failed: %s", e)
-    return None
+    return _env_or_settings_default()
 
 
 class PoENinjaPriceProvider:
-    """Currency prices for PoE2 via poe.ninja."""
+    """
+    Tiny wrapper for poe.ninja price endpoints we use in tests/CLI.
+    """
 
-    def __init__(self, session: Optional[requests.Session] = None, timeout: float = 12.0):
+    def __init__(self, session: Optional[requests.Session] = None):
         self.session = session or requests.Session()
-        self.timeout = timeout
 
-    def get_currency_prices(self, league: str = "Standard") -> Dict:
-        # --- API path (preferred) ---
-        api_params = {"league": league, "type": "Currency", "game": "poe2"}
-        try:
-            # NOTE: tests often stub by URL prefix; they usually accept params baked into the URL as well.
-            r = self.session.get(_API_CURRENCY, params=api_params, timeout=self.timeout)
-            data = None
-            ct = (r.headers.get("content-type") or "").lower()
-            if "application/json" in ct:
-                try:
-                    data = r.json()
-                except Exception:
-                    try:
-                        data = json.loads(getattr(r, "text", "") or getattr(r, "content", b"").decode("utf-8"))
-                    except Exception:
-                        data = None
-            if data and "lines" in data:
-                out: Dict[str, float] = {}
-                for line in data["lines"]:
-                    name = line.get("currencyTypeName")
-                    val = None
-                    recv = line.get("receive")
-                    if isinstance(recv, dict) and isinstance(recv.get("value"), (int, float)):
-                        val = float(recv["value"])
-                    elif isinstance(line.get("chaosEquivalent"), (int, float)):
-                        val = float(line["chaosEquivalent"])
-                    if name and val is not None:
-                        out[name] = val
-                if out:
-                    return out
-        except TypeError:
-            # Some test doubles don’t accept `params=`; try again without params:
-            try:
-                url = f"{_API_CURRENCY}?league={league}&type=Currency&game=poe2"
-                r = self.session.get(url, timeout=self.timeout)
-                data = json.loads(r.text)
-                out: Dict[str, float] = {}
-                for line in data.get("lines", []):
-                    name = line.get("currencyTypeName")
-                    val = None
-                    recv = line.get("receive")
-                    if isinstance(recv, dict) and isinstance(recv.get("value"), (int, float)):
-                        val = float(recv["value"])
-                    elif isinstance(line.get("chaosEquivalent"), (int, float)):
-                        val = float(line["chaosEquivalent"])
-                    if name and val is not None:
-                        out[name] = val
-                if out:
-                    return out
-            except Exception as e:
-                LOG.warning("poe.ninja API error: %s", e)
-        except Exception as e:
-            LOG.warning("poe.ninja API error: %s", e)
-
-        # --- Fallback: scrape __NEXT_DATA__ ---
+    def fetch_prices(self, league: str) -> Dict[str, float]:
+        """
+        Pulls a merged map of currency-like prices for the given league.
+        We primarily need a dense currency set; item classes can be added similarly.
+        """
         league_slug = _slugify_league(league)
-        url = _FALLBACK_PAGE.format(league_slug=league_slug)
+        prices: Dict[str, float] = {}
+
+        # Currency overview
+        cur_url = f"{_API_BASE}/currencyoverview?league={league_slug}&type=Currency"
         try:
-            r = self.session.get(url, timeout=self.timeout)
-            ct = (r.headers.get("content-type") or "").lower()
-            if "text/html" in ct:
-                soup = BeautifulSoup(r.text, "html.parser")
-                blob = soup.find("script", id="__NEXT_DATA__")
-                if not blob or not blob.string:
-                    LOG.warning("Could not find embedded JSON on %s; returning empty price map", url)
-                    return {}
-                j = json.loads(blob.string)
-                page_props = ((j.get("props") or {}).get("pageProps") or {})
-                arr = page_props.get("data") or page_props.get("items") or []
-                out: Dict[str, float] = {}
-                for it in arr:
-                    n = it.get("name") or it.get("currencyTypeName")
-                    v = it.get("chaosValue")
-                    if n and isinstance(v, (int, float)):
-                        out[n] = float(v)
-                return out
+            data = self._json(cur_url)
+            for line in data.get("lines", []):
+                n = line.get("currencyTypeName") or line.get("typeLine")
+                val = None
+                # prefer gold-equivalent
+                chaos_equiv = (line.get("receive", {}) or {}).get("value")
+                if chaos_equiv is None:
+                    chaos_equiv = (line.get("pay", {}) or {}).get("value")
+                # poe2 uses Gold, but poe.ninja returns its standard "chaos" field name in many places;
+                # treat it as our base unit either way.
+                val = chaos_equiv
+                if n and isinstance(val, (int, float)):
+                    prices[n] = float(val)
         except Exception as e:
-            LOG.warning("poe.ninja economy fallback failed for %s: %s", url, e)
-        return {}
+            LOG.debug("currencyoverview failed: %s", e)
+
+        # Item categories we often treat as currency-like (e.g., Catalysts, etc.)
+        for type_name in ("Fragment", "Oil", "Incubator", "Fossil", "Resonator", "Scarab", "DeliriumOrb"):
+            url = f"{_API_BASE}/itemoverview?league={league_slug}&type={type_name}"
+            try:
+                data = self._json(url)
+                for line in data.get("lines", []):
+                    n = line.get("name") or line.get("typeLine")
+                    val = line.get("chaosValue") or line.get("goldValue")
+                    if n and isinstance(val, (int, float)):
+                        prices[n] = float(val)
+            except Exception:
+                # Not all categories are always present for PoE2; ignore missing.
+                continue
+
+        return prices
+
+    # ------------------ http helpers ------------------
+    def _json(self, url: str) -> dict:
+        r = self.session.get(url, timeout=15)
+        r.raise_for_status()
+        return r.json()
