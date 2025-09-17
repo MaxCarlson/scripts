@@ -1,0 +1,385 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.11, pytest-8.3.4, pluggy-1.5.0
+rootdir: /data/data/com.termux/files/home/scripts/pyscripts
+configfile: pytest.ini
+plugins: anyio-4.9.0, libtmux-0.46.2, mock-3.14.0, asyncio-1.0.0, cov-6.2.1
+asyncio: mode=Mode.STRICT, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 44 items
+
+tests/zip_for_llms_test.py .F.F.F......FF...F.F.F.FF..............F..F.  [100%]
+
+=================================== FAILURES ===================================
+______________ test_flatten_directory_respects_default_exclusions ______________
+
+temp_test_dir = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_flatten_directory_respect0/test_repo')
+
+    def test_flatten_directory_respects_default_exclusions(temp_test_dir: Path):
+        source_for_flatten = temp_test_dir.parent / "source_for_flatten"
+        if source_for_flatten.exists():
+            shutil.rmtree(source_for_flatten)
+        shutil.copytree(temp_test_dir, source_for_flatten)
+    
+        flat_dir = flatten_directory(source_for_flatten, name_by_path=False, verbose=False)
+        assert flat_dir.exists()
+        assert flat_dir.name == "_flattened"
+    
+        flat_files = {f.name for f in flat_dir.iterdir() if f.is_file()}
+        assert "large_file.dat" in flat_files
+        # compiled cache excluded by default exts
+>       assert "cachefile.pyc" not in flat_files
+E       AssertionError: assert 'cachefile.pyc' not in {'README.md', 'another_large.log', 'binary.bin', 'cachefile.pyc', 'config', 'folder_structure.txt', ...}
+
+tests/zip_for_llms_test.py:112: AssertionError
+________________________ test_delete_files_to_fit_size _________________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_delete_files_to_fit_size0')
+
+    def test_delete_files_to_fit_size(tmp_path: Path):
+        delete_dir = tmp_path / "delete_test_dir"
+        delete_dir.mkdir()
+        (delete_dir / "file_c_verylarge.log").write_text("L" * (800 * 1024))
+        (delete_dir / "file_b_large.txt").write_text("T" * (700 * 1024))
+        (delete_dir / "file_a_medium.log").write_text("LL" * (250 * 1024))
+        (delete_dir / "file_d_small.dat").write_text("D" * (300 * 1024))
+    
+        removed = delete_files_to_fit_size(delete_dir, 1, [".log", ".txt"], verbose=True)
+    
+        assert str(delete_dir / "file_c_verylarge.log") in removed
+>       assert str(delete_dir / "file_a_medium.log") in removed
+E       AssertionError: assert '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_delete_files_to_fit_size0/delete_test_dir/file_a_medium.log' in ['/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_delete_files_to_fit_size0/delete_test_dir/file...com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_delete_files_to_fit_size0/delete_test_dir/file_b_large.txt']
+E        +  where '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_delete_files_to_fit_size0/delete_test_dir/file_a_medium.log' = str((PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_delete_files_to_fit_size0/delete_test_dir') / 'file_a_medium.log'))
+
+tests/zip_for_llms_test.py:147: AssertionError
+----------------------------- Captured stdout call -----------------------------
+warn: trimming to fit: deleting file_c_verylarge.log
+warn: trimming to fit: deleting file_b_large.txt
+________________________ test_exclude_dir_custom[False] ________________________
+
+temp_test_dir = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_exclude_dir_custom_False_0/test_repo')
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_exclude_dir_custom_False_0')
+mode_func_is_zip = False
+
+    @pytest.mark.parametrize("mode_func_is_zip", [True, False])
+    def test_exclude_dir_custom(temp_test_dir: Path, tmp_path: Path, mode_func_is_zip):
+        (temp_test_dir / "custom_exclude_dir").mkdir()
+        (temp_test_dir / "custom_exclude_dir" / "file.txt").write_text("in excluded dir")
+        output_name = f"custom_xd.{'zip' if mode_func_is_zip else 'txt'}"
+        output_path = tmp_path / output_name
+        current_exclude_dirs = DEFAULT_EXCLUDE_DIRS.copy()
+        current_exclude_dirs.add("custom_exclude_dir")
+    
+        if mode_func_is_zip:
+            zip_folder(str(temp_test_dir), str(output_path), current_exclude_dirs, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES, [], [], None, [], False, False, False)
+            with zipfile.ZipFile(output_path, 'r') as z:
+                assert not any(name.startswith("custom_exclude_dir/") for name in z.namelist())
+        else:
+            text_file_mode(str(temp_test_dir), str(output_path), current_exclude_dirs, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES,
+                           [], [], False, False, False)
+            content = output_path.read_text()
+>           assert "custom_exclude_dir/" not in content
+E           AssertionError: assert 'custom_exclude_dir/' not in 'This docume...e.txt --\nhi'
+E             
+E             'custom_exclude_dir/' is contained here:
+E               p2xx/
+E                   custom_exclude_dir/ (excluded)
+E                   data/
+E                   logs/
+E                   node_modules/ (excluded)...
+E             
+E             ...Full output truncated (29 lines hidden), use '-vv' to show
+
+tests/zip_for_llms_test.py:177: AssertionError
+______________________ test_remove_patterns_dirname[True] ______________________
+
+temp_test_dir = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_remove_patterns_dirname_T0/test_repo')
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_remove_patterns_dirname_T0')
+mode_func_is_zip = True
+
+    @pytest.mark.parametrize("mode_func_is_zip", [True, False])
+    def test_remove_patterns_dirname(temp_test_dir: Path, tmp_path: Path, mode_func_is_zip):
+        (temp_test_dir / "data" / "another.txt").write_text("in data")
+        output_name = f"remove_pat_dir.{'zip' if mode_func_is_zip else 'txt'}"
+        output_path = tmp_path / output_name
+    
+        if mode_func_is_zip:
+            zip_folder(str(temp_test_dir), str(output_path), DEFAULT_EXCLUDE_DIRS, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES,
+                       ["data"], [], None, [], False, False, False)
+            with zipfile.ZipFile(output_path, 'r') as z:
+>               assert not any(name.startswith("data/") for name in z.namelist())
+E               assert not True
+E                +  where True = any(<generator object test_remove_patterns_dirname.<locals>.<genexpr> at 0x787e65df20>)
+
+tests/zip_for_llms_test.py:254: AssertionError
+_____________________ test_remove_patterns_dirname[False] ______________________
+
+temp_test_dir = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_remove_patterns_dirname_F0/test_repo')
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_remove_patterns_dirname_F0')
+mode_func_is_zip = False
+
+    @pytest.mark.parametrize("mode_func_is_zip", [True, False])
+    def test_remove_patterns_dirname(temp_test_dir: Path, tmp_path: Path, mode_func_is_zip):
+        (temp_test_dir / "data" / "another.txt").write_text("in data")
+        output_name = f"remove_pat_dir.{'zip' if mode_func_is_zip else 'txt'}"
+        output_path = tmp_path / output_name
+    
+        if mode_func_is_zip:
+            zip_folder(str(temp_test_dir), str(output_path), DEFAULT_EXCLUDE_DIRS, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES,
+                       ["data"], [], None, [], False, False, False)
+            with zipfile.ZipFile(output_path, 'r') as z:
+                assert not any(name.startswith("data/") for name in z.namelist())
+                assert "src/script.py" in z.namelist()
+        else:
+            text_file_mode(str(temp_test_dir), str(output_path), DEFAULT_EXCLUDE_DIRS, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES,
+                           ["data"], [], False, False, True)
+            content = output_path.read_text()
+>           assert "    data/" not in content
+E           AssertionError: assert '    data/' not in 'This docume...e.txt --\nhi'
+E             
+E             '    data/' is contained here:
+E               istmp2xx/
+E                   data/
+E                   logs/
+E                   node_modules/ (excluded)
+E                   scripts/...
+E             
+E             ...Full output truncated (30 lines hidden), use '-vv' to show
+
+tests/zip_for_llms_test.py:260: AssertionError
+----------------------------- Captured stdout call -----------------------------
+== Generating folder structure...
+  - .git (excluded dir)
+  - node_modules (excluded dir)
+  - scripts/__pycache__ (excluded dir)
+  - src/__pycache__ (excluded dir)
+  - .git (excluded dir)
+  - node_modules (excluded dir)
+  - yarn.lock (excluded)
+  - src/__pycache__ (excluded dir)
+  - data/large_file.dat (binary or non-UTF-8 content)
+  - data/binary.bin (binary or non-UTF-8 content)
+  - scripts/__pycache__ (excluded dir)
+  Text file complete: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_remove_patterns_dirname_F0/remove_pat_dir.txt
+  Source: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_remove_patterns_dirname_F0/test_repo
+___________________ test_exclude_dir_by_name_anywhere[False] ___________________
+
+temp_test_dir = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_exclude_dir_by_name_anywh1/test_repo')
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_exclude_dir_by_name_anywh1')
+mode_func_is_zip = False
+
+    @pytest.mark.parametrize("mode_func_is_zip", [True, False])
+    def test_exclude_dir_by_name_anywhere(temp_test_dir: Path, tmp_path: Path, mode_func_is_zip):
+        output = tmp_path / f"xd_name_anywhere.{'zip' if mode_func_is_zip else 'txt'}"
+        xd = DEFAULT_EXCLUDE_DIRS.copy()
+        xd.update({"__pycache__"})  # ensure present
+        if mode_func_is_zip:
+            zip_folder(str(temp_test_dir), str(output), xd, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES, [], [], None, [], False, False, False)
+            with zipfile.ZipFile(output, "r") as z:
+                assert not any("src/__pycache__/" in n or "scripts/__pycache__/" in n for n in z.namelist())
+        else:
+            text_file_mode(str(temp_test_dir), str(output), xd, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES, [], [], False, False, False)
+            content = output.read_text()
+>           assert "        __pycache__/" not in content  # not in structure
+E           AssertionError: assert '        __pycache__/' not in 'This docume...e.txt --\nhi'
+E             
+E             '        __pycache__/' is contained here:
+E               scripts/
+E                       __pycache__/ (excluded)
+E                   src/
+E                       __pycache__/ (excluded)
+E               ...
+E             
+E             ...Full output truncated (24 lines hidden), use '-vv' to show
+
+tests/zip_for_llms_test.py:302: AssertionError
+___________________ test_exclude_dir_by_path_fragment[False] ___________________
+
+temp_test_dir = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_exclude_dir_by_path_fragm1/test_repo')
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_exclude_dir_by_path_fragm1')
+mode_func_is_zip = False
+
+    @pytest.mark.parametrize("mode_func_is_zip", [True, False])
+    def test_exclude_dir_by_path_fragment(temp_test_dir: Path, tmp_path: Path, mode_func_is_zip):
+        output = tmp_path / f"xd_path_fragment.{'zip' if mode_func_is_zip else 'txt'}"
+        xd = DEFAULT_EXCLUDE_DIRS.copy()
+        xd.update({"scripts/__pycache__"})
+        if mode_func_is_zip:
+            zip_folder(str(temp_test_dir), str(output), xd, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES, [], [], None, [], False, False, False)
+            with zipfile.ZipFile(output, "r") as z:
+                assert not any("scripts/__pycache__/" in n for n in z.namelist())
+        else:
+            text_file_mode(str(temp_test_dir), str(output), xd, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES, [], [], False, False, False)
+            content = output.read_text()
+            assert "    scripts/" in content
+>           assert "        __pycache__/" not in content
+E           AssertionError: assert '        __pycache__/' not in 'This docume...e.txt --\nhi'
+E             
+E             '        __pycache__/' is contained here:
+E               scripts/
+E                       __pycache__/ (excluded)
+E                   src/
+E                       __pycache__/ (excluded)
+E               ...
+E             
+E             ...Full output truncated (24 lines hidden), use '-vv' to show
+
+tests/zip_for_llms_test.py:318: AssertionError
+_______________________ test_exclude_dir_by_glob[False] ________________________
+
+temp_test_dir = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_exclude_dir_by_glob_False0/test_repo')
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_exclude_dir_by_glob_False0')
+mode_func_is_zip = False
+
+    @pytest.mark.parametrize("mode_func_is_zip", [True, False])
+    def test_exclude_dir_by_glob(temp_test_dir: Path, tmp_path: Path, mode_func_is_zip):
+        output = tmp_path / f"xd_glob.{'zip' if mode_func_is_zip else 'txt'}"
+        xd = DEFAULT_EXCLUDE_DIRS.copy()
+        xd.update({"analysistmp*"})
+        if mode_func_is_zip:
+            zip_folder(str(temp_test_dir), str(output), xd, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES, [], [], None, [], False, False, False)
+            with zipfile.ZipFile(output, "r") as z:
+                assert not any(n.startswith("analysistmp2xx/") for n in z.namelist())
+        else:
+            text_file_mode(str(temp_test_dir), str(output), xd, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES, [], [], False, False, False)
+            content = output.read_text()
+>           assert "analysistmp2xx/" not in content
+E           AssertionError: assert 'analysistmp2xx/' not in 'This docume...og --\nother'
+E             
+E             'analysistmp2xx/' is contained here:
+E               uded)
+E                   analysistmp2xx/ (excluded)
+E                   data/
+E                   logs/
+E                   node_modules/ (excluded)...
+E             
+E             ...Full output truncated (27 lines hidden), use '-vv' to show
+
+tests/zip_for_llms_test.py:333: AssertionError
+__________________ test_text_file_mode_hierarchy_and_content ___________________
+
+temp_test_dir = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_text_file_mode_hierarchy_0/test_repo')
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_text_file_mode_hierarchy_0')
+
+    def test_text_file_mode_hierarchy_and_content(temp_test_dir: Path, tmp_path: Path):
+        output_txt = tmp_path / "text_output.txt"
+        text_file_mode(
+            str(temp_test_dir), str(output_txt), DEFAULT_EXCLUDE_DIRS, DEFAULT_EXCLUDE_EXTS,
+            DEFAULT_EXCLUDE_FILES, [], [], False, False, False
+        )
+        assert output_txt.exists()
+        content = output_txt.read_text()
+        # Preamble exists
+        assert "This document packages a repository for a Large Language Model (LLM)." in content
+        # Structure
+        assert "Folder Structure for: test_repo" in content
+        assert "    src/" in content
+        assert "    data/" in content
+>       assert "    .git/" not in content
+E       AssertionError: assert '    .git/' not in 'This docume...e.txt --\nhi'
+E         
+E         '    .git/' is contained here:
+E           t_repo
+E           /
+E               .git/ (excluded)
+E               analysistmp2xx/
+E               data/...
+E         
+E         ...Full output truncated (31 lines hidden), use '-vv' to show
+
+tests/zip_for_llms_test.py:373: AssertionError
+_______________ test_text_file_mode_verbose_skipped_and_non_utf8 _______________
+
+capsys = <_pytest.capture.CaptureFixture object at 0x787eb025a0>
+temp_test_dir = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_text_file_mode_verbose_sk0/test_repo')
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_text_file_mode_verbose_sk0')
+
+    def test_text_file_mode_verbose_skipped_and_non_utf8(capsys, temp_test_dir: Path, tmp_path: Path):
+        output_txt = tmp_path / "verbose_skip.txt"
+        current_exclude_exts = DEFAULT_EXCLUDE_EXTS.copy()
+        current_exclude_exts.add(".dat")  # exclude data/large_file.dat
+    
+        text_file_mode(
+            str(temp_test_dir), str(output_txt), DEFAULT_EXCLUDE_DIRS, current_exclude_exts,
+            DEFAULT_EXCLUDE_FILES,
+            [], [], False, False, True
+        )
+        captured = capsys.readouterr()
+        stdout = captured.out
+    
+>       assert "Files skipped from content:" in stdout
+E       AssertionError: assert 'Files skipped from content:' in '== Generating folder structure...\n  - .git (excluded dir)\n  - node_modules (excluded dir)\n  - scripts/__pycache__ ...  Source: /data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_text_file_mode_verbose_sk0/test_repo\n'
+
+tests/zip_for_llms_test.py:399: AssertionError
+_______________________ test_text_mode_skips_binary_file _______________________
+
+temp_test_dir = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_text_mode_skips_binary_fi0/test_repo')
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_text_mode_skips_binary_fi0')
+
+    def test_text_mode_skips_binary_file(temp_test_dir: Path, tmp_path: Path):
+        """
+        Ensure binary file isn't printed with contents (header may exist).
+        """
+        out = tmp_path / "txt.txt"
+        text_file_mode(
+            str(temp_test_dir), str(out),
+            DEFAULT_EXCLUDE_DIRS, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES,
+            [], [], False, False, False
+        )
+        content = out.read_text()
+>       assert "-- File: data/binary.bin --" not in content
+E       AssertionError: assert '-- File: da...inary.bin --' not in 'This docume...e.txt --\nhi'
+E         
+E         '-- File: data/binary.bin --' is contained here:
+E           y content
+E           -- File: data/binary.bin --
+E           
+E           -- File: logs/important.log --
+E           important...
+E         
+E         ...Full output truncated (4 lines hidden), use '-vv' to show
+
+tests/zip_for_llms_test.py:763: AssertionError
+_________________ test_text_mode_with_keep_over_remove_dirname _________________
+
+temp_test_dir = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_text_mode_with_keep_over_0/test_repo')
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-295/test_text_mode_with_keep_over_0')
+
+    def test_text_mode_with_keep_over_remove_dirname(temp_test_dir: Path, tmp_path: Path):
+        """
+        Directory matches a remove pattern but a specific keep pattern rescues a file within it.
+        """
+        special_dir = temp_test_dir / "build_logs"
+        special_dir.mkdir(exist_ok=True)
+        (special_dir / "survivor.md").write_text("keep me")
+    
+        out = tmp_path / "keep_dir.txt"
+        text_file_mode(
+            str(temp_test_dir), str(out),
+            DEFAULT_EXCLUDE_DIRS, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES,
+            ["build_*"], ["survivor.md"], False, False, False
+        )
+        txt = out.read_text()
+>       assert "-- File: build_logs/survivor.md --" in txt
+E       AssertionError: assert '-- File: build_logs/survivor.md --' in 'This document packages a repository for a Large Language Model (LLM).\n\nFolder Structure for: test_repo\n/\n    .git...n-- File: logs/important.log --\nimportant\n-- File: logs/other.log --\nother\n-- File: analysistmp2xx/note.txt --\nhi'
+
+tests/zip_for_llms_test.py:816: AssertionError
+=============================== warnings summary ===============================
+tests/zip_for_llms_test.py::test_zip_with_flatten_and_name_by_path
+tests/zip_for_llms_test.py::test_zip_respects_advanced_exclude_dirs_when_flattening
+  /data/data/com.termux/files/usr/lib/python3.12/zipfile/__init__.py:1611: UserWarning: Duplicate name: 'folder_structure.txt'
+    return self._open_to_write(zinfo, force_zip64=force_zip64)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/zip_for_llms_test.py::test_flatten_directory_respects_default_exclusions
+FAILED tests/zip_for_llms_test.py::test_delete_files_to_fit_size - AssertionE...
+FAILED tests/zip_for_llms_test.py::test_exclude_dir_custom[False] - Assertion...
+FAILED tests/zip_for_llms_test.py::test_remove_patterns_dirname[True] - asser...
+FAILED tests/zip_for_llms_test.py::test_remove_patterns_dirname[False] - Asse...
+FAILED tests/zip_for_llms_test.py::test_exclude_dir_by_name_anywhere[False]
+FAILED tests/zip_for_llms_test.py::test_exclude_dir_by_path_fragment[False]
+FAILED tests/zip_for_llms_test.py::test_exclude_dir_by_glob[False] - Assertio...
+FAILED tests/zip_for_llms_test.py::test_text_file_mode_hierarchy_and_content
+FAILED tests/zip_for_llms_test.py::test_text_file_mode_verbose_skipped_and_non_utf8
+FAILED tests/zip_for_llms_test.py::test_text_mode_skips_binary_file - Asserti...
+FAILED tests/zip_for_llms_test.py::test_text_mode_with_keep_over_remove_dirname
+================== 12 failed, 32 passed, 2 warnings in 4.40s ===================

@@ -1,0 +1,38 @@
+downloads_dlpn/manga-mgmt/model_manager/model_manager.py
+downloads_dlpn/manga-mgmt/poptags.json
+downloads_dlpn/manga-mgmt/quantize-manga.py
+downloads_dlpn/manga-mgmt/scrape-nhentai-tags.py
+downloads_dlpn/manga-mgmt/summarize-manga.py
+downloads_dlpn/nhentai-dl/dlnh.py
+downloads_dlpn/nhentai-dl/dlnhv2.py
+
+# Analysis of nhentai-dl and manga-mgmt
+
+## High-Level Summary
+
+These two directories represent two distinct but related domains: downloading manga (`nhentai-dl`) and post-download processing using AI/ML (`manga-mgmt`). They should be organized into two separate, focused projects. The `manga-mgmt` directory contains a very powerful, reusable `model_manager` that could eventually become a shared module.
+
+---
+
+### 1. `nhentai-dl` -> Integrate into `media-dl` Project
+
+**Observation:**
+The `nhentai-dl` directory contains scripts (`dlnh.py`, `dlnhv2.py`) that are wrappers around an external `nhentai` CLI tool. This is a specialized downloading task.
+
+**Recommendation:**
+- **Merge into `media-dl`:** This functionality belongs in the previously proposed `pyprjs/media-dl` project.
+- **Create a "nhentai" Downloader:** The logic should be encapsulated as a specific downloader module within the `media-dl` framework. This would allow the parallel runner to process nhentai URLs alongside others.
+- **Consolidate and Deprecate:** The two Python scripts (`dlnh.py`, `dlnhv2.py`) should be merged into one, and the `nhentai-dl` directory should be removed once the logic is migrated.
+
+---
+
+### 2. `manga-mgmt` -> Create New `manga-analyzer` Project
+
+**Observation:**
+The `manga-mgmt` directory contains a suite of advanced tools for processing manga, including OCR, summarization, and tag generation using local LLMs. This is a complex application, not just a simple script or module.
+
+**Recommendation:**
+- **Create `pyprjs/manga-analyzer`:** This functionality is a perfect candidate for a new, dedicated project.
+- **Migrate Core Logic:** Move `manga-mgmt/summarize-manga.py`, `manga-mgmt/quantize-manga.py`, and the `model_manager/` subdirectory into the new `pyprjs/manga-analyzer` project.
+- **Relocate Scraper:** The `scrape-nhentai-tags.py` script is for data acquisition, not analysis. It should be moved into the `media-dl` project, as its purpose is to gather information from the source. The `poptags.json` file it generates can be considered a shared artifact consumed by the `manga-analyzer`.
+- **Promote `model_manager` (Future):** The `model_manager` is a highly reusable utility for managing local LLMs. For now, it can live inside the `manga-analyzer` project. If any other projects require LLM management in the future, it should be promoted to its own top-level module (e.g., `modules/llm_manager`).

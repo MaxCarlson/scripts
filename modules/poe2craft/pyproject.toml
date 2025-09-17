@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "poe2craft"
+version = "0.2.0"
+description = "Path of Exile 2 scraping CLI"
+authors = [{ name = "you" }]
+readme = "README.md"
+requires-python = ">=3.11"
+
+[project.scripts]
+poe2craft = "poe2craft.cli:main_cli"
+
+[tool.setuptools]
+packages = ["poe2craft", "poe2craft.datasources", "poe2craft.ui"]
+package-dir = {"" = "."}

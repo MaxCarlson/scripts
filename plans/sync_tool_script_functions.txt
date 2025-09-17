@@ -1,0 +1,155 @@
+**Functionalities of scripts for `pyprjs/sync-tool`:**
+
+---
+
+**1. `pscripts/phonetopc/rsynctransfer-test.py`**
+*   **Purpose:** Tests the ability to run `find` commands remotely via SSH on a Cygwin/Windows machine, primarily to verify SSH connectivity and `find` utility availability for `rsync` operations.
+*   **Key Functionalities:**
+    *   **SSH Connection Test:** Attempts to connect to a remote host via SSH using predefined user, host, and port.
+    *   **Remote Command Execution:** Executes `find` commands on the remote machine using `bash -c` to ensure proper command parsing and execution.
+    *   **Output Capture:** Captures and displays stdout and stderr from remote commands.
+    *   **Error Reporting:** Reports SSH connection failures, command not found errors, and non-zero exit codes from remote commands.
+    *   **Cygwin `find` Path:** Assumes and tests for `find` at `/usr/bin/find` on the remote Cygwin environment.
+
+---
+
+**2. `pscripts/phonetopc/rsynctransfer.py`**
+*   **Purpose:** A Python-based rsync wrapper for syncing files from a Termux (Android) device to a remote PC, with features for hash-based duplicate detection and progress tracking.
+*   **Key Functionalities:**
+    *   **Local File Hashing:** Computes SHA1 hashes of local files in the source directory.
+    *   **Remote File Hashing:** Connects to a remote PC via SSH and computes SHA1 hashes of files in specified existence directories.
+    *   **Duplicate Detection:** Compares local and remote file hashes to identify duplicates.
+    *   **Exclusion List Generation:** Creates a list of local files that are already present on the remote (duplicates) to be excluded from rsync.
+    *   **Rsync Execution:** Runs `rsync` to transfer non-duplicate files from the local source to the remote destination.
+    *   **Progress Tracking:** Displays a live progress ticker during remote hash comparisons.
+    *   **Summary Reporting:** Provides a summary of matched (skipped) and to-copy files.
+    *   **Dry Run:** Supports a dry-run mode to show what would be transferred without actual rsync execution.
+    *   **Debug Hashes:** Allows specifying hashes to debug, printing detailed messages when those hashes are encountered.
+    *   **Error Handling:** Catches and reports errors during local/remote command execution and rsync.
+
+---
+
+**3. `pscripts/phonetopc/rsynctransfer.sh`**
+*   **Purpose:** A shell script for syncing files from a Termux (Android) device to a remote PC using `rsync`, with basic duplicate detection based on filenames.
+*   **Key Functionalities:**
+    *   **Remote Exclusion List:** Fetches a list of filenames from specified remote directories via SSH `find` command. This list is used to exclude existing files from the rsync transfer.
+    *   **Rsync Transfer:** Executes `rsync` to transfer files from the local source to the remote destination.
+    *   **Dry Run:** Supports a dry-run mode to show which files would be copied or skipped.
+    *   **Error Handling:** Checks for SSH connection failures and `rsync` errors, providing diagnostic messages and potential solutions (e.g., checking Cygwin rsync path).
+    *   **Basic Exclusion:** Excludes files from transfer if their filenames exist in the remote exclusion list.
+
+---
+
+**4. `pscripts/phonetopc/rsynctransfer2.sh`**
+*   **Purpose:** (Similar to `rsynctransfer.sh`) A shell script for syncing files from Termux to a remote PC using `rsync`, with hash-based duplicate detection.
+*   **Key Functionalities:**
+    *   **Local File Hashing:** Computes SHA1 hashes of local files.
+    *   **Remote File Hashing:** Connects to a remote PC via SSH and computes SHA1 hashes of remote files.
+    *   **Hash Comparison:** Compares local and remote hashes to identify identical files.
+    *   **Exclusion List Generation:** Creates an exclusion list of filenames for files that are already present on the remote (based on hash match).
+    *   **Rsync Transfer:** Executes `rsync` to transfer non-duplicate files.
+    *   **Progress Tracking:** Displays a live progress ticker during hash comparisons.
+    *   **Summary Reporting:** Provides a summary of matched (skipped) and to-copy files.
+    *   **Dry Run:** Supports a dry-run mode.
+    *   **Debug Hashes:** Allows specifying hashes to debug.
+
+---
+
+**5. `pscripts/phonetopc/rsynctransfer3.sh`**
+*   **Purpose:** (Similar to `rsynctransfer2.sh`) Another shell script for `rsync` synchronization with hash-based duplicate detection, potentially with minor variations or improvements in progress reporting or error handling.
+*   **Key Functionalities:**
+    *   **Local File Hashing:** Computes SHA1 hashes of local files.
+    *   **Remote File Hashing:** Connects to a remote PC via SSH and computes SHA1 hashes of remote files.
+    *   **Hash Comparison:** Compares local and remote hashes to identify identical files.
+    *   **Exclusion List Generation:** Creates an exclusion list of filenames for files that are already present on the remote (based on hash match).
+    *   **Rsync Transfer:** Executes `rsync` to transfer non-duplicate files.
+    *   **Progress Tracking:** Displays a live progress ticker during hash comparisons.
+    *   **Summary Reporting:** Provides a summary of matched (skipped) and to-copy files.
+    *   **Dry Run:** Supports a dry-run mode.
+    *   **Debug Hashes:** Allows specifying hashes to debug.
+
+---
+
+**6. `pscripts/phonetopc/rsynctransfer4.sh`**
+*   **Purpose:** (Similar to `rsynctransfer3.sh`) Yet another shell script for `rsync` synchronization with hash-based duplicate detection, likely representing further iterations or specific use cases.
+*   **Key Functionalities:**
+    *   **Local File Hashing:** Computes SHA1 hashes of local files.
+    *   **Remote File Hashing:** Connects to a remote PC via SSH and computes SHA1 hashes of remote files.
+    *   **Hash Comparison:** Compares local and remote hashes to identify identical files.
+    *   **Exclusion List Generation:** Creates an exclusion list of filenames for files that are already present on the remote (based on hash match).
+    *   **Rsync Transfer:** Executes `rsync` to transfer non-duplicate files.
+    *   **Progress Tracking:** Displays a live progress ticker during hash comparisons.
+    *   **Summary Reporting:** Provides a summary of matched (skipped) and to-copy files.
+    *   **Dry Run:** Supports a dry-run mode.
+    *   **Debug Hashes:** Allows specifying hashes to debug.
+
+---
+
+**7. `pscripts/termux/rsyncAndroidToSlice.sh`**
+*   **Purpose:** A shell script to `rsync` files from an Android device (Termux) to a Windows Subsystem for Linux (WSL) path on a remote PC.
+*   **Key Functionalities:**
+    *   **Path Conversion:** Converts Windows-style paths to WSL-compatible paths (e.g., `C:/path` to `/mnt/c/path`).
+    *   **Rsync Execution:** Executes `rsync` with specified options (`-av`, `--progress`, `--partial`, `--checksum`, `--info=progress2`) to transfer files.
+    *   **SSH Integration:** Uses `ssh` for remote connection, allowing custom port.
+    *   **Source Deletion:** Optionally removes source files after successful transfer.
+    *   **Error Handling:** Checks `rsync` exit code and reports success/failure.
+
+---
+
+**8. `pscripts/termux/rsyncInternal.py`**
+*   **Purpose:** A Python script for performing `rsync` operations between local directories, potentially for internal synchronization tasks within the Termux environment.
+*   **Key Functionalities:**
+    *   **Rsync Execution:** Executes `rsync` command with specified source and destination.
+    *   **Basic Rsync Options:** Uses common `rsync` options like `-az`, `--ignore-existing`, `--info=progress2`, `--human-readable`, `--stats`, `--no-perms`, `--no-owner`, `--no-group`.
+    *   **Error Handling:** Prints messages if source does not exist.
+
+---
+
+**9. `pscripts/termux/rsyncInternal.sh`**
+*   **Purpose:** A shell script for performing `rsync` operations between local directories, similar to `rsyncInternal.py` but implemented in bash.
+*   **Key Functionalities:**
+    *   **Rsync Execution:** Executes `rsync` command with specified source and destination.
+    *   **Basic Rsync Options:** Uses common `rsync` options like `-az`, `--ignore-existing`, `--info=progress2`, `--human-readable`, `--stats`, `--no-perms`, `--no-owner`, `--no-group`.
+
+---
+
+**10. `pscripts/termux/rsync_final.py`**
+*   **Purpose:** A Python-based `rsync` tool designed for multi-target synchronization, supporting file filtering, recursion depth, and remote targets via SSH.
+*   **Key Functionalities:**
+    *   **Multi-Source/Multi-Target Sync:** Can sync from one or more source paths to one or more target paths.
+    *   **File Filtering:** Filters files based on glob patterns and maximum subfolder depth. Uses `find` command for file listing if depth is specified.
+    *   **Remote Target Support:** Handles remote targets via SSH, allowing custom port, username, and password (using `sshpass` if needed).
+    *   **Rsync Options:** Supports standard `rsync` options like `--ignore-existing`, `--remove-source-files`, `--partial`, `--append-verify`, `--no-perms`, `--chmod`.
+    *   **Dry Run:** Shows what would be transferred without actual copying, providing a summary of files and sizes.
+    *   **Verbose Mode:** Provides detailed logging of `rsync` commands and output.
+    *   **Error Handling:** Logs warnings and errors during `rsync` execution and file operations.
+
+---
+
+**11. `shell-scripts/copyrsync.sh`**
+*   **Purpose:** A `cp`-like command that uses `rsync` for copying files, providing progress tracking. Falls back to `cp -r` if `rsync` is not installed.
+*   **Key Functionalities:**
+    *   **Rsync Usage:** Uses `rsync -ah --info=progress2` for copying, providing human-readable output and progress.
+    *   **Fallback to `cp`:** If `rsync` is not found, it uses `cp -r` as a fallback.
+    *   **Verbose Mode:** Supports a verbose mode to show more `rsync` output.
+
+---
+
+**12. `pyscripts/git_sync.py`**
+*   **Purpose:** Synchronizes a Git repository and its submodules by performing `git add`, `commit`, `pull`, and `push` operations.
+*   **Key Functionalities:**
+    *   **Git Status Check:** Displays the current Git status (including colored output and a concise summary).
+    *   **Git Add:** Stages changes using a specified pattern (defaulting to `.`).
+    *   **Git Commit:** Creates a commit with a user-provided message (or a default message if empty).
+    *   **Git Pull:** Pulls changes from the remote repository.
+    *   **Git Push:** Pushes changes to the remote repository.
+    *   **Submodule Handling:**
+        *   Recursively processes submodules, performing `git add`, `pull`, and `update` within each.
+        *   Handles detached HEAD states in submodules by attempting to checkout a branch.
+        *   Supports processing specific submodules or all submodules.
+        *   Allows submodule-specific add patterns and branches.
+    *   **Confirmation Prompt:** Prompts the user for confirmation before proceeding with `add`, `commit`, `pull`, and `push`.
+    *   **Logging:** Provides verbose and debug logging to a timestamped log file.
+    *   **Error Reporting:** Logs and prints errors encountered during Git operations.
+
+---

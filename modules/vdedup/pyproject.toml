@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vdedup"
+version = "0.1.0"
+description = "Video & file deduplication toolkit with staged pipeline (size → partial+BLAKE3 → SHA-256 → metadata → pHash/subset), resumable cache, and responsive TUI."
+readme = { text = "See repository for usage. Requires ffmpeg/ffprobe on PATH.", content-type = "text/plain" }
+requires-python = ">=3.9"
+authors = [{ name = "Your Name" }]
+license = { text = "MIT" }
+keywords = ["dedupe", "video", "ffmpeg", "hashing", "phash", "similarity"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Environment :: Console",
+  "Operating System :: OS Independent",
+  "Topic :: Utilities",
+]
+
+dependencies = [
+  "rich>=13.0.0",
+  "Pillow>=9.0.0",
+  "ImageHash>=4.3.1",
+  "blake3>=0.3.3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+  "pytest-cov>=4.0",
+]
+# GPU decode is provided by your system ffmpeg build; no extra Python deps required.
+
+[project.scripts]
+video-dedupe = "video_dedupe:main"
+
+[tool.setuptools]
+include-package-data = true
+# Include the package directory and the top-level single-file module
+py-modules = ["video_dedupe"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["vdedup*"]
+exclude = ["vdedup/tests*","tests*",".*","dist*","build*"]

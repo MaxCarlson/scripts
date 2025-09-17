@@ -1,0 +1,332 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.11, pytest-8.3.4, pluggy-1.5.0
+rootdir: /data/data/com.termux/files/home/scripts/modules/clip_tools
+configfile: pyproject.toml
+plugins: anyio-4.9.0, libtmux-0.46.2, mock-3.14.0, asyncio-1.0.0, cov-6.2.1
+asyncio: mode=Mode.STRICT, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 26 items
+
+tests/append_test.py F.                                                  [  7%]
+tests/copt_test.py FF...F                                                [ 30%]
+tests/copy_buffer_test.py F.F                                            [ 42%]
+tests/copy_log_test.py F.                                                [ 50%]
+tests/diff_test.py F.                                                    [ 57%]
+tests/paste_test.py .F                                                   [ 65%]
+tests/replace_block_test.py ...F                                         [ 80%]
+tests/run_test.py F..FF                                                  [100%]
+
+=================================== FAILURES ===================================
+_______________________ test_append_creates_and_appends ________________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-300/test_append_creates_and_append0')
+fake_sysapi = <conftest.FakeSysAPI object at 0x6cc3da6ab0>
+ns = <function ns.<locals>.<lambda> at 0x6cc3db4720>
+capsys = <_pytest.capture.CaptureFixture object at 0x6cc3da65a0>
+
+    def test_append_creates_and_appends(tmp_path, fake_sysapi, ns, capsys):
+        target = tmp_path / "out.txt"
+        fake_sysapi.set_clipboard("foo\nbar")
+    
+        args = ns(file=str(target), no_stats=False)
+        rc = cli.cmd_append(args, fake_sysapi)
+        assert rc == 0
+        assert target.exists()
+        # First append creates file and writes "\n" prefix + content
+        assert target.read_text() == "\nfoo\nbar"
+    
+        # Append again
+        fake_sysapi.set_clipboard("BAZ")
+        rc = cli.cmd_append(args, fake_sysapi)
+        assert rc == 0
+        assert target.read_text().endswith("BAZ")
+    
+        out = capsys.readouterr()
+>       assert "append stats" in out.out
+E       assert 'append stats' in "Appended clipboard contents to \n'/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-300/test_append_cr\nea...ly appended.                     │\n└─────────────────────────────────┴────────────────────────────────────────────┘\n"
+E        +  where "Appended clipboard contents to \n'/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-300/test_append_cr\nea...ly appended.                     │\n└─────────────────────────────────┴────────────────────────────────────────────┘\n" = CaptureResult(out="Appended clipboard contents to \n'/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-300/.../usr/tmp/pytest-of-u0_a142/pytest-300/test_append_cr\neates_and_append0/out.txt' did not exist, it will be created.\n").out
+
+tests/append_test.py:24: AssertionError
+_____________________________ test_copy_raw_single _____________________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-300/test_copy_raw_single0')
+fake_sysapi = <conftest.FakeSysAPI object at 0x6cc3da7fb0>
+ns = <function ns.<locals>.<lambda> at 0x6cc3db54e0>
+capsys = <_pytest.capture.CaptureFixture object at 0x6cc3da7e60>
+
+    def test_copy_raw_single(tmp_path, fake_sysapi, ns, capsys):
+        p = tmp_path / "a.txt"
+        p.write_text("A\n")
+        args = ns(files=[str(p)], raw_copy=True, wrap=False, whole_wrap=False,
+                  show_full_path=False, append=False, override_append_wrapping=False, no_stats=False)
+        rc = cli.cmd_copy(args, fake_sysapi)
+        assert rc == 0
+        assert fake_sysapi.get_clipboard() == "A\n"
+        out = capsys.readouterr()
+>       assert "copy stats" in out.out
+E       assert 'copy stats' in '                    copy (clip_tools) Statistics                     \n┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━...s         │ Set Succeeded                   │\n└─────────────────────────────────┴─────────────────────────────────┘\n'
+E        +  where '                    copy (clip_tools) Statistics                     \n┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━...s         │ Set Succeeded                   │\n└─────────────────────────────────┴─────────────────────────────────┘\n' = CaptureResult(out='                    copy (clip_tools) Statistics                     \n┏━━━━━━━━━━━━━━━━━━━━━━━━━━━...t-of-u0_a142/pytest-300/test_copy_raw_\nsingle0/a.txt'.\n[INFO] Attempting to copy to clipboard (1 lines, 2 chars).\n").out
+
+tests/copt_test.py:14: AssertionError
+_____________________________ test_copy_wrap_multi _____________________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-300/test_copy_wrap_multi0')
+fake_sysapi = <conftest.FakeSysAPI object at 0x6cc3da6d20>
+ns = <function ns.<locals>.<lambda> at 0x6cc3db4720>
+
+    def test_copy_wrap_multi(tmp_path, fake_sysapi, ns):
+        a = tmp_path / "a.txt"; b = tmp_path / "b.txt"
+        a.write_text("A"); b.write_text("B")
+        args = ns(files=[str(a), str(b)], raw_copy=False, wrap=True, whole_wrap=False,
+                  show_full_path=True, append=False, override_append_wrapping=False, no_stats=True)
+        rc = cli.cmd_copy(args, fake_sysapi)
+        assert rc == 0
+        cb = fake_sysapi.get_clipboard()
+>       assert "```" in cb and "# " in cb and "A" in cb and "B" in cb
+E       AssertionError: assert ('```' in '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-300/test_copy_wrap_multi0/a.txt\n../../../../usr/tmp/pyt...test_copy_wrap_multi0/b.txt\n../../../../usr/tmp/pytest-of-u0_a142/pytest-300/test_copy_wrap_multi0/b.txt\n```\nB\n```' and '# ' in '/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-300/test_copy_wrap_multi0/a.txt\n../../../../usr/tmp/pyt...test_copy_wrap_multi0/b.txt\n../../../../usr/tmp/pytest-of-u0_a142/pytest-300/test_copy_wrap_multi0/b.txt\n```\nB\n```')
+
+tests/copt_test.py:24: AssertionError
+----------------------------- Captured stderr call -----------------------------
+[INFO] Successfully read 
+'/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-300/test_copy_wrap
+_multi0/a.txt'.
+[INFO] Successfully read 
+'/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-300/test_copy_wrap
+_multi0/b.txt'.
+[INFO] Attempting to copy to clipboard (11 lines, 360 chars).
+_______________________ test_copy_verification_mismatch ________________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-300/test_copy_verification_mismatc0')
+fake_sysapi = <conftest.FakeSysAPI object at 0x6cc3dc24e0>
+ns = <function ns.<locals>.<lambda> at 0x6cc3db5da0>
+capsys = <_pytest.capture.CaptureFixture object at 0x6cc3dc12e0>
+
+    def test_copy_verification_mismatch(tmp_path, fake_sysapi, ns, capsys):
+        # Force mismatch by toggling flag
+        fake_sysapi.verify_mismatch = True
+        p = tmp_path / "a.txt"; p.write_text("A")
+        args = ns(files=[str(p)], raw_copy=True, wrap=False, whole_wrap=False,
+                  show_full_path=False, append=False, override_append_wrapping=False, no_stats=False)
+        rc = cli.cmd_copy(args, fake_sysapi)
+        assert rc == 0  # still succeeds but warns
+        out = capsys.readouterr()
+>       assert "verification mismatch" in out.err.lower()
+E       assert 'verification mismatch' in "[info] successfully read \n'/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-300/test_copy_veri\nfication_mismatc0/a.txt'.\n[info] attempting to copy to clipboard (1 lines, 1 chars).\n"
+E        +  where "[info] successfully read \n'/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-300/test_copy_veri\nfication_mismatc0/a.txt'.\n[info] attempting to copy to clipboard (1 lines, 1 chars).\n" = <built-in method lower of str object at 0x6cc3d134b0>()
+E        +    where <built-in method lower of str object at 0x6cc3d134b0> = "[INFO] Successfully read \n'/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-300/test_copy_veri\nfication_mismatc0/a.txt'.\n[INFO] Attempting to copy to clipboard (1 lines, 1 chars).\n".lower
+E        +      where "[INFO] Successfully read \n'/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-300/test_copy_veri\nfication_mismatc0/a.txt'.\n[INFO] Attempting to copy to clipboard (1 lines, 1 chars).\n" = CaptureResult(out='                    copy (clip_tools) Statistics                     \n┏━━━━━━━━━━━━━━━━━━━━━━━━━━━...42/pytest-300/test_copy_veri\nfication_mismatc0/a.txt'.\n[INFO] Attempting to copy to clipboard (1 lines, 1 chars).\n").err
+
+tests/copt_test.py:68: AssertionError
+____________________________ test_copy_buffer_full _____________________________
+
+fake_sysapi = <conftest.FakeSysAPI object at 0x6cc3dc3530>
+ns = <function ns.<locals>.<lambda> at 0x6cc3db62a0>
+capsys = <_pytest.capture.CaptureFixture object at 0x6cc3dc33e0>
+
+    def test_copy_buffer_full(fake_sysapi, ns, capsys):
+        fake_sysapi._tmux = True
+        fake_sysapi._pane = "line1\nline2\nline3\n"
+        args = ns(full=True, no_stats=False)
+        rc = cli.cmd_copy_buffer(args, fake_sysapi)
+        assert rc == 0
+        assert fake_sysapi.get_clipboard() == "line1\nline2\nline3"
+        out = capsys.readouterr()
+>       assert "copy-buffer stats" in out.out
+E       AssertionError: assert 'copy-buffer stats' in '    copy-buffer (clip_tools) Statistics     \n┏━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┓\n┃ Metric           ┃ Valu... 3                     │\n│ Clipboard Action │ Success               │\n└──────────────────┴───────────────────────┘\n'
+E        +  where '    copy-buffer (clip_tools) Statistics     \n┏━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┓\n┃ Metric           ┃ Valu... 3                     │\n│ Clipboard Action │ Success               │\n└──────────────────┴───────────────────────┘\n' = CaptureResult(out='    copy-buffer (clip_tools) Statistics     \n┏━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┓\n┃ Metri...            │\n└──────────────────┴───────────────────────┘\n', err='[INFO] Copied 3 lines (17 chars) to clipboard.\n').out
+
+tests/copy_buffer_test.py:12: AssertionError
+__________________________ test_copy_buffer_not_tmux ___________________________
+
+fake_sysapi = <conftest.FakeSysAPI object at 0x6cc3dc1e20>
+ns = <function ns.<locals>.<lambda> at 0x6cc3db6700>
+capsys = <_pytest.capture.CaptureFixture object at 0x6cc3c0cc80>
+
+    def test_copy_buffer_not_tmux(fake_sysapi, ns, capsys):
+        fake_sysapi._tmux = False
+        args = ns(full=False, no_stats=False)
+        rc = cli.cmd_copy_buffer(args, fake_sysapi)
+        assert rc == 1
+        out = capsys.readouterr()
+>       assert "Not running inside tmux" in out.err
+E       AssertionError: assert 'Not running inside tmux' in '[ERROR] This command is designed to run inside a tmux session.\n'
+E        +  where '[ERROR] This command is designed to run inside a tmux session.\n' = CaptureResult(out='                  copy-buffer (clip_tools) Statistics                   \n┏━━━━━━━━━━━━━┳━━━━━━━━━━...──────────────────────────────────────────┘\n', err='[ERROR] This command is designed to run inside a tmux session.\n').err
+
+tests/copy_buffer_test.py:29: AssertionError
+____________________________ test_copy_log_success _____________________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-300/test_copy_log_success0')
+fake_sysapi = <conftest.FakeSysAPI object at 0x6cc3dc3ec0>
+ns = <function ns.<locals>.<lambda> at 0x6cc3db6200>
+capsys = <_pytest.capture.CaptureFixture object at 0x6cc3eb37d0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x6cc3dc3470>
+
+    def test_copy_log_success(tmp_path, fake_sysapi, ns, capsys, monkeypatch):
+        # SHLVL=3 from autouse fixture; create corresponding log file in HOME
+        log = Path(os.path.expanduser("~")) / ".term_log.session_shlvl_3"
+        log.write_text("\n".join([f"line{i}" for i in range(10)]) + "\n")
+        args = ns(lines=4, no_stats=False)
+        rc = cli.cmd_copy_log(args, fake_sysapi)
+        assert rc == 0
+        assert fake_sysapi.get_clipboard() == "line6\nline7\nline8\nline9"
+        out = capsys.readouterr()
+>       assert "copy-log stats" in out.out
+E       AssertionError: assert 'copy-log stats' in 'Last 4 lines from SHLVL=3 log copied to clipboard.\n                        copy-log (clip_tools) Statistics         ...                                 │\n└───────────────────┴──────────────────────────────────────────────────────────┘\n'
+E        +  where 'Last 4 lines from SHLVL=3 log copied to clipboard.\n                        copy-log (clip_tools) Statistics         ...                                 │\n└───────────────────┴──────────────────────────────────────────────────────────┘\n' = CaptureResult(out='Last 4 lines from SHLVL=3 log copied to clipboard.\n                        copy-log (clip_tools) S...                        │\n└───────────────────┴──────────────────────────────────────────────────────────┘\n', err='').out
+
+tests/copy_log_test.py:15: AssertionError
+______________________ test_diff_shows_changes_and_stats _______________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-300/test_diff_shows_changes_and_st0')
+fake_sysapi = <conftest.FakeSysAPI object at 0x6cc3c0e1e0>
+ns = <function ns.<locals>.<lambda> at 0x6cc3db6fc0>
+capsys = <_pytest.capture.CaptureFixture object at 0x6cc3c0c560>
+
+    def test_diff_shows_changes_and_stats(tmp_path, fake_sysapi, ns, capsys):
+        f = tmp_path / "f.txt"
+        f.write_text("a\nb\nc\n")
+        fake_sysapi.set_clipboard("a\nB\nc\n")
+    
+        args = ns(file=str(f), context_lines=3, loc_diff_warn=50, similarity_threshold=0.1, no_stats=False)
+        rc = cli.cmd_diff(args, fake_sysapi)
+        assert rc == 0
+        captured = capsys.readouterr()
+        # Expect unified diff with + and - lines
+        assert "+B" in captured.out or "+B" in captured.err
+        assert "-b" in captured.out or "-b" in captured.err
+>       assert "diff stats" in captured.out
+E       AssertionError: assert 'diff stats' in '--- file: \n/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-300/test_diff_shows\n_changes_and_st0/f.txt\...                                 │\n└──────────────────────┴───────────────────────────────────────────────────────┘\n'
+E        +  where '--- file: \n/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-300/test_diff_shows\n_changes_and_st0/f.txt\...                                 │\n└──────────────────────┴───────────────────────────────────────────────────────┘\n' = CaptureResult(out='--- file: \n/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-300/test_diff_shows\n_chan...                        │\n└──────────────────────┴───────────────────────────────────────────────────────┘\n', err='').out
+
+tests/diff_test.py:17: AssertionError
+___________________________ test_paste_print_stdout ____________________________
+
+fake_sysapi = <conftest.FakeSysAPI object at 0x6cc3dc3c80>
+ns = <function ns.<locals>.<lambda> at 0x6cc3db72e0>
+capsys = <_pytest.capture.CaptureFixture object at 0x6cc3dc16a0>
+
+    def test_paste_print_stdout(fake_sysapi, ns, capsys):
+        fake_sysapi.set_clipboard("X\nY")
+        args = ns(file=None, no_stats=False)
+        rc = cli.cmd_paste(args, fake_sysapi)
+        assert rc == 0
+        out = capsys.readouterr()
+        assert out.out == "X\nY"
+>       assert "paste stats" in out.err  # stats for stdout mode go to stderr
+E       AssertionError: assert 'paste stats' in '     paste (clip_tools) Statistics      \n┏━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┓\n┃ Metric            ┃ Value      ...Printed     │ 3                │\n│ Lines Printed     │ 2                │\n└───────────────────┴──────────────────┘\n'
+E        +  where '     paste (clip_tools) Statistics      \n┏━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┓\n┃ Metric            ┃ Value      ...Printed     │ 3                │\n│ Lines Printed     │ 2                │\n└───────────────────┴──────────────────┘\n' = CaptureResult(out='X\nY', err='     paste (clip_tools) Statistics      \n┏━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┓\n┃ M...rinted     │ 3                │\n│ Lines Printed     │ 2                │\n└───────────────────┴──────────────────┘\n').err
+
+tests/paste_test.py:20: AssertionError
+_______________________ test_replace_multiple_defs_error _______________________
+
+tmp_path = PosixPath('/data/data/com.termux/files/usr/tmp/pytest-of-u0_a142/pytest-300/test_replace_multiple_defs_err0')
+fake_sysapi = <conftest.FakeSysAPI object at 0x6cc3c0c350>
+ns = <function ns.<locals>.<lambda> at 0x6cc3db6ac0>
+capsys = <_pytest.capture.CaptureFixture object at 0x6cc3c0e1b0>
+
+    def test_replace_multiple_defs_error(tmp_path, fake_sysapi, ns, capsys):
+        src = tmp_path / "mod.py"
+        src.write_text(
+            "def target():\n    pass\n\n"
+            "def target():\n    pass\n"
+        )
+        fake_sysapi.set_clipboard("def target():\n    return 123\n")
+        args = ns(file=str(src), no_stats=False)
+        rc = cli.cmd_replace_block(args, fake_sysapi)
+        assert rc == 1
+        out = capsys.readouterr()
+>       assert "Multiple def/class" in out.err
+E       assert 'Multiple def/class' in "Error: Multiple definitions of 'target' found. Aborting.\n"
+E        +  where "Error: Multiple definitions of 'target' found. Aborting.\n" = CaptureResult(out='                     replace-block (clip_tools) Statistics                      \n┏━━━━━━━━━━━━━━━━...┴───────────────────────────────────────────────┘\n', err="Error: Multiple definitions of 'target' found. Aborting.\n").err
+
+tests/replace_block_test.py:69: AssertionError
+_____________________________ test_run_direct_raw ______________________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x6cc3c0fad0>
+fake_sysapi = <conftest.FakeSysAPI object at 0x6cc3c0f6e0>
+ns = <function ns.<locals>.<lambda> at 0x6cc3db6160>
+capsys = <_pytest.capture.CaptureFixture object at 0x6cc3c0fa10>
+
+    def test_run_direct_raw(monkeypatch, fake_sysapi, ns, capsys):
+        def fake_run(cmd, shell, capture_output, text, check):
+            assert "echo raw" in cmd
+            return FakeCompleted(stdout="OUT\n", stderr="ERR\n", returncode=0)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        args = ns(replay_history=None, wrap=False, no_stats=False, command_and_args=["echo", "raw"])
+        rc = cli.cmd_run(args, fake_sysapi)
+        assert rc == 0
+        cb = fake_sysapi.get_clipboard()
+        assert "OUT" in cb and "ERR" in cb  # combined
+        out = capsys.readouterr()
+>       assert "run stats" in out.err
+E       AssertionError: assert 'run stats' in '           run (clip_tools) Statistics            \n┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n┃ Metric     ...           │\n│ Characters Copied   │ 7                        │\n└─────────────────────┴──────────────────────────┘\n'
+E        +  where '           run (clip_tools) Statistics            \n┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n┃ Metric     ...           │\n│ Characters Copied   │ 7                        │\n└─────────────────────┴──────────────────────────┘\n' = CaptureResult(out='Copied command output to clipboard.\n', err='           run (clip_tools) Statistics            \n┏━...          │\n│ Characters Copied   │ 7                        │\n└─────────────────────┴──────────────────────────┘\n').err
+
+tests/run_test.py:31: AssertionError
+_________________ test_run_default_replay_history_confirm_yes __________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x6cc3c4eab0>
+fake_sysapi = <conftest.FakeSysAPI object at 0x6cc3c4c440>
+ns = <function ns.<locals>.<lambda> at 0x6cc3db7b00>
+capsys = <_pytest.capture.CaptureFixture object at 0x6cc3c4c1a0>
+
+    def test_run_default_replay_history_confirm_yes(monkeypatch, fake_sysapi, ns, capsys):
+        # Patch HistoryUtilsAdapter used inside cmd_run
+        monkeypatch.setattr(cli, "HistoryUtilsAdapter", lambda: FakeHistory({1: "echo hi"}))
+        # Simulate user confirming
+        monkeypatch.setattr(cli.console_err, "input", lambda prompt: "y")
+        # Patch subprocess.run
+        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: FakeCompleted(stdout="hello\n", stderr="", returncode=0))
+    
+        # No command_and_args, no -r => defaults to N=1 replay
+        args = ns(replay_history=None, wrap=False, no_stats=False, command_and_args=None)
+        rc = cli.cmd_run(args, fake_sysapi)
+>       assert rc == 0
+E       assert 1 == 0
+
+tests/run_test.py:63: AssertionError
+----------------------------- Captured stderr call -----------------------------
+Unexpected error: 'types.SimpleNamespace' object has no attribute 'replay_n'
+                          run (clip_tools) Statistics                           
+┏━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Metric ┃ Value                                                               ┃
+┡━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ Error  │ Unexpected error: 'types.SimpleNamespace' object has no attribute   │
+│        │ 'replay_n'                                                          │
+└────────┴─────────────────────────────────────────────────────────────────────┘
+___________________________ test_run_loop_prevention ___________________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x6cc3dc3e60>
+fake_sysapi = <conftest.FakeSysAPI object at 0x6cc3c4eae0>
+ns = <function ns.<locals>.<lambda> at 0x6cc3db7c40>
+capsys = <_pytest.capture.CaptureFixture object at 0x6cc3c4f170>
+
+    def test_run_loop_prevention(monkeypatch, fake_sysapi, ns, capsys):
+        # Simulate history command that would call this script itself
+        script_name = "clip-tools"
+        monkeypatch.setattr(cli, "HistoryUtilsAdapter", lambda: FakeHistory({1: script_name}))
+        monkeypatch.setattr(cli.console_err, "input", lambda prompt: "y")  # confirmation won't be reached
+        args = ns(replay_history=None, wrap=False, no_stats=False, command_and_args=None)
+        rc = cli.cmd_run(args, fake_sysapi)
+        assert rc == 1
+        out = capsys.readouterr()
+>       assert "Loop detected" in (out.err + out.out)
+E       assert 'Loop detected' in ("Unexpected error: 'types.SimpleNamespace' object has no attribute 'replay_n'\n                          run (clip_too...                                 │\n└────────┴─────────────────────────────────────────────────────────────────────┘\n" + '')
+E        +  where "Unexpected error: 'types.SimpleNamespace' object has no attribute 'replay_n'\n                          run (clip_too...                                 │\n└────────┴─────────────────────────────────────────────────────────────────────┘\n" = CaptureResult(out='', err="Unexpected error: 'types.SimpleNamespace' object has no attribute 'replay_n'\n             ...                                │\n└────────┴─────────────────────────────────────────────────────────────────────┘\n").err
+E        +  and   '' = CaptureResult(out='', err="Unexpected error: 'types.SimpleNamespace' object has no attribute 'replay_n'\n             ...                                │\n└────────┴─────────────────────────────────────────────────────────────────────┘\n").out
+
+tests/run_test.py:77: AssertionError
+=========================== short test summary info ============================
+FAILED tests/append_test.py::test_append_creates_and_appends - assert 'append...
+FAILED tests/copt_test.py::test_copy_raw_single - assert 'copy stats' in '   ...
+FAILED tests/copt_test.py::test_copy_wrap_multi - AssertionError: assert ('``...
+FAILED tests/copt_test.py::test_copy_verification_mismatch - assert 'verifica...
+FAILED tests/copy_buffer_test.py::test_copy_buffer_full - AssertionError: ass...
+FAILED tests/copy_buffer_test.py::test_copy_buffer_not_tmux - AssertionError:...
+FAILED tests/copy_log_test.py::test_copy_log_success - AssertionError: assert...
+FAILED tests/diff_test.py::test_diff_shows_changes_and_stats - AssertionError...
+FAILED tests/paste_test.py::test_paste_print_stdout - AssertionError: assert ...
+FAILED tests/replace_block_test.py::test_replace_multiple_defs_error - assert...
+FAILED tests/run_test.py::test_run_direct_raw - AssertionError: assert 'run s...
+FAILED tests/run_test.py::test_run_default_replay_history_confirm_yes - asser...
+FAILED tests/run_test.py::test_run_loop_prevention - assert 'Loop detected' i...
+======================== 13 failed, 13 passed in 0.69s =========================

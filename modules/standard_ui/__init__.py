@@ -22,6 +22,11 @@ from .standard_ui import (
     print_panel,
     progress_bar,
     print_parsed_args,
+    # new helpers
+    blank,
+    status_line,
+    rule,
+    term_width,
 )
 
 __all__ = [
@@ -40,4 +45,8 @@ __all__ = [
     "print_panel",
     "progress_bar",
     "print_parsed_args",
+    "blank",
+    "status_line",
+    "rule",
+    "term_width",
 ]

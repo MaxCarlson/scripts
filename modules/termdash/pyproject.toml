@@ -1,19 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "termdash"
 version = "0.1.0"
-description = "A robust, thread-safe library for persistent terminal dashboards"
+description = "Thread-safe, in-place terminal dashboard with stats, progress bars, and CMake-like build output."
 readme = "README.md"
-authors = [
-    { name = "Your Name", email = "your@email.com" }
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "TermDash Authors" }]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Environment :: Console",
+  "Topic :: Terminals",
+  "Topic :: System :: Monitoring",
+  "Operating System :: OS Independent",
 ]
-license = "MIT"
-requires-python = ">=3.8"
 
-# This section tells the installer how to find your code.
-# By leaving it empty, it defaults to looking in the current directory ("."),
-# which is correct for your new flat layout.
-[tool.setuptools.packages.find]
+dependencies = []
 
-[project.urls]
-Homepage = "https://github.com/yourname/termdash"
-Repository = "https://github.com/yourname/termdash"
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2",
+  "pytest-asyncio>=0.23",
+  "pytest-cov>=6.0",
+  "libtmux>=0.46",
+]
+
+[project.scripts]
+termdash = "termdash.cli:main"
+
+[tool.setuptools]
+# Treat the *project root* as the 'termdash' package (no 'src/' and no 'termdash/' dir needed).
+packages = ["termdash"]
+
+[tool.setuptools.package-dir]
+termdash = "."
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["."]

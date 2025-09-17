@@ -1,0 +1,373 @@
+**Functionalities of scripts for `modules/system_tools`:**
+
+---
+
+**1. `modules/cross_platform/clipboard_utils.py`**
+*   **Purpose:** Provides cross-platform functionalities for getting and setting system clipboard content.
+*   **Key Functionalities:**
+    *   `get_clipboard()`: Retrieves text from the system clipboard. Supports Termux, WSL2 (via `win32yank`), Windows (PowerShell), Linux (xclip), and macOS (pbpaste).
+    *   `set_clipboard(text)`: Sets text to the system clipboard. Always attempts to send an OSC 52 sequence for local clipboard update (useful in SSH/terminal emulators) and then updates the remote/system clipboard using OS-specific commands (Termux, WSL2, Windows, Linux, macOS).
+    *   **Dependencies:** Relies on `SystemUtils` for OS detection and command execution, and `debug_utils` for logging.
+
+---
+
+**2. `modules/cross_platform/debug_utils.py`**
+*   **Purpose:** Provides a flexible logging and debugging utility with support for different verbosity levels, console output, file logging, log rotation, and cleanup.
+*   **Key Functionalities:**
+    *   `set_console_verbosity()`: Sets the minimum verbosity level for messages printed to the console.
+    *   `set_log_verbosity()`: Sets the minimum verbosity level for messages written to log files.
+    *   `set_log_directory()`: Configures the base directory for log files.
+    *   `enable_file_logging()`: Activates logging to files, creating a new log file for each day or rotating if the current one exceeds size limits.
+    *   `disable_file_logging()`: Deactivates file logging.
+    *   `write_debug(message, channel, condition, output_stream, location_channels)`: The core logging function.
+        *   Prints messages to stdout/stderr based on `channel` (e.g., "Debug", "Information", "Warning", "Error", "Critical") and configured console verbosity.
+        *   Writes messages to a log file based on `channel` and configured log verbosity.
+        *   Supports conditional logging.
+        *   Can include caller location (filename:lineno) in log messages.
+        *   Applies ANSI color coding to console output.
+    *   `print_parsed_args()`: Utility to print parsed `argparse` arguments in a formatted table.
+    *   **Log Management:** Implements log rotation (by size) and cleanup (by total size and number of files) to prevent excessive log file accumulation.
+
+---
+
+**3. `modules/cross_platform/file_system_manager.py`**
+*   **Purpose:** Provides cross-platform utilities for basic file system operations like creating/deleting directories and listing files.
+*   **Key Functionalities:**
+    *   `create_directory(path)`: Creates a directory, including any necessary parent directories, if it doesn't already exist.
+    *   `delete_directory(path)`: Deletes an empty directory.
+    *   `list_files(path)`: Lists the names of files and subdirectories directly within a specified directory.
+    *   **Dependencies:** Relies on `SystemUtils` for OS detection and `debug_utils` for logging.
+
+---
+
+**4. `modules/cross_platform/history_utils.py`**
+*   **Purpose:** Provides utilities to access and parse shell history (PowerShell 7, bash, zsh) to extract recently used, existing file paths.
+*   **Key Functionalities:**
+    *   `_get_shell_type()`: Detects the current shell environment (PowerShell, Zsh, Bash) by checking environment variables and common shell paths.
+    *   `_get_history_file_path()`: Determines the path to the shell's history file based on detected shell type and environment variables (e.g., `HISTFILE`, `APPDATA`).
+    *   `_extract_paths_from_history_lines(lines)`: Parses a list of history command lines, extracts potential file paths from command arguments, and filters them to include only unique, existing, absolute paths.
+    *   `get_nth_recent_path(n)`: Retrieves the Nth most recent, unique, existing file path from the shell history.
+    *   **Dependencies:** Relies on `SystemUtils` for command execution and `debug_utils` for logging.
+
+---
+
+**5. `modules/cross_platform/network_utils.py`**
+*   **Purpose:** Provides cross-platform utilities for network-related operations, specifically for resetting network settings.
+*   **Key Functionalities:**
+    *   `reset_network()`: Executes OS-specific commands to reset network configurations.
+        *   **Termux:** `svc wifi disable && svc wifi enable`
+        *   **Windows:** `netsh winsock reset`, `netsh int ip reset`, `ipconfig /release`, `ipconfig /renew`, `ipconfig /flushdns`
+        *   **Linux:** `systemctl restart NetworkManager`
+        *   **macOS:** `ifconfig en0 down && ifconfig en0 up`, `killall -HUP mDNSResponder`
+    *   **Dependencies:** Relies on `SystemUtils` for OS detection and command execution, and `debug_utils` for logging.
+
+---
+
+**6. `modules/cross_platform/privileges_manager.py`**
+*   **Purpose:** Provides cross-platform functionality to check and enforce administrative (root) privileges for script execution.
+*   **Key Functionalities:**
+    *   `require_admin()`: Checks if the script is running with administrative privileges.
+        *   **Windows:** Uses `ctypes.windll.shell32.IsUserAnAdmin()`.
+        *   **Unix-like (Linux, macOS):** Checks if the effective user ID is 0 (`os.geteuid() == 0`).
+    *   Raises a `PermissionError` if the required privileges are not met.
+    *   **Dependencies:** Relies on `SystemUtils` for OS detection and `debug_utils` for logging.
+
+---
+
+**7. `modules/cross_platform/process_manager.py`**
+*   **Purpose:** Provides cross-platform utilities for managing system processes, including listing and terminating them.
+*   **Key Functionalities:**
+    *   `list_processes()`: Lists all running processes.
+        *   **Windows:** Uses `tasklist`.
+        *   **Unix-like (Linux, macOS):** Uses `ps aux`.
+    *   `kill_process(process_name)`: Terminates processes by name.
+        *   **Windows:** Uses `taskkill /IM /F`.
+        *   **Unix-like (Linux, macOS):** Uses `pkill`.
+    *   **Dependencies:** Relies on `SystemUtils` for OS detection and command execution, and `debug_utils` for logging.
+
+---
+
+**8. `modules/cross_platform/service_manager.py`**
+*   **Purpose:** Provides cross-platform utilities for managing system services, including querying their status, starting, and stopping them.
+*   **Key Functionalities:**
+    *   `service_status(service_name)`: Retrieves the status of a specified service.
+        *   **Windows:** Uses `sc query`.
+        *   **Linux:** Uses `systemctl status`.
+        *   **macOS:** Uses `launchctl list | grep`.
+    *   `start_service(service_name)`: Starts a specified service.
+        *   **Windows:** Uses `net start`.
+        *   **Linux:** Uses `systemctl start`.
+        *   **macOS:** Uses `launchctl start`.
+    *   `stop_service(service_name)`: Stops a specified service.
+        *   **Windows:** Uses `net stop`.
+        *   **Linux:** Uses `systemctl stop`.
+        *   **macOS:** Uses `launchctl stop`.
+    *   **Dependencies:** Relies on `SystemUtils` for OS detection and command execution, and `debug_utils` for logging.
+
+---
+
+**9. `modules/cross_platform/system_utils.py`**
+*   **Purpose:** A base class providing fundamental cross-platform system utilities, including OS detection and command execution.
+*   **Key Functionalities:**
+    *   `__init__()`: Initializes the `os_name` attribute (e.g., "windows", "linux", "darwin").
+    *   `is_termux()`: Detects if the script is running within a Termux environment.
+    *   `is_tmux()`: Detects if the script is running inside a tmux session.
+    *   `is_wsl2()`: Detects if the script is running under WSL2.
+    *   `is_mac()`: Detects if the script is running on macOS.
+    *   `run_command(command, sudo)`: Executes a shell command.
+        *   Supports optional `sudo` for Unix-like systems (except Termux).
+        *   Captures stdout and stderr.
+        *   Returns the stripped stdout on success, empty string on failure.
+        *   Logs command execution and results using `debug_utils`.
+    *   `source_file(filepath)`: Attempts to source a file in the shell (Unix-like systems, not Termux).
+    *   **Dependencies:** Relies on `debug_utils` for logging.
+
+---
+
+**10. `modules/cross_platform/tmux_utils.py`**
+*   **Purpose:** Provides cross-platform utilities for managing tmux sessions, including listing, attaching, creating, and detaching sessions, as well as capturing pane content.
+*   **Key Functionalities:**
+    *   `_is_tmux_installed()`: Checks if `tmux` executable is available in the system's PATH.
+    *   `_is_fzf_installed()`: Checks if `fzf` executable is available (for fuzzy finding).
+    *   `_run_tmux_command(cmd_args)`: Executes a `tmux` command and returns its return code, stdout, and stderr.
+    *   `list_sessions_raw(format_string)`: Lists tmux sessions with a custom format string.
+    *   `list_sessions_pretty()`: Prints a formatted list of tmux sessions.
+    *   `capture_pane(start_line, end_line)`: Captures the content of the current tmux pane, including scrollback history.
+    *   `session_exists(session_name)`: Checks if a tmux session with the given name exists.
+    *   `attach_or_create_session(session_name, default_command)`: Attaches to an existing session or creates a new one if it doesn't exist.
+    *   `next_available_session()`: Creates and attaches to the next available session named `tsN`.
+    *   `reattach_last_detached()`: Re-attaches to the most recently detached session.
+    *   `fuzzy_find_session(detached_only)`: Uses `fzf` to allow fuzzy finding and attaching to sessions (optionally only detached ones).
+    *   `rename_current_session(new_name)`: Renames the current tmux session.
+    *   `detach_client()`: Detaches the current tmux client.
+    *   **Dependencies:** Relies on `debug_utils` for logging.
+
+---
+
+**11. `modules/system_tools/cli.py`**
+*   **Purpose:** The main command-line interface (CLI) for the `system_tools` module, providing a unified entry point for various system utility subcommands.
+*   **Key Functionalities:**
+    *   **Subcommand Dispatch:** Uses `argparse` subparsers to dispatch to different handlers for system information, clipboard, network, privileges, process, and service management.
+    *   **System Information (`sysinfo`):**
+        *   Collects and displays extensive system information (OS, BIOS, CPU, Memory, GPU, Drives, Network).
+        *   Automatically detects OS and dispatches to OS-specific modules (`windows_info`, `linux_info`, `mac_info`, `termux_info`).
+        *   Supports filtering information by section (e.g., `--os`, `--cpu`).
+        *   Handles admin/non-admin modes, warning if admin privileges are required but not available.
+    *   **Clipboard (`clipboard`):**
+        *   `get`: Retrieves clipboard content.
+        *   `set`: Sets clipboard content.
+    *   **Network (`network`):**
+        *   `reset`: Resets network settings.
+    *   **Privileges (`privileges`):**
+        *   `require-admin`: Checks and enforces admin privileges.
+    *   **Process (`process`):**
+        *   `list`: Lists processes.
+        *   `kill`: Kills a process.
+    *   **Service (`service`):**
+        *   `status`: Gets service status.
+        *   `start`: Starts a service.
+        *   `stop`: Stops a service.
+    *   **Common Options:** Supports verbose logging.
+    *   **Dependencies:** Imports and utilizes classes from `system_tools.core`, `system_tools.file_system`, `system_tools.network`, `system_tools.privileges`, `system_tools.process`, `system_tools.system_info`, and `system_tools.standard_ui`.
+
+---
+
+**12. `modules/system_tools/core/clipboard_utils.py`**
+*   **Purpose:** Provides core cross-platform functionalities for getting and setting system clipboard content. This is the refactored version intended for `system_tools`.
+*   **Key Functionalities:**
+    *   `get_clipboard()`: Retrieves text from the system clipboard. Supports Termux, WSL2 (via `win32yank`), Windows (PowerShell), Linux (xclip), and macOS (pbpaste).
+    *   `set_clipboard(text)`: Sets text to the system clipboard. Always attempts to send an OSC 52 sequence for local clipboard update (useful in SSH/terminal emulators) and then updates the remote/system clipboard using OS-specific commands (Termux, WSL2, Windows, Linux, macOS).
+    *   **Dependencies:** Relies on `SystemUtils` for OS detection and command execution, and `debug_utils` for logging.
+    *   **Note:** This file is functionally identical to `modules/cross_platform/clipboard_utils.py`, indicating it's the target of the migration.
+
+---
+
+**13. `modules/system_tools/core/debug_utils.py`**
+*   **Purpose:** Provides a flexible logging and debugging utility with support for different verbosity levels, console output, file logging, log rotation, and cleanup. This is the refactored version intended for `system_tools`.
+*   **Key Functionalities:**
+    *   `set_console_verbosity()`: Sets the minimum verbosity level for messages printed to the console.
+    *   `set_log_verbosity()`: Sets the minimum verbosity level for messages written to log files.
+    *   `set_log_directory()`: Configures the base directory for log files.
+    *   `enable_file_logging()`: Activates logging to files, creating a new log file for each day or rotating if the current one exceeds size limits.
+    *   `disable_file_logging()`: Deactivates file logging.
+    *   `write_debug(message, channel, condition, output_stream, location_channels)`: The core logging function.
+        *   Prints messages to stdout/stderr based on `channel` (e.g., "Debug", "Information", "Warning", "Error", "Critical") and configured console verbosity.
+        *   Writes messages to a log file based on `channel` and configured log verbosity.
+        *   Supports conditional logging.
+        *   Can include caller location (filename:lineno) in log messages.
+        *   Applies ANSI color coding to console output.
+    *   `print_parsed_args()`: Utility to print parsed `argparse` arguments in a formatted table.
+    *   **Log Management:** Implements log rotation (by size) and cleanup (by total size and number of files) to prevent excessive log file accumulation.
+    *   **Note:** This file is functionally identical to `modules/cross_platform/debug_utils.py`, indicating it's the target of the migration.
+
+---
+
+**14. `modules/system_tools/core/system_utils.py`**
+*   **Purpose:** A base class providing fundamental cross-platform system utilities, including OS detection and command execution. This is the refactored version intended for `system_tools`.
+*   **Key Functionalities:**
+    *   `__init__()`: Initializes the `os_name` attribute (e.g., "windows", "linux", "darwin").
+    *   `is_termux()`: Detects if the script is running within a Termux environment.
+    *   `is_tmux()`: Detects if the script is running inside a tmux session.
+    *   `is_wsl2()`: Detects if the script is running under WSL2.
+    *   `is_mac()`: Detects if the script is running on macOS.
+    *   `run_command(command, sudo)`: Executes a shell command.
+        *   Supports optional `sudo` for Unix-like systems (except Termux).
+        *   Captures stdout and stderr.
+        *   Returns the stripped stdout on success, empty string on failure.
+        *   Logs command execution and results using `debug_utils`.
+    *   `source_file(filepath)`: Attempts to source a file in the shell (Unix-like systems, not Termux).
+    *   **Dependencies:** Relies on `debug_utils` for logging.
+    *   **Note:** This file is functionally identical to `modules/cross_platform/system_utils.py`, indicating it's the target of the migration.
+
+---
+
+**15. `modules/system_tools/file_system/file_system_manager.py`**
+*   **Purpose:** Provides cross-platform utilities for basic file system operations like creating/deleting directories and listing files. This is the refactored version intended for `system_tools`.
+*   **Key Functionalities:**
+    *   `create_directory(path)`: Creates a directory, including any necessary parent directories, if it doesn't already exist.
+    *   `delete_directory(path)`: Deletes an empty directory.
+    *   `list_files(path)`: Lists the names of files and subdirectories directly within a specified directory.
+    *   **Dependencies:** Relies on `SystemUtils` for OS detection and `debug_utils` for logging.
+    *   **Note:** This file is functionally identical to `modules/cross_platform/file_system_manager.py`, indicating it's the target of the migration.
+
+---
+
+**16. `modules/system_tools/network/network_utils.py`**
+*   **Purpose:** Provides cross-platform utilities for network-related operations, specifically for resetting network settings. This is the refactored version intended for `system_tools`.
+*   **Key Functionalities:**
+    *   `reset_network()`: Executes OS-specific commands to reset network configurations.
+        *   **Windows:** `netsh winsock reset`, `netsh int ip reset`, `ipconfig /release`, `ipconfig /renew`, `ipconfig /flushdns`
+        *   **Termux:** `svc wifi disable && svc wifi enable`
+        *   **Linux:** `systemctl restart NetworkManager`
+        *   **macOS:** `ifconfig en0 down && ifconfig en0 up`, `killall -HUP mDNSResponder`
+    *   **Dependencies:** Relies on `SystemUtils` for OS detection and command execution, and `debug_utils` for logging.
+    *   **Note:** This file is functionally identical to `modules/cross_platform/network_utils.py`, indicating it's the target of the migration.
+
+---
+
+**17. `modules/system_tools/privileges/privileges_manager.py`**
+*   **Purpose:** Provides cross-platform functionality to check and enforce administrative (root) privileges for script execution. This is the refactored version intended for `system_tools`.
+*   **Key Functionalities:**
+    *   `require_admin()`: Checks if the script is running with administrative privileges.
+        *   **Windows:** Uses `ctypes.windll.shell32.IsUserAnAdmin()`.
+        *   **Unix-like (Linux, macOS):** Checks if the effective user ID is 0 (`os.geteuid() == 0`).
+    *   Raises a `PermissionError` if the required privileges are not met.
+    *   **Dependencies:** Relies on `SystemUtils` for OS detection and `debug_utils` for logging.
+    *   **Note:** This file is functionally identical to `modules/cross_platform/privileges_manager.py`, indicating it's the target of the migration.
+
+---
+
+**18. `modules/system_tools/process/process_manager.py`**
+*   **Purpose:** Provides cross-platform utilities for managing system processes, including listing and terminating them. This is the refactored version intended for `system_tools`.
+*   **Key Functionalities:**
+    *   `list_processes()`: Lists all running processes.
+        *   **Windows:** Uses `tasklist`.
+        *   **Unix-like (Linux, macOS):** Uses `ps aux`.
+    *   `kill_process(process_name)`: Terminates processes by name.
+        *   **Windows:** Uses `taskkill /IM /F`.
+        *   **Unix-like (Linux, macOS):** Uses `pkill`.
+    *   **Dependencies:** Relies on `SystemUtils` for OS detection and command execution, and `debug_utils` for logging.
+    *   **Note:** This file is functionally identical to `modules/cross_platform/process_manager.py`, indicating it's the target of the migration.
+
+---
+
+**19. `modules/system_tools/process/service_manager.py`**
+*   **Purpose:** Provides cross-platform utilities for managing system services, including querying their status, starting, and stopping them. This is the refactored version intended for `system_tools`.
+*   **Key Functionalities:**
+    *   `service_status(service_name)`: Retrieves the status of a specified service.
+        *   **Windows:** Uses `sc query`.
+        *   **Linux:** Uses `systemctl status`.
+        *   **macOS:** Uses `launchctl list | grep`.
+    *   `start_service(service_name)`: Starts a specified service.
+        *   **Windows:** Uses `net start`.
+        *   **Linux:** Uses `systemctl start`.
+        *   **macOS:** Uses `launchctl start`.
+    *   `stop_service(service_name)`: Stops a specified service.
+        *   **Windows:** Uses `net stop`.
+        *   **Linux:** Uses `systemctl stop`.
+        *   **macOS:** Uses `launchctl stop`.
+    *   **Dependencies:** Relies on `SystemUtils` for OS detection and command execution, and `debug_utils` for logging.
+    *   **Note:** This file is functionally identical to `modules/cross_platform/service_manager.py`, indicating it's the target of the migration.
+
+---
+
+**20. `modules/system_tools/system_info/cli.py`**
+*   **Purpose:** The main command-line interface (CLI) for the `system_info` sub-module, providing a unified entry point for various system information subcommands.
+*   **Key Functionalities:**
+    *   **OS Detection:** Automatically detects the operating system (Windows, Linux, macOS, Termux).
+    *   **Information Gathering:** Collects and displays extensive system information for the detected OS.
+    *   **Section Filtering:** Allows users to filter the displayed information by specific sections (e.g., OS, BIOS, CPU, Memory, GPU, Drives, Network).
+    *   **Admin Mode Handling:** Manages execution in admin/non-admin modes, warning the user if admin privileges are required but not available for certain information.
+    *   **Dispatch to OS-Specific Modules:** Calls appropriate functions from `windows_info`, `linux_info`, `mac_info`, and `termux_info` based on the detected OS.
+    *   **Verbose Output:** Supports verbose logging.
+    *   **Dependencies:** Relies on `SystemUtils` for OS detection and `standard_ui` for logging and output formatting.
+
+---
+
+**21. `modules/system_tools/system_info/linux_info.py`**
+*   **Purpose:** Gathers and displays system information specific to Linux operating systems (non-Termux).
+*   **Key Functionalities:**
+    *   **OS Information:** Uses `hostnamectl` to get basic OS details.
+    *   **BIOS Information:** Uses `dmidecode -t bios` (requires admin privileges).
+    *   **CPU Information:** Reads from `/proc/cpuinfo`.
+    *   **Memory Information:** Reads from `/proc/meminfo`.
+    *   **GPU Information:** Uses `lspci | grep -i 'vga\|3d\|2d'`.
+    *   **Drives Information:** Uses `lsblk -a`.
+    *   **Network Information:** Uses `ip a`.
+    *   **Admin Mode Awareness:** Warns if running in non-admin mode as some commands may require root.
+    *   **Dependencies:** Relies on `SystemUtils` for command execution and `standard_ui` for logging and section formatting.
+
+---
+
+**22. `modules/system_tools/system_info/mac_info.py`**
+*   **Purpose:** Gathers and displays system information specific to macOS.
+*   **Key Functionalities:**
+    *   **OS Information:** Uses `sw_vers`.
+    *   **Hardware Information:** Uses `system_profiler SPHardwareDataType` (includes BIOS, CPU, Memory details).
+    *   **Memory Information (detailed):** Uses `system_profiler SPMemoryDataType`.
+    *   **GPU Information:** Uses `system_profiler SPDisplaysDataType`.
+    *   **Storage Information:** Uses `system_profiler SPStorageDataType`.
+    *   **Network Information:** Uses `system_profiler SPNetworkDataType`.
+    *   **Dependencies:** Relies on `SystemUtils` for command execution and `standard_ui` for logging and section formatting.
+
+---
+
+**23. `modules/system_tools/system_info/termux_info.py`**
+*   **Purpose:** Gathers and displays system information specific to Termux (Android) environments.
+*   **Key Functionalities:**
+    *   **Termux/Android OS Information:** Uses `termux-info`.
+    *   **CPU Information:** Reads from `/proc/cpuinfo`.
+    *   **Memory Information:** Reads from `/proc/meminfo`.
+    *   **Storage Information:** Uses `lsblk -a`.
+    *   **Network Information:** Uses `ip a`.
+    *   **Dependencies:** Relies on `SystemUtils` for command execution and `standard_ui` for logging and section formatting.
+
+---
+
+**24. `modules/system_tools/system_info/windows_info.py`**
+*   **Purpose:** Gathers and displays system information specific to Windows operating systems.
+*   **Key Functionalities:**
+    *   **OS Information:** Uses `Get-ComputerInfo`.
+    *   **BIOS Information:** Uses `Get-WmiObject -Class Win32_BIOS`.
+    *   **CPU Information:** Uses `Get-WmiObject -Class Win32_Processor`.
+    *   **Memory Information:** Uses `Get-WmiObject -Class Win32_PhysicalMemory`.
+    *   **GPU Information:** Uses `Get-WmiObject -Class Win32_VideoController`.
+    *   **Drives Information:** Uses `Get-WmiObject -Class Win32_DiskDrive`.
+    *   **Network Information:** Uses `Get-WmiObject -Class Win32_NetworkAdapterConfiguration`.
+    *   **PowerShell Execution:** Runs PowerShell commands via `pwsh -Command`.
+    *   **Admin Mode Awareness:** Warns if running in non-admin mode as some WMI queries may require elevated privileges.
+    *   **Dependencies:** Relies on `SystemUtils` for command execution and `standard_ui` for logging and section formatting.
+
+---
+
+**25. `pscripts/link_creator.py`**
+*   **Purpose:** Creates hard links or symbolic links for files matching a pattern from a source directory to a target directory. Also supports linking the script itself to a specified destination.
+*   **Key Functionalities:**
+    *   **Link Creation:** Creates either hard links (`os.link`) or symbolic links (`os.symlink`).
+    *   **File Pattern Matching:** Links files matching a glob pattern (e.g., `*.py`).
+    *   **Source/Target Directories:** Configurable source and target directories.
+    *   **Self-Linking Mode:** Can link the `link_creator.py` script itself (or its original if it's already a link) to a new location.
+    *   **Skipping Existing:** Skips creating links if the target file already exists.
+    *   **Error Handling:** Reports errors during link creation.
+
+---

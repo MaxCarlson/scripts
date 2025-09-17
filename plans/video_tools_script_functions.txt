@@ -1,0 +1,88 @@
+**Functionalities of scripts for `pyprjs/video-tools`:**
+
+---
+
+**1. `downloads_dlpn/scripts/shortest.py`**
+*   **Purpose:** Continuously scans a directory for video files and reports the top N shortest videos by duration.
+*   **Key Functionalities:**
+    *   **Video Scanning:** Recursively walks a specified base directory to find video files (MP4, MKV, AVI, MOV, WMV).
+    *   **Duration Extraction:** Uses `ffprobe` (from FFmpeg) to extract the duration of each video file.
+    *   **Live Reporting:** Periodically clears the terminal and prints a sorted list of the shortest videos found so far.
+    *   **Multithreading:** Uses a separate thread for scanning videos to avoid blocking the main reporting loop.
+    *   **Configuration:** Configurable search directory, reporting interval, and number of shortest videos to display.
+    *   **Dependencies:** Requires `ffprobe` to be installed and in the system's PATH.
+
+---
+
+**2. `downloads_dlpn/scripts/video_cleaner.py`**
+*   **Purpose:** Cleans up video files by renaming bracketed filenames (e.g., `Video [ID].mp4` to `Video.mp4`) and managing `.part` files.
+*   **Key Functionalities:**
+    *   **Duplicate Detection (Bracketed):** Scans for `.mp4` files that have a bracketed ID (e.g., `[ID]`) and a corresponding clean-named version (e.g., `Video.mp4` and `Video [ID].mp4`).
+    *   **Reporting Duplicates:** Can report counts of true bracketed duplicates per folder and list the duplicate filenames.
+    *   **Fixing Bracketed Files:**
+        *   If a clean-named `.mp4` does not exist, renames the bracketed file to its clean name.
+        *   If a clean-named `.mp4` *does* exist, deletes the bracketed file (assuming it's a duplicate).
+    *   **`.part` File Cleanup:**
+        *   For each `.part` file, if a corresponding completed `.mp4` file exists, deletes the `.part` file.
+        *   If no completed `.mp4` exists, attempts to strip bracket patterns from the `.part` filename.
+    *   **Recursive Scan:** Operates recursively from a specified root folder.
+
+---
+
+**3. `downloads_dlpn/scripts/video_processor.py`**
+*   **Purpose:** A comprehensive video processing utility that uses FFmpeg for tasks like subtitling, merging, cutting slices, and downscaling videos. It includes progress monitoring and logging.
+*   **Key Functionalities:**
+    *   **Subtitle Videos:**
+        *   Extracts audio from video files using FFmpeg.
+        *   Generates subtitles (SRT) from audio using `whisper` (an external tool).
+        *   Supports resuming subtitle generation from a previous offset.
+        *   Optionally burns subtitles directly into the video.
+        *   Monitors progress during subtitle generation.
+    *   **Merge Videos:** Merges multiple video files into a single output video using FFmpeg's concat demuxer.
+    *   **Cut Slices:** Removes specified time segments (slices) from a video, keeping the remaining parts.
+    *   **Downscale Video:** Resizes a video to a lower resolution (e.g., 1920:1080).
+    *   **Duplicate Detection (Placeholder):** Includes a placeholder for future duplicate detection functionality.
+    *   **Progress Monitoring:** Provides live progress updates for long-running operations (e.g., subtitling, burning).
+    *   **Error Handling:** Catches and reports errors during FFmpeg/Whisper execution.
+    *   **Dependencies:** Requires `ffmpeg` and `whisper` to be installed.
+
+---
+
+**4. `pyscripts/edit_video_file.py`**
+*   **Purpose:** A command-line utility for basic video editing operations, including merging multiple videos, cutting slices, and downscaling.
+*   **Key Functionalities:**
+    *   **Merge Videos:** Merges multiple input video files into a single output file using FFmpeg's concat demuxer.
+    *   **Remove Slices (Cut):** Removes specified time segments from a video, effectively cutting out unwanted parts.
+    *   **Downscale Video:** Resizes a video to a lower resolution (e.g., 1920:1080).
+    *   **Duplicate Detection (Placeholder):** Includes a placeholder for future duplicate detection.
+    *   **Dependencies:** Relies on `ffmpeg` and `ffprobe` for video processing.
+
+---
+
+**5. `pyscripts/video_dedupe.py`**
+*   **Purpose:** A powerful tool for finding and removing duplicate or perceptually similar video and other file types, with advanced grouping, live progress, and reporting features.
+*   **Key Functionalities:**
+    *   **Duplicate Detection Modes:**
+        *   **Exact Hash (`hash`):** Finds files with identical content using SHA256 hashing.
+        *   **Metadata (`meta`):** Groups video files based on similar metadata (duration, resolution, codec, container) within a configurable tolerance.
+        *   **Perceptual Hash (`phash`):** Uses perceptual hashing (phash) to find visually similar videos, even if they are not exact duplicates.
+        *   **All (`all`):** Combines all detection modes.
+    *   **File Scanning:** Recursively scans a root directory for files, optionally filtering by glob patterns and maximum depth.
+    *   **Metadata Extraction:** Uses `ffprobe` to extract detailed video metadata (duration, resolution, codecs, bitrates).
+    *   **Live Progress Dashboard (TermDash):** Provides a live, in-place updating terminal UI showing:
+        *   Overall progress (scanning, hashing).
+        *   Counts of files, videos, bytes processed.
+        *   Number of duplicate groups found.
+        *   Estimated time remaining for each stage.
+    *   **Keep Policy:** Allows defining a priority order for which duplicate copy to keep (e.g., "longer", "newer", "smaller", "higher resolution").
+    *   **Actions on Duplicates:**
+        *   **Dry Run:** Shows which files would be removed without actual deletion.
+        *   **Force:** Deletes without confirmation.
+        *   **Backup:** Moves "loser" files to a specified backup directory instead of deleting them.
+    *   **Reporting:** Can generate a JSON report detailing duplicate groups, winners, and losers.
+    *   **Apply Report:** Can read a previously generated JSON report and perform deletion/moving actions based on it.
+    *   **Hash Cache:** Uses a JSONL file to cache SHA256 hashes for faster re-scans.
+    *   **Presets:** Provides low, medium, and high tolerance presets for detection parameters.
+    *   **Multithreading:** Uses worker threads for scanning and hashing.
+
+---

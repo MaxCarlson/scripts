@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "type": "knowledge_manager.project-link",
+  "project_id": "996a8337-2f42-463c-8064-7f272f30a247",
+  "project_name": "llm-interface",
+  "base_data_dir": null,
+  "created_at": "2025-09-12T23:10:04.797034+00:00"
+}

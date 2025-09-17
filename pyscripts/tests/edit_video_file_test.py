@@ -2,7 +2,7 @@ import pytest
 import sys
 import os
 from unittest.mock import patch, call
-import video_tool
+import edit_video_file as video_tool
 
 @pytest.fixture(autouse=True)
 def no_sys_exit(monkeypatch):
@@ -18,7 +18,7 @@ def test_escape_filename():
     assert video_tool.escape_filename("foo.mp4") == "foo.mp4"
     assert video_tool.escape_filename("foo'bar.mp4") == "foo'\\''bar.mp4"
 
-@patch("video_tool.subprocess.run")
+@patch("edit_video_file.subprocess.run")
 def test_merge(mock_run, tmp_path):
     f1 = tmp_path/"a.mp4"
     f2 = tmp_path/"b.mp4"
@@ -28,8 +28,8 @@ def test_merge(mock_run, tmp_path):
     video_tool.merge([str(f1), str(f2)], str(out))
     assert mock_run.called
 
-@patch("video_tool.subprocess.run")
-@patch("video_tool.subprocess.check_output")
+@patch("edit_video_file.subprocess.run")
+@patch("edit_video_file.subprocess.check_output")
 def test_remove_video_slices(mock_check, mock_run, tmp_path):
     f1 = tmp_path/"input.mp4"
     f1.write_bytes(b"x")
@@ -44,8 +44,8 @@ def test_remove_video_slices(mock_check, mock_run, tmp_path):
     # Number of calls: two segments, one merge
     assert mock_run.call_count == 3
 
-@patch("video_tool.subprocess.run")
-@patch("video_tool.subprocess.check_output")
+@patch("edit_video_file.subprocess.run")
+@patch("edit_video_file.subprocess.check_output")
 def test_downscale(mock_check, mock_run, tmp_path):
     f1 = tmp_path/"input.mp4"
     f1.write_bytes(b"x")
