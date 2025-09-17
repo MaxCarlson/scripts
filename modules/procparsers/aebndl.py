@@ -17,8 +17,9 @@ _PROG_RE = re.compile(
 def _hms_to_seconds(hms: str) -> Optional[int]:
     parts = [int(x) for x in hms.split(":")]
     if len(parts) == 2:
-        m, s = parts
-        return m * 60 + s
+        # AEBN progress uses HH:MM when two fields are present (00:35 -> 35 minutes)
+        h, m = parts
+        return h * 3600 + m * 60
     if len(parts) == 3:
         h, m, s = parts
         return h * 3600 + m * 60 + s
