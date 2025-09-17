@@ -12,18 +12,18 @@ from .utils import sanitize_line
 # Optional custom meta line people sometimes add via --print "TDMETA\t%(id)s\t%(title)s"
 _META_RE = re.compile(r"^TDMETA\t(?P<id>[^\t]+)\t(?P<title>.+)$")
 
-# Destination emitted by yt-dlp
-_DEST_RE = re.compile(r"^download\s+Destination:\s*(?P<path>.+)$", re.I)
+# Destination emitted by yt-dlp, e.g. "[download] Destination: /path/file.mp4"
+_DEST_RE = re.compile(r"^\[download\]\s+Destination:\s*(?P<path>.+)$", re.I)
 
 # "Already downloaded" variants
 _ALREADY_RES = [
-    re.compile(r"^download\s+File\s+is\s+already\s+downloaded\s+and\s+merged\s*$", re.I),
-    re.compile(r"^download\s+.+?\s+has\s+already\s+been\s+downloaded(?:\s+and\s+merged)?\s*$", re.I),
+    re.compile(r"^\[download\]\s+File\s+is\s+already\s+downloaded\s+and\s+merged\s*$", re.I),
+    re.compile(r"^\[download\]\s+.+?\s+has\s+already\s+been\s+downloaded(?:\s+and\s+merged)?\s*$", re.I),
 ]
 
 # Progress lines (several shapes)
 _PROGRESS_RE = re.compile(
-    r"""^download\s+
+    r"""^\[download\]\s+
         (?P<pct>\d{1,3}(?:\.\d+)?)%\s+of\s+
         (?:~\s*)?
         (?P<total_val>\d+(?:\.\d+)?)\s*(?P<total_unit>[KMGT]?i?B)\s*
@@ -33,6 +33,7 @@ _PROGRESS_RE = re.compile(
             \s+in\s+(?P<intime>\d{2}:\d{2}(?::\d{2})?) |
             \s*
         )
+        (?:\s*\(frag\s+\d+/\d+\))?
         \s*$
     """,
     re.X | re.I,
@@ -126,3 +127,4 @@ def parse_line(line: str) -> Optional[Dict]:
         }
 
     return None
+
