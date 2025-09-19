@@ -1,14 +1,10 @@
-# Compatibility shim + version surfacing
-from __future__ import annotations
+"""ytaedl package.
 
-import sys as _sys
+Provides two CLIs:
+ - `ytaedl` (aka `yt-ae-dl`) -> ytaedl.dlscript:main
+ - `ytaedl-orchestrate` -> ytaedl.dlmanager:main
+"""
 
 __all__ = ["__version__"]
+__version__ = "0.7.0"
 
-# Bump as requested
-__version__ = "0.6.1"
-
-# Provide a friendly alias so `import ytaedl` points here too (and vice versa)
-# If the short name gets imported first, it can reassign ytaedl as well.
-if "ytaedl" not in _sys.modules:
-    _sys.modules["ytaedl"] = _sys.modules[__name__]
