@@ -32,11 +32,15 @@ class ClipboardUtils:
 
     Also exposes module-level wrappers set_clipboard()/get_clipboard() below.
 
-    NEW (robust Windows + dual-target behavior):
-      • Always emit OSC 52 so the *local* terminal/Termux gets the copy over SSH/tmux.
-      • On Windows, copy to the Windows clipboard using a PowerShell -EncodedCommand
-        that decodes a UTF-8 payload inside PowerShell (thus ignoring console codepages),
-        with a UTF-16LE clip.exe fallback.
+    Behavior overview:
+      • Always emit OSC 52 (to TTY only) so the *local* terminal/Termux can receive a copy over SSH/tmux.
+      • On tmux, also try to push to the tmux buffer (stdin-based) as a best-effort.
+      • Platform-native set/get:
+          - Termux: termux-clipboard-set / termux-clipboard-get
+          - macOS : pbcopy / pbpaste
+          - Linux : wl-copy|xclip|xsel / wl-paste|xclip|xsel
+          - Windows: robust PowerShell -EncodedCommand (UTF-8 payload) + clip.exe (UTF-16LE) fallback
+          - WSL   : prefer win32yank (-i / -o) bridging to Windows clipboard, then clip.exe / PowerShell Get-Clipboard
     """
 
     def __init__(self):
@@ -50,9 +54,9 @@ class ClipboardUtils:
         return bool(os.environ.get("TMUX"))
 
     def is_wsl2(self) -> bool:
+        """Detect WSL (v1 or v2); both report 'Microsoft' in kernel release."""
         try:
-            rel = platform.uname().release
-            return "microsoft" in rel.lower()
+            return "microsoft" in platform.uname().release.lower()
         except Exception:
             return False
 
@@ -88,8 +92,12 @@ class ClipboardUtils:
     def _emit_osc52(self, text: str):
         """
         Emit OSC 52 so the *local* terminal receives the clipboard
-        (works over SSH if terminal/tmux allows OSC 52).
+        (works over SSH if terminal/tmux allows OSC 52). Only emit
+        to a TTY to avoid contaminating piped output.
         """
+        if not sys.stdout.isatty():
+            return
+
         encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
         osc = f"\033]52;c;{encoded}\a"
 
@@ -114,7 +122,7 @@ class ClipboardUtils:
     # Windows robust setters
     # ------------------------
     def _pwsh_exe(self) -> Optional[str]:
-        for exe in ("pwsh", "powershell"):
+        for exe in ("pwsh", "powershell", "powershell.exe"):
             p = shutil.which(exe)
             if p:
                 return p
@@ -178,13 +186,9 @@ Set-Clipboard -Value $str
     def set_clipboard(self, text: str):
         """
         Strategy (dual-target):
-          1) Always try OSC 52 (updates local terminal/Termux clipboard over SSH/tmux)
-          2) If tmux, also push to tmux buffer (stdin to avoid 'no data specified')
-          3) Platform-native set:
-             - Termux: termux-clipboard-set
-             - macOS : pbcopy
-             - Linux : wl-copy | xclip | xsel
-             - Windows: PowerShell -EncodedCommand (UTF-8 payload) then clip.exe UTF-16LE fallback
+          1) Always try OSC 52 (updates local terminal/Termux clipboard over SSH/tmux) — TTY only.
+          2) If tmux, also push to tmux buffer (stdin to avoid 'no data specified').
+          3) Platform-native set, including WSL bridges to Windows clipboard.
         """
         # 1) OSC 52 for local terminal clipboard
         self._emit_osc52(text)
@@ -210,6 +214,32 @@ Set-Clipboard -Value $str
             except Exception as e:
                 _log("Warning", f"Termux clipboard set failed (continuing): {e}")
                 # Fall through to OSC52-only behavior
+
+        # WSL prefers bridging to Windows clipboard
+        if self.is_wsl2():
+            # Best: win32yank bridges WSL <-> Windows clipboard
+            if shutil.which("win32yank"):
+                try:
+                    self._run(["win32yank", "-i"], input_text=text, check=True)
+                    return
+                except Exception as e:
+                    _log("Warning", f"win32yank -i failed (continuing): {e}")
+            # Fallback: Windows clip.exe via interop (UTF-16LE)
+            try:
+                proc = subprocess.run(["clip.exe"], input=text.encode("utf-16le"))
+                if proc.returncode == 0:
+                    return
+            except Exception as e:
+                _log("Warning", f"clip.exe failed (continuing): {e}")
+            # Last resort: treat like Linux (may be headless); OSC52 already emitted
+            for prog in (["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]):
+                if shutil.which(prog[0]):
+                    try:
+                        self._run(prog, input_text=text, check=True)
+                        return
+                    except Exception as e:
+                        _log("Warning", f"{' '.join(prog)} failed (continuing): {e}")
+            return
 
         if osname == "darwin":
             try:
@@ -259,6 +289,34 @@ Set-Clipboard -Value $str
     # ------------------------
     def get_clipboard(self) -> str:
         osname = self.os_name()
+
+        # WSL prefers Windows clipboard
+        if self.is_wsl2():
+            # Prefer win32yank output (Windows clipboard)
+            if shutil.which("win32yank"):
+                try:
+                    res = self._run(["win32yank", "-o"], check=True)
+                    return res.stdout
+                except Exception as e:
+                    _log("Warning", f"win32yank -o failed: {e}")
+            # Fallback: PowerShell Get-Clipboard (works from WSL via interop)
+            pwsh = shutil.which("pwsh") or shutil.which("powershell.exe") or shutil.which("powershell")
+            if pwsh:
+                try:
+                    # Use -Raw to preserve newlines
+                    res = self._run([pwsh, "-NoProfile", "-Command", "Get-Clipboard -Raw"], check=True)
+                    return res.stdout
+                except Exception as e:
+                    _log("Warning", f"{pwsh} Get-Clipboard failed: {e}")
+            # Last resort: Linux tools (or empty)
+            for prog in (["wl-paste"], ["xclip", "-selection", "clipboard", "-o"], ["xsel", "--clipboard", "--output"]):
+                if shutil.which(prog[0]):
+                    try:
+                        res = self._run(prog, check=True)
+                        return res.stdout
+                    except Exception as e:
+                        _log("Warning", f"{' '.join(prog)} failed: {e}")
+            return ""
 
         if self.is_termux():
             try:
@@ -321,3 +379,4 @@ def get_clipboard() -> str:
     return _U().get_clipboard()
 
 __all__ = ["ClipboardUtils", "set_clipboard", "get_clipboard"]
+
