@@ -1,5 +1,4 @@
-# File: scripts_setup/setup_path.py
-#!/usr/bin/env python3
+#!/usr/bin/env python
 import os
 import subprocess
 from pathlib import Path
@@ -100,6 +99,7 @@ def main():
 
     path_separator = os.pathsep
     if "zsh" in shell_name.lower():
+        # 1) Ensure <bin_dir> is on PATH via a dedicated dynamic file
         config_file_path = args.dotfiles_dir.resolve() / "dynamic/setup_path.zsh"
         config_file_path.parent.mkdir(parents=True, exist_ok=True)
         path_export_line = f'export PATH="{bin_path_to_add}{path_separator}$PATH"\n'
@@ -121,9 +121,31 @@ def main():
             except IOError as e:
                 log_print("ERROR", f"Could not write to {config_file_path}: {e}", verbose_flag=True)
                 log_print("INFO", f"Please add manually: {path_export_line.strip()}", verbose_flag=True)
+
+        # 2) Ensure the repo-local .venv/bin is also on PATH (idempotent)
+        scripts_dir = args.bin_dir.resolve().parent  # bin_dir == <scripts>/bin
+        venv_bin = (scripts_dir / ".venv" / "bin").resolve()
+        pyenv_zsh_file = args.dotfiles_dir.resolve() / "dynamic" / "python_env.zsh"
+        try:
+            pyenv_zsh_file.parent.mkdir(parents=True, exist_ok=True)
+            line = f'export PATH="{venv_bin}{path_separator}$PATH"\n'
+            existing = pyenv_zsh_file.read_text(encoding="utf-8") if pyenv_zsh_file.exists() else ""
+            if line not in existing:
+                with open(pyenv_zsh_file, "a", encoding="utf-8") as f:
+                    if not existing:
+                        f.write("# Added by scripts_setup/setup_path.py (repo .venv on PATH)\n")
+                    f.write(line)
+                log_print("SUCCESS", f"Ensured repo .venv on PATH via {pyenv_zsh_file}", verbose)
+            else:
+                log_print("SUCCESS", f"Repo .venv already on PATH via {pyenv_zsh_file}", verbose)
+            log_print("IMPORTANT", f"To apply now: source '{pyenv_zsh_file}'", verbose_flag=True)
+        except Exception as e:
+            log_print("WARNING", f"Could not update python_env.zsh: {e}", verbose)
+
     else:
         log_print("WARNING", f"Unsupported shell '{shell_name}' for automatic PATH config. This script primarily handles Zsh for POSIX.", verbose_flag=True)
-        log_print("INFO", f"Please add '{str(bin_path_to_add)}' to your PATH manually for shell '{shell_name}'.", verbose_flag=True)
+        log_print("INFO", f"Please add '{str(bin_path_to_add)}' and the repo '.venv/bin' to your PATH manually for shell '{shell_name}'.", verbose_flag=True)
 
 if __name__ == "__main__":
     main()
+

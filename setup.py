@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 import os
@@ -444,6 +444,56 @@ def run_setup(script_path: Path, *args, soft_fail_modules: bool = False):
         write_error_log_detail(f"Setup {resolved.name}", None, out, "")
 
 # ─────────────────────────────────────────────────────────
+# Venv bootstrap (added)
+# ─────────────────────────────────────────────────────────
+def _which(x):  # tiny helper
+    from shutil import which as _w
+    return _w(x)
+
+def ensure_repo_venv() -> Path:
+    """
+    Ensure <scripts>/.venv exists. Prefer uv if available, fallback to stdlib venv.
+    Returns path to venv python.
+    """
+    venv_dir = SCRIPTS_DIR / ".venv"
+    vbin = venv_dir / ("Scripts" if os.name == "nt" else "bin")
+    vpy = vbin / ("python.exe" if os.name == "nt" else "python")
+    if vpy.exists():
+        if _is_verbose:
+            log_info(f"Using existing venv: {venv_dir}")
+        return vpy
+
+    with sui_section("Create project venv (.venv)", level="major"):
+        uv = _which("uv")
+        if uv:
+            rc, _, _ = _popen_stream_and_log([uv, "venv", str(venv_dir)], tag="uv venv")
+            if rc == 0 and vpy.exists():
+                status_line("uv venv created", "ok", str(venv_dir))
+                return vpy
+            status_line("uv venv failed; falling back", "warn")
+
+        rc, _, _ = _popen_stream_and_log([sys.executable, "-m", "venv", str(venv_dir)], tag="python -m venv")
+        if rc != 0 or not vpy.exists():
+            status_line("venv creation failed", "fail")
+            sys.exit(1)
+        status_line("venv created", "ok", str(venv_dir))
+    return vpy
+
+def reexec_inside_venv(argv_rest: list[str]):
+    vpy = ensure_repo_venv()
+    if Path(sys.executable).resolve() != vpy.resolve():
+        if _is_verbose:
+            log_info(f"Re-exec under venv: {vpy}")
+        os.execv(str(vpy), [str(vpy), str(Path(__file__).resolve()), *argv_rest])
+
+def is_wsl2() -> bool:
+    try:
+        rel = platform.uname().release
+    except Exception:
+        return False
+    return "microsoft" in rel.lower() and "WSL" in rel.upper()
+
+# ─────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────
 def main():
@@ -469,7 +519,10 @@ def main():
                         help="Do not halt when modules/setup.py fails; continue and record as a warning.")
     parser.add_argument("-I", "--ignore-requirements", action="store_true",
                         help="Pass to modules/setup.py to skip installing requirements.txt for each module.")
-
+    parser.add_argument("-a", "--include-hidden", action="store_true",
+                        help="Include dot-prefixed module folders.")
+    parser.add_argument("--bootstrap-venv", action="store_true",
+                        help="Create <scripts>/.venv and re-exec this script inside it first.")
     args = parser.parse_args()
     _is_verbose = args.verbose
 
@@ -497,6 +550,16 @@ def main():
 
     bin_dir = args.bin_dir if args.bin_dir else scripts_dir / "bin"
 
+    # Optional: bootstrap venv and re-exec under it
+    if args.bootstrap-venv if False else None:  # guard for hyphen name
+        pass
+    if args.bootstrap_venv:
+        argv_rest = []
+        for a in sys.argv[1:]:
+            if a != "--bootstrap-venv":
+                argv_rest.append(a)
+        reexec_inside_venv(argv_rest)
+
     try:
         init_timer()
     except Exception:
@@ -511,7 +574,7 @@ def main():
         except OSError as e:
             log_warning(f"Could not clear previous error log {ERROR_LOG}: {e}")
 
-    # Core modules
+    # Core modules (these are also covered by modules/setup.py; we keep this for parity with your flow)
     with sui_section("Core Module Installation", level="major"):
         for name, path in [
             ("standard_ui", STANDARD_UI_SETUP_DIR),
@@ -530,17 +593,13 @@ def main():
                 log_warning(f"{name} setup files not found in {path} or it's not a directory.")
 
     # WSL2?
-    try:
-        rel = platform.uname().release
-    except Exception:
-        rel = ""
-    if "microsoft" in rel.lower() and "WSL" in rel.upper():
+    if is_wsl2():
         with sui_section("WSL2 Specific Setup", level="medium"):
             run_setup(SCRIPTS_SETUP_PACKAGE_DIR / "setup_wsl2.py", *([] if not args.verbose else ["--verbose"]))
     else:
         status_line("Not WSL2; skipping win32yank setup.", "unchanged")
 
-    # Sub-setups (modules/setup.py receives -I only)
+    # Sub-setups (modules/setup.py receives -I only; pass include-hidden too)
     common_setup_args = [
         "--scripts-dir", str(scripts_dir),
         "--dotfiles-dir", str(dotfiles_dir),
@@ -549,6 +608,7 @@ def main():
     if args.verbose:        common_setup_args.append("--verbose")
     if args.skip_reinstall: common_setup_args.append("--skip-reinstall")
     if args.production:     common_setup_args.append("--production")
+    if args.include_hidden: common_setup_args.append("--include-hidden")
 
     sub_setups = [
         (SCRIPTS_DIR / "pyscripts" / "setup.py", []),
@@ -568,6 +628,12 @@ def main():
         path_args = ["--bin-dir", str(bin_dir), "--dotfiles-dir", str(dotfiles_dir)]
         if args.verbose: path_args.append("--verbose")
         run_setup(setup_path_script, *path_args)
+
+    # Optional: PowerShell profile wiring (if present)
+    pwsh_profile = SCRIPTS_SETUP_PACKAGE_DIR / "setup_pwsh_profile.py"
+    if pwsh_profile.exists():
+        with sui_section("PowerShell profile wiring", level="medium"):
+            run_setup(pwsh_profile, "--scripts-dir", str(scripts_dir), "--dotfiles-dir", str(dotfiles_dir), *([] if not args.verbose else ["--verbose"]))
 
     try:
         print_global_elapsed()
@@ -598,3 +664,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
