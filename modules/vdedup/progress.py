@@ -27,9 +27,10 @@ from typing import Optional
 
 # Try to import TermDash (user-provided module)
 TERMDASH_AVAILABLE = False
-TermDash = Line = Stat = None  # type: ignore
+TermDash = Line = Stat = ProgressBar = None  # type: ignore
 try:
-    from termdash import TermDash, Line, Stat  # type: ignore
+    from termdash import TermDash, Line, Stat, ProgressBar  # type: ignore
+    from termdash.utils import format_bytes, fmt_hms, bytes_to_mib  # type: ignore
     TERMDASH_AVAILABLE = True
 except Exception:
     TERMDASH_AVAILABLE = False
@@ -50,7 +51,16 @@ class _LayoutChoice:
 
 class ProgressReporter:
     """
-    Counters + live UI.
+    Enhanced progress reporter with visual indicators, progress bars, and color coding.
+
+    Features:
+    - Dynamic progress bars for each pipeline stage
+    - Color-coded status indicators
+    - Real-time throughput and ETA calculations
+    - Visual feedback for pause/resume states
+    - Cache hit rate indicators
+    - Memory and performance metrics
+
     Public methods used by the pipeline/CLI:
       - start_stage(name, total)
       - set_total_files(n)
@@ -117,10 +127,19 @@ class ProgressReporter:
         self.stage_start_ts = time.time()
         self._ema_rate = 0.0  # items/sec (EMA)
 
+        # Enhanced UI metrics
+        self.throughput_files_per_sec = 0.0
+        self.throughput_bytes_per_sec = 0.0
+        self.cache_hit_rate = 0.0
+        self.current_file_name = ""
+        self.stage_progress_percent = 0.0
+        self.memory_usage_mb = 0.0
+
         # Dashboard runtime
         self.dash: Optional[TermDash] = None  # type: ignore
         self._ticker: Optional[threading.Thread] = None
         self._stop_evt = threading.Event()
+        self._progress_bars = {}  # Progress bars for different stages
 
         # Controls
         self._paused_evt = threading.Event()
@@ -129,6 +148,68 @@ class ProgressReporter:
         self._keys_thread: Optional[threading.Thread] = None
         self._await_quit_confirm = False
         self._stdin_ok = sys.stdin and sys.stdin.isatty()
+
+    # --------------- Enhanced UI helpers ---------------
+
+    def _get_stage_color(self, stage_name: str) -> str:
+        """Return ANSI color code based on stage type and status."""
+        if not TERMDASH_AVAILABLE:
+            return ""
+
+        stage_lower = stage_name.lower()
+        if "scan" in stage_lower:
+            return "0;36"  # Cyan for scanning
+        elif "hash" in stage_lower:
+            return "0;33"  # Yellow for hashing
+        elif "meta" in stage_lower:
+            return "0;35"  # Magenta for metadata
+        elif "phash" in stage_lower or "subset" in stage_lower:
+            return "0;31"  # Red for intensive operations
+        elif "complete" in stage_lower or "done" in stage_lower:
+            return "0;32"  # Green for completion
+        else:
+            return "0;37"  # White for other stages
+
+    def _get_status_indicator(self) -> str:
+        """Return a visual status indicator based on current state."""
+        if not self._paused_evt.is_set():
+            return "[||] "  # Paused
+        elif self.stage_done > 0 and self.stage_total > 0:
+            progress = self.stage_done / self.stage_total
+            if progress < 0.1:
+                return "[>] "  # Starting
+            elif progress < 0.9:
+                return "[*] "  # Active
+            else:
+                return "[~] "  # Nearly done
+        else:
+            return "[-] "  # Idle
+
+    def _calculate_throughput(self):
+        """Calculate real-time throughput metrics."""
+        with self.lock:
+            elapsed = max(1e-6, time.time() - self.stage_start_ts)
+            self.throughput_files_per_sec = self.stage_done / elapsed
+            self.throughput_bytes_per_sec = self.bytes_seen / elapsed
+
+            if self.hash_done > 0:
+                self.cache_hit_rate = (self.cache_hits / self.hash_done) * 100.0
+            else:
+                self.cache_hit_rate = 0.0
+
+            if self.stage_total > 0:
+                self.stage_progress_percent = (self.stage_done / self.stage_total) * 100.0
+            else:
+                self.stage_progress_percent = 0.0
+
+    def _format_throughput(self, value: float, unit: str) -> str:
+        """Format throughput values with appropriate units."""
+        if value >= 1000:
+            return f"{value/1000:.1f}k {unit}/s"
+        elif value >= 1:
+            return f"{value:.1f} {unit}/s"
+        else:
+            return f"{value:.2f} {unit}/s"
 
     # --------------- keyboard handling ---------------
 
@@ -222,78 +303,174 @@ class ProgressReporter:
             return
         self._layout = self._choose_layout()
 
-        # Start TermDash
+        # Start TermDash with enhanced settings
         self.dash = TermDash(  # type: ignore
             refresh_rate=self.refresh_rate,
-            enable_separators=False,
-            reserve_extra_rows=2,
+            enable_separators=True,
+            reserve_extra_rows=3,
             align_columns=True,
             max_col_width=None,
         )
         self.dash.__enter__()  # type: ignore
 
-        # Title
+        # Enhanced title with visual indicator
+        status_indicator = self._get_status_indicator()
         self.dash.add_line(  # type: ignore
             "title",
-            Line("title", stats=[Stat("title", "Video Deduper — Live", format_string="{}")], style="header"),  # type: ignore
+            Line("title", stats=[
+                Stat("title", f"{status_indicator}Video Deduplication Pipeline",
+                     format_string="{}", color="1;36")  # Bold cyan
+            ], style="header"),  # type: ignore
             at_top=True,
         )
 
-        # Banner
-        bw = max(20, min(self._layout.cols - 2, 200))
-        self._add_line("banner", Stat("banner", self.banner, format_string="{}", no_expand=True, display_width=bw))
+        # Banner with mode information
+        bw = max(30, min(self._layout.cols - 2, 200))
+        self._add_line("banner", Stat("banner", self.banner, format_string="{}",
+                                    no_expand=True, display_width=bw, color="0;37"))
+
+        # Add main progress bar for current stage
+        if TERMDASH_AVAILABLE:
+            self._progress_bars["main"] = ProgressBar(
+                name="stage_progress",
+                total=100,
+                current=0,
+                width=min(60, self._layout.cols - 20),
+                charset="block",  # Use block characters for visual appeal
+                show_percent=True
+            )
 
         if self._layout.stacked:
             w = bw
-            self._add_line("stage", Stat("stage", "idle", prefix="Stage: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("elapsed", Stat("elapsed", "00:00:00", prefix="Elapsed: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("eta", Stat("eta", "--:--:--", prefix="ETA: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("files", Stat("files", (0, 0), prefix="Files: ", format_string="{}/{}", no_expand=True, display_width=w))
-            self._add_line("videos", Stat("videos", 0, prefix="Videos: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("hashed", Stat("hashed", (0, 0), prefix="Hashed: ", format_string="{}/{}", no_expand=True, display_width=w))
-            self._add_line("cache", Stat("cache_hits", 0, prefix="Cache hits: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("scan", Stat("scanned", "0 MiB", prefix="Scanned: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("g_hash", Stat("g_hash", 0, prefix="Hash groups: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("g_meta", Stat("g_meta", 0, prefix="Meta groups: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("g_phash", Stat("g_phash", 0, prefix="pHash groups: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("g_subset", Stat("g_subset", 0, prefix="Subset groups: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("dup_files", Stat("dup_files", 0, prefix="Dup files: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("bytes_rm", Stat("bytes_rm", "0 MiB", prefix="To remove: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("total_elapsed", Stat("tot_elapsed", "00:00:00", prefix="Total elapsed: ", format_string="{}", no_expand=True, display_width=w))
+            # Current stage with color coding
+            self._add_line("stage", Stat("stage", "idle", prefix="[S] Stage: ",
+                                       format_string="{}", no_expand=True, display_width=w,
+                                       color=lambda v: self._get_stage_color(str(v))))
+
+            # Progress bar for current stage
+            if TERMDASH_AVAILABLE and "main" in self._progress_bars:
+                # Create a simple text-based progress bar for display
+                bar_width = min(40, w - 20)
+                if self.stage_total > 0:
+                    progress_pct = (self.stage_done / self.stage_total)
+                    filled = int(progress_pct * bar_width)
+                    bar_text = f"[{'#' * filled}{'.' * (bar_width - filled)}] {progress_pct * 100:.1f}%"
+                else:
+                    bar_text = f"[{'.' * bar_width}] 0.0%"
+
+                self._add_line("progress", Stat("progress_bar", bar_text,
+                                               format_string="{}", no_expand=True, display_width=w, color="0;32"))
+
+            # Timing information with better formatting
+            self._add_line("timing",
+                          Stat("elapsed", "00:00:00", prefix="[T] Stage: ", format_string="{}",
+                               no_expand=True, display_width=w//2, color="0;33"),
+                          Stat("eta", "--:--:--", prefix="ETA: ", format_string="{}",
+                               no_expand=True, display_width=w//2, color="0;36"))
+
+            # File processing stats
+            self._add_line("files", Stat("files", (0, 0), prefix="[F] Files: ",
+                                       format_string="{}/{}", no_expand=True, display_width=w,
+                                       color=lambda v: "0;32" if isinstance(v, tuple) and v[0] == v[1] and v[1] > 0 else "0;37"))
+            self._add_line("videos", Stat("videos", 0, prefix="[V] Videos: ",
+                                        format_string="{}", no_expand=True, display_width=w, color="0;35"))
+
+            # Hashing progress with cache hit rate
+            self._add_line("hashing",
+                          Stat("hashed", (0, 0), prefix="[H] Hashed: ", format_string="{}/{}",
+                               no_expand=True, display_width=w//2, color="0;33"),
+                          Stat("cache_rate", "0%", prefix="Cache: ", format_string="{}",
+                               no_expand=True, display_width=w//2,
+                               color=lambda v: "0;32" if "%" in str(v) and float(str(v).rstrip('%')) > 50 else "0;37"))
+
+            # Data volume with throughput
+            self._add_line("throughput",
+                          Stat("scanned", "0 MiB", prefix="[D] Data: ", format_string="{}",
+                               no_expand=True, display_width=w//2, color="0;36"),
+                          Stat("speed", "0 MB/s", prefix="Speed: ", format_string="{}",
+                               no_expand=True, display_width=w//2, color="0;32"))
+
+            # Duplicate detection results
+            self._add_line("groups_hash", Stat("g_hash", 0, prefix="[G] Hash groups: ",
+                                             format_string="{}", no_expand=True, display_width=w, color="0;33"))
+            self._add_line("groups_meta", Stat("g_meta", 0, prefix="[M] Meta groups: ",
+                                             format_string="{}", no_expand=True, display_width=w, color="0;35"))
+            self._add_line("groups_phash", Stat("g_phash", 0, prefix="[P] pHash groups: ",
+                                              format_string="{}", no_expand=True, display_width=w, color="0;31"))
+            self._add_line("groups_subset", Stat("g_subset", 0, prefix="[S] Subset groups: ",
+                                                format_string="{}", no_expand=True, display_width=w, color="0;31"))
+
+            # Final results
+            self._add_line("results",
+                          Stat("dup_files", 0, prefix="[X] Duplicates: ", format_string="{}",
+                               no_expand=True, display_width=w//2,
+                               color=lambda v: "0;31" if v > 0 else "0;37"),
+                          Stat("bytes_rm", "0 MiB", prefix="Space: ", format_string="{}",
+                               no_expand=True, display_width=w//2,
+                               color=lambda v: "0;32" if "GiB" in str(v) else "0;33" if "MiB" in str(v) else "0;37"))
+
+            self._add_line("total_elapsed", Stat("tot_elapsed", "00:00:00", prefix="[T] Total: ",
+                                                format_string="{}", no_expand=True, display_width=w, color="0;37"))
         else:
+            # Wide layout with enhanced visuals
             self._add_line(
                 "stage",
-                Stat("stage", "idle", prefix="Stage: ", format_string="{}", no_expand=True, display_width=22),
-                Stat("elapsed", "00:00:00", prefix="Elapsed: ", format_string="{}", no_expand=True, display_width=14),
-                Stat("eta", "--:--:--", prefix="ETA: ", format_string="{}", no_expand=True, display_width=14),
+                Stat("stage", "idle", prefix="[S] Stage: ", format_string="{}",
+                     no_expand=True, display_width=26,
+                     color=lambda v: self._get_stage_color(str(v))),
+                Stat("elapsed", "00:00:00", prefix="[T] ", format_string="{}",
+                     no_expand=True, display_width=16, color="0;33"),
+                Stat("eta", "--:--:--", prefix="ETA: ", format_string="{}",
+                     no_expand=True, display_width=16, color="0;36"),
             )
+
+            # Progress bar row
+            if TERMDASH_AVAILABLE and "main" in self._progress_bars:
+                self._add_line("progress", Stat("progress_bar", self._progress_bars["main"],
+                                               format_string="{}", no_expand=True, display_width=62))
+
             self._add_line(
                 "files",
-                Stat("files", (0, 0), prefix="Files: ", format_string="{}/{}", no_expand=True, display_width=22),
-                Stat("videos", 0, prefix="Videos: ", format_string="{}", no_expand=True, display_width=18),
+                Stat("files", (0, 0), prefix="[F] Files: ", format_string="{}/{}",
+                     no_expand=True, display_width=26,
+                     color=lambda v: "0;32" if isinstance(v, tuple) and v[0] == v[1] and v[1] > 0 else "0;37"),
+                Stat("videos", 0, prefix="[V] Videos: ", format_string="{}",
+                     no_expand=True, display_width=20, color="0;35"),
+                Stat("speed", "0 files/s", prefix="[>] ", format_string="{}",
+                     no_expand=True, display_width=16, color="0;32"),
             )
             self._add_line(
                 "hash",
-                Stat("hashed", (0, 0), prefix="Hashed: ", format_string="{}/{}", no_expand=True, display_width=22),
-                Stat("cache_hits", 0, prefix="Cache hits: ", format_string="{}", no_expand=True, display_width=18),
+                Stat("hashed", (0, 0), prefix="[H] Hashed: ", format_string="{}/{}",
+                     no_expand=True, display_width=26, color="0;33"),
+                Stat("cache_rate", "0%", prefix="[C] Cache: ", format_string="{}",
+                     no_expand=True, display_width=20,
+                     color=lambda v: "0;32" if "%" in str(v) and float(str(v).rstrip('%')) > 50 else "0;37"),
+                Stat("scanned", "0 MiB", prefix="[D] ", format_string="{}",
+                     no_expand=True, display_width=16, color="0;36"),
             )
-            self._add_line("scan", Stat("scanned", "0 MiB", prefix="Scanned: ", format_string="{}", no_expand=True, display_width=22))
             self._add_line(
                 "groups1",
-                Stat("g_hash", 0, prefix="Hash groups: ", format_string="{}", no_expand=True, display_width=22),
-                Stat("g_meta", 0, prefix="Meta groups: ", format_string="{}", no_expand=True, display_width=22),
-            )
-            self._add_line(
-                "groups2",
-                Stat("g_phash", 0, prefix="pHash groups: ", format_string="{}", no_expand=True, display_width=22),
-                Stat("g_subset", 0, prefix="Subset groups: ", format_string="{}", no_expand=True, display_width=22),
+                Stat("g_hash", 0, prefix="[G] Hash: ", format_string="{}",
+                     no_expand=True, display_width=18, color="0;33"),
+                Stat("g_meta", 0, prefix="[M] Meta: ", format_string="{}",
+                     no_expand=True, display_width=18, color="0;35"),
+                Stat("g_phash", 0, prefix="[P] pHash: ", format_string="{}",
+                     no_expand=True, display_width=18, color="0;31"),
+                Stat("g_subset", 0, prefix="[S] Subset: ", format_string="{}",
+                     no_expand=True, display_width=18, color="0;31"),
             )
             self._add_line(
                 "results",
-                Stat("dup_files", 0, prefix="Dup files: ", format_string="{}", no_expand=True, display_width=22),
-                Stat("bytes_rm", "0 MiB", prefix="To remove: ", format_string="{}", no_expand=True, display_width=22),
+                Stat("dup_files", 0, prefix="[X] Duplicates: ", format_string="{}",
+                     no_expand=True, display_width=26,
+                     color=lambda v: "0;31" if v > 0 else "0;37"),
+                Stat("bytes_rm", "0 MiB", prefix="[B] Space: ", format_string="{}",
+                     no_expand=True, display_width=24,
+                     color=lambda v: "0;32" if "GiB" in str(v) else "0;33" if "MiB" in str(v) else "0;37"),
+                Stat("tot_elapsed", "00:00:00", prefix="[T] ", format_string="{}",
+                     no_expand=True, display_width=16, color="0;37"),
             )
-            self._add_line("total", Stat("tot_elapsed", "00:00:00", prefix="Total elapsed: ", format_string="{}", no_expand=True, display_width=16))
 
         # start ticker + keys
         self._ticker = threading.Thread(target=self._tick_loop, daemon=True)
@@ -314,16 +491,55 @@ class ProgressReporter:
     def _update_eta(self):
         if not self.enable_dash or not self.dash:
             return
+
+        # Calculate throughput and metrics
+        self._calculate_throughput()
+
+        # Update timing
         eta_text = _fmt_hms(self._estimate_remaining())
         elapsed_stage = _fmt_hms(time.time() - self.stage_start_ts)
         elapsed_total = _fmt_hms(time.time() - self.start_ts)
+
+        # Update progress bar
+        if "main" in self._progress_bars and self.stage_total > 0:
+            self._progress_bars["main"].set(self.stage_done)
+            self._progress_bars["main"].set_total(self.stage_total)
+
+            # Update the text-based progress bar display
+            try:
+                bar_width = 40
+                progress_pct = (self.stage_done / self.stage_total) if self.stage_total > 0 else 0
+                filled = int(progress_pct * bar_width)
+                bar_text = f"[{'#' * filled}{'.' * (bar_width - filled)}] {progress_pct * 100:.1f}%"
+                self.dash.update_stat("progress", "progress_bar", bar_text)  # type: ignore
+            except:
+                pass
+
+        # Update title with current status
+        status_indicator = self._get_status_indicator()
+        try:
+            self.dash.update_stat("title", "title", f"{status_indicator}Video Deduplication Pipeline")  # type: ignore
+        except:
+            pass
+
+        # Update timing stats
         self.dash.update_stat("stage", "eta", eta_text)  # type: ignore
         if self._layout.stacked:
-            self.dash.update_stat("elapsed", "elapsed", elapsed_stage)  # type: ignore
+            self.dash.update_stat("timing", "elapsed", elapsed_stage)  # type: ignore
             self.dash.update_stat("total_elapsed", "tot_elapsed", elapsed_total)  # type: ignore
+            # Update throughput stats
+            if self.throughput_files_per_sec > 0:
+                self.dash.update_stat("throughput", "speed", self._format_throughput(self.throughput_files_per_sec, "files"))  # type: ignore
+            if self.cache_hit_rate > 0:
+                self.dash.update_stat("hashing", "cache_rate", f"{self.cache_hit_rate:.1f}%")  # type: ignore
         else:
             self.dash.update_stat("stage", "elapsed", elapsed_stage)  # type: ignore
-            self.dash.update_stat("total", "tot_elapsed", elapsed_total)  # type: ignore
+            self.dash.update_stat("results", "tot_elapsed", elapsed_total)  # type: ignore
+            # Update wide layout throughput
+            if self.throughput_files_per_sec > 0:
+                self.dash.update_stat("files", "speed", self._format_throughput(self.throughput_files_per_sec, "files"))  # type: ignore
+            if self.cache_hit_rate > 0:
+                self.dash.update_stat("hash", "cache_rate", f"{self.cache_hit_rate:.1f}%")  # type: ignore
 
     def set_banner(self, text: str):
         self.banner = text
@@ -333,30 +549,52 @@ class ProgressReporter:
     def flush(self):
         if self.enable_dash and self.dash:
             with self.lock:
+                # Calculate enhanced metrics
+                self._calculate_throughput()
+
+                # Format data sizes with better units
+                scanned_text = self._format_data_size(self.bytes_seen)
+                remove_text = self._format_data_size(self.bytes_to_remove)
+
                 self.dash.update_stat("stage", "stage", self.stage_name)  # type: ignore
                 self.dash.update_stat("files", "files", (self.scanned_files, self.total_files))  # type: ignore
+
                 if self._layout.stacked:
                     self.dash.update_stat("videos", "videos", self.video_files)  # type: ignore
-                    self.dash.update_stat("hashed", "hashed", (self.hash_done, self.hash_total))  # type: ignore
-                    self.dash.update_stat("cache", "cache_hits", self.cache_hits)  # type: ignore
-                    self.dash.update_stat("scan", "scanned", f"{self.bytes_seen/1048576:.0f} MiB")  # type: ignore
-                    self.dash.update_stat("g_hash", "g_hash", self.groups_hash)  # type: ignore
-                    self.dash.update_stat("g_meta", "g_meta", self.groups_meta)  # type: ignore
-                    self.dash.update_stat("g_phash", "g_phash", self.groups_phash)  # type: ignore
-                    self.dash.update_stat("g_subset", "g_subset", self.groups_subset)  # type: ignore
-                    self.dash.update_stat("dup_files", "dup_files", self.losers_total)  # type: ignore
-                    self.dash.update_stat("bytes_rm", "bytes_rm", f"{self.bytes_to_remove/1048576:.0f} MiB")  # type: ignore
+                    self.dash.update_stat("hashing", "hashed", (self.hash_done, self.hash_total))  # type: ignore
+                    self.dash.update_stat("throughput", "scanned", scanned_text)  # type: ignore
+                    self.dash.update_stat("groups_hash", "g_hash", self.groups_hash)  # type: ignore
+                    self.dash.update_stat("groups_meta", "g_meta", self.groups_meta)  # type: ignore
+                    self.dash.update_stat("groups_phash", "g_phash", self.groups_phash)  # type: ignore
+                    self.dash.update_stat("groups_subset", "g_subset", self.groups_subset)  # type: ignore
+                    self.dash.update_stat("results", "dup_files", self.losers_total)  # type: ignore
+                    self.dash.update_stat("results", "bytes_rm", remove_text)  # type: ignore
                 else:
                     self.dash.update_stat("files", "videos", self.video_files)  # type: ignore
                     self.dash.update_stat("hash", "hashed", (self.hash_done, self.hash_total))  # type: ignore
-                    self.dash.update_stat("hash", "cache_hits", self.cache_hits)  # type: ignore
-                    self.dash.update_stat("scan", "scanned", f"{self.bytes_seen/1048576:.0f} MiB")  # type: ignore
+                    self.dash.update_stat("hash", "scanned", scanned_text)  # type: ignore
                     self.dash.update_stat("groups1", "g_hash", self.groups_hash)  # type: ignore
                     self.dash.update_stat("groups1", "g_meta", self.groups_meta)  # type: ignore
-                    self.dash.update_stat("groups2", "g_phash", self.groups_phash)  # type: ignore
-                    self.dash.update_stat("groups2", "g_subset", self.groups_subset)  # type: ignore
+                    self.dash.update_stat("groups1", "g_phash", self.groups_phash)  # type: ignore
+                    self.dash.update_stat("groups1", "g_subset", self.groups_subset)  # type: ignore
                     self.dash.update_stat("results", "dup_files", self.losers_total)  # type: ignore
-                    self.dash.update_stat("results", "bytes_rm", f"{self.bytes_to_remove/1048576:.0f} MiB")  # type: ignore
+                    self.dash.update_stat("results", "bytes_rm", remove_text)  # type: ignore
+
+    def _format_data_size(self, bytes_value: int) -> str:
+        """Format byte values with appropriate units and colors."""
+        if TERMDASH_AVAILABLE and hasattr(self, 'format_bytes'):
+            mib_val = bytes_value / (1024 * 1024)
+            return format_bytes(mib_val)  # type: ignore
+        else:
+            # Fallback formatting
+            if bytes_value >= 1024**3:
+                return f"{bytes_value/(1024**3):.1f} GiB"
+            elif bytes_value >= 1024**2:
+                return f"{bytes_value/(1024**2):.1f} MiB"
+            elif bytes_value >= 1024:
+                return f"{bytes_value/1024:.1f} KiB"
+            else:
+                return f"{bytes_value} B"
 
     def start_stage(self, name: str, total: int):
         with self.lock:
@@ -425,7 +663,30 @@ class ProgressReporter:
                 self.groups_meta += int(n)
             elif mode == "phash":
                 self.groups_phash += int(n)
+            elif mode == "subset":
+                self.groups_subset += int(n)
         self.flush()
+
+    def set_current_file(self, filename: str):
+        """Update the current file being processed for display."""
+        with self.lock:
+            self.current_file_name = filename
+            # Update banner to show current file (truncated for display)
+            if len(filename) > 50:
+                display_name = "..." + filename[-47:]
+            else:
+                display_name = filename
+            if self.banner and not filename.startswith("Processing:"):
+                self.set_banner(f"{self.banner} | Processing: {display_name}")
+
+    def clear_current_file(self):
+        """Clear the current file display."""
+        with self.lock:
+            self.current_file_name = ""
+            # Restore original banner
+            if " | Processing:" in self.banner:
+                original_banner = self.banner.split(" | Processing:")[0]
+                self.set_banner(original_banner)
 
     def set_results(self, dup_groups: int, losers_count: int, bytes_total: int):
         with self.lock:
