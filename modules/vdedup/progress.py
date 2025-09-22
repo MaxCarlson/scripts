@@ -7,7 +7,7 @@ Live progress reporter with a responsive TermDash UI.
 - Can be forced with stacked_ui=True / wide_ui=True flags.
 - Thread-safe counters and per-stage ETA + total elapsed.
 - Key controls:
-    Z = pause/resume pipeline
+    Z or P = pause/resume pipeline
     Q = request quit (press 'y' to confirm)
 
 This module does not require TermDash to run; when it is not available,
@@ -247,7 +247,7 @@ class ProgressReporter:
 
     def _handle_key(self, ch: str):
         ch = (ch or "").lower()
-        if ch == "z":
+        if ch == "z" or ch == "p":  # Support both 'z' and 'p' for pause
             if self._paused_evt.is_set():
                 # pause now
                 self._paused_evt.clear()
@@ -301,17 +301,31 @@ class ProgressReporter:
                 self._keys_thread = threading.Thread(target=self._keys_loop, daemon=True)
                 self._keys_thread.start()
             return
+
+        # Clear screen before starting UI
+        import os
+        if os.name == 'nt':  # Windows
+            os.system('cls')
+        else:  # Unix/Linux/macOS
+            os.system('clear')
+
         self._layout = self._choose_layout()
 
         # Start TermDash with enhanced settings
-        self.dash = TermDash(  # type: ignore
-            refresh_rate=self.refresh_rate,
-            enable_separators=True,
-            reserve_extra_rows=3,
-            align_columns=True,
-            max_col_width=None,
-        )
-        self.dash.__enter__()  # type: ignore
+        try:
+            self.dash = TermDash(  # type: ignore
+                refresh_rate=self.refresh_rate,
+                enable_separators=True,
+                reserve_extra_rows=3,
+                align_columns=True,
+                max_col_width=None,
+            )
+            self.dash.__enter__()  # type: ignore
+        except Exception as e:
+            # Fallback to non-UI mode if TermDash fails
+            print(f"Warning: Failed to initialize UI: {e}", file=sys.stderr)
+            self.enable_dash = False
+            return
 
         # Enhanced title with visual indicator
         status_indicator = self._get_status_indicator()
@@ -487,7 +501,17 @@ class ProgressReporter:
         if self._stdin_ok and not self._keys_thread:
             self._keys_thread = threading.Thread(target=self._keys_loop, daemon=True)
             self._keys_thread.start()
-        self.flush()
+
+        # Use a non-blocking initial flush with timeout
+        def _safe_flush():
+            try:
+                self.flush()
+            except Exception:
+                pass
+
+        flush_thread = threading.Thread(target=_safe_flush, daemon=True)
+        flush_thread.start()
+        # Don't wait for flush to complete - let it run in background
 
     def _tick_loop(self):
         while not self._stop_evt.is_set():

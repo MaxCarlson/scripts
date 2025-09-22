@@ -31,7 +31,7 @@ def test_enhanced_ui():
         print("UI started. Testing various pipeline stages...")
 
         # Simulate file scanning stage
-        reporter.start_stage("Scanning files", 100)
+        reporter.start_stage("scanning files", 100)  # Lowercase 'scanning' to match condition
         reporter.set_total_files(100)
 
         for i in range(101):
