@@ -118,6 +118,78 @@ def _hms(elapsed_s: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def _pause_process(proc: subprocess.Popen) -> bool:
+    """Pause a process. Returns True if successful."""
+    if not proc or proc.poll() is not None:
+        return False
+
+    try:
+        if os.name == 'nt':
+            # Windows: use psutil if available, otherwise try native API
+            try:
+                import psutil
+                p = psutil.Process(proc.pid)
+                p.suspend()
+                return True
+            except ImportError:
+                # Fallback: use Windows API via ctypes
+                try:
+                    import ctypes
+                    from ctypes import wintypes
+                    kernel32 = ctypes.windll.kernel32
+                    handle = kernel32.OpenProcess(0x0200, False, proc.pid)  # PROCESS_SUSPEND_RESUME
+                    if handle:
+                        # Get thread IDs and suspend them
+                        import ctypes.wintypes
+                        class THREADENTRY32(ctypes.Structure):
+                            _fields_ = [
+                                ("dwSize", wintypes.DWORD),
+                                ("cntUsage", wintypes.DWORD),
+                                ("th32ThreadID", wintypes.DWORD),
+                                ("th32OwnerProcessID", wintypes.DWORD),
+                                ("tpBasePri", wintypes.LONG),
+                                ("tpDeltaPri", wintypes.LONG),
+                                ("dwFlags", wintypes.DWORD)
+                            ]
+
+                        # This is complex, so let's use a simpler approach
+                        kernel32.CloseHandle(handle)
+                        return False
+                except Exception:
+                    return False
+        else:
+            # Unix: use SIGSTOP
+            os.kill(proc.pid, signal.SIGSTOP)
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _resume_process(proc: subprocess.Popen) -> bool:
+    """Resume a paused process. Returns True if successful."""
+    if not proc or proc.poll() is not None:
+        return False
+
+    try:
+        if os.name == 'nt':
+            # Windows: use psutil if available
+            try:
+                import psutil
+                p = psutil.Process(proc.pid)
+                p.resume()
+                return True
+            except ImportError:
+                return False
+        else:
+            # Unix: use SIGCONT
+            os.kill(proc.pid, signal.SIGCONT)
+            return True
+    except Exception:
+        return False
+    return False
+
+
 @dataclass
 class WorkerState:
     slot: int
@@ -146,6 +218,8 @@ class WorkerState:
     overlay_since: float = 0.0
     ndjson_buf: list[str] = field(default_factory=list)
     prog_log_path: Optional[Path] = None
+    is_paused: bool = False
+    paused_speed_bps: Optional[float] = None
 
 
 def _gather_from_roots(roots: List[Path], finished_log: Path) -> List[Path]:
@@ -442,6 +516,10 @@ def main() -> int:
     def _requeue(ws: WorkerState, finished: bool, reason: str):
         # Cleanup process
         if ws.proc and ws.proc.poll() is None:
+            # Resume if paused before terminating
+            if ws.is_paused:
+                _resume_process(ws.proc)
+                ws.is_paused = False
             try:
                 ws.proc.terminate()
             except Exception:
@@ -471,7 +549,7 @@ def main() -> int:
 
     # Helpers for total throttle
     def _current_speed_mib() -> float:
-        return sum(float(w.speed_bps) for w in workers if isinstance(w.speed_bps, (int, float))) / (1024*1024)
+        return sum(float(w.speed_bps) for w in workers if isinstance(w.speed_bps, (int, float)) and not w.is_paused) / (1024*1024)
 
     def _can_assign_more() -> bool:
         if not isinstance(args.max_total_dl_speed, (int, float)) or not args.max_total_dl_speed or args.max_total_dl_speed <= 0:
@@ -506,8 +584,8 @@ def main() -> int:
             now_check = time.time()
             if isinstance(args.max_total_dl_speed, (int, float)) and args.max_total_dl_speed and args.max_total_dl_speed > 0:
                 cap = float(args.max_total_dl_speed)
-                total_mib = sum(float(w.speed_bps) for w in workers if isinstance(w.speed_bps, (int, float))) / (1024*1024)
-                elig = [w for w in workers if w.proc and w.downloader == 'yt-dlp' and isinstance(w.speed_bps, (int, float)) and w.speed_bps and w.speed_bps > 0]
+                total_mib = sum(float(w.speed_bps) for w in workers if isinstance(w.speed_bps, (int, float)) and not w.is_paused) / (1024*1024)
+                elig = [w for w in workers if w.proc and w.downloader == 'yt-dlp' and isinstance(w.speed_bps, (int, float)) and w.speed_bps and w.speed_bps > 0 and not w.is_paused]
                 elig_sum = sum((float(w.speed_bps)/(1024*1024)) for w in elig)
                 non_elig_mib = max(0.0, total_mib - elig_sum)
                 budget = max(0.0, cap - non_elig_mib)
@@ -615,7 +693,7 @@ def main() -> int:
             quit_status = " [Press Y to confirm quit]" if quit_confirm else ""
             header = f"DL Manager{pause_status}{quit_status}  |  threads={args.threads}  active={active_workers}  pool={pool_size}  time_limit={args.time_limit}"
             lines.append(header[:cols])
-            total_speed_bps = sum(float(w.speed_bps) for w in workers if isinstance(w.speed_bps, (int, float)))
+            total_speed_bps = sum(float(w.speed_bps) for w in workers if isinstance(w.speed_bps, (int, float)) and not w.is_paused)
             total_speed_mib = total_speed_bps / (1024 * 1024) if total_speed_bps else 0.0
             inprog_bytes = sum(int(w.downloaded_bytes) for w in workers if isinstance(w.downloaded_bytes, int))
             agg_bytes = total_completed_bytes + inprog_bytes
@@ -674,7 +752,10 @@ def main() -> int:
                 url_idx = f"URL {ws.url_index or 0}/{ws.url_count or 0}"
                 elapsed = _hms(now - ws.assign_t0) if ws.urlfile else "00:00:00"
                 pct = f"{ws.percent:.2f}%" if isinstance(ws.percent, (int, float)) else "?%"
-                sp = f"{(float(ws.speed_bps)/(1024*1024)):.2f}MiB/s" if isinstance(ws.speed_bps, (int, float)) and ws.speed_bps is not None else "?/s"
+                if ws.is_paused:
+                    sp = "PAUSED"
+                else:
+                    sp = f"{(float(ws.speed_bps)/(1024*1024)):.2f}MiB/s" if isinstance(ws.speed_bps, (int, float)) and ws.speed_bps is not None else "?/s"
                 # Render ETA; if near completion and eta ≤ 0, show '?' to avoid stuck 00:00:00
                 if isinstance(ws.eta_s, (int, float)) and ws.eta_s is not None:
                     if isinstance(ws.percent, (int, float)) and ws.percent is not None and ws.percent >= 99.5 and float(ws.eta_s) <= 0:
@@ -762,18 +843,38 @@ def main() -> int:
                                 # Toggle pause
                                 paused = not paused
                                 if paused:
-                                    mlog.info("PAUSE requested - stopping new assignments")
-                                    # Don't kill existing processes, just mark as paused in UI
+                                    mlog.info("PAUSE requested - pausing all worker processes")
+                                    # Pause existing processes
                                     for ws in workers:
-                                        if ws.proc and ws.proc.poll() is None:
-                                            ws.overlay_msg = f"PAUSED - current download will finish, no new assignments"
-                                            ws.overlay_since = time.time()
+                                        if ws.proc and ws.proc.poll() is None and not ws.is_paused:
+                                            # Store current speed before pausing
+                                            ws.paused_speed_bps = ws.speed_bps
+                                            if _pause_process(ws.proc):
+                                                ws.is_paused = True
+                                                ws.speed_bps = 0.0  # Set speed to 0 while paused
+                                                ws.overlay_msg = f"PAUSED - process suspended, no downloads active"
+                                                ws.overlay_since = time.time()
+                                                mlog.info(f"[{ws.slot:02d}] PAUSED process PID {ws.proc.pid}")
+                                            else:
+                                                ws.overlay_msg = f"PAUSE FAILED - could not suspend process"
+                                                ws.overlay_since = time.time()
+                                                mlog.error(f"[{ws.slot:02d}] Failed to pause process PID {ws.proc.pid}")
                                 else:
-                                    mlog.info("UNPAUSE requested - resuming new assignments")
-                                    # Resume normal operation - assign work to idle workers
+                                    mlog.info("UNPAUSE requested - resuming all worker processes")
+                                    # Resume paused processes and allow new assignments
                                     for ws in workers:
-                                        ws.overlay_msg = None
-                                        if not ws.proc:
+                                        if ws.proc and ws.proc.poll() is None and ws.is_paused:
+                                            if _resume_process(ws.proc):
+                                                ws.is_paused = False
+                                                # Restore previous speed (it will update from actual progress soon)
+                                                ws.speed_bps = ws.paused_speed_bps
+                                                ws.paused_speed_bps = None
+                                                ws.overlay_msg = None
+                                                mlog.info(f"[{ws.slot:02d}] RESUMED process PID {ws.proc.pid}")
+                                            else:
+                                                mlog.error(f"[{ws.slot:02d}] Failed to resume process PID {ws.proc.pid}")
+                                        elif not ws.proc:
+                                            # Assign work to idle workers
                                             _assign(ws)
                             elif ch and ch.lower() == 'q':
                                 # Request quit confirmation
@@ -854,6 +955,10 @@ def main() -> int:
         # Cleanup
         for ws in workers:
             if ws.proc and ws.proc.poll() is None:
+                # Resume if paused before terminating
+                if ws.is_paused:
+                    _resume_process(ws.proc)
+                    ws.is_paused = False
                 try:
                     ws.proc.terminate()
                 except Exception:
