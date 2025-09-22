@@ -1,33 +1,30 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
 
 [project]
 name = "ytaedl"
-version = "0.6.1"
-description = "Batch downloader using yt-dlp and aebndl with an optional terminal UI."
+version = "0.7.0"
+description = "Batch downloader using yt-dlp/aebn with an optional orchestrator."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 dependencies = [
   "yt-dlp>=2024.10.22",
 ]
-# Optional: uncomment and fill out when you want
-# authors = [{ name = "Your Name" }]
-# license = { text = "MIT" }
-# keywords = ["yt-dlp", "aebn", "downloader"]
 
 [project.optional-dependencies]
-# If you want the pretty terminal dashboard, install with: pip install .[ui]
 ui = ["termdash>=0.5.0"]
 
 [project.scripts]
-# Main CLI (this is the `ytaedl` command you asked for)
-ytaedl = "ytaedl.cli:main"
-# Friendly alias that mirrors your help text’s program name
-yt-ae-dl = "ytaedl.cli:main"
-# Orchestrator utility
-ytaedl-orchestrate = "ytaedl.orchestrator:main"
+ytaedl = "ytaedl.dlscript:main"
+yt-ae-dl = "ytaedl.dlscript:main"
+ytaedl-orchestrate = "ytaedl.dlmanager:main"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["ytaedl*"]
+[tool.hatch.build.targets.wheel]
+packages = ["ytaedl"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+python_files = ["*_test.py", "test_*.py"]
+
