@@ -196,21 +196,68 @@ def _blake3_partial_hex(path: Path, head: int = 1 << 20, tail: int = 1 << 20, mi
 
 def _alignable_distance(a_sig, b_sig, per_frame_thresh: int) -> Optional[float]:
     """
-    Sliding alignment (subset) average Hamming distance. None if not alignable under threshold.
+    Enhanced sliding alignment (subset) average Hamming distance with adaptive thresholds.
+    Supports cross-resolution matching by normalizing threshold based on content complexity.
     """
     if not a_sig or not b_sig:
         return None
+
+    # Ensure A is the shorter sequence
     A, B = (a_sig, b_sig) if len(a_sig) <= len(b_sig) else (b_sig, a_sig)
-    best = None
-    for offset in range(0, len(B) - len(A) + 1):
-        dist = 0
-        for i in range(len(A)):
-            x = int(A[i]) ^ int(B[i + offset])
-            dist += x.bit_count() if hasattr(int, "bit_count") else bin(x).count("1")
-        avg = dist / len(A)
-        if best is None or avg < best:
-            best = avg
-    return best if (best is not None and best <= per_frame_thresh) else None
+
+    if len(A) < 2:  # Need at least 2 frames for meaningful comparison
+        return None
+
+    best_distance = None
+    best_offset = -1
+
+    # Calculate content complexity for adaptive thresholding
+    def _estimate_complexity(sig):
+        if len(sig) < 2:
+            return 1.0
+        # Estimate complexity based on frame-to-frame variation
+        variations = []
+        for i in range(len(sig) - 1):
+            x = int(sig[i]) ^ int(sig[i + 1])
+            variations.append(x.bit_count() if hasattr(int, "bit_count") else bin(x).count("1"))
+        return max(1.0, sum(variations) / len(variations) / 16.0)  # Normalize to 0-4 range
+
+    complexity_factor = min(2.0, _estimate_complexity(A))
+    adaptive_threshold = per_frame_thresh * complexity_factor
+
+    # Try different alignment strategies
+    strategies = [
+        (1, 0),      # Standard 1:1 alignment
+        (2, 0),      # Skip every other frame in B (handles different frame rates)
+        (1, 1),      # Skip first frame in B (handles intro/outro differences)
+    ]
+
+    for step, start_offset in strategies:
+        max_positions = (len(B) - start_offset - 1) // step + 1
+        if max_positions < len(A):
+            continue
+
+        for base_offset in range(0, max_positions - len(A) + 1):
+            total_distance = 0
+            valid_comparisons = 0
+
+            for i in range(len(A)):
+                b_idx = start_offset + base_offset + (i * step)
+                if b_idx >= len(B):
+                    break
+
+                x = int(A[i]) ^ int(B[b_idx])
+                frame_distance = x.bit_count() if hasattr(int, "bit_count") else bin(x).count("1")
+                total_distance += frame_distance
+                valid_comparisons += 1
+
+            if valid_comparisons >= min(3, len(A)):  # Need minimum valid comparisons
+                avg_distance = total_distance / valid_comparisons
+                if best_distance is None or avg_distance < best_distance:
+                    best_distance = avg_distance
+                    best_offset = base_offset
+
+    return best_distance if (best_distance is not None and best_distance <= adaptive_threshold) else None
 
 
 # -------------------------------------------------------------------------------------------------
@@ -592,24 +639,62 @@ def run_pipeline(
                 reporter.inc_group("phash", formed_phash)
                 reporter.flush()
 
-            # Optional subset detection (short version of longer one)
+            # Enhanced subset detection with cross-resolution support
             if cfg.subset_detect and phashed:
                 formed_subset = 0
                 gid = 0
                 vids_sorted = sorted([v for v in phashed if v.duration], key=lambda v: v.duration or 0.0)
-                for si in range(len(vids_sorted)):
-                    for li in range(si + 1, len(vids_sorted)):
-                        short, long = vids_sorted[si], vids_sorted[li]
-                        if not short.duration or not long.duration:
-                            continue
-                        ratio = short.duration / (long.duration or 1.0)
-                        if ratio < cfg.subset_min_ratio:
-                            continue
-                        best = _alignable_distance(short.phash_signature, long.phash_signature, cfg.subset_frame_threshold)  # type: ignore[arg-type]
-                        if best is not None:
-                            groups[f"subset:{gid}"] = [short, long]
-                            gid += 1
-                            formed_subset += 1
+
+                # Group videos by resolution for more targeted comparisons
+                by_resolution = {}
+                for v in vids_sorted:
+                    res_key = (v.width or 0, v.height or 0)
+                    if res_key not in by_resolution:
+                        by_resolution[res_key] = []
+                    by_resolution[res_key].append(v)
+
+                # Compare within and across resolution groups
+                all_pairs = []
+                for res1, vids1 in by_resolution.items():
+                    for res2, vids2 in by_resolution.items():
+                        # Allow cross-resolution comparison with adjusted ratio thresholds
+                        res_factor = 1.0
+                        if res1 != res2 and res1[0] > 0 and res2[0] > 0:
+                            # Adjust threshold for different resolutions
+                            area1, area2 = res1[0] * res1[1], res2[0] * res2[1]
+                            res_factor = min(2.0, max(0.5, area2 / area1)) if area1 > 0 else 1.0
+
+                        for v1 in vids1:
+                            for v2 in vids2:
+                                if v1.path == v2.path:
+                                    continue
+                                if v1.duration and v2.duration and v1.duration < v2.duration:
+                                    all_pairs.append((v1, v2, res_factor))
+
+                # Process all potential subset pairs
+                processed_paths = set()
+                for short, long, res_factor in all_pairs:
+                    if short.path in processed_paths or long.path in processed_paths:
+                        continue
+
+                    if not short.duration or not long.duration:
+                        continue
+
+                    ratio = short.duration / long.duration
+                    adjusted_min_ratio = cfg.subset_min_ratio / res_factor
+
+                    if ratio < adjusted_min_ratio or ratio > 0.95:  # Skip if too similar (likely same content)
+                        continue
+
+                    # Use enhanced alignable distance with resolution awareness
+                    best = _alignable_distance(short.phash_signature, long.phash_signature, cfg.subset_frame_threshold)
+                    if best is not None:
+                        groups[f"subset:{gid}"] = [short, long]
+                        processed_paths.add(short.path)
+                        processed_paths.add(long.path)
+                        gid += 1
+                        formed_subset += 1
+
                 if formed_subset:
                     reporter.groups_subset += formed_subset  # surface in UI
                     reporter.flush()

@@ -10,6 +10,9 @@ def run_ffprobe_json(path: Path) -> Optional[Dict[str, Any]]:
     Fast container/stream metadata via ffprobe (no full decode).
     ffprobe duration is quick and suitable for coarse grouping.  # 4
     """
+    if not path or not path.exists():
+        return None
+
     try:
         cmd = [
             "ffprobe", "-v", "error",
@@ -18,7 +21,29 @@ def run_ffprobe_json(path: Path) -> Optional[Dict[str, Any]]:
             "-of", "json",
             str(path),
         ]
-        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
-        return json.loads(out.decode("utf-8", errors="ignore"))
+
+        # Use timeout to prevent hanging on corrupted files
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            timeout=30,  # 30-second timeout
+            text=True
+        )
+
+        if result.returncode != 0:
+            return None
+
+        if not result.stdout.strip():
+            return None
+
+        return json.loads(result.stdout)
+
+    except subprocess.TimeoutExpired:
+        # Log timeout but don't raise - return None for consistency
+        return None
+    except (json.JSONDecodeError, FileNotFoundError, PermissionError):
+        # Expected errors that should not crash the pipeline
+        return None
     except Exception:
+        # Catch-all for unexpected errors
         return None
