@@ -461,27 +461,36 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument(
         "-Q", "--pipeline",
         type=str, default="1-2",
-        help="Stages to run: 1=size prefilter, 2=hashing, 3=metadata, 4=phash/subset. You may also pass 5 (no-op) for convenience. Examples: 1-2 or 1,3-4 or all"
+        help=(
+            "Stages to run (default: 1-2 for fast exact duplicates): "
+            "1=size prefilter (very fast), "
+            "2=hashing (fast exact matches), "
+            "3=metadata clustering (duration/codec/resolution), "
+            "4=pHash visual similarity + subset detection (slow but thorough). "
+            "Examples: '1-2' (fast), '1-4' or 'all' (thorough), '2,4' (skip size prefilter)"
+        )
     )
 
     # Mode label (informational only; printed in the banner)
     p.add_argument("-M", "--mode", type=str, default="hash", help="Free-form label for the run (printed in the banner)")
 
     # Performance & GPU
-    p.add_argument("-t", "--threads", type=int, default=8, help="Total worker threads (default: 8)")
-    p.add_argument("-g", "--gpu", action="store_true", help="Hint FFmpeg to use NVDEC/CUDA for pHash/subset (if available)")
+    p.add_argument("-t", "--threads", type=int, default=8,
+                   help="Total worker threads (default: 8). Higher values may improve performance on multi-core systems")
+    p.add_argument("-g", "--gpu", action="store_true",
+                   help="Hint FFmpeg to use NVDEC/CUDA hardware acceleration for pHash extraction (requires compatible GPU)")
 
     # Metadata / pHash params
     p.add_argument("-u", "--duration-tolerance", dest="duration_tolerance", type=float, default=2.0,
-                   help="Duration tolerance (seconds) for metadata grouping (default: 2.0)")
+                   help="Duration tolerance in seconds for metadata grouping (default: 2.0). Videos within this tolerance are considered similar")
     p.add_argument("-F", "--phash-frames", dest="phash_frames", type=int, default=5,
-                   help="Frames to sample for perceptual hash (default: 5)")
+                   help="Number of frames to sample for perceptual hash comparison (default: 5). More frames = more accurate but slower")
     p.add_argument("-T", "--phash-threshold", dest="phash_threshold", type=int, default=12,
-                   help="Per-frame Hamming distance threshold for pHash (default: 12)")
+                   help="Per-frame Hamming distance threshold for pHash matching (default: 12). Lower = stricter matching")
     p.add_argument("-s", "--subset-detect", action="store_true",
-                   help="Enable subset detection (find shorter cut-downs of longer videos)")
+                   help="Enable subset detection to find shorter videos that are portions of longer ones (requires stage 4)")
     p.add_argument("-m", "--subset-min-ratio", type=float, default=0.30,
-                   help="Minimum short/long duration ratio for subset matches (default: 0.30)")
+                   help="Minimum duration ratio (short/long) for subset detection (default: 0.30). Range: 0.1-0.9")
 
     # Live UI
     p.add_argument("-L", "--live", action="store_true", help="Show live TermDash UI")
@@ -543,8 +552,138 @@ def _maybe_print_or_analyze(args: argparse.Namespace) -> Optional[int]:
     return None
 
 
+def _validate_args(args: argparse.Namespace) -> Optional[str]:
+    """
+    Validate parsed command line arguments.
+
+    Returns:
+        Error message string if validation fails, None if validation passes
+    """
+    # Validate pipeline stages
+    try:
+        stages = parse_pipeline(args.pipeline)
+        if not stages:
+            return "Invalid pipeline specification. Use formats like: 1-2, 1,3-4, or all"
+    except Exception:
+        return f"Failed to parse pipeline '{args.pipeline}'. Use formats like: 1-2, 1,3-4, or all"
+
+    # Validate thread count
+    if args.threads <= 0:
+        return "Thread count must be positive"
+
+    if args.threads > 64:  # Reasonable upper limit
+        return "Thread count seems excessive (>64). Consider reducing for better performance"
+
+    # Validate tolerance values
+    if args.duration_tolerance < 0:
+        return "Duration tolerance must be non-negative"
+
+    if args.duration_tolerance > 3600:  # 1 hour seems excessive
+        return "Duration tolerance seems excessive (>1 hour). Consider reducing"
+
+    # Validate pHash parameters
+    if args.phash_frames <= 0:
+        return "pHash frames count must be positive"
+
+    if args.phash_frames > 50:  # Reasonable upper limit
+        return "pHash frames count seems excessive (>50). Consider reducing for performance"
+
+    if args.phash_threshold < 0:
+        return "pHash threshold must be non-negative"
+
+    if args.phash_threshold > 64:  # Maximum possible Hamming distance for 64-bit hash
+        return "pHash threshold too high (>64). Maximum is 64 for 64-bit hashes"
+
+    # Validate subset detection parameters
+    if args.subset_min_ratio <= 0 or args.subset_min_ratio >= 1:
+        return "Subset minimum ratio must be between 0 and 1 (exclusive)"
+
+    # Validate file paths that must exist
+    if args.apply_report:
+        report_path = Path(args.apply_report).expanduser().resolve()
+        if not report_path.exists():
+            return f"Report file not found: {report_path}"
+        if not report_path.is_file():
+            return f"Report path is not a file: {report_path}"
+
+    if args.exclude_by_report:
+        for report in args.exclude_by_report:
+            report_path = Path(report).expanduser().resolve()
+            if not report_path.exists():
+                return f"Exclusion report file not found: {report_path}"
+
+    if args.print_report:
+        for report in args.print_report:
+            report_path = Path(report).expanduser().resolve()
+            if not report_path.exists():
+                return f"Report file not found: {report_path}"
+
+    if args.analyze_report:
+        for report in args.analyze_report:
+            report_path = Path(report).expanduser().resolve()
+            if not report_path.exists():
+                return f"Report file not found: {report_path}"
+
+    if args.collapse_report:
+        report_path = Path(args.collapse_report).expanduser().resolve()
+        if not report_path.exists():
+            return f"Report file not found: {report_path}"
+
+    # Validate output directories can be created
+    if args.backup:
+        try:
+            backup_path = Path(args.backup).expanduser().resolve()
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            return f"Cannot create backup directory: {e}"
+
+    if args.vault:
+        try:
+            vault_path = Path(args.vault).expanduser().resolve()
+            vault_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            return f"Cannot create vault directory: {e}"
+
+    if args.scan_prefix:
+        try:
+            scan_path = Path(args.scan_prefix).expanduser().resolve()
+            scan_path.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            return f"Cannot create scan prefix directory: {e}"
+
+    # Validate directory arguments exist (for scan mode)
+    if args.directories:
+        for directory in args.directories:
+            # Parse the directory spec to get the actual path
+            dir_spec, _ = _parse_dir_spec(directory, None)
+            for expanded_path in _expand_glob(dir_spec):
+                if not expanded_path.exists():
+                    return f"Directory not found: {expanded_path}"
+                if not expanded_path.is_dir():
+                    return f"Path is not a directory: {expanded_path}"
+
+    # Validate conflicting options
+    if args.stacked_ui and args.wide_ui:
+        return "Cannot specify both --stacked-ui and --wide-ui"
+
+    if args.subset_detect and 4 not in stages:
+        return "Subset detection requires stage 4 (pHash) to be enabled"
+
+    # Validate auto-naming requirements
+    if args.scan_name and not args.scan_prefix:
+        return "Scan name requires scan prefix to be specified"
+
+    return None
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
+
+    # Validate arguments
+    validation_error = _validate_args(args)
+    if validation_error:
+        print(f"video-dedupe: error: {validation_error}", file=sys.stderr)
+        return 2
 
     # If they only want to print/analyze reports, do that and exit
     maybe = _maybe_print_or_analyze(args)
