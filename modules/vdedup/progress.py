@@ -336,7 +336,7 @@ class ProgressReporter:
                 total=100,
                 current=0,
                 width=min(60, self._layout.cols - 20),
-                charset="block",  # Use block characters for visual appeal
+                charset="ascii",  # Use ASCII characters for Windows compatibility
                 show_percent=True
             )
 
@@ -426,8 +426,17 @@ class ProgressReporter:
 
             # Progress bar row
             if TERMDASH_AVAILABLE and "main" in self._progress_bars:
-                self._add_line("progress", Stat("progress_bar", self._progress_bars["main"],
-                                               format_string="{}", no_expand=True, display_width=62))
+                # Create text-based progress bar for wide layout too
+                bar_width = 40
+                if self.stage_total > 0:
+                    progress_pct = (self.stage_done / self.stage_total)
+                    filled = int(progress_pct * bar_width)
+                    bar_text = f"[{'#' * filled}{'.' * (bar_width - filled)}] {progress_pct * 100:.1f}%"
+                else:
+                    bar_text = f"[{'.' * bar_width}] 0.0%"
+
+                self._add_line("progress", Stat("progress_bar", bar_text,
+                                               format_string="{}", no_expand=True, display_width=62, color="0;32"))
 
             self._add_line(
                 "files",
