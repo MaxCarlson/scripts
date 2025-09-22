@@ -494,6 +494,9 @@ def main() -> int:
     # Interactive verbose pane state: 0=off, 1=NDJSON, 2=Program log
     verbose_mode = 0
     verbose_slot = 1
+    # Pause/quit state
+    paused = False
+    quit_confirm = False
     try:
         while not stop.is_set():
             if deadline and time.time() >= deadline:
@@ -587,7 +590,8 @@ def main() -> int:
                 if args.time_limit is not None and args.time_limit > 0:
                     if (time.time() - ws.assign_t0) > args.time_limit:
                         _requeue(ws, finished=False, reason="time_limit")
-                        _assign(ws)
+                        if not paused:
+                            _assign(ws)
                         continue
                 # exit
                 rc = ws.proc.poll()
@@ -595,8 +599,9 @@ def main() -> int:
                     ws.rc = rc
                     finished = (rc == 0)
                     _requeue(ws, finished=finished, reason=f"exit rc={rc}")
-                    # Assign a new one if available
-                    _assign(ws)
+                    # Assign a new one if available (only if not paused)
+                    if not paused:
+                        _assign(ws)
 
             # Build frame lines and redraw whole screen
             try:
@@ -606,7 +611,9 @@ def main() -> int:
             lines: List[str] = []
             active_workers = sum(1 for w in workers if w.proc)
             pool_size = len([p for p in _gather_from_roots(roots, finished_log) if str(p.resolve()) not in active])
-            header = f"DL Manager  |  threads={args.threads}  active={active_workers}  pool={pool_size}  time_limit={args.time_limit}"
+            pause_status = " [PAUSED]" if paused else ""
+            quit_status = " [Press Y to confirm quit]" if quit_confirm else ""
+            header = f"DL Manager{pause_status}{quit_status}  |  threads={args.threads}  active={active_workers}  pool={pool_size}  time_limit={args.time_limit}"
             lines.append(header[:cols])
             total_speed_bps = sum(float(w.speed_bps) for w in workers if isinstance(w.speed_bps, (int, float)))
             total_speed_mib = total_speed_bps / (1024 * 1024) if total_speed_bps else 0.0
@@ -725,20 +732,52 @@ def main() -> int:
                     lines.append("     " + make_bar(ws.percent, barw, speed_color_prefix(ws.speed_bps))[:cols])
 
             # Controls and optional verbose pane
-            lines.append("Keys: v=cycle verbose (NDJSON→LOG→off), 1-9=select worker"[:cols])
+            if quit_confirm:
+                lines.append("Press Y to quit, N to cancel"[:cols])
+            else:
+                lines.append("Keys: p=pause/unpause, q=quit, v=cycle verbose (NDJSON→LOG→off), 1-9=select worker"[:cols])
             if os.name == 'nt':
                 try:
                     import msvcrt  # type: ignore
                     while msvcrt.kbhit():
                         ch = msvcrt.getwch()
-                        if ch and ch.lower() == 'v':
-                            try:
-                                verbose_mode = int(verbose_mode)
-                            except Exception:
-                                verbose_mode = 0
-                            verbose_mode = (verbose_mode + 1) % 3
-                        elif ch and ch.isdigit() and ch != '0':
-                            verbose_slot = int(ch)
+                        if quit_confirm:
+                            # Handle quit confirmation
+                            if ch and ch.lower() == 'y':
+                                stop.set()
+                                break
+                            elif ch and ch.lower() == 'n':
+                                quit_confirm = False
+                        else:
+                            # Normal key handling
+                            if ch and ch.lower() == 'v':
+                                try:
+                                    verbose_mode = int(verbose_mode)
+                                except Exception:
+                                    verbose_mode = 0
+                                verbose_mode = (verbose_mode + 1) % 3
+                            elif ch and ch.isdigit() and ch != '0':
+                                verbose_slot = int(ch)
+                            elif ch and ch.lower() == 'p':
+                                # Toggle pause
+                                paused = not paused
+                                if paused:
+                                    mlog.info("PAUSE requested - stopping new assignments")
+                                    # Don't kill existing processes, just mark as paused in UI
+                                    for ws in workers:
+                                        if ws.proc and ws.proc.poll() is None:
+                                            ws.overlay_msg = f"PAUSED - current download will finish, no new assignments"
+                                            ws.overlay_since = time.time()
+                                else:
+                                    mlog.info("UNPAUSE requested - resuming new assignments")
+                                    # Resume normal operation - assign work to idle workers
+                                    for ws in workers:
+                                        ws.overlay_msg = None
+                                        if not ws.proc:
+                                            _assign(ws)
+                            elif ch and ch.lower() == 'q':
+                                # Request quit confirmation
+                                quit_confirm = True
                 except Exception:
                     pass
             if verbose_mode:
