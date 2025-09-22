@@ -1,8 +1,8 @@
 """ytaedl package.
 
 Provides two CLIs:
- - `ytaedl` (aka `yt-ae-dl`) -> ytaedl.dlscript:main
- - `ytaedl-orchestrate` -> ytaedl.dlmanager:main
+ - `ytaedl` (main command) -> ytaedl.manager:main
+ - `ytaedl-download` (single URL file downloader) -> ytaedl.downloader:main
 """
 
 __all__ = ["__version__"]

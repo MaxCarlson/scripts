@@ -4,21 +4,21 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ytaedl"
-version = "0.7.0"
+version = "1.0.0"
 description = "Batch downloader using yt-dlp/aebn with an optional orchestrator."
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
   "yt-dlp>=2024.10.22",
+  "procparsers",
 ]
 
 [project.optional-dependencies]
 ui = ["termdash>=0.5.0"]
 
 [project.scripts]
-ytaedl = "ytaedl.dlscript:main"
-yt-ae-dl = "ytaedl.dlscript:main"
-ytaedl-orchestrate = "ytaedl.dlmanager:main"
+ytaedl = "ytaedl.manager:main"
+ytaedl-download = "ytaedl.downloader:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["ytaedl"]

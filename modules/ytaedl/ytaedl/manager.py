@@ -168,7 +168,7 @@ def _gather_from_roots(roots: List[Path], finished_log: Path) -> List[Path]:
 def _start_worker(slot: int, urlfile: Path, max_rate: float, quiet: bool, archive_dir: Optional[Path], log_dir: Path, cap_mibs: Optional[float]) -> subprocess.Popen:
     cmd = [
         sys.executable,
-        str(Path(__file__).parent / "dlscript.py"),
+        str(Path(__file__).parent / "downloader.py"),
         "-f",
         str(urlfile),
         "-U",
