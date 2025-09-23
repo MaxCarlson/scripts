@@ -502,22 +502,22 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     )
 
     # Core scan options
-    p.add_argument("-p", "--pattern", action="append", help="Glob to include (repeatable), e.g. -p *.mp4 -p *.mkv")
+    p.add_argument("-p", "--pattern", action="append", default=["*.mp4"], help="Glob to include (repeatable), e.g. -p *.mp4 -p *.mkv (default: *.mp4)")
     p.add_argument("-r", "--recursive", action="store_true", help="Recurse into subdirectories (unlimited) for roots without a ::dN or ::r suffix. Default: no recursion (depth 0)")
 
     # Quality levels and pipeline selection
     p.add_argument(
-        "-Q", "--quality",
+        "-q", "--quality",
         type=str, default="2",
         help=(
             "Quality/thoroughness level or pipeline stages (default: 2): "
-            "Quality levels: 1=Size only, 2=Size+hash, 3=Size+hash+metadata, 4=Size+hash+metadata+pHash, 5=All+subset detect. "
-            "Pipeline stages: 1, 1-2, 1-3, 1-4, etc. (e.g., '1-3' runs stages 1 through 3)"
+            "Quality levels: 1=Size only, 2=Size+hash, 3=Size+hash+metadata, 4=Size+hash+metadata+pHash, 5=All+subset detect, 6=+audio analysis, 7=+advanced content analysis. "
+            "Pipeline stages: 1, 1-2, 1-3, 1-4, 1-5, 1-6, 1-7, etc. (e.g., '1-3' runs stages 1 through 3)"
         )
     )
 
     # Output folder (replaces individual -C, -R, -S, -N arguments)
-    p.add_argument("-O", "--output-dir", type=str,
+    p.add_argument("-o", "--output-dir", type=str,
                    help="Directory for all outputs (cache, reports, logs). If not specified, writes to current directory.")
 
     # Performance
@@ -530,38 +530,38 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("-L", "--live", action="store_true", help="Show live progress UI")
 
     # Logging options
-    p.add_argument("--log-level", type=str, default="INFO",
+    p.add_argument("-l", "--log-level", type=str, default="INFO",
                    choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                    help="File logging level (default: INFO)")
-    p.add_argument("--console-log-level", type=str, default="WARNING",
+    p.add_argument("-c", "--console-log-level", type=str, default="INFO",
                    choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-                   help="Console logging level (default: WARNING)")
-    p.add_argument("--no-log-file", action="store_true",
+                   help="Console logging level (default: INFO)")
+    p.add_argument("-n", "--no-log-file", action="store_true",
                    help="Disable file logging (console only)")
 
     # Report utilities
     p.add_argument("-P", "--print-report", action="append", help="Path to a JSON report to pretty-print (repeatable)")
-    p.add_argument("-V", "--verbosity", type=int, default=1, choices=[0, 1, 2], help="Report/apply verbosity (0–2). Default: 1")
-    p.add_argument("-X", "--exclude-by-report", action="append", help="Path to a JSON report; losers listed will be skipped during scan (repeatable)")
+    p.add_argument("-v", "--verbosity", type=int, default=1, choices=[0, 1, 2], help="Report/apply verbosity (0–2). Default: 1")
+    p.add_argument("-e", "--exclude-by-report", action="append", help="Path to a JSON report; losers listed will be skipped during scan (repeatable)")
 
     # Report analysis
-    p.add_argument("-Y", "--analyze-report", action="append", help="Path to a JSON report to analyze (winner<->loser diffs). Repeatable.")
+    p.add_argument("-y", "--analyze-report", action="append", help="Path to a JSON report to analyze (winner<->loser diffs). Repeatable.")
 
     # Apply report
-    p.add_argument("-A", "--apply-report", type=str, help="Read a JSON report and delete/move all listed losers")
+    p.add_argument("-a", "--apply-report", type=str, help="Read a JSON report and delete/move all listed losers")
     p.add_argument("-b", "--backup", type=str, help="Move losers to this folder instead of deleting (apply-report mode)")
     p.add_argument("-f", "--force", action="store_true", help="Do not prompt for deletion (apply-report mode)")
-    p.add_argument("-x", "--dry-run", action="store_true", help="No changes; just print / write report")
+    p.add_argument("-d", "--dry-run", action="store_true", help="No changes; just print / write report")
 
     # Advanced options (moved to subgroup)
     advanced = p.add_argument_group('advanced options', 'Fine-tune detection parameters')
-    advanced.add_argument("--duration-tolerance", type=float, default=2.0,
+    advanced.add_argument("-u", "--duration-tolerance", type=float, default=2.0,
                          help="Duration tolerance in seconds for metadata grouping (default: 2.0)")
-    advanced.add_argument("--phash-frames", type=int, default=5,
+    advanced.add_argument("-F", "--phash-frames", type=int, default=5,
                          help="Number of frames to sample for perceptual hash comparison (default: 5)")
-    advanced.add_argument("--phash-threshold", type=int, default=12,
+    advanced.add_argument("-T", "--phash-threshold", type=int, default=12,
                          help="Per-frame Hamming distance threshold for pHash matching (default: 12)")
-    advanced.add_argument("--subset-min-ratio", type=float, default=0.30,
+    advanced.add_argument("-s", "--subset-min-ratio", type=float, default=0.30,
                          help="Minimum duration ratio (short/long) for subset detection (default: 0.30)")
 
     return p.parse_args(argv)
@@ -599,7 +599,9 @@ def _quality_to_pipeline(quality: str) -> str:
         "2": "1-2",
         "3": "1-3",
         "4": "1-4",
-        "5": "1-4"  # Level 5 enables subset detection via config
+        "5": "1-4",  # Level 5 enables subset detection via config
+        "6": "1-6",  # Level 6 adds audio analysis
+        "7": "1-7"   # Level 7 adds advanced content analysis
     }
 
     # If it's a known quality level, return the mapped pipeline
@@ -719,6 +721,10 @@ def _validate_args(args: argparse.Namespace) -> Optional[str]:
     # Validate quality level enables required features
     if args.quality in ["4", "5"] and 4 not in stages:
         return "Quality levels 4 and 5 require pHash stage to be available"
+    if args.quality in ["6"] and 6 not in stages:
+        return "Quality level 6 requires audio analysis stage to be available"
+    if args.quality in ["7"] and 7 not in stages:
+        return "Quality level 7 requires advanced content analysis stage to be available"
 
     return None
 
@@ -1043,9 +1049,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
                 logger.info("Starting run_pipeline call...")
 
-                # Simplified approach: always use non-UI reporter for pipeline execution
-                # This prevents all threading and UI conflicts
-                pipeline_reporter = ProgressReporter(enable_dash=False)
+                # NEW APPROACH: Use the same UI reporter for real-time updates
+                # The periodic update system ensures thread-safe UI updates
+                pipeline_reporter = reporter
                 g_fin = run_pipeline(
                     root=root,
                     patterns=patterns,

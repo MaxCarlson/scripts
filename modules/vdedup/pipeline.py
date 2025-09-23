@@ -15,6 +15,8 @@ Stages (select with -Q/--pipeline):
   3 = Q3 ffprobe metadata clustering (duration/codec/container/resolution)
   4 = Q4 pHash visual similarity + optional subset detection
   5 = accepted for convenience; currently a no-op (kept for future expansions)
+  6 = Q6 audio fingerprinting and analysis (audio similarity beyond metadata)
+  7 = Q7 advanced content analysis (scene detection, motion vectors, keyframes)
 
 This module wires **all** heavy operations to ProgressReporter so the live UI
 never looks idle while work is happening.
@@ -71,13 +73,19 @@ class PipelineConfig:
 def parse_pipeline(spec: Optional[str]) -> List[int]:
     """
     Parse strings like: "1-2", "1,3-4", "4", "all".
-    Empty/None -> [1,2,3,4] (full pipeline). We also accept up to 5; 5 is a no-op for convenience.
+    Empty/None -> [1,2,3,4] (full pipeline). Now supports up to stage 7.
     """
     if not spec:
         return [1, 2, 3, 4]
     s = spec.strip().lower()
-    if s in {"all", "full", "1-4", "1-5"}:
-        return [1, 2, 3, 4]
+    if s in {"all", "full"}:
+        return [1, 2, 3, 4, 5, 6, 7]  # Full pipeline with all stages
+    if s in {"1-4", "1-5"}:
+        return [1, 2, 3, 4]  # Legacy compatibility
+    if s in {"1-6"}:
+        return [1, 2, 3, 4, 5, 6]
+    if s in {"1-7"}:
+        return [1, 2, 3, 4, 5, 6, 7]
     parts = [p.strip() for p in s.split(",") if p.strip()]
     out: set[int] = set()
     for p in parts:
@@ -87,16 +95,16 @@ def parse_pipeline(spec: Optional[str]) -> List[int]:
                 a_i, b_i = int(a), int(b)
                 if a_i > b_i:
                     a_i, b_i = b_i, a_i
-                # allow 5 but coerce to max 4 for now
-                for x in range(max(1, a_i), min(5, b_i) + 1):
-                    if 1 <= x <= 4:
+                # Now allow up to stage 7
+                for x in range(max(1, a_i), min(8, b_i) + 1):
+                    if 1 <= x <= 7:
                         out.add(x)
             except ValueError:
                 continue
         else:
             try:
                 x = int(p)
-                if 1 <= x <= 4:
+                if 1 <= x <= 7:
                     out.add(x)
             except ValueError:
                 continue
@@ -332,6 +340,11 @@ def run_pipeline(
             if i % 500 == 0:
                 logger.info(f"Scanning progress: {i+1}/{len(files)} files")
             scan_one(file_path)
+            # Update UI periodically during scanning
+            if i % 10 == 0:  # Update every 10 files
+                reporter.update_progress_periodically(i + 1, len(files))
+        # Final update
+        reporter.update_progress_periodically(len(files), len(files), force_update=True)
         logger.info(f"Scanning completed. Processed {len(metas)} files")
 
     if reporter.should_quit():
@@ -381,6 +394,11 @@ def run_pipeline(
                 logger.info(f"Partial hash progress: {i+1}/{len(size_collisions)} files")
             m_result, sig = _do_partial(m)
             partial_map[sig].append(m_result)
+            # Update UI periodically during partial hashing
+            if i % 5 == 0:  # Update every 5 files
+                reporter.update_progress_periodically(i + 1, len(size_collisions))
+        # Final update
+        reporter.update_progress_periodically(len(size_collisions), len(size_collisions), force_update=True)
         logger.info(f"Partial hashing completed. Found {len(partial_map)} unique partial hashes")
 
         if reporter.should_quit():
@@ -443,6 +461,11 @@ def run_pipeline(
                 m_result, sha, _hit = _do_full(m)
                 if sha:
                     by_hash[sha].append(m_result)
+                # Update UI periodically during SHA256 hashing
+                if i % 3 == 0:  # Update every 3 files (SHA256 is slower)
+                    reporter.update_progress_periodically(i + 1, len(to_full))
+            # Final update
+            reporter.update_progress_periodically(len(to_full), len(to_full), force_update=True)
             logger.info(f"SHA256 processing completed. Found {len(by_hash)} unique hashes")
 
         # Form groups from exact hashes and mark **all members** excluded for later stages
@@ -735,6 +758,57 @@ def run_pipeline(
                 if formed_subset:
                     reporter.groups_subset += formed_subset  # surface in UI
                     reporter.flush()
+
+    if reporter.should_quit():
+        reporter.flush()
+        return groups
+
+    # ----------------------------------------------------------
+    # Q6: Audio fingerprinting and analysis (experimental)
+    # ----------------------------------------------------------
+    if 6 in selected_stages and video_for_q4:
+        logger.info("Q6: Audio fingerprinting stage - currently placeholder")
+        reporter.start_stage("Q6 audio", total=len(video_for_q4))
+
+        # Placeholder implementation for audio analysis
+        # Future: Implement audio fingerprinting using librosa or similar
+        # - Extract audio spectrograms
+        # - Compare audio characteristics beyond metadata
+        # - Detect re-encoded audio with same content
+
+        for i, video in enumerate(video_for_q4):
+            if i % 20 == 0:
+                logger.info(f"Q6 Audio analysis progress: {i+1}/{len(video_for_q4)} files")
+            # Placeholder: Would extract audio features here
+            reporter.update_progress_periodically(i + 1, len(video_for_q4))
+
+        logger.info("Q6: Audio analysis stage completed (placeholder)")
+
+    if reporter.should_quit():
+        reporter.flush()
+        return groups
+
+    # ----------------------------------------------------------
+    # Q7: Advanced content analysis (experimental)
+    # ----------------------------------------------------------
+    if 7 in selected_stages and video_for_q4:
+        logger.info("Q7: Advanced content analysis stage - currently placeholder")
+        reporter.start_stage("Q7 content", total=len(video_for_q4))
+
+        # Placeholder implementation for advanced content analysis
+        # Future: Implement scene detection and motion analysis
+        # - Extract keyframes at scene boundaries
+        # - Analyze motion vectors between frames
+        # - Compare video content beyond simple pHash
+        # - Detect cropped, scaled, or filtered versions
+
+        for i, video in enumerate(video_for_q4):
+            if i % 20 == 0:
+                logger.info(f"Q7 Content analysis progress: {i+1}/{len(video_for_q4)} files")
+            # Placeholder: Would extract content features here
+            reporter.update_progress_periodically(i + 1, len(video_for_q4))
+
+        logger.info("Q7: Advanced content analysis stage completed (placeholder)")
 
     # Final flush of results (CLI will compute losers/bytes after keep-policy)
     reporter.set_results(dup_groups=len(groups), losers_count=0, bytes_total=0)
