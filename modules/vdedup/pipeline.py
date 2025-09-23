@@ -391,9 +391,6 @@ def run_pipeline(
 
         def _do_full(m: FileMeta) -> Tuple[FileMeta, Optional[str], bool]:
             # Simplified: remove reporter interaction to prevent deadlocks
-            # reporter.wait_if_paused()
-            # if reporter.should_quit():
-            #     return (m, None, False)
             # Try cache first
             sha = None
             try:
@@ -402,7 +399,6 @@ def run_pipeline(
             except Exception:
                 sha = None
             if sha:
-                # reporter.inc_hashed(1, cache_hit=True)
                 return m, sha, True
             try:
                 sha = _sha256_file(m.path)
@@ -411,19 +407,17 @@ def run_pipeline(
                         cache.put_field(m.path, m.size, m.mtime, "sha256", sha)
                     except Exception:
                         pass
-                # reporter.inc_hashed(1, cache_hit=False)
                 return m, sha, False
             except Exception:
-                # reporter.inc_hashed(1, cache_hit=False)
                 return m, None, False
 
         if to_full:
-            logger.info(f"Starting SHA256 hashing for {len(to_full)} files")
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(cfg.threads))) as ex:
+            # Use a smaller thread pool to reduce contention
+            max_workers = min(4, max(1, int(cfg.threads) // 2))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
                 for (m, sha, _hit) in ex.map(_do_full, to_full):
                     if sha:
                         by_hash[sha].append(m)
-            logger.info(f"SHA256 hashing completed. Found {len(by_hash)} unique hashes")
 
         # Form groups from exact hashes and mark **all members** excluded for later stages
         formed = 0
