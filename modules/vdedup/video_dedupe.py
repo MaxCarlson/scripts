@@ -724,9 +724,27 @@ def _validate_args(args: argparse.Namespace) -> Optional[str]:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    # Global quit flag for signal handling
+    quit_requested = False
+    active_reporter = None
+
     # Set up signal handling for proper Ctrl+C behavior
     def signal_handler(sig, frame):
-        print("\n\nInterrupted by user. Cleaning up...", file=sys.stderr)
+        nonlocal quit_requested, active_reporter
+        quit_requested = True
+        print("\n\nInterrupted by user. Shutting down gracefully...", file=sys.stderr)
+        if active_reporter:
+            try:
+                active_reporter._quit_evt.set()
+                active_reporter.flush()
+            except Exception:
+                pass
+        # Give threads a moment to clean up
+        import threading
+        import time
+        time.sleep(0.5)
+        # Force exit if threads don't respond
+        print("Forcing exit...", file=sys.stderr)
         sys.exit(1)
 
     signal.signal(signal.SIGINT, signal_handler)
@@ -769,6 +787,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         banner = _banner_text(False, dry=args.dry_run, mode="apply", threads=args.threads, gpu=False, backup=getattr(args, 'backup', None))
         # Simplified: always disable UI to prevent freezing issues
         reporter = ProgressReporter(enable_dash=False, refresh_rate=0.2, banner=banner, stacked_ui=None)
+        active_reporter = reporter
         reporter.start()
         try:
             report_path = Path(args.apply_report).expanduser().resolve()
@@ -890,6 +909,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     logger.info("Creating ProgressReporter...")
     # Simplified: always disable UI to prevent freezing issues
     reporter = ProgressReporter(enable_dash=False, refresh_rate=0.2, banner=banner, stacked_ui=None)
+    active_reporter = reporter
     logger.info("Starting ProgressReporter...")
     reporter.start()
     logger.info("ProgressReporter started successfully")
