@@ -901,14 +901,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     banner = _banner_text(True, dry=args.dry_run, mode=f"Q{args.quality}", threads=cfg.threads, gpu=cfg.gpu, backup=getattr(args, 'backup', None))
 
-    # Inform user if they requested UI mode
-    if args.live:
-        print("Note: Live UI (-L) is temporarily disabled for stability. Running in console mode.")
-        logger.info("User requested live UI (-L) but running in console mode for stability")
-
     logger.info("Creating ProgressReporter...")
-    # Simplified: always disable UI to prevent freezing issues
-    reporter = ProgressReporter(enable_dash=False, refresh_rate=0.2, banner=banner, stacked_ui=None)
+    # Re-enable UI for -L flag with thread-safe design
+    enable_ui = args.live
+    if enable_ui:
+        logger.info("Live UI (-L) enabled")
+    else:
+        logger.info("Running in console mode")
+
+    reporter = ProgressReporter(enable_dash=enable_ui, refresh_rate=0.2, banner=banner, stacked_ui=None)
     active_reporter = reporter
     logger.info("Starting ProgressReporter...")
     reporter.start()
@@ -966,8 +967,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if unlimited_roots:
             logger.info(f"Running unlimited depth pipeline on {len(unlimited_roots)} roots...")
             try:
-                # Simplified approach: always use non-UI reporter for pipeline execution
-                pipeline_reporter = ProgressReporter(enable_dash=False)
+                # Use the same reporter instance to ensure UI updates properly
+                pipeline_reporter = reporter
                 g_unlim = run_pipeline(
                     roots=unlimited_roots,
                     patterns=patterns,
@@ -993,8 +994,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     warning_msg = "Warning: current pipeline doesn't accept multiple roots; running on the first directory only for unlimited-depth set. Cross-root duplicates may be missed."
                     logger.warning(warning_msg)
                     print(warning_msg, file=sys.stderr)
-                # Simplified approach: always use non-UI reporter for pipeline execution
-                pipeline_reporter = ProgressReporter(enable_dash=False)
+                # Use the same reporter instance to ensure UI updates properly
+                pipeline_reporter = reporter
                 g_unlim = run_pipeline(
                     root=root,
                     patterns=patterns,
@@ -1012,8 +1013,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if finite_expanded_roots:
             logger.info(f"Running finite depth pipeline on {len(finite_expanded_roots)} roots...")
             try:
-                # Simplified approach: always use non-UI reporter for pipeline execution
-                pipeline_reporter = ProgressReporter(enable_dash=False)
+                # Use the same reporter instance to ensure UI updates properly
+                pipeline_reporter = reporter
                 g_fin = run_pipeline(
                     roots=finite_expanded_roots,
                     patterns=patterns,

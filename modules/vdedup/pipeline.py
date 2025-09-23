@@ -26,6 +26,7 @@ import concurrent.futures
 import hashlib
 import os
 import sys
+import threading
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -312,9 +313,8 @@ def run_pipeline(
     by_size: Dict[int, List[FileMeta]] = defaultdict(list)
 
     def scan_one(p: Path) -> None:
-        reporter.wait_if_paused()
-        if reporter.should_quit():
-            return
+        # Avoid problematic blocking calls in thread workers
+        # Skip: reporter.wait_if_paused() and reporter.should_quit() to prevent deadlocks
         try:
             st = p.stat()
             fm = FileMeta(path=p, size=int(st.st_size), mtime=float(st.st_mtime))
@@ -322,13 +322,17 @@ def run_pipeline(
             fm = FileMeta(path=p, size=0, mtime=0.0)
         metas.append(fm)
         by_size[fm.size].append(fm)
+        # Safe call: simple counter increment - test without exception handling
         reporter.inc_scanned(1, bytes_added=fm.size, is_video=_is_video_suffix(p))
 
     if files:
-        logger.info(f"About to start thread pool for scanning {len(files)} files")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(cfg.threads))) as ex:
-            list(ex.map(scan_one, files))
-        logger.info(f"Thread pool scanning completed. Processed {len(metas)} files")
+        # SIMPLIFIED: Use single-threaded processing for complete reliability
+        logger.info(f"Scanning {len(files)} files (single-threaded for stability)")
+        for i, file_path in enumerate(files):
+            if i % 500 == 0:
+                logger.info(f"Scanning progress: {i+1}/{len(files)} files")
+            scan_one(file_path)
+        logger.info(f"Scanning completed. Processed {len(metas)} files")
 
     if reporter.should_quit():
         reporter.flush()
@@ -360,21 +364,23 @@ def run_pipeline(
         partial_map: Dict[str, List[FileMeta]] = defaultdict(list)
 
         def _do_partial(m: FileMeta) -> Tuple[FileMeta, str]:
-            # Simplified: remove reporter interaction to prevent deadlocks
-            # reporter.wait_if_paused()
-            # if reporter.should_quit():
-            #     return (m, f"__quit__{id(m)}")
+            # Avoid problematic blocking calls in thread workers
+            # Skip: reporter.wait_if_paused() and reporter.should_quit() to prevent deadlocks
             sig = _blake3_partial_hex(m.path, head=1 << 20, tail=1 << 20, mid=0)
-            # reporter.inc_hashed(1, cache_hit=False)
+            # Safe call: simple counter increment (only catch threading-related exceptions)
+            try:
+                reporter.inc_hashed(1, cache_hit=False)
+            except (RuntimeError, threading.ThreadError, AttributeError):
+                pass  # Only catch specific UI threading issues
             return m, sig
 
-        logger.info("About to start partial hashing thread pool")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(cfg.threads))) as ex:
-            logger.info("Thread pool created, starting map operation")
-            for m, sig in ex.map(_do_partial, size_collisions):
-                # if sig.startswith("__quit__"):
-                #     continue
-                partial_map[sig].append(m)
+        # SIMPLIFIED: Use single-threaded processing to eliminate threading deadlocks
+        logger.info(f"Processing partial hashes for {len(size_collisions)} files (single-threaded for stability)")
+        for i, m in enumerate(size_collisions):
+            if i % 10 == 0:
+                logger.info(f"Partial hash progress: {i+1}/{len(size_collisions)} files")
+            m_result, sig = _do_partial(m)
+            partial_map[sig].append(m_result)
         logger.info(f"Partial hashing completed. Found {len(partial_map)} unique partial hashes")
 
         if reporter.should_quit():
@@ -390,7 +396,8 @@ def run_pipeline(
         by_hash: Dict[str, List[FileMeta]] = defaultdict(list)
 
         def _do_full(m: FileMeta) -> Tuple[FileMeta, Optional[str], bool]:
-            # Simplified: remove reporter interaction to prevent deadlocks
+            # Avoid problematic blocking calls in thread workers
+            # Skip: reporter.wait_if_paused() and reporter.should_quit() to prevent deadlocks
             # Try cache first
             sha = None
             try:
@@ -399,6 +406,11 @@ def run_pipeline(
             except Exception:
                 sha = None
             if sha:
+                # Safe call: simple counter increment
+                try:
+                    reporter.inc_hashed(1, cache_hit=True)
+                except (RuntimeError, threading.ThreadError, AttributeError):
+                    pass  # Only catch specific UI threading issues
                 return m, sha, True
             try:
                 sha = _sha256_file(m.path)
@@ -407,17 +419,31 @@ def run_pipeline(
                         cache.put_field(m.path, m.size, m.mtime, "sha256", sha)
                     except Exception:
                         pass
+                # Safe call: simple counter increment
+                try:
+                    reporter.inc_hashed(1, cache_hit=False)
+                except (RuntimeError, threading.ThreadError, AttributeError):
+                    pass  # Only catch specific UI threading issues
                 return m, sha, False
             except Exception:
+                # Safe call: simple counter increment for failed attempts
+                try:
+                    reporter.inc_hashed(1, cache_hit=False)
+                except (RuntimeError, threading.ThreadError, AttributeError):
+                    pass  # Only catch specific UI threading issues
                 return m, None, False
 
         if to_full:
-            # Use a smaller thread pool to reduce contention
-            max_workers = min(4, max(1, int(cfg.threads) // 2))
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
-                for (m, sha, _hit) in ex.map(_do_full, to_full):
-                    if sha:
-                        by_hash[sha].append(m)
+            # SIMPLIFIED: Use single-threaded processing to eliminate threading deadlocks
+            # This is slower but guaranteed to work reliably
+            logger.info(f"Processing SHA256 hashes for {len(to_full)} files (single-threaded for stability)")
+            for i, m in enumerate(to_full):
+                if i % 10 == 0:
+                    logger.info(f"SHA256 progress: {i+1}/{len(to_full)} files")
+                m_result, sha, _hit = _do_full(m)
+                if sha:
+                    by_hash[sha].append(m_result)
+            logger.info(f"SHA256 processing completed. Found {len(by_hash)} unique hashes")
 
         # Form groups from exact hashes and mark **all members** excluded for later stages
         formed = 0

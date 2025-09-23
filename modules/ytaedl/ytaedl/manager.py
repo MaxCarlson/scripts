@@ -222,7 +222,7 @@ class WorkerState:
     paused_speed_bps: Optional[float] = None
 
 
-def _gather_from_roots(roots: List[Path], finished_log: Path) -> List[Path]:
+def _gather_from_roots(roots: List[Path], finished_log: Path, priority_files: Optional[List[str]] = None) -> tuple[List[Path], List[Path]]:
     pool: List[Path] = []
     for root in roots:
         if not root.exists():
@@ -236,7 +236,21 @@ def _gather_from_roots(roots: List[Path], finished_log: Path) -> List[Path]:
             finished = set(x.strip() for x in finished_log.read_text(encoding="utf-8").splitlines() if x.strip())
         except Exception:
             finished = set()
-    return [p for p in pool if str(p.resolve()) not in finished]
+
+    available_pool = [p for p in pool if str(p.resolve()) not in finished]
+
+    if not priority_files:
+        return available_pool, []
+
+    priority_paths = []
+    for pf in priority_files:
+        p = Path(pf).expanduser().resolve()
+        if p.exists() and p.is_file() and str(p) not in finished:
+            priority_paths.append(p)
+
+    regular_pool = [p for p in available_pool if p.resolve() not in [pp.resolve() for pp in priority_paths]]
+
+    return regular_pool, priority_paths
 
 
 def _start_worker(slot: int, urlfile: Path, max_rate: float, quiet: bool, archive_dir: Optional[Path], log_dir: Path, cap_mibs: Optional[float]) -> subprocess.Popen:
@@ -291,6 +305,7 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("-X", "--max-process-dl-speed", type=float, default=None, help="Per-worker max download speed (MiB/s)")
     p.add_argument("-Z", "--max-total-dl-speed", type=float, default=None, help="Global max download speed across all workers (MiB/s)")
     p.add_argument("--show-bars", action="store_true", help="Show an ASCII progress bar per worker")
+    p.add_argument("-P", "--priority-files", action="append", help="URL files to prioritize (can be specified multiple times)")
     return p
 
 
@@ -317,21 +332,25 @@ def main() -> int:
     finished_log.parent.mkdir(parents=True, exist_ok=True)
 
     roots: List[Path] = [stars_dir, aebn_dir]
-    pool = _gather_from_roots(roots, finished_log)
-    if not pool:
+    pool, priority_pool = _gather_from_roots(roots, finished_log, args.priority_files)
+    if not pool and not priority_pool:
         # Fallback to test dirs if primary roots are empty
         repo_root = Path(__file__).resolve().parent.parent
         test_stars = (repo_root / "test" / "files" / "downloads" / "stars").resolve()
         test_aebn = (repo_root / "test" / "files" / "downloads" / "ae-stars").resolve()
         roots = [test_stars, test_aebn]
-        pool = _gather_from_roots(roots, finished_log)
+        pool, priority_pool = _gather_from_roots(roots, finished_log, args.priority_files)
     random.shuffle(pool)
+    random.shuffle(priority_pool)
     active: set[str] = set()
 
     workers: List[WorkerState] = [WorkerState(slot=i) for i in range(1, args.threads + 1)]
     stop = threading.Event()
     mlog.info(f"Start manager threads={args.threads} time_limit={args.time_limit} refresh_hz={args.refresh_hz} exit_at_time={args.exit_at_time} archive_dir={archive_dir}")
     mlog.info(f"Log dir: {log_dir} | Manager log: {manager_log_path}")
+    if args.priority_files:
+        mlog.info(f"Priority files: {len(priority_pool)} files specified: {[str(p) for p in priority_pool]}")
+    mlog.info(f"Regular pool: {len(pool)} files | Priority pool: {len(priority_pool)} files")
 
     # Totals tracking
     total_completed_bytes = 0
@@ -458,20 +477,29 @@ def main() -> int:
             mlog.error(f"reader exception slot={ws.slot}: {e}\n{traceback.format_exc()}")
 
     def _assign(ws: WorkerState) -> bool:
-        nonlocal pool
-        # Filter out finished from current pool on each assignment
+        nonlocal pool, priority_pool
+        # Filter out finished from current pools on each assignment
         finished: set[str] = set()
         if finished_log.exists():
             try:
                 finished = set(x.strip() for x in finished_log.read_text(encoding="utf-8").splitlines() if x.strip())
             except Exception:
                 finished = set()
-        # drop currently active and finished files from the candidate list
-        avail = [p for p in pool if str(p.resolve()) not in active and str(p.resolve()) not in finished]
-        if not avail:
-            return False
-        urlfile = random.choice(avail)
-        mlog.info(f"[{ws.slot:02d}] ASSIGN {urlfile}")
+
+        # Try priority files first
+        priority_avail = [p for p in priority_pool if str(p.resolve()) not in active and str(p.resolve()) not in finished]
+        if priority_avail:
+            urlfile = random.choice(priority_avail)
+            priority_pool.remove(urlfile)
+            mlog.info(f"[{ws.slot:02d}] ASSIGN PRIORITY {urlfile}")
+        else:
+            # Fall back to regular pool
+            avail = [p for p in pool if str(p.resolve()) not in active and str(p.resolve()) not in finished]
+            if not avail:
+                return False
+            urlfile = random.choice(avail)
+            mlog.info(f"[{ws.slot:02d}] ASSIGN {urlfile}")
+
         active.add(str(urlfile.resolve()))
         ws.urlfile = urlfile
         ws.url_count = len(_read_urls(urlfile))
@@ -688,10 +716,11 @@ def main() -> int:
                 cols = 80
             lines: List[str] = []
             active_workers = sum(1 for w in workers if w.proc)
-            pool_size = len([p for p in _gather_from_roots(roots, finished_log) if str(p.resolve()) not in active])
+            current_regular, current_priority = _gather_from_roots(roots, finished_log, args.priority_files)
+            total_available = len([p for p in current_regular if str(p.resolve()) not in active]) + len([p for p in current_priority if str(p.resolve()) not in active])
             pause_status = " [PAUSED]" if paused else ""
             quit_status = " [Press Y to confirm quit]" if quit_confirm else ""
-            header = f"DL Manager{pause_status}{quit_status}  |  threads={args.threads}  active={active_workers}  pool={pool_size}  time_limit={args.time_limit}"
+            header = f"DL Manager{pause_status}{quit_status}  |  threads={args.threads}  active={active_workers}  pool={total_available}  time_limit={args.time_limit}"
             lines.append(header[:cols])
             total_speed_bps = sum(float(w.speed_bps) for w in workers if isinstance(w.speed_bps, (int, float)) and not w.is_paused)
             total_speed_mib = total_speed_bps / (1024 * 1024) if total_speed_bps else 0.0
@@ -816,7 +845,7 @@ def main() -> int:
             if quit_confirm:
                 lines.append("Press Y to quit, N to cancel"[:cols])
             else:
-                lines.append("Keys: p=pause/unpause, q=quit, v=cycle verbose (NDJSON→LOG→off), 1-9=select worker"[:cols])
+                lines.append("Keys: p=pause/unpause, q=quit, v=cycle verbose (NDJSON->LOG->off), 1-9=select worker"[:cols])
             if os.name == 'nt':
                 try:
                     import msvcrt  # type: ignore
@@ -944,9 +973,11 @@ def main() -> int:
             sys.stdout.write("\n".join(lines) + "\n")
             sys.stdout.flush()
 
-            # If all workers idle and pool empty, stop
-            if all(w.proc is None for w in workers) and not _gather_from_roots(roots, finished_log):
-                break
+            # If all workers idle and both pools empty, stop
+            if all(w.proc is None for w in workers):
+                current_regular, current_priority = _gather_from_roots(roots, finished_log, args.priority_files)
+                if not current_regular and not current_priority:
+                    break
 
             time.sleep(refresh_dt)
     except KeyboardInterrupt:
