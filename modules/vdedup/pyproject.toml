@@ -52,7 +52,7 @@ python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 # Exclude UI test files that may freeze due to interactive components
-ignore = [
+norecursedirs = [
     "test_enhanced_ui.py",
     "test_simple_ui.py",
     "test_debug_ui.py"

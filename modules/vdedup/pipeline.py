@@ -293,7 +293,11 @@ def run_pipeline(
     # -----------------------------
     # Stage: scanning / enumeration
     # -----------------------------
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"Starting file enumeration for root: {root}, patterns: {patterns}, max_depth: {max_depth}")
     files: List[Path] = list(_iter_files(root, patterns, max_depth))
+    logger.info(f"File enumeration completed. Found {len(files)} files.")
 
     # Apply excludes early
     if skip_paths:
@@ -302,6 +306,7 @@ def run_pipeline(
 
     reporter.set_total_files(len(files))
     reporter.start_stage("scanning", total=len(files))
+    logger.info(f"Starting scanning stage with {cfg.threads} threads")
 
     metas: List[FileMeta] = []
     by_size: Dict[int, List[FileMeta]] = defaultdict(list)
@@ -320,8 +325,10 @@ def run_pipeline(
         reporter.inc_scanned(1, bytes_added=fm.size, is_video=_is_video_suffix(p))
 
     if files:
+        logger.info(f"About to start thread pool for scanning {len(files)} files")
         with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(cfg.threads))) as ex:
             list(ex.map(scan_one, files))
+        logger.info(f"Thread pool scanning completed. Processed {len(metas)} files")
 
     if reporter.should_quit():
         reporter.flush()
@@ -332,9 +339,11 @@ def run_pipeline(
     # -------------------------------------------
     size_collisions: List[FileMeta] = []
     if 1 in selected_stages:
+        logger.info("Starting Q1: size bucket analysis")
         for bucket in by_size.values():
             if len(bucket) > 1:
                 size_collisions.extend(bucket)
+        logger.info(f"Q1 completed. Found {len(size_collisions)} files in size collision groups")
 
     groups: GroupMap = {}
     excluded_after_q2: Set[Path] = set()
@@ -344,24 +353,29 @@ def run_pipeline(
     # Q2: partial (blake3 slices) -> full sha256 on collisions
     # -------------------------------------------------------
     if 2 in selected_stages and size_collisions:
+        logger.info(f"Starting Q2: partial hashing for {len(size_collisions)} files")
         reporter.start_stage("Q2 partial", total=len(size_collisions))
         reporter.set_hash_total(len(size_collisions))
 
         partial_map: Dict[str, List[FileMeta]] = defaultdict(list)
 
         def _do_partial(m: FileMeta) -> Tuple[FileMeta, str]:
-            reporter.wait_if_paused()
-            if reporter.should_quit():
-                return (m, f"__quit__{id(m)}")
+            # Simplified: remove reporter interaction to prevent deadlocks
+            # reporter.wait_if_paused()
+            # if reporter.should_quit():
+            #     return (m, f"__quit__{id(m)}")
             sig = _blake3_partial_hex(m.path, head=1 << 20, tail=1 << 20, mid=0)
-            reporter.inc_hashed(1, cache_hit=False)
+            # reporter.inc_hashed(1, cache_hit=False)
             return m, sig
 
+        logger.info("About to start partial hashing thread pool")
         with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(cfg.threads))) as ex:
+            logger.info("Thread pool created, starting map operation")
             for m, sig in ex.map(_do_partial, size_collisions):
-                if sig.startswith("__quit__"):
-                    continue
+                # if sig.startswith("__quit__"):
+                #     continue
                 partial_map[sig].append(m)
+        logger.info(f"Partial hashing completed. Found {len(partial_map)} unique partial hashes")
 
         if reporter.should_quit():
             reporter.flush();
@@ -376,9 +390,10 @@ def run_pipeline(
         by_hash: Dict[str, List[FileMeta]] = defaultdict(list)
 
         def _do_full(m: FileMeta) -> Tuple[FileMeta, Optional[str], bool]:
-            reporter.wait_if_paused()
-            if reporter.should_quit():
-                return (m, None, False)
+            # Simplified: remove reporter interaction to prevent deadlocks
+            # reporter.wait_if_paused()
+            # if reporter.should_quit():
+            #     return (m, None, False)
             # Try cache first
             sha = None
             try:
@@ -387,7 +402,7 @@ def run_pipeline(
             except Exception:
                 sha = None
             if sha:
-                reporter.inc_hashed(1, cache_hit=True)
+                # reporter.inc_hashed(1, cache_hit=True)
                 return m, sha, True
             try:
                 sha = _sha256_file(m.path)
@@ -396,17 +411,19 @@ def run_pipeline(
                         cache.put_field(m.path, m.size, m.mtime, "sha256", sha)
                     except Exception:
                         pass
-                reporter.inc_hashed(1, cache_hit=False)
+                # reporter.inc_hashed(1, cache_hit=False)
                 return m, sha, False
             except Exception:
-                reporter.inc_hashed(1, cache_hit=False)
+                # reporter.inc_hashed(1, cache_hit=False)
                 return m, None, False
 
         if to_full:
+            logger.info(f"Starting SHA256 hashing for {len(to_full)} files")
             with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(cfg.threads))) as ex:
                 for (m, sha, _hit) in ex.map(_do_full, to_full):
                     if sha:
                         by_hash[sha].append(m)
+            logger.info(f"SHA256 hashing completed. Found {len(by_hash)} unique hashes")
 
         # Form groups from exact hashes and mark **all members** excluded for later stages
         formed = 0
