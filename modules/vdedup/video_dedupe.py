@@ -503,7 +503,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
     # Core scan options
     p.add_argument("-p", "--pattern", action="append", help="Glob to include (repeatable), e.g. -p *.mp4 -p *.mkv")
-    p.add_argument("-r", "--recursive", action="store_true", help="Default: recurse into subdirectories (unlimited) for roots without a ::dN or ::r suffix")
+    p.add_argument("-r", "--recursive", action="store_true", help="Recurse into subdirectories (unlimited) for roots without a ::dN or ::r suffix. Default: no recursion (depth 0)")
 
     # Quality levels and pipeline selection
     p.add_argument(
@@ -767,7 +767,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         logger.info(f"Dry run: {args.dry_run}, Force: {args.force}")
 
         banner = _banner_text(False, dry=args.dry_run, mode="apply", threads=args.threads, gpu=False, backup=getattr(args, 'backup', None))
-        reporter = ProgressReporter(enable_dash=bool(args.live), refresh_rate=0.2, banner=banner, stacked_ui=None)
+        # Simplified: always disable UI to prevent freezing issues
+        reporter = ProgressReporter(enable_dash=False, refresh_rate=0.2, banner=banner, stacked_ui=None)
         reporter.start()
         try:
             report_path = Path(args.apply_report).expanduser().resolve()
@@ -880,8 +881,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     logger.debug(f"Advanced config: duration_tolerance={cfg.duration_tolerance}, phash_frames={cfg.phash_frames}, phash_threshold={cfg.phash_threshold}")
 
     banner = _banner_text(True, dry=args.dry_run, mode=f"Q{args.quality}", threads=cfg.threads, gpu=cfg.gpu, backup=getattr(args, 'backup', None))
+
+    # Inform user if they requested UI mode
+    if args.live:
+        print("Note: Live UI (-L) is temporarily disabled for stability. Running in console mode.")
+        logger.info("User requested live UI (-L) but running in console mode for stability")
+
     logger.info("Creating ProgressReporter...")
-    reporter = ProgressReporter(enable_dash=bool(args.live), refresh_rate=0.2, banner=banner, stacked_ui=None)
+    # Simplified: always disable UI to prevent freezing issues
+    reporter = ProgressReporter(enable_dash=False, refresh_rate=0.2, banner=banner, stacked_ui=None)
     logger.info("Starting ProgressReporter...")
     reporter.start()
     logger.info("ProgressReporter started successfully")
@@ -938,6 +946,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if unlimited_roots:
             logger.info(f"Running unlimited depth pipeline on {len(unlimited_roots)} roots...")
             try:
+                # Simplified approach: always use non-UI reporter for pipeline execution
+                pipeline_reporter = ProgressReporter(enable_dash=False)
                 g_unlim = run_pipeline(
                     roots=unlimited_roots,
                     patterns=patterns,
@@ -945,7 +955,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     selected_stages=stages,
                     cfg=cfg,
                     cache=cache,
-                    reporter=reporter,
+                    reporter=pipeline_reporter,
                     skip_paths=skip_paths,
                 )
                 logger.info(f"Unlimited depth pipeline completed with {len(g_unlim)} groups")
@@ -963,6 +973,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     warning_msg = "Warning: current pipeline doesn't accept multiple roots; running on the first directory only for unlimited-depth set. Cross-root duplicates may be missed."
                     logger.warning(warning_msg)
                     print(warning_msg, file=sys.stderr)
+                # Simplified approach: always use non-UI reporter for pipeline execution
+                pipeline_reporter = ProgressReporter(enable_dash=False)
                 g_unlim = run_pipeline(
                     root=root,
                     patterns=patterns,
@@ -970,7 +982,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     selected_stages=stages,
                     cfg=cfg,
                     cache=cache,
-                    reporter=reporter,
+                    reporter=pipeline_reporter,
                     skip_paths=skip_paths,
                 )
                 logger.info(f"Fallback unlimited depth pipeline completed with {len(g_unlim)} groups")
@@ -980,6 +992,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if finite_expanded_roots:
             logger.info(f"Running finite depth pipeline on {len(finite_expanded_roots)} roots...")
             try:
+                # Simplified approach: always use non-UI reporter for pipeline execution
+                pipeline_reporter = ProgressReporter(enable_dash=False)
                 g_fin = run_pipeline(
                     roots=finite_expanded_roots,
                     patterns=patterns,
@@ -987,7 +1001,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     selected_stages=stages,
                     cfg=cfg,
                     cache=cache,
-                    reporter=reporter,
+                    reporter=pipeline_reporter,
                     skip_paths=skip_paths,
                 )
                 logger.info(f"Finite depth pipeline completed with {len(g_fin)} groups")
@@ -1007,8 +1021,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     print(warning_msg, file=sys.stderr)
 
                 logger.info("Starting run_pipeline call...")
-                # Temporarily pass None as reporter to avoid UI deadlock
-                pipeline_reporter = None if args.live else reporter
+
+                # Simplified approach: always use non-UI reporter for pipeline execution
+                # This prevents all threading and UI conflicts
+                pipeline_reporter = ProgressReporter(enable_dash=False)
                 g_fin = run_pipeline(
                     root=root,
                     patterns=patterns,
@@ -1019,6 +1035,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     reporter=pipeline_reporter,
                     skip_paths=skip_paths,
                 )
+
                 logger.info(f"Fallback finite depth pipeline completed with {len(g_fin)} groups")
             _merge_groups(groups_all, g_fin)
 

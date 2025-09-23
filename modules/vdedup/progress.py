@@ -98,6 +98,9 @@ class ProgressReporter:
         self.lock = threading.Lock()
         self.start_ts = time.time()
 
+        # Track main thread for thread-safe UI updates
+        self.main_thread = threading.current_thread()
+
         # High-level counters
         self.total_files = 0
         self.scanned_files = 0
@@ -581,6 +584,10 @@ class ProgressReporter:
 
     def flush(self):
         if self.enable_dash and self.dash:
+            # Skip UI updates from worker threads to prevent deadlock
+            if threading.current_thread() != self.main_thread:
+                return
+
             with self.lock:
                 # Calculate enhanced metrics
                 self._calculate_throughput()
@@ -727,6 +734,38 @@ class ProgressReporter:
             self.losers_total = int(losers_count)
             self.bytes_to_remove = int(bytes_total)
         self.flush()
+
+    def copy_state_from(self, other_reporter):
+        """Copy progress state from another reporter (thread-safe)."""
+        if not other_reporter:
+            return
+
+        with self.lock:
+            with other_reporter.lock:
+                # Copy all state variables
+                self.stage_name = other_reporter.stage_name
+                self.stage_total = other_reporter.stage_total
+                self.stage_done = other_reporter.stage_done
+                self.stage_start_ts = other_reporter.stage_start_ts
+                self._ema_rate = other_reporter._ema_rate
+
+                self.total_files = other_reporter.total_files
+                self.scanned_files = other_reporter.scanned_files
+                self.video_files = other_reporter.video_files
+                self.bytes_seen = other_reporter.bytes_seen
+
+                self.hash_total = other_reporter.hash_total
+                self.hash_done = other_reporter.hash_done
+                self.cache_hits = other_reporter.cache_hits
+
+                self.groups_hash = other_reporter.groups_hash
+                self.groups_meta = other_reporter.groups_meta
+                self.groups_phash = other_reporter.groups_phash
+                self.groups_subset = other_reporter.groups_subset
+
+                self.dup_groups_total = other_reporter.dup_groups_total
+                self.losers_total = other_reporter.losers_total
+                self.bytes_to_remove = other_reporter.bytes_to_remove
 
     def stop(self):
         # stop ticker + keys threads
