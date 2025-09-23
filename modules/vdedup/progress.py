@@ -584,9 +584,9 @@ class ProgressReporter:
 
     def flush(self):
         if self.enable_dash and self.dash:
-            # Skip UI updates from worker threads to prevent deadlock
-            if threading.current_thread() != self.main_thread:
-                return
+            # Now safe for single-threaded processing with periodic updates
+            # if threading.current_thread() != self.main_thread:
+            #     return
 
             with self.lock:
                 # Calculate enhanced metrics
@@ -734,6 +734,29 @@ class ProgressReporter:
             self.losers_total = int(losers_count)
             self.bytes_to_remove = int(bytes_total)
         self.flush()
+
+    def update_progress_periodically(self, current_step: int, total_steps: int, force_update: bool = False):
+        """
+        Call this periodically during single-threaded processing to update UI.
+        Designed to be called every N iterations to keep UI responsive.
+        """
+        if not self.enable_dash:
+            return
+
+        # Update stage progress
+        with self.lock:
+            self.stage_done = current_step
+            if total_steps > 0:
+                self.stage_total = max(self.stage_total, total_steps)
+
+        # Throttle updates - only update every 100ms at most
+        import time
+        now = time.time()
+        last_update = getattr(self, '_last_periodic_update', 0)
+
+        if force_update or (now - last_update) >= 0.1:  # 100ms throttle
+            self._last_periodic_update = now
+            self.flush()
 
     def copy_state_from(self, other_reporter):
         """Copy progress state from another reporter (thread-safe)."""
