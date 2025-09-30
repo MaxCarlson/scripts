@@ -255,7 +255,7 @@ def _install_module(module_name: str, module_dir: Path, *, editable: bool, logs_
 # ─────────────────────────────────────────────────────────
 # Scan + install modules
 # ─────────────────────────────────────────────────────────
-def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall: bool, production: bool, verbose: bool, include_hidden: bool, ignore_requirements: bool) -> list[str]:
+def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall: bool, production: bool, verbose: bool, include_hidden: bool) -> list[str]:
     errors_encountered: list[str] = []
     hidden_skipped: list[str] = []
 
@@ -306,7 +306,7 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
                     log_info(f"{name}: not installed or unknown status → installing.")
 
             # 1) requirements (optional)
-            if not ignore_requirements and req_file.exists():
+            if req_file.exists():
                 reqs = _parse_requirements(req_file)
                 if reqs:
                     num_fail, results = _install_requirements(name, entry, reqs, logs_dir, verbose)
@@ -319,8 +319,6 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
                             print(f"  {mark} {r}")
                 else:
                     status_line(f"{name}: requirements.txt empty — skipped", "unchanged")
-            elif ignore_requirements:
-                status_line(f"{name}: requirements skipped by flag", "unchanged")
             else:
                 status_line(f"{name}: no requirements.txt — skipped", "unchanged")
 
@@ -473,11 +471,15 @@ def main():
     parser.add_argument("-R", "--scripts-dir", type=Path, required=True, help="Base project scripts directory.")
     parser.add_argument("-D", "--dotfiles-dir", type=Path, required=True, help="Root directory of dotfiles.")
     parser.add_argument("-B", "--bin-dir", type=Path, required=True, help="Target directory for binaries.")
-    parser.add_argument("-s", "--skip-reinstall", action="store_true", help="Skip reinstall when already correct.")
+    parser.add_argument(
+        "-s", "--skip-reinstall",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Skip reinstall when already correct.",
+    )
     parser.add_argument("-p", "--production", action="store_true", help="Install modules in production (non-editable).")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable detailed output.")
     parser.add_argument("-a", "--include-hidden", action="store_true", help="Include dot-prefixed (hidden) module folders.")
-    parser.add_argument("-I", "--ignore-requirements", action="store_true", help="Do not install requirements.txt for each module.")
     args = parser.parse_args()
 
     global _is_verbose
@@ -492,7 +494,6 @@ def main():
         production=args.production,
         verbose=args.verbose,
         include_hidden=args.include_hidden,
-        ignore_requirements=args.ignore_requirements,
     )
 
     ensure_pythonpath(args.scripts_dir / "modules", args.dotfiles_dir, args.verbose)

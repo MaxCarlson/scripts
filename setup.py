@@ -457,18 +457,24 @@ def main():
                         help="Root directory of dotfiles. Defaults to $DOTFILES.")
     parser.add_argument("-B", "--bin-dir", type=Path, required=False,
                         help="Target directory for symlinked executables. Defaults to <scripts-dir>/bin.")
-    parser.add_argument("-s", "--skip-reinstall", action="store_true",
-                        help="Skip re-installation if modules already match the desired install mode and path.")
+    parser.add_argument(
+        "-s", "--skip-reinstall",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Skip re-installation when modules already match the desired install mode and path.",
+    )
     parser.add_argument("-p", "--production", action="store_true",
                         help="Install Python modules in production mode (non-editable).")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Enable detailed output.")
     parser.add_argument("-q", "--quiet", action="store_true",
                         help="Suppress some fallback INFO logs.")
-    parser.add_argument("-m", "--soft-fail-modules", action="store_true",
-                        help="Do not halt when modules/setup.py fails; continue and record as a warning.")
-    parser.add_argument("-I", "--ignore-requirements", action="store_true",
-                        help="Pass to modules/setup.py to skip installing requirements.txt for each module.")
+    parser.add_argument(
+        "-m", "--soft-fail-modules",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Do not halt when modules/setup.py fails; continue and record as a warning.",
+    )
 
     args = parser.parse_args()
     _is_verbose = args.verbose
@@ -540,21 +546,24 @@ def main():
     else:
         status_line("Not WSL2; skipping win32yank setup.", "unchanged")
 
-    # Sub-setups (modules/setup.py receives -I only)
+    # Sub-setups
     common_setup_args = [
         "--scripts-dir", str(scripts_dir),
         "--dotfiles-dir", str(dotfiles_dir),
         "--bin-dir", str(bin_dir),
     ]
     if args.verbose:        common_setup_args.append("--verbose")
-    if args.skip_reinstall: common_setup_args.append("--skip-reinstall")
+    if args.skip_reinstall:
+        common_setup_args.append("--skip-reinstall")
+    else:
+        common_setup_args.append("--no-skip-reinstall")
     if args.production:     common_setup_args.append("--production")
 
     sub_setups = [
         (SCRIPTS_DIR / "pyscripts" / "setup.py", []),
         (SCRIPTS_DIR / "pscripts" / "setup.py", []),
         (SCRIPTS_DIR / "shell-scripts" / "setup.py", []),
-        (MODULES_DIR / "setup.py", (["-I"] if args.ignore_requirements else [])),
+        (MODULES_DIR / "setup.py", []),
     ]
     for full_script_path, extra_args in sub_setups:
         try:
