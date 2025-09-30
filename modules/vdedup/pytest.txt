@@ -1,0 +1,318 @@
+============================= test session starts =============================
+platform win32 -- Python 3.10.17, pytest-8.3.5, pluggy-1.6.0
+rootdir: C:\Users\mcarls\Repos\scripts\modules\vdedup
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.9.0, libtmux-0.46.2
+collected 52 items
+
+tests\cache_enhanced_test.py ...                                         [  5%]
+tests\cache_test.py .                                                    [  7%]
+tests\cli_validation_test.py FF....FFFF..F.                              [ 34%]
+tests\error_handling_test.py ..............                              [ 61%]
+tests\hashers_test.py ..                                                 [ 65%]
+tests\integration_test.py ......                                         [ 76%]
+tests\keep_policy_test.py .                                              [ 78%]
+tests\pipeline_parse_test.py .                                           [ 80%]
+tests\report_analysis_test.py .                                          [ 82%]
+tests\report_print_test.py .                                             [ 84%]
+tests\subset_detection_test.py ........                                  [100%]
+
+================================== FAILURES ===================================
+_______________________________ test_valid_args _______________________________
+
+    def test_valid_args():
+        """Test that valid arguments pass validation."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            test_video = temp_path / "test.mp4"
+            test_video.write_text("fake video")
+    
+            # Test basic scan command
+>           args = parse_args([str(temp_path), "-Q", "1-2", "-t", "4"])
+
+tests\cli_validation_test.py:21: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+video_dedupe.py:576: in parse_args
+    return p.parse_args(argv)
+..\argparse_enforcer\enforcer.py:179: in parse_args
+    return super().parse_args(args, namespace)
+..\..\..\..\mambaforge\envs\dlpn\lib\argparse.py:1836: in parse_args
+    self.error(msg % ' '.join(argv))
+..\..\..\..\mambaforge\envs\dlpn\lib\argparse.py:2594: in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = EnforcedArgumentParser(prog='pytest', usage=None, description='Find and remove duplicate/similar videos & files using ...ed pipeline.', formatter_class=<class 'argparse.RawDescriptionHelpFormatter'>, conflict_handler='error', add_help=True)
+status = 2, message = 'pytest: error: unrecognized arguments: -Q 1-2\n'
+
+    def exit(self, status=0, message=None):
+        if message:
+            self._print_message(message, _sys.stderr)
+>       _sys.exit(status)
+E       SystemExit: 2
+
+..\..\..\..\mambaforge\envs\dlpn\lib\argparse.py:2581: SystemExit
+---------------------------- Captured stderr call -----------------------------
+usage: pytest [-h] [-p PATTERN] [-r] [-q QUALITY] [-o OUTPUT_DIR] [-t THREADS]
+              [-g] [-L] [-l {DEBUG,INFO,WARNING,ERROR}]
+              [-c {DEBUG,INFO,WARNING,ERROR}] [-n] [-P PRINT_REPORT]
+              [-v {0,1,2}] [-e EXCLUDE_BY_REPORT] [-y ANALYZE_REPORT]
+              [-a APPLY_REPORT] [-b BACKUP] [-f] [-d] [-u DURATION_TOLERANCE]
+              [-F PHASH_FRAMES] [-T PHASH_THRESHOLD] [-s SUBSET_MIN_RATIO]
+              [directories ...]
+pytest: error: unrecognized arguments: -Q 1-2
+____________________________ test_invalid_pipeline ____________________________
+
+    def test_invalid_pipeline():
+        """Test pipeline validation."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Test with a pipeline that would cause parse_pipeline to raise an exception
+>           args = parse_args([temp_dir, "-Q", "1-2"])
+
+tests\cli_validation_test.py:30: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+video_dedupe.py:576: in parse_args
+    return p.parse_args(argv)
+..\argparse_enforcer\enforcer.py:179: in parse_args
+    return super().parse_args(args, namespace)
+..\..\..\..\mambaforge\envs\dlpn\lib\argparse.py:1836: in parse_args
+    self.error(msg % ' '.join(argv))
+..\..\..\..\mambaforge\envs\dlpn\lib\argparse.py:2594: in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = EnforcedArgumentParser(prog='pytest', usage=None, description='Find and remove duplicate/similar videos & files using ...ed pipeline.', formatter_class=<class 'argparse.RawDescriptionHelpFormatter'>, conflict_handler='error', add_help=True)
+status = 2, message = 'pytest: error: unrecognized arguments: -Q 1-2\n'
+
+    def exit(self, status=0, message=None):
+        if message:
+            self._print_message(message, _sys.stderr)
+>       _sys.exit(status)
+E       SystemExit: 2
+
+..\..\..\..\mambaforge\envs\dlpn\lib\argparse.py:2581: SystemExit
+---------------------------- Captured stderr call -----------------------------
+usage: pytest [-h] [-p PATTERN] [-r] [-q QUALITY] [-o OUTPUT_DIR] [-t THREADS]
+              [-g] [-L] [-l {DEBUG,INFO,WARNING,ERROR}]
+              [-c {DEBUG,INFO,WARNING,ERROR}] [-n] [-P PRINT_REPORT]
+              [-v {0,1,2}] [-e EXCLUDE_BY_REPORT] [-y ANALYZE_REPORT]
+              [-a APPLY_REPORT] [-b BACKUP] [-f] [-d] [-u DURATION_TOLERANCE]
+              [-F PHASH_FRAMES] [-T PHASH_THRESHOLD] [-s SUBSET_MIN_RATIO]
+              [directories ...]
+pytest: error: unrecognized arguments: -Q 1-2
+________________________ test_nonexistent_report_files ________________________
+
+    def test_nonexistent_report_files():
+        """Test validation of report file paths."""
+        # Apply report
+>       args = parse_args(["-A", "/nonexistent/report.json"])
+
+tests\cli_validation_test.py:117: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+video_dedupe.py:576: in parse_args
+    return p.parse_args(argv)
+..\argparse_enforcer\enforcer.py:179: in parse_args
+    return super().parse_args(args, namespace)
+..\..\..\..\mambaforge\envs\dlpn\lib\argparse.py:1836: in parse_args
+    self.error(msg % ' '.join(argv))
+..\..\..\..\mambaforge\envs\dlpn\lib\argparse.py:2594: in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = EnforcedArgumentParser(prog='pytest', usage=None, description='Find and remove duplicate/similar videos & files using ...ed pipeline.', formatter_class=<class 'argparse.RawDescriptionHelpFormatter'>, conflict_handler='error', add_help=True)
+status = 2, message = 'pytest: error: unrecognized arguments: -A\n'
+
+    def exit(self, status=0, message=None):
+        if message:
+            self._print_message(message, _sys.stderr)
+>       _sys.exit(status)
+E       SystemExit: 2
+
+..\..\..\..\mambaforge\envs\dlpn\lib\argparse.py:2581: SystemExit
+---------------------------- Captured stderr call -----------------------------
+usage: pytest [-h] [-p PATTERN] [-r] [-q QUALITY] [-o OUTPUT_DIR] [-t THREADS]
+              [-g] [-L] [-l {DEBUG,INFO,WARNING,ERROR}]
+              [-c {DEBUG,INFO,WARNING,ERROR}] [-n] [-P PRINT_REPORT]
+              [-v {0,1,2}] [-e EXCLUDE_BY_REPORT] [-y ANALYZE_REPORT]
+              [-a APPLY_REPORT] [-b BACKUP] [-f] [-d] [-u DURATION_TOLERANCE]
+              [-F PHASH_FRAMES] [-T PHASH_THRESHOLD] [-s SUBSET_MIN_RATIO]
+              [directories ...]
+pytest: error: unrecognized arguments: -A
+_________________________ test_conflicting_ui_options _________________________
+
+    def test_conflicting_ui_options():
+        """Test validation of conflicting UI options - now handled by quality levels."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Test that valid quality levels work
+>           args = parse_args([temp_dir, "-Q", "3"])
+
+tests\cli_validation_test.py:133: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+video_dedupe.py:576: in parse_args
+    return p.parse_args(argv)
+..\argparse_enforcer\enforcer.py:179: in parse_args
+    return super().parse_args(args, namespace)
+..\..\..\..\mambaforge\envs\dlpn\lib\argparse.py:1836: in parse_args
+    self.error(msg % ' '.join(argv))
+..\..\..\..\mambaforge\envs\dlpn\lib\argparse.py:2594: in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = EnforcedArgumentParser(prog='pytest', usage=None, description='Find and remove duplicate/similar videos & files using ...ed pipeline.', formatter_class=<class 'argparse.RawDescriptionHelpFormatter'>, conflict_handler='error', add_help=True)
+status = 2, message = 'pytest: error: unrecognized arguments: -Q 3\n'
+
+    def exit(self, status=0, message=None):
+        if message:
+            self._print_message(message, _sys.stderr)
+>       _sys.exit(status)
+E       SystemExit: 2
+
+..\..\..\..\mambaforge\envs\dlpn\lib\argparse.py:2581: SystemExit
+---------------------------- Captured stderr call -----------------------------
+usage: pytest [-h] [-p PATTERN] [-r] [-q QUALITY] [-o OUTPUT_DIR] [-t THREADS]
+              [-g] [-L] [-l {DEBUG,INFO,WARNING,ERROR}]
+              [-c {DEBUG,INFO,WARNING,ERROR}] [-n] [-P PRINT_REPORT]
+              [-v {0,1,2}] [-e EXCLUDE_BY_REPORT] [-y ANALYZE_REPORT]
+              [-a APPLY_REPORT] [-b BACKUP] [-f] [-d] [-u DURATION_TOLERANCE]
+              [-F PHASH_FRAMES] [-T PHASH_THRESHOLD] [-s SUBSET_MIN_RATIO]
+              [directories ...]
+pytest: error: unrecognized arguments: -Q 3
+______________________ test_subset_detect_without_stage4 ______________________
+
+    def test_subset_detect_without_stage4():
+        """Test that subset detection requires stage 4."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Quality level 5 enables subset detection and requires stage 4
+>           args = parse_args([temp_dir, "-Q", "5"])
+
+tests\cli_validation_test.py:142: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+video_dedupe.py:576: in parse_args
+    return p.parse_args(argv)
+..\argparse_enforcer\enforcer.py:179: in parse_args
+    return super().parse_args(args, namespace)
+..\..\..\..\mambaforge\envs\dlpn\lib\argparse.py:1836: in parse_args
+    self.error(msg % ' '.join(argv))
+..\..\..\..\mambaforge\envs\dlpn\lib\argparse.py:2594: in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = EnforcedArgumentParser(prog='pytest', usage=None, description='Find and remove duplicate/similar videos & files using ...ed pipeline.', formatter_class=<class 'argparse.RawDescriptionHelpFormatter'>, conflict_handler='error', add_help=True)
+status = 2, message = 'pytest: error: unrecognized arguments: -Q 5\n'
+
+    def exit(self, status=0, message=None):
+        if message:
+            self._print_message(message, _sys.stderr)
+>       _sys.exit(status)
+E       SystemExit: 2
+
+..\..\..\..\mambaforge\envs\dlpn\lib\argparse.py:2581: SystemExit
+---------------------------- Captured stderr call -----------------------------
+usage: pytest [-h] [-p PATTERN] [-r] [-q QUALITY] [-o OUTPUT_DIR] [-t THREADS]
+              [-g] [-L] [-l {DEBUG,INFO,WARNING,ERROR}]
+              [-c {DEBUG,INFO,WARNING,ERROR}] [-n] [-P PRINT_REPORT]
+              [-v {0,1,2}] [-e EXCLUDE_BY_REPORT] [-y ANALYZE_REPORT]
+              [-a APPLY_REPORT] [-b BACKUP] [-f] [-d] [-u DURATION_TOLERANCE]
+              [-F PHASH_FRAMES] [-T PHASH_THRESHOLD] [-s SUBSET_MIN_RATIO]
+              [directories ...]
+pytest: error: unrecognized arguments: -Q 5
+________________________ test_scan_name_without_prefix ________________________
+
+    def test_scan_name_without_prefix():
+        """Test scan name functionality - now handled via output directory."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Test that output directory works
+>           args = parse_args([temp_dir, "-O", "./output"])
+
+tests\cli_validation_test.py:153: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+video_dedupe.py:576: in parse_args
+    return p.parse_args(argv)
+..\argparse_enforcer\enforcer.py:179: in parse_args
+    return super().parse_args(args, namespace)
+..\..\..\..\mambaforge\envs\dlpn\lib\argparse.py:1836: in parse_args
+    self.error(msg % ' '.join(argv))
+..\..\..\..\mambaforge\envs\dlpn\lib\argparse.py:2594: in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = EnforcedArgumentParser(prog='pytest', usage=None, description='Find and remove duplicate/similar videos & files using ...ed pipeline.', formatter_class=<class 'argparse.RawDescriptionHelpFormatter'>, conflict_handler='error', add_help=True)
+status = 2, message = 'pytest: error: unrecognized arguments: -O ./output\n'
+
+    def exit(self, status=0, message=None):
+        if message:
+            self._print_message(message, _sys.stderr)
+>       _sys.exit(status)
+E       SystemExit: 2
+
+..\..\..\..\mambaforge\envs\dlpn\lib\argparse.py:2581: SystemExit
+---------------------------- Captured stderr call -----------------------------
+usage: pytest [-h] [-p PATTERN] [-r] [-q QUALITY] [-o OUTPUT_DIR] [-t THREADS]
+              [-g] [-L] [-l {DEBUG,INFO,WARNING,ERROR}]
+              [-c {DEBUG,INFO,WARNING,ERROR}] [-n] [-P PRINT_REPORT]
+              [-v {0,1,2}] [-e EXCLUDE_BY_REPORT] [-y ANALYZE_REPORT]
+              [-a APPLY_REPORT] [-b BACKUP] [-f] [-d] [-u DURATION_TOLERANCE]
+              [-F PHASH_FRAMES] [-T PHASH_THRESHOLD] [-s SUBSET_MIN_RATIO]
+              [directories ...]
+pytest: error: unrecognized arguments: -O ./output
+_______________________ test_output_directory_creation ________________________
+
+    def test_output_directory_creation():
+        """Test validation of output directory creation."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            test_video = temp_path / "test.mp4"
+            test_video.write_text("fake video")
+    
+            # Valid backup directory
+            backup_dir = temp_path / "backup"
+            args = parse_args([str(temp_path), "-b", str(backup_dir)])
+            error = _validate_args(args)
+            assert error is None
+    
+            # Valid output directory
+            output_dir = temp_path / "output"
+>           args = parse_args([str(temp_path), "-O", str(output_dir)])
+
+tests\cli_validation_test.py:192: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+video_dedupe.py:576: in parse_args
+    return p.parse_args(argv)
+..\argparse_enforcer\enforcer.py:179: in parse_args
+    return super().parse_args(args, namespace)
+..\..\..\..\mambaforge\envs\dlpn\lib\argparse.py:1836: in parse_args
+    self.error(msg % ' '.join(argv))
+..\..\..\..\mambaforge\envs\dlpn\lib\argparse.py:2594: in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = EnforcedArgumentParser(prog='pytest', usage=None, description='Find and remove duplicate/similar videos & files using ...ed pipeline.', formatter_class=<class 'argparse.RawDescriptionHelpFormatter'>, conflict_handler='error', add_help=True)
+status = 2
+message = 'pytest: error: unrecognized arguments: -O C:\\Users\\mcarls\\AppData\\Local\\Temp\\tmpgtrfsy9_\\output\n'
+
+    def exit(self, status=0, message=None):
+        if message:
+            self._print_message(message, _sys.stderr)
+>       _sys.exit(status)
+E       SystemExit: 2
+
+..\..\..\..\mambaforge\envs\dlpn\lib\argparse.py:2581: SystemExit
+---------------------------- Captured stderr call -----------------------------
+usage: pytest [-h] [-p PATTERN] [-r] [-q QUALITY] [-o OUTPUT_DIR] [-t THREADS]
+              [-g] [-L] [-l {DEBUG,INFO,WARNING,ERROR}]
+              [-c {DEBUG,INFO,WARNING,ERROR}] [-n] [-P PRINT_REPORT]
+              [-v {0,1,2}] [-e EXCLUDE_BY_REPORT] [-y ANALYZE_REPORT]
+              [-a APPLY_REPORT] [-b BACKUP] [-f] [-d] [-u DURATION_TOLERANCE]
+              [-F PHASH_FRAMES] [-T PHASH_THRESHOLD] [-s SUBSET_MIN_RATIO]
+              [directories ...]
+pytest: error: unrecognized arguments: -O C:\Users\mcarls\AppData\Local\Temp\tmpgtrfsy9_\output
+=========================== short test summary info ===========================
+FAILED tests/cli_validation_test.py::test_valid_args - SystemExit: 2
+FAILED tests/cli_validation_test.py::test_invalid_pipeline - SystemExit: 2
+FAILED tests/cli_validation_test.py::test_nonexistent_report_files - SystemEx...
+FAILED tests/cli_validation_test.py::test_conflicting_ui_options - SystemExit: 2
+FAILED tests/cli_validation_test.py::test_subset_detect_without_stage4 - Syst...
+FAILED tests/cli_validation_test.py::test_scan_name_without_prefix - SystemEx...
+FAILED tests/cli_validation_test.py::test_output_directory_creation - SystemE...
+======================== 7 failed, 45 passed in 1.90s =========================

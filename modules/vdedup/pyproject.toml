@@ -51,9 +51,5 @@ testpaths = ["tests"]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-# Exclude UI test files that may freeze due to interactive components
-norecursedirs = [
-    "test_enhanced_ui.py",
-    "test_simple_ui.py",
-    "test_debug_ui.py"
-]
+# Exclude manual/interactive UI test scripts (renamed with manual_ prefix)
+addopts = "--ignore=manual_test_*.py"
