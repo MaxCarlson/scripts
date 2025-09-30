@@ -200,3 +200,4 @@ downloads_dlpn/
 # LLMs CLI related
 *.claude/
 claude-*.txt
+*.ignore
