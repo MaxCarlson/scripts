@@ -29,10 +29,10 @@ class TestManager:
         args_with_res = parser.parse_args(["--max-resolution", "1080"])
         assert args_with_res.max_resolution == "1080"
 
-        args_with_short = parser.parse_args(["-H", "720"])
+        args_with_short = parser.parse_args(["-v", "720"])
         assert args_with_short.max_resolution == "720"
 
-        args_with_show = parser.parse_args(["-B"])
+        args_with_show = parser.parse_args(["-b"])
         assert args_with_show.show_bars is True
 
     def test_read_urls(self):

@@ -27,6 +27,14 @@ import traceback
 from pathlib import Path
 from typing import List, Optional
 
+# Import EnforcedArgumentParser with fallback
+try:
+    from argparse_enforcer import EnforcedArgumentParser
+    ENFORCER_AVAILABLE = True
+except ImportError:
+    EnforcedArgumentParser = argparse.ArgumentParser
+    ENFORCER_AVAILABLE = False
+
 from .downloader import MAX_RESOLUTION_CHOICES
 
 # Use TermDash for robust in-place dashboard rendering
@@ -298,28 +306,28 @@ def _start_worker(
 
 
 def make_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+    p = EnforcedArgumentParser(
         prog="dlmanager.py",
         description="Master downloader that coordinates multiple dlscript.py workers",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("-t", "--threads", type=int, default=2, help="Number of concurrent dlscript workers")
-    p.add_argument("-T", "--time-limit", type=int, default=-1, help="Max seconds a worker holds a urlfile (-1 for unlimited)")
-    p.add_argument("-U", "--max-ndjson-rate", type=float, default=5.0, help="Max progress events/sec printed by workers (-1 unlimited)")
+    p.add_argument("-l", "--time-limit", type=int, default=-1, help="Max seconds a worker holds a urlfile (-1 for unlimited)")
+    p.add_argument("-u", "--max-ndjson-rate", type=float, default=5.0, help="Max progress events/sec printed by workers (-1 unlimited)")
     p.add_argument("-q", "--quiet", action="store_true", help="Pass -q to workers")
-    p.add_argument("-S", "--stars-dir", default="./files/downloads/stars", help="Folder of yt-dlp url files")
-    p.add_argument("-A", "--aebn-dir", default="./files/downloads/ae-stars", help="Folder of AEBN url files")
-    p.add_argument("-F", "--finished-log", default="./logs/finished_urlfiles.txt", help="Path to record completed url files")
-    p.add_argument("-R", "--refresh-hz", type=float, default=5.0, help="UI refresh rate")
-    p.add_argument("-E", "--exit-at-time", type=int, default=-1, help="Exit the manager after N seconds (<=0 disables)")
+    p.add_argument("-s", "--stars-dir", default="./files/downloads/stars", help="Folder of yt-dlp url files")
+    p.add_argument("-d", "--aebn-dir", default="./files/downloads/ae-stars", help="Folder of AEBN url files")
+    p.add_argument("-f", "--finished-log", default="./logs/finished_urlfiles.txt", help="Path to record completed url files")
+    p.add_argument("-r", "--refresh-hz", type=float, default=5.0, help="UI refresh rate")
+    p.add_argument("-e", "--exit-at-time", type=int, default=-1, help="Exit the manager after N seconds (<=0 disables)")
     p.add_argument("-a", "--archive", type=str, default=None, help="Archive folder to store per-urlfile status files")
     p.add_argument("-g", "--log-dir", type=str, default="./logs", help="Directory for manager and worker program logs")
-    p.add_argument("-M", "--manager-log", type=str, default=None, help="Explicit path for manager log file (overrides --log-dir)")
-    p.add_argument("-X", "--max-process-dl-speed", type=float, default=None, help="Per-worker max download speed (MiB/s)")
-    p.add_argument("-H", "--max-resolution", choices=MAX_RESOLUTION_CHOICES, default=None, help="Highest video resolution workers should request")
-    p.add_argument("-Z", "--max-total-dl-speed", type=float, default=None, help="Global max download speed across all workers (MiB/s)")
-    p.add_argument("-B", "--show-bars", action="store_true", help="Show an ASCII progress bar per worker")
-    p.add_argument("-P", "--priority-files", action="append", help="URL files to prioritize (can be specified multiple times)")
+    p.add_argument("-m", "--manager-log", type=str, default=None, help="Explicit path for manager log file (overrides --log-dir)")
+    p.add_argument("-x", "--max-process-dl-speed", type=float, default=None, help="Per-worker max download speed (MiB/s)")
+    p.add_argument("-v", "--max-resolution", choices=MAX_RESOLUTION_CHOICES, default=None, help="Highest video resolution workers should request")
+    p.add_argument("-z", "--max-total-dl-speed", type=float, default=None, help="Global max download speed across all workers (MiB/s)")
+    p.add_argument("-b", "--show-bars", action="store_true", help="Show an ASCII progress bar per worker")
+    p.add_argument("-p", "--priority-files", action="append", help="URL files to prioritize (can be specified multiple times)")
     return p
 
 
