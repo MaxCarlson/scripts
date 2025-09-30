@@ -552,6 +552,7 @@ def main():
 
     sub_setups = [
         (SCRIPTS_DIR / "pyscripts" / "setup.py", []),
+        (SCRIPTS_DIR / "pscripts" / "setup.py", []),
         (SCRIPTS_DIR / "shell-scripts" / "setup.py", []),
         (MODULES_DIR / "setup.py", (["-I"] if args.ignore_requirements else [])),
     ]
