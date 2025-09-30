@@ -4,6 +4,14 @@ import argparse, os, sys, json, time, logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# Import EnforcedArgumentParser with fallback
+try:
+    from argparse_enforcer import EnforcedArgumentParser
+    ENFORCER_AVAILABLE = True
+except ImportError:
+    EnforcedArgumentParser = argparse.ArgumentParser
+    ENFORCER_AVAILABLE = False
+
 from .client import WebAIClient, DEFAULT_URL
 from .ingest import materialize_at_refs, render_attachments_block
 from .sessions import load_session, append_session
@@ -117,21 +125,21 @@ def repl(client: WebAIClient, *, model: str, session: Optional[str],
             sess_msgs.append({"role":"assistant","content":reply})
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="agt", description="AI tools.")
+    p = EnforcedArgumentParser(prog="agt", description="AI tools.")
     sub = p.add_subparsers(dest="sub", required=True)
 
     g = sub.add_parser("gemini", help="Interact with a WebAI-to-API server (Gemini).")
-    g.add_argument("--url", default=DEFAULT_URL, help=f"Server base URL (default: {DEFAULT_URL})")
-    g.add_argument("--model", default=os.environ.get("AGT_MODEL","gemini-2.0-flash"),
+    g.add_argument("-u", "--url", default=DEFAULT_URL, help=f"Server base URL (default: {DEFAULT_URL})")
+    g.add_argument("-m", "--model", default=os.environ.get("AGT_MODEL","gemini-2.0-flash"),
                    help="Model name (default: env AGT_MODEL or gemini-2.0-flash)")
-    g.add_argument("-p","--prompt", help="Prompt text OR path to a file containing the prompt.")
-    g.add_argument("-s","--stream", action="store_true", help="Stream assistant output.")
-    g.add_argument("--session", help="Resume/save conversation under this name.")
-    g.add_argument("--new-session", action="store_true", help="Start fresh even if session exists.")
-    g.add_argument("--attach-root-hint", default=None, help="Shown in the ReadManyFiles header. Default: CWD.")
-    g.add_argument("--ui", choices=["tui","repl"], default="tui", help="Choose interface (default: tui).")
-    g.add_argument("-v","--verbose", action="store_true", help="Verbose logging to stderr.")
-    g.add_argument("--log", default=str((Path.home()/".config/agt/agt.log") if os.name!="nt" else (Path.home()/"AppData/Roaming/agt/agt.log")),
+    g.add_argument("-p", "--prompt", help="Prompt text OR path to a file containing the prompt.")
+    g.add_argument("-s", "--stream", action="store_true", help="Stream assistant output.")
+    g.add_argument("-S", "--session", help="Resume/save conversation under this name.")
+    g.add_argument("-n", "--new-session", action="store_true", help="Start fresh even if session exists.")
+    g.add_argument("-a", "--attach-root-hint", default=None, help="Shown in the ReadManyFiles header. Default: CWD.")
+    g.add_argument("-i", "--ui", choices=["tui","repl"], default="tui", help="Choose interface (default: tui).")
+    g.add_argument("-v", "--verbose", action="store_true", help="Verbose logging to stderr.")
+    g.add_argument("-l", "--log", default=str((Path.home()/".config/agt/agt.log") if os.name!="nt" else (Path.home()/"AppData/Roaming/agt/agt.log")),
                    help="Log file path (default: ~/.config/agt/agt.log)")
     g.add_argument("message", nargs="*", help="Prompt text (if -p not used).")
 
