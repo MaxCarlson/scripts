@@ -341,7 +341,7 @@ def run_pipeline(
                 logger.info(f"Scanning progress: {i+1}/{len(files)} files")
             scan_one(file_path)
             # Update UI periodically during scanning
-            if i % 10 == 0:  # Update every 10 files
+            if i % 100 == 0:  # STEP 6: Reduce update frequency to prevent UI spam
                 reporter.update_progress_periodically(i + 1, len(files))
         # Final update
         reporter.update_progress_periodically(len(files), len(files), force_update=True)
@@ -395,7 +395,7 @@ def run_pipeline(
             m_result, sig = _do_partial(m)
             partial_map[sig].append(m_result)
             # Update UI periodically during partial hashing
-            if i % 5 == 0:  # Update every 5 files
+            if i % 20 == 0:  # STEP 6: Update every 20 files to reduce UI overhead
                 reporter.update_progress_periodically(i + 1, len(size_collisions))
         # Final update
         reporter.update_progress_periodically(len(size_collisions), len(size_collisions), force_update=True)
@@ -462,7 +462,7 @@ def run_pipeline(
                 if sha:
                     by_hash[sha].append(m_result)
                 # Update UI periodically during SHA256 hashing
-                if i % 3 == 0:  # Update every 3 files (SHA256 is slower)
+                if i % 10 == 0:  # STEP 6: Update every 10 files (balanced for SHA256)
                     reporter.update_progress_periodically(i + 1, len(to_full))
             # Final update
             reporter.update_progress_periodically(len(to_full), len(to_full), force_update=True)
