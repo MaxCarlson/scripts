@@ -24,6 +24,16 @@ class TestManager:
         assert args.threads == 2
         assert args.time_limit == -1
         assert args.max_ndjson_rate == 5.0
+        assert args.max_resolution is None
+
+        args_with_res = parser.parse_args(["--max-resolution", "1080"])
+        assert args_with_res.max_resolution == "1080"
+
+        args_with_short = parser.parse_args(["-H", "720"])
+        assert args_with_short.max_resolution == "720"
+
+        args_with_show = parser.parse_args(["-B"])
+        assert args_with_show.show_bars is True
 
     def test_read_urls(self):
         """Test reading URLs from a file."""
@@ -70,8 +80,9 @@ class TestManager:
         with tempfile.TemporaryDirectory() as tmpdir:
             finished_log = Path(tmpdir) / "finished.txt"
             roots = [Path(tmpdir) / "nonexistent"]
-            files = manager._gather_from_roots(roots, finished_log)
-            assert files == []
+            regular, priority = manager._gather_from_roots(roots, finished_log)
+            assert regular == []
+            assert priority == []
 
     def test_gather_from_roots_with_files(self):
         """Test gathering files from roots with txt files."""
@@ -86,8 +97,9 @@ class TestManager:
             (root / "subdir" / "test3.txt").write_text("test")
             (root / "not_txt.dat").write_text("test")  # Should be ignored
 
-            files = manager._gather_from_roots([root], finished_log)
-            file_names = [f.name for f in files]
+            regular, priority = manager._gather_from_roots([root], finished_log)
+            assert priority == []
+            file_names = [f.name for f in regular]
 
             assert "test1.txt" in file_names
             assert "test2.txt" in file_names
@@ -109,9 +121,10 @@ class TestManager:
             # Mark file1 as finished
             finished_log.write_text(str(file1.resolve()) + "\n")
 
-            files = manager._gather_from_roots([root], finished_log)
+            regular, priority = manager._gather_from_roots([root], finished_log)
             # Should exclude both the finished file and the finished.txt log file itself
-            remaining_files = [f for f in files if f.name != "finished.txt"]
+            assert priority == []
+            remaining_files = [f for f in regular if f.name != "finished.txt"]
             assert len(remaining_files) == 1
             assert remaining_files[0].name == "test2.txt"
 
@@ -232,6 +245,7 @@ class TestStartWorker:
                     assert "-U" in cmd
                     assert "5.0" in cmd
                     assert "-q" in cmd
+                    assert "--max-resolution" not in cmd
         finally:
             os.unlink(temp_path)
 
@@ -258,7 +272,8 @@ class TestStartWorker:
                         quiet=False,
                         archive_dir=archive_dir,
                         log_dir=log_dir,
-                        cap_mibs=5.5
+                        cap_mibs=5.5,
+                        max_resolution="1080",
                     )
 
                     assert proc == mock_process
@@ -268,6 +283,9 @@ class TestStartWorker:
                     assert "5.5" in cmd
                     assert "-a" in cmd
                     assert str(archive_dir) in cmd
+                    assert "--max-resolution" in cmd
+                    res_idx = cmd.index("--max-resolution")
+                    assert cmd[res_idx + 1] == "1080"
                     assert "-q" not in cmd
         finally:
             os.unlink(temp_path)

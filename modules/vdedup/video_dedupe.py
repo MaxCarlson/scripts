@@ -7,19 +7,19 @@ This CLI drives the staged pipeline and report application.
 Examples:
 
   # Fast exact-dupe sweep (HDD-friendly)
-  video-dedupe "D:\\Videos" -Q 1-2 -p *.mp4 -r -t 4 -C D:\\vd-cache.jsonl -R D:\\report.json -x -L
+  video-dedupe "D:\\Videos" -q 2 -p *.mp4 -r -t 4 -o D:\\output -L
 
   # Thorough scan including pHash + subset detection
-  video-dedupe "D:\\Videos" -Q 1-4 -u 8 -F 9 -T 14 -s -m 0.30 -t 16 -C D:\\vd-cache.jsonl -R D:\\report.json -x -L -g
+  video-dedupe "D:\\Videos" -q 5 -u 8 -F 9 -T 14 -t 16 -o D:\\output -L -g
 
   # Apply a previously generated report
-  video-dedupe -A D:\\report.json -f -b D:\\Quarantine
+  video-dedupe -a D:\\report.json -f -b D:\\Quarantine
 
   # Print one or more reports (with verbosity)
-  video-dedupe -P D:\\report.json -V 2
+  video-dedupe -P D:\\report.json -v 2
 
   # Analyze report(s): print winner<->loser diffs (duration, resolution, bitrates, size)
-  video-dedupe -Y D:\\report.json --diff-verbosity 1
+  video-dedupe -y D:\\report.json
 """
 
 from __future__ import annotations
@@ -34,6 +34,15 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+# Import EnforcedArgumentParser
+try:
+    from argparse_enforcer import EnforcedArgumentParser
+    ENFORCER_AVAILABLE = True
+except ImportError:
+    # Fallback to regular argparse if enforcer not available
+    EnforcedArgumentParser = argparse.ArgumentParser
+    ENFORCER_AVAILABLE = False
 
 # NOTE: absolute imports so the CLI works whether installed or run from source
 from vdedup.pipeline import PipelineConfig, parse_pipeline, run_pipeline
@@ -486,7 +495,7 @@ def _walk_dirs_up_to(root: Path, max_depth: Optional[int]) -> Iterable[Path]:
 # -------- CLI parsing --------
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(
+    p = EnforcedArgumentParser(
         description="Find and remove duplicate/similar videos & files using a staged pipeline.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

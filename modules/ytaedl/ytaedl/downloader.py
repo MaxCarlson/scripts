@@ -21,6 +21,7 @@ Argument style: short -k, long --full-words-with-dashes
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shlex
@@ -33,6 +34,45 @@ from pathlib import Path
 from typing import Iterable, List, Optional
 
 from procparsers import iter_parsed_events, events_to_ndjson
+
+MAX_RESOLUTION_CHOICES = ("4k", "2k", "1080", "720", "480")
+_MAX_RESOLUTION_HEIGHTS = {
+    "4k": 2160,
+    "2k": 1440,
+    "1080": 1080,
+    "720": 720,
+    "480": 480,
+}
+
+
+def _max_height_for_label(label: Optional[str]) -> Optional[int]:
+    if not label:
+        return None
+    return _MAX_RESOLUTION_HEIGHTS.get(label.lower())
+
+
+
+def _safe_marker_stem(name: str) -> str:
+    safe = ''.join(ch if ch.isalnum() else '-' for ch in name)
+    safe = safe.strip('-') or 'aebn'
+    return safe[:80]
+
+
+def _aebn_url_marker(out_dir: Path, url: str) -> Path:
+    ident = (_extract_video_id(url) or '').strip()
+    if not ident:
+        ident = hashlib.sha1(url.encode('utf-8')).hexdigest()[:12]
+    return out_dir / f"{_safe_marker_stem(ident)}.aebndl.part"
+
+
+def _aebn_destination_marker(dest: Path) -> Path:
+    try:
+        suffix = dest.suffix
+        if suffix:
+            return dest.with_suffix(f"{suffix}.part")
+    except Exception:
+        pass
+    return dest.with_name(dest.name + '.part')
 
 # ---- CLI --------------------------------------------------------------------
 
@@ -64,6 +104,8 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("-E", "--exit-at-time", type=int, default=-1, help="Exit the program after N seconds (<=0 disables).")
     p.add_argument("-X", "--max-dl-speed", type=float, default=None,
                    help="Limit download speed to MiB/s (per process). Applies to yt-dlp via --limit-rate; aebndl currently not limited.")
+    p.add_argument("-H", "--max-resolution", choices=MAX_RESOLUTION_CHOICES, default=None,
+                   help="Highest video resolution to allow (yt-dlp uses format filters; aebndl requests nearest available <= target).")
 
     return p
 
@@ -288,7 +330,38 @@ def _extract_video_id(url: str) -> str:
     except Exception:
         return ''
 
-def _build_ytdlp_cmd(urls: List[str], out_dir: Path, max_mibs: Optional[float] = None) -> List[str]:
+def _format_selector_for_height(height: int) -> str:
+    # Prefer best video/audio up to the requested height; fallback to global best.
+    return f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
+
+
+
+
+def _format_archive_line(status: str, elapsed_s: float, when: str, downloaded_mib: float, video_id: str, url: str) -> str:
+    return "	".join([
+        status,
+        f"{elapsed_s:.3f}",
+        when,
+        f"{downloaded_mib:.2f}MiB",
+        video_id or '',
+        url,
+    ])
+
+
+def _ensure_archive_line_has_url(line: str, url: str) -> str:
+    if not line.strip():
+        return ''
+    parts = line.split('	')
+    if len(parts) < 6:
+        parts = (parts + [''] * 6)[:6]
+    parts[5] = url
+    return '	'.join(parts)
+def _build_ytdlp_cmd(
+    urls: List[str],
+    out_dir: Path,
+    max_mibs: Optional[float] = None,
+    max_height: Optional[int] = None,
+) -> List[str]:
     # no --print; --newline ensures line-terminated progress
     cmd = [
         "yt-dlp",
@@ -298,12 +371,24 @@ def _build_ytdlp_cmd(urls: List[str], out_dir: Path, max_mibs: Optional[float] =
     if isinstance(max_mibs, (int, float)) and max_mibs and max_mibs > 0:
         rate_arg = f"{max_mibs:.2f}M"
         cmd += ["--limit-rate", rate_arg]
+    if isinstance(max_height, int) and max_height > 0:
+        cmd += ["--format", _format_selector_for_height(max_height)]
     cmd += [*urls]
     return cmd
 
-def _build_aebndl_cmd(url: str, out_dir: Path, work_dir: Path) -> List[str]:
+
+def _build_aebndl_cmd(
+    url: str,
+    out_dir: Path,
+    work_dir: Path,
+    max_height: Optional[int] = None,
+) -> List[str]:
     # Keep default logging level (INFO) to have progress; do NOT pass -c by default
-    return ["aebndl", "--json", "-o", str(out_dir), "-w", str(work_dir), url]
+    cmd = ["aebndl", "--json", "-o", str(out_dir), "-w", str(work_dir)]
+    if isinstance(max_height, int) and max_height > 0:
+        cmd += ["-r", str(max_height)]
+    cmd.append(url)
+    return cmd
 
 def _emit_json(d: dict) -> None:
     sys.stdout.write(json.dumps(d, ensure_ascii=False) + "\n")
@@ -326,6 +411,7 @@ def _run_one(
     stall_seconds: int | None = None,
     program_deadline: float | None = None,
     max_dl_speed: Optional[float] = None,
+    max_height: Optional[int] = None,
 ) -> tuple[int, dict]:
     """
     Returns rc (0 on success). Emits NDJSON to stdout during run.
@@ -341,12 +427,34 @@ def _run_one(
 
     # choose command
     if tool == "aebndl":
-        cmd = _build_aebndl_cmd(url, out_dir, work_dir)
+        cmd = _build_aebndl_cmd(url, out_dir, work_dir, max_height)
     else:
-        cmd = _build_ytdlp_cmd([url], out_dir, max_dl_speed)
+        cmd = _build_ytdlp_cmd([url], out_dir, max_dl_speed, max_height)
+
+    marker_paths: set[Path] = set()
+    active_marker: Optional[Path] = None
+    resume_marker_path: Optional[Path] = None
+    if tool == "aebndl":
+        candidate = _aebn_url_marker(out_dir, url)
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        preexisting = candidate.exists()
+        try:
+            candidate.touch(exist_ok=True)
+            marker_paths.add(candidate)
+            active_marker = candidate
+            if preexisting:
+                resume_marker_path = candidate
+        except Exception:
+            active_marker = None
 
     _emit_json({"event": "start", "downloader": tool, "url_index": url_index, "url_total": None,
                 "url": url, "out_dir": str(out_dir), "cmd": None})
+    if resume_marker_path is not None:
+        _emit_json({"event": "partial_resume_marker", "downloader": tool, "url_index": url_index,
+                   "url": url, "marker": str(resume_marker_path)})
 
     if dry_run:
         if not quiet:
@@ -395,6 +503,35 @@ def _run_one(
                 # still emit the event below for downstream
             if evt.get("event") == "destination":
                 dest_path = evt.get("path") or dest_path
+                if tool == "aebndl" and dest_path:
+                    dest_marker = _aebn_destination_marker(Path(str(dest_path)))
+                    try:
+                        dest_marker.parent.mkdir(parents=True, exist_ok=True)
+                    except Exception:
+                        pass
+                    if active_marker and active_marker.exists() and active_marker != dest_marker:
+                        try:
+                            active_marker.replace(dest_marker)
+                            marker_paths.discard(active_marker)
+                            marker_paths.add(dest_marker)
+                            active_marker = dest_marker
+                        except Exception:
+                            marker_paths.add(active_marker)
+                            try:
+                                if not dest_marker.exists():
+                                    dest_marker.touch(exist_ok=True)
+                                marker_paths.add(dest_marker)
+                                active_marker = dest_marker
+                            except Exception:
+                                pass
+                    else:
+                        try:
+                            if not dest_marker.exists():
+                                dest_marker.touch(exist_ok=True)
+                            marker_paths.add(dest_marker)
+                            active_marker = dest_marker
+                        except Exception:
+                            pass
             if evt.get("event") == "progress":
                 last_progress = evt
             now = time.time()
@@ -490,6 +627,16 @@ def _run_one(
         info = {"elapsed_s": time.time() - t_url_start, "downloaded": (last_progress or {}).get("downloaded"), "total": (last_progress or {}).get("total"), "already": False, "downloader": tool}
         return 130, info
 
+    if tool == "aebndl" and rc == 0:
+        for marker in list(marker_paths):
+            try:
+                if marker.exists():
+                    marker.unlink()
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass
+
     # classify status
     status = "FINISH_SUCCESS" if rc == 0 else "FINISH_BAD"
     if rc == 0 and tool == "yt-dlp" and already_seen:
@@ -502,7 +649,7 @@ def _run_one(
     # retry if bad
     info = {"elapsed_s": elapsed_s, "downloaded": (last_progress or {}).get("downloaded"), "total": (last_progress or {}).get("total"), "already": bool(already_seen), "downloader": tool}
     if rc != 0 and retries > 0:
-        return _run_one(tool, urls, out_dir, work_dir, raw_dir, url_index, proglog, timeout, retries - 1, quiet, dry_run, progress_freq_s, max_ndjson_rate, stall_seconds, program_deadline, max_dl_speed)
+        return _run_one(tool, urls, out_dir, work_dir, raw_dir, url_index, proglog, timeout, retries - 1, quiet, dry_run, progress_freq_s, max_ndjson_rate, stall_seconds, program_deadline, max_dl_speed, max_height)
     return rc, info
 
 def main() -> int:
@@ -555,6 +702,9 @@ def main() -> int:
             statuses.extend([''] * (len(urls) - len(statuses)))
         else:
             statuses = statuses[:len(urls)]
+        for idx, line in enumerate(statuses):
+            if line.strip():
+                statuses[idx] = _ensure_archive_line_has_url(line, urls[idx])
     # First unprocessed index (1-based index in our event loop)
     first_unprocessed = 1
     if archive_file:
@@ -601,9 +751,12 @@ def main() -> int:
                 quiet=args.quiet,
                 dry_run=args.dry_run,
                 progress_freq_s=args.progress_log_freq,
-                max_ndjson_rate=args.max_ndjson_rate, stall_seconds=args.stall_seconds,
-                program_deadline=(time.time()+args.exit_at_time) if (args.exit_at_time and args.exit_at_time>0) else None,
-                max_dl_speed=args.max_dl_speed)
+                max_ndjson_rate=args.max_ndjson_rate,
+                stall_seconds=args.stall_seconds,
+                program_deadline=(time.time() + args.exit_at_time) if (args.exit_at_time and args.exit_at_time > 0) else None,
+                max_dl_speed=args.max_dl_speed,
+                max_height=_max_height_for_label(args.max_resolution),
+            )
             # Update archive status (skip marking on Ctrl-C abort rc==130)
             if archive_file:
                 # Ensure statuses list long enough
@@ -620,12 +773,14 @@ def main() -> int:
                 if status:
                     # Compose tab-separated columns
                     # status, elapsed_s, iso time, bytes_downloaded, video_id
-                    elapsed_s = info.get('elapsed_s') or 0.0
+                    elapsed_s = float(info.get('elapsed_s') or 0.0)
                     when = time.strftime('%Y-%m-%dT%H:%M:%S')
-                    downloaded = info.get('downloaded') or 0
-                    downloaded_mib = float(downloaded) / (1024*1024)
+                    downloaded = float(info.get('downloaded') or 0.0)
+                    downloaded_mib = downloaded / (1024*1024)
                     vid = _extract_video_id(url)
-                    statuses[i - 1] = f"{status}\t{elapsed_s:.3f}\t{when}\t{downloaded_mib:.2f}MiB\t{vid}"
+                    statuses[i - 1] = _format_archive_line(status, elapsed_s, when, downloaded_mib, vid, url)
+                elif status == '' and statuses[i - 1].strip():
+                    statuses[i - 1] = _ensure_archive_line_has_url(statuses[i - 1], url)
                 try:
                     archive_file.write_text("\n".join(statuses) + "\n", encoding='utf-8')
                 except Exception:
