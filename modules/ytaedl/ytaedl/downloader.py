@@ -21,7 +21,6 @@ Argument style: short -k, long --full-words-with-dashes
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import shlex
@@ -50,29 +49,6 @@ def _max_height_for_label(label: Optional[str]) -> Optional[int]:
         return None
     return _MAX_RESOLUTION_HEIGHTS.get(label.lower())
 
-
-
-def _safe_marker_stem(name: str) -> str:
-    safe = ''.join(ch if ch.isalnum() else '-' for ch in name)
-    safe = safe.strip('-') or 'aebn'
-    return safe[:80]
-
-
-def _aebn_url_marker(out_dir: Path, url: str) -> Path:
-    ident = (_extract_video_id(url) or '').strip()
-    if not ident:
-        ident = hashlib.sha1(url.encode('utf-8')).hexdigest()[:12]
-    return out_dir / f"{_safe_marker_stem(ident)}.aebndl.part"
-
-
-def _aebn_destination_marker(dest: Path) -> Path:
-    try:
-        suffix = dest.suffix
-        if suffix:
-            return dest.with_suffix(f"{suffix}.part")
-    except Exception:
-        pass
-    return dest.with_name(dest.name + '.part')
 
 # ---- CLI --------------------------------------------------------------------
 
@@ -431,30 +407,8 @@ def _run_one(
     else:
         cmd = _build_ytdlp_cmd([url], out_dir, max_dl_speed, max_height)
 
-    marker_paths: set[Path] = set()
-    active_marker: Optional[Path] = None
-    resume_marker_path: Optional[Path] = None
-    if tool == "aebndl":
-        candidate = _aebn_url_marker(out_dir, url)
-        try:
-            candidate.parent.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
-        preexisting = candidate.exists()
-        try:
-            candidate.touch(exist_ok=True)
-            marker_paths.add(candidate)
-            active_marker = candidate
-            if preexisting:
-                resume_marker_path = candidate
-        except Exception:
-            active_marker = None
-
     _emit_json({"event": "start", "downloader": tool, "url_index": url_index, "url_total": None,
                 "url": url, "out_dir": str(out_dir), "cmd": None})
-    if resume_marker_path is not None:
-        _emit_json({"event": "partial_resume_marker", "downloader": tool, "url_index": url_index,
-                   "url": url, "marker": str(resume_marker_path)})
 
     if dry_run:
         if not quiet:
@@ -503,35 +457,6 @@ def _run_one(
                 # still emit the event below for downstream
             if evt.get("event") == "destination":
                 dest_path = evt.get("path") or dest_path
-                if tool == "aebndl" and dest_path:
-                    dest_marker = _aebn_destination_marker(Path(str(dest_path)))
-                    try:
-                        dest_marker.parent.mkdir(parents=True, exist_ok=True)
-                    except Exception:
-                        pass
-                    if active_marker and active_marker.exists() and active_marker != dest_marker:
-                        try:
-                            active_marker.replace(dest_marker)
-                            marker_paths.discard(active_marker)
-                            marker_paths.add(dest_marker)
-                            active_marker = dest_marker
-                        except Exception:
-                            marker_paths.add(active_marker)
-                            try:
-                                if not dest_marker.exists():
-                                    dest_marker.touch(exist_ok=True)
-                                marker_paths.add(dest_marker)
-                                active_marker = dest_marker
-                            except Exception:
-                                pass
-                    else:
-                        try:
-                            if not dest_marker.exists():
-                                dest_marker.touch(exist_ok=True)
-                            marker_paths.add(dest_marker)
-                            active_marker = dest_marker
-                        except Exception:
-                            pass
             if evt.get("event") == "progress":
                 last_progress = evt
             now = time.time()
@@ -626,16 +551,6 @@ def _run_one(
         # Treat as non-fatal for the file: return 130 so caller can advance to next URL
         info = {"elapsed_s": time.time() - t_url_start, "downloaded": (last_progress or {}).get("downloaded"), "total": (last_progress or {}).get("total"), "already": False, "downloader": tool}
         return 130, info
-
-    if tool == "aebndl" and rc == 0:
-        for marker in list(marker_paths):
-            try:
-                if marker.exists():
-                    marker.unlink()
-            except FileNotFoundError:
-                pass
-            except Exception:
-                pass
 
     # classify status
     status = "FINISH_SUCCESS" if rc == 0 else "FINISH_BAD"
