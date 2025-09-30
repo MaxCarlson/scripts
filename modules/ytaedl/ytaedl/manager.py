@@ -27,6 +27,8 @@ import traceback
 from pathlib import Path
 from typing import List, Optional
 
+from .downloader import MAX_RESOLUTION_CHOICES
+
 # Use TermDash for robust in-place dashboard rendering
 # We avoid TermDash here for maximal compatibility across shells; do manual frames
 
@@ -253,7 +255,16 @@ def _gather_from_roots(roots: List[Path], finished_log: Path, priority_files: Op
     return regular_pool, priority_paths
 
 
-def _start_worker(slot: int, urlfile: Path, max_rate: float, quiet: bool, archive_dir: Optional[Path], log_dir: Path, cap_mibs: Optional[float]) -> subprocess.Popen:
+def _start_worker(
+    slot: int,
+    urlfile: Path,
+    max_rate: float,
+    quiet: bool,
+    archive_dir: Optional[Path],
+    log_dir: Path,
+    cap_mibs: Optional[float],
+    max_resolution: Optional[str] = None,
+) -> subprocess.Popen:
     cmd = [
         sys.executable,
         str(Path(__file__).parent / "downloader.py"),
@@ -269,6 +280,8 @@ def _start_worker(slot: int, urlfile: Path, max_rate: float, quiet: bool, archiv
         cmd += ["-X", str(cap_mibs)]
     if archive_dir:
         cmd += ["-a", str(archive_dir)]
+    if max_resolution:
+        cmd += ["--max-resolution", max_resolution]
     if quiet:
         cmd.append("-q")
     # line buffered
@@ -303,8 +316,9 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("-g", "--log-dir", type=str, default="./logs", help="Directory for manager and worker program logs")
     p.add_argument("-M", "--manager-log", type=str, default=None, help="Explicit path for manager log file (overrides --log-dir)")
     p.add_argument("-X", "--max-process-dl-speed", type=float, default=None, help="Per-worker max download speed (MiB/s)")
+    p.add_argument("-H", "--max-resolution", choices=MAX_RESOLUTION_CHOICES, default=None, help="Highest video resolution workers should request")
     p.add_argument("-Z", "--max-total-dl-speed", type=float, default=None, help="Global max download speed across all workers (MiB/s)")
-    p.add_argument("--show-bars", action="store_true", help="Show an ASCII progress bar per worker")
+    p.add_argument("-B", "--show-bars", action="store_true", help="Show an ASCII progress bar per worker")
     p.add_argument("-P", "--priority-files", action="append", help="URL files to prioritize (can be specified multiple times)")
     return p
 
@@ -535,7 +549,7 @@ def main() -> int:
             ws.prog_log_path = (Path(log_dir) / f"ytaedler-worker-{ws.slot:02d}.log").resolve()
         except Exception:
             ws.prog_log_path = None
-        ws.proc = _start_worker(ws.slot, urlfile, args.max_ndjson_rate, args.quiet, archive_dir, log_dir, ws.cap_mibs)
+        ws.proc = _start_worker(ws.slot, urlfile, args.max_ndjson_rate, args.quiet, archive_dir, log_dir, ws.cap_mibs, args.max_resolution)
         ws.reader_stop.clear()
         ws.reader = threading.Thread(target=_reader, args=(ws,), daemon=True)
         ws.reader.start()
@@ -652,7 +666,7 @@ def main() -> int:
                                     w.prog_log_path = (Path(log_dir) / f"ytaedler-worker-{w.slot:02d}.log").resolve()
                                 except Exception:
                                     w.prog_log_path = None
-                                w.proc = _start_worker(w.slot, w.urlfile, args.max_ndjson_rate, args.quiet, archive_dir, log_dir, w.cap_mibs)
+                                w.proc = _start_worker(w.slot, w.urlfile, args.max_ndjson_rate, args.quiet, archive_dir, log_dir, w.cap_mibs, args.max_resolution)
                                 w.reader = threading.Thread(target=_reader, args=(w,), daemon=True)
                                 w.reader.start()
                 elif total_mib < cap * 0.60:
@@ -685,7 +699,7 @@ def main() -> int:
                                         w.prog_log_path = (Path(log_dir) / f"ytaedler-worker-{w.slot:02d}.log").resolve()
                                     except Exception:
                                         w.prog_log_path = None
-                                    w.proc = _start_worker(w.slot, w.urlfile, args.max_ndjson_rate, args.quiet, archive_dir, log_dir, w.cap_mibs)
+                                    w.proc = _start_worker(w.slot, w.urlfile, args.max_ndjson_rate, args.quiet, archive_dir, log_dir, w.cap_mibs, args.max_resolution)
                                     w.reader = threading.Thread(target=_reader, args=(w,), daemon=True)
                                     w.reader.start()
             # Check time limit and exits
