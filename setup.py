@@ -625,7 +625,6 @@ def main():
     if args.production:     common_setup_args.append("--production")
 
     sub_setups = [
-        (MODULES_DIR / "setup.py", (["-I"] if args.ignore_requirements else [])),
         (SCRIPTS_DIR / "pyscripts" / "setup.py", []),
         (SCRIPTS_DIR / "pscripts" / "setup.py", []),
         (SCRIPTS_DIR / "shell-scripts" / "setup.py", []),
