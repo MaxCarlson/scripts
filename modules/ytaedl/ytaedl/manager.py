@@ -1,0 +1,1032 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Master downloader that coordinates multiple dlscript.py workers.
+
+- Scans URL files under ./files/downloads/ae-stars and ./files/downloads/stars
+- Runs up to -t workers (each runs dlscript.py on one URL file at a time)
+- Assigns URL files at random; ensures exclusive assignment
+- Enforces a per-assignment time limit (-T seconds; -1 disables)
+- Tracks per-worker progress by reading dlscript NDJSON and renders a live dashboard
+- Records finished URL files in a log so they are not reassigned
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import random
+import signal
+import subprocess
+import sys
+import threading
+import time
+from dataclasses import dataclass, field
+import traceback
+from pathlib import Path
+from typing import List, Optional
+
+from .downloader import MAX_RESOLUTION_CHOICES
+
+# Use TermDash for robust in-place dashboard rendering
+# We avoid TermDash here for maximal compatibility across shells; do manual frames
+
+
+class ManagerLogger:
+    def __init__(self, path: Path):
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _write(self, msg: str) -> None:
+        # Best-effort cross-process lock
+        try:
+            import msvcrt  # type: ignore
+        except Exception:
+            msvcrt = None  # type: ignore
+        try:
+            import fcntl  # type: ignore
+        except Exception:
+            fcntl = None  # type: ignore
+        with self.path.open("a", encoding="utf-8") as f:
+            try:
+                if msvcrt and os.name == "nt":
+                    msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1_000_000)
+                elif fcntl and os.name != "nt":
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            except Exception:
+                pass
+            try:
+                f.write(msg + "\n")
+                f.flush()
+            finally:
+                try:
+                    if msvcrt and os.name == "nt":
+                        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1_000_000)
+                    elif fcntl and os.name != "nt":
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                except Exception:
+                    pass
+
+    def info(self, msg: str) -> None:
+        t = time.strftime("%H:%M:%S")
+        self._write(f"{t}|INFO|{msg}")
+
+    def error(self, msg: str) -> None:
+        t = time.strftime("%H:%M:%S")
+        self._write(f"{t}|ERROR|{msg}")
+
+
+def _read_urls(path: Path) -> List[str]:
+    lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    out: List[str] = []
+    for ln in lines:
+        s = ln.strip()
+        if not s:
+            continue
+        if s.startswith("#") or s.startswith(";") or s.startswith("]"):
+            continue
+        out.append(s.split("  #", 1)[0].split("  ;", 1)[0].strip())
+    # stable de-dup
+    return list(dict.fromkeys(out))
+
+
+def _human_bytes(b: Optional[float | int]) -> str:
+    if b is None:
+        return "?"
+    v = float(b)
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    i = 0
+    while v >= 1024.0 and i < len(units) - 1:
+        v /= 1024.0
+        i += 1
+    return f"{v:.2f}{units[i]}"
+
+def _human_short_bytes(b: Optional[int]) -> str:
+    if b is None:
+        return "?"
+    v = float(b)
+    g = v / (1024*1024*1024)
+    if g >= 1.0:
+        return f"{g:.1f}G"
+    m = v / (1024*1024)
+    return f"{m:.1f}M"
+
+
+def _hms(elapsed_s: float) -> str:
+    s = int(elapsed_s) % 60
+    m = (int(elapsed_s) // 60) % 60
+    h = int(elapsed_s) // 3600
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def _pause_process(proc: subprocess.Popen) -> bool:
+    """Pause a process. Returns True if successful."""
+    if not proc or proc.poll() is not None:
+        return False
+
+    try:
+        if os.name == 'nt':
+            # Windows: use psutil if available, otherwise try native API
+            try:
+                import psutil
+                p = psutil.Process(proc.pid)
+                p.suspend()
+                return True
+            except ImportError:
+                # Fallback: use Windows API via ctypes
+                try:
+                    import ctypes
+                    from ctypes import wintypes
+                    kernel32 = ctypes.windll.kernel32
+                    handle = kernel32.OpenProcess(0x0200, False, proc.pid)  # PROCESS_SUSPEND_RESUME
+                    if handle:
+                        # Get thread IDs and suspend them
+                        import ctypes.wintypes
+                        class THREADENTRY32(ctypes.Structure):
+                            _fields_ = [
+                                ("dwSize", wintypes.DWORD),
+                                ("cntUsage", wintypes.DWORD),
+                                ("th32ThreadID", wintypes.DWORD),
+                                ("th32OwnerProcessID", wintypes.DWORD),
+                                ("tpBasePri", wintypes.LONG),
+                                ("tpDeltaPri", wintypes.LONG),
+                                ("dwFlags", wintypes.DWORD)
+                            ]
+
+                        # This is complex, so let's use a simpler approach
+                        kernel32.CloseHandle(handle)
+                        return False
+                except Exception:
+                    return False
+        else:
+            # Unix: use SIGSTOP
+            os.kill(proc.pid, signal.SIGSTOP)
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _resume_process(proc: subprocess.Popen) -> bool:
+    """Resume a paused process. Returns True if successful."""
+    if not proc or proc.poll() is not None:
+        return False
+
+    try:
+        if os.name == 'nt':
+            # Windows: use psutil if available
+            try:
+                import psutil
+                p = psutil.Process(proc.pid)
+                p.resume()
+                return True
+            except ImportError:
+                return False
+        else:
+            # Unix: use SIGCONT
+            os.kill(proc.pid, signal.SIGCONT)
+            return True
+    except Exception:
+        return False
+    return False
+
+
+@dataclass
+class WorkerState:
+    slot: int
+    proc: Optional[subprocess.Popen] = None
+    reader: Optional[threading.Thread] = None
+    reader_stop: threading.Event = field(default_factory=threading.Event)
+    urlfile: Optional[Path] = None
+    url_count: int = 0
+    url_index: Optional[int] = None
+    url_current: Optional[str] = None
+    downloader: Optional[str] = None
+    percent: Optional[float] = None
+    speed_bps: Optional[float] = None
+    eta_s: Optional[float] = None
+    downloaded_bytes: Optional[int] = None
+    total_bytes: Optional[int] = None
+    assign_t0: float = 0.0
+    url_t0: float = 0.0
+    last_event_time: float = 0.0
+    destination: Optional[str] = None
+    rc: Optional[int] = None
+    cap_mibs: Optional[float] = None
+    last_throttle_t: float = 0.0
+    last_already: bool = False
+    overlay_msg: Optional[str] = None
+    overlay_since: float = 0.0
+    ndjson_buf: list[str] = field(default_factory=list)
+    prog_log_path: Optional[Path] = None
+    is_paused: bool = False
+    paused_speed_bps: Optional[float] = None
+
+
+def _gather_from_roots(roots: List[Path], finished_log: Path, priority_files: Optional[List[str]] = None) -> tuple[List[Path], List[Path]]:
+    pool: List[Path] = []
+    for root in roots:
+        if not root.exists():
+            continue
+        for p in root.rglob("*.txt"):
+            if p.is_file():
+                pool.append(p)
+    finished: set[str] = set()
+    if finished_log.exists():
+        try:
+            finished = set(x.strip() for x in finished_log.read_text(encoding="utf-8").splitlines() if x.strip())
+        except Exception:
+            finished = set()
+
+    available_pool = [p for p in pool if str(p.resolve()) not in finished]
+
+    if not priority_files:
+        return available_pool, []
+
+    priority_paths = []
+    for pf in priority_files:
+        p = Path(pf).expanduser().resolve()
+        if p.exists() and p.is_file() and str(p) not in finished:
+            priority_paths.append(p)
+
+    regular_pool = [p for p in available_pool if p.resolve() not in [pp.resolve() for pp in priority_paths]]
+
+    return regular_pool, priority_paths
+
+
+def _start_worker(
+    slot: int,
+    urlfile: Path,
+    max_rate: float,
+    quiet: bool,
+    archive_dir: Optional[Path],
+    log_dir: Path,
+    cap_mibs: Optional[float],
+    max_resolution: Optional[str] = None,
+) -> subprocess.Popen:
+    cmd = [
+        sys.executable,
+        str(Path(__file__).parent / "downloader.py"),
+        "-f",
+        str(urlfile),
+        "-U",
+        str(max_rate),
+    ]
+    # Dedicated program log per worker to avoid cross-process contention
+    log_name = Path(log_dir) / f"ytaedler-worker-{slot:02d}.log"
+    cmd += ["-g", str(log_name)]
+    if isinstance(cap_mibs, (int, float)) and cap_mibs and cap_mibs > 0:
+        cmd += ["-X", str(cap_mibs)]
+    if archive_dir:
+        cmd += ["-a", str(archive_dir)]
+    if max_resolution:
+        cmd += ["--max-resolution", max_resolution]
+    if quiet:
+        cmd.append("-q")
+    # line buffered
+    return subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+        creationflags=0,
+    )
+
+
+def make_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="dlmanager.py",
+        description="Master downloader that coordinates multiple dlscript.py workers",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p.add_argument("-t", "--threads", type=int, default=2, help="Number of concurrent dlscript workers")
+    p.add_argument("-T", "--time-limit", type=int, default=-1, help="Max seconds a worker holds a urlfile (-1 for unlimited)")
+    p.add_argument("-U", "--max-ndjson-rate", type=float, default=5.0, help="Max progress events/sec printed by workers (-1 unlimited)")
+    p.add_argument("-q", "--quiet", action="store_true", help="Pass -q to workers")
+    p.add_argument("-S", "--stars-dir", default="./files/downloads/stars", help="Folder of yt-dlp url files")
+    p.add_argument("-A", "--aebn-dir", default="./files/downloads/ae-stars", help="Folder of AEBN url files")
+    p.add_argument("-F", "--finished-log", default="./logs/finished_urlfiles.txt", help="Path to record completed url files")
+    p.add_argument("-R", "--refresh-hz", type=float, default=5.0, help="UI refresh rate")
+    p.add_argument("-E", "--exit-at-time", type=int, default=-1, help="Exit the manager after N seconds (<=0 disables)")
+    p.add_argument("-a", "--archive", type=str, default=None, help="Archive folder to store per-urlfile status files")
+    p.add_argument("-g", "--log-dir", type=str, default="./logs", help="Directory for manager and worker program logs")
+    p.add_argument("-M", "--manager-log", type=str, default=None, help="Explicit path for manager log file (overrides --log-dir)")
+    p.add_argument("-X", "--max-process-dl-speed", type=float, default=None, help="Per-worker max download speed (MiB/s)")
+    p.add_argument("-H", "--max-resolution", choices=MAX_RESOLUTION_CHOICES, default=None, help="Highest video resolution workers should request")
+    p.add_argument("-Z", "--max-total-dl-speed", type=float, default=None, help="Global max download speed across all workers (MiB/s)")
+    p.add_argument("-B", "--show-bars", action="store_true", help="Show an ASCII progress bar per worker")
+    p.add_argument("-P", "--priority-files", action="append", help="URL files to prioritize (can be specified multiple times)")
+    return p
+
+
+def main() -> int:
+    args = make_parser().parse_args()
+    t0 = time.time()
+    deadline = (t0 + args.exit_at_time) if (args.exit_at_time and args.exit_at_time>0) else None
+    stars_dir = Path(args.stars_dir).expanduser().resolve()
+    aebn_dir = Path(args.aebn_dir).expanduser().resolve()
+    # Logs
+    log_dir = Path(args.log_dir).expanduser().resolve()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    if args.manager_log:
+        manager_log_path = Path(args.manager_log).expanduser().resolve()
+    else:
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        manager_log_path = log_dir / f"dlmanager-{ts}-{os.getpid()}.log"
+    mlog = ManagerLogger(manager_log_path)
+
+    archive_dir: Optional[Path] = Path(args.archive).expanduser().resolve() if args.archive else None
+    if archive_dir:
+        archive_dir.mkdir(parents=True, exist_ok=True)
+    finished_log = Path(args.finished_log).expanduser().resolve()
+    finished_log.parent.mkdir(parents=True, exist_ok=True)
+
+    roots: List[Path] = [stars_dir, aebn_dir]
+    pool, priority_pool = _gather_from_roots(roots, finished_log, args.priority_files)
+    if not pool and not priority_pool:
+        # Fallback to test dirs if primary roots are empty
+        repo_root = Path(__file__).resolve().parent.parent
+        test_stars = (repo_root / "test" / "files" / "downloads" / "stars").resolve()
+        test_aebn = (repo_root / "test" / "files" / "downloads" / "ae-stars").resolve()
+        roots = [test_stars, test_aebn]
+        pool, priority_pool = _gather_from_roots(roots, finished_log, args.priority_files)
+    random.shuffle(pool)
+    random.shuffle(priority_pool)
+    active: set[str] = set()
+
+    workers: List[WorkerState] = [WorkerState(slot=i) for i in range(1, args.threads + 1)]
+    stop = threading.Event()
+    mlog.info(f"Start manager threads={args.threads} time_limit={args.time_limit} refresh_hz={args.refresh_hz} exit_at_time={args.exit_at_time} archive_dir={archive_dir}")
+    mlog.info(f"Log dir: {log_dir} | Manager log: {manager_log_path}")
+    if args.priority_files:
+        mlog.info(f"Priority files: {len(priority_pool)} files specified: {[str(p) for p in priority_pool]}")
+    mlog.info(f"Regular pool: {len(pool)} files | Priority pool: {len(priority_pool)} files")
+
+    # Totals tracking
+    total_completed_bytes = 0
+    total_processed_urls = 0
+    total_completed_urls = 0
+    total_started_urls = 0
+
+    def _reader(ws: WorkerState):
+        f = ws.proc.stdout  # type: ignore
+        try:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                # Buffer NDJSON for verbose view
+                try:
+                    ws.ndjson_buf.append(line)
+                    if len(ws.ndjson_buf) > 400:
+                        ws.ndjson_buf = ws.ndjson_buf[-200:]
+                except Exception:
+                    pass
+                try:
+                    evt = json.loads(line)
+                except Exception:
+                    continue
+                ws.last_event_time = time.time()
+                ev = evt.get("event")
+                if ev == "start":
+                    ws.url_index = evt.get("url_index")
+                    ws.url_current = evt.get("url")
+                    ws.downloader = evt.get("downloader")
+                    # Reset progress state on new URL
+                    ws.percent = None
+                    ws.speed_bps = None
+                    ws.eta_s = None
+                    ws.downloaded_bytes = None
+                    ws.total_bytes = None
+                    ws.url_t0 = time.time()
+                    # Clear overlay upon new activity
+                    ws.overlay_msg = None
+                    ws.overlay_since = 0.0
+                    nonlocal total_started_urls
+                    total_started_urls += 1
+                    mlog.info(f"[{ws.slot:02d}] START idx={ws.url_index} url={ws.url_current}")
+                elif ev == "destination":
+                    ws.destination = evt.get("path")
+                    mlog.info(f"[{ws.slot:02d}] DEST path={ws.destination}")
+                elif ev == "already":
+                    # Mark that this URL was already downloaded
+                    ws.last_already = True
+                elif ev == "progress":
+                    # Clamp and normalize to avoid >100% and >total displays
+                    try:
+                        dl = evt.get("downloaded")
+                        tot = evt.get("total")
+                        sp = evt.get("speed_bps")
+                        eta = evt.get("eta_s")
+                        pct = evt.get("percent")
+                        if isinstance(dl, int) and isinstance(tot, int) and tot and tot > 0:
+                            show_dl = min(dl, tot)
+                            ws.downloaded_bytes = show_dl
+                            ws.total_bytes = tot
+                            pct_calc = 100.0 * (float(show_dl) / float(tot))
+                            ws.percent = min(99.9, pct_calc)
+                        else:
+                            if isinstance(pct, (int, float)):
+                                ws.percent = min(99.9, float(pct))
+                            # Keep downloaded/total as-is if provided
+                            ws.downloaded_bytes = dl if isinstance(dl, int) else ws.downloaded_bytes
+                            ws.total_bytes = tot if isinstance(tot, int) else ws.total_bytes
+                        ws.speed_bps = float(sp) if isinstance(sp, (int, float)) else ws.speed_bps
+                        # eta may be 0 or negative near completion
+                        ws.eta_s = float(eta) if isinstance(eta, (int, float)) else ws.eta_s
+                        # Any progress clears overlay
+                        ws.overlay_msg = None
+                        ws.overlay_since = 0.0
+                    except Exception:
+                        pass
+                elif ev == "finish":
+                    mlog.info(f"[{ws.slot:02d}] FINISH rc={evt.get('rc')} idx={ws.url_index}")
+                    # Update per-URL counters here (process continues running)
+                    try:
+                        rc_v = int(evt.get('rc')) if evt.get('rc') is not None else None
+                    except Exception:
+                        rc_v = None
+                    # Count this URL as processed
+                    nonlocal total_processed_urls, total_completed_urls, total_completed_bytes
+                    total_processed_urls += 1
+                    if rc_v == 0:
+                        total_completed_urls += 1
+                        if isinstance(ws.downloaded_bytes, int):
+                            total_completed_bytes += ws.downloaded_bytes
+                    # Build overlay message until next start/progress
+                    status = "FINISHED_DL" if rc_v == 0 and not ws.last_already else ("DUPLICATE" if rc_v == 0 and ws.last_already else "BAD_URL")
+                    ws.last_already = False
+                    # Colorize status
+                    color = "\x1b[32m" if status == "FINISHED_DL" else ("\x1b[33m" if status == "DUPLICATE" else "\x1b[31m")
+                    reset = "\x1b[0m"
+                    elapsed_url = _hms(time.time() - (ws.url_t0 or ws.assign_t0))
+                    name = ws.url_current or ""
+                    ws.overlay_msg = f"URL {ws.url_index or 0} Finished Status {color}{status}{reset} {elapsed_url} {name}"
+                    ws.overlay_since = time.time()
+                    # Reset progress so stale >100% values don’t linger
+                    ws.percent = None
+                    ws.speed_bps = None
+                    ws.eta_s = None
+                    ws.downloaded_bytes = None
+                    ws.total_bytes = None
+                elif ev == "aborted":
+                    mlog.info(f"[{ws.slot:02d}] ABORT reason={evt.get('reason')}")
+                    ws.overlay_msg = f"URL {ws.url_index or 0} Finished Status \x1b[35mABORTED\x1b[0m 00:00:00 {ws.url_current or ''}"
+                    ws.overlay_since = time.time()
+                elif ev == "stalled":
+                    mlog.info(f"[{ws.slot:02d}] STALLED stall_seconds={evt.get('stall_seconds')}")
+                    ws.overlay_msg = f"URL {ws.url_index or 0} Finished Status \x1b[31mSTALLED\x1b[0m 00:00:00 {ws.url_current or ''}"
+                    ws.overlay_since = time.time()
+                elif ev == "deadline":
+                    mlog.info(f"[{ws.slot:02d}] DEADLINE idx={ws.url_index}")
+                    ws.overlay_msg = f"URL {ws.url_index or 0} Finished Status \x1b[35mDEADLINE\x1b[0m 00:00:00 {ws.url_current or ''}"
+                    ws.overlay_since = time.time()
+                if ws.reader_stop.is_set():
+                    break
+        except Exception as e:
+            mlog.error(f"reader exception slot={ws.slot}: {e}\n{traceback.format_exc()}")
+
+    def _assign(ws: WorkerState) -> bool:
+        nonlocal pool, priority_pool
+        # Filter out finished from current pools on each assignment
+        finished: set[str] = set()
+        if finished_log.exists():
+            try:
+                finished = set(x.strip() for x in finished_log.read_text(encoding="utf-8").splitlines() if x.strip())
+            except Exception:
+                finished = set()
+
+        # Try priority files first
+        priority_avail = [p for p in priority_pool if str(p.resolve()) not in active and str(p.resolve()) not in finished]
+        if priority_avail:
+            urlfile = random.choice(priority_avail)
+            priority_pool.remove(urlfile)
+            mlog.info(f"[{ws.slot:02d}] ASSIGN PRIORITY {urlfile}")
+        else:
+            # Fall back to regular pool
+            avail = [p for p in pool if str(p.resolve()) not in active and str(p.resolve()) not in finished]
+            if not avail:
+                return False
+            urlfile = random.choice(avail)
+            mlog.info(f"[{ws.slot:02d}] ASSIGN {urlfile}")
+
+        active.add(str(urlfile.resolve()))
+        ws.urlfile = urlfile
+        ws.url_count = len(_read_urls(urlfile))
+        # If archive indicates completion, skip assignment
+        if archive_dir and ws.url_count > 0:
+            prefix = "ae" if ("ae-stars" in str(urlfile.parent)) else "yt"
+            arch = archive_dir / f"{prefix}-{urlfile.stem}.txt"
+            if arch.exists():
+                try:
+                    statuses = arch.read_text(encoding="utf-8").splitlines()
+                except Exception:
+                    statuses = []
+                done = sum(1 for s in statuses if s.strip())
+                if done >= ws.url_count:
+                    # mark finished and choose another
+                    try:
+                        with finished_log.open("a", encoding="utf-8") as f:
+                            f.write(str(urlfile.resolve()) + "\n")
+                    except Exception:
+                        pass
+                    active.discard(str(urlfile.resolve()))
+                    mlog.info(f"[{ws.slot:02d}] SKIP finished {urlfile}")
+                    return _assign(ws)
+        ws.percent = ws.speed_bps = ws.eta_s = None
+        ws.url_index = None
+        ws.url_current = None
+        ws.destination = None
+        ws.assign_t0 = time.time()
+        ws.rc = None
+        ws.cap_mibs = float(args.max_process_dl_speed) if isinstance(args.max_process_dl_speed, (int, float)) and args.max_process_dl_speed and args.max_process_dl_speed > 0 else None
+        # Remember program log path for this worker
+        try:
+            ws.prog_log_path = (Path(log_dir) / f"ytaedler-worker-{ws.slot:02d}.log").resolve()
+        except Exception:
+            ws.prog_log_path = None
+        ws.proc = _start_worker(ws.slot, urlfile, args.max_ndjson_rate, args.quiet, archive_dir, log_dir, ws.cap_mibs, args.max_resolution)
+        ws.reader_stop.clear()
+        ws.reader = threading.Thread(target=_reader, args=(ws,), daemon=True)
+        ws.reader.start()
+        return True
+
+    def _requeue(ws: WorkerState, finished: bool, reason: str):
+        # Cleanup process
+        if ws.proc and ws.proc.poll() is None:
+            # Resume if paused before terminating
+            if ws.is_paused:
+                _resume_process(ws.proc)
+                ws.is_paused = False
+            try:
+                ws.proc.terminate()
+            except Exception:
+                pass
+            try:
+                ws.proc.wait(timeout=2)
+            except Exception:
+                pass
+        ws.reader_stop.set()
+        if ws.reader:
+            try:
+                ws.reader.join(timeout=1)
+            except Exception:
+                pass
+        if ws.urlfile is not None:
+            key = str(ws.urlfile.resolve())
+            active.discard(key)
+            if finished:
+                try:
+                    with finished_log.open("a", encoding="utf-8") as f:
+                        f.write(key + "\n")
+                except Exception:
+                    pass
+        mlog.info(f"[{ws.slot:02d}] REQUEUE finished={finished} reason={reason}")
+        ws.proc = None
+        ws.urlfile = None
+
+    # Helpers for total throttle
+    def _current_speed_mib() -> float:
+        return sum(float(w.speed_bps) for w in workers if isinstance(w.speed_bps, (int, float)) and not w.is_paused) / (1024*1024)
+
+    def _can_assign_more() -> bool:
+        if not isinstance(args.max_total_dl_speed, (int, float)) or not args.max_total_dl_speed or args.max_total_dl_speed <= 0:
+            return True
+        cur = _current_speed_mib()
+        est_add = float(args.max_process_dl_speed) if isinstance(args.max_process_dl_speed, (int, float)) and args.max_process_dl_speed and args.max_process_dl_speed > 0 else 0.0
+        return (cur + est_add) <= float(args.max_total_dl_speed)
+
+    # Initial fill
+    for ws in workers:
+        if not _can_assign_more():
+            mlog.info("Admission control: delaying assignment due to max-total-dl-speed")
+            break
+        if not _assign(ws):
+            break
+
+    # UI loop
+    refresh_dt = 1.0 / max(1.0, float(args.refresh_hz))
+    last_lines = 0
+    # Interactive verbose pane state: 0=off, 1=NDJSON, 2=Program log
+    verbose_mode = 0
+    verbose_slot = 1
+    # Pause/quit state
+    paused = False
+    quit_confirm = False
+    try:
+        while not stop.is_set():
+            if deadline and time.time() >= deadline:
+                stop.set()
+                break
+            # Dynamic total throttle: proportional caps across yt-dlp workers
+            now_check = time.time()
+            if isinstance(args.max_total_dl_speed, (int, float)) and args.max_total_dl_speed and args.max_total_dl_speed > 0:
+                cap = float(args.max_total_dl_speed)
+                total_mib = sum(float(w.speed_bps) for w in workers if isinstance(w.speed_bps, (int, float)) and not w.is_paused) / (1024*1024)
+                elig = [w for w in workers if w.proc and w.downloader == 'yt-dlp' and isinstance(w.speed_bps, (int, float)) and w.speed_bps and w.speed_bps > 0 and not w.is_paused]
+                elig_sum = sum((float(w.speed_bps)/(1024*1024)) for w in elig)
+                non_elig_mib = max(0.0, total_mib - elig_sum)
+                budget = max(0.0, cap - non_elig_mib)
+                if total_mib > cap * 1.05 and elig:
+                    # Proportional scaling to stay under budget
+                    if elig_sum <= 0.0:
+                        target_each = budget / len(elig) if budget > 0 else 0.5
+                        targets = {w: target_each for w in elig}
+                    else:
+                        scale = budget / elig_sum if elig_sum > 0 else 0.0
+                        targets = {w: max(0.25, (float(w.speed_bps)/(1024*1024)) * scale) for w in elig}
+                    for w, tgt in targets.items():
+                        # Respect per-process cap if set
+                        if isinstance(args.max_process_dl_speed, (int, float)) and args.max_process_dl_speed and args.max_process_dl_speed > 0:
+                            tgt = min(tgt, float(args.max_process_dl_speed))
+                        # Change only if significant and cooldown passed
+                        if (w.cap_mibs is None or abs(tgt - w.cap_mibs) > 0.25) and (now_check - w.last_throttle_t) > 3.0:
+                            w.last_throttle_t = now_check
+                            mlog.info(f"[{w.slot:02d}] THROTTLE total={total_mib:.2f}MiB/s -> cap {tgt:.2f}MiB/s (budget {budget:.2f})")
+                            try:
+                                if w.proc and w.proc.poll() is None:
+                                    w.proc.terminate()
+                                    w.proc.wait(timeout=2)
+                            except Exception:
+                                pass
+                            if w.urlfile:
+                                w.cap_mibs = max(0.25, tgt)
+                                w.reader_stop.set()
+                                if w.reader:
+                                    try:
+                                        w.reader.join(timeout=1)
+                                    except Exception:
+                                        pass
+                                w.reader_stop.clear()
+                                try:
+                                    w.prog_log_path = (Path(log_dir) / f"ytaedler-worker-{w.slot:02d}.log").resolve()
+                                except Exception:
+                                    w.prog_log_path = None
+                                w.proc = _start_worker(w.slot, w.urlfile, args.max_ndjson_rate, args.quiet, archive_dir, log_dir, w.cap_mibs, args.max_resolution)
+                                w.reader = threading.Thread(target=_reader, args=(w,), daemon=True)
+                                w.reader.start()
+                elif total_mib < cap * 0.60:
+                    # Gently increase caps back toward per-process cap (if any)
+                    for w in elig:
+                        if w.cap_mibs and (now_check - w.last_throttle_t) > 5.0:
+                            target = float(args.max_process_dl_speed) if isinstance(args.max_process_dl_speed, (int, float)) and args.max_process_dl_speed and args.max_process_dl_speed > 0 else None
+                            new_cap = w.cap_mibs * 1.2
+                            if target:
+                                new_cap = min(new_cap, target)
+                            if new_cap > w.cap_mibs + 0.25:
+                                w.last_throttle_t = now_check
+                                mlog.info(f"[{w.slot:02d}] UNTHROTTLE total={total_mib:.2f}MiB/s -> cap {new_cap:.2f}MiB/s")
+                                try:
+                                    if w.proc and w.proc.poll() is None:
+                                        w.proc.terminate()
+                                        w.proc.wait(timeout=2)
+                                except Exception:
+                                    pass
+                                if w.urlfile:
+                                    w.cap_mibs = new_cap
+                                    w.reader_stop.set()
+                                    if w.reader:
+                                        try:
+                                            w.reader.join(timeout=1)
+                                        except Exception:
+                                            pass
+                                    w.reader_stop.clear()
+                                    try:
+                                        w.prog_log_path = (Path(log_dir) / f"ytaedler-worker-{w.slot:02d}.log").resolve()
+                                    except Exception:
+                                        w.prog_log_path = None
+                                    w.proc = _start_worker(w.slot, w.urlfile, args.max_ndjson_rate, args.quiet, archive_dir, log_dir, w.cap_mibs, args.max_resolution)
+                                    w.reader = threading.Thread(target=_reader, args=(w,), daemon=True)
+                                    w.reader.start()
+            # Check time limit and exits
+            for ws in workers:
+                if not ws.proc:
+                    continue
+                # time limit
+                if args.time_limit is not None and args.time_limit > 0:
+                    if (time.time() - ws.assign_t0) > args.time_limit:
+                        _requeue(ws, finished=False, reason="time_limit")
+                        if not paused:
+                            _assign(ws)
+                        continue
+                # exit
+                rc = ws.proc.poll()
+                if rc is not None:
+                    ws.rc = rc
+                    finished = (rc == 0)
+                    _requeue(ws, finished=finished, reason=f"exit rc={rc}")
+                    # Assign a new one if available (only if not paused)
+                    if not paused:
+                        _assign(ws)
+
+            # Build frame lines and redraw whole screen
+            try:
+                cols = os.get_terminal_size().columns
+            except OSError:
+                cols = 80
+            lines: List[str] = []
+            active_workers = sum(1 for w in workers if w.proc)
+            current_regular, current_priority = _gather_from_roots(roots, finished_log, args.priority_files)
+            total_available = len([p for p in current_regular if str(p.resolve()) not in active]) + len([p for p in current_priority if str(p.resolve()) not in active])
+            pause_status = " [PAUSED]" if paused else ""
+            quit_status = " [Press Y to confirm quit]" if quit_confirm else ""
+            header = f"DL Manager{pause_status}{quit_status}  |  threads={args.threads}  active={active_workers}  pool={total_available}  time_limit={args.time_limit}"
+            lines.append(header[:cols])
+            total_speed_bps = sum(float(w.speed_bps) for w in workers if isinstance(w.speed_bps, (int, float)) and not w.is_paused)
+            total_speed_mib = total_speed_bps / (1024 * 1024) if total_speed_bps else 0.0
+            inprog_bytes = sum(int(w.downloaded_bytes) for w in workers if isinstance(w.downloaded_bytes, int))
+            agg_bytes = total_completed_bytes + inprog_bytes
+            avg_mib_s = (agg_bytes / max(1.0, (time.time() - t0))) / (1024*1024)
+            lines.append(f"Totals: speed={total_speed_mib:.2f}MiB/s  avg={avg_mib_s:.2f}MiB/s  downloaded={(agg_bytes/1048576):.1f}MiB  urls: started={total_started_urls} processed={total_processed_urls} completed={total_completed_urls}"[:cols])
+            lines.append("-" * min(cols, 100))
+            now = time.time()
+
+            def col(text: str, width: int) -> str:
+                return (text[:width]).ljust(width)
+
+            # Build quartiles for color-coding speeds
+            speeds = [float(w.speed_bps) for w in workers if isinstance(w.speed_bps, (int, float)) and w.speed_bps and w.speed_bps > 0]
+            speeds.sort()
+            def _quantile(xs, q):
+                if not xs:
+                    return None
+                idx = int(round((len(xs)-1) * q))
+                return xs[max(0, min(len(xs)-1, idx))]
+            q1 = _quantile(speeds, 0.25)
+            q2 = _quantile(speeds, 0.50)
+            q3 = _quantile(speeds, 0.75)
+            def speed_color_prefix(sp_bps: Optional[float]) -> str:
+                try:
+                    v = float(sp_bps)
+                except Exception:
+                    return "\x1b[37m"
+                if not speeds or q1 is None or q2 is None or q3 is None:
+                    return "\x1b[37m"
+                if v <= q1:
+                    return "\x1b[31m"  # red
+                if v <= q2:
+                    return "\x1b[33m"  # yellow
+                if v <= q3:
+                    return "\x1b[32m"  # green
+                return "\x1b[36m"      # cyan
+
+            def make_bar(pct: Optional[float], width: int, color_prefix: str = "") -> str:
+                try:
+                    p = float(pct)
+                except Exception:
+                    p = -1
+                inner = max(0, width-2)
+                if p < 0:
+                    return "[" + ("." * inner) + "]"
+                p = max(0.0, min(100.0, p))
+                filled = int(inner * (p/100.0))
+                reset = "\x1b[0m"
+                if color_prefix:
+                    return "[" + (f"{color_prefix}" + ("=" * filled) + f"{reset}") + ("." * (inner - filled)) + "]"
+                else:
+                    return "[" + ("=" * filled) + ("." * (inner - filled)) + "]"
+
+            for ws in workers:
+                name = ws.urlfile.name if (ws.urlfile) else "idle"
+                url_idx = f"URL {ws.url_index or 0}/{ws.url_count or 0}"
+                elapsed = _hms(now - ws.assign_t0) if ws.urlfile else "00:00:00"
+                pct = f"{ws.percent:.2f}%" if isinstance(ws.percent, (int, float)) else "?%"
+                if ws.is_paused:
+                    sp = "PAUSED"
+                else:
+                    sp = f"{(float(ws.speed_bps)/(1024*1024)):.2f}MiB/s" if isinstance(ws.speed_bps, (int, float)) and ws.speed_bps is not None else "?/s"
+                # Render ETA; if near completion and eta ≤ 0, show '?' to avoid stuck 00:00:00
+                if isinstance(ws.eta_s, (int, float)) and ws.eta_s is not None:
+                    if isinstance(ws.percent, (int, float)) and ws.percent is not None and ws.percent >= 99.5 and float(ws.eta_s) <= 0:
+                        eta_txt = "?"
+                    else:
+                        eta_txt = _hms(float(ws.eta_s))
+                else:
+                    eta_txt = "?"
+                sizes = f"{_human_short_bytes(ws.downloaded_bytes)}/{_human_short_bytes(ws.total_bytes)}" if (isinstance(ws.downloaded_bytes, int) and isinstance(ws.total_bytes, int) and ws.total_bytes) else ""
+
+                if cols >= 110:
+                    # Single row packed
+                    tag = "[Y]" if ws.downloader == 'yt-dlp' else ("[A]" if ws.downloader == 'aebndl' else "   ")
+                    c0 = col(f"[{ws.slot:02d}]", 4)
+                    c1 = col(name, 40)
+                    c2 = col(url_idx, 12)
+                    c3 = col(f"Elapsed {elapsed}", 16)
+                    c4 = col(pct, 8)
+                    c5 = col(sp, 12)
+                    c6 = col(f"ETA {eta_txt}", 12)
+                    c7 = col(sizes, 12)
+                    mainline = " | ".join([c0, c1, c2, c3, c4, c5, c6, c7])[:cols]
+                    lines.append(ws.overlay_msg[:cols] if ws.overlay_msg else mainline)
+                    barw = max(20, cols - 8)
+                    lines.append(f"  {tag}  " + make_bar(ws.percent, barw, speed_color_prefix(ws.speed_bps))[:max(0, cols-6)])
+                elif cols >= 90:
+                    # Two rows
+                    tag = "[Y]" if ws.downloader == 'yt-dlp' else ("[A]" if ws.downloader == 'aebndl' else "   ")
+                    c0 = col(f"[{ws.slot:02d}]", 4)
+                    c1 = col(name, 36)
+                    c2 = col(url_idx, 12)
+                    c3 = col(sizes, 14)
+                    main1 = " | ".join([c0, c1, c2, c3])[:cols]
+                    lines.append(ws.overlay_msg[:cols] if ws.overlay_msg else main1)
+                    c0b = col(tag, 4)
+                    c1b = col(f"Elapsed {elapsed}", 20)
+                    c2b = col(pct, 10)
+                    c3b = col(sp, 12)
+                    c4b = col(f"ETA {eta_txt}", 14)
+                    lines.append(" | ".join([c0b, c1b, c2b, c3b, c4b])[:cols])
+                    barw = max(20, cols - 8)
+                    lines.append("     " + make_bar(ws.percent, barw, speed_color_prefix(ws.speed_bps))[:cols])
+                else:
+                    # Three rows compact
+                    tag = "[Y]" if ws.downloader == 'yt-dlp' else ("[A]" if ws.downloader == 'aebndl' else "   ")
+                    c0 = col(f"[{ws.slot:02d}]", 4)
+                    c1 = col(name, max(20, cols - 7))
+                    lines.append(ws.overlay_msg[:cols] if ws.overlay_msg else " | ".join([c0, c1])[:cols])
+                    c0b = col(tag, 4)
+                    c1b = col(f"{url_idx}  Elapsed {elapsed}", max(20, cols - 7))
+                    lines.append(" | ".join([c0b, c1b])[:cols])
+                    c1c = col(f"{pct}  {sp}  ETA {eta_txt}  {sizes}", max(20, cols - 7))
+                    lines.append(" | ".join([c0, c1c])[:cols])
+                    barw = max(20, cols - 8)
+                    lines.append("     " + make_bar(ws.percent, barw, speed_color_prefix(ws.speed_bps))[:cols])
+
+            # Controls and optional verbose pane
+            if quit_confirm:
+                lines.append("Press Y to quit, N to cancel"[:cols])
+            else:
+                lines.append("Keys: p=pause/unpause, q=quit, v=cycle verbose (NDJSON->LOG->off), 1-9=select worker"[:cols])
+            if os.name == 'nt':
+                try:
+                    import msvcrt  # type: ignore
+                    while msvcrt.kbhit():
+                        ch = msvcrt.getwch()
+                        if quit_confirm:
+                            # Handle quit confirmation
+                            if ch and ch.lower() == 'y':
+                                stop.set()
+                                break
+                            elif ch and ch.lower() == 'n':
+                                quit_confirm = False
+                        else:
+                            # Normal key handling
+                            if ch and ch.lower() == 'v':
+                                try:
+                                    verbose_mode = int(verbose_mode)
+                                except Exception:
+                                    verbose_mode = 0
+                                verbose_mode = (verbose_mode + 1) % 3
+                            elif ch and ch.isdigit() and ch != '0':
+                                verbose_slot = int(ch)
+                            elif ch and ch.lower() == 'p':
+                                # Toggle pause
+                                paused = not paused
+                                if paused:
+                                    mlog.info("PAUSE requested - pausing all worker processes")
+                                    # Pause existing processes
+                                    for ws in workers:
+                                        if ws.proc and ws.proc.poll() is None and not ws.is_paused:
+                                            # Store current speed before pausing
+                                            ws.paused_speed_bps = ws.speed_bps
+                                            if _pause_process(ws.proc):
+                                                ws.is_paused = True
+                                                ws.speed_bps = 0.0  # Set speed to 0 while paused
+                                                ws.overlay_msg = f"PAUSED - process suspended, no downloads active"
+                                                ws.overlay_since = time.time()
+                                                mlog.info(f"[{ws.slot:02d}] PAUSED process PID {ws.proc.pid}")
+                                            else:
+                                                ws.overlay_msg = f"PAUSE FAILED - could not suspend process"
+                                                ws.overlay_since = time.time()
+                                                mlog.error(f"[{ws.slot:02d}] Failed to pause process PID {ws.proc.pid}")
+                                else:
+                                    mlog.info("UNPAUSE requested - resuming all worker processes")
+                                    # Resume paused processes and allow new assignments
+                                    for ws in workers:
+                                        if ws.proc and ws.proc.poll() is None and ws.is_paused:
+                                            if _resume_process(ws.proc):
+                                                ws.is_paused = False
+                                                # Restore previous speed (it will update from actual progress soon)
+                                                ws.speed_bps = ws.paused_speed_bps
+                                                ws.paused_speed_bps = None
+                                                ws.overlay_msg = None
+                                                mlog.info(f"[{ws.slot:02d}] RESUMED process PID {ws.proc.pid}")
+                                            else:
+                                                mlog.error(f"[{ws.slot:02d}] Failed to resume process PID {ws.proc.pid}")
+                                        elif not ws.proc:
+                                            # Assign work to idle workers
+                                            _assign(ws)
+                            elif ch and ch.lower() == 'q':
+                                # Request quit confirmation
+                                quit_confirm = True
+                except Exception:
+                    pass
+            if verbose_mode:
+                lines.append("-" * min(cols, 100))
+                sel = next((w for w in workers if w.slot == verbose_slot), None)
+                # Mode 1: NDJSON buffer
+                if verbose_mode == 1:
+                    header_v = f"Verbose NDJSON [{verbose_slot:02d}]"
+                    lines.append(header_v[:cols])
+                    if sel and sel.ndjson_buf:
+                        try:
+                            max_lines = os.get_terminal_size().lines // 3
+                        except Exception:
+                            max_lines = 20
+                        max_lines = max(10, min(60, max_lines))
+                        for ln in sel.ndjson_buf[-max_lines:]:
+                            lines.append(ln[:cols])
+                # Mode 2: Program log tail (colorized statuses)
+                elif verbose_mode == 2:
+                    header_v = f"Program Log [{verbose_slot:02d}]"
+                    lines.append(header_v[:cols])
+                    def _tail_lines(p: Optional[Path], n: int) -> list[str]:
+                        if not p:
+                            return ["<no log path>"]
+                        try:
+                            txt = Path(p).read_text(encoding='utf-8', errors='ignore')
+                            arr = txt.splitlines()
+                            return arr[-n:]
+                        except Exception as _e:
+                            return [f"<error reading {p}: {_e}>"]
+                    def _colorize_log(s: str) -> str:
+                        # Color key statuses per line; ensure reset at end
+                        pairs = [
+                            ("FINISH_BAD", "\x1b[31m"),
+                            ("BAD", "\x1b[31m"),
+                            ("STALLED", "\x1b[31m"),
+                            ("DEADLINE", "\x1b[35m"),
+                            ("FORCE_EXIT", "\x1b[35m"),
+                            ("DUPLICATE", "\x1b[33m"),
+                            ("FINISH_SUCCESS", "\x1b[32m"),
+                            ("SUCCESS", "\x1b[32m"),
+                        ]
+                        out = s
+                        for token, colr in pairs:
+                            if token in out:
+                                out = out.replace(token, f"{colr}{token}\x1b[0m")
+                        # Ensure reset at end to prevent bleed
+                        if "\x1b[" in out and not out.endswith("\x1b[0m"):
+                            out = out + "\x1b[0m"
+                        return out
+                    try:
+                        max_lines = os.get_terminal_size().lines // 3
+                    except Exception:
+                        max_lines = 20
+                    max_lines = max(10, min(60, max_lines))
+                    tail = _tail_lines(sel.prog_log_path if sel else None, max_lines)
+                    for ln in tail:
+                        c = _colorize_log(ln)
+                        lines.append(c[:cols])
+
+            # Redraw whole frame (reset attributes first to avoid color bleed)
+            sys.stdout.write("\x1b[0m\x1b[2J\x1b[H")
+            sys.stdout.write("\n".join(lines) + "\n")
+            sys.stdout.flush()
+
+            # If all workers idle and both pools empty, stop
+            if all(w.proc is None for w in workers):
+                current_regular, current_priority = _gather_from_roots(roots, finished_log, args.priority_files)
+                if not current_regular and not current_priority:
+                    break
+
+            time.sleep(refresh_dt)
+    except KeyboardInterrupt:
+        stop.set()
+    finally:
+        # Cleanup
+        for ws in workers:
+            if ws.proc and ws.proc.poll() is None:
+                # Resume if paused before terminating
+                if ws.is_paused:
+                    _resume_process(ws.proc)
+                    ws.is_paused = False
+                try:
+                    ws.proc.terminate()
+                except Exception:
+                    pass
+                try:
+                    ws.proc.wait(timeout=2)
+                except Exception:
+                    pass
+            if ws.reader:
+                ws.reader_stop.set()
+                try:
+                    ws.reader.join(timeout=1)
+                except Exception:
+                    pass
+        # Leave cursor below
+    return 0
+
+
+if __name__ == "__main__":
+    # Make Ctrl-C stop child process trees on POSIX; on Windows terminate() handles direct child
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
+
+

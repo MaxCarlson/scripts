@@ -195,3 +195,9 @@ cython_debug/
 #.idea/
 pyprjs/chat_gpt_parser/analysis**
 downloads_dlpn/
+
+
+# LLMs CLI related
+*.claude/
+claude-*.txt
+*.ignore

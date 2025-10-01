@@ -7,31 +7,42 @@ This CLI drives the staged pipeline and report application.
 Examples:
 
   # Fast exact-dupe sweep (HDD-friendly)
-  video-dedupe "D:\\Videos" -Q 1-2 -p *.mp4 -r -t 4 -C D:\\vd-cache.jsonl -R D:\\report.json -x -L
+  video-dedupe "D:\\Videos" -q 2 -p *.mp4 -r -t 4 -o D:\\output -L
 
   # Thorough scan including pHash + subset detection
-  video-dedupe "D:\\Videos" -Q 1-4 -u 8 -F 9 -T 14 -s -m 0.30 -t 16 -C D:\\vd-cache.jsonl -R D:\\report.json -x -L -g
+  video-dedupe "D:\\Videos" -q 5 -u 8 -F 9 -T 14 -t 16 -o D:\\output -L -g
 
   # Apply a previously generated report
-  video-dedupe -A D:\\report.json -f -b D:\\Quarantine
+  video-dedupe -a D:\\report.json -f -b D:\\Quarantine
 
   # Print one or more reports (with verbosity)
-  video-dedupe -P D:\\report.json -V 2
+  video-dedupe -P D:\\report.json -v 2
 
-  # Analyze report(s): print winner↔loser diffs (duration, resolution, bitrates, size)
-  video-dedupe -Y D:\\report.json --diff-verbosity 1
+  # Analyze report(s): print winner<->loser diffs (duration, resolution, bitrates, size)
+  video-dedupe -y D:\\report.json
 """
 
 from __future__ import annotations
 
 import argparse
 import glob
+import logging
 import os
 import shutil
+import signal
 import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+# Import EnforcedArgumentParser
+try:
+    from argparse_enforcer import EnforcedArgumentParser
+    ENFORCER_AVAILABLE = True
+except ImportError:
+    # Fallback to regular argparse if enforcer not available
+    EnforcedArgumentParser = argparse.ArgumentParser
+    ENFORCER_AVAILABLE = False
 
 # NOTE: absolute imports so the CLI works whether installed or run from source
 from vdedup.pipeline import PipelineConfig, parse_pipeline, run_pipeline
@@ -79,6 +90,52 @@ def _fmt_bytes(n: int) -> str:
     if n < 1024**3:
         return f"{n/1024**2:.2f} MiB"
     return f"{n/1024**3:.2f} GiB"
+
+
+def _setup_logging(log_file: Optional[Path] = None, log_level: str = "INFO", console_level: str = "WARNING") -> logging.Logger:
+    """
+    Configure comprehensive logging for video deduplication operations.
+
+    Args:
+        log_file: Path to log file (if None, logs to output directory)
+        log_level: File logging level (DEBUG, INFO, WARNING, ERROR)
+        console_level: Console logging level (DEBUG, INFO, WARNING, ERROR)
+
+    Returns:
+        Configured logger instance
+    """
+    # Create logger
+    logger = logging.getLogger('vdedup')
+    logger.setLevel(logging.DEBUG)  # Capture everything, filter at handler level
+
+    # Clear any existing handlers
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+
+    # File handler (detailed logging)
+    if log_file:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
+        file_handler.setLevel(getattr(logging, log_level.upper()))
+
+        # Detailed format for file
+        file_format = logging.Formatter(
+            '%(asctime)s | %(levelname)-8s | %(funcName)-20s | %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        file_handler.setFormatter(file_format)
+        logger.addHandler(file_handler)
+
+    # Console handler (less verbose)
+    console_handler = logging.StreamHandler(sys.stderr)
+    console_handler.setLevel(getattr(logging, console_level.upper()))
+
+    # Simple format for console
+    console_format = logging.Formatter('%(levelname)s: %(message)s')
+    console_handler.setFormatter(console_format)
+    logger.addHandler(console_handler)
+
+    return logger
 
 
 # --- analysis helpers (kept here so tests can monkeypatch) ---
@@ -438,7 +495,7 @@ def _walk_dirs_up_to(root: Path, max_depth: Optional[int]) -> Iterable[Path]:
 # -------- CLI parsing --------
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(
+    p = EnforcedArgumentParser(
         description="Find and remove duplicate/similar videos & files using a staged pipeline.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -453,72 +510,68 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         ),
     )
 
-    # Patterns & recursion
-    p.add_argument("-p", "--pattern", action="append", help="Glob to include (repeatable), e.g. -p *.mp4 -p *.mkv")
-    p.add_argument("-r", "--recursive", action="store_true", help="Default: recurse into subdirectories (unlimited) for roots without a ::dN or ::r suffix")
+    # Core scan options
+    p.add_argument("-p", "--pattern", action="append", default=["*.mp4"], help="Glob to include (repeatable), e.g. -p *.mp4 -p *.mkv (default: *.mp4)")
+    p.add_argument("-r", "--recursive", action="store_true", help="Recurse into subdirectories (unlimited) for roots without a ::dN or ::r suffix. Default: no recursion (depth 0)")
 
-    # Pipeline stages
+    # Quality levels and pipeline selection
     p.add_argument(
-        "-Q", "--pipeline",
-        type=str, default="1-2",
-        help="Stages to run: 1=size prefilter, 2=hashing, 3=metadata, 4=phash/subset. You may also pass 5 (no-op) for convenience. Examples: 1-2 or 1,3-4 or all"
+        "-q", "--quality",
+        type=str, default="2",
+        help=(
+            "Quality/thoroughness level or pipeline stages (default: 2): "
+            "Quality levels: 1=Size only, 2=Size+hash, 3=Size+hash+metadata, 4=Size+hash+metadata+pHash, 5=All+subset detect, 6=+audio analysis, 7=+advanced content analysis. "
+            "Pipeline stages: 1, 1-2, 1-3, 1-4, 1-5, 1-6, 1-7, etc. (e.g., '1-3' runs stages 1 through 3)"
+        )
     )
 
-    # Mode label (informational only; printed in the banner)
-    p.add_argument("-M", "--mode", type=str, default="hash", help="Free-form label for the run (printed in the banner)")
+    # Output folder (replaces individual -C, -R, -S, -N arguments)
+    p.add_argument("-o", "--output-dir", type=str,
+                   help="Directory for all outputs (cache, reports, logs). If not specified, writes to current directory.")
 
-    # Performance & GPU
-    p.add_argument("-t", "--threads", type=int, default=8, help="Total worker threads (default: 8)")
-    p.add_argument("-g", "--gpu", action="store_true", help="Hint FFmpeg to use NVDEC/CUDA for pHash/subset (if available)")
+    # Performance
+    p.add_argument("-t", "--threads", type=int, default=8,
+                   help="Worker threads (default: 8)")
+    p.add_argument("-g", "--gpu", action="store_true",
+                   help="Use GPU acceleration for pHash extraction (requires compatible GPU)")
 
-    # Metadata / pHash params
-    p.add_argument("-u", "--duration-tolerance", dest="duration_tolerance", type=float, default=2.0,
-                   help="Duration tolerance (seconds) for metadata grouping (default: 2.0)")
-    p.add_argument("-F", "--phash-frames", dest="phash_frames", type=int, default=5,
-                   help="Frames to sample for perceptual hash (default: 5)")
-    p.add_argument("-T", "--phash-threshold", dest="phash_threshold", type=int, default=12,
-                   help="Per-frame Hamming distance threshold for pHash (default: 12)")
-    p.add_argument("-s", "--subset-detect", action="store_true",
-                   help="Enable subset detection (find shorter cut-downs of longer videos)")
-    p.add_argument("-m", "--subset-min-ratio", type=float, default=0.30,
-                   help="Minimum short/long duration ratio for subset matches (default: 0.30)")
+    # UI
+    p.add_argument("-L", "--live", action="store_true", help="Show live progress UI")
 
-    # Live UI
-    p.add_argument("-L", "--live", action="store_true", help="Show live TermDash UI")
-    p.add_argument("-e", "--refresh-rate", dest="refresh_rate", type=float, default=0.2,
-                   help="UI refresh rate in seconds (default: 0.2)")
-    p.add_argument("-Z", "--stacked-ui", action="store_true", help="Force stacked UI (one metric per line)")
-    p.add_argument("-W", "--wide-ui", action="store_true", help="Force wide UI (multi-column)")
-
-    # Cache & report (manual)
-    p.add_argument("-C", "--cache", type=str, help="Path to JSONL cache file (append-on-write, resumable)")
-    p.add_argument("-R", "--report", type=str, help="Write JSON report to this path")
-
-    # QoL: auto-name outputs
-    p.add_argument("-S", "--scan-prefix", type=str, help="Directory to place auto-named outputs (used when -C/-R are not given)")
-    p.add_argument("-N", "--scan-name", type=str, help="Base name for auto-named outputs (e.g., 'scan' -> scan-q1-cache.jsonl, scan-q1-report.json)")
+    # Logging options
+    p.add_argument("-l", "--log-level", type=str, default="INFO",
+                   choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                   help="File logging level (default: INFO)")
+    p.add_argument("-c", "--console-log-level", type=str, default="INFO",
+                   choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                   help="Console logging level (default: INFO)")
+    p.add_argument("-n", "--no-log-file", action="store_true",
+                   help="Disable file logging (console only)")
 
     # Report utilities
     p.add_argument("-P", "--print-report", action="append", help="Path to a JSON report to pretty-print (repeatable)")
-    p.add_argument("-V", "--verbosity", type=int, default=1, choices=[0, 1, 2], help="Report/apply verbosity (0–2). Default: 1")
-    p.add_argument("-X", "--exclude-by-report", action="append", help="Path to a JSON report; losers listed will be skipped during scan (repeatable)")
+    p.add_argument("-v", "--verbosity", type=int, default=1, choices=[0, 1, 2], help="Report/apply verbosity (0–2). Default: 1")
+    p.add_argument("-e", "--exclude-by-report", action="append", help="Path to a JSON report; losers listed will be skipped during scan (repeatable)")
 
     # Report analysis
-    p.add_argument("-Y", "--analyze-report", action="append", help="Path to a JSON report to analyze (winner↔loser diffs). Repeatable.")
-    p.add_argument("-D", "--diff-verbosity", type=int, default=1, choices=[0, 1], help="Analysis verbosity. 0=totals only, 1=pairs with stats.")
-    p.add_argument("-NQ", "--no-progress", dest="no_progress", action="store_true", help="Disable textual progress bar during report analysis.")
+    p.add_argument("-y", "--analyze-report", action="append", help="Path to a JSON report to analyze (winner<->loser diffs). Repeatable.")
 
     # Apply report
-    p.add_argument("-A", "--apply-report", type=str, help="Read a JSON report and delete/move all listed losers (or vault + hardlink if --vault is provided)")
+    p.add_argument("-a", "--apply-report", type=str, help="Read a JSON report and delete/move all listed losers")
     p.add_argument("-b", "--backup", type=str, help="Move losers to this folder instead of deleting (apply-report mode)")
-    p.add_argument("-U", "--vault", type=str, help="Vault root for canonical content. With -A, move winner into the vault and hardlink original paths to it.")
     p.add_argument("-f", "--force", action="store_true", help="Do not prompt for deletion (apply-report mode)")
-    p.add_argument("-x", "--dry-run", action="store_true", help="No changes; just print / write report")
-    p.add_argument("-E", "--full-file-names", action="store_true", help="Show full original paths in apply output (disable compact vset aliases)")
+    p.add_argument("-d", "--dry-run", action="store_true", help="No changes; just print / write report")
 
-    # Collapse report
-    p.add_argument("-k", "--collapse-report", type=str, help="Collapse an existing report by merging overlapping groups.")
-    p.add_argument("-o", "--out", type=str, help="Output path for --collapse-report")
+    # Advanced options (moved to subgroup)
+    advanced = p.add_argument_group('advanced options', 'Fine-tune detection parameters')
+    advanced.add_argument("-u", "--duration-tolerance", type=float, default=2.0,
+                         help="Duration tolerance in seconds for metadata grouping (default: 2.0)")
+    advanced.add_argument("-F", "--phash-frames", type=int, default=5,
+                         help="Number of frames to sample for perceptual hash comparison (default: 5)")
+    advanced.add_argument("-T", "--phash-threshold", type=int, default=12,
+                         help="Per-frame Hamming distance threshold for pHash matching (default: 12)")
+    advanced.add_argument("-s", "--subset-min-ratio", type=float, default=0.30,
+                         help="Minimum duration ratio (short/long) for subset detection (default: 0.30)")
 
     return p.parse_args(argv)
 
@@ -537,48 +590,226 @@ def _maybe_print_or_analyze(args: argparse.Namespace) -> Optional[int]:
     # Analyze
     if args.analyze_report and not args.directories and not args.apply_report:
         paths = [Path(p).expanduser().resolve() for p in args.analyze_report]
-        text = render_analysis_for_reports(paths, verbosity=int(args.diff_verbosity), show_progress=not args.no_progress)
+        text = render_analysis_for_reports(paths, verbosity=1, show_progress=True)
         print(text)
         return 0
     return None
 
 
+def _quality_to_pipeline(quality: str) -> str:
+    """Convert quality level to pipeline stages or return pipeline directly."""
+    # If it's already a pipeline specification (contains digits and dash), return as-is
+    if "-" in quality and all(c.isdigit() or c == "-" for c in quality):
+        return quality
+
+    # Map quality levels to pipeline stages first
+    quality_map = {
+        "1": "1",
+        "2": "1-2",
+        "3": "1-3",
+        "4": "1-4",
+        "5": "1-4",  # Level 5 enables subset detection via config
+        "6": "1-6",  # Level 6 adds audio analysis
+        "7": "1-7"   # Level 7 adds advanced content analysis
+    }
+
+    # If it's a known quality level, return the mapped pipeline
+    if quality in quality_map:
+        return quality_map[quality]
+
+    # If it's a single digit that's not a quality level, return as-is (for direct stage specs)
+    if quality.isdigit():
+        return quality
+
+    # Default fallback
+    return "1-2"
+
+
+def _validate_args(args: argparse.Namespace) -> Optional[str]:
+    """
+    Validate parsed command line arguments.
+
+    Returns:
+        Error message string if validation fails, None if validation passes
+    """
+    # Convert and validate quality level
+    try:
+        pipeline_str = _quality_to_pipeline(args.quality)
+        stages = parse_pipeline(pipeline_str)
+        if not stages:
+            return f"Invalid quality level: {args.quality}"
+    except Exception:
+        return f"Failed to parse quality level '{args.quality}'. Use levels 1-5."
+
+    # Validate thread count
+    if args.threads <= 0:
+        return "Thread count must be positive"
+
+    if args.threads > 64:  # Reasonable upper limit
+        return "Thread count seems excessive (>64). Consider reducing for better performance"
+
+    # Validate tolerance values
+    duration_tolerance = getattr(args, 'duration_tolerance', 2.0)
+    if duration_tolerance < 0:
+        return "Duration tolerance must be non-negative"
+    if duration_tolerance > 3600:  # 1 hour seems excessive
+        return "Duration tolerance seems excessive (>1 hour). Consider reducing"
+
+    # Validate pHash parameters
+    phash_frames = getattr(args, 'phash_frames', 5)
+    if phash_frames <= 0:
+        return "pHash frames count must be positive"
+
+    if phash_frames > 50:  # Reasonable upper limit
+        return "pHash frames count seems excessive (>50). Consider reducing for performance"
+
+    phash_threshold = getattr(args, 'phash_threshold', 12)
+    subset_min_ratio = getattr(args, 'subset_min_ratio', 0.30)
+    if phash_threshold < 0:
+        return "pHash threshold must be non-negative"
+
+    if phash_threshold > 64:  # Maximum possible Hamming distance for 64-bit hash
+        return "pHash threshold too high (>64). Maximum is 64 for 64-bit hashes"
+
+    # Validate subset detection parameters
+    if subset_min_ratio <= 0 or subset_min_ratio >= 1:
+        return "Subset minimum ratio must be between 0 and 1 (exclusive)"
+
+    # Validate file paths that must exist
+    if args.apply_report:
+        report_path = Path(args.apply_report).expanduser().resolve()
+        if not report_path.exists():
+            return f"Report file not found: {report_path}"
+        if not report_path.is_file():
+            return f"Report path is not a file: {report_path}"
+
+    if args.exclude_by_report:
+        for report in args.exclude_by_report:
+            report_path = Path(report).expanduser().resolve()
+            if not report_path.exists():
+                return f"Exclusion report file not found: {report_path}"
+
+    if args.print_report:
+        for report in args.print_report:
+            report_path = Path(report).expanduser().resolve()
+            if not report_path.exists():
+                return f"Report file not found: {report_path}"
+
+    if args.analyze_report:
+        for report in args.analyze_report:
+            report_path = Path(report).expanduser().resolve()
+            if not report_path.exists():
+                return f"Report file not found: {report_path}"
+
+    # Validate output directories can be created
+    if getattr(args, 'backup', None):
+        try:
+            backup_path = Path(args.backup).expanduser().resolve()
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            return f"Cannot create backup directory: {e}"
+
+    if getattr(args, 'output_dir', None):
+        try:
+            output_path = Path(args.output_dir).expanduser().resolve()
+            output_path.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            return f"Cannot create output directory: {e}"
+
+    # Validate directory arguments exist (for scan mode)
+    if args.directories:
+        for directory in args.directories:
+            # Parse the directory spec to get the actual path
+            dir_spec, _ = _parse_dir_spec(directory, None)
+            for expanded_path in _expand_glob(dir_spec):
+                if not expanded_path.exists():
+                    return f"Directory not found: {expanded_path}"
+                if not expanded_path.is_dir():
+                    return f"Path is not a directory: {expanded_path}"
+
+    # Validate quality level enables required features
+    if args.quality in ["4", "5"] and 4 not in stages:
+        return "Quality levels 4 and 5 require pHash stage to be available"
+    if args.quality in ["6"] and 6 not in stages:
+        return "Quality level 6 requires audio analysis stage to be available"
+    if args.quality in ["7"] and 7 not in stages:
+        return "Quality level 7 requires advanced content analysis stage to be available"
+
+    return None
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    # Global quit flag for signal handling
+    quit_requested = False
+    active_reporter = None
+
+    # Set up signal handling for proper Ctrl+C behavior
+    def signal_handler(sig, frame):
+        nonlocal quit_requested, active_reporter
+        quit_requested = True
+        print("\n\nInterrupted by user. Shutting down gracefully...", file=sys.stderr)
+        if active_reporter:
+            try:
+                active_reporter._quit_evt.set()
+                active_reporter.flush()
+            except Exception:
+                pass
+        # Give threads a moment to clean up
+        import threading
+        import time
+        time.sleep(0.5)
+        # Force exit if threads don't respond
+        print("Forcing exit...", file=sys.stderr)
+        sys.exit(1)
+
+    signal.signal(signal.SIGINT, signal_handler)
+    if hasattr(signal, 'SIGTERM'):
+        signal.signal(signal.SIGTERM, signal_handler)
+
     args = parse_args(argv)
+
+    # Validate arguments
+    validation_error = _validate_args(args)
+    if validation_error:
+        print(f"video-dedupe: error: {validation_error}", file=sys.stderr)
+        return 2
+
+    # Setup output directory and logging
+    output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else Path.cwd()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Setup logging
+    log_file = None if args.no_log_file else output_dir / f"vdedup-q{args.quality}.log"
+    logger = _setup_logging(log_file, args.log_level, args.console_log_level)
+
+    logger.info(f"vdedup started with args: {' '.join(sys.argv[1:])}")
+    logger.info(f"Output directory: {output_dir}")
+    logger.info(f"Quality level: {args.quality}")
+    if log_file:
+        logger.info(f"Logging to: {log_file}")
 
     # If they only want to print/analyze reports, do that and exit
     maybe = _maybe_print_or_analyze(args)
     if maybe is not None:
+        logger.info("Print/analyze mode completed")
         return maybe
-
-    # UI layout preference
-    stacked_pref: Optional[bool] = True if args.stacked_ui else (False if args.wide_ui else None)
-
-    # COLLAPSE REPORT mode
-    if args.collapse_report:
-        reporter = ProgressReporter(enable_dash=bool(args.live), refresh_rate=args.refresh_rate,
-                                    banner="Run: COLLAPSE REPORT", stacked_ui=stacked_pref)
-        reporter.start()
-        try:
-            in_path = Path(args.collapse_report).expanduser().resolve()
-            if not in_path.exists():
-                print(f"video-dedupe: error: report not found: {in_path}", file=sys.stderr)
-                return 2
-            out_path = Path(args.out).expanduser().resolve() if args.out else None
-            out = collapse_report_file(in_path, out_path, reporter=reporter)
-            print(f"Collapsed report written to: {out}")
-            return 0
-        finally:
-            reporter.stop()
 
     # APPLY REPORT mode
     if args.apply_report:
-        banner = _banner_text(False, dry=args.dry_run, mode="apply", threads=args.threads, gpu=False, backup=args.backup)
-        reporter = ProgressReporter(enable_dash=bool(args.live), refresh_rate=args.refresh_rate, banner=banner, stacked_ui=stacked_pref)
+        logger.info(f"Starting APPLY REPORT mode: {args.apply_report}")
+        logger.info(f"Dry run: {args.dry_run}, Force: {args.force}")
+
+        banner = _banner_text(False, dry=args.dry_run, mode="apply", threads=args.threads, gpu=False, backup=getattr(args, 'backup', None))
+        # Simplified: always disable UI to prevent freezing issues
+        reporter = ProgressReporter(enable_dash=False, refresh_rate=0.2, banner=banner, stacked_ui=None)
+        active_reporter = reporter
         reporter.start()
         try:
             report_path = Path(args.apply_report).expanduser().resolve()
+            logger.info(f"Report path: {report_path}")
+
             if not report_path.exists():
+                logger.error(f"Report not found: {report_path}")
                 print(f"video-dedupe: error: report not found: {report_path}", file=sys.stderr)
                 return 2
 
@@ -588,11 +819,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 # when multiple directories are provided, compute a common base for backup layout
                 try:
                     base_root = Path(os.path.commonpath([str(Path(d).expanduser().resolve().absolute()) for d in args.directories]))
-                except Exception:
+                    logger.info(f"Base root for backup: {base_root}")
+                except Exception as e:
+                    logger.warning(f"Could not compute base root: {e}")
                     base_root = None
 
-            backup = Path(args.backup).expanduser().resolve() if args.backup else None
-            vault = Path(args.vault).expanduser().resolve() if args.vault else None
+            backup = Path(args.backup).expanduser().resolve() if getattr(args, 'backup', None) else None
+            if backup:
+                logger.info(f"Backup directory: {backup}")
+
+            vault = None  # Vault functionality removed
+            logger.info("Starting report application...")
+
             count, size = apply_report(
                 report_path,
                 dry_run=args.dry_run,
@@ -602,78 +840,114 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 vault=vault,
                 reporter=reporter,
                 verbosity=int(args.verbosity),
-                full_file_names=bool(args.full_file_names),
+                full_file_names=False,
             )
+
             reporter.set_results(dup_groups=0, losers_count=count, bytes_total=size)
-            if args.vault:
-                print(f"Vaulted apply complete: linked {count} paths; space reclaimable: {size/1_048_576:.2f} MiB")
-            else:
-                print(f"Report applied: removed/moved={count}; size={size/1_048_576:.2f} MiB")
+            result_msg = f"Report applied: removed/moved={count}; size={size/1_048_576:.2f} MiB"
+            logger.info(result_msg)
+            print(result_msg)
             return 0
+        except Exception as e:
+            logger.error(f"Error applying report: {e}")
+            raise
         finally:
             reporter.stop()
+            logger.info("Apply report mode completed")
 
     # SCAN mode
     if not args.directories:
+        logger.error("No directories specified for scanning")
         print("video-dedupe: error: the following arguments are required: one or more directories (or use -P/--print-report / -Y/--analyze-report)", file=sys.stderr)
         return 2
+
+    logger.info(f"Starting SCAN mode for directories: {args.directories}")
 
     # Build (pattern, depth) per root, expand globs
     default_depth: Optional[int] = None if args.recursive else 0
     parsed_specs: List[Tuple[Path, Optional[int]]] = []
     for spec in args.directories:
+        logger.debug(f"Parsing directory spec: {spec}")
         pat, depth = _parse_dir_spec(spec, default_depth)
         for match in _expand_glob(pat):
-            parsed_specs.append((match.expanduser().resolve(), depth))
+            resolved_path = match.expanduser().resolve()
+            parsed_specs.append((resolved_path, depth))
+            logger.debug(f"Added directory: {resolved_path} (depth: {depth})")
+
+    logger.info(f"Total directories to scan: {len(parsed_specs)}")
 
     # Validate existence (pre-expansion will yield a concrete list)
     for r, _d in parsed_specs:
         if not r.exists():
+            logger.error(f"Directory not found: {r}")
             print(f"video-dedupe: error: directory not found: {r}", file=sys.stderr)
             return 2
 
     patterns = _normalize_patterns(args.pattern)
+    logger.info(f"File patterns: {patterns or 'all files'}")
 
-    # QoL auto-named outputs (only if -C/-R absent)
-    if (not args.cache or not args.report) and (args.scan_prefix and args.scan_name):
-        cache_auto, report_auto = _auto_outputs(args.scan_prefix, args.scan_name, args.pipeline)
-        if not args.cache and cache_auto:
-            args.cache = str(cache_auto)
-        if not args.report and report_auto:
-            args.report = str(report_auto)
+    # Convert quality level to pipeline stages
+    pipeline_str = _quality_to_pipeline(args.quality)
+    logger.info(f"Pipeline stages: {pipeline_str}")
+
+    # Auto-generate cache and report filenames
+    base_name = f"vdedup-q{args.quality}"
+    cache_path = output_dir / f"{base_name}-cache.jsonl"
+    report_path = output_dir / f"{base_name}-report.json"
+    logger.info(f"Cache file: {cache_path}")
+    logger.info(f"Report file: {report_path}")
 
     cfg = PipelineConfig(
         threads=max(1, int(args.threads)),
-        duration_tolerance=args.duration_tolerance,
+        duration_tolerance=getattr(args, 'duration_tolerance', 2.0),
         same_res=False,
         same_codec=False,
         same_container=False,
-        phash_frames=args.phash_frames,
-        phash_threshold=args.phash_threshold,
-        subset_detect=bool(args.subset_detect),
-        subset_min_ratio=args.subset_min_ratio,
-        subset_frame_threshold=max(args.phash_threshold, 12),
+        phash_frames=getattr(args, 'phash_frames', 5),
+        phash_threshold=getattr(args, 'phash_threshold', 12),
+        subset_detect=(args.quality == "5"),  # Enable subset detection for quality level 5
+        subset_min_ratio=getattr(args, 'subset_min_ratio', 0.30),
+        subset_frame_threshold=max(getattr(args, 'phash_threshold', 12), 12),
         gpu=bool(args.gpu),
     )
 
-    banner = _banner_text(True, dry=args.dry_run, mode=args.mode, threads=cfg.threads, gpu=cfg.gpu, backup=args.backup)
-    reporter = ProgressReporter(enable_dash=bool(args.live), refresh_rate=args.refresh_rate, banner=banner, stacked_ui=stacked_pref)
-    reporter.start()
+    logger.info(f"Pipeline configuration: threads={cfg.threads}, GPU={cfg.gpu}, subset_detect={cfg.subset_detect}")
+    logger.debug(f"Advanced config: duration_tolerance={cfg.duration_tolerance}, phash_frames={cfg.phash_frames}, phash_threshold={cfg.phash_threshold}")
 
-    cache = HashCache(Path(args.cache)) if args.cache else None
-    if cache:
-        cache.open_append()
+    banner = _banner_text(True, dry=args.dry_run, mode=f"Q{args.quality}", threads=cfg.threads, gpu=cfg.gpu, backup=getattr(args, 'backup', None))
+
+    logger.info("Creating ProgressReporter...")
+    # Re-enable UI for -L flag with thread-safe design
+    enable_ui = args.live
+    if enable_ui:
+        logger.info("Live UI (-L) enabled")
+    else:
+        logger.info("Running in console mode")
+
+    reporter = ProgressReporter(enable_dash=enable_ui, refresh_rate=0.2, banner=banner, stacked_ui=None)
+    active_reporter = reporter
+    logger.info("Starting ProgressReporter...")
+    reporter.start()
+    logger.info("ProgressReporter started successfully")
+
+    logger.info("Initializing hash cache...")
+    cache = HashCache(cache_path)
+    cache.open_append()
 
     # Build exclusion set from reports, if any
     skip_paths = set()
     if args.exclude_by_report:
+        logger.info(f"Processing exclusion reports: {args.exclude_by_report}")
         ex_paths = [Path(p).expanduser().resolve() for p in args.exclude_by_report]
         skip_paths = collect_exclusions(ex_paths)
         if skip_paths:
+            logger.info(f"Excluding {len(skip_paths)} files from previous reports")
             print(f"Excluding {len(skip_paths)} files listed as losers in supplied report(s).")
 
     try:
-        stages = parse_pipeline(args.pipeline)
+        logger.info(f"Parsing pipeline stages: {pipeline_str}")
+        stages = parse_pipeline(pipeline_str)
+        logger.info(f"Active pipeline stages: {[s for s in stages]}")
 
         # Partition roots into: unlimited-depth batch (max_depth=None) and finite-depth batches expanded into max_depth=0
         unlimited_roots: List[Path] = []
@@ -684,8 +958,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 # otherwise we expand into finite list scanned at depth 0.
                 if depth is None and d == root:
                     unlimited_roots.append(d)
+                    logger.debug(f"Unlimited depth root: {d}")
                 else:
                     finite_expanded_roots.append(d)
+                    logger.debug(f"Finite depth root: {d}")
+
+        logger.info(f"Unlimited depth roots: {len(unlimited_roots)}")
+        logger.info(f"Finite depth roots: {len(finite_expanded_roots)}")
 
         groups_all: Dict[str, Tuple[Any, List[Any]]] = {}
 
@@ -701,7 +980,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         # Run unlimited batch (if any)
         if unlimited_roots:
+            logger.info(f"Running unlimited depth pipeline on {len(unlimited_roots)} roots...")
             try:
+                # Use the same reporter instance to ensure UI updates properly
+                pipeline_reporter = reporter
                 g_unlim = run_pipeline(
                     roots=unlimited_roots,
                     patterns=patterns,
@@ -709,10 +991,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     selected_stages=stages,
                     cfg=cfg,
                     cache=cache,
-                    reporter=reporter,
+                    reporter=pipeline_reporter,
                     skip_paths=skip_paths,
                 )
-            except TypeError:
+                logger.info(f"Unlimited depth pipeline completed with {len(g_unlim)} groups")
+            except TypeError as e:
+                logger.warning(f"Multiple roots not supported by current pipeline, falling back to single root: {e}")
                 # Fallback: if multiple, try common parent; else first
                 common: Optional[Path] = None
                 try:
@@ -720,8 +1004,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 except Exception:
                     common = None
                 root = common if common and common.exists() else unlimited_roots[0]
+                logger.info(f"Using fallback root: {root}")
                 if len(unlimited_roots) > 1 and (common is None or common not in unlimited_roots):
-                    print("Warning: current pipeline doesn’t accept multiple roots; running on the first directory only for unlimited-depth set. Cross-root duplicates may be missed.", file=sys.stderr)
+                    warning_msg = "Warning: current pipeline doesn't accept multiple roots; running on the first directory only for unlimited-depth set. Cross-root duplicates may be missed."
+                    logger.warning(warning_msg)
+                    print(warning_msg, file=sys.stderr)
+                # Use the same reporter instance to ensure UI updates properly
+                pipeline_reporter = reporter
                 g_unlim = run_pipeline(
                     root=root,
                     patterns=patterns,
@@ -729,14 +1018,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     selected_stages=stages,
                     cfg=cfg,
                     cache=cache,
-                    reporter=reporter,
+                    reporter=pipeline_reporter,
                     skip_paths=skip_paths,
                 )
+                logger.info(f"Fallback unlimited depth pipeline completed with {len(g_unlim)} groups")
             _merge_groups(groups_all, g_unlim)
 
         # Run finite-expanded batch in one go at depth=0 (if any)
         if finite_expanded_roots:
+            logger.info(f"Running finite depth pipeline on {len(finite_expanded_roots)} roots...")
             try:
+                # Use the same reporter instance to ensure UI updates properly
+                pipeline_reporter = reporter
                 g_fin = run_pipeline(
                     roots=finite_expanded_roots,
                     patterns=patterns,
@@ -744,10 +1037,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     selected_stages=stages,
                     cfg=cfg,
                     cache=cache,
-                    reporter=reporter,
+                    reporter=pipeline_reporter,
                     skip_paths=skip_paths,
                 )
-            except TypeError:
+                logger.info(f"Finite depth pipeline completed with {len(g_fin)} groups")
+            except TypeError as e:
+                logger.warning(f"Multiple roots not supported by current pipeline, falling back to single root: {e}")
                 # Fallback: try common parent
                 common: Optional[Path] = None
                 try:
@@ -755,8 +1050,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 except Exception:
                     common = None
                 root = common if common and common.exists() else finite_expanded_roots[0]
+                logger.info(f"Using fallback root for finite depth: {root}")
                 if len(finite_expanded_roots) > 1 and (common is None or common not in finite_expanded_roots):
-                    print("Warning: pipeline doesn’t accept multiple roots; running on the first directory only for finite-depth set. Cross-root duplicates may be missed.", file=sys.stderr)
+                    warning_msg = "Warning: pipeline doesn't accept multiple roots; running on the first directory only for finite-depth set. Cross-root duplicates may be missed."
+                    logger.warning(warning_msg)
+                    print(warning_msg, file=sys.stderr)
+
+                logger.info("Starting run_pipeline call...")
+
+                # NEW APPROACH: Use the same UI reporter for real-time updates
+                # The periodic update system ensures thread-safe UI updates
+                pipeline_reporter = reporter
                 g_fin = run_pipeline(
                     root=root,
                     patterns=patterns,
@@ -764,35 +1068,48 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     selected_stages=stages,
                     cfg=cfg,
                     cache=cache,
-                    reporter=reporter,
+                    reporter=pipeline_reporter,
                     skip_paths=skip_paths,
                 )
+
+                logger.info(f"Fallback finite depth pipeline completed with {len(g_fin)} groups")
             _merge_groups(groups_all, g_fin)
 
+        logger.info(f"Total groups found: {len(groups_all)}")
+        logger.info("Choosing winners from duplicate groups...")
         keep_order = ["longer", "resolution", "video-bitrate", "newer", "smaller", "deeper"]
         winners = choose_winners(groups_all, keep_order)
 
-        if args.report:
-            write_report(Path(args.report), winners)
-            print(f"Wrote report to: {args.report}")
+        logger.info(f"Writing report with {len(winners)} groups to: {report_path}")
+        write_report(report_path, winners)
+        print(f"Wrote report to: {report_path}")
 
         losers = [loser for (_keep, losers) in winners.values() for loser in losers]
         bytes_total = sum(int(getattr(l, "size", 0)) for l in losers)
+        logger.info(f"Final results: {len(winners)} duplicate groups, {len(losers)} losers, {_fmt_bytes(bytes_total)} reclaimable")
         reporter.set_results(dup_groups=len(winners), losers_count=len(losers), bytes_total=bytes_total)
 
         # If they also passed -P or -Y with directories, run those too (after scan)
         if args.print_report:
+            logger.info(f"Pretty printing reports: {args.print_report}")
             paths = [Path(p).expanduser().resolve() for p in args.print_report]
             print(pretty_print_reports(paths, verbosity=int(args.verbosity)))
         if args.analyze_report:
+            logger.info(f"Analyzing reports: {args.analyze_report}")
             paths = [Path(p).expanduser().resolve() for p in args.analyze_report]
-            print(render_analysis_for_reports(paths, verbosity=int(args.diff_verbosity), show_progress=not args.no_progress))
+            print(render_analysis_for_reports(paths, verbosity=1, show_progress=True))
 
+        logger.info("Scan mode completed successfully")
         return 0
+    except Exception as e:
+        logger.error(f"Pipeline execution failed: {e}")
+        raise
     finally:
         if cache:
+            logger.debug("Closing hash cache")
             cache.close()
         reporter.stop()
+        logger.info("vdedup session ended")
 
 
 if __name__ == "__main__":
