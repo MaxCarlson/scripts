@@ -1,0 +1,2 @@
+https://example.com/regular1
+https://example.com/regular2

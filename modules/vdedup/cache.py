@@ -78,17 +78,41 @@ class HashCache:
 
     # Convenience getters
     def get_sha256(self, path: Path, size: int, mtime: float) -> Optional[str]:
-        rec = self.get_record(path, size, mtime)
-        return rec.get("sha256") if rec else None
+        # Try to find a record that matches within tolerance
+        path_str = str(path)
+        for (cached_path, cached_size, cached_mtime), rec in self._map.items():
+            if (cached_path == path_str and
+                cached_size == size and
+                abs(cached_mtime - mtime) <= 1.0):  # Allow 1s tolerance
+                return rec.get("sha256")
+        return None
 
     def get_partial(self, path: Path, size: int, mtime: float) -> Optional[Dict[str, Any]]:
-        rec = self.get_record(path, size, mtime)
-        return rec.get("partial") if rec else None
+        # Try to find a record that matches within tolerance
+        path_str = str(path)
+        for (cached_path, cached_size, cached_mtime), rec in self._map.items():
+            if (cached_path == path_str and
+                cached_size == size and
+                abs(cached_mtime - mtime) <= 1.0):  # Allow 1s tolerance
+                return rec.get("partial")
+        return None
 
     def get_video_meta(self, path: Path, size: int, mtime: float) -> Optional[Dict[str, Any]]:
-        rec = self.get_record(path, size, mtime)
-        return rec.get("video_meta") if rec else None
+        # Try to find a record that matches within tolerance
+        path_str = str(path)
+        for (cached_path, cached_size, cached_mtime), rec in self._map.items():
+            if (cached_path == path_str and
+                cached_size == size and
+                abs(cached_mtime - mtime) <= 1.0):  # Allow 1s tolerance
+                return rec.get("video_meta")
+        return None
 
     def get_phash(self, path: Path, size: int, mtime: float) -> Optional[Any]:
-        rec = self.get_record(path, size, mtime)
-        return rec.get("phash") if rec else None
+        # Try to find a record that matches within tolerance
+        path_str = str(path)
+        for (cached_path, cached_size, cached_mtime), rec in self._map.items():
+            if (cached_path == path_str and
+                cached_size == size and
+                abs(cached_mtime - mtime) <= 1.0):  # Allow 1s tolerance
+                return rec.get("phash")
+        return None

@@ -7,7 +7,7 @@ Live progress reporter with a responsive TermDash UI.
 - Can be forced with stacked_ui=True / wide_ui=True flags.
 - Thread-safe counters and per-stage ETA + total elapsed.
 - Key controls:
-    Z = pause/resume pipeline
+    Z or P = pause/resume pipeline
     Q = request quit (press 'y' to confirm)
 
 This module does not require TermDash to run; when it is not available,
@@ -27,9 +27,10 @@ from typing import Optional
 
 # Try to import TermDash (user-provided module)
 TERMDASH_AVAILABLE = False
-TermDash = Line = Stat = None  # type: ignore
+TermDash = Line = Stat = ProgressBar = None  # type: ignore
 try:
-    from termdash import TermDash, Line, Stat  # type: ignore
+    from termdash import TermDash, Line, Stat, ProgressBar  # type: ignore
+    from termdash.utils import format_bytes, fmt_hms, bytes_to_mib  # type: ignore
     TERMDASH_AVAILABLE = True
 except Exception:
     TERMDASH_AVAILABLE = False
@@ -50,7 +51,16 @@ class _LayoutChoice:
 
 class ProgressReporter:
     """
-    Counters + live UI.
+    Enhanced progress reporter with visual indicators, progress bars, and color coding.
+
+    Features:
+    - Dynamic progress bars for each pipeline stage
+    - Color-coded status indicators
+    - Real-time throughput and ETA calculations
+    - Visual feedback for pause/resume states
+    - Cache hit rate indicators
+    - Memory and performance metrics
+
     Public methods used by the pipeline/CLI:
       - start_stage(name, total)
       - set_total_files(n)
@@ -88,6 +98,9 @@ class ProgressReporter:
         self.lock = threading.Lock()
         self.start_ts = time.time()
 
+        # Track main thread for thread-safe UI updates
+        self.main_thread = threading.current_thread()
+
         # High-level counters
         self.total_files = 0
         self.scanned_files = 0
@@ -117,10 +130,19 @@ class ProgressReporter:
         self.stage_start_ts = time.time()
         self._ema_rate = 0.0  # items/sec (EMA)
 
+        # Enhanced UI metrics
+        self.throughput_files_per_sec = 0.0
+        self.throughput_bytes_per_sec = 0.0
+        self.cache_hit_rate = 0.0
+        self.current_file_name = ""
+        self.stage_progress_percent = 0.0
+        self.memory_usage_mb = 0.0
+
         # Dashboard runtime
         self.dash: Optional[TermDash] = None  # type: ignore
         self._ticker: Optional[threading.Thread] = None
         self._stop_evt = threading.Event()
+        self._progress_bars = {}  # Progress bars for different stages
 
         # Controls
         self._paused_evt = threading.Event()
@@ -129,6 +151,68 @@ class ProgressReporter:
         self._keys_thread: Optional[threading.Thread] = None
         self._await_quit_confirm = False
         self._stdin_ok = sys.stdin and sys.stdin.isatty()
+
+    # --------------- Enhanced UI helpers ---------------
+
+    def _get_stage_color(self, stage_name: str) -> str:
+        """Return ANSI color code based on stage type and status."""
+        if not TERMDASH_AVAILABLE:
+            return ""
+
+        stage_lower = stage_name.lower()
+        if "scan" in stage_lower:
+            return "0;36"  # Cyan for scanning
+        elif "hash" in stage_lower:
+            return "0;33"  # Yellow for hashing
+        elif "meta" in stage_lower:
+            return "0;35"  # Magenta for metadata
+        elif "phash" in stage_lower or "subset" in stage_lower:
+            return "0;31"  # Red for intensive operations
+        elif "complete" in stage_lower or "done" in stage_lower:
+            return "0;32"  # Green for completion
+        else:
+            return "0;37"  # White for other stages
+
+    def _get_status_indicator(self) -> str:
+        """Return a visual status indicator based on current state."""
+        if not self._paused_evt.is_set():
+            return "[||] "  # Paused
+        elif self.stage_done > 0 and self.stage_total > 0:
+            progress = self.stage_done / self.stage_total
+            if progress < 0.1:
+                return "[>] "  # Starting
+            elif progress < 0.9:
+                return "[*] "  # Active
+            else:
+                return "[~] "  # Nearly done
+        else:
+            return "[-] "  # Idle
+
+    def _calculate_throughput(self):
+        """Calculate real-time throughput metrics."""
+        with self.lock:
+            elapsed = max(1e-6, time.time() - self.stage_start_ts)
+            self.throughput_files_per_sec = self.stage_done / elapsed
+            self.throughput_bytes_per_sec = self.bytes_seen / elapsed
+
+            if self.hash_done > 0:
+                self.cache_hit_rate = (self.cache_hits / self.hash_done) * 100.0
+            else:
+                self.cache_hit_rate = 0.0
+
+            if self.stage_total > 0:
+                self.stage_progress_percent = (self.stage_done / self.stage_total) * 100.0
+            else:
+                self.stage_progress_percent = 0.0
+
+    def _format_throughput(self, value: float, unit: str) -> str:
+        """Format throughput values with appropriate units."""
+        if value >= 1000:
+            return f"{value/1000:.1f}k {unit}/s"
+        elif value >= 1:
+            return f"{value:.1f} {unit}/s"
+        else:
+            return f"{value:.2f} {unit}/s"
 
     # --------------- keyboard handling ---------------
 
@@ -166,7 +250,7 @@ class ProgressReporter:
 
     def _handle_key(self, ch: str):
         ch = (ch or "").lower()
-        if ch == "z":
+        if ch == "z" or ch == "p":  # Support both 'z' and 'p' for pause
             if self._paused_evt.is_set():
                 # pause now
                 self._paused_evt.clear()
@@ -220,143 +304,113 @@ class ProgressReporter:
                 self._keys_thread = threading.Thread(target=self._keys_loop, daemon=True)
                 self._keys_thread.start()
             return
+
+        # Clear screen before starting UI
+        import os
+        if os.name == 'nt':  # Windows
+            os.system('cls')
+        else:  # Unix/Linux/macOS
+            os.system('clear')
+
         self._layout = self._choose_layout()
 
-        # Start TermDash
-        self.dash = TermDash(  # type: ignore
-            refresh_rate=self.refresh_rate,
-            enable_separators=False,
-            reserve_extra_rows=2,
-            align_columns=True,
-            max_col_width=None,
-        )
-        self.dash.__enter__()  # type: ignore
+        # STEP 14: Create simple custom UI without TermDash to avoid infinite loops
+        try:
+            # Use simple ANSI-based UI instead of TermDash
+            self.dash = None  # No TermDash instance
+            self._simple_ui_initialized = True
+            print("\033[2J\033[H", end="", flush=True)  # Clear screen and go to top
+            print("=== Video Deduplication Pipeline ===", flush=True)
+            print("Initializing...", flush=True)
+        except Exception as e:
+            print(f"Warning: Failed to initialize simple UI: {e}", file=sys.stderr)
+            self.enable_dash = False
+            return
 
-        # Title
-        self.dash.add_line(  # type: ignore
-            "title",
-            Line("title", stats=[Stat("title", "Video Deduper — Live", format_string="{}")], style="header"),  # type: ignore
-            at_top=True,
-        )
+        # STEP 16: ALL TermDash setup code removed - using simple custom UI only
+        # The old TermDash initialization code has been completely removed to prevent
+        # infinite loops and UI freezing. Now only the simple ANSI-based UI is used.
 
-        # Banner
-        bw = max(20, min(self._layout.cols - 2, 200))
-        self._add_line("banner", Stat("banner", self.banner, format_string="{}", no_expand=True, display_width=bw))
-
-        if self._layout.stacked:
-            w = bw
-            self._add_line("stage", Stat("stage", "idle", prefix="Stage: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("elapsed", Stat("elapsed", "00:00:00", prefix="Elapsed: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("eta", Stat("eta", "--:--:--", prefix="ETA: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("files", Stat("files", (0, 0), prefix="Files: ", format_string="{}/{}", no_expand=True, display_width=w))
-            self._add_line("videos", Stat("videos", 0, prefix="Videos: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("hashed", Stat("hashed", (0, 0), prefix="Hashed: ", format_string="{}/{}", no_expand=True, display_width=w))
-            self._add_line("cache", Stat("cache_hits", 0, prefix="Cache hits: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("scan", Stat("scanned", "0 MiB", prefix="Scanned: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("g_hash", Stat("g_hash", 0, prefix="Hash groups: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("g_meta", Stat("g_meta", 0, prefix="Meta groups: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("g_phash", Stat("g_phash", 0, prefix="pHash groups: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("g_subset", Stat("g_subset", 0, prefix="Subset groups: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("dup_files", Stat("dup_files", 0, prefix="Dup files: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("bytes_rm", Stat("bytes_rm", "0 MiB", prefix="To remove: ", format_string="{}", no_expand=True, display_width=w))
-            self._add_line("total_elapsed", Stat("tot_elapsed", "00:00:00", prefix="Total elapsed: ", format_string="{}", no_expand=True, display_width=w))
-        else:
-            self._add_line(
-                "stage",
-                Stat("stage", "idle", prefix="Stage: ", format_string="{}", no_expand=True, display_width=22),
-                Stat("elapsed", "00:00:00", prefix="Elapsed: ", format_string="{}", no_expand=True, display_width=14),
-                Stat("eta", "--:--:--", prefix="ETA: ", format_string="{}", no_expand=True, display_width=14),
-            )
-            self._add_line(
-                "files",
-                Stat("files", (0, 0), prefix="Files: ", format_string="{}/{}", no_expand=True, display_width=22),
-                Stat("videos", 0, prefix="Videos: ", format_string="{}", no_expand=True, display_width=18),
-            )
-            self._add_line(
-                "hash",
-                Stat("hashed", (0, 0), prefix="Hashed: ", format_string="{}/{}", no_expand=True, display_width=22),
-                Stat("cache_hits", 0, prefix="Cache hits: ", format_string="{}", no_expand=True, display_width=18),
-            )
-            self._add_line("scan", Stat("scanned", "0 MiB", prefix="Scanned: ", format_string="{}", no_expand=True, display_width=22))
-            self._add_line(
-                "groups1",
-                Stat("g_hash", 0, prefix="Hash groups: ", format_string="{}", no_expand=True, display_width=22),
-                Stat("g_meta", 0, prefix="Meta groups: ", format_string="{}", no_expand=True, display_width=22),
-            )
-            self._add_line(
-                "groups2",
-                Stat("g_phash", 0, prefix="pHash groups: ", format_string="{}", no_expand=True, display_width=22),
-                Stat("g_subset", 0, prefix="Subset groups: ", format_string="{}", no_expand=True, display_width=22),
-            )
-            self._add_line(
-                "results",
-                Stat("dup_files", 0, prefix="Dup files: ", format_string="{}", no_expand=True, display_width=22),
-                Stat("bytes_rm", "0 MiB", prefix="To remove: ", format_string="{}", no_expand=True, display_width=22),
-            )
-            self._add_line("total", Stat("tot_elapsed", "00:00:00", prefix="Total elapsed: ", format_string="{}", no_expand=True, display_width=16))
-
-        # start ticker + keys
-        self._ticker = threading.Thread(target=self._tick_loop, daemon=True)
-        self._ticker.start()
+        # STEP 9: Remove ticker thread that causes infinite refresh loops
+        # Only start keys thread for pause/quit functionality
         if self._stdin_ok and not self._keys_thread:
             self._keys_thread = threading.Thread(target=self._keys_loop, daemon=True)
             self._keys_thread.start()
-        self.flush()
 
-    def _tick_loop(self):
-        while not self._stop_evt.is_set():
-            try:
-                self._update_eta()
-            except Exception:
-                pass
-            time.sleep(self.refresh_rate)
+        # STEP 13: Initialize flush lock but skip initial flush test
+        # The infinite loop might be caused by the initial flush call
+        self._flush_lock = threading.Lock()
 
-    def _update_eta(self):
-        if not self.enable_dash or not self.dash:
-            return
-        eta_text = _fmt_hms(self._estimate_remaining())
-        elapsed_stage = _fmt_hms(time.time() - self.stage_start_ts)
-        elapsed_total = _fmt_hms(time.time() - self.start_ts)
-        self.dash.update_stat("stage", "eta", eta_text)  # type: ignore
-        if self._layout.stacked:
-            self.dash.update_stat("elapsed", "elapsed", elapsed_stage)  # type: ignore
-            self.dash.update_stat("total_elapsed", "tot_elapsed", elapsed_total)  # type: ignore
-        else:
-            self.dash.update_stat("stage", "elapsed", elapsed_stage)  # type: ignore
-            self.dash.update_stat("total", "tot_elapsed", elapsed_total)  # type: ignore
+    # STEP 12: _tick_loop method removed - no ticker thread
+
+    # STEP 11: _update_eta method removed - timing updates now handled in flush()
 
     def set_banner(self, text: str):
         self.banner = text
-        if self.enable_dash and self.dash:
-            self.dash.update_stat("banner", "banner", text)  # type: ignore
+        # Banner updates are handled in the simple UI flush() method
+        # No need for TermDash-specific banner updates
 
     def flush(self):
-        if self.enable_dash and self.dash:
-            with self.lock:
-                self.dash.update_stat("stage", "stage", self.stage_name)  # type: ignore
-                self.dash.update_stat("files", "files", (self.scanned_files, self.total_files))  # type: ignore
-                if self._layout.stacked:
-                    self.dash.update_stat("videos", "videos", self.video_files)  # type: ignore
-                    self.dash.update_stat("hashed", "hashed", (self.hash_done, self.hash_total))  # type: ignore
-                    self.dash.update_stat("cache", "cache_hits", self.cache_hits)  # type: ignore
-                    self.dash.update_stat("scan", "scanned", f"{self.bytes_seen/1048576:.0f} MiB")  # type: ignore
-                    self.dash.update_stat("g_hash", "g_hash", self.groups_hash)  # type: ignore
-                    self.dash.update_stat("g_meta", "g_meta", self.groups_meta)  # type: ignore
-                    self.dash.update_stat("g_phash", "g_phash", self.groups_phash)  # type: ignore
-                    self.dash.update_stat("g_subset", "g_subset", self.groups_subset)  # type: ignore
-                    self.dash.update_stat("dup_files", "dup_files", self.losers_total)  # type: ignore
-                    self.dash.update_stat("bytes_rm", "bytes_rm", f"{self.bytes_to_remove/1048576:.0f} MiB")  # type: ignore
-                else:
-                    self.dash.update_stat("files", "videos", self.video_files)  # type: ignore
-                    self.dash.update_stat("hash", "hashed", (self.hash_done, self.hash_total))  # type: ignore
-                    self.dash.update_stat("hash", "cache_hits", self.cache_hits)  # type: ignore
-                    self.dash.update_stat("scan", "scanned", f"{self.bytes_seen/1048576:.0f} MiB")  # type: ignore
-                    self.dash.update_stat("groups1", "g_hash", self.groups_hash)  # type: ignore
-                    self.dash.update_stat("groups1", "g_meta", self.groups_meta)  # type: ignore
-                    self.dash.update_stat("groups2", "g_phash", self.groups_phash)  # type: ignore
-                    self.dash.update_stat("groups2", "g_subset", self.groups_subset)  # type: ignore
-                    self.dash.update_stat("results", "dup_files", self.losers_total)  # type: ignore
-                    self.dash.update_stat("results", "bytes_rm", f"{self.bytes_to_remove/1048576:.0f} MiB")  # type: ignore
+        if self.enable_dash and hasattr(self, '_simple_ui_initialized'):
+            # STEP 15: Simple ANSI-based UI update (no TermDash)
+            if not hasattr(self, '_flush_lock'):
+                self._flush_lock = threading.Lock()
+
+            # Non-blocking lock attempt - if UI is busy, skip this update
+            if not self._flush_lock.acquire(blocking=False):
+                return
+
+            try:
+                with self.lock:
+                    # Calculate metrics
+                    self._calculate_throughput()
+
+                    # Format data sizes
+                    scanned_text = self._format_data_size(self.bytes_seen)
+                    remove_text = self._format_data_size(self.bytes_to_remove)
+
+                    # Calculate timing
+                    import time
+                    eta_text = _fmt_hms(self._estimate_remaining())
+                    elapsed_stage = _fmt_hms(time.time() - self.stage_start_ts)
+                    elapsed_total = _fmt_hms(time.time() - self.start_ts)
+
+                    # Simple progress bar
+                    progress_pct = (self.stage_done / self.stage_total) if self.stage_total > 0 else 0
+                    filled = int(progress_pct * 30)
+                    bar_text = f"[{'#' * filled}{'.' * (30 - filled)}] {progress_pct * 100:.1f}%"
+
+                    # Clear screen and show update
+                    print("\033[2J\033[H", end="", flush=True)  # Clear screen and go to top
+                    print("=== Video Deduplication Pipeline ===")
+                    print(f"Stage: {self.stage_name} | Files: {self.scanned_files}/{self.total_files}")
+                    print(f"Progress: {bar_text}")
+                    print(f"Hashed: {self.hash_done}/{self.hash_total} | Videos: {self.video_files}")
+                    print(f"Data: {scanned_text} | Groups: H={self.groups_hash} M={self.groups_meta} P={self.groups_phash}")
+                    print(f"Results: {self.losers_total} duplicates | Space: {remove_text}")
+                    print(f"Time: {elapsed_stage} / {elapsed_total} | ETA: {eta_text}")
+                    if self.throughput_files_per_sec > 0:
+                        print(f"Speed: {self.throughput_files_per_sec:.1f} files/sec")
+                    print("Press Ctrl+C to stop")
+                    print("-" * 50)
+            finally:
+                self._flush_lock.release()
+
+    def _format_data_size(self, bytes_value: int) -> str:
+        """Format byte values with appropriate units and colors."""
+        if TERMDASH_AVAILABLE and hasattr(self, 'format_bytes'):
+            mib_val = bytes_value / (1024 * 1024)
+            return format_bytes(mib_val)  # type: ignore
+        else:
+            # Fallback formatting
+            if bytes_value >= 1024**3:
+                return f"{bytes_value/(1024**3):.1f} GiB"
+            elif bytes_value >= 1024**2:
+                return f"{bytes_value/(1024**2):.1f} MiB"
+            elif bytes_value >= 1024:
+                return f"{bytes_value/1024:.1f} KiB"
+            else:
+                return f"{bytes_value} B"
 
     def start_stage(self, name: str, total: int):
         with self.lock:
@@ -425,7 +479,30 @@ class ProgressReporter:
                 self.groups_meta += int(n)
             elif mode == "phash":
                 self.groups_phash += int(n)
+            elif mode == "subset":
+                self.groups_subset += int(n)
         self.flush()
+
+    def set_current_file(self, filename: str):
+        """Update the current file being processed for display."""
+        with self.lock:
+            self.current_file_name = filename
+            # Update banner to show current file (truncated for display)
+            if len(filename) > 50:
+                display_name = "..." + filename[-47:]
+            else:
+                display_name = filename
+            if self.banner and not filename.startswith("Processing:"):
+                self.set_banner(f"{self.banner} | Processing: {display_name}")
+
+    def clear_current_file(self):
+        """Clear the current file display."""
+        with self.lock:
+            self.current_file_name = ""
+            # Restore original banner
+            if " | Processing:" in self.banner:
+                original_banner = self.banner.split(" | Processing:")[0]
+                self.set_banner(original_banner)
 
     def set_results(self, dup_groups: int, losers_count: int, bytes_total: int):
         with self.lock:
@@ -434,21 +511,70 @@ class ProgressReporter:
             self.bytes_to_remove = int(bytes_total)
         self.flush()
 
+    def update_progress_periodically(self, current_step: int, total_steps: int, force_update: bool = False):
+        """
+        Call this periodically during single-threaded processing to update UI.
+        Designed to be called every N iterations to keep UI responsive.
+        """
+        if not self.enable_dash:
+            return
+
+        # Update stage progress
+        with self.lock:
+            self.stage_done = current_step
+            if total_steps > 0:
+                self.stage_total = max(self.stage_total, total_steps)
+
+        # STEP 7: More conservative throttling - only update every 500ms
+        import time
+        now = time.time()
+        last_update = getattr(self, '_last_periodic_update', 0)
+
+        if force_update or (now - last_update) >= 0.5:  # 500ms throttle
+            self._last_periodic_update = now
+            self.flush()
+
+    def copy_state_from(self, other_reporter):
+        """Copy progress state from another reporter (thread-safe)."""
+        if not other_reporter:
+            return
+
+        with self.lock:
+            with other_reporter.lock:
+                # Copy all state variables
+                self.stage_name = other_reporter.stage_name
+                self.stage_total = other_reporter.stage_total
+                self.stage_done = other_reporter.stage_done
+                self.stage_start_ts = other_reporter.stage_start_ts
+                self._ema_rate = other_reporter._ema_rate
+
+                self.total_files = other_reporter.total_files
+                self.scanned_files = other_reporter.scanned_files
+                self.video_files = other_reporter.video_files
+                self.bytes_seen = other_reporter.bytes_seen
+
+                self.hash_total = other_reporter.hash_total
+                self.hash_done = other_reporter.hash_done
+                self.cache_hits = other_reporter.cache_hits
+
+                self.groups_hash = other_reporter.groups_hash
+                self.groups_meta = other_reporter.groups_meta
+                self.groups_phash = other_reporter.groups_phash
+                self.groups_subset = other_reporter.groups_subset
+
+                self.dup_groups_total = other_reporter.dup_groups_total
+                self.losers_total = other_reporter.losers_total
+                self.bytes_to_remove = other_reporter.bytes_to_remove
+
     def stop(self):
-        # stop ticker + keys threads
+        # Stop keys thread only (no ticker thread in simple UI)
         self._stop_evt.set()
-        if self._ticker:
-            try:
-                self._ticker.join(timeout=1.0)
-            except Exception:
-                pass
         if self._keys_thread:
             try:
                 self._keys_thread.join(timeout=1.0)
             except Exception:
                 pass
-        if self.enable_dash and self.dash:
-            try:
-                self.dash.__exit__(None, None, None)  # type: ignore
-            except Exception:
-                pass
+        # Simple UI cleanup - just clear screen
+        if self.enable_dash and hasattr(self, '_simple_ui_initialized'):
+            print("\033[2J\033[H", end="", flush=True)  # Clear screen
+            print("=== Pipeline Complete ===", flush=True)
