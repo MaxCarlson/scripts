@@ -332,6 +332,7 @@ def _ensure_archive_line_has_url(line: str, url: str) -> str:
         parts = (parts + [''] * 6)[:6]
     parts[5] = url
     return '	'.join(parts)
+
 def _build_ytdlp_cmd(
     urls: List[str],
     out_dir: Path,
@@ -604,31 +605,24 @@ def main() -> int:
             archive_file = archive_dir / f"{prefix}-{urlfile.stem}.txt"
         except Exception:
             archive_file = None
-    # Read existing statuses and compute starting index (first empty)
-    statuses: list[str] = []
+    # Read existing archive entries and compute starting index
+    processed_lines: list[str] = []
     if archive_file and archive_file.exists():
         try:
-            statuses = archive_file.read_text(encoding='utf-8').splitlines()
+            raw_lines = archive_file.read_text(encoding='utf-8').splitlines()
         except Exception:
-            statuses = []
-    # Normalize statuses list to length of urls with '' for missing
-    if archive_file:
-        if len(statuses) < len(urls):
-            statuses.extend([''] * (len(urls) - len(statuses)))
-        else:
-            statuses = statuses[:len(urls)]
-        for idx, line in enumerate(statuses):
-            if line.strip():
-                statuses[idx] = _ensure_archive_line_has_url(line, urls[idx])
-    # First unprocessed index (1-based index in our event loop)
-    first_unprocessed = 1
-    if archive_file:
-        for idx, s in enumerate(statuses, 1):
-            if not s.strip():
-                first_unprocessed = idx
-                break
-        else:
-            first_unprocessed = len(urls) + 1
+            raw_lines = []
+        for idx, ln in enumerate(raw_lines):
+            if not ln.strip():
+                continue
+            url_for_line = urls[idx] if idx < len(urls) else ''
+            processed_lines.append(_ensure_archive_line_has_url(ln, url_for_line))
+        if processed_lines and processed_lines != [ln for ln in raw_lines if ln.strip()]:
+            try:
+                archive_file.write_text('\n'.join(processed_lines) + '\n', encoding='utf-8')
+            except Exception:
+                pass
+    first_unprocessed = (len(processed_lines) + 1) if archive_file else 1
     if not urls:
         print("[ERROR] No URLs found.", file=sys.stderr)
         return 3
@@ -674,32 +668,30 @@ def main() -> int:
             )
             # Update archive status (skip marking on Ctrl-C abort rc==130)
             if archive_file:
-                # Ensure statuses list long enough
-                if len(statuses) < i:
-                    statuses.extend([''] * (i - len(statuses)))
-                # Only write for: finished (rc==0), already-existed, or definitively bad-url
                 if rc == 0:
                     status = 'already' if info.get('already') else 'downloaded'
-                elif rc in (130, 131, 124):
-                    status = ''  # do not write on Ctrl+C/deadline/stall
+                elif rc == 124:
+                    status = 'stalled'
+                elif rc in (130, 131):
+                    status = ''  # do not write on Ctrl+C/deadline
                 else:
                     status = 'bad-url'
-                # Write enrichments if status non-empty
                 if status:
-                    # Compose tab-separated columns
-                    # status, elapsed_s, iso time, bytes_downloaded, video_id
                     elapsed_s = float(info.get('elapsed_s') or 0.0)
                     when = time.strftime('%Y-%m-%dT%H:%M:%S')
                     downloaded = float(info.get('downloaded') or 0.0)
                     downloaded_mib = downloaded / (1024*1024)
                     vid = _extract_video_id(url)
-                    statuses[i - 1] = _format_archive_line(status, elapsed_s, when, downloaded_mib, vid, url)
-                elif status == '' and statuses[i - 1].strip():
-                    statuses[i - 1] = _ensure_archive_line_has_url(statuses[i - 1], url)
-                try:
-                    archive_file.write_text("\n".join(statuses) + "\n", encoding='utf-8')
-                except Exception:
-                    pass
+                    line = _format_archive_line(status, elapsed_s, when, downloaded_mib, vid, url)
+                    processed_lines.append(line)
+                    try:
+                        with archive_file.open('a', encoding='utf-8') as fh:
+                            fh.write(line + "\n")
+                        _emit_json({"event": "archive_write", "status": status, "url_index": i, "url": url, "archive_path": str(archive_file)})
+                    except Exception:
+                        _emit_json({"event": "archive_write_failed", "status": status, "url_index": i, "url": url, "archive_path": str(archive_file)})
+                else:
+                    _emit_json({"event": "archive_skip", "url_index": i, "url": url, "archive_path": str(archive_file), "reason": "status_suppressed"})
             if rc != 0:
                 overall_rc = rc  # remember last non-zero
                 # If user aborted (rc==130), stop processing further URLs

@@ -389,6 +389,32 @@ class TestIntegration:
         finally:
             os.unlink(temp_path)
 
+    def test_main_archive_records_stalled_url(self):
+        """Stalled downloads are recorded in the archive."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            url_root = Path(tmpdir) / 'files' / 'downloads' / 'ae-stars'
+            url_root.mkdir(parents=True)
+            urlfile = url_root / 'stall_test.txt'
+            urlfile.write_text('https://straight.aebn.com/video/123#scene-45\n')
+
+            archive_dir = Path(tmpdir) / 'archive'
+            archive_dir.mkdir()
+
+            with patch('sys.argv', ['ytaedl', '-f', str(urlfile), '--archive-dir', str(archive_dir)]):
+                with patch('ytaedl.downloader._run_one', return_value=(124, {'elapsed_s': 2.5, 'downloaded': 0, 'total': 0, 'already': False, 'downloader': 'aebndl'})):
+                    with patch('ytaedl.downloader._emit_json') as mock_emit:
+                        result = downloader.main()
+                        assert result == 124
+                        write_events = [evt for call in mock_emit.call_args_list for evt in ([call.args[0]] if call.args else []) if isinstance(evt, dict) and evt.get('event') == 'archive_write']
+                        assert any(evt.get('status') == 'stalled' for evt in write_events)
+
+            archive_file = archive_dir / 'ae-stall_test.txt'
+            content = archive_file.read_text().strip().splitlines()
+            assert len(content) == 1
+            fields = content[0].split('\t')
+            assert fields[0] == 'stalled'
+            assert fields[-1] == 'https://straight.aebn.com/video/123#scene-45'
+
     def test_main_archive_skips_processed_urls(self):
         """Processed URLs recorded in archive files are skipped on rerun."""
         with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
