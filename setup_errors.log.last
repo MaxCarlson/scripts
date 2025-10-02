@@ -1,0 +1,288 @@
+=== Install standard_ui ===
+--- STDOUT ---
+error: externally-managed-environment
+
+× This environment is externally managed
+╰─> To install Python packages system-wide, try apt install
+    python3-xyz, where xyz is the package you are trying to
+    install.
+    
+    If you wish to install a non-Debian-packaged Python package,
+    create a virtual environment using python3 -m venv path/to/venv.
+    Then use path/to/venv/bin/python and path/to/venv/bin/pip. Make
+    sure you have python3-full installed.
+    
+    If you wish to install a non-Debian packaged Python application,
+    it may be easiest to use pipx install xyz, which will manage a
+    virtual environment for you. Make sure you have pipx installed.
+    
+    See /usr/share/doc/python3.12/README.venv for more information.
+
+note: If you believe this is a mistake, please contact your Python installation or OS distribution provider. You can override this, at the risk of breaking your Python installation or OS, by passing --break-system-packages.
+hint: See PEP 668 for the detailed specification.
+
+--- STDERR ---
+<none>
+
+=== Install scripts_setup ===
+--- STDOUT ---
+error: externally-managed-environment
+
+× This environment is externally managed
+╰─> To install Python packages system-wide, try apt install
+    python3-xyz, where xyz is the package you are trying to
+    install.
+    
+    If you wish to install a non-Debian-packaged Python package,
+    create a virtual environment using python3 -m venv path/to/venv.
+    Then use path/to/venv/bin/python and path/to/venv/bin/pip. Make
+    sure you have python3-full installed.
+    
+    If you wish to install a non-Debian packaged Python application,
+    it may be easiest to use pipx install xyz, which will manage a
+    virtual environment for you. Make sure you have pipx installed.
+    
+    See /usr/share/doc/python3.12/README.venv for more information.
+
+note: If you believe this is a mistake, please contact your Python installation or OS distribution provider. You can override this, at the risk of breaking your Python installation or OS, by passing --break-system-packages.
+hint: See PEP 668 for the detailed specification.
+
+--- STDERR ---
+<none>
+
+=== Install cross_platform ===
+--- STDOUT ---
+error: externally-managed-environment
+
+× This environment is externally managed
+╰─> To install Python packages system-wide, try apt install
+    python3-xyz, where xyz is the package you are trying to
+    install.
+    
+    If you wish to install a non-Debian-packaged Python package,
+    create a virtual environment using python3 -m venv path/to/venv.
+    Then use path/to/venv/bin/python and path/to/venv/bin/pip. Make
+    sure you have python3-full installed.
+    
+    If you wish to install a non-Debian packaged Python application,
+    it may be easiest to use pipx install xyz, which will manage a
+    virtual environment for you. Make sure you have pipx installed.
+    
+    See /usr/share/doc/python3.12/README.venv for more information.
+
+note: If you believe this is a mistake, please contact your Python installation or OS distribution provider. You can override this, at the risk of breaking your Python installation or OS, by passing --break-system-packages.
+hint: See PEP 668 for the detailed specification.
+
+--- STDERR ---
+<none>
+
+=== Setup setup.py ===
+--- STDOUT ---
+───────────────────── Python Modules Installation - START ──────────────────────
+[•] Found 25 module(s) to process
+[•] agt: no requirements.txt — skipped
+[•] agt: pip installing (editable)
+[X] agt: install failed — log: /home/mcarls/scripts/setup_logs/agt-pip.log
+[•] clip_tools: no installer (no setup.py/pyproject.toml) — skipped
+[•] clipboard_utils: requirements.txt empty — skipped
+[•] clipboard_utils: pip installing (editable)
+[X] clipboard_utils: install failed — log: 
+/home/mcarls/scripts/setup_logs/clipboard_utils-pip.log
+
+code_tools: 1/1 …
+[!] code_tools: requirements installed with 1 failure(s) — log: 
+/home/mcarls/scripts/setup_logs/code_tools-pip.log
+  ❌ pyperclip
+[•] code_tools: pip installing (editable)
+[X] code_tools: install failed — log: 
+/home/mcarls/scripts/setup_logs/code_tools-pip.log
+
+cross_platform: 1/3 …
+cross_platform: 2/3 …
+cross_platform: 3/3 …
+[!] cross_platform: requirements installed with 3 failure(s) — log: 
+/home/mcarls/scripts/setup_logs/cross_platform-pip.log
+  ❌ rich
+  ❌ GitPython
+  ❌ pytest
+[•] cross_platform: pip installing (editable)
+[X] cross_platform: install failed — log: 
+/home/mcarls/scripts/setup_logs/cross_platform-pip.log
+
+diff_utils: 1/1 …
+[!] diff_utils: requirements installed with 1 failure(s) — log: 
+/home/mcarls/scripts/setup_logs/diff_utils-pip.log
+  ❌ pytest
+[•] diff_utils: pip installing (editable)
+[X] diff_utils: install failed — log: 
+/home/mcarls/scripts/setup_logs/diff_utils-pip.log
+[•] edit_commands: requirements.txt empty — skipped
+[•] edit_commands: pip installing (editable)
+[X] edit_commands: install failed — log: 
+/home/mcarls/scripts/setup_logs/edit_commands-pip.log
+[•] file_utils: requirements.txt empty — skipped
+[•] file_utils: pip installing (editable)
+[X] file_utils: install failed — log: 
+/home/mcarls/scripts/setup_logs/file_utils-pip.log
+
+history_watcher: 1/2 …
+history_watcher: 2/2 …
+[!] history_watcher: requirements installed with 2 failure(s) — log: 
+/home/mcarls/scripts/setup_logs/history_watcher-pip.log
+  ❌ rich
+  ❌ pytest
+[•] history_watcher: pip installing (editable)
+[X] history_watcher: install failed — log: 
+/home/mcarls/scripts/setup_logs/history_watcher-pip.log
+
+knowledge_manager: 1/2 …
+knowledge_manager: 2/2 …
+[!] knowledge_manager: requirements installed with 2 failure(s) — log: 
+/home/mcarls/scripts/setup_logs/knowledge_manager-pip.log
+  ❌ pytest
+  ❌ textual
+[•] knowledge_manager: pip installing (editable)
+[X] knowledge_manager: install failed — log: 
+/home/mcarls/scripts/setup_logs/knowledge_manager-pip.log
+[•] llm-interface: no requirements.txt — skipped
+[•] llm-interface: pip installing (editable)
+[X] llm-interface: install failed — log: 
+/home/mcarls/scripts/setup_logs/llm-interface-pip.log
+[•] obfuscator: no installer (no setup.py/pyproject.toml) — skipped
+
+parallel_runner: 1/1 …
+[!] parallel_runner: requirements installed with 1 failure(s) — log: 
+/home/mcarls/scripts/setup_logs/parallel_runner-pip.log
+  ❌ rich
+[•] parallel_runner: pip installing (editable)
+[X] parallel_runner: install failed — log: 
+/home/mcarls/scripts/setup_logs/parallel_runner-pip.log
+
+poe2craft: 1/3 …
+poe2craft: 2/3 …
+poe2craft: 3/3 …
+[!] poe2craft: requirements installed with 3 failure(s) — log: 
+/home/mcarls/scripts/setup_logs/poe2craft-pip.log
+  ❌ requests>=2.32.0
+  ❌ beautifulsoup4>=4.12.0
+  ❌ platformdirs>=4.2.2
+[•] poe2craft: pip installing (editable)
+[X] poe2craft: install failed — log: 
+/home/mcarls/scripts/setup_logs/poe2craft-pip.log
+[•] procparsers: no requirements.txt — skipped
+[•] procparsers: pip installing (editable)
+[X] procparsers: install failed — log: 
+/home/mcarls/scripts/setup_logs/procparsers-pip.log
+[•] README.md: not a directory — skipped
+
+script_manager: 1/1 …
+[!] script_manager: requirements installed with 1 failure(s) — log: 
+/home/mcarls/scripts/setup_logs/script_manager-pip.log
+  ❌ rich
+[•] script_manager: pip installing (editable)
+[X] script_manager: install failed — log: 
+/home/mcarls/scripts/setup_logs/script_manager-pip.log
+[•] setup.py: not a directory — skipped
+
+standard_ui: 1/1 …
+[!] standard_ui: requirements installed with 1 failure(s) — log: 
+/home/mcarls/scripts/setup_logs/standard_ui-pip.log
+  ❌ rich
+[•] standard_ui: pip installing (editable)
+[X] standard_ui: install failed — log: 
+/home/mcarls/scripts/setup_logs/standard_ui-pip.log
+
+system_tools: 1/3 …
+system_tools: 2/3 …
+system_tools: 3/3 …
+[!] system_tools: requirements installed with 3 failure(s) — log: 
+/home/mcarls/scripts/setup_logs/system_tools-pip.log
+  ❌ rich
+  ❌ GitPython
+  ❌ pytest
+[•] system_tools: pip installing (editable)
+[X] system_tools: install failed — log: 
+/home/mcarls/scripts/setup_logs/system_tools-pip.log
+[•] termdash: requirements.txt empty — skipped
+[•] termdash: pip installing (editable)
+[X] termdash: install failed — log: 
+/home/mcarls/scripts/setup_logs/termdash-pip.log
+
+tmux_control: 1/4 …
+tmux_control: 2/4 …
+tmux_control: 3/4 …
+tmux_control: 4/4 …
+[!] tmux_control: requirements installed with 4 failure(s) — log: 
+/home/mcarls/scripts/setup_logs/tmux_control-pip.log
+  ❌ libtmux
+  ❌ psutil
+  ❌ typer
+  ❌ rich
+[•] tmux_control: pip installing (editable)
+[X] tmux_control: install failed — log: 
+/home/mcarls/scripts/setup_logs/tmux_control-pip.log
+
+vdedup: 1/4 …
+vdedup: 2/4 …
+vdedup: 3/4 …
+vdedup: 4/4 …
+[!] vdedup: requirements installed with 4 failure(s) — log: 
+/home/mcarls/scripts/setup_logs/vdedup-pip.log
+  ❌ rich>=13.0.0
+  ❌ Pillow>=9.0.0
+  ❌ ImageHash>=4.3.1
+  ❌ blake3>=0.3.3
+[•] vdedup: pip installing (editable)
+[X] vdedup: install failed — log: /home/mcarls/scripts/setup_logs/vdedup-pip.log
+
+web_ai_automator: 1/3 …
+web_ai_automator: 2/3 …
+web_ai_automator: 3/3 …
+[!] web_ai_automator: requirements installed with 3 failure(s) — log: 
+/home/mcarls/scripts/setup_logs/web_ai_automator-pip.log
+  ❌ flask
+  ❌ selenium
+  ❌ pytest
+[•] web_ai_automator: pip installing (editable)
+[X] web_ai_automator: install failed — log: 
+/home/mcarls/scripts/setup_logs/web_ai_automator-pip.log
+
+ytaedl: 1/1 …
+[!] ytaedl: requirements installed with 1 failure(s) — log: 
+/home/mcarls/scripts/setup_logs/ytaedl-pip.log
+  ❌ yt-dlp>=2024.10.22
+[•] ytaedl: pip installing (editable)
+[X] ytaedl: install failed — log: /home/mcarls/scripts/setup_logs/ytaedl-pip.log
+───────────── Python Modules Installation - END (Elapsed: 21.99s) ──────────────
+─────────────────────── PYTHONPATH Configuration - START ───────────────────────
+──────────────────────── Zsh PYTHONPATH Update - START ─────────────────────────
+✅ PYTHONPATH configuration for '/home/mcarls/scripts/modules' already correctly
+exists in /home/mcarls/dotfiles/dynamic/setup_modules_pythonpath.zsh
+───────────────── Zsh PYTHONPATH Update - END (Elapsed: 0.00s) ─────────────────
+─────────────── PYTHONPATH Configuration - END (Elapsed: 0.00s) ────────────────
+⚠️  Completed with 21 error(s) in module installation.
+FAILED_MODULE: agt
+FAILED_MODULE: clipboard_utils
+FAILED_MODULE: code_tools
+FAILED_MODULE: cross_platform
+FAILED_MODULE: diff_utils
+FAILED_MODULE: edit_commands
+FAILED_MODULE: file_utils
+FAILED_MODULE: history_watcher
+FAILED_MODULE: knowledge_manager
+FAILED_MODULE: llm-interface
+FAILED_MODULE: parallel_runner
+FAILED_MODULE: poe2craft
+FAILED_MODULE: procparsers
+FAILED_MODULE: script_manager
+FAILED_MODULE: standard_ui
+FAILED_MODULE: system_tools
+FAILED_MODULE: termdash
+FAILED_MODULE: tmux_control
+FAILED_MODULE: vdedup
+FAILED_MODULE: web_ai_automator
+FAILED_MODULE: ytaedl
+
+--- STDERR ---
+<none>
+

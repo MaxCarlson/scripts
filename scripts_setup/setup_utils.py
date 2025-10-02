@@ -1,6 +1,3 @@
-# File: scripts_setup/setup_utils.py
-# In scripts_setup/setup_utils.py
-
 import os
 import sys
 import shutil
@@ -282,3 +279,4 @@ def install_dependencies(dependencies: list, verbose: bool = True):
             _log_error(f"Failed to install some dependencies with Pip: {', '.join(remaining_dependencies)}")
 
     _log_success("Dependency installation process finished.", verbose)
+

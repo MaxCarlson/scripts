@@ -1,5 +1,15 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
+
+"""
+Root setup.py — self-bootstrapping
+
+Adds a venv bootstrap step before running the original setup workflow:
+- ensures ./.venv exists (prefers `uv venv --seed` if available, otherwise `python -m venv`)
+- ensures pip/setuptools/wheel are installed/updated in ./.venv
+- re-execs this script with ./.venv/bin/python
+- then proceeds with the existing install/sub-setup orchestration
+"""
 
 import os
 import sys
@@ -12,6 +22,70 @@ import time
 import re
 from datetime import datetime
 from threading import Thread, Lock
+
+# ─────────────────────────────────────────────────────────
+# VENV BOOTSTRAP (new)
+# ─────────────────────────────────────────────────────────
+
+SCRIPTS_DIR = Path(__file__).resolve().parent
+VENV_DIR = SCRIPTS_DIR / ".venv"
+IS_WINDOWS = os.name == "nt"
+
+def _which(cmd: str) -> str | None:
+    return shutil.which(cmd) if (shutil := __import__("shutil")) else None
+
+def _run_quiet(cmd: list[str]) -> int:
+    try:
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="ignore")
+        return p.returncode
+    except Exception:
+        return 1
+
+def _ensure_pip_in_venv(py_exe: Path):
+    # make sure pip exists, then upgrade basics
+    rc = _run_quiet([str(py_exe), "-m", "ensurepip", "--upgrade"])
+    # Even if ensurepip is a no-op, upgrade tooling
+    _run_quiet([str(py_exe), "-m", "pip", "install", "-U", "pip", "setuptools", "wheel"])
+
+def _venv_python() -> Path:
+    return VENV_DIR / ("Scripts/python.exe" if IS_WINDOWS else "bin/python")
+
+def _bootstrap_venv_if_needed():
+    # Allow skipping (for legacy/advanced scenarios)
+    if os.environ.get("SKIP_VENV_BOOTSTRAP") == "1":
+        return
+
+    # If we're already using the repo venv python, nothing to do
+    vpy = _venv_python()
+    if vpy.exists() and Path(sys.executable).resolve() == vpy.resolve():
+        return
+
+    # If the venv doesn’t exist, create it (prefer uv if available)
+    if not vpy.exists():
+        VENV_DIR.mkdir(parents=True, exist_ok=True)
+        uv = _which("uv")
+        if uv:
+            # seed to include pip
+            subprocess.check_call([uv, "venv", "--seed", str(VENV_DIR)])
+        else:
+            # Stdlib venv; try to get pip as well
+            subprocess.check_call([sys.executable, "-m", "venv", str(VENV_DIR)])
+        # ensure pip present/up-to-date
+        _ensure_pip_in_venv(_venv_python())
+
+    else:
+        # venv exists — but ensure pip is present (covers stale/missing pip cases)
+        _ensure_pip_in_venv(vpy)
+
+    # Re-exec this script under the venv python so all downstream pip installs
+    # use the venv and never hit system PEP 668.
+    if Path(sys.executable).resolve() != vpy.resolve():
+        os.execv(str(vpy), [str(vpy), *sys.argv])
+
+# Run the bootstrap ASAP (before any pip installs or sub-setups)
+_bootstrap_venv_if_needed()
+
+# From this point on, we are guaranteed to be running under ./.venv/bin/python
 
 # ─────────────────────────────────────────────────────────
 # Bootstrap tomllib/tomli for TOML parsing
@@ -29,7 +103,6 @@ except Exception:
 # ─────────────────────────────────────────────────────────
 # Paths & global log
 # ─────────────────────────────────────────────────────────
-SCRIPTS_DIR = Path(__file__).resolve().parent
 MODULES_DIR = SCRIPTS_DIR / "modules"
 STANDARD_UI_SETUP_DIR = MODULES_DIR / "standard_ui"
 CROSS_PLATFORM_DIR = MODULES_DIR / "cross_platform"
@@ -216,21 +289,13 @@ def write_error_log_detail(title: str, proc: subprocess.CompletedProcess | None,
         log_error(f"Critical error: could not write detailed error to {ERROR_LOG}: {e}")
 
 # ─────────────────────────────────────────────────────────
-# Child process runner with stall detection (fix for pwsh Y/N)
+# Child process runner with stall detection (unchanged)
 # ─────────────────────────────────────────────────────────
 STALL_NOTICE_AFTER = int(os.environ.get("SETUP_STALL_NOTICE_SEC", "10"))
 STALL_AUTO_CONFIRM_AFTER = int(os.environ.get("SETUP_STALL_AUTOCONFIRM_SEC", "15"))
 AUTO_CONFIRM = os.environ.get("SETUP_AUTO_CONFIRM", "1") not in ("0", "false", "False")
 
 def _popen_stream_and_log(cmd, cwd=None, env=None, tag: str = ""):
-    """
-    Start a child process, stream stdout (merged with stderr) to console
-    and append to GLOBAL_LOG in real time.
-
-    On Windows PowerShell stalls (hidden Y/N), we print a visible hint after
-    STALL_NOTICE_AFTER seconds, and (if enabled) auto-send 'Y\\n' after
-    STALL_AUTO_CONFIRM_AFTER seconds.
-    """
     if env is None:
         env = os.environ.copy()
     env.setdefault("PYTHONIOENCODING", "utf-8")
@@ -241,7 +306,7 @@ def _popen_stream_and_log(cmd, cwd=None, env=None, tag: str = ""):
     proc = subprocess.Popen(
         cmd, cwd=cwd, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        stdin=subprocess.PIPE,  # allow us to inject Y/Enter if stuck
+        stdin=subprocess.PIPE,
         text=True, encoding="utf-8", errors="ignore", bufsize=1
     )
 
@@ -258,12 +323,10 @@ def _popen_stream_and_log(cmd, cwd=None, env=None, tag: str = ""):
                 with out_lock:
                     collected_lines.append(line)
                     last_out = time.time()
-                # live to console
                 try:
                     sys.stdout.write(line)
                 except Exception:
                     pass
-                # and to log
                 _log_append(line.rstrip("\n"))
         finally:
             try:
@@ -281,7 +344,6 @@ def _popen_stream_and_log(cmd, cwd=None, env=None, tag: str = ""):
             now = time.time()
             silent_for = now - last_out
 
-            # Stall hint
             if rc is None and not notice_printed and silent_for >= STALL_NOTICE_AFTER:
                 hint = (
                     "\n[HINT] No output from child process for a while. "
@@ -292,7 +354,6 @@ def _popen_stream_and_log(cmd, cwd=None, env=None, tag: str = ""):
                 _log_append(hint.rstrip("\n"))
                 notice_printed = True
 
-            # Auto-confirm for PowerShell stalls
             if (
                 rc is None
                 and os.name == "nt"
@@ -309,7 +370,7 @@ def _popen_stream_and_log(cmd, cwd=None, env=None, tag: str = ""):
                     autoyes_sent = True
                 except Exception as e:
                     _log_append(f"[WARN] Failed to auto-send input: {e}")
-                    autoyes_sent = True  # avoid retry loop
+                    autoyes_sent = True
 
             if rc is not None:
                 break
@@ -405,7 +466,7 @@ def ensure_module_installed(module_display_name: str, install_path: Path,
             _append_unique(errors, f"Installation of {module_display_name} failed (rc: {rc})")
 
 # ─────────────────────────────────────────────────────────
-# Sub-setup runner (streams live output + logs; with stall fix)
+# Sub-setup runner
 # ─────────────────────────────────────────────────────────
 def run_setup(script_path: Path, *args, soft_fail_modules: bool = False):
     resolved = script_path.resolve()
@@ -469,6 +530,7 @@ def main():
                         help="Enable detailed output.")
     parser.add_argument("-q", "--quiet", action="store_true",
                         help="Suppress some fallback INFO logs.")
+    parser.add_argument("-E", "--no-venv", dest="no_venv", action="store_true", help="(Advanced) Skip venv bootstrap even if not in ./.venv.")
     parser.add_argument(
         "-m", "--soft-fail-modules",
         action=argparse.BooleanOptionalAction,
@@ -478,6 +540,9 @@ def main():
 
     args = parser.parse_args()
     _is_verbose = args.verbose
+
+    if args.no_venv:
+        os.environ["SKIP_VENV_BOOTSTRAP"] = "1"
 
     # Resolve directories
     env_scripts = os.environ.get("SCRIPTS", "").strip()
@@ -517,7 +582,7 @@ def main():
         except OSError as e:
             log_warning(f"Could not clear previous error log {ERROR_LOG}: {e}")
 
-    # Core modules
+    # Core modules — now safe because we’re under ./.venv
     with sui_section("Core Module Installation", level="major"):
         for name, path in [
             ("standard_ui", STANDARD_UI_SETUP_DIR),
@@ -535,7 +600,7 @@ def main():
             else:
                 log_warning(f"{name} setup files not found in {path} or it's not a directory.")
 
-    # WSL2?
+    # WSL2 helper
     try:
         rel = platform.uname().release
     except Exception:
@@ -579,6 +644,12 @@ def main():
         if args.verbose: path_args.append("--verbose")
         run_setup(setup_path_script, *path_args)
 
+    # Optional: wire PowerShell profile if on Windows/WSL
+    with sui_section("PowerShell profile wiring", level="major"):
+        run_setup(SCRIPTS_SETUP_PACKAGE_DIR / "setup_pwsh_profile.py",
+                  "--scripts-dir", str(scripts_dir),
+                  "--dotfiles-dir", str(dotfiles_dir))
+
     try:
         print_global_elapsed()
     except Exception:
@@ -608,3 +679,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
