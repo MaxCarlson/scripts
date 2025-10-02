@@ -253,15 +253,16 @@ def _install_module(module_name: str, module_dir: Path, *, editable: bool, logs_
     return _run_with_log(cmd, log_file, verbose=verbose)
 
 # ─────────────────────────────────────────────────────────
-# Scan + install modules
+# Scan + install modules (and remember names for proxy generation)
 # ─────────────────────────────────────────────────────────
 def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall: bool, production: bool, verbose: bool, include_hidden: bool) -> list[str]:
     errors_encountered: list[str] = []
     hidden_skipped: list[str] = []
+    touched_pkgs: list[str] = []  # keep distribution names we installed/checked
 
     if not modules_dir.exists() or not modules_dir.is_dir():
         status_line(f"{modules_dir}: not found — skipped", "warn")
-        return errors_encountered
+        return errors_encountered, touched_pkgs
 
     with section("Python Modules Installation"):
         entries = sorted(modules_dir.iterdir(), key=lambda p: p.name.lower())
@@ -299,6 +300,8 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
                 current = _determine_install_status(entry, verbose)
                 if current == desired:
                     status_line(f"{name}: already ({current})", "unchanged", "skip")
+                    # even if we skip, track package name so proxies can be refreshed
+                    touched_pkgs.append(_pkg_name_from_source(entry, verbose))
                     continue
                 elif current:
                     log_info(f"{name}: installed as '{current}', but '{desired}' requested → reinstalling.")
@@ -328,6 +331,7 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
             rc = _install_module(name, entry, editable=not production, logs_dir=logs_dir, verbose=verbose)
             if rc == 0:
                 status_line(f"{name}: installed", "ok", "editable" if not production else "normal")
+                touched_pkgs.append(_pkg_name_from_source(entry, verbose))
             else:
                 status_line(f"{name}: install failed", "fail", f"log: {logs_dir / (name + '-pip.log')}")
                 errors_encountered.append(name)
@@ -336,7 +340,7 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
         print("\nHidden modules not processed:")
         for h in hidden_skipped:
             print(f"  - {h} (dot-prefixed; ignored)")
-    return errors_encountered
+    return errors_encountered, touched_pkgs
 
 # ─────────────────────────────────────────────────────────
 # PYTHONPATH configuration
@@ -344,7 +348,7 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
 def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path, verbose: bool = False):
     modules_dir_abs = str(modules_dir.resolve())
     path_separator = os.pathsep
-    
+
     with section("PYTHONPATH Configuration"):
         if os.name == "nt":
             with section("Windows PYTHONPATH Update"):
@@ -360,11 +364,11 @@ def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path, verbose: bool = Fal
                         for line in completed_process.stdout.splitlines():
                             match = re.search(regex_pattern, line.strip(), re.IGNORECASE)
                             if match: current_user_pythonpath = match.group(1).strip(); break
-                    
+
                     if verbose: log_info(f"Current User PYTHONPATH from registry: '{current_user_pythonpath}'")
 
                     current_paths_list = list(dict.fromkeys([p for p in current_user_pythonpath.split(path_separator) if p]))
-                    
+
                     if modules_dir_abs in current_paths_list:
                         log_success(f"{modules_dir_abs} is already in the User PYTHONPATH.")
                     else:
@@ -407,15 +411,15 @@ def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path, verbose: bool = Fal
                             subprocess.run(['setx', 'PYTHONPATH', new_pythonpath_value], check=True)
                             log_success("Requested update for User PYTHONPATH using 'setx'.")
                         log_warning("PYTHONPATH change will apply to new terminal sessions or after a restart/re-login.")
-                except Exception as e: 
+                except Exception as e:
                     log_error(f"Failed to update User PYTHONPATH: {type(e).__name__}: {e}")
                     log_info(f"Please add '{modules_dir_abs}' to your User PYTHONPATH environment variable manually.")
-        else: 
+        else:
             with section("Zsh PYTHONPATH Update"):
                 pythonpath_config_file = dotfiles_dir / "dynamic/setup_modules_pythonpath.zsh"
                 pythonpath_config_file.parent.mkdir(parents=True, exist_ok=True)
                 export_line = f'export PYTHONPATH="{modules_dir_abs}{path_separator}${{PYTHONPATH}}"\n'
-                
+
                 current_config_content = ""
                 if pythonpath_config_file.exists():
                     try: current_config_content = pythonpath_config_file.read_text(encoding="utf-8")
@@ -428,7 +432,7 @@ def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path, verbose: bool = Fal
                        line_in_file.strip().endswith(f'{path_separator}{modules_dir_abs}"'):
                         is_already_configured = True
                         break
-                
+
                 if is_already_configured and f'export PYTHONPATH="{modules_dir_abs}{path_separator}${{PYTHONPATH}}"' in current_config_content :
                     log_success(f"PYTHONPATH configuration for '{modules_dir_abs}' already correctly exists in {pythonpath_config_file}")
                 else:
@@ -438,17 +442,17 @@ def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path, verbose: bool = Fal
                             f.write("# This file is (re)generated to ensure correctness.\n")
                             f.write(export_line)
                         log_success(f"PYTHONPATH configuration (re)generated in {pythonpath_config_file}")
-                        
+
                         try:
                             source_cmd = f"source '{pythonpath_config_file.resolve()}' && echo $PYTHONPATH"
-                            if verbose: log_info(f"Attempting to have Zsh sub-shell source: {source_cmd}")
+                            if _is_verbose: log_info(f"Attempting to have Zsh sub-shell source: {source_cmd}")
                             result = subprocess.run(
-                                ["zsh", "-c", source_cmd], timeout=5, 
+                                ["zsh", "-c", source_cmd], timeout=5,
                                 check=True, capture_output=True, text=True, encoding='utf-8', errors='ignore'
                             )
-                            if verbose and result.stdout.strip():
+                            if _is_verbose and result.stdout.strip():
                                 log_success(f"Sourced {pythonpath_config_file} in a zsh sub-shell. New PYTHONPATH (in sub-shell): {result.stdout.strip()}")
-                            if verbose and result.stderr.strip():
+                            if _is_verbose and result.stderr.strip():
                                 log_warning(f"Zsh source stderr: {result.stderr.strip()}")
                         except FileNotFoundError:
                             log_warning("zsh not found. Cannot source the Zsh config file automatically.")
@@ -462,6 +466,98 @@ def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path, verbose: bool = Fal
                     except IOError as e:
                         log_error(f"Could not write PYTHONPATH configuration to {pythonpath_config_file}: {e}")
                         log_info(f"Please add the following line to your Zsh startup file manually:\n{export_line.strip()}")
+
+# ─────────────────────────────────────────────────────────
+# Console-script proxy generation (for run-anywhere behavior)
+# ─────────────────────────────────────────────────────────
+def _write_text_if_changed(path: Path, content: str, verbose: bool, crlf: bool = False) -> bool:
+    if path.exists():
+        try:
+            existing = path.read_text(encoding="utf-8")
+            if existing == content:
+                if verbose:
+                    print(f"[INFO] No change for {path.name}")
+                return False
+        except Exception:
+            pass
+    newline = "\r\n" if crlf else "\n"
+    path.write_text(content, encoding="utf-8", newline=newline)
+    if verbose:
+        print(f"[SUCCESS] Wrote {path}")
+    return True
+
+def generate_console_proxies(installed_pkg_names: list[str]) -> None:
+    """
+    Create/refresh tiny shims in <scripts>/bin that delegate to this repo’s venv entry points.
+    Only proxies console scripts that belong to the distributions we just installed/checked.
+    """
+    try:
+        from importlib import metadata
+    except Exception:
+        log_warning("Could not import importlib.metadata; skipping console proxy generation.")
+        return
+
+    scripts_dir = Path(__file__).resolve().parents[1]
+    bin_dir = scripts_dir / "bin"
+    venv_dir = scripts_dir / ".venv"
+    venv_bin = venv_dir / ("Scripts" if os.name == "nt" else "bin")
+    bin_dir.mkdir(parents=True, exist_ok=True)
+
+    desired = set(n.strip().lower() for n in installed_pkg_names if n.strip())
+    console_map: dict[str, str] = {}
+
+    for dist in metadata.distributions():
+        dist_name = (dist.metadata.get("Name") or "").lower()
+        if not dist_name or dist_name not in desired:
+            continue
+        for ep in dist.entry_points or []:
+            if ep.group == "console_scripts" and ep.name:
+                console_map[ep.name] = dist_name
+
+    if not console_map:
+        status_line("No console_scripts discovered for installed packages", "unchanged")
+        return
+
+    created = 0
+    unchanged = 0
+    for script_name in sorted(console_map.keys()):
+        if os.name == "nt":
+            wrapper = bin_dir / f"{script_name}.cmd"
+            content = (
+                "@echo off\r\n"
+                "setlocal\r\n"
+                "set \"_B=%~dp0\"\r\n"
+                "set \"_V=%_B%..\\.venv\\Scripts\"\r\n"
+                f"set \"_T=%_V%\\{script_name}.exe\"\r\n"
+                "if exist \"%_T%\" (\r\n"
+                "  \"%_T%\" %*\r\n"
+                "  exit /b %ERRORLEVEL%\r\n"
+                ")\r\n"
+                f"echo [WARN] {script_name} not found in repo venv. Falling back to PATH.\r\n"
+                f"{script_name} %*\r\n"
+            )
+            changed = _write_text_if_changed(wrapper, content=content, verbose=_is_verbose, crlf=True)
+            if changed: created += 1
+            else: unchanged += 1
+        else:
+            wrapper = bin_dir / script_name
+            content = f"""#!/usr/bin/env bash
+set -euo pipefail
+DIR="$(cd -- "$(dirname -- "${{BASH_SOURCE[0]}}")" && pwd)"
+T="$DIR/../.venv/bin/{script_name}"
+if [ -x "$T" ]; then exec "$T" "$@"; fi
+echo "[WARN] {script_name} not found in repo venv. Falling back to PATH." 1>&2
+exec "{script_name}" "$@"
+"""
+            changed = _write_text_if_changed(wrapper, content=content, verbose=_is_verbose, crlf=False)
+            try:
+                wrapper.chmod(0o755)
+            except Exception:
+                pass
+            if changed: created += 1
+            else: unchanged += 1
+
+    status_line(f"Console proxies: {created} created/updated, {unchanged} unchanged", "ok")
 
 # ─────────────────────────────────────────────────────────
 # Orchestrator
@@ -488,13 +584,19 @@ def main():
     logs_dir = args.scripts_dir / "setup_logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    all_errors = install_python_modules(
+    all_errors, touched_pkgs = install_python_modules(
         args.scripts_dir / "modules", logs_dir,
         skip_reinstall=args.skip_reinstall,
         production=args.production,
         verbose=args.verbose,
         include_hidden=args.include_hidden,
     )
+
+    # Always refresh console proxies for anything we touched
+    try:
+        generate_console_proxies(touched_pkgs)
+    except Exception as e:
+        log_warning(f"Console proxy generation encountered an issue: {e}")
 
     ensure_pythonpath(args.scripts_dir / "modules", args.dotfiles_dir, args.verbose)
 
@@ -504,7 +606,8 @@ def main():
             print(f"FAILED_MODULE: {mod}")
         sys.exit(1)
     else:
-        print("[OK] setup.py completed.")
+        print("[OK] modules/setup.py completed.")
 
 if __name__ == "__main__":
     main()
+
