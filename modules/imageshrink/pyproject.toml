@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "imgshrink"
+version = "0.2.0"
+description = "Multi-process manga image shrinker with Termdash-style live UI"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "imgshrink authors" }]
+dependencies = [
+  "Pillow>=9.2.0",
+]
+
+[project.optional-dependencies]
+ui = ["termdash>=0.1.0"]
+
+[project.scripts]
+imgshrink = "imgshrink.cli:main"
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+python_files = ["*_test.py"]
