@@ -44,6 +44,14 @@ def _run_quiet(cmd: list[str]) -> int:
 def _ensure_pip_in_venv(py_exe: Path):
     # make sure pip exists, then upgrade basics
     rc = _run_quiet([str(py_exe), "-m", "ensurepip", "--upgrade"])
+
+    # On Termux, ensurepip may not be available, use system pip to bootstrap
+    if rc != 0:
+        # Try using system pip to install pip into the venv
+        _run_quiet([sys.executable, "-m", "pip", "install", "--target",
+                   str(py_exe.parent.parent / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"),
+                   "pip", "setuptools", "wheel"])
+
     # Even if ensurepip is a no-op, upgrade tooling
     _run_quiet([str(py_exe), "-m", "pip", "install", "-U", "pip", "setuptools", "wheel"])
 
@@ -60,13 +68,16 @@ def _bootstrap_venv_if_needed():
     if vpy.exists() and Path(sys.executable).resolve() == vpy.resolve():
         return
 
-    # If the venv doesn’t exist, create it (prefer uv if available)
+    # If the venv doesn't exist, create it (prefer uv if available)
     if not vpy.exists():
         VENV_DIR.mkdir(parents=True, exist_ok=True)
         uv = _which("uv")
         if uv:
-            # seed to include pip
-            subprocess.check_call([uv, "venv", "--seed", str(VENV_DIR)])
+            # seed to include pip, and specify python explicitly for Termux compatibility
+            # Set UV_LINK_MODE=copy to suppress hardlink warnings on Android/Termux
+            env = os.environ.copy()
+            env["UV_LINK_MODE"] = "copy"
+            subprocess.check_call([uv, "venv", "--python", sys.executable, "--seed", str(VENV_DIR)], env=env)
         else:
             # Stdlib venv; try to get pip as well
             subprocess.check_call([sys.executable, "-m", "venv", str(VENV_DIR)])
@@ -449,6 +460,8 @@ def ensure_module_installed(module_display_name: str, install_path: Path,
         return
 
     install_cmd = [sys.executable, "-m", "pip", "install"]
+    if not verbose:
+        install_cmd.extend(["-q", "--no-input", "--disable-pip-version-check"])
     if editable:
         install_cmd.append("-e")
     install_cmd.append(str(install_path.resolve()))
@@ -514,16 +527,16 @@ def main():
 
     parser = argparse.ArgumentParser(description="Master setup script for managing project components.")
     parser.add_argument("-R", "--scripts-dir", type=Path, required=False,
-                        help="Base directory for the project scripts. Defaults to $SCRIPTS.")
+                        help="Base directory for the project scripts. Defaults to $SCRIPTS or ~/scripts.")
     parser.add_argument("-D", "--dotfiles-dir", type=Path, required=False,
-                        help="Root directory of dotfiles. Defaults to $DOTFILES.")
+                        help="Root directory of dotfiles. Defaults to $DOTFILES or ~/dotfiles.")
     parser.add_argument("-B", "--bin-dir", type=Path, required=False,
                         help="Target directory for symlinked executables. Defaults to <scripts-dir>/bin.")
     parser.add_argument(
-        "-s", "--skip-reinstall",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Skip re-installation when modules already match the desired install mode and path.",
+        "-f", "--force-reinstall",
+        action="store_true",
+        default=False,
+        help="Force re-installation even when modules already match the desired install mode.",
     )
     parser.add_argument("-p", "--production", action="store_true",
                         help="Install Python modules in production mode (non-editable).")
@@ -533,10 +546,10 @@ def main():
                         help="Suppress some fallback INFO logs.")
     parser.add_argument("-E", "--no-venv", dest="no_venv", action="store_true", help="(Advanced) Skip venv bootstrap even if not in ./.venv.")
     parser.add_argument(
-        "-m", "--soft-fail-modules",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Do not halt when modules/setup.py fails; continue and record as a warning.",
+        "-F", "--fail-fast",
+        action="store_true",
+        default=False,
+        help="Halt immediately when modules/setup.py fails (default is to continue and warn).",
     )
 
     args = parser.parse_args()
@@ -545,7 +558,7 @@ def main():
     if args.no_venv:
         os.environ["SKIP_VENV_BOOTSTRAP"] = "1"
 
-    # Resolve directories
+    # Resolve directories with fallback defaults
     env_scripts = os.environ.get("SCRIPTS", "").strip()
     env_dotfiles = os.environ.get("DOTFILES", "").strip()
 
@@ -554,20 +567,21 @@ def main():
     elif env_scripts:
         scripts_dir = Path(env_scripts)
     else:
-        status_line("scripts-dir not provided and $SCRIPTS is not set", "fail")
-        print("Hint: use -R/--scripts-dir or export SCRIPTS=/path/to/scripts", file=sys.stderr)
-        sys.exit(2)
+        scripts_dir = Path.home() / "scripts"
 
     if args.dotfiles_dir:
         dotfiles_dir = args.dotfiles_dir
     elif env_dotfiles:
         dotfiles_dir = Path(env_dotfiles)
     else:
-        status_line("dotfiles-dir not provided and $DOTFILES is not set", "fail")
-        print("Hint: use -D/--dotfiles-dir or export DOTFILES=/path/to/dotfiles", file=sys.stderr)
-        sys.exit(2)
+        dotfiles_dir = Path.home() / "dotfiles"
 
     bin_dir = args.bin_dir if args.bin_dir else scripts_dir / "bin"
+
+    # Invert the flags: skip_reinstall is True by default, force_reinstall inverts it
+    skip_reinstall = not args.force_reinstall
+    # soft_fail_modules is True by default, fail_fast inverts it
+    soft_fail_modules = not args.fail_fast
 
     try:
         init_timer()
@@ -583,21 +597,22 @@ def main():
         except OSError as e:
             log_warning(f"Could not clear previous error log {ERROR_LOG}: {e}")
 
-    # Core modules — now safe because we’re under ./.venv
+    # Core modules — now safe because we're under ./.venv
+    # Order matters: cross_platform must be installed before python_setup (dependency)
     with sui_section("Core Module Installation", level="major"):
         for name, path in [
             ("standard_ui", STANDARD_UI_SETUP_DIR),
+            ("cross_platform", CROSS_PLATFORM_DIR),
             ("python_setup", PYTHON_SETUP_DIR),
             ("scripts_setup", SCRIPTS_SETUP_PACKAGE_DIR),
-            ("cross_platform", CROSS_PLATFORM_DIR),
         ]:
             if path.is_dir() and ((path / "setup.py").exists() or (path / "pyproject.toml").exists()):
                 ensure_module_installed(
                     name, path,
-                    skip_reinstall=args.skip_reinstall,
+                    skip_reinstall=skip_reinstall,
                     editable=not args.production,
                     verbose=args.verbose,
-                    soft_fail=args.soft_fail_modules,
+                    soft_fail=soft_fail_modules,
                 )
             else:
                 log_warning(f"{name} setup files not found in {path} or it's not a directory.")
@@ -620,7 +635,7 @@ def main():
         "--bin-dir", str(bin_dir),
     ]
     if args.verbose:        common_setup_args.append("--verbose")
-    if args.skip_reinstall:
+    if skip_reinstall:
         common_setup_args.append("--skip-reinstall")
     else:
         common_setup_args.append("--no-skip-reinstall")
@@ -638,7 +653,7 @@ def main():
         except ValueError:
             title_rel_path = full_script_path.name
         with sui_section(f"Running sub-setup: {title_rel_path}", level="medium"):
-            run_setup(full_script_path, *(common_setup_args + extra_args), soft_fail_modules=args.soft_fail_modules)
+            run_setup(full_script_path, *(common_setup_args + extra_args), soft_fail_modules=soft_fail_modules)
 
     with sui_section("Shell PATH Configuration (setup_path.py)", level="major"):
         setup_path_script = SCRIPTS_SETUP_PACKAGE_DIR / "setup_path.py"
