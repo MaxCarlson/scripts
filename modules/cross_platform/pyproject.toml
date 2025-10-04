@@ -16,6 +16,7 @@ requires-python = ">=3.6"
 dependencies = [
     "psutil",         # For process and system information
     "pyperclip",      # For clipboard support where applicable
+    "rich>=13.0.0",   # For console output in debug_utils
 ]
 
 # Optional dependency for Git integration in debug utilities (if needed)
@@ -29,4 +30,3 @@ Repository = "https://github.com/yourusername/cross_platform"
 
 [tool.setuptools.packages.find]
 where = ["."]
-
