@@ -265,7 +265,23 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
         return errors_encountered, touched_pkgs
 
     with section("Python Modules Installation"):
-        entries = sorted(modules_dir.iterdir(), key=lambda p: p.name.lower())
+        # Try to use dependency-aware ordering
+        try:
+            setup_utils_dir = modules_dir.parent / "setup_utils"
+            if (setup_utils_dir / "dependency_resolver.py").exists():
+                sys.path.insert(0, str(setup_utils_dir))
+                from dependency_resolver import resolve_module_order
+                ordered_names = resolve_module_order(modules_dir)
+                entries = [modules_dir / name for name in ordered_names if (modules_dir / name).exists()]
+                if verbose:
+                    log_info(f"Using dependency-aware installation order: {', '.join(ordered_names)}")
+            else:
+                entries = sorted(modules_dir.iterdir(), key=lambda p: p.name.lower())
+        except Exception as e:
+            if verbose:
+                log_warning(f"Dependency resolver failed ({e}), using alphabetical order")
+            entries = sorted(modules_dir.iterdir(), key=lambda p: p.name.lower())
+
         print(f"[•] Found {len(entries)} module(s) to process") if not _ASCII_UI else print(f"[-] Found {len(entries)} module(s) to process")
 
         for entry in entries:
