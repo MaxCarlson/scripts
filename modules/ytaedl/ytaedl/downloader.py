@@ -62,6 +62,7 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("-m", "--mode", default="auto", choices=["auto", "yt", "aebn"],
                    help="Which downloader to use; 'auto' chooses per-URL.")
     p.add_argument("-o", "--output-dir", help="Output directory; defaults to ./stars/{urlfile_stem}/")
+    p.add_argument("-P", "--proxy-dl-location", help="Download into this root (per url file subfolder) while checking duplicates in the canonical location.")
     p.add_argument("-Y", "--ytdlp-url-dir", default="./files/downloads/stars", help="Default folder for yt-dlp URL files.")
     p.add_argument("-A", "--aebn-url-dir", default="./files/downloads/ae-stars", help="Default folder for AEBN URL files.")
     p.add_argument("-w", "--work-dir", default="./tmp", help="Work dir for aebndl (segments, temp).")
@@ -71,7 +72,7 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("-R", "--retries", type=int, default=1, help="Retries per URL when tool exits non-zero.")
     p.add_argument("-n", "--dry-run", action="store_true", help="Do not call external tools; print planned commands.")
     p.add_argument("-q", "--quiet", action="store_true", help="Reduce wrapper verbosity (still emits NDJSON events).")
-    p.add_argument("-P", "--progress-log-freq", type=int, default=30,
+    p.add_argument("-p", "--progress-log-freq", type=int, default=30,
                    help="Every N seconds, append a PROGRESS line to the program log (0 to disable).")
     p.add_argument("-U", "--max-ndjson-rate", type=float, default=5.0,
                    help="Max NDJSON progress events printed per second (-1 for unlimited). Applies to 'progress' events.")
@@ -338,6 +339,7 @@ def _build_ytdlp_cmd(
     out_dir: Path,
     max_mibs: Optional[float] = None,
     max_height: Optional[int] = None,
+    temp_dir: Optional[Path] = None,
 ) -> List[str]:
     # no --print; --newline ensures line-terminated progress
     cmd = [
@@ -350,6 +352,8 @@ def _build_ytdlp_cmd(
         cmd += ["--limit-rate", rate_arg]
     if isinstance(max_height, int) and max_height > 0:
         cmd += ["--format", _format_selector_for_height(max_height)]
+    if temp_dir:
+        cmd += ["--paths", f"temp:{temp_dir}"]
     cmd += [*urls]
     return cmd
 
@@ -366,7 +370,6 @@ def _build_aebndl_cmd(
         cmd += ["-r", str(max_height)]
     cmd.append(url)
     return cmd
-
 def _emit_json(d: dict) -> None:
     sys.stdout.write(json.dumps(d, ensure_ascii=False) + "\n")
     sys.stdout.flush()
@@ -375,6 +378,7 @@ def _run_one(
     tool: str,
     urls: List[str],
     out_dir: Path,
+    canonical_out_dir: Path,
     work_dir: Path,
     raw_dir: Path,
     url_index: int,
@@ -402,11 +406,15 @@ def _run_one(
     proglog.start(url_index, url)
     t_url_start = time.time()
 
+    canonical_out_dir = canonical_out_dir.expanduser().resolve()
+    cleanup_proxy_path: Optional[Path] = None
+    terminate_for_canonical_duplicate = False
+
     # choose command
     if tool == "aebndl":
         cmd = _build_aebndl_cmd(url, out_dir, work_dir, max_height)
     else:
-        cmd = _build_ytdlp_cmd([url], out_dir, max_dl_speed, max_height)
+        cmd = _build_ytdlp_cmd([url], out_dir, max_dl_speed, max_height, temp_dir=work_dir)
 
     _emit_json({"event": "start", "downloader": tool, "url_index": url_index, "url_total": None,
                 "url": url, "out_dir": str(out_dir), "cmd": None})
@@ -431,7 +439,7 @@ def _run_one(
     )
 
     already_seen = False
-    dest_path: Optional[str] = None
+    dest_path: Optional[Path] = None
     last_progress: Optional[dict] = None
     last_proglog_t = time.time()
     # rate limit for stdout NDJSON (progress events)
@@ -457,7 +465,25 @@ def _run_one(
                 rc = 0
                 # still emit the event below for downstream
             if evt.get("event") == "destination":
-                dest_path = evt.get("path") or dest_path
+                raw_dest = evt.get("path")
+                if raw_dest:
+                    candidate = Path(raw_dest).expanduser().resolve()
+                    dest_path = candidate
+                    if canonical_out_dir != out_dir:
+                        try:
+                            rel = candidate.relative_to(out_dir)
+                        except ValueError:
+                            rel = Path(candidate.name)
+                        canonical_candidate = (canonical_out_dir / rel).resolve()
+                        if canonical_candidate.exists():
+                            already_seen = True
+                            terminate_for_canonical_duplicate = True
+                            cleanup_proxy_path = candidate
+                            try:
+                                proc.terminate()
+                            except Exception:
+                                pass
+                            rc = 0
             if evt.get("event") == "progress":
                 last_progress = evt
             now = time.time()
@@ -553,6 +579,17 @@ def _run_one(
         info = {"elapsed_s": time.time() - t_url_start, "downloaded": (last_progress or {}).get("downloaded"), "total": (last_progress or {}).get("total"), "already": False, "downloader": tool}
         return 130, info
 
+    if terminate_for_canonical_duplicate and cleanup_proxy_path:
+        try:
+            if cleanup_proxy_path.exists():
+                cleanup_proxy_path.unlink()
+                parent = cleanup_proxy_path.parent
+                while parent != out_dir and parent != parent.parent and not any(parent.iterdir()):
+                    parent.rmdir()
+                    parent = parent.parent
+        except Exception:
+            pass
+
     # classify status
     status = "FINISH_SUCCESS" if rc == 0 else "FINISH_BAD"
     if rc == 0 and tool == "yt-dlp" and already_seen:
@@ -565,7 +602,7 @@ def _run_one(
     # retry if bad
     info = {"elapsed_s": elapsed_s, "downloaded": (last_progress or {}).get("downloaded"), "total": (last_progress or {}).get("total"), "already": bool(already_seen), "downloader": tool}
     if rc != 0 and retries > 0:
-        return _run_one(tool, urls, out_dir, work_dir, raw_dir, url_index, proglog, timeout, retries - 1, quiet, dry_run, progress_freq_s, max_ndjson_rate, stall_seconds, program_deadline, max_dl_speed, max_height)
+        return _run_one(tool, urls, out_dir, canonical_out_dir, work_dir, raw_dir, url_index, proglog, timeout, retries - 1, quiet, dry_run, progress_freq_s, max_ndjson_rate, stall_seconds, program_deadline, max_dl_speed, max_height)
     return rc, info
 
 def main() -> int:
@@ -576,23 +613,42 @@ def main() -> int:
         print(f"[ERROR] URL file not found: {urlfile}", file=sys.stderr)
         return 2
 
-    # Default output dir
-    out_dir = Path(args.output_dir) if args.output_dir else _default_outdir_for(urlfile)
-    out_dir = out_dir.expanduser().resolve()
-    work_dir = Path(args.work_dir).expanduser().resolve()
+    # Canonical output (where files normally live)
+    canonical_out_dir = Path(args.output_dir) if args.output_dir else _default_outdir_for(urlfile)
+    canonical_out_dir = canonical_out_dir.expanduser().resolve()
+
+    work_dir_arg = Path(args.work_dir).expanduser()
     raw_dir = Path(args.raw_log_dir).expanduser().resolve()
-    _ensure_dir(out_dir)
+
+    proxy_root: Optional[Path] = None
+    download_out_dir = canonical_out_dir
+    if args.proxy_dl_location:
+        proxy_root = Path(args.proxy_dl_location).expanduser().resolve()
+        download_out_dir = (proxy_root / urlfile.stem).expanduser().resolve()
+        _ensure_dir(proxy_root)
+        if args.work_dir == './tmp':
+            work_dir = (download_out_dir / '_tmp').resolve()
+        else:
+            work_dir = work_dir_arg.resolve()
+    else:
+        work_dir = work_dir_arg.resolve()
+
+    _ensure_dir(download_out_dir)
     _ensure_dir(work_dir)
     _ensure_dir(raw_dir)
+    if download_out_dir != canonical_out_dir:
+        canonical_out_dir.mkdir(parents=True, exist_ok=True)
 
     if not args.quiet:
         print(f"[INFO] URL file: {urlfile.resolve()}")
-        print(f"[INFO] Output dir: {out_dir}")
+        print(f"[INFO] Canonical dir: {canonical_out_dir}")
+        if download_out_dir != canonical_out_dir:
+            print(f"[INFO] Proxy download dir: {download_out_dir}")
         print(f"[INFO] Mode: {args.mode}")
 
     # Program log
     proglog = ProgLogger(path=Path(args.program_log).expanduser().resolve(), t0=time.time())
-    proglog.program_start(urlfile.resolve(), out_dir, args.mode)
+    proglog.program_start(urlfile.resolve(), canonical_out_dir, args.mode)
 
     urls = _read_urls(urlfile)
     # Archive support
@@ -650,7 +706,8 @@ def main() -> int:
             rc, info = _run_one(
                 tool=tool,
                 urls=[url],
-                out_dir=out_dir,
+                out_dir=download_out_dir,
+                canonical_out_dir=canonical_out_dir,
                 work_dir=work_dir,
                 raw_dir=raw_dir,
                 url_index=i,
@@ -692,6 +749,7 @@ def main() -> int:
                         _emit_json({"event": "archive_write_failed", "status": status, "url_index": i, "url": url, "archive_path": str(archive_file)})
                 else:
                     _emit_json({"event": "archive_skip", "url_index": i, "url": url, "archive_path": str(archive_file), "reason": "status_suppressed"})
+
             if rc != 0:
                 overall_rc = rc  # remember last non-zero
                 # If user aborted (rc==130), stop processing further URLs

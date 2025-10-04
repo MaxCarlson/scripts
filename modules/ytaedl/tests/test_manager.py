@@ -26,6 +26,14 @@ class TestManager:
         assert args.max_ndjson_rate == 5.0
         assert args.max_resolution is None
 
+        assert args.proxy_dl_location is None
+
+        args_with_proxy = parser.parse_args(["-P", "/mirror"])
+        assert args_with_proxy.proxy_dl_location == "/mirror"
+
+        args_with_priority = parser.parse_args(["-p", "file.txt"])
+        assert args_with_priority.priority_files == ["file.txt"]
+
         args_with_res = parser.parse_args(["--max-resolution", "1080"])
         assert args_with_res.max_resolution == "1080"
 
@@ -231,7 +239,8 @@ class TestStartWorker:
                         quiet=True,
                         archive_dir=None,
                         log_dir=log_dir,
-                        cap_mibs=None
+                        cap_mibs=None,
+                        proxy_dl_location=None
                     )
 
                     assert proc == mock_process
@@ -245,6 +254,7 @@ class TestStartWorker:
                     assert "-U" in cmd
                     assert "5.0" in cmd
                     assert "-q" in cmd
+                    assert "--proxy-dl-location" not in cmd
                     assert "--max-resolution" not in cmd
         finally:
             os.unlink(temp_path)
@@ -273,6 +283,7 @@ class TestStartWorker:
                         archive_dir=archive_dir,
                         log_dir=log_dir,
                         cap_mibs=5.5,
+                        proxy_dl_location="/tmp/proxy",
                         max_resolution="1080",
                     )
 
