@@ -30,6 +30,28 @@ class SystemUtils:
         write_debug(f"is_wsl2: {is_wsl}", channel="Debug")
         return is_wsl
 
+    def is_windows(self) -> bool:
+        """Check if running on Windows (not WSL)."""
+        is_win = self.os_name == "windows"
+        write_debug(f"is_windows: {is_win}", channel="Debug")
+        return is_win
+
+    def is_linux(self) -> bool:
+        """Check if running on Linux (includes WSL and Termux)."""
+        is_lin = self.os_name == "linux"
+        write_debug(f"is_linux: {is_lin}", channel="Debug")
+        return is_lin
+
+    def is_darwin(self) -> bool:
+        """Check if running on macOS."""
+        is_mac = self.os_name == "darwin"
+        write_debug(f"is_darwin: {is_mac}", channel="Debug")
+        return is_mac
+
+    def is_macos(self) -> bool:
+        """Alias for is_darwin()."""
+        return self.is_darwin()
+
     def run_command(self, command: str, sudo: bool = False) -> str:
         """
         Execute a system command with optional sudo privileges.

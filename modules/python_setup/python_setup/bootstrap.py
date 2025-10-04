@@ -11,12 +11,13 @@ try:
     from cross_platform.system_utils import SystemUtils
 except Exception:
     # Fallback: minimal detection without cross_platform
+    import platform as _platform
+
     class SystemUtils:  # type: ignore
         @staticmethod
         def is_wsl2() -> bool:
             try:
-                import platform
-                rel = platform.uname().release
+                rel = _platform.uname().release
                 return "microsoft" in rel.lower()
             except Exception:
                 return False
@@ -33,6 +34,14 @@ except Exception:
         @staticmethod
         def is_linux() -> bool:
             return sys.platform.startswith("linux")
+
+        @staticmethod
+        def is_darwin() -> bool:
+            return sys.platform == "darwin"
+
+        @staticmethod
+        def is_macos() -> bool:
+            return sys.platform == "darwin"
 
 
 @dataclass
@@ -71,9 +80,33 @@ def ensure_uv(su: SystemUtils) -> tuple[bool, str]:
                 return True, "attempted winget install for uv"
             return False, "uv missing; install via winget or installer: https://docs.astral.sh/uv"
         elif su.is_termux():
-            # Use pip in Termux environment as a fallback
-            run([sys.executable, "-m", "pip", "install", "--upgrade", "uv"], check=False)
-            return True, "attempted pip install uv (Termux)"
+            # On Termux, uv is available in the official package repository (already patched for Android)
+            if which("pkg"):
+                print("[python_setup] Installing uv via Termux package manager...")
+                result = run(["pkg", "install", "-y", "uv"], check=False)
+                if result.returncode == 0 and which("uv"):
+                    return True, "installed uv via pkg"
+                # pkg install failed, try apt as fallback
+                result = run(["apt", "install", "-y", "uv"], check=False)
+                if result.returncode == 0 and which("uv"):
+                    return True, "installed uv via apt"
+            # Last resort: try cargo (but will likely fail due to sys-info issues)
+            if which("cargo"):
+                print("[python_setup] pkg/apt failed; attempting cargo build (may fail on Android)...")
+                import os as _os
+                env = _os.environ.copy()
+                home = _os.path.expanduser("~")
+                env["CARGO_TARGET_DIR"] = f"{home}/.cargo-build"
+                result = subprocess.run(
+                    ["cargo", "install", "--git", "https://github.com/astral-sh/uv", "uv"],
+                    env=env,
+                    text=True,
+                    check=False
+                )
+                if result.returncode == 0 and which("uv"):
+                    return True, "installed uv via cargo from source"
+                return False, "all install methods failed; uv requires Android-specific patches. Install manually: pkg install uv"
+            return False, "uv not available; install via: pkg install uv"
         else:
             # Ubuntu/WSL2: try pip first; user may replace with official installer later
             run([sys.executable, "-m", "pip", "install", "--upgrade", "uv"], check=False)
