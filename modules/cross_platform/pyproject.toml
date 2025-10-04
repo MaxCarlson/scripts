@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cross_platform"
-version = "0.2.0"
+version = "0.3.0"
 description = "A cross-platform system utilities module supporting Windows, Linux, macOS, WSL2, Termux, with integrated debug utilities"
 authors = [
     {name = "Your Name", email = "your.email@example.com"}

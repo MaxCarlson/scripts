@@ -27,6 +27,9 @@ from .tmux_utils import TmuxManager
 # Debugging and logging utilities
 from . import debug_utils
 
+# File system utilities including link creation
+from .fs_utils import create_link, LinkType, LinkResult
+
 # Optionally, you could expose a unified namespace:
 __all__ = [
     "SystemUtils",
@@ -39,4 +42,7 @@ __all__ = [
     "HistoryUtils", # Added to __all__
     "TmuxManager",
     "debug_utils",
+    "create_link",
+    "LinkType",
+    "LinkResult",
 ]
