@@ -308,8 +308,8 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
                 else:
                     log_info(f"{name}: not installed or unknown status → installing.")
 
-            # 1) requirements (optional)
-            if req_file.exists():
+            # 1) requirements (optional) - skip if pyproject.toml exists (dependencies declared there)
+            if req_file.exists() and not has_pyproject:
                 reqs = _parse_requirements(req_file)
                 if reqs:
                     num_fail, results = _install_requirements(name, entry, reqs, logs_dir, verbose)
@@ -322,7 +322,9 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
                             print(f"  {mark} {r}")
                 else:
                     status_line(f"{name}: requirements.txt empty — skipped", "unchanged")
-            else:
+            elif req_file.exists() and has_pyproject:
+                status_line(f"{name}: has pyproject.toml (dependencies declared there) — skipping requirements.txt", "unchanged")
+            elif not req_file.exists() and not has_pyproject:
                 status_line(f"{name}: no requirements.txt — skipped", "unchanged")
 
             # 2) module install (one line per module in non-verbose)
