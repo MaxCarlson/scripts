@@ -11,7 +11,7 @@ sys.path.insert(0, str(script_dir))
 from llm_project_parser import extract_files_from_lines, write_file
 
 # Sample input for the "new" format (e.g., imageshrink.txt)
-NEW_FORMAT_INPUT = """
+NEW_FORMAT_INPUT = '''
 First file is here:
 imgshrink/__init__.py
 ```python
@@ -35,7 +35,7 @@ README.md
 ```
 This is a test.
 ```
-"""
+'''
 
 # Sample input for the "original" format
 ORIGINAL_FORMAT_INPUT = """

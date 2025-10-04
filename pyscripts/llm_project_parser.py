@@ -91,12 +91,32 @@ def extract_files_from_lines(lines, interactive=False):
         if line.strip().startswith("```"):
             filename_candidate = ""
             search_idx = i - 1
-            while search_idx >= 0:
+            # Look backwards for a line that looks like a filename
+            # Prefer lines with paths, file extensions, or markdown formatting
+            # Skip lines that look like descriptions (sentences ending with periods)
+            candidates = []
+            while search_idx >= 0 and search_idx >= i - 5:  # Search up to 5 lines back
                 prev_line = lines_buffer[search_idx].strip()
-                if prev_line:
-                    filename_candidate = prev_line
-                    break
+                if prev_line and not prev_line.startswith('---'):  # Skip separator lines
+                    candidates.append(prev_line)
                 search_idx -= 1
+
+            # Pick the best candidate (prefer filenames over descriptions)
+            for candidate in candidates:
+                # Skip if it looks like a description (sentence with multiple words ending in period)
+                if candidate.endswith('.') and len(candidate.split()) > 3:
+                    continue
+                # Prefer if it has a path separator or common file extension pattern
+                if '/' in candidate or re.search(r'\.\w+$', candidate):
+                    filename_candidate = candidate
+                    break
+
+            # If no preferred candidate found, use the first non-description line
+            if not filename_candidate:
+                for candidate in candidates:
+                    if not (candidate.endswith('.') and len(candidate.split()) > 3):
+                        filename_candidate = candidate
+                        break
 
             code_lines = []
             i += 1
