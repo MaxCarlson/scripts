@@ -43,9 +43,10 @@ def clean_env(monkeypatch):
 def linux_utils(monkeypatch, clean_env):
     monkeypatch.setattr(platform, "system", lambda: "Linux")
     u = ClipboardUtils()
-    # Force off Termux/tmux for tests that don't want them
+    # Force off Termux/tmux/WSL for tests that don't want them
     monkeypatch.setattr(ClipboardUtils, "is_termux", lambda self: False)
     monkeypatch.setattr(ClipboardUtils, "is_tmux", lambda self: False)
+    monkeypatch.setattr(ClipboardUtils, "is_wsl2", lambda self: False)
     return u
 
 @pytest.fixture()

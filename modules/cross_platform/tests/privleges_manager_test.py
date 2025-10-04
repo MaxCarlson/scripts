@@ -17,21 +17,25 @@ def priv_mgr_windows(monkeypatch):
     monkeypatch.setattr(platform, "system", lambda: "Windows")
     return PrivilegesManager()
 
+@pytest.mark.skipif(not hasattr(os, 'geteuid'), reason="geteuid not available on Windows")
 def test_require_admin_linux_success(monkeypatch, priv_mgr_linux):
     monkeypatch.setattr(os, "geteuid", lambda: 0) # Running as root
     priv_mgr_linux.require_admin() # Should not raise
 
+@pytest.mark.skipif(not hasattr(os, 'geteuid'), reason="geteuid not available on Windows")
 def test_require_admin_linux_failure(monkeypatch, priv_mgr_linux):
     monkeypatch.setattr(os, "geteuid", lambda: 1) # Not running as root
     with pytest.raises(PermissionError, match="Administrator \\(root\\) privileges required."):
         priv_mgr_linux.require_admin()
 
+@pytest.mark.skipif(not hasattr(os, 'geteuid'), reason="geteuid not available on Windows")
 def test_require_admin_darwin_success(monkeypatch):
     monkeypatch.setattr(platform, "system", lambda: "Darwin")
     priv_mgr = PrivilegesManager()
     monkeypatch.setattr(os, "geteuid", lambda: 0)
     priv_mgr.require_admin()
 
+@pytest.mark.skipif(not hasattr(os, 'geteuid'), reason="geteuid not available on Windows")
 def test_require_admin_darwin_failure(monkeypatch):
     monkeypatch.setattr(platform, "system", lambda: "Darwin")
     priv_mgr = PrivilegesManager()
