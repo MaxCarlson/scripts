@@ -24,6 +24,11 @@ class TestDownloader:
         assert args.mode == "auto"
         assert args.max_resolution is None
 
+        assert args.proxy_dl_location is None
+
+        args_with_proxy = parser.parse_args(["-f", "test.txt", "-P", "/tmp/mirror"])
+        assert args_with_proxy.proxy_dl_location == "/tmp/mirror"
+
         args_with_res = parser.parse_args(["-f", "test.txt", "--max-resolution", "2k"])
         assert args_with_res.max_resolution == "2k"
 

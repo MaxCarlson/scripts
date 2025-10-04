@@ -271,6 +271,7 @@ def _start_worker(
     archive_dir: Optional[Path],
     log_dir: Path,
     cap_mibs: Optional[float],
+    proxy_dl_location: Optional[str] = None,
     max_resolution: Optional[str] = None,
 ) -> subprocess.Popen:
     cmd = [
@@ -288,6 +289,8 @@ def _start_worker(
         cmd += ["-X", str(cap_mibs)]
     if archive_dir:
         cmd += ["-a", str(archive_dir)]
+    if proxy_dl_location:
+        cmd += ["--proxy-dl-location", str(proxy_dl_location)]
     if max_resolution:
         cmd += ["--max-resolution", max_resolution]
     if quiet:
@@ -315,6 +318,8 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("-l", "--time-limit", type=int, default=-1, help="Max seconds a worker holds a urlfile (-1 for unlimited)")
     p.add_argument("-u", "--max-ndjson-rate", type=float, default=5.0, help="Max progress events/sec printed by workers (-1 unlimited)")
     p.add_argument("-q", "--quiet", action="store_true", help="Pass -q to workers")
+    p.add_argument("-p", "--priority-files", action="append", help="URL files to prioritize (can be specified multiple times)")
+    p.add_argument("-P", "--proxy-dl-location", default=None, help="Download into this root (per url file subfolder) while checking duplicates in the canonical location")
     p.add_argument("-s", "--stars-dir", default="./files/downloads/stars", help="Folder of yt-dlp url files")
     p.add_argument("-d", "--aebn-dir", default="./files/downloads/ae-stars", help="Folder of AEBN url files")
     p.add_argument("-f", "--finished-log", default="./logs/finished_urlfiles.txt", help="Path to record completed url files")
@@ -327,7 +332,6 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("-v", "--max-resolution", choices=MAX_RESOLUTION_CHOICES, default=None, help="Highest video resolution workers should request")
     p.add_argument("-z", "--max-total-dl-speed", type=float, default=None, help="Global max download speed across all workers (MiB/s)")
     p.add_argument("-b", "--show-bars", action="store_true", help="Show an ASCII progress bar per worker")
-    p.add_argument("-p", "--priority-files", action="append", help="URL files to prioritize (can be specified multiple times)")
     return p
 
 
@@ -557,7 +561,7 @@ def main() -> int:
             ws.prog_log_path = (Path(log_dir) / f"ytaedler-worker-{ws.slot:02d}.log").resolve()
         except Exception:
             ws.prog_log_path = None
-        ws.proc = _start_worker(ws.slot, urlfile, args.max_ndjson_rate, args.quiet, archive_dir, log_dir, ws.cap_mibs, args.max_resolution)
+        ws.proc = _start_worker(ws.slot, urlfile, args.max_ndjson_rate, args.quiet, archive_dir, log_dir, ws.cap_mibs, args.proxy_dl_location, args.max_resolution)
         ws.reader_stop.clear()
         ws.reader = threading.Thread(target=_reader, args=(ws,), daemon=True)
         ws.reader.start()
@@ -674,7 +678,7 @@ def main() -> int:
                                     w.prog_log_path = (Path(log_dir) / f"ytaedler-worker-{w.slot:02d}.log").resolve()
                                 except Exception:
                                     w.prog_log_path = None
-                                w.proc = _start_worker(w.slot, w.urlfile, args.max_ndjson_rate, args.quiet, archive_dir, log_dir, w.cap_mibs, args.max_resolution)
+                                w.proc = _start_worker(w.slot, w.urlfile, args.max_ndjson_rate, args.quiet, archive_dir, log_dir, w.cap_mibs, args.proxy_dl_location, args.max_resolution)
                                 w.reader = threading.Thread(target=_reader, args=(w,), daemon=True)
                                 w.reader.start()
                 elif total_mib < cap * 0.60:
@@ -707,7 +711,7 @@ def main() -> int:
                                         w.prog_log_path = (Path(log_dir) / f"ytaedler-worker-{w.slot:02d}.log").resolve()
                                     except Exception:
                                         w.prog_log_path = None
-                                    w.proc = _start_worker(w.slot, w.urlfile, args.max_ndjson_rate, args.quiet, archive_dir, log_dir, w.cap_mibs, args.max_resolution)
+                                    w.proc = _start_worker(w.slot, w.urlfile, args.max_ndjson_rate, args.quiet, archive_dir, log_dir, w.cap_mibs, args.proxy_dl_location, args.max_resolution)
                                     w.reader = threading.Thread(target=_reader, args=(w,), daemon=True)
                                     w.reader.start()
             # Check time limit and exits
