@@ -268,3 +268,131 @@ def scanned_files_by_extension(
         exclude_dir_globs=exclude_dir_globs,
         max_depth=max_depth,
     )
+
+
+# ------------------------------
+# Link creation utilities
+# ------------------------------
+
+import shutil
+from enum import Enum
+
+
+class LinkType(Enum):
+    """Type of file link to create."""
+    SYMLINK = "symlink"
+    HARDLINK = "hardlink"
+    COPY = "copy"
+
+
+class LinkResult:
+    """Result of link creation attempt."""
+    def __init__(self, success: bool, link_type: LinkType | None, error: str | None = None):
+        self.success = success
+        self.link_type = link_type
+        self.error = error
+
+    def __repr__(self) -> str:
+        if self.success:
+            return f"LinkResult(success=True, type={self.link_type.value})"
+        return f"LinkResult(success=False, error={self.error!r})"
+
+
+def create_link(
+    source: Path,
+    target: Path,
+    *,
+    link_type: LinkType = LinkType.SYMLINK,
+    fallback_copy: bool = True,
+    overwrite: bool = False,
+) -> LinkResult:
+    """
+    Create a link (symlink, hardlink, or copy) from source to target.
+
+    Strategy:
+    1. If link_type is SYMLINK: try symlink, optionally fall back to hardlink then copy
+    2. If link_type is HARDLINK: try hardlink, optionally fall back to copy
+    3. If link_type is COPY: just copy
+
+    Args:
+        source: Source file path (must exist)
+        target: Target link path
+        link_type: Preferred link type (SYMLINK, HARDLINK, or COPY)
+        fallback_copy: If True, fall back to copy if preferred method fails
+        overwrite: If True, remove existing target before creating link
+
+    Returns:
+        LinkResult with success status and actual link type used
+
+    Raises:
+        FileNotFoundError: If source doesn't exist
+        IsADirectoryError: If source or target is a directory
+    """
+    source = Path(source).resolve()
+    target = Path(target)
+
+    # Validate source
+    if not source.exists():
+        raise FileNotFoundError(f"Source file does not exist: {source}")
+    if source.is_dir():
+        raise IsADirectoryError(f"Source is a directory (only files supported): {source}")
+
+    # Handle existing target
+    if target.exists() or target.is_symlink():
+        # Check if it's a broken symlink
+        if target.is_symlink() and not target.exists():
+            # Broken symlink - remove it automatically
+            target.unlink()
+        elif overwrite:
+            # Overwrite enabled - remove existing file/link
+            if target.is_dir():
+                raise IsADirectoryError(f"Target is a directory: {target}")
+            target.unlink()
+        else:
+            return LinkResult(False, None, f"Target already exists: {target}")
+
+    # Create parent directory if needed
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    # Try requested link type
+    if link_type == LinkType.SYMLINK:
+        try:
+            target.symlink_to(source)
+            return LinkResult(True, LinkType.SYMLINK)
+        except (OSError, NotImplementedError) as e:
+            # Symlink failed - try hardlink if fallback enabled
+            if fallback_copy:
+                try:
+                    os.link(source, target)
+                    return LinkResult(True, LinkType.HARDLINK)
+                except (OSError, NotImplementedError):
+                    # Hardlink failed - try copy
+                    try:
+                        shutil.copy2(source, target)
+                        return LinkResult(True, LinkType.COPY)
+                    except Exception as copy_err:
+                        return LinkResult(False, None, f"All methods failed. Last error: {copy_err}")
+            return LinkResult(False, None, f"Symlink failed: {e}")
+
+    elif link_type == LinkType.HARDLINK:
+        try:
+            os.link(source, target)
+            return LinkResult(True, LinkType.HARDLINK)
+        except (OSError, NotImplementedError) as e:
+            # Hardlink failed - try copy if fallback enabled
+            if fallback_copy:
+                try:
+                    shutil.copy2(source, target)
+                    return LinkResult(True, LinkType.COPY)
+                except Exception as copy_err:
+                    return LinkResult(False, None, f"Hardlink and copy failed. Last error: {copy_err}")
+            return LinkResult(False, None, f"Hardlink failed: {e}")
+
+    elif link_type == LinkType.COPY:
+        try:
+            shutil.copy2(source, target)
+            return LinkResult(True, LinkType.COPY)
+        except Exception as e:
+            return LinkResult(False, None, f"Copy failed: {e}")
+
+    return LinkResult(False, None, "Invalid link type specified")
