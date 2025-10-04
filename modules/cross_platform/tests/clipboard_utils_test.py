@@ -24,6 +24,12 @@ def _which_map(mapping: dict[str, str | None]):
     return _which
 
 
+class TtyStringIO(io.StringIO):
+    """StringIO that reports itself as a TTY for OSC 52 tests."""
+    def isatty(self):
+        return True
+
+
 # ------------ fixtures ------------
 
 @pytest.fixture()
@@ -62,7 +68,7 @@ def windows_utils(monkeypatch, clean_env):
 # ------------ set_clipboard: OSC52 ------------
 
 def test_set_clipboard_emits_osc52_outside_tmux(linux_utils, monkeypatch):
-    buf = io.StringIO()
+    buf = TtyStringIO()
     monkeypatch.setattr(sys, "stdout", buf)
 
     with patch("cross_platform.clipboard_utils.shutil.which", _which_map({})), \
@@ -77,7 +83,7 @@ def test_set_clipboard_emits_osc52_outside_tmux(linux_utils, monkeypatch):
 def test_set_clipboard_emits_osc52_inside_tmux(linux_utils, monkeypatch):
     # enable tmux path for just this test
     monkeypatch.setattr(ClipboardUtils, "is_tmux", lambda self: True)
-    buf = io.StringIO()
+    buf = TtyStringIO()
     monkeypatch.setattr(sys, "stdout", buf)
 
     with patch("cross_platform.clipboard_utils.shutil.which", _which_map({})), \
@@ -99,7 +105,7 @@ def test_set_clipboard_emits_osc52_inside_tmux(linux_utils, monkeypatch):
 # ------------ set_clipboard: Linux/macOS/Termux ------------
 
 def test_set_clipboard_linux_chooses_xclip(linux_utils, monkeypatch):
-    buf = io.StringIO(); monkeypatch.setattr(sys, "stdout", buf)
+    buf = TtyStringIO(); monkeypatch.setattr(sys, "stdout", buf)
     which = _which_map({"xclip": "/usr/bin/xclip"})
 
     with patch("cross_platform.clipboard_utils.shutil.which", which), \
@@ -113,7 +119,7 @@ def test_set_clipboard_linux_chooses_xclip(linux_utils, monkeypatch):
     assert "]52;c;" in buf.getvalue()  # OSC52 also emitted
 
 def test_set_clipboard_macos_uses_pbcopy(darwin_utils, monkeypatch):
-    buf = io.StringIO(); monkeypatch.setattr(sys, "stdout", buf)
+    buf = TtyStringIO(); monkeypatch.setattr(sys, "stdout", buf)
 
     with patch("cross_platform.clipboard_utils.subprocess.run") as sub_run:
         darwin_utils.set_clipboard("hey mac")
@@ -139,7 +145,7 @@ def test_set_clipboard_termux_path(monkeypatch, clean_env):
 # ------------ set_clipboard: Windows robust + fallback ------------
 
 def test_set_clipboard_windows_robust_success(windows_utils, monkeypatch):
-    buf = io.StringIO(); monkeypatch.setattr(sys, "stdout", buf)
+    buf = TtyStringIO(); monkeypatch.setattr(sys, "stdout", buf)
     monkeypatch.setattr(ClipboardUtils, "_pwsh_exe", lambda self: "pwsh")
 
     with patch.object(ClipboardUtils, "_run", return_value=_cp()) as run_mock:
@@ -150,7 +156,7 @@ def test_set_clipboard_windows_robust_success(windows_utils, monkeypatch):
     assert "]52;c;" in buf.getvalue()
 
 def test_set_clipboard_windows_robust_failure_falls_back_to_clip(windows_utils, monkeypatch):
-    buf = io.StringIO(); monkeypatch.setattr(sys, "stdout", buf)
+    buf = TtyStringIO(); monkeypatch.setattr(sys, "stdout", buf)
     monkeypatch.setattr(ClipboardUtils, "_pwsh_exe", lambda self: "pwsh")
 
     with patch.object(ClipboardUtils, "_run", side_effect=subprocess.CalledProcessError(1, "pwsh")), \
@@ -213,7 +219,7 @@ def test_unknown_os_relies_on_osc52_only(monkeypatch):
     monkeypatch.setattr(ClipboardUtils, "is_termux", lambda self: False)
     monkeypatch.setattr(ClipboardUtils, "is_tmux", lambda self: False)
 
-    buf = io.StringIO(); monkeypatch.setattr(sys, "stdout", buf)
+    buf = TtyStringIO(); monkeypatch.setattr(sys, "stdout", buf)
     with patch("cross_platform.clipboard_utils.subprocess.run") as sub_run:
         u.set_clipboard("beos")
 
