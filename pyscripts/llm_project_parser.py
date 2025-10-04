@@ -5,9 +5,8 @@ llm_project_parser.py
 This script reads an input file containing an LLM output (with file definitions and code blocks)
 and then creates a folder structure and individual files in a target output directory.
 
-Files are only created if a valid file header is immediately followed by a code block.
-Filenames are cleaned of markdown formatting and validated for proper file extensions.
-If no folder structure is found, a flat structure is used (all files are created directly under the output directory).
+It identifies code blocks and looks for a filename on a line preceding it.
+This allows it to handle multiple formats robustly.
 
 Usage example:
     python llm_project_parser.py --input project.txt --output output_dir --confirm --verbose --dry-run
@@ -25,9 +24,6 @@ import re
 import argparse
 import sys
 import logging
-
-# Allowed file extensions (adjust as needed)
-ALLOWED_EXTENSIONS = {".py", ".txt", ".md", ".json", ".yaml", ".yml"}
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -47,20 +43,14 @@ def parse_args():
 
 def clean_filename(raw_name):
     """
-    Removes markdown formatting (e.g. **, __, backticks) from the file name.
+    Removes markdown formatting (e.g. **, __, backticks) and common prefixes
+    from a potential file name line.
     """
-    cleaned = re.sub(r'[\*_`]+', '', raw_name).strip()
+    # First, remove list/header prefixes
+    cleaned = re.sub(r'^(?:#{1,6}\s*)?(?:\d+\.\s*)?(?:-\s*)?''', '', raw_name).strip()
+    # Then, remove markdown formatting like **, ` from the rest of the string
+    cleaned = re.sub(r'[\*`]+', '', cleaned).strip()
     return cleaned
-
-def has_valid_extension(filename):
-    """
-    Checks if the file has one of the allowed extensions.
-    """
-    _, ext = os.path.splitext(filename)
-    valid = ext.lower() in ALLOWED_EXTENSIONS
-    if not valid:
-        logging.warning("File '%s' does not have a valid extension.", filename)
-    return valid
 
 def preview_file_content(filename, content):
     """
@@ -86,69 +76,60 @@ def confirm_file_creation(filename, content):
 
 def extract_files_from_lines(lines, interactive=False):
     """
-    Iterates line-by-line through the input lines and extracts (filename, code_block)
-    pairs. A file header is expected to be a line that optionally starts with markdown header markers
-    (like "##") followed by a number, a dot, and a file name.
-    The very next encountered code block (delimited by triple backticks) is associated with that header.
+    Iterates through the input lines and extracts (filename, code_block) pairs.
+    It identifies code blocks and looks for a filename on one of the lines
+    immediately preceding it.
     """
     files = []
-    candidate_header = None
-    header_regex = re.compile(r'^(?:#{1,6}\s*)?(\d+\.\s+.*)$')
+    lines_buffer = list(lines)
+    total_lines = len(lines_buffer)
     i = 0
-    total_lines = len(lines)
+
     while i < total_lines:
-        line = lines[i].rstrip("\n")
-        header_match = header_regex.match(line)
-        if header_match:
-            # Found a file header; extract and clean filename.
-            raw_header = header_match.group(1)
-            candidate_header = clean_filename(raw_header)
-            logging.debug("Found header at line %d: %s", i, candidate_header)
+        line = lines_buffer[i]
+
+        if line.strip().startswith("```"):
+            filename_candidate = ""
+            search_idx = i - 1
+            while search_idx >= 0:
+                prev_line = lines_buffer[search_idx].strip()
+                if prev_line:
+                    filename_candidate = prev_line
+                    break
+                search_idx -= 1
+
+            code_lines = []
             i += 1
-            continue
-        if line.startswith("```"):
-            # Found the start of a code block.
-            if candidate_header is not None:
-                # Optionally, capture language info (ignored here).
-                i += 1  # skip the opening backticks line
-                code_lines = []
-                while i < total_lines and not lines[i].startswith("```"):
-                    code_lines.append(lines[i])
-                    i += 1
-                # Skip the closing backticks, if present.
-                if i < total_lines and lines[i].startswith("```"):
-                    i += 1
-                candidate_code = "\n".join(code_lines).strip()
-                num_lines = len(candidate_code.splitlines())
-                if num_lines < 6:
-                    logging.warning("Code block for '%s' is very short (%d lines).", candidate_header, num_lines)
-                    if interactive:
-                        if not confirm_file_creation(candidate_header, candidate_code):
-                            logging.info("User chose not to create file '%s'.", candidate_header)
-                            candidate_header = None
-                            continue
-                    else:
-                        logging.info("Skipping file '%s' due to short code block (use --confirm for interactive confirmation).", candidate_header)
-                        candidate_header = None
-                        continue
-                if not has_valid_extension(candidate_header):
-                    logging.warning("Skipping file '%s' due to invalid extension.", candidate_header)
-                else:
-                    files.append((candidate_header, candidate_code))
-                    logging.info("Valid file found: %s", candidate_header)
-                candidate_header = None  # reset header after pairing with code block
-                continue
-            else:
-                # Found a code block without a preceding header.
-                logging.debug("Encountered a code block at line %d with no candidate header; skipping.", i)
-                # Skip this code block entirely.
+            while i < total_lines and not lines_buffer[i].strip().startswith("```"):
+                code_lines.append(lines_buffer[i].rstrip('\n'))
                 i += 1
-                while i < total_lines and not lines[i].startswith("```"):
-                    i += 1
-                if i < total_lines and lines[i].startswith("```"):
-                    i += 1
-                continue
+            
+            code_content = "\n".join(code_lines)
+
+            if filename_candidate:
+                cleaned_name = clean_filename(filename_candidate)
+                
+                # Heuristic: a filename should not be empty and must contain a dot (for an extension).
+                if cleaned_name and '.' in cleaned_name:
+                    logging.info("Found potential file: '%s'", cleaned_name)
+                    
+                    if len(code_content.splitlines()) < 6 and interactive:
+                        if not confirm_file_creation(cleaned_name, code_content):
+                            logging.info("User chose not to create file '%s'.", cleaned_name)
+                            i += 1
+                            continue
+                    
+                    files.append((cleaned_name, code_content))
+                else:
+                    logging.warning(
+                        "Line '%s' before code block did not look like a valid filename. Skipping.",
+                        filename_candidate
+                    )
+            else:
+                logging.debug("Found a code block at line %d with no preceding filename; skipping.", i)
+        
         i += 1
+
     return files
 
 def parse_folder_structure(sections):
@@ -180,7 +161,7 @@ def parse_folder_structure(sections):
         directories.add(root)
         for line in tree_lines[1:]:
             # Remove common tree-drawing characters and extra whitespace.
-            line_clean = re.sub(r'^[\s│├└─]+', '', line).strip()
+            line_clean = re.sub(r'^[\\s│├└─]+''', '', line).strip()
             if not line_clean:
                 continue
             if line_clean.endswith("/"):
@@ -247,14 +228,15 @@ def main():
     
     try:
         with open(args.input, "r", encoding="utf-8") as f:
-            text = f.read()
+            lines = f.readlines()
         logging.info("Successfully read input file: %s", args.input)
     except Exception as exc:
         logging.error("Error reading input file %s: %s", args.input, exc)
         sys.exit(1)
     
-    # Split into sections to try to find a folder structure (if present).
-    sections = re.split(r'^\s*-{3,}\s*$', text, flags=re.MULTILINE)
+    # For backward compatibility, we can still look for a "Folder Structure" section.
+    text = "".join(lines)
+    sections = re.split(r'^\s*-{3,}\s*$''', text, flags=re.MULTILINE)
     sections = [s.strip() for s in sections if s.strip()]
     
     folder_section = None
@@ -273,9 +255,7 @@ def main():
     else:
         logging.info("No folder structure section found; defaulting to flat structure.")
     
-    # Process the entire file line-by-line to extract file definitions.
-    file_lines = text.splitlines()
-    valid_files = extract_files_from_lines(file_lines, interactive=args.confirm)
+    valid_files = extract_files_from_lines(lines, interactive=args.confirm)
     logging.info("Found %d valid file(s).", len(valid_files))
     
     base_output = args.output
@@ -286,4 +266,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
