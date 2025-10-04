@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import sys
+import os
 from pathlib import Path
 
 from scripts_setup.definition_utils import (
@@ -8,7 +9,9 @@ from scripts_setup.definition_utils import (
     write_definitions,
     write_definitions_powershell,  # NEW: emit PS1 aliases/functions too
 )
-from scripts_setup.setup_utils import process_symlinks
+from scripts_setup.setup_utils import (
+    process_symlinks,  # kept for reference, not used for final wrappers
+)
 from standard_ui.standard_ui import (
     log_info,
     log_success,
@@ -18,42 +21,112 @@ from standard_ui.standard_ui import (
 )
 
 
+def _write_text_if_changed(path: Path, content: str, verbose: bool) -> bool:
+    try:
+        if path.exists():
+            existing = path.read_text(encoding="utf-8")
+            if existing == content:
+                if verbose:
+                    log_info(f"No changes for wrapper: {path}")
+                return False
+    except Exception:
+        pass
+    path.write_text(content, encoding="utf-8", newline="\n")
+    try:
+        path.chmod(0o755)
+    except Exception:
+        pass
+    if verbose:
+        log_success(f"Wrote wrapper: {path}")
+    return True
+
+
+def _make_posix_wrapper(bin_dir: Path, script_path: Path, verbose: bool) -> None:
+    name = script_path.stem
+    wrapper = bin_dir / name
+    # Replace symlink if it exists to ensure we control interpreter
+    if wrapper.exists() or wrapper.is_symlink():
+        try:
+            wrapper.unlink()
+        except Exception:
+            pass
+    content = f"""#!/usr/bin/env bash
+set -euo pipefail
+DIR="$(cd -- "$(dirname -- "${{BASH_SOURCE[0]}}")" && pwd)"
+VENV_PY="$DIR/../.venv/bin/python"
+TARGET="{script_path.resolve()}"
+if [ -x "$VENV_PY" ]; then
+  if "$VENV_PY" - <<'PY'
+import sys
+try:
+    import rich  # sanity check common dependency
+except Exception:
+    sys.exit(1)
+sys.exit(0)
+PY
+  then
+    exec "$VENV_PY" "$TARGET" "$@"
+  fi
+fi
+exec python3 "$TARGET" "$@"
+"""
+    _write_text_if_changed(wrapper, content, verbose)
+
+
+def _make_windows_wrapper(bin_dir: Path, script_path: Path, verbose: bool) -> None:
+    name = script_path.stem
+    wrapper = bin_dir / f"{name}.cmd"
+    # Best-effort overwrite
+    if wrapper.exists() or wrapper.is_symlink():
+        try:
+            wrapper.unlink()
+        except Exception:
+            pass
+    py_abs = (bin_dir.parent / ".venv" / "Scripts" / "python.exe").resolve()
+    script_abs = script_path.resolve()
+    content = (
+        "@echo off\r\n"
+        "setlocal\r\n"
+        f"set \"_VENV_PY={str(py_abs).replace('/', '\\')}\"\r\n"
+        f"set \"_SCRIPT={str(script_abs).replace('/', '\\')}\"\r\n"
+        "if exist \"%_VENV_PY%\" ( \r\n"
+        "  \"%_VENV_PY%\" \"%_SCRIPT%\" %*\r\n"
+        "  exit /b %ERRORLEVEL%\r\n"
+        ")\r\n"
+        "python \"%_SCRIPT%\" %*\r\n"
+    )
+    wrapper.write_text(content, encoding="utf-8", newline="\r\n")
+    if verbose:
+        log_success(f"Wrote wrapper: {wrapper}")
+
+
 def ensure_symlinks(scripts_dir: Path, bin_dir: Path, verbose: bool) -> None:
-    """Ensures Python scripts from pyscripts_dir are symlinked into bin_dir."""
+    """Ensure Python scripts are invocable via repo venv by writing wrappers in bin/."""
     with section("PY SCRIPTS SYMLINKS"):
         pyscripts_dir_to_scan = scripts_dir / "pyscripts"
         log_info(
-            f"Ensuring Python scripts are symlinked from '{pyscripts_dir_to_scan}' to '{bin_dir}' and executable..."
+            f"Ensuring Python script wrappers exist in '{bin_dir}' for scripts in '{pyscripts_dir_to_scan}'"
         )
 
         if not pyscripts_dir_to_scan.exists():
             log_warning(
-                f"Source pyscripts directory not found at '{pyscripts_dir_to_scan}'. Skipping symlink creation."
+                f"Source pyscripts directory not found at '{pyscripts_dir_to_scan}'. Skipping wrapper creation."
             )
             return
 
-        try:
-            created_count, existing_count = process_symlinks(
-                source_dir=pyscripts_dir_to_scan,
-                glob_pattern="*.py",
-                bin_dir=bin_dir,
-                verbose=verbose,
-                skip_names=["setup.py"],
-            )
-            log_info(
-                f"Python script symlinks: {created_count} created/updated, {existing_count} already correct."
-            )
-
-        except SystemExit:
-            log_error(
-                "Critical error during symlink processing for Python scripts (aborted by symlink utility)."
-            )
-            raise
-        except Exception as e:
-            log_error(
-                f"Unexpected error during symlink processing for Python scripts: {e}"
-            )
-            log_warning("Symlink creation may be incomplete.")
+        created = 0
+        unchanged = 0
+        for file_path in sorted(pyscripts_dir_to_scan.glob("*.py")):
+            if file_path.name == "setup.py":
+                continue
+            if os.name == "nt":
+                _make_windows_wrapper(bin_dir, file_path, verbose)
+                created += 1
+            else:
+                # Ensure we replace any existing symlink with a file wrapper
+                _make_posix_wrapper(bin_dir, file_path, verbose)
+                created += 1
+        log_info(f"Python script wrappers: {created} created/updated, {unchanged} unchanged.")
 
 
 def main(scripts_dir: Path, dotfiles_dir: Path, bin_dir: Path, verbose: bool) -> None:
@@ -74,9 +147,9 @@ def main(scripts_dir: Path, dotfiles_dir: Path, bin_dir: Path, verbose: bool) ->
         except SystemExit:
             log_error("Halting pyscripts setup due to critical symlink error.")
             return
-        except Exception:
+        except Exception as e:
             log_error(
-                "Halting pyscripts setup due to an unexpected error in ensure_symlinks."
+                f"Halting pyscripts setup due to an unexpected error in ensure_symlinks: {e}"
             )
             return
 

@@ -106,6 +106,7 @@ except Exception:
 MODULES_DIR = SCRIPTS_DIR / "modules"
 STANDARD_UI_SETUP_DIR = MODULES_DIR / "standard_ui"
 CROSS_PLATFORM_DIR = MODULES_DIR / "cross_platform"
+PYTHON_SETUP_DIR = MODULES_DIR / "python_setup"
 SCRIPTS_SETUP_PACKAGE_DIR = SCRIPTS_DIR / "scripts_setup"
 
 ERROR_LOG = SCRIPTS_DIR / "setup_errors.log"
@@ -586,6 +587,7 @@ def main():
     with sui_section("Core Module Installation", level="major"):
         for name, path in [
             ("standard_ui", STANDARD_UI_SETUP_DIR),
+            ("python_setup", PYTHON_SETUP_DIR),
             ("scripts_setup", SCRIPTS_SETUP_PACKAGE_DIR),
             ("cross_platform", CROSS_PLATFORM_DIR),
         ]:
@@ -679,4 +681,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
