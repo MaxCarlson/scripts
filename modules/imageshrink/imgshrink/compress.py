@@ -14,6 +14,7 @@ from typing import Optional
 from PIL import Image
 
 from .analysis import Plan
+from .perceptual import binary_search_quality, PerceptualThresholds
 
 
 @dataclass
@@ -47,7 +48,7 @@ def resize_image(im: Image.Image, ratio: float) -> Image.Image:
     return im.resize((nw, nh), Image.LANCZOS)
 
 
-def choose_output_format(src: Path, plan: Plan) -> str:
+def _choose_output_format(src: Path, plan: Plan) -> str:
     if plan.target_format:
         return plan.target_format.lower()
     ext = src.suffix.lower()
@@ -60,44 +61,59 @@ def choose_output_format(src: Path, plan: Plan) -> str:
     return "jpeg"
 
 
-def save_with_format(im: Image.Image, dest: Path, fmt: str, plan: Plan) -> None:
+def _save_with_format(im: Image.Image, dest: Path, fmt: str, plan: Plan, guard_ssim: Optional[float]) -> None:
     fmt = fmt.lower()
     kwargs = {}
-
+    # Perceptual guardrail: do a quick search on the resized reference itself
     if fmt in ("jpg", "jpeg"):
-        kwargs["quality"] = plan.jpeg_quality
+        if guard_ssim:
+            _, _, q, _ = binary_search_quality(im, fmt="JPEG", q_lo=45, q_hi=plan.jpeg_quality, thresholds=PerceptualThresholds(ssim_min=float(guard_ssim)))
+            kwargs["quality"] = int(q)
+        else:
+            kwargs["quality"] = plan.jpeg_quality
         kwargs["optimize"] = True
-        fmt = "JPEG"
+        outfmt = "JPEG"
         if im.mode in ("RGBA", "LA", "P"):
             im = im.convert("RGB")
     elif fmt == "webp":
-        kwargs["quality"] = plan.webp_quality
+        if guard_ssim:
+            _, _, q, _ = binary_search_quality(im, fmt="WEBP", q_lo=45, q_hi=plan.webp_quality, thresholds=PerceptualThresholds(ssim_min=float(guard_ssim)))
+            kwargs["quality"] = int(q)
+        else:
+            kwargs["quality"] = plan.webp_quality
         kwargs["method"] = 6
         kwargs["lossless"] = False
-        fmt = "WEBP"
+        outfmt = "WEBP"
         if im.mode in ("RGBA", "LA", "P"):
             im = im.convert("RGB")
     elif fmt == "png":
         kwargs["optimize"] = True
-        fmt = "PNG"
+        outfmt = "PNG"
         if plan.png_quantize_colors:
             im = im.convert("RGB").quantize(colors=plan.png_quantize_colors, method=Image.MEDIANCUT)
     else:
-        kwargs["quality"] = plan.jpeg_quality
+        # default to JPEG
+        if guard_ssim:
+            _, _, q, _ = binary_search_quality(im, fmt="JPEG", q_lo=45, q_hi=plan.jpeg_quality, thresholds=PerceptualThresholds(ssim_min=float(guard_ssim)))
+            kwargs["quality"] = int(q)
+        else:
+            kwargs["quality"] = plan.jpeg_quality
         kwargs["optimize"] = True
-        fmt = "JPEG"
+        outfmt = "JPEG"
         if im.mode in ("RGBA", "LA", "P"):
             im = im.convert("RGB")
 
     dest.parent.mkdir(parents=True, exist_ok=True)
-    im.save(dest, format=fmt, **kwargs)
+    im.save(dest, format=outfmt, **kwargs)
 
 
 def compress_one(src: Path, out_dir: Optional[Path], plan: Plan,
-                 overwrite: bool = False, backup: bool = False) -> CompressResult:
+                 overwrite: bool = False, backup: bool = False,
+                 guard_ssim: Optional[float] = None) -> CompressResult:
     """
     Compress a single image using plan. Returns result with timings and sizes.
     If out_dir is None and overwrite=True, writes back to src.
+    guard_ssim: optional SSIM threshold to binary-search the *lowest* acceptable encoder quality.
     """
     t0 = time.time()
     src = src.resolve()
@@ -107,18 +123,19 @@ def compress_one(src: Path, out_dir: Optional[Path], plan: Plan,
         w0, h0 = im.size
         im2 = resize_image(im, plan.downsample_ratio)
 
-        fmt = choose_output_format(src, plan)
+        fmt = _choose_output_format(src, plan)
         if out_dir:
-            # Ensure we *only* create a single level _compressed, not nested repeatedly.
+            # Ensure only a single level _compressed
             out_dir.mkdir(parents=True, exist_ok=True)
-            dest = (out_dir / src.name).with_suffix("." + fmt if fmt != src.suffix.lstrip(".") else src.suffix)
+            new_ext = "." + fmt if fmt != src.suffix.lstrip(".").lower() else src.suffix
+            dest = (out_dir / src.name).with_suffix(new_ext)
         else:
             dest = src if overwrite else src.with_name(src.stem + "_shrink" + src.suffix)
 
         if overwrite and backup:
             make_backup(src, True)
 
-        save_with_format(im2, dest, fmt, plan)
+        _save_with_format(im2, dest, fmt, plan, guard_ssim)
 
     after = dest.stat().st_size
     t1 = time.time()

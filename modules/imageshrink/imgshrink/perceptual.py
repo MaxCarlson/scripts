@@ -10,10 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Callable, Tuple, Optional
+from typing import Tuple
 
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image
 
 
 def _to_gray_np(im: Image.Image) -> np.ndarray:
@@ -45,7 +45,6 @@ def ssim(img_a: Image.Image, img_b: Image.Image, K1: float = 0.01, K2: float = 0
     """Structural SIMilarity on luminance only; returns 0..1 (1=identical)."""
     a = _to_gray_np(img_a).astype(np.float32)
     b = _to_gray_np(img_b).astype(np.float32)
-    # Match sizes by cropping to overlapping "valid" area after filtering
     k = _gaussian_kernel(11, sigma)
     mu_a = _filter2d(a, k)
     mu_b = _filter2d(b, k)
@@ -57,7 +56,6 @@ def ssim(img_a: Image.Image, img_b: Image.Image, K1: float = 0.01, K2: float = 0
     sigma_b2 = _filter2d(b * b, k) - mu_b2
     sigma_ab = _filter2d(a * b, k) - mu_ab
 
-    # Stabilizers
     L = 255.0
     C1 = (K1 * L) ** 2
     C2 = (K2 * L) ** 2
@@ -65,15 +63,12 @@ def ssim(img_a: Image.Image, img_b: Image.Image, K1: float = 0.01, K2: float = 0
     num = (2 * mu_ab + C1) * (2 * sigma_ab + C2)
     den = (mu_a2 + mu_b2 + C1) * (sigma_a2 + sigma_b2 + C2)
     ssim_map = num / np.maximum(den, 1e-9)
-    # Mean SSIM over valid region
     return float(np.clip(ssim_map.mean(), 0.0, 1.0))
 
 
 @dataclass(frozen=True)
 class PerceptualThresholds:
-    """Thresholds for accepting a candidate encode as 'visually lossless enough'."""
-    ssim_min: float = 0.990  # 0..1
-    # Placeholders for other metrics (butteraugli, fsim, lpips) if integrated later.
+    ssim_min: float = 0.990
 
 
 def _encode_decode_with_pillow(
@@ -82,26 +77,26 @@ def _encode_decode_with_pillow(
     quality: int | None,
     lossless: bool | None = None,
     method: int | None = None,
-) -> Tuple[Image.Image, int]:
-    """Encode to memory then decode to compare; return (decoded_img, num_bytes)."""
+) -> tuple[Image.Image, int]:
     buf = BytesIO()
     save_kwargs = {}
-    if fmt.upper() == "JPEG":
+    f = fmt.upper()
+    if f == "JPEG":
         save_kwargs.update(dict(format="JPEG", quality=int(quality or 85), optimize=True, progressive=True))
-    elif fmt.upper() == "WEBP":
+    elif f == "WEBP":
         save_kwargs.update(dict(format="WEBP"))
         if lossless:
             save_kwargs["lossless"] = True
             if quality is not None:
-                save_kwargs["quality"] = int(quality)  # 'quality' still matters in WebP lossless
+                save_kwargs["quality"] = int(quality)
         else:
             save_kwargs["quality"] = int(quality or 80)
             if method is not None:
                 save_kwargs["method"] = int(method)
-    elif fmt.upper() == "PNG":
+    elif f == "PNG":
         save_kwargs.update(dict(format="PNG", optimize=True))
     else:
-        save_kwargs.update(dict(format=fmt.upper()))
+        save_kwargs.update(dict(format=f))
     img.save(buf, **save_kwargs)
     data = buf.getvalue()
     dec = Image.open(BytesIO(data))
@@ -117,11 +112,7 @@ def binary_search_quality(
     thresholds: PerceptualThresholds = PerceptualThresholds(),
     max_steps: int = 7,
     webp_lossless: bool = False,
-) -> Tuple[Image.Image, int, int, float]:
-    """Find the smallest quality meeting thresholds vs `reference`.
-    
-    Returns: (decoded_img, num_bytes, chosen_quality, ssim_value)
-    """
+) -> tuple[Image.Image, int, int, float]:
     best = None
     lo, hi = int(q_lo), int(q_hi)
     while lo <= hi and max_steps > 0:
@@ -135,6 +126,5 @@ def binary_search_quality(
             lo = mid + 1
         max_steps -= 1
     if best is None:
-        # Fall back to hi bound
         best = _encode_decode_with_pillow(reference, fmt, quality=q_hi, lossless=webp_lossless) + (q_hi, ssim(reference, reference))
     return best  # type: ignore[return-value]
