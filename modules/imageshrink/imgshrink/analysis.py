@@ -3,9 +3,11 @@
 Analysis & planning for image compression.
 
 - Detect leaf "manga/chapter" folders that contain images but whose subdirs do not.
-- Collect per-image metadata (size, resolution).
-- Compute per-folder statistics: count, size stats, resolution stats, most-common resolution, etc.
-- Decide a compression plan per folder given heuristics and phone display constraints.
+- Collect per-image metadata (size, resolution, proxy quality metrics).
+- Compute per-folder statistics: count, size stats, resolution stats,
+  most-common resolution, quality stats (min/max/avg/median).
+- Decide a compression plan per folder given heuristics and phone display constraints
+  or user goals (target size / reduction).
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from PIL import Image
 
+from .metrics import quick_quality_tuple
 
 SUPPORTED_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 
@@ -29,6 +32,9 @@ class ImageInfo:
     bytes: int
     width: int
     height: int
+    mode: str
+    entropy_bits: float
+    lap_var: float
 
     @property
     def megapixels(self) -> float:
@@ -48,6 +54,15 @@ class FolderStats:
     height_min: int
     height_max: int
     height_avg: float
+    q_entropy_min: float
+    q_entropy_max: float
+    q_entropy_avg: float
+    q_entropy_median: float
+    q_lap_min: float
+    q_lap_max: float
+    q_lap_avg: float
+    q_lap_median: float
+    modes: Counter[str]
     common_res: Optional[Tuple[int, int]] = None
 
     def to_dict(self) -> Dict:
@@ -76,21 +91,26 @@ def bytes_human(n: int) -> str:
     x = float(n)
     for u in units:
         if x < step:
-            return f"{x:.2f}{u}"
+            return f"{x:.0f}{u}" if u == 'B' else f"{x:.2f}{u}"
         x /= step
     return f"{x:.2f}PiB"
 
 
 def collect_images(folder: Path) -> List[Path]:
     out: List[Path] = []
-    for p in folder.rglob("*"):
+    for p in folder.iterdir():
         if p.is_file() and p.suffix.lower() in SUPPORTED_EXT:
             out.append(p)
     return out
 
 
-def is_leaf_dir(dirpath: Path) -> bool:
-    """A leaf dir contains at least one image, and none of its subdirs contain images."""
+def is_leaf_dir(dirpath: Path, *, exclude_names: Tuple[str, ...] = ("_compressed", "_tmp", ".Hentoid")) -> bool:
+    """A leaf dir contains at least one image, and none of its subdirs contain images.
+       Also skip any directory whose name starts with '_' or matches exclude_names.
+    """
+    name = dirpath.name
+    if name.startswith("_") or name in exclude_names:
+        return False
     try:
         entries = list(dirpath.iterdir())
     except PermissionError:
@@ -100,6 +120,9 @@ def is_leaf_dir(dirpath: Path) -> bool:
         return False
     for sub in entries:
         if sub.is_dir():
+            subname = sub.name
+            if subname.startswith("_") or subname in exclude_names:
+                continue
             try:
                 if any(child.is_file() and child.suffix.lower() in SUPPORTED_EXT for child in sub.iterdir()):
                     return False
@@ -112,11 +135,8 @@ def find_leaf_image_dirs(root: Path) -> List[Path]:
     leaves: List[Path] = []
     for dirpath, dirnames, filenames in os.walk(root):
         p = Path(dirpath)
-        try:
-            if is_leaf_dir(p):
-                leaves.append(p)
-        except Exception:
-            continue
+        if is_leaf_dir(p):
+            leaves.append(p)
     return sorted(leaves)
 
 
@@ -127,7 +147,9 @@ def analyze_images(images: Iterable[Path]) -> Tuple[List[ImageInfo], Optional[Fo
             size = path.stat().st_size
             with Image.open(path) as im:
                 w, h = im.size
-            infos.append(ImageInfo(path=path, bytes=size, width=w, height=h))
+                mode = im.mode
+                ent, lap = quick_quality_tuple(im)
+            infos.append(ImageInfo(path=path, bytes=size, width=w, height=h, mode=mode, entropy_bits=ent, lap_var=lap))
         except Exception:
             # Skip unreadables
             continue
@@ -138,6 +160,9 @@ def analyze_images(images: Iterable[Path]) -> Tuple[List[ImageInfo], Optional[Fo
     sizes = [i.bytes for i in infos]
     widths = [i.width for i in infos]
     heights = [i.height for i in infos]
+    ents = [i.entropy_bits for i in infos]
+    laps = [i.lap_var for i in infos]
+    modes = Counter(i.mode for i in infos)
     res_counter = Counter((i.width, i.height) for i in infos)
     common_res = None
     if res_counter:
@@ -156,9 +181,32 @@ def analyze_images(images: Iterable[Path]) -> Tuple[List[ImageInfo], Optional[Fo
         height_min=min(heights),
         height_max=max(heights),
         height_avg=sum(heights) / len(heights),
+        q_entropy_min=min(ents),
+        q_entropy_max=max(ents),
+        q_entropy_avg=sum(ents) / len(ents),
+        q_entropy_median=statistics.median(ents),
+        q_lap_min=min(laps),
+        q_lap_max=max(laps),
+        q_lap_avg=sum(laps) / len(laps),
+        q_lap_median=statistics.median(laps),
+        modes=modes,
         common_res=common_res,
     )
     return infos, stats
+
+
+def _auto_target_format(prefer_format: Optional[str], ext: str) -> Optional[str]:
+    if prefer_format:
+        return prefer_format.lower()
+    ext = ext.lower()
+    if ext in (".jpg", ".jpeg"):
+        return None  # keep
+    if ext == ".webp":
+        return None  # keep
+    if ext == ".png":
+        # PNG defaults to keep; quantization parameter controls size
+        return None
+    return None
 
 
 def decide_plan(stats: FolderStats, *,
@@ -168,6 +216,7 @@ def decide_plan(stats: FolderStats, *,
     """
     Heuristic: larger average files → smaller ratio + lower lossy quality.
     - If phone_max_dim provided, also cap the ratio to avoid exceeding display utility.
+    - Target format is auto when not specified (keep original).
     """
     avg_mb = stats.bytes_avg / (1024 * 1024)
 
@@ -195,7 +244,6 @@ def decide_plan(stats: FolderStats, *,
         if max_edge > 0:
             ratio = min(ratio, max(0.1, float(phone_max_dim) / float(max_edge)))
 
-    # Target format choice: None (keep), "jpeg", "webp", or "png".
     fmt = prefer_format.lower() if prefer_format else None
     note = "heuristic plan"
 
@@ -229,3 +277,42 @@ def predict_after_bytes(infos: List[ImageInfo], plan: Plan) -> int:
             factor = max(factor, 0.2)
         total += int(info.bytes * factor)
     return total
+
+
+def tune_plan_for_target(infos: List[ImageInfo],
+                         base_plan: Plan,
+                         *,
+                         target_ratio: Optional[float] = None,
+                         target_total_bytes: Optional[int] = None) -> Plan:
+    """
+    Adjust plan's downsample_ratio (and slightly quality) to approach a target ratio or total bytes.
+    Use a coarse binary search over ratio in [0.1, base_ratio].
+    """
+    want = None
+    total_before = sum(i.bytes for i in infos) or 1
+    if target_total_bytes is not None:
+        want = max(1, int(target_total_bytes))
+    elif target_ratio is not None:
+        want = max(1, int(total_before * max(0.05, min(1.0, target_ratio))))
+    else:
+        return base_plan
+
+    lo, hi = 0.1, base_plan.downsample_ratio
+    best = base_plan
+    for _ in range(12):
+        mid = (lo + hi) / 2.0
+        cand = Plan(
+            downsample_ratio=mid,
+            target_format=base_plan.target_format,
+            jpeg_quality=base_plan.jpeg_quality,
+            webp_quality=base_plan.webp_quality,
+            png_quantize_colors=base_plan.png_quantize_colors,
+            note="tuned",
+        )
+        est = predict_after_bytes(infos, cand)
+        if est <= want:
+            best = cand
+            hi = mid
+        else:
+            lo = mid
+    return best

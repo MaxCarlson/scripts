@@ -6,18 +6,17 @@ Event models used between workers and the UI/orchestrator.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Literal
+from typing import Dict, Literal
 
 
 EventType = Literal[
     "WORKER_ONLINE",
     "FOLDER_START",
     "FOLDER_PROGRESS",
+    "FOLDER_STATS",
     "FOLDER_FINISH",
     "FOLDER_ERROR",
-    "IMAGE_PROGRESS",
     "LOG",
-    "SUMMARY",
     "SHUTDOWN",
 ]
 
