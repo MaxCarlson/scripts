@@ -6,8 +6,9 @@ Analysis & planning for image compression.
 - Collect per-image metadata (size, resolution, proxy quality metrics).
 - Compute per-folder statistics: count, size stats, resolution stats,
   most-common resolution, quality stats (min/max/avg/median).
-- Decide a compression plan per folder given heuristics and phone display constraints
-  or user goals (target size / reduction).
+- Decide a compression plan per folder via:
+    * legacy heuristic (unchanged interface for existing tests)
+    * device-aware path using display geometry (PPI/PPD) + lightweight content classification
 """
 
 from __future__ import annotations
@@ -22,6 +23,8 @@ from typing import Dict, Iterable, List, Optional, Tuple
 from PIL import Image
 
 from .metrics import quick_quality_tuple
+from .more_metrics import quick_content_metrics
+from .display import DeviceProfile, target_source_size_from_ppd
 
 SUPPORTED_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 
@@ -35,6 +38,7 @@ class ImageInfo:
     mode: str
     entropy_bits: float
     lap_var: float
+    extra: Dict[str, float]  # added: megapixels, file_bpp, bytes_per_mp, colorfulness, edge_density, otsu_sep, noise_proxy, jpeg_q_est, is_grayscale
 
     @property
     def megapixels(self) -> float:
@@ -63,6 +67,17 @@ class FolderStats:
     q_lap_avg: float
     q_lap_median: float
     modes: Counter[str]
+    # NEW aggregated stats (averages; min/max can be added later if needed)
+    megapixels_avg: float
+    file_bpp_avg: float
+    bytes_per_mp_avg: float
+    colorfulness_avg: float
+    edge_density_avg: float
+    otsu_sep_avg: float
+    noise_proxy_avg: float
+    jpeg_q_est_avg: float
+    grayscale_pct: float
+    # resolution mode
     common_res: Optional[Tuple[int, int]] = None
 
     def to_dict(self) -> Dict:
@@ -100,9 +115,12 @@ def bytes_human(n: int) -> str:
 
 def collect_images(folder: Path) -> List[Path]:
     out: List[Path] = []
-    for p in folder.iterdir():
-        if p.is_file() and p.suffix.lower() in SUPPORTED_EXT:
-            out.append(p)
+    try:
+        for p in folder.iterdir():
+            if p.is_file() and p.suffix.lower() in SUPPORTED_EXT:
+                out.append(p)
+    except PermissionError:
+        pass
     return out
 
 
@@ -135,7 +153,7 @@ def is_leaf_dir(dirpath: Path, *, exclude_names: Tuple[str, ...] = ("_compressed
 
 def find_leaf_image_dirs(root: Path) -> List[Path]:
     leaves: List[Path] = []
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, _, _ in os.walk(root):
         p = Path(dirpath)
         if is_leaf_dir(p):
             leaves.append(p)
@@ -151,7 +169,11 @@ def analyze_images(images: Iterable[Path]) -> Tuple[List[ImageInfo], Optional[Fo
                 w, h = im.size
                 mode = im.mode
                 ent, lap = quick_quality_tuple(im)
-            infos.append(ImageInfo(path=path, bytes=size, width=w, height=h, mode=mode, entropy_bits=ent, lap_var=lap))
+                extra = quick_content_metrics(im, file_bytes=size)
+            infos.append(ImageInfo(
+                path=path, bytes=size, width=w, height=h, mode=mode,
+                entropy_bits=ent, lap_var=lap, extra=extra
+            ))
         except Exception:
             # Skip unreadables
             continue
@@ -170,6 +192,21 @@ def analyze_images(images: Iterable[Path]) -> Tuple[List[ImageInfo], Optional[Fo
     if res_counter:
         (w, h), _ = res_counter.most_common(1)[0]
         common_res = (w, h)
+
+    # new rollups
+    def _avg(seq: List[float]) -> float:
+        return float(sum(seq) / max(1, len(seq)))
+
+    mp_avg = _avg([i.extra.get("megapixels", 0.0) for i in infos])
+    fbpp_avg = _avg([i.extra.get("file_bpp", 0.0) for i in infos])
+    bpm_avg = _avg([i.extra.get("bytes_per_mp", 0.0) for i in infos])
+    col_avg = _avg([i.extra.get("colorfulness", 0.0) for i in infos])
+    edg_avg = _avg([i.extra.get("edge_density", 0.0) for i in infos])
+    ots_avg = _avg([i.extra.get("otsu_sep", 0.0) for i in infos])
+    noi_avg = _avg([i.extra.get("noise_proxy", 0.0) for i in infos])
+    jq_vals = [i.extra.get("jpeg_q_est", -1.0) for i in infos if i.extra.get("jpeg_q_est", -1.0) >= 0.0]
+    jq_avg = _avg(jq_vals) if jq_vals else 0.0
+    gray_pct = 100.0 * _avg([i.extra.get("is_grayscale", 0.0) for i in infos])
 
     stats = FolderStats(
         count=len(infos),
@@ -192,6 +229,15 @@ def analyze_images(images: Iterable[Path]) -> Tuple[List[ImageInfo], Optional[Fo
         q_lap_avg=sum(laps) / len(laps),
         q_lap_median=statistics.median(laps),
         modes=modes,
+        megapixels_avg=mp_avg,
+        file_bpp_avg=fbpp_avg,
+        bytes_per_mp_avg=bpm_avg,
+        colorfulness_avg=col_avg,
+        edge_density_avg=edg_avg,
+        otsu_sep_avg=ots_avg,
+        noise_proxy_avg=noi_avg,
+        jpeg_q_est_avg=jq_avg,
+        grayscale_pct=gray_pct,
         common_res=common_res,
     )
     return infos, stats
@@ -216,6 +262,7 @@ def decide_plan(stats: FolderStats, *,
                 prefer_format: Optional[str] = None,
                 png_quantize_colors: Optional[int] = None) -> Plan:
     """
+    Legacy heuristic (kept to preserve existing tests and flags).
     Heuristic: larger average files → smaller ratio + lower lossy quality.
     - If phone_max_dim provided, also cap the ratio to avoid exceeding display utility.
     - Target format is auto when not specified (keep original).
@@ -254,6 +301,58 @@ def decide_plan(stats: FolderStats, *,
         target_format=fmt,
         jpeg_quality=max(1, min(95, jpeg_q)),
         webp_quality=max(1, min(100, webp_q)),
+        png_quantize_colors=png_quantize_colors,
+        note=note,
+    )
+
+
+def decide_plan_device_aware(
+    infos: List[ImageInfo],
+    stats: FolderStats,
+    device: DeviceProfile,
+    *,
+    fit_mode: str = "fit-longer",
+    ppd_photo: float = 60.0,
+    ppd_line: float = 75.0,
+    prefer_format: Optional[str] = None,
+    png_quantize_colors: Optional[int] = None,
+) -> Plan:
+    """
+    Device-aware plan: choose a conservative downsample ratio from per-image ratios
+    computed to satisfy a PPD target at the given viewing distance. Line-art uses a
+    higher target PPD than photo-like pages.
+    """
+    ratios: List[float] = []
+    line_votes = 0
+    for img in infos:
+        ex = img.extra
+        # simple classification derived from stored metrics
+        is_line = (ex.get("is_grayscale", 0.0) > 0.5
+                   and ex.get("edge_density", 0.0) >= 0.06
+                   and ex.get("otsu_sep", 0.0) >= 0.5)
+        line_votes += 1 if is_line else 0
+        want_ppd = ppd_line if is_line else ppd_photo
+        _, _, r = target_source_size_from_ppd((img.width, img.height), device, fit_mode=fit_mode, ppd_target=want_ppd, safety_scale=1.0)
+        ratios.append(float(r))
+
+    if not ratios:
+        return decide_plan(stats, phone_max_dim=None, prefer_format=prefer_format, png_quantize_colors=png_quantize_colors)
+
+    ratios_sorted = sorted(ratios)
+    # 25th percentile for safety (avoid over-downsampling the sharpest pages)
+    idx = max(0, int(0.25 * (len(ratios_sorted) - 1)))
+    folder_ratio = max(0.3, min(1.0, ratios_sorted[idx]))
+
+    line_share = line_votes / max(1, len(infos))
+    # default codec: WebP for most; you can flip to PNG quantize for strong line-art if desired
+    target_fmt = (prefer_format.lower() if prefer_format else "webp")
+    note = f"device-aware ppd_photo={ppd_photo:.0f} ppd_line={ppd_line:.0f} lineart={int(line_share*100)}%"
+
+    return Plan(
+        downsample_ratio=folder_ratio,
+        target_format=target_fmt,
+        jpeg_quality=90,
+        webp_quality=82,
         png_quantize_colors=png_quantize_colors,
         note=note,
     )

@@ -10,6 +10,9 @@ __all__ = [
     "metrics",
     "ui",
     "cli",
+    "display",
+    "more_metrics",
+    "perceptual",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.5.0"
