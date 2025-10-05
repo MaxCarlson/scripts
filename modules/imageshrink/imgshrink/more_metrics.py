@@ -145,7 +145,7 @@ def noise_proxy_highpass(im: Image.Image) -> float:
 
 def jpeg_quant_summary(im: Image.Image) -> Dict[str, Any] | None:
     """Summarize JPEG quantization to detect low-quality sources."""
-    if getattr(im, "format", "").upper() != "JPEG":
+    if (im.format or "").upper() != "JPEG":
         return None
     qtables = getattr(im, "quantization", None)
     if not qtables:

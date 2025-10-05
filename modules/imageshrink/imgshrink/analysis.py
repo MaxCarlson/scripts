@@ -66,7 +66,9 @@ class FolderStats:
     common_res: Optional[Tuple[int, int]] = None
 
     def to_dict(self) -> Dict:
-        d = asdict(self)
+        """Return a JSON-serializable dictionary representation."""
+        d = self.__dict__.copy()
+        d["modes"] = dict(self.modes)  # Convert Counter to plain dict
         if self.common_res is not None:
             d["common_res"] = {"width": self.common_res[0], "height": self.common_res[1]}
         return d
