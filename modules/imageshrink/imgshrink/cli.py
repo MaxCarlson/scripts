@@ -47,7 +47,7 @@ from .analysis import (
 )
 from .compress import compress_one
 from .events import Event, ev
-from .ui import make_dashboard
+from .ui import Dashboard
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -217,6 +217,13 @@ def main() -> None:
     ap.add_argument("-d", "--phone-max-dim", type=int, help="Cap long edge to this many pixels (e.g., 3200 for S21U)")
     ap.add_argument("-f", "--format", choices=["jpeg", "webp", "png"], help="Force output format (default: keep)")
     ap.add_argument("-Q", "--png-quantize", type=int, help="Quantize PNGs to this many colors (e.g., 256)")
+
+    # Target sizing
+    ap.add_argument("-r", "--target-ratio", type=float,
+                    help="Aim for this total size ratio per folder (e.g., 0.6 → 60%% of original)")
+    ap.add_argument("-m", "--target-total-mb", type=float,
+                    help="Aim for this total size (MiB) per folder")
+
     ap.add_argument("-w", "--overwrite", action="store_true", help="Overwrite originals (else write to _compressed/)")
     ap.add_argument("-b", "--backup", action="store_true", help="Make .orig backups when overwriting")
 
@@ -270,7 +277,7 @@ def main() -> None:
         for _ in range(n_workers):
             tasks.put(None)
 
-        dash = make_dashboard(n_workers, refresh_hz=8.0) if args.ui else None
+        dash = Dashboard(n_workers, root_path=args.root, refresh_hz=10.0) if args.ui else None
         if dash:
             dash.start()
 
@@ -332,7 +339,7 @@ def main() -> None:
         tasks.put(None)
 
     # Dashboard
-    dash = make_dashboard(n_workers, refresh_hz=8.0) if args.ui else None
+    dash = Dashboard(n_workers, root_path=args.root, refresh_hz=10.0) if args.ui else None
     if dash:
         dash.start()
 
