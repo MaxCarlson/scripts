@@ -29,36 +29,6 @@ class CompressResult:
     elapsed_s: float
 
 
-def should_quantize_png(path: Path, colors: Optional[int]) -> bool:
-    if not colors:
-        return False
-    return path.suffix.lower() == ".png"
-
-
-def has_alpha(im: Image.Image) -> bool:
-    mode = im.mode
-    if mode in ("RGBA", "LA"):
-        return True
-    if mode == "P":
-        return "transparency" in im.info
-    return False
-
-
-def choose_output_format(src: Path, plan: Plan, im: Image.Image) -> str:
-    if plan.target_format:
-        return plan.target_format.lower()
-    # Keep original unless PNG with no alpha and we want jpeg/webp by heuristic (not applied here).
-    ext = src.suffix.lower()
-    if ext in (".jpg", ".jpeg"):
-        return "jpeg"
-    if ext == ".webp":
-        return "webp"
-    if ext == ".png":
-        return "png"
-    # Fallback
-    return "jpeg"
-
-
 def make_backup(src: Path, enable: bool, suffix: str = ".orig") -> Optional[Path]:
     if not enable:
         return None
@@ -75,6 +45,19 @@ def resize_image(im: Image.Image, ratio: float) -> Image.Image:
     nw = max(1, int(w * ratio))
     nh = max(1, int(h * ratio))
     return im.resize((nw, nh), Image.LANCZOS)
+
+
+def choose_output_format(src: Path, plan: Plan) -> str:
+    if plan.target_format:
+        return plan.target_format.lower()
+    ext = src.suffix.lower()
+    if ext in (".jpg", ".jpeg"):
+        return "jpeg"
+    if ext == ".webp":
+        return "webp"
+    if ext == ".png":
+        return "png"
+    return "jpeg"
 
 
 def save_with_format(im: Image.Image, dest: Path, fmt: str, plan: Plan) -> None:
@@ -124,8 +107,10 @@ def compress_one(src: Path, out_dir: Optional[Path], plan: Plan,
         w0, h0 = im.size
         im2 = resize_image(im, plan.downsample_ratio)
 
-        fmt = choose_output_format(src, plan, im2)
+        fmt = choose_output_format(src, plan)
         if out_dir:
+            # Ensure we *only* create a single level _compressed, not nested repeatedly.
+            out_dir.mkdir(parents=True, exist_ok=True)
             dest = (out_dir / src.name).with_suffix("." + fmt if fmt != src.suffix.lstrip(".") else src.suffix)
         else:
             dest = src if overwrite else src.with_name(src.stem + "_shrink" + src.suffix)
