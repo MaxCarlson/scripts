@@ -23,6 +23,7 @@ import queue
 import shutil
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -47,6 +48,143 @@ from .display import DeviceProfile
 from . import __version__
 
 
+# --------------------------- quality presets -------------------------
+@dataclass
+class QualityPreset:
+    """Smart compression preset based on perceptual quality level (0-9)."""
+    level: int  # 0 = max quality, 9 = max compression
+    ssim_min: float
+    ppd_photo: float
+    ppd_line: float
+    jpeg_quality: int
+    webp_quality: int
+    downsample_factor: float
+    description: str
+
+
+def get_quality_preset(level: int) -> QualityPreset:
+    """
+    Return compression parameters for a quality preset level (0-9).
+
+    Level 0: Maximum quality, imperceptible loss
+    Level 5: Balanced quality/size, minimal perceptible loss
+    Level 9: Aggressive compression, small but noticeable loss
+
+    Based on perceptual research:
+    - Human visual acuity: ~60 PPD at optimal viewing
+    - SSIM >= 0.95 is generally imperceptible
+    - SSIM >= 0.90 is high quality
+    - SSIM >= 0.85 is acceptable with visible but minor artifacts
+    """
+    presets = {
+        0: QualityPreset(
+            level=0,
+            ssim_min=0.98,
+            ppd_photo=75.0,
+            ppd_line=90.0,
+            jpeg_quality=95,
+            webp_quality=95,
+            downsample_factor=1.0,
+            description="Maximum quality - imperceptible loss"
+        ),
+        1: QualityPreset(
+            level=1,
+            ssim_min=0.97,
+            ppd_photo=70.0,
+            ppd_line=85.0,
+            jpeg_quality=92,
+            webp_quality=92,
+            downsample_factor=1.0,
+            description="Near-lossless - virtually imperceptible"
+        ),
+        2: QualityPreset(
+            level=2,
+            ssim_min=0.96,
+            ppd_photo=65.0,
+            ppd_line=80.0,
+            jpeg_quality=88,
+            webp_quality=88,
+            downsample_factor=1.0,
+            description="Excellent quality - imperceptible to most viewers"
+        ),
+        3: QualityPreset(
+            level=3,
+            ssim_min=0.95,
+            ppd_photo=60.0,
+            ppd_line=75.0,
+            jpeg_quality=85,
+            webp_quality=85,
+            downsample_factor=0.98,
+            description="High quality - imperceptible under normal viewing"
+        ),
+        4: QualityPreset(
+            level=4,
+            ssim_min=0.93,
+            ppd_photo=55.0,
+            ppd_line=70.0,
+            jpeg_quality=82,
+            webp_quality=82,
+            downsample_factor=0.95,
+            description="Very good quality - slight loss in critical inspection"
+        ),
+        5: QualityPreset(
+            level=5,
+            ssim_min=0.91,
+            ppd_photo=50.0,
+            ppd_line=65.0,
+            jpeg_quality=78,
+            webp_quality=78,
+            downsample_factor=0.92,
+            description="Good quality - minimal perceptible loss (balanced)"
+        ),
+        6: QualityPreset(
+            level=6,
+            ssim_min=0.89,
+            ppd_photo=45.0,
+            ppd_line=60.0,
+            jpeg_quality=75,
+            webp_quality=75,
+            downsample_factor=0.88,
+            description="Acceptable quality - minor visible artifacts"
+        ),
+        7: QualityPreset(
+            level=7,
+            ssim_min=0.87,
+            ppd_photo=40.0,
+            ppd_line=55.0,
+            jpeg_quality=70,
+            webp_quality=70,
+            downsample_factor=0.85,
+            description="Moderate quality - noticeable compression"
+        ),
+        8: QualityPreset(
+            level=8,
+            ssim_min=0.85,
+            ppd_photo=35.0,
+            ppd_line=50.0,
+            jpeg_quality=65,
+            webp_quality=65,
+            downsample_factor=0.80,
+            description="Lower quality - visible artifacts, good file size"
+        ),
+        9: QualityPreset(
+            level=9,
+            ssim_min=0.82,
+            ppd_photo=30.0,
+            ppd_line=45.0,
+            jpeg_quality=60,
+            webp_quality=60,
+            downsample_factor=0.75,
+            description="Aggressive compression - clear quality loss, small files"
+        ),
+    }
+
+    if level not in presets:
+        raise ValueError(f"Quality preset level must be 0-9, got {level}")
+
+    return presets[level]
+
+
 # --------------------------- logging ---------------------------------
 def find_project_root(marker: str = ".git") -> Path:
     current = Path(__file__).resolve()
@@ -58,13 +196,20 @@ def find_project_root(marker: str = ".git") -> Path:
     return Path(__file__).resolve().parent
 
 
-def _setup_logging(verbose: bool) -> None:
+def _setup_logging(verbose: bool, trace_png: bool = False) -> None:
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
         level=level,
         format="%(asctime)s %(levelname)s %(processName)s %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    # Suppress PIL/Pillow debug output unless explicitly requested
+    pil_level = logging.DEBUG if trace_png else logging.WARNING
+    logging.getLogger("PIL").setLevel(pil_level)
+    logging.getLogger("PIL.Image").setLevel(pil_level)
+    logging.getLogger("PIL.PngImagePlugin").setLevel(pil_level)
+    logging.getLogger("PIL.TiffImagePlugin").setLevel(pil_level)
 
 
 def _setup_worker_logging(worker_id: int):
@@ -75,11 +220,18 @@ def _setup_worker_logging(worker_id: int):
         log_file = log_dir / f"worker-{worker_id}.log"
 
         logger = logging.getLogger()
+        logger.setLevel(logging.DEBUG)
         for handler in logger.handlers[:]:
             logger.removeHandler(handler)
         handler = logging.FileHandler(log_file, mode='w')
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         logger.addHandler(handler)
+
+        # Suppress PIL debug output in worker logs too
+        logging.getLogger("PIL").setLevel(logging.WARNING)
+        logging.getLogger("PIL.Image").setLevel(logging.WARNING)
+        logging.getLogger("PIL.PngImagePlugin").setLevel(logging.WARNING)
+        logging.getLogger("PIL.TiffImagePlugin").setLevel(logging.WARNING)
     except Exception as e:
         logging.error(f"Failed to set up worker logging: {e}")
 
@@ -90,20 +242,25 @@ def worker_main(worker_id: int,
                 outq: "mp.Queue[Event]",
                 args: argparse.Namespace) -> None:
     _setup_worker_logging(worker_id)
+    logging.info(f"Worker {worker_id} starting")
     try:
         outq.put(ev(worker_id, "WORKER_ONLINE"))
         while True:
             item = tasks.get()
             if item is None:
+                logging.info(f"Worker {worker_id} received shutdown signal")
                 tasks.task_done()
                 break
             folder_str, plan_dict = item
             folder = Path(folder_str)
+            logging.info(f"Processing folder: {folder}")
             try:
                 folder_start_time = time.time()
                 images = collect_images(folder)
+                logging.debug(f"Found {len(images)} images in {folder}")
                 infos, stats = analyze_images(images)
                 if not stats:
+                    logging.warning(f"No readable images in {folder}")
                     outq.put(ev(worker_id, "LOG", text=f"[SKIP] No readable images in {folder}"))
                     tasks.task_done()
                     continue
@@ -187,6 +344,7 @@ def worker_main(worker_id: int,
                 outq.put(ev(worker_id, "FOLDER_STATS", stats_str=res_str))
                 time.sleep(0.05)
 
+                logging.info(f"Completed {folder}: {img_done}/{len(infos)} files in {elapsed_s:.2f}s ({files_per_s:.2f} files/s, {mib_per_s:.2f} MiB/s)")
                 outq.put(ev(worker_id, "FOLDER_FINISH", folder=str(folder),
                     elapsed_s=elapsed_s, files_per_s=files_per_s, mib_per_s=mib_per_s))
                 time.sleep(0.2)
@@ -277,7 +435,22 @@ def _print_summary_report(summary_entries: List[Dict]) -> None:
 
 # --------------------------- legacy parser ----------------------------
 def _build_legacy_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(description="Shrink manga image folders with a live dashboard (legacy mode)")
+    description = """Shrink manga image folders with a live dashboard.
+
+Available subcommands:
+  analyze   - Analyze images and print/save stats per folder
+  plan      - Create a device-aware plan.json per folder
+  compress  - Apply an existing plan.json to folders
+  all       - Analyze → Plan → Compress in one go
+  profile   - Print device PPI/PPD for a screen + distance
+
+Use 'imgshrink <subcommand> -h' for more information on a specific subcommand.
+Or use the legacy mode (default) with the options below:"""
+
+    ap = argparse.ArgumentParser(
+        description=description,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("root", type=Path, help="Root folder to scan for leaf image directories")
 
     # Concurrency & UI
@@ -305,14 +478,18 @@ def _build_legacy_parser() -> argparse.ArgumentParser:
     ap.add_argument("-w", "--overwrite", action="store_true", help="Overwrite originals (else write to _compressed/)")
     ap.add_argument("-b", "--backup", action="store_true", help="Make .orig backups when overwriting")
 
-    # NEW: device & perceptual flags (work in legacy mode too)
-    ap.add_argument("--display-res", help="Screen resolution W×H (e.g., 2400x1080)")
-    ap.add_argument("--display-diagonal-in", type=float, help="Screen diagonal inches")
-    ap.add_argument("--viewing-distance-cm", type=float, help="Viewing distance in cm")
-    ap.add_argument("--fit-mode", choices=["fit-longer", "fit-shorter", "fit-width", "fit-height"], default="fit-longer")
-    ap.add_argument("--ppd-photo", type=float, default=60.0, help="PPD target for photo-like pages")
-    ap.add_argument("--ppd-line", type=float, default=75.0, help="PPD target for line-art pages")
-    ap.add_argument("--guard-ssim", type=float, help="Perceptual guardrail: minimum SSIM for encoded image")
+    # Quality preset (smart compression) - overrides device & perceptual flags
+    ap.add_argument("-q", "--quality-preset", type=int, choices=range(10), metavar="0-9",
+                    help="Smart compression preset: 0=max quality, 5=balanced, 9=max compression (overrides PPD/SSIM settings)")
+
+    # Device & perceptual flags (advanced options, all have short forms)
+    ap.add_argument("-x", "--display-res", help="Screen resolution W×H (e.g., 2400x1080)")
+    ap.add_argument("-i", "--display-diagonal-in", type=float, help="Screen diagonal inches")
+    ap.add_argument("-c", "--viewing-distance-cm", type=float, help="Viewing distance in cm")
+    ap.add_argument("-F", "--fit-mode", choices=["fit-longer", "fit-shorter", "fit-width", "fit-height"], default="fit-longer", help="Image fit mode (default: fit-longer)")
+    ap.add_argument("-p", "--ppd-photo", type=float, default=60.0, help="PPD target for photo-like pages (default: 60.0)")
+    ap.add_argument("-l", "--ppd-line", type=float, default=75.0, help="PPD target for line-art pages (default: 75.0)")
+    ap.add_argument("-g", "--guard-ssim", type=float, help="Perceptual guardrail: minimum SSIM for encoded image")
 
     # Test mode
     ap.add_argument("-T", "--test-images", nargs="+", type=Path,
@@ -324,8 +501,28 @@ def _build_legacy_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def _apply_quality_preset(args: argparse.Namespace) -> None:
+    """Apply quality preset to args if specified."""
+    if not hasattr(args, 'quality_preset') or args.quality_preset is None:
+        return
+
+    preset = get_quality_preset(args.quality_preset)
+    logging.info(f"Applying quality preset {preset.level}: {preset.description}")
+
+    # Override settings with preset values
+    args.guard_ssim = preset.ssim_min
+    args.ppd_photo = preset.ppd_photo
+    args.ppd_line = preset.ppd_line
+
+    # Note: downsample_factor will be applied in the planning phase
+    # We'll need to store it somewhere accessible
+    if not hasattr(args, '_preset'):
+        args._preset = preset
+
+
 def _run_legacy(args: argparse.Namespace) -> int:
-    _setup_logging(args.verbose)
+    _setup_logging(args.verbose, getattr(args, 'trace_png', False))
+    _apply_quality_preset(args)
     ctx = mp.get_context("spawn") if sys.platform.startswith("win") else mp.get_context("fork")
 
     if args.test_images:
@@ -464,11 +661,11 @@ def _run_legacy(args: argparse.Namespace) -> int:
 # --------------------------- subcommand layer ------------------------
 def _sub_analyze(argv: List[str]) -> int:
     p = argparse.ArgumentParser(prog="imgshrink analyze", description="Analyze images and print/save stats per folder")
-    p.add_argument("root", type=Path)
-    p.add_argument("-S", "--summary-file", type=Path, default=Path("summary.json"))
-    p.add_argument("-t", "--threads", type=int, default=1)
-    p.add_argument("-u", "--ui", action="store_true")
-    p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("root", type=Path, help="Root folder to scan")
+    p.add_argument("-S", "--summary-file", type=Path, default=Path("summary.json"), help="Output summary file (default: summary.json)")
+    p.add_argument("-t", "--threads", type=int, default=1, help="Number of worker processes (default: 1)")
+    p.add_argument("-u", "--ui", action="store_true", help="Enable live dashboard UI")
+    p.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     args = p.parse_args(argv)
     # call legacy with dry-run + summary
     leg = _build_legacy_parser().parse_args([str(args.root), "-t", str(args.threads), "-n", "-S", str(args.summary_file)] + (["-u"] if args.ui else []) + (["-v"] if args.verbose else []))
@@ -477,19 +674,22 @@ def _sub_analyze(argv: List[str]) -> int:
 
 def _sub_plan(argv: List[str]) -> int:
     p = argparse.ArgumentParser(prog="imgshrink plan", description="Create a device-aware plan.json per folder")
-    p.add_argument("root", type=Path)
-    p.add_argument("-o", "--output", type=Path, default=Path("plan.json"))
-    p.add_argument("--display-res", "-R", required=False)
-    p.add_argument("--display-diagonal-in", "-D", type=float)
-    p.add_argument("--viewing-distance-cm", "-V", type=float)
-    p.add_argument("--fit-mode", choices=["fit-longer", "fit-shorter", "fit-width", "fit-height"], default="fit-longer")
-    p.add_argument("--ppd-photo", type=float, default=60.0)
-    p.add_argument("--ppd-line", type=float, default=75.0)
-    p.add_argument("-t", "--threads", type=int, default=1)
-    p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("root", type=Path, help="Root folder to scan")
+    p.add_argument("-o", "--output", type=Path, default=Path("plan.json"), help="Output plan file (default: plan.json)")
+    p.add_argument("-q", "--quality-preset", type=int, choices=range(10), metavar="0-9",
+                    help="Smart compression preset: 0=max quality, 5=balanced, 9=max compression")
+    p.add_argument("-x", "--display-res", help="Screen resolution WxH (e.g., 2400x1080)")
+    p.add_argument("-i", "--display-diagonal-in", type=float, help="Screen diagonal in inches")
+    p.add_argument("-c", "--viewing-distance-cm", type=float, help="Viewing distance in cm")
+    p.add_argument("-F", "--fit-mode", choices=["fit-longer", "fit-shorter", "fit-width", "fit-height"], default="fit-longer", help="Image fit mode (default: fit-longer)")
+    p.add_argument("-p", "--ppd-photo", type=float, default=60.0, help="PPD target for photo-like pages (default: 60.0)")
+    p.add_argument("-l", "--ppd-line", type=float, default=75.0, help="PPD target for line-art pages (default: 75.0)")
+    p.add_argument("-t", "--threads", type=int, default=1, help="Number of worker processes (default: 1)")
+    p.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     args = p.parse_args(argv)
     # We piggy-back on legacy to write plan.json
     forwarded = [str(args.root), "-t", str(args.threads), "-n", "-P", str(args.output)]
+    if args.quality_preset is not None: forwarded += ["--quality-preset", str(args.quality_preset)]
     if args.display_res: forwarded += ["--display-res", args.display_res]
     if args.display_diagonal_in: forwarded += ["--display-diagonal-in", str(args.display_diagonal_in)]
     if args.viewing_distance_cm: forwarded += ["--viewing-distance-cm", str(args.viewing_distance_cm)]
@@ -501,15 +701,18 @@ def _sub_plan(argv: List[str]) -> int:
 
 def _sub_compress(argv: List[str]) -> int:
     p = argparse.ArgumentParser(prog="imgshrink compress", description="Apply an existing plan.json to folders")
-    p.add_argument("root", type=Path)
-    p.add_argument("--plan", required=True, type=Path)
-    p.add_argument("--guard-ssim", type=float)
-    p.add_argument("-t", "--threads", type=int, default=1)
-    p.add_argument("-w", "--overwrite", action="store_true")
-    p.add_argument("-u", "--ui", action="store_true")
-    p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("root", type=Path, help="Root folder to scan")
+    p.add_argument("-P", "--plan", required=True, type=Path, help="Plan file to apply (required)")
+    p.add_argument("-q", "--quality-preset", type=int, choices=range(10), metavar="0-9",
+                    help="Override plan with quality preset: 0=max quality, 5=balanced, 9=max compression")
+    p.add_argument("-g", "--guard-ssim", type=float, help="Minimum SSIM quality threshold")
+    p.add_argument("-t", "--threads", type=int, default=1, help="Number of worker processes (default: 1)")
+    p.add_argument("-w", "--overwrite", action="store_true", help="Overwrite originals (else write to _compressed/)")
+    p.add_argument("-u", "--ui", action="store_true", help="Enable live dashboard UI")
+    p.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     args = p.parse_args(argv)
     forwarded = [str(args.root), "-t", str(args.threads), "-a", "-P", str(args.plan)]
+    if args.quality_preset is not None: forwarded += ["--quality-preset", str(args.quality_preset)]
     if args.guard_ssim: forwarded += ["--guard-ssim", str(args.guard_ssim)]
     if args.overwrite: forwarded += ["--overwrite"]
     if args.ui: forwarded += ["-u"]
@@ -520,22 +723,25 @@ def _sub_compress(argv: List[str]) -> int:
 
 def _sub_all(argv: List[str]) -> int:
     p = argparse.ArgumentParser(prog="imgshrink all", description="Analyze → Plan → Compress in one go")
-    p.add_argument("root", type=Path)
-    p.add_argument("-S", "--summary-file", type=Path, default=Path("summary.json"))
-    p.add_argument("-P", "--plan-file", type=Path, default=Path("plan.json"))
-    p.add_argument("--display-res", "-R")
-    p.add_argument("--display-diagonal-in", "-D", type=float)
-    p.add_argument("--viewing-distance-cm", "-V", type=float)
-    p.add_argument("--fit-mode", choices=["fit-longer", "fit-shorter", "fit-width", "fit-height"], default="fit-longer")
-    p.add_argument("--ppd-photo", type=float, default=60.0)
-    p.add_argument("--ppd-line", type=float, default=75.0)
-    p.add_argument("--guard-ssim", type=float)
-    p.add_argument("-t", "--threads", type=int, default=1)
-    p.add_argument("-u", "--ui", action="store_true")
-    p.add_argument("-w", "--overwrite", action="store_true")
-    p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("root", type=Path, help="Root folder to scan")
+    p.add_argument("-S", "--summary-file", type=Path, default=Path("summary.json"), help="Output summary file (default: summary.json)")
+    p.add_argument("-P", "--plan-file", type=Path, default=Path("plan.json"), help="Output plan file (default: plan.json)")
+    p.add_argument("-q", "--quality-preset", type=int, choices=range(10), metavar="0-9",
+                    help="Smart compression preset: 0=max quality, 5=balanced, 9=max compression")
+    p.add_argument("-x", "--display-res", help="Screen resolution WxH (e.g., 2400x1080)")
+    p.add_argument("-i", "--display-diagonal-in", type=float, help="Screen diagonal in inches")
+    p.add_argument("-c", "--viewing-distance-cm", type=float, help="Viewing distance in cm")
+    p.add_argument("-F", "--fit-mode", choices=["fit-longer", "fit-shorter", "fit-width", "fit-height"], default="fit-longer", help="Image fit mode (default: fit-longer)")
+    p.add_argument("-p", "--ppd-photo", type=float, default=60.0, help="PPD target for photo-like pages (default: 60.0)")
+    p.add_argument("-l", "--ppd-line", type=float, default=75.0, help="PPD target for line-art pages (default: 75.0)")
+    p.add_argument("-g", "--guard-ssim", type=float, help="Minimum SSIM quality threshold")
+    p.add_argument("-t", "--threads", type=int, default=1, help="Number of worker processes (default: 1)")
+    p.add_argument("-u", "--ui", action="store_true", help="Enable live dashboard UI")
+    p.add_argument("-w", "--overwrite", action="store_true", help="Overwrite originals (else write to _compressed/)")
+    p.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     args = p.parse_args(argv)
     forwarded = [str(args.root), "-t", str(args.threads), "-S", str(args.summary_file), "-P", str(args.plan_file)]
+    if args.quality_preset is not None: forwarded += ["--quality-preset", str(args.quality_preset)]
     if args.display_res: forwarded += ["--display-res", args.display_res]
     if args.display_diagonal_in: forwarded += ["--display-diagonal-in", str(args.display_diagonal_in)]
     if args.viewing_distance_cm: forwarded += ["--viewing-distance-cm", str(args.viewing_distance_cm)]
@@ -551,9 +757,9 @@ def _sub_all(argv: List[str]) -> int:
 def _sub_profile(argv: List[str]) -> int:
     from .display import device_ppd
     p = argparse.ArgumentParser(prog="imgshrink profile", description="Print device PPI/PPD for a screen + distance")
-    p.add_argument("--display-res", "-R", required=True)
-    p.add_argument("--display-diagonal-in", "-D", type=float, required=True)
-    p.add_argument("--viewing-distance-cm", "-V", type=float, required=True)
+    p.add_argument("-x", "--display-res", required=True, help="Screen resolution WxH (e.g., 2400x1080)")
+    p.add_argument("-i", "--display-diagonal-in", type=float, required=True, help="Screen diagonal in inches")
+    p.add_argument("-c", "--viewing-distance-cm", type=float, required=True, help="Viewing distance in cm")
     args = p.parse_args(argv)
     w, h = [int(x) for x in args.display_res.lower().replace("×", "x").split("x")]
     dev = DeviceProfile(args.display_diagonal_in, w, h, args.viewing_distance_cm)
