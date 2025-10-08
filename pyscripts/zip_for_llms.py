@@ -233,21 +233,33 @@ def _match_any_fragment(path_rel: str, patterns: Iterable[str]) -> bool:
     return False
 
 
-def flatten_directory(source_dir: Path, name_by_path: bool, verbose: bool) -> Path:
+def flatten_directory(source_dir: Path, exclusion: Exclusion, name_by_path: bool, verbose: bool) -> Path:
     """
-    Copy all files into a temp "_flattened" directory for packaging.
+    Copy all files into a temp "_flattened" directory for packaging, respecting exclusions.
     """
     flat = source_dir / "_flattened"
     if flat.exists():
         shutil.rmtree(flat)
     flat.mkdir()
-    for root, _, files in os.walk(source_dir):
+
+    for root, dirs, files in os.walk(source_dir):
         root_path = Path(root)
+
+        # Prune excluded directories
+        dirs[:] = [d for d in dirs if not exclusion.dir_is_excluded(_relpath(root_path / d, source_dir))]
+
         if flat in root_path.parents or root_path == flat:
             continue
+
         for f in files:
             src = root_path / f
             rel = _relpath(src, source_dir)
+
+            if exclusion.file_is_excluded(rel):
+                if verbose:
+                    _print_skip(rel, "excluded")
+                continue
+
             target_name = rel.replace("/", "_") if name_by_path else f
             dst = flat / target_name
             if verbose:
@@ -257,6 +269,7 @@ def flatten_directory(source_dir: Path, name_by_path: bool, verbose: bool) -> Pa
             except Exception as e:
                 if verbose:
                     _print_warn(f"failed to copy {rel}: {e}")
+
     # Add a plain structure marker file for zip output parity
     (flat / "folder_structure.txt").write_text("Flattened view artifacts (see text mode for full structure).")
     return flat
@@ -264,56 +277,59 @@ def flatten_directory(source_dir: Path, name_by_path: bool, verbose: bool) -> Pa
 
 def delete_files_to_fit_size(folder: Path, max_mib: int, preference_exts: Iterable[str], verbose: bool) -> List[str]:
     """
-    Best-effort removal: delete biggest preferred-extension files first until
-    the folder fits under max_mib.
+    Best-effort removal: delete biggest preferred-extension files first, then any
+    other largest files, until the folder fits under max_mib.
     """
     max_bytes = max_mib * 1024 * 1024
     removed: List[str] = []
 
-    def size_of_tree(p: Path) -> int:
-        total = 0
+    def get_all_files(p: Path) -> List[Path]:
+        file_list = []
         for r, _, files in os.walk(p):
             for f in files:
-                try:
-                    total += (Path(r) / f).stat().st_size
-                except OSError:
-                    pass
-        return total
+                file_list.append(Path(r) / f)
+        return file_list
+
+    def size_of_tree(files: List[Path]) -> int:
+        return sum(f.stat().st_size for f in files if f.exists()) 
 
     preference_exts = set(preference_exts or [])
-    while True:
-        total = size_of_tree(folder)
-        if total <= max_bytes:
+    
+    all_files = get_all_files(folder)
+    
+    while size_of_tree(all_files) > max_bytes:
+        preferred_candidates = sorted(
+            [f for f in all_files if f.suffix in preference_exts and f.exists()],
+            key=lambda p: p.stat().st_size,
+            reverse=True
+        )
+        
+        other_candidates = sorted(
+            [f for f in all_files if f.suffix not in preference_exts and f.exists()],
+            key=lambda p: p.stat().st_size,
+            reverse=True
+        )
+
+        victim = None
+        if preferred_candidates:
+            victim = preferred_candidates[0]
+        elif other_candidates:
+            victim = other_candidates[0]
+        
+        if not victim:
             break
-        # collect candidate files
-        candidates: List[Path] = []
-        for r, _, files in os.walk(folder):
-            for f in files:
-                p = Path(r) / f
-                try:
-                    if p.suffix in preference_exts:
-                        candidates.append(p)
-                except Exception:
-                    continue
-        if not candidates:
-            # fallback: delete any biggest file
-            for r, _, files in os.walk(folder):
-                for f in files:
-                    candidates.append(Path(r) / f)
-        if not candidates:
-            break
-        # pick largest
-        candidates.sort(key=lambda p: p.stat().st_size if p.exists() else 0, reverse=True)
-        victim = candidates[0]
+
         try:
             if verbose:
                 _print_warn(f"trimming to fit: deleting {_relpath(victim, folder)}")
             removed.append(str(victim))
             victim.unlink(missing_ok=True)
+            all_files.remove(victim)
         except Exception as e:
             if verbose:
                 _print_warn(f"failed to delete {victim}: {e}")
-            break
+            break # Stop if a file can't be deleted
+            
     return removed
 
 
@@ -336,7 +352,10 @@ class Exclusion:
             return True
         if rel_dir in self.exclude_dirs:
             return True
-        return _match_any_fragment(rel_dir, self.exclude_dirs)
+        if _match_any_fragment(rel_dir, self.exclude_dirs):
+            return True
+        # Also check remove_patterns for directories
+        return _match_any_fragment(rel_dir, self.remove_patterns)
 
     def file_is_excluded(self, rel_path: str) -> bool:
         # Keep overrides remove
@@ -363,20 +382,64 @@ class Exclusion:
 # Text mode
 # =====================================================================================
 
+def _get_llm_introduction() -> str:
+    """Returns a detailed introductory text for the packaged file."""
+    return """
+This document is a self-contained representation of a software repository, packaged for analysis by a Large Language Model (LLM).
+
+It contains two main sections:
+
+1.  **Folder Structure:** A hierarchical tree view of the repository's directories and files.
+    - Directories marked with `(excluded)` were skipped based on the packaging rules.
+    - The tree provides a map to understand the layout and organization of the code.
+
+2.  **File Contents:** The full content of each included file.
+    - Each file's content is preceded by a header like `-- File: path/to/file.ext --`.
+    - Files that are binary, non-UTF-8, or could not be read are noted and their content is omitted.
+
+The purpose is to provide all necessary context for code analysis, review, or documentation tasks without requiring the LLM to have direct access to a file system.
+"""
+
+
 def _emit_folder_structure(root: Path, exclusion: Exclusion, out: io.TextIOBase, verbose: bool) -> None:
+    """
+    Generates and writes a visual tree structure of the directory, respecting exclusions.
+    """
     out.write(f"\nFolder Structure for: {root.name}\n")
-    def walk(d: Path, indent: int = 0) -> None:
-        rel = _relpath(d, root)
-        if rel and exclusion.dir_is_excluded(rel):
-            out.write("    " * indent + f"{Path(rel).name}/ (excluded)\n")
+    
+    def walk(d: Path, prefix: str = "") -> None:
+        rel_dir = _relpath(d, root)
+        if rel_dir and exclusion.dir_is_excluded(rel_dir):
             if verbose:
-                _print_skip(rel, "excluded dir")
-            return  # CRITICAL: do not descend into excluded dirs
-        if rel:
-            out.write("    " * indent + f"{Path(rel).name}/\n")
-        for child in sorted(d.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+                _print_skip(rel_dir, "excluded dir")
+            return
+
+        # Get children and sort them: dirs first, then files, all alphabetically
+        try:
+            children = sorted(list(d.iterdir()), key=lambda p: (not p.is_dir(), p.name.lower()))
+        except OSError:
+            children = []
+
+        for i, child in enumerate(children):
+            is_last = i == (len(children) - 1)
+            connector = "└── " if is_last else "├── "
+            
+            rel_child_path = _relpath(child, root)
+
             if child.is_dir():
-                walk(child, indent + (1 if rel else 1))
+                if exclusion.dir_is_excluded(rel_child_path):
+                    out.write(f"{prefix}{connector}{child.name}/ (excluded)\n")
+                    if verbose:
+                        _print_skip(rel_child_path, "excluded dir")
+                else:
+                    out.write(f"{prefix}{connector}{child.name}/\n")
+                    new_prefix = prefix + ("    " if is_last else "│   ")
+                    walk(child, new_prefix)
+            else:
+                if not exclusion.file_is_excluded(rel_child_path):
+                    out.write(f"{prefix}{connector}{child.name}\n")
+
+    out.write(f"{root.name}/\n")
     walk(root)
 
 
@@ -400,7 +463,7 @@ def text_file_mode(
     if verbose:
         _print_header("Generating folder structure...")
     with io.open(output_txt, "w", encoding="utf-8") as out:
-        out.write("This document packages a repository for a Large Language Model (LLM).\n")
+        out.write(_get_llm_introduction())
         _emit_folder_structure(source_dir, exclusion, out, verbose)
 
         out.write("\nProcessing files for content...\n")
@@ -412,7 +475,7 @@ def text_file_mode(
         if flatten:
             if verbose:
                 _print_header("Flattening files...")
-            staging_root = flatten_directory(source_dir, name_by_path=name_by_path, verbose=verbose)
+            staging_root = flatten_directory(source_dir, exclusion, name_by_path=name_by_path, verbose=verbose)
 
         # Walk staging root for file contents (prune excluded dirs entirely)
         for r, dirs, files in os.walk(staging_root):
@@ -484,68 +547,70 @@ def zip_folder(
     output_zip = Path(output_zip_str)
     exclusion = Exclusion(set(exclude_dirs), set(exclude_exts), set(exclude_files), list(remove_patterns), list(keep_patterns))
 
-    # Stage files (optionally flatten)
-    staging_root = source_dir
-    if flatten:
-        if verbose:
-            _print_header("Flattening files...")
-        staging_root = flatten_directory(source_dir, name_by_path=name_by_path, verbose=verbose)
+    with tempfile.TemporaryDirectory() as td:
+        staging_root = Path(td)
 
-    # Create zip
-    if verbose:
-        _print_header(f"Creating zip: {output_zip.name}")
-    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as z:
-        # Add a structure marker (helps LLM context)
-        structure_txt = "folder_structure.txt"
-        z.writestr(structure_txt, "See text mode for detailed structure.")
         if verbose:
-            _print_ok(f"added {structure_txt}")
+            _print_header("Preparing files for zip...")
 
-        for r, dirs, files in os.walk(staging_root):
+        for r, dirs, files in os.walk(source_dir):
             root_path = Path(r)
+            rel_dir = _relpath(root_path, source_dir)
+
             # Prune excluded dirs before descent
-            for d in list(dirs):
-                rel_d = _relpath(root_path / d, staging_root)
-                if exclusion.dir_is_excluded(rel_d):
-                    if verbose:
-                        _print_skip(rel_d, "excluded dir")
-                    dirs.remove(d)
+            dirs[:] = [d for d in dirs if not exclusion.dir_is_excluded(_relpath(root_path / d, source_dir))]
+
+            # Create corresponding directory structure in staging area
+            if rel_dir != ".":
+                (staging_root / rel_dir).mkdir(parents=True, exist_ok=True)
+
             for f in files:
                 p = root_path / f
-                rel = _relpath(p, staging_root)
+                rel = _relpath(p, source_dir)
                 if exclusion.file_is_excluded(rel):
                     if verbose:
-                        reason = "excluded"
-                        _print_skip(rel, reason)
+                        _print_skip(rel, "excluded")
                     continue
-                arcname = rel.replace("/", "_") if (flatten and name_by_path) else rel
-                try:
-                    z.write(p, arcname)
-                    if verbose:
-                        _print_ok(f"+ {arcname}")
-                except Exception as e:
-                    if verbose:
-                        _print_warn(f"failed to add {rel}: {e}")
+                
+                # Copy file to staging directory
+                shutil.copy2(p, staging_root / rel)
 
-    # Size trimming if requested
-    if max_size is not None:
-        # Extract, trim, re-zip (simpler logic)
-        with tempfile.TemporaryDirectory() as td:
-            td_path = Path(td)
-            with zipfile.ZipFile(output_zip, "r") as z:
-                z.extractall(td_path)
-            removed = delete_files_to_fit_size(td_path, max_size, preferences, verbose=verbose)
-            with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as z:
-                for r, _, files in os.walk(td_path):
-                    for f in files:
-                        p = Path(r) / f
-                        rel = _relpath(p, td_path)
-                        z.write(p, rel)
+        if flatten:
+            if verbose:
+                _print_header("Flattening files...")
+            flat_staging_root = flatten_directory(staging_root, exclusion, name_by_path=name_by_path, verbose=verbose)
+            # Replace staging_root with the flattened one for zipping
+            staging_root = flat_staging_root
+
+        # Size trimming if requested
+        if max_size is not None:
+            removed = delete_files_to_fit_size(staging_root, max_size, preferences, verbose=verbose)
             if verbose and removed:
                 _print_warn(f"trimmed {len(removed)} files to honor max size")
 
-    if flatten and staging_root != source_dir:
-        shutil.rmtree(staging_root, ignore_errors=True)
+        # Create zip from the staging root
+        if verbose:
+            _print_header(f"Creating zip: {output_zip.name}")
+        with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as z:
+            # Add a structure marker (helps LLM context)
+            structure_txt = "folder_structure.txt"
+            z.writestr(structure_txt, "See text mode for detailed structure.")
+            if verbose:
+                _print_ok(f"added {structure_txt}")
+
+            for r, _, files in os.walk(staging_root):
+                root_path = Path(r)
+                for f in files:
+                    p = root_path / f
+                    rel = _relpath(p, staging_root)
+                    arcname = rel
+                    try:
+                        z.write(p, arcname)
+                        if verbose:
+                            _print_ok(f"+ {arcname}")
+                    except Exception as e:
+                        if verbose:
+                            _print_warn(f"failed to add {rel}: {e}")
 
     if verbose:
         _print_stat("Zip complete", str(output_zip))

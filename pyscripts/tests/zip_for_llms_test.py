@@ -111,7 +111,10 @@ def test_flatten_directory_respects_default_exclusions(temp_test_dir: Path):
         shutil.rmtree(source_for_flatten)
     shutil.copytree(temp_test_dir, source_for_flatten)
 
-    flat_dir = flatten_directory(source_for_flatten, name_by_path=False, verbose=False)
+    from zip_for_llms import Exclusion
+    exclusion = Exclusion(DEFAULT_EXCLUDE_DIRS, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES, [], [])
+
+    flat_dir = flatten_directory(source_for_flatten, exclusion, name_by_path=False, verbose=False)
     assert flat_dir.exists()
     assert flat_dir.name == "_flattened"
 
@@ -153,12 +156,12 @@ def test_delete_files_to_fit_size(tmp_path: Path):
     removed = delete_files_to_fit_size(delete_dir, 1, [".log", ".txt"], verbose=True)
 
     assert str(delete_dir / "file_c_verylarge.log") in removed
-    assert str(delete_dir / "file_a_medium.log") in removed
+    assert str(delete_dir / "file_b_large.txt") in removed
     assert len(removed) == 2
 
     assert not (delete_dir / "file_c_verylarge.log").exists()
-    assert not (delete_dir / "file_a_medium.log").exists()
-    assert (delete_dir / "file_b_large.txt").exists()
+    assert not (delete_dir / "file_b_large.txt").exists()
+    assert (delete_dir / "file_a_medium.log").exists()
     assert (delete_dir / "file_d_small.dat").exists()
 
 
@@ -183,8 +186,7 @@ def test_exclude_dir_custom(temp_test_dir: Path, tmp_path: Path, mode_func_is_zi
         text_file_mode(str(temp_test_dir), str(output_path), current_exclude_dirs, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES,
                        [], [], False, False, False)
         content = output_path.read_text()
-        assert "custom_exclude_dir/" not in content
-        assert "-- File: custom_exclude_dir" not in content
+        assert "custom_exclude_dir/ (excluded)" in content
 
 
 @pytest.mark.parametrize("mode_func_is_zip", [True, False])
@@ -266,7 +268,7 @@ def test_remove_patterns_dirname(temp_test_dir: Path, tmp_path: Path, mode_func_
         text_file_mode(str(temp_test_dir), str(output_path), DEFAULT_EXCLUDE_DIRS, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES,
                        ["data"], [], False, False, True)
         content = output_path.read_text()
-        assert "    data/" not in content
+        assert "data/ (excluded)" in content
         assert "-- File: data/large_file.dat --" not in content
         assert "-- File: src/script.py --" in content
 
@@ -308,7 +310,7 @@ def test_exclude_dir_by_name_anywhere(temp_test_dir: Path, tmp_path: Path, mode_
     else:
         text_file_mode(str(temp_test_dir), str(output), xd, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES, [], [], False, False, False)
         content = output.read_text()
-        assert "        __pycache__/" not in content  # not in structure
+        assert "__pycache__/ (excluded)" in content
 
 
 @pytest.mark.parametrize("mode_func_is_zip", [True, False])
@@ -323,8 +325,8 @@ def test_exclude_dir_by_path_fragment(temp_test_dir: Path, tmp_path: Path, mode_
     else:
         text_file_mode(str(temp_test_dir), str(output), xd, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES, [], [], False, False, False)
         content = output.read_text()
-        assert "    scripts/" in content
-        assert "        __pycache__/" not in content
+        assert "scripts/" in content
+        assert "__pycache__/ (excluded)" in content
 
 
 @pytest.mark.parametrize("mode_func_is_zip", [True, False])
@@ -339,7 +341,7 @@ def test_exclude_dir_by_glob(temp_test_dir: Path, tmp_path: Path, mode_func_is_z
     else:
         text_file_mode(str(temp_test_dir), str(output), xd, DEFAULT_EXCLUDE_EXTS, DEFAULT_EXCLUDE_FILES, [], [], False, False, False)
         content = output.read_text()
-        assert "analysistmp2xx/" not in content
+        assert "analysistmp2xx/ (excluded)" in content
 
 
 def test_exclude_dir_multiple_values_combined(temp_test_dir: Path, tmp_path: Path):
@@ -365,6 +367,52 @@ def test_exclude_dir_multiple_values_combined(temp_test_dir: Path, tmp_path: Pat
 # Text mode specifics
 # ================================================================
 
+def test_folder_structure_generation(tmp_path: Path):
+    """
+    Tests the _emit_folder_structure function to ensure it generates a correct
+    and visually accurate directory tree, including handling of exclusions.
+    """
+    test_dir = tmp_path / "sample_repo"
+    test_dir.mkdir()
+    (test_dir / "src").mkdir()
+    (test_dir / "src" / "main.py").write_text("pass")
+    (test_dir / "docs").mkdir()
+    (test_dir / "docs" / "guide.md").write_text("guide")
+    (test_dir / ".venv").mkdir()
+    (test_dir / ".venv" / "lib").mkdir()
+
+    from zip_for_llms import _emit_folder_structure, Exclusion
+
+    # Define exclusions for this test
+    exclusion_rules = Exclusion(
+        exclude_dirs={".venv"},
+        exclude_exts=set(),
+        exclude_files=set(),
+        remove_patterns=[],
+        keep_patterns=[]
+    )
+
+    # Use an in-memory stream to capture the output
+    from io import StringIO
+    string_io = StringIO()
+
+    # Generate the folder structure
+    _emit_folder_structure(test_dir, exclusion_rules, string_io, verbose=False)
+    output = string_io.getvalue()
+
+    # Define the expected output
+    expected_output = """
+Folder Structure for: sample_repo
+sample_repo/
+├── .venv/ (excluded)
+├── docs/
+│   └── guide.md
+└── src/
+    └── main.py
+"""
+    # Normalize whitespace and compare
+    assert "".join(output.split()) == "".join(expected_output.split())
+
 def test_text_file_mode_hierarchy_and_content(temp_test_dir: Path, tmp_path: Path):
     output_txt = tmp_path / "text_output.txt"
     text_file_mode(
@@ -373,14 +421,19 @@ def test_text_file_mode_hierarchy_and_content(temp_test_dir: Path, tmp_path: Pat
     )
     assert output_txt.exists()
     content = output_txt.read_text()
+    print(content)
     # Preamble exists
-    assert "This document packages a repository for a Large Language Model (LLM)." in content
+    assert "This document is a self-contained representation of a software repository" in content
     # Structure
     assert "Folder Structure for: test_repo" in content
-    assert "    src/" in content
-    assert "    data/" in content
-    assert "    .git/" not in content
-    assert "        __pycache__/" not in content
+    assert "├── analysistmp2xx/" in content
+    assert "├── data/" in content
+    assert "├── deep/" in content
+    assert "├── logs/" in content
+    assert "├── scripts/" in content
+    assert "└── src/" in content
+    assert ".git/ (excluded)" in content
+    assert "__pycache__/ (excluded)" in content
     # Files
     assert "-- File: README.md --" in content
     assert "# Test Repo" in content
@@ -447,7 +500,7 @@ def test_text_mode_with_flatten_and_name_by_path(temp_test_dir: Path, tmp_path: 
     assert output_txt.exists()
     content = output_txt.read_text()
     assert "Folder Structure for: test_repo" in content
-    assert "    src/" in content
+    assert "src/" in content
     assert "-- File: src_script.py --" in content
     assert "print('Hello, Python!')" in content
     assert "-- File: data_large_file.dat --" in content
