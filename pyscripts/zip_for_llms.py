@@ -416,12 +416,18 @@ def _emit_folder_structure(root: Path, exclusion: Exclusion, out: io.TextIOBase,
 
         # Get children and sort them: dirs first, then files, all alphabetically
         try:
-            children = sorted(list(d.iterdir()), key=lambda p: (not p.is_dir(), p.name.lower()))
+            all_children = sorted(list(d.iterdir()), key=lambda p: (not p.is_dir(), p.name.lower()))
         except OSError:
-            children = []
+            all_children = []
 
-        for i, child in enumerate(children):
-            is_last = i == (len(children) - 1)
+        # Filter children that will be visible in the tree
+        visible_children = [
+            p for p in all_children
+            if p.is_dir() or not exclusion.file_is_excluded(_relpath(p, root))
+        ]
+
+        for i, child in enumerate(visible_children):
+            is_last = i == (len(visible_children) - 1)
             connector = "└── " if is_last else "├── "
             
             rel_child_path = _relpath(child, root)
@@ -436,8 +442,8 @@ def _emit_folder_structure(root: Path, exclusion: Exclusion, out: io.TextIOBase,
                     new_prefix = prefix + ("    " if is_last else "│   ")
                     walk(child, new_prefix)
             else:
-                if not exclusion.file_is_excluded(rel_child_path):
-                    out.write(f"{prefix}{connector}{child.name}\n")
+                # This check is now redundant because we pre-filtered.
+                out.write(f"{prefix}{connector}{child.name}\n")
 
     out.write(f"{root.name}/\n")
     walk(root)
