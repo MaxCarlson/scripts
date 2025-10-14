@@ -1,0 +1,21 @@
+
+Container {
+    layout: horizontal;
+}
+
+#host-list {
+    width: 30;
+}
+
+#session-list {
+    width: 1fr;
+}
+
+ListView > .--highlight {
+    background: $secondary;
+}
+
+#log-view {
+    height: 10;
+    border: solid $primary;
+}

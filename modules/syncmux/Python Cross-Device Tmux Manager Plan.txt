@@ -1,0 +1,302 @@
+﻿Development Plan: SyncMux - A Centralized, Cross-Device tmux Session Manager
+I. Executive Summary and Architectural Vision
+A. Project SyncMux: A Unified tmux Management Framework
+This document outlines the comprehensive development plan for SyncMux, a centralized, cross-platform tmux session manager. The project's primary mission is to provide a single, intuitive, and highly responsive Text-based User Interface (TUI) for managing tmux sessions across a heterogeneous fleet of local and remote machines. The core functionality of SyncMux will encompass the listing, creation, attachment, and termination of tmux sessions on any number of user-configured hosts, all from a unified control plane.
+The architectural design is founded upon four key pillars:
+1. Asynchronicity: The application will be built on a fully asynchronous, event-driven model to handle concurrent network operations without blocking the user interface, ensuring a fluid and responsive user experience even when managing hosts with high latency.
+2. Modularity: The design separates concerns into distinct layers—a TUI frontend, core application logic, a communication backend, and a configuration/platform abstraction layer—to promote maintainability, testability, and extensibility.
+3. State-as-Truth: The application will treat the remote tmux servers as the ultimate source of truth for session state. By leveraging tmux's native introspection capabilities, SyncMux minimizes internal state management, thereby reducing complexity and eliminating the risk of state desynchronization.
+4. Cross-Platform Fidelity: The application is designed from the ground up to provide a consistent and fully functional experience across its target environments: Termux on Android, Windows 11 (via PowerShell 7), and Windows Subsystem for Linux 2 (WSL2) with Ubuntu.
+B. Core Technology Stack and Architectural Overview
+The SyncMux application will be developed exclusively in Python, leveraging a carefully selected stack of modern, high-performance libraries. The architecture comprises four primary, interconnected components as illustrated below:
+1. TUI Frontend (Textual): The user-facing component responsible for rendering the interface, managing layout, and capturing all user input. It operates within an asyncio event loop.
+2. Core Application Logic (asyncio): The central orchestrator that manages the application's state, handles user-initiated actions, and coordinates the flow of data between the frontend and the communication backend. It leverages Python's native asyncio library for concurrency.
+3. Communication Backend (AsyncSSH): The layer responsible for establishing, managing, and executing commands over secure SSH connections to remote hosts. It is a native asyncio library, integrating seamlessly with the core logic.
+4. Configuration & Platform Abstraction Layer: This component is responsible for parsing user-defined host configurations from a file and abstracting away platform-specific details related to command execution and terminal management.
+The central architectural decision is the adoption of a fully asynchronous, event-driven model. This choice is not merely a preference but a direct consequence of the application's primary function: managing remote resources over a network. This task is inherently I/O-bound, dominated by the latency of SSH connections and command execution. A traditional synchronous architecture would cause the entire user interface to freeze while waiting for a single network operation to complete. By contrast, an asynchronous model allows SyncMux to initiate operations on multiple hosts concurrently, updating the UI as results arrive without ever blocking the main event loop. This ensures the application remains interactive and responsive at all times.
+The selection of the TUI framework is therefore the most critical architectural decision, as it dictates the viability of the entire asynchronous model. The Textual framework, being built from the ground up on asyncio, provides the necessary foundation. This choice, in turn, informs the selection of the SSH library. To maintain architectural coherence and maximize performance, a native asyncio-compatible SSH library is required. AsyncSSH fits this requirement perfectly, allowing network I/O to be treated as just another awaitable task within the TUI's event loop. This symbiotic relationship between Textual and AsyncSSH forms the core of the SyncMux architecture, enabling a simple, efficient, and maintainable single-threaded concurrent design.
+Criterion
+	Textual
+	prompt-toolkit
+	AsyncSSH
+	Paramiko
+	Architectural Model
+	Fully asynchronous, asyncio-based event loop
+	Primarily synchronous; full-screen apps require more complex manual layout and event handling
+	Native asynchronous client and server built on asyncio
+	Synchronous, blocking API
+	Performance in I/O-Bound Tasks
+	Excellent; non-blocking UI allows for concurrent network operations without freezing the application.
+	Poor; blocking calls would freeze the UI or require complex thread management.
+	Excellent; integrates seamlessly into an asyncio event loop for high-throughput, non-blocking network I/O.
+	Poor; blocking calls would halt the event loop, necessitating delegation to a thread pool, which adds overhead and complexity.
+	Developer Experience
+	High; declarative API inspired by modern web development, with CSS-based styling and a rich widget set
+	Moderate; powerful but more imperative and lower-level API for building full applications.
+	High; modern async/await syntax with context managers for clean connection handling.
+	Moderate; traditional, well-established but more verbose API.
+	Ecosystem Integration
+	Built on Rich for superior text rendering; designed for modern Python (3.9+).
+	Mature and widely used, but its core design predates the widespread adoption of asyncio for applications.
+	Designed specifically for the asyncio ecosystem; direct compatibility with other asyncio libraries.
+	A foundational library but requires bridging (e.g., thread pools) to work efficiently in an asyncio application.
+	C. The tmux Server as the Source of Truth
+A foundational principle of the SyncMux design is to minimize its own state management in favor of treating the remote tmux servers as the canonical source of truth. A naive approach might involve building a local cache of session information, which would inevitably become stale, leading to complex synchronization logic and a fragile user experience.
+The tmux command-line interface, however, provides a robust set of tools for introspection that makes such a cache unnecessary. Specifically, the list-sessions command, when used with the -F format flag, can be instructed to produce machine-parseable output with a custom delimiter. This allows SyncMux to query the exact state of all sessions on a host—including names, window counts, and attachment status—in a single, efficient SSH command. The response can be reliably parsed into structured data objects.
+Furthermore, commands like has-session provide a zero-exit-code confirmation of a session's existence, and the new-session -A -s <name> command provides an atomic "create-or-attach" operation, simplifying session creation logic.
+By leveraging these features, SyncMux can adopt a "state-as-truth" model. The application's internal state becomes a direct, near-real-time reflection of the distributed state held by the tmux servers themselves. When a user requests a refresh, SyncMux queries the servers and re-renders the UI based on the fresh data. This approach dramatically simplifies the application's core logic, making it more robust, resilient, and easier to maintain. SyncMux effectively becomes a stateless rendering engine for the underlying tmux infrastructure.
+II. TUI Architecture and Implementation with Textual
+A. Framework Justification: Why Textual is the Optimal Choice
+The selection of Textual as the TUI framework is a cornerstone of the SyncMux architecture, driven by its modern design, asynchronous core, and rich feature set. A comparative analysis with other libraries, such as prompt-toolkit, reveals Textual's decisive advantages for this specific project.
+* Modernity and Developer Experience: Textual's API is heavily inspired by modern web development paradigms, which are well-suited for building complex, component-based applications. It employs a declarative approach to UI construction through its compose method and uses a CSS-like styling language (TCSS) for layout and appearance. This separation of structure, style, and logic is a proven model for creating scalable and maintainable user interfaces. In contrast, while prompt-toolkit is powerful for creating interactive prompts and REPLs, building a full-screen application requires a more imperative, manual approach to layout and state management.
+* Asynchronous Core: As established in the architectural vision, Textual's native integration with asyncio is its most critical feature for SyncMux. The entire application, from user input handling to screen updates, runs within a single asyncio event loop. This allows long-running, I/O-bound tasks, such as fetching session data from multiple remote hosts, to be executed as concurrent coroutines without blocking the UI. The user can continue to interact with the application—scrolling lists, switching focus—while network operations are in flight. This capability is fundamental to achieving the project's goal of a highly responsive user experience.
+* Rich Widget Ecosystem: Textual provides a comprehensive library of pre-built widgets, including ListView, Header, Footer, Input, Button, and Static. This rich ecosystem accelerates development by reducing the amount of boilerplate code required to build the UI. For SyncMux, this means core components for displaying lists of hosts and sessions are readily available and can be customized and composed into more complex, application-specific widgets.
+B. Application Layout and Core Widgets
+The SyncMux user interface will be structured using Textual's layout system, which includes vertical, horizontal, and grid containers. The primary layout will be a three-pane design to provide a clear and organized view of the managed infrastructure.
+* HostListView (Left Pane): This pane will occupy the left portion of the screen and will contain a textual.widgets.ListView widget. This list will display all hosts configured in config.yml. Each item in the ListView will be an instance of a custom HostWidget, allowing for a richer display than a simple text label.
+* SessionListView (Main/Center Pane): This is the primary content area. It will also contain a textual.widgets.ListView. This list will dynamically display the tmux sessions for the host currently selected in the HostListView. Each item will be an instance of a custom SessionWidget.
+* LogView (Bottom Pane): A docked widget at the bottom of the screen, likely a textual.widgets.RichLog or a scrollable textual.widgets.Static. This area will provide real-time feedback to the user, displaying status messages (e.g., "Connecting to host...", "Refreshing sessions..."), connection errors, and the output of commands.
+To implement this layout, custom compound widgets will be created by subclassing textual.widget.Widget.
+* HostWidget(Widget): This compound widget represents a single host in the HostListView. It will be composed of:
+   * A textual.widgets.Label to display the host's alias (e.g., "production-server").
+   * A textual.widgets.Static widget to display the connection status (e.g., "● Connected", "● Connecting...", "● Error"), with its style changing dynamically based on the state.
+* SessionWidget(Widget): This widget represents a single tmux session. It will use a horizontal layout to arrange several textual.widgets.Static widgets, displaying key information for each session, such as:
+   * Session Name
+   * Number of Windows (e.g., "(3 windows)")
+   * Creation Date
+   * Attached Status (e.g., "(attached)")
+Dialogs for user input, such as creating a new session or confirming termination, will be implemented using Textual's Screen system. A NewSessionScreen, for example, would be pushed onto the screen stack, overlaying the main view and containing an Input widget for the session name and Button widgets for confirmation or cancellation.
+C. State-Driven UI and Reactive Design
+SyncMux will adopt a state-driven, reactive design pattern, leveraging Textual's built-in reactivity features to ensure the UI is always a consistent reflection of the application's state. This approach cleanly separates the logic for managing data (the "backend") from the logic for displaying it (the "frontend").
+The main App class will be the central repository for the application's state. This state will be stored in reactive attributes, declared using textual.reactive.var. Key state variables will include:
+* hosts: var[list[Host]]: A list of Host data models loaded from the configuration file.
+* sessions: var]]: A dictionary mapping host aliases to lists of their Session data models.
+* selected_host: var[Optional[Host]]: The currently selected host in the HostListView.
+Textual provides "watch" methods that are automatically triggered whenever a reactive attribute's value changes. For example, a method named watch_sessions will be called any time the self.sessions dictionary is modified. This mechanism will be the primary driver of UI updates. The watch_sessions method will contain the logic to clear the SessionListView and repopulate it with new SessionWidget instances based on the updated data for the selected_host.
+This pattern ensures a unidirectional data flow:
+1. A user action or background task triggers a backend function (e.g., fetching session data).
+2. The backend function completes and updates a reactive state variable on the App instance.
+3. The change to the state variable automatically triggers the corresponding watch method.
+4. The watch method updates the relevant UI widgets to reflect the new state.
+D. User Interaction Model: Key Bindings and Actions
+User interaction will be primarily keyboard-driven, defined using Textual's declarative key binding system. A BINDINGS list will be defined as a class attribute on the main App class, mapping keys to specific actions.
+The primary key bindings will be:
+* Navigation:
+   * j, down: Move focus down in the active list view.
+   * k, up: Move focus up in the active list view.
+   * tab: Cycle focus between the HostListView and SessionListView.
+* Actions:
+   * enter:
+      * If HostListView is focused, selects the host and triggers a refresh of its sessions.
+      * If SessionListView is focused, initiates the process to attach to the selected tmux session.
+   * n: (New) Triggers the action_create_session, which will display the NewSessionScreen dialog for the currently selected host.
+   * d, x: (Delete/Kill) Triggers the action_kill_session, which will display a confirmation dialog before terminating the selected session.
+   * r: (Refresh) Triggers action_refresh_host to reload session data for the currently selected host.
+   * ctrl+r: (Refresh All) Triggers action_refresh_all_hosts to reload session data for all configured hosts concurrently.
+   * q: (Quit) Triggers action_quit to exit the application.
+Each binding corresponds to an action_* method (e.g., the n key is handled by action_create_session()). These action methods serve as the bridge between the UI and the backend logic. They are responsible for retrieving the necessary context (e.g., the selected host or session), calling the appropriate asynchronous methods from the TmuxController or ConnectionManager, and then updating the application's reactive state with the results. Error handling (e.g., displaying connection failures in the LogView) will also be managed within these action methods.
+III. Asynchronous Backend and Communication Layer
+A. The AsyncSSH Communication Core
+The entire communication backend will be built around the AsyncSSH library to maintain consistency with the asynchronous architecture of the Textual frontend. A dedicated ConnectionManager class will be implemented to abstract away the complexities of establishing and maintaining SSH connections.
+The ConnectionManager class will serve as a centralized, potentially singleton, object responsible for the complete lifecycle of all SSH connections. Its primary responsibilities include:
+* Connection Pooling/Caching: It will maintain a dictionary of active asyncssh.SSHClientConnection objects, keyed by a unique host identifier (e.g., the host's alias from the config file). This prevents redundant connection setups for repeated commands to the same host.
+* Connection Lifecycle Management: It will provide a high-level asynchronous method, get_connection(host: Host) -> asyncssh.SSHClientConnection. When called, this method will first check the cache for an existing, active connection. If one exists, it is returned immediately. If not, the method will proceed to establish a new connection using the parameters defined in the Host data model, add it to the cache, and then return it. This method will also handle connection errors gracefully, raising specific exceptions that can be caught by the application logic to update the UI.
+* Authentication Abstraction: The get_connection method will handle various authentication mechanisms supported by AsyncSSH, including password, public key, and agent-based authentication. The specific method used will be determined by the auth_method field in the Host model. For key-based authentication, it will use the client_keys parameter, and for agent authentication, it will rely on AsyncSSH's ability to automatically connect to a running ssh-agent (on Unix-like systems) or Pageant (on Windows).
+This centralized approach ensures that the rest of the application does not need to be concerned with the low-level details of SSH connection management, leading to cleaner and more maintainable code.
+B. tmux Command Abstraction and Parsing
+To interact with remote tmux servers in a reliable and version-agnostic manner, a stable "API" layer must be created over the SSH transport. Directly parsing the human-readable output of commands like tmux ls is brittle and prone to breaking with updates to tmux. The key to creating a robust interface is the -F format flag available in many tmux list commands, which allows for the specification of a custom, machine-readable output format. This feature will be used to define a consistent data structure for session information, minimizing SSH round-trips and simplifying parsing logic.
+A TmuxController class will be implemented to encapsulate all tmux-related remote commands. This class will operate on asyncssh.SSHClientConnection objects provided by the ConnectionManager.
+* async def list_sessions(conn: SSHClientConnection) -> list: This will be the workhorse method for fetching session data.
+   1. It will construct the tmux command with a precise format string: tmux list-sessions -F "#{session_id}|#{session_name}|#{session_windows}|#{session_attached}|#{session_created}". The pipe character (|) is chosen as a delimiter that is unlikely to appear in session names.
+   2. It will execute this command on the remote host using result = await conn.run(command).
+   3. It will check result.exit_status. If it is non-zero (e.g., tmux is not running on the remote host), it will return an empty list.
+   4. If successful, it will take result.stdout, split it by newlines to get individual session lines, and then split each line by the | delimiter.
+   5. Each set of parsed fields will be used to instantiate a Session data model object, which is then added to a list that is returned to the caller.
+* async def create_session(conn: SSHClientConnection, name: str) -> bool: This method will execute the command tmux new-session -d -s <name>, where <name> is the sanitized session name provided by the user. The -d flag creates the session in the background without attaching to it. It will return True on success (exit code 0).
+* async def kill_session(conn: SSHClientConnection, target: str) -> bool: This method will execute tmux kill-session -t <target>, where <target> can be the session name or ID. It will return True on success.
+* async def session_exists(conn: SSHClientConnection, name: str) -> bool: This method provides a reliable way to check for a session's existence before attempting an operation. It will execute tmux has-session -t <name> and inspect the exit code of the result. An exit code of 0 indicates the session exists, while a non-zero code indicates it does not.
+C. Application State and Data Modeling
+To ensure data consistency, validation, and type safety throughout the application, the Pydantic library will be used for data modeling. Pydantic models provide a clear and concise way to define the data structures that SyncMux will work with.
+* Host(BaseModel): This model will represent a single configured host and will be used to store information parsed from config.yml.
+   * alias: str: A short, user-friendly name for the host (e.g., "dev-box").
+   * hostname: str: The FQDN or IP address of the host.
+   * port: int = 22: The SSH port.
+   * user: str: The username for the SSH connection.
+   * auth_method: Literal['password', 'key', 'agent']: The authentication method to use.
+   * key_path: Optional[str] = None: The path to the private key file, if auth_method is 'key'.
+   * password: Optional[str] = None: The password for the connection, if auth_method is 'password'. (Note: Storing passwords in plaintext is insecure; this should be used with caution, and the configuration file must be protected with strict file permissions).
+* Session(BaseModel): This model will represent a single tmux session on a host, with its fields populated by parsing the output of the list_sessions command.
+   * id: str: The unique session ID (e.g., $0).
+   * name: str: The session name.
+   * windows: int: The number of windows in the session.
+   * attached: int: The number of clients attached to the session (0 for detached).
+   * created_at: datetime: The creation timestamp of the session, parsed from the Unix timestamp provided by tmux.
+Using these strongly-typed models prevents a wide class of bugs related to data handling and makes the flow of data between the backend communication layer, the core application logic, and the TUI frontend explicit and predictable.
+IV. Platform-Specific Implementation and Deployment
+A. Configuration Management
+To separate application logic from user-specific settings, SyncMux will use a configuration file. This approach allows users to easily manage their list of hosts without modifying the application's source code.
+The configuration will be stored in a YAML file named config.yml, located in a platform-appropriate user configuration directory (e.g., ~/.config/syncmux/ on Linux/WSL/Termux, %APPDATA%\syncmux\ on Windows). A dedicated module will be responsible for locating, loading, and parsing this file into a list of Host Pydantic models upon application startup.
+An example config.yml structure:
+hosts:
+ - alias: "local-wsl"
+   hostname: "localhost"
+   user: "ubuntu_user"
+   auth_method: "agent"
+
+ - alias: "remote-server"
+   hostname: "192.168.1.100"
+   port: 2222
+   user: "devops"
+   auth_method: "key"
+   key_path: "~/.ssh/id_rsa_server"
+
+ - alias: "legacy-device"
+   hostname: "legacy.internal"
+   user: "admin"
+   auth_method: "password"
+   password: "INSECURE_PASSWORD" # For demonstration; use with caution
+
+This structure is both human-readable and easily parsed. The application will provide a clear error message if the configuration file is missing or malformed.
+B. Cross-Platform Deployment Guide
+A primary challenge for this project is ensuring a smooth deployment and execution experience across three distinct environments: Windows 11, WSL2, and Termux. Each platform has its own set of dependencies and environmental quirks that must be explicitly addressed. Failure to account for this "environment friction" is a significant project risk.
+The primary source of friction comes from Python packages with native C or Rust extensions, such as cryptography, which is a core dependency of AsyncSSH. Additionally, networking between the platforms (e.g., connecting from Termux on a phone to a WSL2 instance on a PC) presents unique challenges.
+The following table provides a consolidated deployment matrix to guide installation on each target platform.
+Requirement
+	Windows 11 (PowerShell 7)
+	WSL2 (Ubuntu)
+	Termux
+	Python Installation
+	Install from Microsoft Store or python.org. Ensure python and pip are in the system PATH.
+	Pre-installed or install via sudo apt install python3 python3-pip python3-venv.
+	pkg install python openssh.
+	System Dependencies
+	OpenSSH Client (built-in). Windows Terminal recommended for best Textual rendering.
+	sudo apt install build-essential libffi-dev python3-dev openssh-client.
+	pkg install build-essential libffi openssl-tool rust for compiling native extensions.
+	Python Dependencies (via pip)
+	pip install "textual[dev]" pip install pyyaml pydantic pip install "asyncssh[pywin32]"
+	pip install "textual[dev]" pip install pyyaml pydantic pip install "asyncssh[gssapi]" (optional)
+	pip install textual pyyaml pydantic asyncssh
+	Key Considerations
+	Requires pywin32 for Pageant (PuTTY agent) support. Textual works best in Windows Terminal.
+	Network access from LAN (e.g., Termux) requires port forwarding rules on the Windows host using netsh.
+	cryptography and other dependencies may need to be compiled from source, requiring the build-essential and rust packages.
+	C. The "Attach" Functionality: Terminal Control Handoff
+The "attach" functionality is the most technically complex feature of SyncMux, as it requires a complete transfer of terminal control from the SyncMux Python process to a new ssh process. A common but incorrect approach would be to launch ssh as a subprocess. This would fail because a child process cannot directly manipulate the terminal TTY (Teletype) controlled by its parent in the way required for an interactive session, leading to rendering artifacts, incorrect input handling, and a broken user experience.
+The correct and robust solution is to use a system call that replaces the current process with a new one. On Unix-like systems (including WSL2 and Termux) and Windows, the os.execvp function serves this exact purpose. When os.execvp is called, the operating system stops the execution of the current program (SyncMux) and starts the new program (ssh) in its place, inheriting the same process ID and, crucially, the same controlling terminal. This call never returns to the original program.
+The implementation strategy for the action_attach_session method will be as follows:
+1. Get Target Details: The action method will identify the selected host and tmux session from the application's state.
+2. Restore Terminal: Before handing off control, the application must gracefully shut down the Textual TUI environment and restore the terminal to its standard line-by-line mode. This is handled automatically by calling await self.app.exit(). This step is critical to prevent the terminal from being left in a corrupted state.
+3. Platform Detection: The code will detect the current operating system using sys.platform and check for Termux-specific environment variables to differentiate it from a standard Linux environment.
+4. Construct Command: Based on the platform, a list representing the command and its arguments will be constructed. The -t flag for ssh is essential, as it forces the allocation of a pseudo-tty, which is required for interactive terminal applications like tmux.
+   * Example for WSL/Termux: ['ssh', 'user@host', '-p', '2222', '-t', 'tmux', 'attach-session', '-t', 'session-name']
+   * Example for Windows: `` (The exact path to ssh.exe must be determined).
+5. Execute Process Replacement: The final step is to call os.execvp(command, command). The SyncMux application will cease to exist, and the user's terminal will now be fully controlled by the ssh client connected to the remote tmux session. When the user detaches from the remote tmux session, the ssh connection will close, and the user will be returned to their shell prompt, just as if they had run the ssh command manually.
+V. LLM-Promptable Implementation Blueprint
+This section provides a granular, step-by-step sequence of prompts designed to guide a code-generating Large Language Model (LLM) in building the entire SyncMux application. Each prompt is self-contained and builds upon the previous ones.
+Prompt 1: Project Scaffolding and Dependencies
+"Generate the file and directory structure for a Python project named SyncMux. The structure should be:
+syncmux/
+├── __init__.py
+├── app.py
+├── config.py
+├── connection.py
+├── models.py
+├── tmux_controller.py
+└── widgets.py
+main.py
+config.yml.example
+pyproject.toml
+README.md
+
+Next, generate the content for pyproject.toml. It should define the project metadata and list the following dependencies: python = "^3.9", textual = "^0.58.0", asyncssh = "^2.14.2", pyyaml = "^6.0.1", pydantic = "^2.7.1". Also, include a platform-specific extra dependency for Windows: pywin32; sys_platform == 'win32'. Finally, create a basic config.yml.example file showing the structure for defining at least two hosts with different authentication methods as specified in the design document."
+Prompt 2: Data Models (syncmux/models.py)
+"In the file syncmux/models.py, define the Pydantic data models for the application.
+1. Import necessary types: datetime from datetime, Optional, Literal from typing, and BaseModel from pydantic.
+2. Create a Host model inheriting from BaseModel. It must have the fields: alias (str), hostname (str), port (int, default 22), user (str), auth_method (Literal['password', 'key', 'agent']), key_path (Optional[str], default None), and password (Optional[str], default None).
+3. Create a Session model inheriting from BaseModel. It must have the fields: id (str), name (str), windows (int), attached (int), and created_at (datetime)."
+Prompt 3: Configuration Loader (syncmux/config.py)
+"In the file syncmux/config.py, create a function to load and parse the configuration file.
+1. Import pathlib, yaml, and the Host model from syncmux.models.
+2. Define a constant for the configuration file path, which should resolve to ~/.config/syncmux/config.yml.
+3. Create a function load_config() -> list[Host].
+4. This function should check if the config file exists. If not, it should raise a FileNotFoundError with a helpful message.
+5. If the file exists, it should open and read it, parse the YAML content using pyyaml, and validate the hosts list against the Host Pydantic model.
+6. It should return the list of validated Host objects. Include error handling for YAML parsing errors and Pydantic validation errors."
+Prompt 4: TmuxController (syncmux/tmux_controller.py)
+"In syncmux/tmux_controller.py, implement the TmuxController class for interacting with remote tmux servers.
+1. Import asyncio, datetime, asyncssh, and the Session model.
+2. Create a class TmuxController.
+3. Implement an async def list_sessions(self, conn: asyncssh.SSHClientConnection) -> list method.
+   * Define the format string: FORMAT = '#{session_id}|#{session_name}|#{session_windows}|#{session_attached}|#{session_created}'.
+   * The command to run is f'tmux list-sessions -F "{FORMAT}"'.
+   * Execute the command using await conn.run(command).
+   * If the exit status is not 0, return an empty list.
+   * Otherwise, parse the stdout. For each line, split by '|', create a Session object (converting types appropriately, especially the Unix timestamp for created_at), and return the list of Session objects.
+4. Implement async def create_session(self, conn: asyncssh.SSHClientConnection, name: str) -> bool. This method should run tmux new-session -d -s <name> and return True if the exit status is 0.
+5. Implement async def kill_session(self, conn: asyncssh.SSHClientConnection, target: str) -> bool. This method should run tmux kill-session -t <target> and return True if the exit status is 0.
+6. Implement async def session_exists(self, conn: asyncssh.SSHClientConnection, name: str) -> bool. This method should run tmux has-session -t <name> and return True if the exit status is 0, False otherwise."
+Prompt 5: ConnectionManager (syncmux/connection.py)
+"In syncmux/connection.py, implement the ConnectionManager class.
+1. Import asyncssh and the Host model.
+2. Create a class ConnectionManager.
+3. In its __init__, initialize an empty dictionary self._connections to cache active connections and an asyncio.Lock for thread-safe access to the cache.
+4. Implement an async def get_connection(self, host: Host) -> asyncssh.SSHClientConnection method.
+   * Acquire the lock.
+   * Check if a valid, non-closed connection for host.alias exists in self._connections. If so, release the lock and return it.
+   * If not, establish a new connection using await asyncssh.connect(...). Use a try...except block to handle connection errors.
+   * The connection parameters (hostname, port, username, etc.) should be taken from the host object. Handle all three auth_method types: for 'key', use the client_keys parameter; for 'password', use the password parameter; for 'agent', set agent_forwarding=True.
+   * Store the new connection in self._connections.
+   * Release the lock and return the connection.
+5. Implement an async def close_all(self) method to iterate through self._connections and call .close() on each connection."
+Prompt 6: TUI Widgets (syncmux/widgets.py)
+"In syncmux/widgets.py, create the custom Textual widgets.
+1. Import Widget, Static, Label from textual.widgets, and Horizontal from textual.containers. Import the Host and Session models.
+2. Create a HostWidget(Widget) class.
+   * In its compose method, yield a Label for the host alias and a Static for the status indicator.
+   * Add methods like set_status_connected(), set_status_connecting(), set_status_error() that update the text and style of the status Static widget.
+3. Create a SessionWidget(Widget) class.
+   * In its __init__, accept a Session object.
+   * Its compose method should yield a Horizontal container. Inside the container, yield Static widgets to display the session name, window count, creation date (formatted nicely), and attached status. Use CSS classes for styling and layout."
+Prompt 7: Main Application (syncmux/app.py)
+"In syncmux/app.py, implement the main SyncMuxApp. This is the most complex part.
+1. Import all necessary Textual components (App, Screen, widgets, containers, reactive), os, sys, and all custom classes from the project (Host, Session, load_config, ConnectionManager, TmuxController, HostWidget, SessionWidget).
+2. Define class SyncMuxApp(App).
+3. CSS: Define CSS_PATH = "app.css".
+4. Bindings: Define the BINDINGS list as specified in the design document (j, k, enter, n, d, r, ctrl+r, q).
+5. State: Define reactive variables: hosts: var[list[Host]] = reactive(), sessions: var]] = reactive({}), selected_host_alias: var[Optional[str]] = reactive(None).
+6. compose method: Yield a Header, a main Container with two ListView widgets (IDs: host-list, session-list) arranged side-by-side, and a Footer. Also include a RichLog (ID: log-view) docked at the bottom.
+7. on_mount method: This async method should:
+   * Instantiate self.conn_manager = ConnectionManager() and self.tmux_controller = TmuxController().
+   * Load the config using load_config() and populate self.hosts.
+   * Populate the host-list ListView with HostWidget instances.
+   * Call the action_refresh_all_hosts() method to perform an initial data fetch.
+8. Watch Methods:
+   * watch_selected_host_alias: When the selected host changes, this async method should trigger a refresh for that host's sessions by calling action_refresh_host.
+   * watch_sessions: This method should get the sessions for the selected_host_alias from the self.sessions dict, clear the session-list ListView, and repopulate it with SessionWidget instances.
+9. Message Handlers: Implement on_list_view_selected methods for both list views to update the selected_host_alias or handle selection events.
+10. Action Methods: Implement all async def action_*() methods corresponding to the BINDINGS.
+   * action_refresh_host and action_refresh_all_hosts should use the ConnectionManager and TmuxController to fetch session data and update the self.sessions reactive variable. They should log status updates to the log-view.
+   * action_create_session and action_kill_session should push a Screen for user input/confirmation, then call the appropriate TmuxController method and trigger a refresh.
+   * action_attach_session: This is the critical terminal handoff.
+      * Get the selected host and session.
+      * If none are selected, do nothing.
+      * Call await self.exit().
+      * Use sys.platform to detect OS.
+      * Construct the ssh command list: ['ssh', user@host, '-t', 'tmux', 'attach-session', '-t', session_name].
+      * Call os.execvp(command, command).
+11. on_unmount method: Call await self.conn_manager.close_all()."
+Prompt 8: Entry Point (main.py)
+"In main.py, create the application's entry point.
+1. Import SyncMuxApp from syncmux.app.
+2. In an if __name__ == "__main__": block:
+   * Instantiate the app: app = SyncMuxApp().
+   * Run the app: app.run()."
+Prompt 9: Styling (syncmux/app.css)
+"Create the file syncmux/app.css. Provide basic Textual CSS to style the application layout.
+1. Define a horizontal layout for the main Container.
+2. Give the host-list ListView a fixed width (e.g., width: 30;) and the session-list ListView a flexible width (width: 1fr;).
+3. Add some basic styling for selected items in the ListViews (e.g., a different background color).
+4. Style the LogView to have a fixed height and border."
+Works cited
+1. 5 Best Python TUI Libraries for Building Text-Based User Interfaces - DEV Community, https://dev.to/lazy_code/5-best-python-tui-libraries-for-building-text-based-user-interfaces-5fdi 2. Textualize/textual: The lean application framework for Python. Build sophisticated user interfaces with a simple Python API. Run your apps in the terminal and a web browser. - GitHub, https://github.com/Textualize/textual 3. asyncio — Asynchronous I/O — Python 3.14.0 documentation, https://docs.python.org/3/library/asyncio.html 4. AsyncSSH: Asynchronous SSH for Python — AsyncSSH 2.21.1 ..., https://asyncssh.readthedocs.io/ 5. AsyncSSH is a Python package which provides an asynchronous client and server implementation of the SSHv2 protocol on top of the Python asyncio framework. - GitHub, https://github.com/ronf/asyncssh 6. Tutorial - Textual, https://textual.textualize.io/tutorial/ 7. API Documentation — AsyncSSH 2.21.1 documentation - Read the Docs, https://asyncssh.readthedocs.io/en/latest/api.html 8. Formats · tmux/tmux Wiki - GitHub, https://github.com/tmux/tmux/wiki/Formats 9. List tmux sessions - Koen Woortman, https://koenwoortman.com/tmux-list-sessions/ 10. Sessions {#sessions} — tao-of-tmux v1.0.2 documentation, https://tao-of-tmux.readthedocs.io/en/latest/manuscript/05-session.html 11. tmux attach to existing sessions or create new ones - Server Fault, https://serverfault.com/questions/539223/tmux-attach-to-existing-sessions-or-create-new-ones 12. How to create new tmux session if none exists - Stack Overflow, https://stackoverflow.com/questions/3432536/how-to-create-new-tmux-session-if-none-exists 13. Python Textual: Build Beautiful UIs in the Terminal, https://realpython.com/python-textual/ 14. python-prompt-toolkit.pdf, https://media.readthedocs.org/pdf/python-prompt-toolkit/stable/python-prompt-toolkit.pdf 15. Getting started — prompt_toolkit 3.0.52 documentation - Python Prompt Toolkit, https://python-prompt-toolkit.readthedocs.io/en/stable/pages/getting_started.html 16. Textual, https://textual.textualize.io/ 17. Textual tutorial – build a TODO app in Python - mathspp, https://mathspp.com/blog/textual-tutorial-build-a-todo-app-in-python 18. tmux output formatting - DJ Adams, https://qmacro.org/blog/posts/2021/08/06/tmux-output-formatting/ 19. Checking If tmux Session Exists in Script - David Tran, https://davidltran.com/blog/check-tmux-session-exists-script/ 20. Installing — Paramiko documentation, https://www.paramiko.org/installing.html 21. How can I ssh into wsl2 on my pc using termux on my android phone? - Reddit, https://www.reddit.com/r/termux/comments/1ikmn8n/how_can_i_ssh_into_wsl2_on_my_pc_using_termux_on/ 22. SSH from WSL(ubuntu) -> Termux SSHD done in 1min, the reverse 5h and maybe I messed up? (list termux pkg's only for rooted devices?) - Reddit, https://www.reddit.com/r/termux/comments/ukz2ol/ssh_from_wslubuntu_termux_sshd_done_in_1min_the/ 23. Attach a tmux session to a remote machine - Super User, https://superuser.com/questions/878890/attach-a-tmux-session-to-a-remote-machine 24. Automatically attaching to a tmux session via SSH - Jordan Elver, https://jordanelver.co.uk/blog/2010/11/27/automatically-attaching-to-a-tmux-session-via-ssh/

@@ -1,0 +1,27 @@
+
+import pathlib
+from typing import List
+
+import yaml
+from pydantic import ValidationError
+
+from .models import Host
+
+CONFIG_PATH = pathlib.Path.home() / ".config" / "syncmux" / "config.yml"
+
+
+def load_config() -> List[Host]:
+    """Loads the configuration file and returns a list of Host objects."""
+    if not CONFIG_PATH.exists():
+        raise FileNotFoundError(f"Configuration file not found at: {CONFIG_PATH}")
+
+    with open(CONFIG_PATH, "r") as f:
+        try:
+            config_data = yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            raise yaml.YAMLError(f"Error parsing YAML file: {e}")
+
+    try:
+        return [Host(**host) for host in config_data["hosts"]]
+    except (ValidationError, KeyError) as e:
+        raise ValidationError(f"Invalid configuration: {e}")
