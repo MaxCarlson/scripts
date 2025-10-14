@@ -421,7 +421,6 @@ def test_text_file_mode_hierarchy_and_content(temp_test_dir: Path, tmp_path: Pat
     )
     assert output_txt.exists()
     content = output_txt.read_text()
-    print(content)
     # Preamble exists
     assert "This document is a self-contained representation of a software repository" in content
     # Structure
@@ -431,7 +430,8 @@ def test_text_file_mode_hierarchy_and_content(temp_test_dir: Path, tmp_path: Pat
     assert "├── deep/" in content
     assert "├── logs/" in content
     assert "├── scripts/" in content
-    assert "└── src/" in content
+    assert "├── src/" in content
+    assert "└── README.md" in content
     assert ".git/ (excluded)" in content
     assert "__pycache__/ (excluded)" in content
     # Files
