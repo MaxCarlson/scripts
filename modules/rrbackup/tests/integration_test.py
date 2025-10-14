@@ -46,7 +46,7 @@ class TestWithUserConfig:
         """Test user config has retention policy."""
         settings = load_config(None)
 
-        retention = settings.retention
+        retention = settings.retention_defaults
         # At least one retention value should be set
         has_retention = any(
             [
@@ -234,7 +234,7 @@ class TestEndToEndBackupRestore:
             "rclone": {"bin": "rclone"},
             "state": {"dir": str(temp_dir / "state")},
             "log": {"dir": str(temp_dir / "logs")},
-            "retention": {"keep_daily": 7},
+            "retention_defaults": {"keep_daily": 7},
             "backup_sets": [
                 {
                     "name": "test-set",

@@ -156,6 +156,7 @@ def build_parser() -> argparse.ArgumentParser:
     cp.add_argument("--keep-weekly", "-W", type=int, help="Weekly snapshots to keep.")
     cp.add_argument("--keep-monthly", "-M", type=int, help="Monthly snapshots to keep.")
     cp.add_argument("--keep-yearly", "-Y", type=int, help="Yearly snapshots to keep.")
+    cp.add_argument("--max-total-size", "-Z", help="Maximum total repository size (e.g., 512GB).")
     cp.add_argument("--clear", "-X", action="store_true", help="Clear all retention values.")
     cp.add_argument("--use-defaults", "-u", action="store_true", help="Reset to default retention policy.")
     cp.set_defaults(func=config_retention_command)

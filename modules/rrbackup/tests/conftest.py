@@ -9,7 +9,14 @@ from typing import Any
 
 import pytest
 
-from rrbackup.config import BackupSet, Repo, Retention, Settings, platform_config_default
+from rrbackup.config import (
+    BackupSet,
+    Repo,
+    RetentionPolicy,
+    Schedule,
+    Settings,
+    platform_config_default,
+)
 
 
 # ==================== Environment Detection ====================
@@ -177,15 +184,16 @@ def sample_backup_set():
         tags=["test", "sample"],
         one_fs=False,
         dry_run_default=False,
-        schedule="daily 02:00",
-        max_snapshots=30,
+        backup_type="incremental",
+        schedule=Schedule(type="daily", time="02:00"),
+        retention=RetentionPolicy(keep_daily=7, keep_weekly=4, keep_monthly=6, keep_yearly=2),
     )
 
 
 @pytest.fixture
 def sample_retention():
     """Sample retention policy."""
-    return Retention(
+    return RetentionPolicy(
         keep_daily=7,
         keep_weekly=4,
         keep_monthly=6,
@@ -203,7 +211,7 @@ def sample_settings(sample_repo, sample_backup_set, sample_retention, temp_dir):
         state_dir=str(temp_dir / "state"),
         repo=sample_repo,
         sets=[sample_backup_set],
-        retention=sample_retention,
+        retention_defaults=sample_retention,
     )
 
 
@@ -244,7 +252,7 @@ def sample_config_dict():
         "rclone": {"bin": "rclone"},
         "state": {"dir": "/tmp/rrbackup/state"},
         "log": {"dir": "/tmp/rrbackup/logs"},
-        "retention": {
+        "retention_defaults": {
             "keep_daily": 7,
             "keep_weekly": 4,
             "keep_monthly": 6,
@@ -258,8 +266,8 @@ def sample_config_dict():
                 "tags": ["test"],
                 "one_fs": False,
                 "dry_run_default": False,
-                "schedule": "daily 02:00",
-                "max_snapshots": 30,
+                "schedule": {"type": "daily", "time": "02:00"},
+                "retention": {"keep_daily": 7, "keep_weekly": 4, "keep_monthly": 6, "keep_yearly": 2},
             }
         ],
     }
