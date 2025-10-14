@@ -199,7 +199,15 @@ class SetupWizard:
             return
 
         print("\n-- Configure restic password file --")
+        print(
+            "Restic encrypts your repository with a secret password.\n"
+            "RRBackup stores this password in a dedicated file so scheduled jobs can run unattended."
+        )
         default_path = self.settings.repo.password_file or str(_default_password_path())
+        print(
+            f"Press Enter to accept the default location ({default_path}), or enter an absolute path if you prefer.\n"
+            "The wizard will generate a strong random password and write it to that file."
+        )
 
         if self.settings.repo.password_file and Path(self.settings.repo.password_file).exists():
             print(f"Existing password file: {self.settings.repo.password_file}")
@@ -226,26 +234,36 @@ class SetupWizard:
                 return
 
         password = secrets.token_urlsafe(32)
-        path = Path(os.path.expandvars(os.path.expanduser(prompt_text("Password file path", default=default_path, required=True))))
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(password, encoding="utf-8")
-        self._secure_password_file(path)
-        self.settings.repo.password_file = str(path)
+        path_obj = Path(os.path.expandvars(os.path.expanduser(prompt_text("Password file path", default=default_path, required=True))))
+        path_obj.parent.mkdir(parents=True, exist_ok=True)
+        path_obj.write_text(password, encoding="utf-8")
+        self._secure_password_file(path_obj)
+        self.settings.repo.password_file = str(path_obj)
         self.settings.repo.password_env = None
-        if prompt_bool("Display generated password now?", default=False):
+        print(f"Password file written to {path_obj}")
+        if prompt_bool("Display generated password now? (not logged)", default=False):
             print(f"Generated password: {password}")
         else:
-            print("Password stored securely. Back it up in a safe location.")
+            print("Password stored securely. Keep a copy of this file in a safe location; without it you cannot restore.")
 
     def _step_state_directories(self) -> None:
         print("\n-- Configure state and log directories --")
         state_default = self.settings.state_dir or str(_default_state_dir())
         log_default = self.settings.log_dir or ""
+        print(
+            "The state directory stores RRBackup metadata (PID files, scheduler manifests, etc.).\n"
+            "Press Enter to accept the default path."
+        )
         self.settings.state_dir = prompt_text("State directory", default=state_default, required=True)
-        self.settings.log_dir = prompt_text("Log directory (blank for state/logs)", default=log_default, required=False) or None
+        print("Leave the log directory blank to use <state>/logs.")
+        self.settings.log_dir = prompt_text("Log directory", default=log_default, required=False) or None
 
     def _step_backup_sets(self) -> None:
         print("\n-- Define backup sets --")
+        print(
+            "Each backup set represents a named backup job (sources, excludes, schedule, retention).\n"
+            "You can manage multiple backup sets in one configuration."
+        )
         if self.settings.sets:
             print("Existing backup sets:")
             for bset in self.settings.sets:
@@ -255,6 +273,7 @@ class SetupWizard:
                 "Backup set options:",
                 [
                     "Keep existing sets",
+                    "Add new backup set(s)",
                     "Rebuild backup sets",
                     "Edit configuration manually (opens editor)",
                 ],
@@ -262,13 +281,17 @@ class SetupWizard:
             )
             if choice == 0:
                 return
-            if choice == 2:
+            if choice == 1:
+                additions = _collect_backup_sets()
+                if additions:
+                    self.settings.sets.extend(additions)
+                return
+            if choice == 3:
                 if launch_editor(self.config_path):
                     print("Re-run wizard after manual edits if needed.")
                     raise SystemExit(0)
                 else:
                     print("Unable to launch editor. Continuing wizard.")
-
         sets = _collect_backup_sets()
         if sets:
             self.settings.sets = sets
@@ -283,6 +306,7 @@ class SetupWizard:
             f"keep_monthly={policy.keep_monthly}, keep_yearly={policy.keep_yearly}, max_total_size={policy.max_total_size or 'unlimited'}"
         )
         print(f"Current defaults: {summary}")
+        print("'keep_last' preserves the N most recent snapshots; the other options keep snapshots by time interval.")
         if not prompt_bool("Adjust retention defaults?", default=not self.existing_config):
             return
 

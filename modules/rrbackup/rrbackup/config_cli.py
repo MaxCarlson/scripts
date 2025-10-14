@@ -403,7 +403,9 @@ def _collect_backup_sets() -> list[BackupSet]:
         )
         if not add_set:
             break
+        print(f"\nConfiguring backup set #{len(sets) + 1}:")
         name = prompt_text("Set name", required=True)
+        print("Add the paths that should be backed up. Enter one path at a time; press Enter on a blank prompt when finished.")
         includes = prompt_list(
             "Include path",
             min_items=1,
@@ -493,6 +495,7 @@ def _collect_backup_sets() -> list[BackupSet]:
 
         retention: RetentionPolicy | None = None
         if not prompt_bool("Use global retention defaults for this set?", default=True):
+            print("Configure set-specific retention. Leave any field blank to inherit from the global defaults.")
             retention = RetentionPolicy(
                 keep_last=prompt_int("Keep last snapshots (blank to skip)"),
                 keep_hourly=prompt_int("Keep hourly snapshots (blank to skip)"),
