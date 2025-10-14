@@ -76,19 +76,28 @@ def _current_platform() -> str:
     return system
 
 
-def _default_password_path() -> Path:
+def _default_password_path(profile: str | None = None) -> Path:
     if _current_platform() == "windows":
-        appdata = os.environ.get("APPDATA") or str(platform_config_default().parent)
-        return Path(appdata) / "rrbackup" / "restic_password.txt"
-    return Path.home() / ".config" / "rrbackup" / "restic_password.txt"
+        base = Path(os.environ.get("APPDATA") or str(platform_config_default().parent)) / "rrbackup"
+    else:
+        base = Path.home() / ".config" / "rrbackup"
+    if profile:
+        base = base / profile
+    return base / "restic_password.txt"
 
 
-def _default_state_dir() -> Path:
+
+def _default_state_dir(profile: str | None = None) -> Path:
     platform_name = _current_platform()
     if platform_name == "windows":
-        localapp = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-        return Path(localapp) / "rrbackup"
-    return Path.home() / ".cache" / "rrbackup"
+        base_root = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+        base = base_root / "rrbackup"
+    else:
+        base = Path.home() / ".cache" / "rrbackup"
+    if profile:
+        base = base / profile
+    return base
+
 
 
 # ---------------------------------------------------------------------------
@@ -110,11 +119,15 @@ class SetupWizard:
             self.existing_config = False
 
         self.expanded_settings: Settings | None = None
+        self.profile_name: str | None = None
+        self.profile_slug: str | None = None
+        self._derive_profile_from_existing()
 
     # ------------------------------------------------------------------ public
     def run(self) -> int:
         self._step_welcome()
         self._step_verify_tools()
+        self._step_profile_name()
         self._step_configure_repository()
         self._step_password_file()
         self._step_state_directories()
@@ -131,6 +144,47 @@ class SetupWizard:
         return 0
 
     # ------------------------------------------------------------------ steps
+
+    def _derive_profile_from_existing(self) -> None:
+        slug = None
+        name = None
+        if self.config_path.exists():
+            if self.settings.state_dir:
+                tail = Path(self.settings.state_dir).name
+                if tail and tail.lower() != 'rrbackup':
+                    slug = _sanitize_name(tail)
+                    name = tail
+                else:
+                    parent = Path(self.settings.state_dir).parent.name
+                    if parent and parent.lower() != 'rrbackup':
+                        slug = _sanitize_name(parent)
+                        name = parent
+            if (not slug) and self.settings.repo and self.settings.repo.url:
+                repo_url = self.settings.repo.url
+                if repo_url.startswith('rclone:'):
+                    path_part = repo_url.split(':', 2)[-1]
+                    tail = Path(path_part).name or Path(path_part).stem
+                else:
+                    tail = Path(os.path.expanduser(repo_url)).name
+                if tail and tail not in {'', '.'}:
+                    slug = _sanitize_name(tail)
+                    name = tail
+        self.profile_slug = slug or 'primary'
+        self.profile_name = name or self.profile_slug
+
+    def _step_profile_name(self) -> None:
+        print("\n-- Backup profile --")
+        print(
+            "Give this configuration a friendly name. It is used to derive default paths for the password file, "
+            "state directory, and scheduler entries."
+        )
+        default = self.profile_name or 'primary'
+        name = prompt_text("Profile name", default=default, required=True).strip()
+        if not name:
+            name = default
+        self.profile_name = name
+        self.profile_slug = _sanitize_name(name) or 'primary'
+
     def _step_welcome(self) -> None:
         print("=== RRBackup Setup Wizard ===\n")
         print(
@@ -203,7 +257,7 @@ class SetupWizard:
             "Restic encrypts your repository with a secret password.\n"
             "RRBackup stores this password in a dedicated file so scheduled jobs can run unattended."
         )
-        default_path = self.settings.repo.password_file or str(_default_password_path())
+        default_path = self.settings.repo.password_file or str(_default_password_path(self.profile_slug))
         print(
             f"Press Enter to accept the default location ({default_path}), or enter an absolute path if you prefer.\n"
             "The wizard will generate a strong random password and write it to that file."
@@ -248,7 +302,7 @@ class SetupWizard:
 
     def _step_state_directories(self) -> None:
         print("\n-- Configure state and log directories --")
-        state_default = self.settings.state_dir or str(_default_state_dir())
+        state_default = self.settings.state_dir or str(_default_state_dir(self.profile_slug))
         log_default = self.settings.log_dir or ""
         print(
             "The state directory stores RRBackup metadata (PID files, scheduler manifests, etc.).\n"
@@ -488,16 +542,19 @@ class SetupWizard:
         if result.stdout:
             print("  " + result.stdout.splitlines()[0])
 
+
+
     def _configure_gdrive_repository(self) -> str:
         remote = prompt_text("rclone remote name", default="gdrive", required=True)
-        path = prompt_text("Remote path", default="/backups/rrbackup", required=True).lstrip("/")
+        default_remote_path = f"/backups/{self.profile_slug}" if self.profile_slug else "/backups/rrbackup"
+        path = prompt_text("Remote path", default=default_remote_path, required=True).lstrip("/")
         url = f"rclone:{remote}:{path}"
         self._verify_rclone_remote(remote, path)
         return url
 
     def _configure_local_repository(self) -> str:
-        default = str(Path.home() / "rrbackup" / "repo")
-        target = Path(os.path.expanduser(prompt_text("Local repository path", default=default, required=True)))
+        default_path = Path.home() / "rrbackup" / (self.profile_slug or "repo") / "repo"
+        target = Path(os.path.expanduser(prompt_text("Local repository path", default=str(default_path), required=True)))
         target.mkdir(parents=True, exist_ok=True)
         return str(target)
 
@@ -548,6 +605,8 @@ class SetupWizard:
             self.expanded_settings = self.settings.expand()
         return self.expanded_settings
 
+
+
     def _review_summary(self) -> str:
         repo_url = self.settings.repo.url if self.settings.repo else "(not configured)"
         password_file = self.settings.repo.password_file if self.settings.repo else "(not configured)"
@@ -556,12 +615,23 @@ class SetupWizard:
             f"keep_last={retention.keep_last}, keep_daily={retention.keep_daily}, keep_weekly={retention.keep_weekly}, "
             f"keep_monthly={retention.keep_monthly}, keep_yearly={retention.keep_yearly}, max_total_size={retention.max_total_size or 'unlimited'}"
         )
+
+        def schedule_label(bset: BackupSet) -> str:
+            schedule = bset.schedule
+            if isinstance(schedule, Schedule):
+                if schedule.description:
+                    return schedule.description
+                return schedule.type
+            return str(schedule)
+
         sets_summary = "\n".join(
-            f"  • {b.name}: include {len(b.include)} path(s), schedule={b.schedule.description if b.schedule.description else b.schedule.type}"
+            f"  - {b.name}: {len(b.include)} include path(s), schedule={schedule_label(b)}"
             for b in self.settings.sets
-        ) or "  • No backup sets defined"
+        ) or "  - No backup sets defined"
+
         return textwrap.dedent(
             f"""
+            Profile name: {self.profile_name}
             Repository: {repo_url}
             Password file: {password_file}
             State dir: {self.settings.state_dir}
@@ -571,6 +641,7 @@ class SetupWizard:
 {sets_summary}
             """
         ).strip()
+
 
     def _step_review_and_save(self) -> bool:
         print("\n-- Review configuration --")
