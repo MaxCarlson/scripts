@@ -10,7 +10,8 @@ import pytest
 from rrbackup.config import (
     BackupSet,
     Repo,
-    Retention,
+    RetentionPolicy,
+    Schedule,
     Settings,
     load_config,
     platform_config_default,
@@ -102,11 +103,11 @@ class TestBackupSetDataclass:
             tags=["important", "daily"],
             one_fs=True,
             dry_run_default=True,
-            schedule="daily 02:00",
+            schedule=Schedule(type="daily", time="02:00"),
             backup_type="incremental",
-            max_snapshots=30,
             encryption="AES256",
             compression="max",
+            retention=RetentionPolicy(keep_last=30),
         )
 
         assert bset.name == "full-test"
@@ -115,17 +116,19 @@ class TestBackupSetDataclass:
         assert len(bset.tags) == 2
         assert bset.one_fs is True
         assert bset.dry_run_default is True
-        assert bset.schedule == "daily 02:00"
-        assert bset.max_snapshots == 30
+        assert isinstance(bset.schedule, Schedule)
+        assert bset.schedule.type == "daily"
+        assert bset.schedule.time == "02:00"
+        assert bset.retention.keep_last == 30
 
 
 @pytest.mark.unit
-class TestRetentionDataclass:
-    """Tests for Retention dataclass."""
+class TestRetentionPolicyDataclass:
+    """Tests for RetentionPolicy dataclass."""
 
     def test_retention_defaults(self):
-        """Test Retention with default values."""
-        retention = Retention()
+        """Test RetentionPolicy with default values."""
+        retention = RetentionPolicy()
 
         assert retention.keep_last is None
         assert retention.keep_hourly is None
@@ -135,14 +138,15 @@ class TestRetentionDataclass:
         assert retention.keep_yearly == 2
 
     def test_retention_custom(self):
-        """Test Retention with custom values."""
-        retention = Retention(
+        """Test RetentionPolicy with custom values."""
+        retention = RetentionPolicy(
             keep_last=10,
             keep_hourly=24,
             keep_daily=14,
             keep_weekly=8,
             keep_monthly=12,
             keep_yearly=5,
+            max_total_size="512GB",
         )
 
         assert retention.keep_last == 10
@@ -151,6 +155,7 @@ class TestRetentionDataclass:
         assert retention.keep_weekly == 8
         assert retention.keep_monthly == 12
         assert retention.keep_yearly == 5
+        assert retention.max_total_size == "512GB"
 
 
 @pytest.mark.unit
@@ -300,8 +305,8 @@ class TestSettingsToDict:
         assert "backup_sets" in result
         assert len(result["backup_sets"]) == 1
         assert result["backup_sets"][0]["name"] == "test-set"
-        assert "retention" in result
-        assert result["retention"]["keep_daily"] == 7
+        assert "retention_defaults" in result
+        assert result["retention_defaults"]["keep_daily"] == 7
 
     def test_settings_to_dict_excludes_none_values(self):
         """Test that None values are excluded from output."""
@@ -387,7 +392,7 @@ class TestConfigRoundTrip:
         assert loaded.repo.url == sample_settings.repo.url
         assert len(loaded.sets) == len(sample_settings.sets)
         assert loaded.sets[0].name == sample_settings.sets[0].name
-        assert loaded.retention.keep_daily == sample_settings.retention.keep_daily
+        assert loaded.retention_defaults.keep_daily == sample_settings.retention_defaults.keep_daily
 
 
 @pytest.mark.unit
@@ -420,7 +425,7 @@ class TestEdgeCases:
 
     def test_retention_all_none(self):
         """Test Retention with all values set to None."""
-        retention = Retention(
+        retention = RetentionPolicy(
             keep_last=None,
             keep_hourly=None,
             keep_daily=None,
@@ -429,11 +434,11 @@ class TestEdgeCases:
             keep_yearly=None,
         )
 
-        result = settings_to_dict(Settings(retention=retention))
+        result = settings_to_dict(Settings(retention_defaults=retention))
 
         # Should still include retention section if any non-None values
         # But since all are None, it might be omitted
-        assert "retention" not in result or result["retention"] == {}
+        assert "retention_defaults" not in result or result["retention_defaults"] == {}
 
     def test_unicode_paths_in_config(self, temp_dir, mocker):
         """Test config with Unicode characters in paths."""

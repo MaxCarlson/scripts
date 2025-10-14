@@ -6,6 +6,7 @@ import sys
 import pathlib
 import shutil
 import typing as t
+from dataclasses import field
 
 try:
     import tomllib  # py311+
@@ -21,6 +22,14 @@ except ModuleNotFoundError:  # pragma: no cover
 PathLikeStr = str | os.PathLike[str]
 ConfigDict = dict[str, t.Any]
 
+_SIZE_UNITS = {
+    "B": 1,
+    "KB": 1024,
+    "MB": 1024**2,
+    "GB": 1024**3,
+    "TB": 1024**4,
+}
+
 
 def platform_config_default() -> pathlib.Path:
     """
@@ -33,6 +42,28 @@ def platform_config_default() -> pathlib.Path:
         return pathlib.Path(appdata) / "rrbackup" / "config.toml"
     else:
         return pathlib.Path.home() / ".config" / "rrbackup" / "config.toml"
+
+
+def _parse_size_to_bytes(raw: str | None) -> tuple[str | None, int | None]:
+    if raw is None:
+        return None, None
+    value = raw.strip().upper()
+    if not value:
+        return None, None
+    for unit in sorted(_SIZE_UNITS, key=len, reverse=True):
+        if value.endswith(unit):
+            number_part = value[: -len(unit)].strip()
+            try:
+                numeric = float(number_part)
+            except ValueError:
+                raise ValueError(f"Invalid size value: {raw!r}")
+            return raw, int(numeric * _SIZE_UNITS[unit])
+    # default assume bytes
+    try:
+        numeric = float(value)
+    except ValueError:
+        raise ValueError(f"Invalid size value: {raw!r}")
+    return raw, int(numeric)
 
 
 @dc.dataclass
@@ -53,28 +84,64 @@ class Repo:
 
 
 @dc.dataclass
-class BackupSet:
-    name: str
-    include: list[str]            # paths to include
-    exclude: list[str] = dc.field(default_factory=list)
-    tags: list[str] = dc.field(default_factory=list)
-    one_fs: bool = False          # restic --one-file-system
-    dry_run_default: bool = False # default dry-run behavior for this set
-    schedule: str | None = None   # user-friendly schedule descriptor
-    backup_type: str = "incremental"
-    max_snapshots: int | None = None
-    encryption: str | None = None
-    compression: str | None = None
+class Schedule:
+    type: str = "manual"          # manual, hourly, daily, weekly, monthly, custom
+    time: str | None = None       # HH:MM 24h time
+    interval_hours: int | None = None
+    day_of_week: str | None = None
+    day_of_month: int | None = None
+    description: str | None = None
+
+    def to_dict(self) -> dict[str, t.Any]:
+        data: dict[str, t.Any] = {"type": self.type}
+        if self.time:
+            data["time"] = self.time
+        if self.interval_hours is not None:
+            data["interval_hours"] = self.interval_hours
+        if self.day_of_week:
+            data["day_of_week"] = self.day_of_week
+        if self.day_of_month is not None:
+            data["day_of_month"] = self.day_of_month
+        if self.description:
+            data["description"] = self.description
+        return data
 
 
 @dc.dataclass
-class Retention:
+class RetentionPolicy:
     keep_last: int | None = None
     keep_hourly: int | None = None
     keep_daily: int | None = 7
     keep_weekly: int | None = 4
     keep_monthly: int | None = 6
     keep_yearly: int | None = 2
+    max_total_size: str | None = None
+    max_total_size_bytes: int | None = None
+
+    def to_dict(self) -> dict[str, t.Any]:
+        data: dict[str, t.Any] = {}
+        for field_name in ("keep_last", "keep_hourly", "keep_daily", "keep_weekly", "keep_monthly", "keep_yearly"):
+            value = getattr(self, field_name)
+            if value is not None:
+                data[field_name] = value
+        if self.max_total_size:
+            data["max_total_size"] = self.max_total_size
+        return data
+
+
+@dc.dataclass
+class BackupSet:
+    name: str
+    include: list[str]            # paths to include
+    exclude: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    one_fs: bool = False          # restic --one-file-system
+    dry_run_default: bool = False # default dry-run behavior for this set
+    backup_type: str = "incremental"
+    encryption: str | None = None
+    compression: str | None = None
+    schedule: Schedule = field(default_factory=Schedule)
+    retention: RetentionPolicy | None = None
 
 
 @dc.dataclass
@@ -84,8 +151,8 @@ class Settings:
     log_dir: str | None = None  # default resolved from state_dir if not set
     state_dir: str | None = None  # default: platform-appropriate cache dir
     repo: Repo | None = None
-    sets: list[BackupSet] = dc.field(default_factory=list)
-    retention: Retention = dc.field(default_factory=Retention)
+    sets: list[BackupSet] = field(default_factory=list)
+    retention_defaults: RetentionPolicy = field(default_factory=RetentionPolicy)
 
     def expand(self) -> "Settings":
         # Resolve state_dir & log_dir with OS-specific defaults.
@@ -99,14 +166,32 @@ class Settings:
 
         log_dir = self.log_dir or str(pathlib.Path(state_dir) / "logs")
 
+        expanded_sets: list[BackupSet] = []
+        for s in self.sets:
+            expanded_sets.append(
+                BackupSet(
+                    name=s.name,
+                    include=[os.path.expanduser(p) for p in s.include],
+                    exclude=list(s.exclude),
+                    tags=list(s.tags),
+                    one_fs=s.one_fs,
+                    dry_run_default=s.dry_run_default,
+                    backup_type=s.backup_type,
+                    encryption=s.encryption,
+                    compression=s.compression,
+                    schedule=s.schedule,
+                    retention=s.retention,
+                )
+            )
+
         return Settings(
             restic_bin=self.restic_bin,
             rclone_bin=self.rclone_bin,
             log_dir=log_dir,
             state_dir=state_dir,
             repo=self.repo.expand() if self.repo else None,
-            sets=[BackupSet(**{**dc.asdict(s), "include": s.include}) for s in self.sets],
-            retention=self.retention,
+            sets=expanded_sets,
+            retention_defaults=self.retention_defaults,
         )
 
 
@@ -157,6 +242,18 @@ def _parse_config_dict(d: ConfigDict) -> Settings:
 
     sets: list[BackupSet] = []
     for s in d.get("backup_sets", []):
+        schedule_input = s.get("schedule")
+        schedule = _parse_schedule(schedule_input)
+
+        retention_input = s.get("retention")
+        retention = _parse_retention(retention_input) if retention_input else None
+
+        # Backwards compatibility for legacy fields
+        if not retention:
+            legacy_max = s.get("max_snapshots")
+            if legacy_max is not None:
+                retention = RetentionPolicy(keep_last=legacy_max)
+
         sets.append(
             BackupSet(
                 name=s["name"],
@@ -165,15 +262,21 @@ def _parse_config_dict(d: ConfigDict) -> Settings:
                 tags=s.get("tags", []),
                 one_fs=bool(s.get("one_fs", False)),
                 dry_run_default=bool(s.get("dry_run_default", False)),
-                schedule=s.get("schedule"),
                 backup_type=s.get("backup_type", "incremental"),
-                max_snapshots=s.get("max_snapshots"),
                 encryption=s.get("encryption"),
                 compression=s.get("compression"),
+                schedule=schedule,
+                retention=retention,
             )
         )
 
-    retention = Retention(**d.get("retention", {}))
+    retention_defaults_input = (
+        d.get("retention_defaults")
+        or d.get("retention")  # backwards compatibility
+        or {}
+    )
+    retention_defaults = _parse_retention(retention_defaults_input)
+
     settings = Settings(
         restic_bin=d.get("restic", {}).get("bin", "restic"),
         rclone_bin=d.get("rclone", {}).get("bin", "rclone"),
@@ -181,9 +284,45 @@ def _parse_config_dict(d: ConfigDict) -> Settings:
         state_dir=d.get("state", {}).get("dir"),
         repo=repo,
         sets=sets,
-        retention=retention,
+        retention_defaults=retention_defaults or RetentionPolicy(),
     )
     return settings
+
+
+def _parse_schedule(value: t.Any) -> Schedule:
+    if isinstance(value, dict):
+        return Schedule(
+            type=value.get("type", "manual"),
+            time=value.get("time"),
+            interval_hours=value.get("interval_hours"),
+            day_of_week=value.get("day_of_week"),
+            day_of_month=value.get("day_of_month"),
+            description=value.get("description"),
+        )
+    if isinstance(value, str):
+        return Schedule(type="custom", description=value)
+    return Schedule()
+
+
+def _parse_retention(value: t.Any) -> RetentionPolicy | None:
+    if value is None:
+        return None
+    if isinstance(value, RetentionPolicy):
+        return value
+    if not isinstance(value, dict):
+        raise TypeError("Retention policy must be a dict.")
+
+    max_size_raw, max_size_bytes = _parse_size_to_bytes(value.get("max_total_size"))
+    return RetentionPolicy(
+        keep_last=value.get("keep_last"),
+        keep_hourly=value.get("keep_hourly"),
+        keep_daily=value.get("keep_daily", 7),
+        keep_weekly=value.get("keep_weekly", 4),
+        keep_monthly=value.get("keep_monthly", 6),
+        keep_yearly=value.get("keep_yearly", 2),
+        max_total_size=max_size_raw,
+        max_total_size_bytes=max_size_bytes,
+    )
 
 
 def settings_to_dict(settings: Settings) -> ConfigDict:
@@ -208,52 +347,35 @@ def settings_to_dict(settings: Settings) -> ConfigDict:
     if settings.log_dir is not None:
         data["log"] = {"dir": settings.log_dir}
 
-    retention_dict: dict[str, t.Any] = {}
-    for field in dc.fields(Retention):
-        value = getattr(settings.retention, field.name)
-        if value is not None:
-            retention_dict[field.name] = value
-    if retention_dict:
-        data["retention"] = retention_dict
+    retention_defaults_dict = settings.retention_defaults.to_dict()
+    if retention_defaults_dict:
+        data["retention_defaults"] = retention_defaults_dict
 
     if settings.sets:
         backup_sets: list[dict[str, t.Any]] = []
         for bset in settings.sets:
-            backup_sets.append(
-                {
-                    "name": bset.name,
-                    "include": list(bset.include),
-                    "exclude": list(bset.exclude),
-                    "tags": list(bset.tags),
-                    "one_fs": bool(bset.one_fs),
-                    "dry_run_default": bool(bset.dry_run_default),
-                    **(
-                        {"schedule": bset.schedule}
-                        if bset.schedule is not None and bset.schedule.strip()
-                        else {}
-                    ),
-                    **(
-                        {"backup_type": bset.backup_type}
-                        if bset.backup_type and bset.backup_type != "incremental"
-                        else {}
-                    ),
-                    **(
-                        {"max_snapshots": bset.max_snapshots}
-                        if bset.max_snapshots is not None
-                        else {}
-                    ),
-                    **(
-                        {"encryption": bset.encryption}
-                        if bset.encryption is not None and bset.encryption.strip()
-                        else {}
-                    ),
-                    **(
-                        {"compression": bset.compression}
-                        if bset.compression is not None and bset.compression.strip()
-                        else {}
-                    ),
-                }
-            )
+            entry: dict[str, t.Any] = {
+                "name": bset.name,
+                "include": list(bset.include),
+                "exclude": list(bset.exclude),
+                "tags": list(bset.tags),
+                "one_fs": bool(bset.one_fs),
+                "dry_run_default": bool(bset.dry_run_default),
+            }
+            if bset.backup_type and bset.backup_type != "incremental":
+                entry["backup_type"] = bset.backup_type
+            if bset.encryption:
+                entry["encryption"] = bset.encryption
+            if bset.compression:
+                entry["compression"] = bset.compression
+            schedule_dict = bset.schedule.to_dict()
+            if schedule_dict.get("type") != "manual" or len(schedule_dict) > 1:
+                entry["schedule"] = schedule_dict
+            if bset.retention:
+                retention_dict = bset.retention.to_dict()
+                if retention_dict:
+                    entry["retention"] = retention_dict
+            backup_sets.append(entry)
         data["backup_sets"] = backup_sets
 
     return data

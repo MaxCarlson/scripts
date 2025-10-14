@@ -11,8 +11,10 @@ from typing import Optional
 from .config import (
     BackupSet,
     Repo,
-    Retention,
+    RetentionPolicy,
+    Schedule,
     Settings,
+    _parse_size_to_bytes,
     load_config,
     resolve_config_path,
     save_config,
@@ -108,9 +110,17 @@ def config_list_sets_command(args: argparse.Namespace) -> int:
 
     print(f"Backup sets in {target}:")
     for bset in cfg.sets:
+        schedule = bset.schedule
+        if isinstance(schedule, Schedule):
+            if schedule.type == "custom" and schedule.description:
+                schedule_label = schedule.description
+            else:
+                schedule_label = schedule.type
+        else:
+            schedule_label = str(schedule)
         print(
             f"  - {bset.name} (includes: {len(bset.include)} paths, "
-            f"excludes: {len(bset.exclude)}, schedule: {bset.schedule or 'unscheduled'})"
+            f"excludes: {len(bset.exclude)}, schedule: {schedule_label})"
         )
     return 0
 
@@ -126,6 +136,12 @@ def _value_or_none(value: Optional[str]) -> Optional[str]:
         return None
     stripped = value.strip()
     return stripped if stripped else None
+
+
+def _schedule_from_text(text: str | None) -> Schedule:
+    if text:
+        return Schedule(type="custom", description=text)
+    return Schedule()
 
 
 def config_add_set_command(args: argparse.Namespace) -> int:
@@ -147,6 +163,10 @@ def config_add_set_command(args: argparse.Namespace) -> int:
         print(f"[rrbackup] Backup set '{args.name}' already exists in {target}.", file=sys.stderr)
         return 1
 
+    retention = None
+    if args.max_snapshots is not None:
+        retention = RetentionPolicy(keep_last=args.max_snapshots)
+
     new_set = BackupSet(
         name=args.name,
         include=includes,
@@ -154,11 +174,11 @@ def config_add_set_command(args: argparse.Namespace) -> int:
         tags=list(args.tag or []),
         one_fs=args.one_fs,
         dry_run_default=args.dry_run_default,
-        schedule=_value_or_none(args.schedule),
         backup_type=args.backup_type,
-        max_snapshots=args.max_snapshots,
         encryption=_value_or_none(args.encryption),
         compression=_value_or_none(args.compression),
+        schedule=_schedule_from_text(args.schedule),
+        retention=retention,
     )
     cfg.sets.append(new_set)
 
@@ -258,18 +278,20 @@ def config_retention_command(args: argparse.Namespace) -> int:
         return 1
 
     if args.clear:
-        cfg.retention = Retention(
+        cfg.retention_defaults = RetentionPolicy(
             keep_last=None,
             keep_hourly=None,
             keep_daily=None,
             keep_weekly=None,
             keep_monthly=None,
             keep_yearly=None,
+            max_total_size=None,
+            max_total_size_bytes=None,
         )
     elif args.use_defaults:
-        cfg.retention = Retention()
+        cfg.retention_defaults = RetentionPolicy()
     else:
-        ret = cfg.retention
+        ret = cfg.retention_defaults
         for attr, value in (
             ("keep_last", args.keep_last),
             ("keep_hourly", args.keep_hourly),
@@ -280,6 +302,14 @@ def config_retention_command(args: argparse.Namespace) -> int:
         ):
             if value is not None:
                 setattr(ret, attr, value)
+        if args.max_total_size:
+            try:
+                raw, bytes_value = _parse_size_to_bytes(args.max_total_size)
+            except ValueError as exc:
+                print(f"[rrbackup] {exc}", file=sys.stderr)
+                return 1
+            ret.max_total_size = raw
+            ret.max_total_size_bytes = bytes_value
 
     try:
         save_config(cfg, str(target), overwrite=True)
@@ -381,11 +411,32 @@ def _collect_backup_sets() -> list[BackupSet]:
         )
         excludes = prompt_list("Exclude pattern", guidance="Provide glob patterns to exclude (optional).")
         tags = prompt_list("Tag", guidance="Optional restic tags to associate with this backup set.")
-        schedule_desc = prompt_text(
-            "How often should this backup run? (e.g., daily 02:00, weekly Sunday 01:30)",
-            default="",
-            required=False,
+        schedule_choice = prompt_choice(
+            "Select schedule type:",
+            [
+                "Manual (no automatic schedule)",
+                "Hourly (every N hours)",
+                "Daily at specific time",
+                "Weekly (day + time)",
+                "Monthly (day + time)",
+            ],
+            default_index=2,
         )
+        schedule = Schedule()
+        if schedule_choice == 1:
+            interval = prompt_int("Run every how many hours?", allow_empty=False)
+            schedule = Schedule(type="hourly", interval_hours=interval)
+        elif schedule_choice == 2:
+            time = prompt_text("Time of day (HH:MM 24-hour)", default="02:00", required=True)
+            schedule = Schedule(type="daily", time=time)
+        elif schedule_choice == 3:
+            day = prompt_text("Day of week (e.g., Monday)", default="Sunday", required=True)
+            time = prompt_text("Time of day (HH:MM 24-hour)", default="02:00", required=True)
+            schedule = Schedule(type="weekly", day_of_week=day, time=time)
+        elif schedule_choice == 4:
+            day = prompt_int("Day of month (1-28)", allow_empty=False)
+            time = prompt_text("Time of day (HH:MM 24-hour)", default="02:00", required=True)
+            schedule = Schedule(type="monthly", day_of_month=day, time=time)
         backup_type_choice = prompt_choice(
             "Backup type for this set:",
             [
@@ -401,11 +452,6 @@ def _collect_backup_sets() -> list[BackupSet]:
             backup_type = "full"
         else:
             backup_type = prompt_text("Describe the backup type", required=True)
-
-        max_snapshots = prompt_int(
-            "How many snapshots should be kept for this set? (blank to use global retention)",
-            allow_empty=True,
-        )
 
         encryption_choice = prompt_choice(
             "Encryption for this set:",
@@ -444,6 +490,33 @@ def _collect_backup_sets() -> list[BackupSet]:
 
         one_fs = prompt_bool("Use --one-file-system for this set?", default=False)
         dry_run_default = prompt_bool("Enable dry-run by default for this set?", default=False)
+
+        retention: RetentionPolicy | None = None
+        if not prompt_bool("Use global retention defaults for this set?", default=True):
+            retention = RetentionPolicy(
+                keep_last=prompt_int("Keep last snapshots (blank to skip)"),
+                keep_hourly=prompt_int("Keep hourly snapshots (blank to skip)"),
+                keep_daily=prompt_int("Keep daily snapshots (blank to skip)"),
+                keep_weekly=prompt_int("Keep weekly snapshots (blank to skip)"),
+                keep_monthly=prompt_int("Keep monthly snapshots (blank to skip)"),
+                keep_yearly=prompt_int("Keep yearly snapshots (blank to skip)"),
+            )
+            size_budget = prompt_text(
+                "Maximum total size for this set (e.g., 512GB) (blank to skip)",
+                default="",
+                required=False,
+            )
+            if size_budget:
+                try:
+                    raw, bytes_value = _parse_size_to_bytes(size_budget)
+                except ValueError as exc:
+                    print(f"[rrbackup] {exc}", file=sys.stderr)
+                    raw = None
+                    bytes_value = None
+                if retention:
+                    retention.max_total_size = raw
+                    retention.max_total_size_bytes = bytes_value
+
         sets.append(
             BackupSet(
                 name=name,
@@ -452,11 +525,11 @@ def _collect_backup_sets() -> list[BackupSet]:
                 tags=tags,
                 one_fs=one_fs,
                 dry_run_default=dry_run_default,
-                schedule=schedule_desc or None,
                 backup_type=backup_type,
-                max_snapshots=max_snapshots,
                 encryption=encryption,
                 compression=compression,
+                schedule=schedule,
+                retention=retention,
             )
         )
     return sets
@@ -476,9 +549,9 @@ def _build_settings_from_wizard() -> Settings:
     log_dir = _value_or_none(prompt_text("Log directory (blank to use state-dir/logs)"))
 
     if prompt_bool("Use default retention policy (daily=7, weekly=4, monthly=6, yearly=2)?", default=True):
-        retention = Retention()
+        retention = RetentionPolicy()
     else:
-        retention = Retention(
+        retention = RetentionPolicy(
             keep_last=prompt_int("Keep last snapshots (blank to skip)"),
             keep_hourly=prompt_int("Keep hourly snapshots (blank to skip)"),
             keep_daily=prompt_int("Keep daily snapshots (blank to skip)"),
@@ -486,6 +559,16 @@ def _build_settings_from_wizard() -> Settings:
             keep_monthly=prompt_int("Keep monthly snapshots (blank to skip)"),
             keep_yearly=prompt_int("Keep yearly snapshots (blank to skip)"),
         )
+        size_budget = prompt_text("Maximum total repo size (e.g., 1024GB) (blank to skip)", default="", required=False)
+        if size_budget:
+            try:
+                raw, bytes_value = _parse_size_to_bytes(size_budget)
+            except ValueError as exc:
+                print(f"[rrbackup] {exc}", file=sys.stderr)
+                raw = None
+                bytes_value = None
+            retention.max_total_size = raw
+            retention.max_total_size_bytes = bytes_value
 
     sets = _collect_backup_sets()
     if not sets:
@@ -499,7 +582,7 @@ def _build_settings_from_wizard() -> Settings:
         state_dir=state_dir,
         repo=repo,
         sets=sets,
-        retention=retention,
+        retention_defaults=retention,
     )
 
 

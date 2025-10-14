@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, mock_open
 
 import pytest
 
-from rrbackup.config import BackupSet, Retention, Settings
+from rrbackup.config import BackupSet, RetentionPolicy, Settings
 from rrbackup.runner import (
     RunError,
     _env_for_repo,
@@ -356,7 +356,7 @@ class TestRunCheck:
 class TestRunForgetPrune:
     """Tests for run_forget_prune function."""
 
-    def test_forget_prune_with_retention(self, sample_settings, mocker, temp_dir):
+    def test_forget_prune_with_RetentionPolicy(self, sample_settings, mocker, temp_dir):
         """Test forget/prune with retention policy."""
         mock_proc = MagicMock()
         mock_proc.stdout.readline = MagicMock(return_value=b"")
@@ -366,7 +366,7 @@ class TestRunForgetPrune:
         mock_file = mocker.mock_open()
         mocker.patch("pathlib.Path.open", mock_file)
 
-        sample_settings.retention = Retention(
+        sample_settings.retention_defaults = RetentionPolicy(
             keep_last=5,
             keep_daily=7,
             keep_weekly=4,
@@ -395,7 +395,7 @@ class TestRunForgetPrune:
         mock_file = mocker.mock_open()
         mocker.patch("pathlib.Path.open", mock_file)
 
-        sample_settings.retention = Retention(
+        sample_settings.retention_defaults = RetentionPolicy(
             keep_daily=7,
             keep_hourly=None,  # Should be skipped
         )
