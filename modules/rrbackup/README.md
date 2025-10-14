@@ -34,15 +34,19 @@ rrb --version
 
 ## Quick Start
 
-### 1. Create Configuration
+### 1. Run Setup Wizard
 
-Use the interactive wizard:
+Kick things off with the guided setup. It walks through configuration, password management, rclone connectivity, and restic repository initialization. Existing setups can be inspected or updated step by step.
+
+```bash
+rrb setup --wizard
+```
+
+Prefer to manage only the configuration file? You can still run the focused configuration wizard:
 
 ```bash
 rrb config wizard
 ```
-
-The wizard walks through repository destination (local drive or Google Drive via rclone), encryption options, retention defaults, and any number of backup sets (what to back up, schedule description, number of copies, compression and encryption preferences).
 
 Prefer to edit manually? Create your config file at the platform-specific location:
 
@@ -360,9 +364,10 @@ tail ~/.cache/rrbackup/logs/backup-documents-20250114-123456.log
 
 ### CLI Helpers
 
-`rrb` includes a configuration management surface to avoid editing TOML by hand:
+`rrb` includes interactive tooling to avoid editing TOML or shell scripts by hand:
 
 ```bash
+rrb setup --wizard              # Full guided setup (config, passwords, rclone, restic)
 rrb config wizard                 # Interactive setup wizard
 rrb config show                   # Print current configuration
 rrb config add-set --name docs \

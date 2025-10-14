@@ -1,0 +1,28 @@
+[repository]
+url = "C:/Users/mcarls/Repos/scripts/modules/rrbackup/test-data/repo"
+password_file = "C:/Users/mcarls/Repos/scripts/modules/rrbackup/test-data/config/restic_password.txt"
+
+[restic]
+bin = "restic"
+
+[rclone]
+bin = "rclone"
+
+[retention]
+keep_daily = 7
+keep_weekly = 4
+keep_monthly = 6
+keep_yearly = 2
+
+[[backup_sets]]
+name = "test-set"
+include = [
+    "C:/Users/mcarls/Repos/scripts/modules/rrbackup/test-data/source",
+]
+exclude = [
+    "**/.git",
+    "**/*.log",
+]
+tags = ["test", "local"]
+one_fs = false
+dry_run_default = false

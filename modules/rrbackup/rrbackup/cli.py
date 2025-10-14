@@ -19,6 +19,7 @@ from .config_cli import (
     config_show_command,
     config_wizard_command,
 )
+from .setup_wizard import run_setup_wizard
 from .runner import (
     RunError,
     start_backup,
@@ -59,6 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("setup", help="Initialize the restic repository (requires configured credentials).")
     sp.add_argument("--password-file", "-p", help="Optional override RESTIC_PASSWORD_FILE path for init")
     sp.add_argument("--remote-check", "-r", action="store_true", help="Run a remote accessibility check via restic unlock")
+    sp.add_argument("--wizard", "-w", action="store_true", help="Launch the interactive setup wizard.")
     sp.set_defaults(func=cmd_setup)
 
     # list snapshots
@@ -121,11 +123,11 @@ def build_parser() -> argparse.ArgumentParser:
     cp.add_argument("--tag", "-t", action="append", help="Tag to apply to the set (repeatable).")
     cp.add_argument("--one-fs", "-o", action="store_true", help="Enable restic --one-file-system.")
     cp.add_argument("--dry-run-default", "-d", action="store_true", help="Enable dry-run by default.")
-    cp.add_argument("--schedule", "-c", help="Human-friendly schedule description for this set.")
-    cp.add_argument("--backup-type", "-b", default="incremental", help="Backup type descriptor (default: incremental).")
+    cp.add_argument("--schedule", "-S", help="Human-friendly schedule description for this set.")
+    cp.add_argument("--backup-type", "-B", default="incremental", help="Backup type descriptor (default: incremental).")
     cp.add_argument(
         "--max-snapshots",
-        "-m",
+        "-M",
         type=int,
         help="Override snapshots to retain for this set (blank uses global retention).",
     )
@@ -166,6 +168,9 @@ def _load_cfg_from_args(args: argparse.Namespace) -> Settings:
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
+    if getattr(args, "wizard", False):
+        return run_setup_wizard(args)
+
     cfg = _load_cfg_from_args(args)
     # Initialize repository
     extra = []

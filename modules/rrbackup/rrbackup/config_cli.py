@@ -18,6 +18,13 @@ from .config import (
     save_config,
     settings_to_dict,
 )
+from .interactive import (
+    prompt_bool,
+    prompt_choice,
+    prompt_int,
+    prompt_list,
+    prompt_text,
+)
 from .runner import RunError, run_restic
 
 
@@ -284,125 +291,6 @@ def config_retention_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _prompt_text(prompt: str, *, default: Optional[str] = None, required: bool = False) -> str:
-    while True:
-        suffix = f" [{default}]" if default else ""
-        try:
-            response = input(f"{prompt}{suffix}: ").strip()
-        except EOFError:
-            raise SystemExit(1)
-        except KeyboardInterrupt:
-            print("\n[rrbackup] Setup wizard cancelled.", file=sys.stderr)
-            raise SystemExit(1)
-        if not response and default is not None:
-            return default
-        if response:
-            return response
-        if not required:
-            return ""
-        print("A value is required.", file=sys.stderr)
-
-
-def _prompt_bool(prompt: str, *, default: bool = True) -> bool:
-    choice = "Y/n" if default else "y/N"
-    while True:
-        try:
-            response = input(f"{prompt} [{choice}]: ").strip().lower()
-        except EOFError:
-            raise SystemExit(1)
-        except KeyboardInterrupt:
-            print("\n[rrbackup] Setup wizard cancelled.", file=sys.stderr)
-            raise SystemExit(1)
-        if not response:
-            return default
-        if response in {"y", "yes"}:
-            return True
-        if response in {"n", "no"}:
-            return False
-        print("Please answer 'y' or 'n'.", file=sys.stderr)
-
-
-def _prompt_int(
-    prompt: str,
-    *,
-    default: Optional[int] = None,
-    allow_empty: bool = True,
-) -> Optional[int]:
-    while True:
-        suffix = ""
-        if default is not None:
-            suffix = f" [{default}]"
-        elif not allow_empty:
-            suffix = " (required)"
-        try:
-            response = input(f"{prompt}{suffix}: ").strip()
-        except EOFError:
-            raise SystemExit(1)
-        except KeyboardInterrupt:
-            print("\n[rrbackup] Setup wizard cancelled.", file=sys.stderr)
-            raise SystemExit(1)
-
-        if not response:
-            if default is not None:
-                return default
-            if allow_empty:
-                return None
-            print("A value is required.", file=sys.stderr)
-            continue
-        try:
-            return int(response)
-        except ValueError:
-            print("Please enter a valid integer.", file=sys.stderr)
-
-
-def _prompt_list(
-    prompt: str,
-    *,
-    min_items: int = 0,
-    guidance: Optional[str] = None,
-) -> list[str]:
-    items: list[str] = []
-    if guidance:
-        print(guidance)
-    while True:
-        suffix = "" if items else " (enter value)"
-        try:
-            response = input(f"{prompt}{suffix} (blank to finish): ").strip()
-        except EOFError:
-            raise SystemExit(1)
-        except KeyboardInterrupt:
-            print("\n[rrbackup] Setup wizard cancelled.", file=sys.stderr)
-            raise SystemExit(1)
-        if not response:
-            if len(items) >= min_items:
-                return items
-            print(f"Please provide at least {min_items} value(s).", file=sys.stderr)
-            continue
-        items.append(response)
-
-
-def _prompt_choice(prompt: str, options: list[str], *, default_index: Optional[int] = None) -> int:
-    while True:
-        print(prompt)
-        for idx, option in enumerate(options, start=1):
-            marker = " (default)" if default_index is not None and default_index == idx - 1 else ""
-            print(f"  {idx}. {option}{marker}")
-        try:
-            response = input("Select option number: ").strip()
-        except EOFError:
-            raise SystemExit(1)
-        except KeyboardInterrupt:
-            print("\n[rrbackup] Setup wizard cancelled.", file=sys.stderr)
-            raise SystemExit(1)
-        if not response and default_index is not None:
-            return default_index
-        if response.isdigit():
-            choice = int(response) - 1
-            if 0 <= choice < len(options):
-                return choice
-        print("Please enter a valid option number.", file=sys.stderr)
-
-
 def _list_available_drives() -> list[str]:
     drives: list[str] = []
     if os.name == "nt":
@@ -419,13 +307,13 @@ def _select_repository_url() -> str:
         "Google Drive via rclone remote",
         "Custom restic repository URL",
     ]
-    choice = _prompt_choice("\nWhere should the backup repository live?", options, default_index=0)
+    choice = prompt_choice("\nWhere should the backup repository live?", options, default_index=0)
 
     if choice == 0:
         drives = _list_available_drives()
         if drives:
             print("Detected drives: " + ", ".join(drives))
-        local_path = _prompt_text(
+        local_path = prompt_text(
             "Local repository path (will be created if needed)",
             default=str(Path.home() / "restic-repo"),
             required=True,
@@ -438,8 +326,8 @@ def _select_repository_url() -> str:
                 "[rrbackup] rclone not found on PATH. Please install and configure rclone before running backups.",
                 file=sys.stderr,
             )
-        remote_name = _prompt_text("Existing rclone remote name", default="gdrive", required=True)
-        remote_path = _prompt_text("Remote path for restic repository", default="backups/rrbackup", required=True)
+        remote_name = prompt_text("Existing rclone remote name", default="gdrive", required=True)
+        remote_path = prompt_text("Remote path for restic repository", default="backups/rrbackup", required=True)
         remote_path = remote_path.lstrip("/")
         print(
             "Reminder: ensure the rclone remote is authorized (e.g., run `rclone config reconnect "
@@ -447,25 +335,25 @@ def _select_repository_url() -> str:
         )
         return f"rclone:{remote_name}:{remote_path}"
 
-    return _prompt_text("Restic repository URL", required=True)
+    return prompt_text("Restic repository URL", required=True)
 
 
-def _prompt_encryption_method() -> tuple[Optional[str], Optional[str]]:
+def prompt_encryption_method() -> tuple[Optional[str], Optional[str]]:
     options = [
         "Use a password file (recommended)",
         "Use an environment variable",
         "I'll configure encryption manually later",
     ]
-    choice = _prompt_choice("\nHow should restic retrieve its encryption password?", options, default_index=0)
+    choice = prompt_choice("\nHow should restic retrieve its encryption password?", options, default_index=0)
     if choice == 0:
-        password_file = _prompt_text(
+        password_file = prompt_text(
             "Password file path",
             default="~/.config/rrbackup/restic_password.txt",
             required=True,
         )
         return os.path.expanduser(password_file), None
     if choice == 1:
-        env_name = _prompt_text(
+        env_name = prompt_text(
             "Environment variable that contains the password",
             default="RESTIC_PASSWORD",
             required=True,
@@ -479,26 +367,26 @@ def _collect_backup_sets() -> list[BackupSet]:
     sets: list[BackupSet] = []
     print("\nConfigure backup sets. You can add multiple sets, each with their own include/exclude lists.")
     while True:
-        add_set = _prompt_bool(
+        add_set = prompt_bool(
             "Would you like to add a backup set?",
             default=True if not sets else False,
         )
         if not add_set:
             break
-        name = _prompt_text("Set name", required=True)
-        includes = _prompt_list(
+        name = prompt_text("Set name", required=True)
+        includes = prompt_list(
             "Include path",
             min_items=1,
             guidance="Provide full paths to include. Repeat until you've added all desired paths.",
         )
-        excludes = _prompt_list("Exclude pattern", guidance="Provide glob patterns to exclude (optional).")
-        tags = _prompt_list("Tag", guidance="Optional restic tags to associate with this backup set.")
-        schedule_desc = _prompt_text(
+        excludes = prompt_list("Exclude pattern", guidance="Provide glob patterns to exclude (optional).")
+        tags = prompt_list("Tag", guidance="Optional restic tags to associate with this backup set.")
+        schedule_desc = prompt_text(
             "How often should this backup run? (e.g., daily 02:00, weekly Sunday 01:30)",
             default="",
             required=False,
         )
-        backup_type_choice = _prompt_choice(
+        backup_type_choice = prompt_choice(
             "Backup type for this set:",
             [
                 "Standard incremental (restic default)",
@@ -512,14 +400,14 @@ def _collect_backup_sets() -> list[BackupSet]:
         elif backup_type_choice == 1:
             backup_type = "full"
         else:
-            backup_type = _prompt_text("Describe the backup type", required=True)
+            backup_type = prompt_text("Describe the backup type", required=True)
 
-        max_snapshots = _prompt_int(
+        max_snapshots = prompt_int(
             "How many snapshots should be kept for this set? (blank to use global retention)",
             allow_empty=True,
         )
 
-        encryption_choice = _prompt_choice(
+        encryption_choice = prompt_choice(
             "Encryption for this set:",
             [
                 "Use repository default",
@@ -531,11 +419,11 @@ def _collect_backup_sets() -> list[BackupSet]:
         if encryption_choice == 0:
             encryption = "repository-default"
         elif encryption_choice == 1:
-            encryption = _prompt_text("Describe encryption requirements", required=True)
+            encryption = prompt_text("Describe encryption requirements", required=True)
         else:
             encryption = "none"
 
-        compression_choice = _prompt_choice(
+        compression_choice = prompt_choice(
             "Compression preference:",
             [
                 "Auto (restic default)",
@@ -552,10 +440,10 @@ def _collect_backup_sets() -> list[BackupSet]:
         elif compression_choice == 2:
             compression = "minimal"
         else:
-            compression = _prompt_text("Describe compression preference", required=True)
+            compression = prompt_text("Describe compression preference", required=True)
 
-        one_fs = _prompt_bool("Use --one-file-system for this set?", default=False)
-        dry_run_default = _prompt_bool("Enable dry-run by default for this set?", default=False)
+        one_fs = prompt_bool("Use --one-file-system for this set?", default=False)
+        dry_run_default = prompt_bool("Enable dry-run by default for this set?", default=False)
         sets.append(
             BackupSet(
                 name=name,
@@ -579,24 +467,24 @@ def _build_settings_from_wizard() -> Settings:
     print("This wizard will create a configuration file for rrbackup.\n")
 
     repo_url = _select_repository_url()
-    password_file, password_env = _prompt_encryption_method()
+    password_file, password_env = prompt_encryption_method()
 
-    restic_bin = _prompt_text("restic binary (leave default unless customized)", default="restic", required=True)
-    rclone_bin = _prompt_text("rclone binary (leave default unless customized)", default="rclone", required=True)
+    restic_bin = prompt_text("restic binary (leave default unless customized)", default="restic", required=True)
+    rclone_bin = prompt_text("rclone binary (leave default unless customized)", default="rclone", required=True)
 
-    state_dir = _value_or_none(_prompt_text("State directory (blank for OS default)"))
-    log_dir = _value_or_none(_prompt_text("Log directory (blank to use state-dir/logs)"))
+    state_dir = _value_or_none(prompt_text("State directory (blank for OS default)"))
+    log_dir = _value_or_none(prompt_text("Log directory (blank to use state-dir/logs)"))
 
-    if _prompt_bool("Use default retention policy (daily=7, weekly=4, monthly=6, yearly=2)?", default=True):
+    if prompt_bool("Use default retention policy (daily=7, weekly=4, monthly=6, yearly=2)?", default=True):
         retention = Retention()
     else:
         retention = Retention(
-            keep_last=_prompt_int("Keep last snapshots (blank to skip)"),
-            keep_hourly=_prompt_int("Keep hourly snapshots (blank to skip)"),
-            keep_daily=_prompt_int("Keep daily snapshots (blank to skip)"),
-            keep_weekly=_prompt_int("Keep weekly snapshots (blank to skip)"),
-            keep_monthly=_prompt_int("Keep monthly snapshots (blank to skip)"),
-            keep_yearly=_prompt_int("Keep yearly snapshots (blank to skip)"),
+            keep_last=prompt_int("Keep last snapshots (blank to skip)"),
+            keep_hourly=prompt_int("Keep hourly snapshots (blank to skip)"),
+            keep_daily=prompt_int("Keep daily snapshots (blank to skip)"),
+            keep_weekly=prompt_int("Keep weekly snapshots (blank to skip)"),
+            keep_monthly=prompt_int("Keep monthly snapshots (blank to skip)"),
+            keep_yearly=prompt_int("Keep yearly snapshots (blank to skip)"),
         )
 
     sets = _collect_backup_sets()
