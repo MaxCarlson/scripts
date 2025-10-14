@@ -4,36 +4,22 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rrbackup"
-version = "0.1.0"
+version = "0.2.0"
 description = "Cross-platform Restic + Rclone backup CLI"
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{ name = "Max", email = "max@example.com" }]
 license = { text = "MIT" }
 dependencies = [
-    # Keep deps minimal and stdlib-first; argparse used instead of click/typer.
     "tomli; python_version < '3.11'",
+    "tomli-w",
 ]
 
 [project.scripts]
 rrb = "rrbackup.cli:main"
 rrbackup = "rrbackup.cli:main"
 
-[tool.setuptools.package-data]
-rrbackup = ["py.typed"]
-
 [tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.rrbackup]
-# Default config search order (do not edit here, just for documentation)
-# 1) CLI --config
-# 2) ENV RRBACKUP_CONFIG
-# 3) %APPDATA%/rrbackup/config.toml (Windows)
-# 4) ~/.config/rrbackup/config.toml (Linux/WSL/Termux)
-#
-# Example repository URL formats supported by restic:
-#   local:        /path/to/repo
-#   rclone:       rclone:<remote>:<path>               (requires rclone configured)
-#   sftp:         sftp:user@host:/path
-#   gcs/s3/etc:   native restic backends
+# Discover packages from project root (flat layout)
+include = ["rrbackup*"]
+exclude = ["tests*"]
