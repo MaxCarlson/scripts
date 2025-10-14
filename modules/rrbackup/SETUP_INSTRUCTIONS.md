@@ -4,15 +4,13 @@
 
 ### 1. Run the Setup Wizard
 
-Launch the guided configuration flow. It will help you choose where to store backups (local drive or Google Drive via rclone), configure encryption, retention defaults, and define one or more backup sets (including schedules, number of copies, compression preferences, etc.).
+Launch the full guided setup. It walks you through configuration, password creation, rclone connectivity for Google Drive, and restic repository initialization. Existing setups are detected automatically and you can choose to keep, inspect, or overwrite each step.
 
 ```bash
-rrb config wizard --initialize-repo
+rrb setup --wizard
 ```
 
-The `--initialize-repo` flag runs `restic init` immediately after the configuration is saved. Omit it if you plan to initialize later.
-
-Prefer to do things manually? Follow the steps below.
+Prefer to manage pieces individually? You can still run `rrb config wizard` or follow the manual steps below.
 
 ### 1a. Create Password File
 
