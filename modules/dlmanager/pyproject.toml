@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=67", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dlmanager"
+version = "0.1.0"
+description = "Multi-method transfer manager for rsync/rclone/scp with live progress."
+authors = [{ name = "Max", email = "noreply@example.com" }]
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+dlmanager = "dlmanager.cli:main"
