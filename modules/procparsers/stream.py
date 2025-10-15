@@ -12,6 +12,9 @@ from typing import Dict, Generator, Iterable, Optional, TextIO
 
 from .aebndl import parse_line as parse_aebndl_line
 from .yt_dlp import parse_line as parse_ytdlp_line
+from .rsync import parse_line as parse_rsync_line
+from .rclone import parse_line as parse_rclone_line
+from .scp import parse_line as parse_scp_line
 from .utils import sanitize_line
 
 Parser = callable
@@ -47,6 +50,12 @@ def _pick_parser(tool: str):
         return parse_ytdlp_line
     if tool == "aebndl":
         return parse_aebndl_line
+    if tool == "rsync":
+        return parse_rsync_line
+    if tool == "rclone":
+        return parse_rclone_line
+    if tool == "scp":
+        return parse_scp_line
     raise ValueError(f"Unknown tool '{tool}'")
 
 def iter_parsed_events(
