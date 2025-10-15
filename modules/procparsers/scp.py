@@ -23,13 +23,13 @@ from typing import Dict, Optional
 from .utils import sanitize_line
 
 # SCP progress line pattern
-# Format: "filename    12%  1234KB  12.3KB/s   00:23 ETA"
+# Format: "filename    12%  1234KB  12.3KB/s   00:23 ETA" or with HH:MM:SS
 _PROGRESS_RE = re.compile(
     r"(?P<filename>\S+.*?)\s+"
     r"(?P<pct>\d+)%\s+"
     r"(?P<size>[\d.]+)(?P<size_unit>[KMG]?B)\s+"
     r"(?P<speed>[\d.]+)(?P<speed_unit>[KMG]?B)/s\s+"
-    r"(?P<eta>\d+:\d+)",
+    r"(?P<eta>\d+:\d+(?::\d+)?)",  # Supports both MM:SS and HH:MM:SS
     re.I
 )
 
