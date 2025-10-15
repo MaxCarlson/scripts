@@ -1,59 +1,42 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-rsync worker: runs rsync and parses --info=progress2 output.
+rsync worker: runs rsync and parses --info=progress2 output using procparsers.
 
 Requirements:
 - rsync must be installed locally.
 - For remote Windows (Cygwin), ensure ssh server + cygwin rsync are available.
 
-We use a JSON job file produced by the manager. The worker resolves flags based
-on job options (replace/resume/delete_source/etc).
-
-Parsing:
-- With --info=progress2, rsync prints lines like:
-    1,234,567  12%   12.34MB/s    0:01:23 (xfr#5, to-chk=10/123)
-- We'll also attempt to parse per-file lines when available.
+Uses procparsers.iter_parsed_events() for robust parsing of rsync output.
+Emits JSONL progress updates to stdout for the manager to consume.
 """
 from __future__ import annotations
 
 import argparse
 import json
-import os
-import re
 import shlex
 import subprocess
 import sys
 from pathlib import Path
 
-from .base_worker import emit, RateCounter
-from ..utils import normalize_path_for_remote
+try:
+    from procparsers import iter_parsed_events
+    PROCPARSERS_AVAILABLE = True
+except ImportError:
+    PROCPARSERS_AVAILABLE = False
 
-PROGRESS_RE = re.compile(
-    r"^\s*(?P<bytes>\d+)\s+(?P<pct>\d+)%\s+(?P<rate>[\d\.]+)(?P<rate_unit>[KMG]?B)/s\s+(?P<eta>\S+)\s+\(xfr#(?P<xfr>\d+),\s+to-chk=(?P<tochk>\d+)/(?P<total>\d+)\)"
-)
-FILE_LINE_RE = re.compile(r"^\s*(?P<size>\d+)\s+(?P<path>.+)$")
+from .base_worker import emit
+from ..utils import normalize_path_for_remote, LOGS_DIR
 
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="rsync worker")
-    ap.add_argument("--job", required=True, help="Path to job JSON.")
+    ap.add_argument("-j", "--job", required=True, help="Path to job JSON.")
     return ap.parse_args()
 
 
-def kb_to_bytes(val: float, unit: str) -> int:
-    unit = unit.upper()
-    mult = 1
-    if unit == "KB":
-        mult = 1024
-    elif unit == "MB":
-        mult = 1024 ** 2
-    elif unit == "GB":
-        mult = 1024 ** 3
-    return int(val * mult)
-
-
 def build_rsync_cmd(spec: dict) -> list[str]:
+    """Build rsync command from job spec."""
     src = spec["src"]
     dst = spec["dst"]
     dst_path = normalize_path_for_remote(spec.get("dst_path", "~"), spec.get("dst_os", "auto"))
@@ -75,15 +58,19 @@ def build_rsync_cmd(spec: dict) -> list[str]:
         "-h",            # human-readable
         "--info=progress2",
     ]
+
     if replace:
         # allow overwrite (default). If we wanted skip-existing: use --ignore-existing
         pass
     else:
         base_flags.append("--ignore-existing")
+
     if resume:
         base_flags.extend(["--partial", "--append-verify"])
+
     if delete_source:
         base_flags.append("--remove-source-files")
+
     if dry:
         base_flags.append("--dry-run")
 
@@ -95,10 +82,22 @@ def build_rsync_cmd(spec: dict) -> list[str]:
     return cmd
 
 
-def run_and_stream(cmd: list[str]) -> int:
-    # Emit starting status
-    emit(status="running", method="rsync", command=" ".join(shlex.quote(c) for c in cmd))
+def run_and_stream(cmd: list[str], job_id: str) -> int:
+    """
+    Run rsync command and stream progress events.
 
+    Uses procparsers to parse rsync output and emit normalized JSONL events.
+    """
+    # Emit starting status
+    emit(
+        event="start",
+        status="running",
+        transfer_id=job_id,
+        method="rsync",
+        command=" ".join(shlex.quote(c) for c in cmd)
+    )
+
+    # Start rsync process
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -107,66 +106,108 @@ def run_and_stream(cmd: list[str]) -> int:
         bufsize=1,
     )
 
-    ratec = RateCounter()
-    total_bytes = 0
-    files_done = 0
-    files_total = None
+    if not PROCPARSERS_AVAILABLE:
+        # Fallback: just relay raw output
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            emit(event="raw", line=line.strip())
+        ret = proc.wait()
+        emit(
+            event="finish",
+            status="completed" if ret == 0 else "failed",
+            returncode=ret
+        )
+        return ret
 
+    # Use procparsers for robust parsing
+    raw_log_path = LOGS_DIR / f"{job_id}.rsync.raw.log"
     assert proc.stdout is not None
-    for line in proc.stdout:
-        s = line.strip()
-        if not s:
-            continue
 
-        # Parse combined progress line
-        m = PROGRESS_RE.match(s.replace(",", ""))
-        if m:
-            b = int(m.group("bytes"))
-            pct = int(m.group("pct"))
-            rate_val = float(m.group("rate"))
-            rate_unit = m.group("rate_unit")
-            rate_bps = kb_to_bytes(rate_val, rate_unit)
-            tochk = int(m.group("tochk"))
-            total = int(m.group("total"))
-            files_total = total
-            files_done = total - tochk
-            total_bytes = b
-            emit(
-                bytes_done=b,
-                bytes_total=None,  # rsync doesn't always provide global total
-                bytes_per_s=rate_bps,
-                files_done=files_done,
-                files_total=files_total,
-            )
-            continue
+    try:
+        for evt in iter_parsed_events("rsync", proc.stdout, raw_log_path=raw_log_path, heartbeat_secs=0.5):
+            # Skip heartbeat events (internal to procparsers)
+            if evt.get("event") == "heartbeat":
+                continue
 
-        # Try to catch per-file summaries (size + path)
-        fm = FILE_LINE_RE.match(s.replace(",", ""))
-        if fm:
-            sz = int(fm.group("size"))
-            path = fm.group("path")
-            total_bytes += 0  # unknown increment robustly; leave counter to PROGRESS_RE
-            emit(current_file=path, last_file_bytes=sz)
-            continue
+            # Enrich event with transfer metadata
+            evt["transfer_id"] = job_id
+            evt["method"] = "rsync"
 
-        # Emit raw line as 'note' occasionally
-        # (Avoid flooding; only on interesting markers)
-        if s.lower().startswith("sending") or s.lower().startswith("sent "):
-            emit(note=s)
+            # Map procparser events to worker event types
+            event_type = evt.get("event")
 
+            if event_type == "progress":
+                # Emit progress with all available stats
+                emit(
+                    event="progress",
+                    transfer_id=job_id,
+                    method="rsync",
+                    percent=evt.get("percent"),
+                    bytes_dl=evt.get("downloaded"),
+                    total_bytes=evt.get("total"),
+                    bytes_per_s=evt.get("speed_bps"),
+                    eta_s=evt.get("eta_s"),
+                    files_done=evt.get("files_done"),
+                    files_total=evt.get("files_total"),
+                )
+
+            elif event_type == "file":
+                # Emit file transfer event
+                emit(
+                    event="file",
+                    transfer_id=job_id,
+                    method="rsync",
+                    current_file=evt.get("path"),
+                )
+
+            elif event_type == "summary":
+                # Emit summary stats
+                emit(
+                    event="summary",
+                    transfer_id=job_id,
+                    method="rsync",
+                    files_transferred=evt.get("files_transferred"),
+                    total_size=evt.get("total_size"),
+                )
+
+    except Exception as e:
+        emit(
+            event="error",
+            transfer_id=job_id,
+            method="rsync",
+            error=str(e)
+        )
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return 1
+
+    # Wait for process completion
     ret = proc.wait()
-    if ret == 0:
-        emit(status="completed")
-    else:
-        emit(status="failed", returncode=ret)
+
+    # Emit final status
+    emit(
+        event="finish",
+        transfer_id=job_id,
+        method="rsync",
+        status="completed" if ret == 0 else "failed",
+        returncode=ret
+    )
+
     return ret
 
 
 def main() -> int:
     args = parse_args()
+
+    # Load job spec
     spec = json.loads(Path(args.job).read_text(encoding="utf-8"))
+    job_id = spec.get("id", "unknown")
+
+    # Build and run rsync command
     cmd = build_rsync_cmd(spec)
-    return run_and_stream(cmd)
+    return run_and_stream(cmd, job_id)
 
 
 if __name__ == "__main__":
