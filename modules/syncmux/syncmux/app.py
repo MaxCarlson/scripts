@@ -13,6 +13,7 @@ from .config import load_config
 from .connection import ConnectionManager
 from .models import Host, Session
 from .tmux_controller import TmuxController
+from .screens import ConfirmKillSessionScreen, NewSessionScreen
 from .widgets import HostWidget, SessionWidget
 
 
@@ -58,11 +59,22 @@ class SyncMuxApp(App):
         except (FileNotFoundError, ValueError) as e:
             self.query_one("#log-view", RichLog).write(str(e))
 
-    @on(ListView.Selected)
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
-        """Called when a list view item is selected."""
-        if event.list_view.id == "host-list":
-            self.selected_host_alias = event.item.host.alias
+    async def action_select_item(self) -> None:
+        """Select an item in the focused list view."""
+        # Get the focused widget
+        focused = self.focused
+        if focused is None:
+            return
+
+        # If host list is focused, select the host
+        if focused.id == "host-list":
+            host_list = self.query_one("#host-list", ListView)
+            if host_list.highlighted is not None:
+                self.selected_host_alias = host_list.highlighted.host.alias
+
+        # If session list is focused, attach to the session
+        elif focused.id == "session-list":
+            await self.action_attach_session()
 
     async def watch_selected_host_alias(self, old_alias: Optional[str], new_alias: Optional[str]) -> None:
         """Called when the selected host alias changes."""
@@ -105,15 +117,62 @@ class SyncMuxApp(App):
             except ConnectionError as e:
                 log.write(str(e))
 
+    
     async def action_create_session(self) -> None:
         """Creates a new session on the selected host."""
-        # This will be implemented later, as it requires a dialog.
-        pass
+        if self.selected_host_alias:
+            host = next((h for h in self.hosts if h.alias == self.selected_host_alias), None)
+            if host:
+                async def create_session_callback(name: Optional[str]) -> None:
+                    if name:
+                        async def _create_session() -> None:
+                            log = self.query_one("#log-view", RichLog)
+                            log.write(f"Creating session '{name}' on {host.alias}...")
+                            try:
+                                conn = await self.conn_manager.get_connection(host)
+                                success = await self.tmux_controller.create_session(conn, name)
+                                if success:
+                                    log.write(f"Session '{name}' created successfully.")
+                                    await self.action_refresh_host()
+                                else:
+                                    log.write(f"Failed to create session '{name}'.")
+                            except ConnectionError as e:
+                                log.write(str(e))
+                        self.call_later(_create_session)
 
+                self.push_screen(NewSessionScreen(), create_session_callback)
+
+
+    
     async def action_kill_session(self) -> None:
         """Kills the selected session."""
-        # This will be implemented later, as it requires a dialog.
-        pass
+        if self.selected_host_alias:
+            host = next((h for h in self.hosts if h.alias == self.selected_host_alias), None)
+            session_list = self.query_one("#session-list", ListView)
+            if host and session_list.highlighted is not None:
+                session = session_list.highlighted.session
+
+                def kill_session_callback(confirm: bool) -> None:
+                    if confirm:
+                        async def _kill_session() -> None:
+                            log = self.query_one("#log-view", RichLog)
+                            log.write(f"Killing session '{session.name}' on {host.alias}...")
+                            try:
+                                conn = await self.conn_manager.get_connection(host)
+                                success = await self.tmux_controller.kill_session(conn, session.name)
+                                if success:
+                                    log.write(f"Session '{session.name}' killed successfully.")
+                                    await self.action_refresh_host()
+                                else:
+                                    log.write(f"Failed to kill session '{session.name}'.")
+                            except ConnectionError as e:
+                                log.write(str(e))
+                        self.call_later(_kill_session)
+
+                self.push_screen(
+                    ConfirmKillSessionScreen(session.name), kill_session_callback
+                )
+
 
     async def action_attach_session(self) -> None:
         """Attaches to the selected session."""
