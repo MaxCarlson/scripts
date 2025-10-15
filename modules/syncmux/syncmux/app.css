@@ -5,10 +5,16 @@ Container {
 
 #host-list {
     width: 30;
+    border: solid $primary;
 }
 
 #session-list {
     width: 1fr;
+    border: solid $primary;
+}
+
+ListView:focus {
+    border: double $accent;
 }
 
 ListView > .--highlight {
@@ -18,4 +24,52 @@ ListView > .--highlight {
 #log-view {
     height: 10;
     border: solid $primary;
+    dock: bottom;
+}
+
+HostWidget {
+    height: auto;
+    padding: 0 1;
+}
+
+SessionWidget {
+    height: auto;
+    padding: 0 1;
+}
+
+.session-name {
+    width: 1fr;
+}
+
+.session-windows {
+    width: auto;
+    color: $text-muted;
+}
+
+.session-created {
+    width: auto;
+    color: $text-muted;
+}
+
+.session-attached {
+    width: auto;
+    color: $success;
+}
+
+#new-session-grid, #kill-session-grid {
+    grid-size: 2;
+    grid-gutter: 1 2;
+    padding: 1 2;
+    width: 60;
+    height: 11;
+    border: thick $background 80%;
+    background: $surface;
+}
+
+#new-session-grid Input {
+    column-span: 2;
+}
+
+#kill-session-grid Static {
+    column-span: 2;
 }

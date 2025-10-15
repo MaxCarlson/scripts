@@ -13,6 +13,8 @@ pyyaml = "^6.0.1"
 pydantic = "^2.7.1"
 pywin32 = { version = "*", platform = "win32" }
 
-[build-system]
+[tool.poetry.dev-dependencies]
+pytest = "^8.4.2"
+pytest-asyncio = "^1.2.0"
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
