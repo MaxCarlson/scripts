@@ -13,10 +13,12 @@ class HostWidget(Widget):
     def __init__(self, host: Host) -> None:
         super().__init__()
         self.host = host
+        self._session_count = 0
 
     def compose(self) -> ComposeResult:
         """Compose the widget."""
         yield Label(self.host.alias)
+        yield Static("", classes="session-count")
         yield Static("", classes="status")
 
     def set_status_connected(self) -> None:
@@ -33,6 +35,17 @@ class HostWidget(Widget):
         """Set the status to error."""
         self.query_one(".status").update("● Error")
         self.styles.background = "red"
+
+    def update_session_count(self, count: int) -> None:
+        """Update the session count display."""
+        self._session_count = count
+        count_widget = self.query_one(".session-count", Static)
+        if count == 0:
+            count_widget.update("(no sessions)")
+        elif count == 1:
+            count_widget.update("(1 session)")
+        else:
+            count_widget.update(f"({count} sessions)")
 
 
 class SessionWidget(Widget):
