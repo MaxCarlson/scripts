@@ -1,11 +1,43 @@
 
-Container {
+#main-container {
     layout: horizontal;
 }
 
 #host-list {
     width: 30;
     border: solid $primary;
+}
+
+#session-panel {
+    width: 1fr;
+}
+
+#filter-container {
+    layout: horizontal;
+    height: auto;
+    padding: 0 1;
+    background: $panel;
+    border: solid $accent;
+    margin-bottom: 1;
+}
+
+#filter-container.hidden {
+    display: none;
+}
+
+#filter-label {
+    width: auto;
+    margin-right: 1;
+}
+
+#filter-input {
+    width: 1fr;
+}
+
+#sort-indicator {
+    height: auto;
+    padding: 0 1;
+    text-align: right;
 }
 
 #session-list {
