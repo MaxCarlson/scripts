@@ -14,7 +14,7 @@ from .config import load_config
 from .connection import ConnectionManager
 from .models import Host, Session
 from .tmux_controller import TmuxController
-from .screens import ConfirmKillSessionScreen, NewSessionScreen
+from .screens import ConfirmKillSessionScreen, ErrorDialog, HelpScreen, NewSessionScreen
 from .widgets import HostWidget, SessionWidget
 
 
@@ -32,6 +32,7 @@ class SyncMuxApp(App):
         ("d", "kill_session", "Kill Session"),
         ("r", "refresh_host", "Refresh Host"),
         ("ctrl+r", "refresh_all_hosts", "Refresh All"),
+        ("question_mark,f1", "show_help", "Help"),
         ("q", "quit", "Quit"),
     ]
 
@@ -49,8 +50,14 @@ class SyncMuxApp(App):
         yield RichLog(id="log-view")
         yield Footer()
 
-    def _log(self, message: str, level: str = "info") -> None:
-        """Log a message with timestamp and optional level indicator."""
+    def _log(self, message: str, level: str = "info", show_dialog: bool = False) -> None:
+        """Log a message with timestamp and optional level indicator.
+
+        Args:
+            message: The message to log
+            level: The severity level (info, success, warning, error)
+            show_dialog: If True and level is error, show a modal error dialog
+        """
         timestamp = datetime.now().strftime("%H:%M:%S")
         log = self.query_one("#log-view", RichLog)
 
@@ -65,6 +72,10 @@ class SyncMuxApp(App):
             prefix = "ℹ️"
 
         log.write(f"[{timestamp}] {prefix} {message}")
+
+        # Show modal dialog for critical errors if requested
+        if show_dialog and level == "error":
+            self.push_screen(ErrorDialog("Error", message))
 
     async def on_mount(self) -> None:
         """Called when the app is mounted."""
@@ -81,8 +92,10 @@ class SyncMuxApp(App):
             host_list.focus()
             self._log(f"Loaded {len(self.hosts)} hosts from configuration", "success")
             await self.action_refresh_all_hosts()
-        except (FileNotFoundError, ValueError) as e:
-            self._log(str(e), "error")
+        except FileNotFoundError as e:
+            self._log(str(e), "error", show_dialog=True)
+        except ValueError as e:
+            self._log(f"Configuration error: {e}", "error", show_dialog=True)
 
     def action_cursor_down(self) -> None:
         """Move the cursor down in the focused list view."""
@@ -169,6 +182,16 @@ class SyncMuxApp(App):
 
         try:
             conn = await self.conn_manager.get_connection(host)
+
+            # Check if tmux is available before trying to list sessions
+            is_available, tmux_message = await self.tmux_controller.check_tmux_available(conn)
+            if not is_available:
+                self._log(f"{host.alias}: {tmux_message} - Install tmux to manage sessions", "warning")
+                if host.alias in self.host_widgets:
+                    self.host_widgets[host.alias].set_status_error()
+                    self.host_widgets[host.alias].update_session_count(0)
+                return (host.alias, [])  # Return empty list, not None (tmux missing, not connection failed)
+
             sessions = await self.tmux_controller.list_sessions(conn)
             self._log(f"Found {len(sessions)} sessions for {host.alias}", "success")
 
@@ -312,6 +335,10 @@ class SyncMuxApp(App):
 
                 # Replace current process with SSH
                 os.execvp(cmd[0], cmd)
+
+    def action_show_help(self) -> None:
+        """Show the keyboard shortcuts help screen."""
+        self.push_screen(HelpScreen())
 
     async def on_unmount(self) -> None:
         """Called when the app is unmounted."""

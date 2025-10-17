@@ -1,6 +1,6 @@
 
 from textual.app import ComposeResult
-from textual.containers import Grid
+from textual.containers import Grid, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Static
 
@@ -58,3 +58,72 @@ class ConfirmKillSessionScreen(ModalScreen):
             self.dismiss(True)
         else:
             self.dismiss(False)
+
+
+class HelpScreen(ModalScreen):
+    """A screen showing keyboard shortcuts and help."""
+
+    BINDINGS = [("escape", "dismiss", "Close")]
+
+    def compose(self) -> ComposeResult:
+        """Compose the help screen."""
+        help_text = """
+[bold cyan]SyncMux - Keyboard Shortcuts[/bold cyan]
+
+[bold yellow]Navigation:[/bold yellow]
+  j, ↓         Move cursor down in active list
+  k, ↑         Move cursor up in active list
+  Tab          Switch focus between host and session lists
+  Enter        Select host / Attach to session
+
+[bold yellow]Session Management:[/bold yellow]
+  n            Create new session on selected host
+  d            Kill selected session (with confirmation)
+
+[bold yellow]Refresh:[/bold yellow]
+  r            Refresh current host's sessions
+  Ctrl+R       Refresh all hosts concurrently
+
+[bold yellow]Help & Exit:[/bold yellow]
+  ?, F1        Show this help screen
+  q, Ctrl+C    Quit application
+  Escape       Close dialogs/help
+
+[bold cyan]Tips:[/bold cyan]
+• Session names: letters, numbers, -, _, spaces (auto-converted to _)
+• Connection status shown with colored indicators in host list
+• Session count displayed next to each host name
+• Timestamped logs at bottom show operation details
+"""
+        with Vertical(id="help-container"):
+            yield Static(help_text, id="help-text")
+            yield Button("Close (Esc)", variant="primary", id="close")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Called when close button is pressed."""
+        self.dismiss()
+
+
+class ErrorDialog(ModalScreen):
+    """A modal dialog for displaying error messages."""
+
+    BINDINGS = [("escape", "dismiss", "Close")]
+
+    def __init__(self, title: str, message: str, details: str = "") -> None:
+        super().__init__()
+        self.title = title
+        self.message = message
+        self.details = details
+
+    def compose(self) -> ComposeResult:
+        """Compose the error dialog."""
+        with Vertical(id="error-dialog-container"):
+            yield Static(f"[bold red]{self.title}[/bold red]", id="error-title")
+            yield Static(self.message, id="error-message")
+            if self.details:
+                yield Static(f"\n[dim]{self.details}[/dim]", id="error-details")
+            yield Button("OK (Esc)", variant="error", id="ok")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Called when OK button is pressed."""
+        self.dismiss()
