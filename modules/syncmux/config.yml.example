@@ -1,0 +1,19 @@
+
+hosts:
+  - alias: "local-wsl"
+    hostname: "localhost"
+    user: "ubuntu_user"
+    auth_method: "agent"
+
+  - alias: "remote-server"
+    hostname: "192.168.1.100"
+    port: 2222
+    user: "devops"
+    auth_method: "key"
+    key_path: "~/.ssh/id_rsa_server"
+
+  - alias: "legacy-device"
+    hostname: "legacy.internal"
+    user: "admin"
+    auth_method: "password"
+    password: "INSECURE_PASSWORD" # For demonstration; use with caution
