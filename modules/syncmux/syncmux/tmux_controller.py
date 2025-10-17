@@ -159,7 +159,7 @@ class TmuxController:
         Returns:
             List of window names (e.g., ["vim", "shell", "logs"])
         """
-        command = f'tmux list-windows -t {session_name} -F "#{window_name}"'
+        command = f'tmux list-windows -t {session_name} -F "#{{window_name}}"'
         try:
             result = await conn.run(command)
             if result.exit_status == 0:
