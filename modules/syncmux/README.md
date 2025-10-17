@@ -3,14 +3,17 @@
 
 A centralized, cross-device tmux session manager with a modern TUI built on Textual and AsyncSSH.
 
-## Features (MVP)
+## Features
 
-- ✅ List and manage tmux sessions across multiple remote hosts
-- ✅ Create new tmux sessions on any configured host
-- ✅ Kill tmux sessions with confirmation
-- ✅ Attach to remote tmux sessions (terminal handoff via SSH)
-- ✅ Asynchronous operations - UI never blocks on network I/O
-- ✅ Cross-platform: Windows 11, WSL2, Termux
+- ✅ **Multi-host tmux management** - List and manage sessions across multiple remote hosts
+- ✅ **Full session lifecycle** - Create, attach, and kill tmux sessions
+- ✅ **Keyboard-driven navigation** - Intuitive j/k navigation and tab switching
+- ✅ **Visual connection status** - Real-time indicators (connecting/connected/error)
+- ✅ **Concurrent operations** - All hosts refresh simultaneously for faster updates
+- ✅ **Platform-specific SSH** - Automatic SSH binary detection on Windows/Unix/Termux
+- ✅ **Input validation** - Session name sanitization and validation
+- ✅ **Asynchronous architecture** - UI never blocks on network I/O
+- ✅ **Cross-platform** - Windows 11, WSL2, Termux, Linux
 
 ## Installation
 
@@ -58,13 +61,14 @@ syncmux
 
 ### Keyboard Shortcuts
 
-- `j`/`k` or `↓`/`↑` - Navigate lists
+- `j`/`k` - Navigate down/up in active list
+- `Tab` - Switch focus between host and session lists
 - `Enter` - Select host / Attach to session
-- `n` - Create new session
-- `d` - Kill session (with confirmation)
-- `r` - Refresh current host
-- `Ctrl+R` - Refresh all hosts
-- `q` - Quit
+- `n` - Create new session on selected host
+- `d` - Kill selected session (with confirmation)
+- `r` - Refresh current host's sessions
+- `Ctrl+R` - Refresh all hosts concurrently
+- `q` - Quit application
 
 ## Architecture
 
@@ -80,15 +84,70 @@ Key principles:
 
 ## Testing
 
+The project includes comprehensive test coverage with 28+ tests:
+
 ```bash
+cd modules/syncmux
 pytest tests/ -v
 ```
 
+Test categories:
+- **Models**: Data validation with Pydantic
+- **Config**: Configuration file loading and error handling
+- **TmuxController**: Remote tmux command execution and parsing
+- **ConnectionManager**: SSH connection pooling and lifecycle
+- **Widgets**: UI component creation and status updates
+- **Platform**: Cross-platform SSH command generation
+- **App**: Integration tests for session creation and deletion
+
+## Platform-Specific Notes
+
+### Termux (Android)
+- SSH binary is automatically located via PATH
+- Works with both local and remote tmux servers
+- Ensure `openssh` package is installed: `pkg install openssh`
+
+### Windows 11
+- Automatically detects SSH in System32 OpenSSH or Git installation
+- Falls back to PATH if neither location found
+- Requires Windows OpenSSH client or Git for Windows
+
+### WSL2 / Linux
+- Uses standard `ssh` from PATH
+- Supports SSH agent forwarding for passwordless authentication
+
+## Authentication Methods
+
+SyncMux supports three authentication methods:
+
+1. **SSH Agent** (`auth_method: "agent"`)
+   - Most secure and convenient
+   - Works with ssh-agent (Unix) or Pageant (Windows)
+   - No credentials stored in config file
+
+2. **Public Key** (`auth_method: "key"`)
+   - Specify path to private key file
+   - Example: `key_path: "~/.ssh/id_rsa"`
+
+3. **Password** (`auth_method: "password"`)
+   - Store password in config (not recommended)
+   - Ensure config file has strict permissions: `chmod 600 ~/.config/syncmux/config.yml`
+
+## Session Name Validation
+
+Session names are automatically validated and sanitized:
+- Must not be empty
+- Maximum 100 characters
+- Cannot contain colons (`:`) or dots (`.`)
+- Only letters, numbers, hyphens, underscores, and spaces allowed
+- Spaces are automatically converted to underscores
+
 ## Development Status
 
-This is an MVP (Minimum Viable Product) implementation. Future enhancements:
-- Connection status indicators in host list
+Core features complete with comprehensive test coverage. Future enhancements:
 - Session filtering and search
-- Multi-host session operations
-- Configuration validation and error recovery
-- More comprehensive test coverage
+- Custom key bindings
+- Theming support
+- Session grouping and tags
+- Connection retry logic
+- Logging and debug mode

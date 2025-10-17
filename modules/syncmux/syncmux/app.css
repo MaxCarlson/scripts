@@ -32,6 +32,11 @@ HostWidget {
     padding: 0 1;
 }
 
+HostWidget .session-count {
+    color: $text-muted;
+    margin-left: 1;
+}
+
 SessionWidget {
     height: auto;
     padding: 0 1;
@@ -61,15 +66,77 @@ SessionWidget {
     grid-gutter: 1 2;
     padding: 1 2;
     width: 60;
-    height: 11;
+    height: 15;
     border: thick $background 80%;
     background: $surface;
+}
+
+#new-session-grid #title {
+    column-span: 2;
+    text-align: center;
+    text-style: bold;
+    margin-bottom: 1;
 }
 
 #new-session-grid Input {
     column-span: 2;
 }
 
+#new-session-grid .error {
+    column-span: 2;
+    color: $error;
+    text-align: center;
+    height: 1;
+}
+
 #kill-session-grid Static {
     column-span: 2;
+}
+
+#help-container {
+    width: 80;
+    height: 32;
+    border: thick $background 80%;
+    background: $surface;
+    padding: 2;
+}
+
+#help-text {
+    height: 1fr;
+    overflow-y: auto;
+}
+
+#help-container Button {
+    width: 20;
+    margin: 1 auto;
+}
+
+#error-dialog-container {
+    width: 70;
+    height: auto;
+    max-height: 25;
+    border: thick $error 80%;
+    background: $surface;
+    padding: 2;
+}
+
+#error-title {
+    text-align: center;
+    margin-bottom: 1;
+}
+
+#error-message {
+    margin-bottom: 1;
+}
+
+#error-details {
+    margin-bottom: 1;
+    height: auto;
+    max-height: 10;
+    overflow-y: auto;
+}
+
+#error-dialog-container Button {
+    width: 15;
+    margin: 1 auto;
 }
