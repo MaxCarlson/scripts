@@ -128,3 +128,43 @@ class TmuxController:
             return result.exit_status == 0
         except asyncssh.ProcessError:
             return False
+
+    async def rename_session(self, conn: asyncssh.SSHClientConnection, old_name: str, new_name: str) -> bool:
+        """Renames a tmux session.
+
+        Args:
+            conn: SSH connection
+            old_name: Current session name
+            new_name: New session name
+
+        Returns:
+            True if rename was successful, False otherwise
+        """
+        # Sanitize the new session name
+        sanitized_name = self.sanitize_session_name(new_name)
+        command = f"tmux rename-session -t {old_name} {sanitized_name}"
+        try:
+            result = await conn.run(command)
+            return result.exit_status == 0
+        except asyncssh.ProcessError:
+            return False
+
+    async def list_windows(self, conn: asyncssh.SSHClientConnection, session_name: str) -> List[str]:
+        """Lists window names for a given session.
+
+        Args:
+            conn: SSH connection
+            session_name: Name of the session
+
+        Returns:
+            List of window names (e.g., ["vim", "shell", "logs"])
+        """
+        command = f'tmux list-windows -t {session_name} -F "#{window_name}"'
+        try:
+            result = await conn.run(command)
+            if result.exit_status == 0:
+                windows = [line.strip() for line in result.stdout.strip().split("\n") if line.strip()]
+                return windows
+            return []
+        except asyncssh.ProcessError:
+            return []

@@ -14,7 +14,14 @@ from .config import load_config
 from .connection import ConnectionManager
 from .models import Host, Session
 from .tmux_controller import TmuxController
-from .screens import ConfirmKillSessionScreen, ErrorDialog, HelpScreen, NewSessionScreen
+from .screens import (
+    ConfirmKillSessionScreen,
+    ErrorDialog,
+    HelpScreen,
+    NewSessionScreen,
+    RenameSessionScreen,
+    SessionInfoScreen,
+)
 from .widgets import HostWidget, SessionWidget
 
 
@@ -30,6 +37,8 @@ class SyncMuxApp(App):
         ("enter", "select_item", "Select"),
         ("n", "create_session", "New Session"),
         ("d", "kill_session", "Kill Session"),
+        ("upper_r", "rename_session", "Rename Session"),
+        ("i", "show_session_info", "Session Info"),
         ("r", "refresh_host", "Refresh Host"),
         ("ctrl+r", "refresh_all_hosts", "Refresh All"),
         ("slash", "toggle_filter", "Filter Sessions"),
@@ -397,6 +406,49 @@ class SyncMuxApp(App):
                 self.push_screen(
                     ConfirmKillSessionScreen(session.name), kill_session_callback
                 )
+
+    async def action_rename_session(self) -> None:
+        """Renames the selected session."""
+        if self.selected_host_alias:
+            host = next((h for h in self.hosts if h.alias == self.selected_host_alias), None)
+            session_list = self.query_one("#session-list", ListView)
+            if host and session_list.highlighted is not None:
+                session = session_list.highlighted.session
+
+                async def rename_session_callback(new_name: Optional[str]) -> None:
+                    if new_name:
+                        async def _rename_session() -> None:
+                            self._log(f"Renaming session '{session.name}' to '{new_name}' on {host.alias}...", "info")
+                            try:
+                                conn = await self.conn_manager.get_connection(host)
+                                success = await self.tmux_controller.rename_session(conn, session.name, new_name)
+                                if success:
+                                    self._log(f"Session renamed successfully", "success")
+                                    await self.action_refresh_host()
+                                else:
+                                    self._log(f"Failed to rename session", "error")
+                            except ConnectionError as e:
+                                self._log(str(e), "error")
+                            except ValueError as e:
+                                self._log(f"Invalid session name: {e}", "error")
+                        self.call_later(_rename_session)
+
+                self.push_screen(RenameSessionScreen(session.name), rename_session_callback)
+
+    async def action_show_session_info(self) -> None:
+        """Shows detailed information about the selected session."""
+        if self.selected_host_alias:
+            host = next((h for h in self.hosts if h.alias == self.selected_host_alias), None)
+            session_list = self.query_one("#session-list", ListView)
+            if host and session_list.highlighted is not None:
+                session = session_list.highlighted.session
+                self._log(f"Loading session info for '{session.name}'...", "info")
+                try:
+                    conn = await self.conn_manager.get_connection(host)
+                    windows = await self.tmux_controller.list_windows(conn, session.name)
+                    self.push_screen(SessionInfoScreen(session, windows))
+                except ConnectionError as e:
+                    self._log(str(e), "error")
 
 
     def _get_ssh_command(self, host: Host, session_name: str) -> list[str]:
