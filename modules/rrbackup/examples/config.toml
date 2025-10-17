@@ -1,0 +1,77 @@
+[repository]
+# Use ONE of the following styles:
+url = "rclone:gdrive:/backups/rrbackup"
+# url = "/mnt/d/restic-repo"
+
+# Prefer storing password in a file:
+password_file = "~/.config/rrbackup/restic_password.txt"
+# Alternatively (less secure), reference an env var that already contains the secret:
+# password_env = "RESTIC_PASSWORD"
+
+[restic]
+bin = "restic"
+
+[rclone]
+bin = "rclone"
+
+[state]
+# If omitted, defaults to OS-specific cache dir:
+#   Windows: %LOCALAPPDATA%/rrbackup
+#   Linux:   ~/.cache/rrbackup
+dir = ""
+
+[log]
+# Defaults to "<state.dir>/logs" if omitted
+dir = ""
+
+[retention]
+keep_daily  = 7
+keep_weekly = 4
+keep_monthly = 6
+keep_yearly = 2
+
+[[backup_sets]]
+name = "documents"
+include = [
+  "C:/Users/mcarls/Documents",
+  "C:/Users/mcarls/Pictures",
+]
+exclude = [
+  "**/.git",
+  "**/.venv",
+  "**/node_modules",
+  "**/__pycache__",
+  "**/.cache",
+]
+tags = ["host:win11", "tier:important"]
+one_fs = false
+dry_run_default = false
+schedule = "daily 02:00"
+backup_type = "incremental"
+max_snapshots = 30
+encryption = "repository-default"
+compression = "auto"
+
+[[backup_sets]]
+name = "repos"
+include = [
+  "C:/Users/mcarls/Repos",
+]
+exclude = [
+  "**/.git",
+  "**/.venv",
+  "**/node_modules",
+  "**/__pycache__",
+  "**/.cache",
+  "**/build",
+  "**/dist",
+  "**/*.egg-info",
+]
+tags = ["host:win11", "tier:code"]
+one_fs = false
+dry_run_default = false
+schedule = "weekdays 23:00"
+backup_type = "incremental"
+max_snapshots = 14
+encryption = "repository-default"
+compression = "auto"

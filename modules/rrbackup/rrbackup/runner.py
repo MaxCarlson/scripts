@@ -133,8 +133,10 @@ def run_check(cfg: Settings) -> None:
     run_restic(cfg, ["check"], log_prefix="check")
 
 
-def run_forget_prune(cfg: Settings) -> None:
-    r = cfg.retention
+def run_forget_prune(cfg: Settings, *, policy: "RetentionPolicy | None" = None) -> None:
+    from .config import RetentionPolicy  # local import to avoid cycle
+
+    r: RetentionPolicy = policy or cfg.retention_defaults
     args: list[str] = ["forget", "--prune"]
     if r.keep_last is not None:
         args += ["--keep-last", str(r.keep_last)]
