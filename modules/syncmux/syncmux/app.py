@@ -25,6 +25,7 @@ class SyncMuxApp(App):
     BINDINGS = [
         ("j", "cursor_down", "Cursor Down"),
         ("k", "cursor_up", "Cursor Up"),
+        ("tab", "switch_list", "Switch List"),
         ("enter", "select_item", "Select"),
         ("n", "create_session", "New Session"),
         ("d", "kill_session", "Kill Session"),
@@ -36,6 +37,7 @@ class SyncMuxApp(App):
     hosts: var[List[Host]] = var([])
     sessions: var[Dict[str, List[Session]]] = var({})
     selected_host_alias: var[Optional[str]] = var(None)
+    host_widgets: Dict[str, HostWidget] = {}
 
     def compose(self) -> ComposeResult:
         """Compose the application."""
@@ -54,10 +56,36 @@ class SyncMuxApp(App):
             self.hosts = load_config()
             host_list = self.query_one("#host-list", ListView)
             for host in self.hosts:
-                host_list.append(HostWidget(host))
+                widget = HostWidget(host)
+                self.host_widgets[host.alias] = widget
+                host_list.append(widget)
+            # Set initial focus on host list
+            host_list.focus()
             await self.action_refresh_all_hosts()
         except (FileNotFoundError, ValueError) as e:
             self.query_one("#log-view", RichLog).write(str(e))
+
+    def action_cursor_down(self) -> None:
+        """Move the cursor down in the focused list view."""
+        focused = self.focused
+        if focused and isinstance(focused, ListView):
+            focused.action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        """Move the cursor up in the focused list view."""
+        focused = self.focused
+        if focused and isinstance(focused, ListView):
+            focused.action_cursor_up()
+
+    def action_switch_list(self) -> None:
+        """Switch focus between host and session lists."""
+        host_list = self.query_one("#host-list", ListView)
+        session_list = self.query_one("#session-list", ListView)
+
+        if self.focused == host_list:
+            session_list.focus()
+        else:
+            host_list.focus()
 
     async def action_select_item(self) -> None:
         """Select an item in the focused list view."""
@@ -96,26 +124,44 @@ class SyncMuxApp(App):
             host = next((h for h in self.hosts if h.alias == self.selected_host_alias), None)
             if host:
                 log.write(f"Refreshing sessions for {host.alias}...")
+                # Update status to connecting
+                if self.selected_host_alias in self.host_widgets:
+                    self.host_widgets[self.selected_host_alias].set_status_connecting()
                 try:
                     conn = await self.conn_manager.get_connection(host)
                     sessions = await self.tmux_controller.list_sessions(conn)
                     self.sessions = {**self.sessions, self.selected_host_alias: sessions}
                     log.write(f"Found {len(sessions)} sessions for {host.alias}.")
+                    # Update status to connected
+                    if self.selected_host_alias in self.host_widgets:
+                        self.host_widgets[self.selected_host_alias].set_status_connected()
                 except ConnectionError as e:
                     log.write(str(e))
+                    # Update status to error
+                    if self.selected_host_alias in self.host_widgets:
+                        self.host_widgets[self.selected_host_alias].set_status_error()
 
     async def action_refresh_all_hosts(self) -> None:
         """Refreshes the sessions for all hosts."""
         log = self.query_one("#log-view", RichLog)
         log.write("Refreshing all hosts...")
         for host in self.hosts:
+            # Update status to connecting
+            if host.alias in self.host_widgets:
+                self.host_widgets[host.alias].set_status_connecting()
             try:
                 conn = await self.conn_manager.get_connection(host)
                 sessions = await self.tmux_controller.list_sessions(conn)
                 self.sessions = {**self.sessions, host.alias: sessions}
                 log.write(f"Found {len(sessions)} sessions for {host.alias}.")
+                # Update status to connected
+                if host.alias in self.host_widgets:
+                    self.host_widgets[host.alias].set_status_connected()
             except ConnectionError as e:
                 log.write(str(e))
+                # Update status to error
+                if host.alias in self.host_widgets:
+                    self.host_widgets[host.alias].set_status_error()
 
     
     async def action_create_session(self) -> None:
