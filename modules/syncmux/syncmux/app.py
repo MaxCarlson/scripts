@@ -162,30 +162,40 @@ class SyncMuxApp(App):
     def watch_sort_mode(self, old_mode: str, new_mode: str) -> None:
         """Called when the sort mode changes."""
         self._update_session_list()
-        # Update sort indicator
-        sort_indicator = self.query_one("#sort-indicator", Static)
-        mode_display = {
-            "name": "Sort: Name (A-Z)",
-            "created": "Sort: Created (Newest First)",
-            "windows": "Sort: Window Count (Most First)",
-            "attached": "Sort: Attached Status"
-        }
-        sort_indicator.update(f"[dim]{mode_display.get(new_mode, '')}[/dim]")
+        # Update sort indicator if app is mounted
+        if self.is_mounted:
+            try:
+                sort_indicator = self.query_one("#sort-indicator", Static)
+                mode_display = {
+                    "name": "Sort: Name (A-Z)",
+                    "created": "Sort: Created (Newest First)",
+                    "windows": "Sort: Window Count (Most First)",
+                    "attached": "Sort: Attached Status"
+                }
+                sort_indicator.update(f"[dim]{mode_display.get(new_mode, '')}[/dim]")
+            except Exception:
+                pass  # Widget not available (e.g., during testing)
 
     def watch_filter_visible(self, old_visible: bool, new_visible: bool) -> None:
         """Called when filter visibility changes."""
-        filter_container = self.query_one("#filter-container", Container)
-        filter_input = self.query_one("#filter-input", Input)
+        if not self.is_mounted:
+            return
 
-        if new_visible:
-            filter_container.remove_class("hidden")
-            filter_input.focus()
-        else:
-            filter_container.add_class("hidden")
-            self.filter_text = ""  # Clear filter when hiding
-            # Return focus to session list
-            session_list = self.query_one("#session-list", ListView)
-            session_list.focus()
+        try:
+            filter_container = self.query_one("#filter-container", Container)
+            filter_input = self.query_one("#filter-input", Input)
+
+            if new_visible:
+                filter_container.remove_class("hidden")
+                filter_input.focus()
+            else:
+                filter_container.add_class("hidden")
+                self.filter_text = ""  # Clear filter when hiding
+                # Return focus to session list
+                session_list = self.query_one("#session-list", ListView)
+                session_list.focus()
+        except Exception:
+            pass  # Widgets not available (e.g., during testing)
 
     def _filter_sessions(self, sessions: List[Session]) -> List[Session]:
         """Filter sessions based on filter_text."""
@@ -209,7 +219,10 @@ class SyncMuxApp(App):
 
     def _update_session_list(self) -> None:
         """Update the session list with filtered and sorted sessions."""
-        if self.selected_host_alias:
+        if not self.is_mounted or not self.selected_host_alias:
+            return
+
+        try:
             session_list = self.query_one("#session-list", ListView)
             session_list.clear()
 
@@ -219,6 +232,8 @@ class SyncMuxApp(App):
 
             for session in sorted_sessions:
                 session_list.append(SessionWidget(session))
+        except Exception:
+            pass  # Widget not available (e.g., during testing)
 
     def action_toggle_filter(self) -> None:
         """Toggle the filter input visibility."""
