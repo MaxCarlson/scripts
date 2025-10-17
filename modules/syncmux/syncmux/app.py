@@ -141,27 +141,51 @@ class SyncMuxApp(App):
                     if self.selected_host_alias in self.host_widgets:
                         self.host_widgets[self.selected_host_alias].set_status_error()
 
+    async def _refresh_single_host(self, host: Host) -> tuple[str, List[Session] | None]:
+        """Refresh sessions for a single host. Returns (alias, sessions or None)."""
+        log = self.query_one("#log-view", RichLog)
+
+        # Update status to connecting
+        if host.alias in self.host_widgets:
+            self.host_widgets[host.alias].set_status_connecting()
+
+        try:
+            conn = await self.conn_manager.get_connection(host)
+            sessions = await self.tmux_controller.list_sessions(conn)
+            log.write(f"Found {len(sessions)} sessions for {host.alias}.")
+
+            # Update status to connected
+            if host.alias in self.host_widgets:
+                self.host_widgets[host.alias].set_status_connected()
+
+            return (host.alias, sessions)
+        except ConnectionError as e:
+            log.write(str(e))
+            # Update status to error
+            if host.alias in self.host_widgets:
+                self.host_widgets[host.alias].set_status_error()
+            return (host.alias, None)
+
     async def action_refresh_all_hosts(self) -> None:
-        """Refreshes the sessions for all hosts."""
+        """Refreshes the sessions for all hosts concurrently."""
+        import asyncio
+
         log = self.query_one("#log-view", RichLog)
         log.write("Refreshing all hosts...")
-        for host in self.hosts:
-            # Update status to connecting
-            if host.alias in self.host_widgets:
-                self.host_widgets[host.alias].set_status_connecting()
-            try:
-                conn = await self.conn_manager.get_connection(host)
-                sessions = await self.tmux_controller.list_sessions(conn)
-                self.sessions = {**self.sessions, host.alias: sessions}
-                log.write(f"Found {len(sessions)} sessions for {host.alias}.")
-                # Update status to connected
-                if host.alias in self.host_widgets:
-                    self.host_widgets[host.alias].set_status_connected()
-            except ConnectionError as e:
-                log.write(str(e))
-                # Update status to error
-                if host.alias in self.host_widgets:
-                    self.host_widgets[host.alias].set_status_error()
+
+        # Refresh all hosts concurrently
+        results = await asyncio.gather(
+            *[self._refresh_single_host(host) for host in self.hosts],
+            return_exceptions=False
+        )
+
+        # Update sessions dict with results
+        new_sessions = {}
+        for alias, sessions in results:
+            if sessions is not None:
+                new_sessions[alias] = sessions
+
+        self.sessions = {**self.sessions, **new_sessions}
 
     
     async def action_create_session(self) -> None:
@@ -220,6 +244,40 @@ class SyncMuxApp(App):
                 )
 
 
+    def _get_ssh_command(self, host: Host, session_name: str) -> list[str]:
+        """Construct platform-specific SSH command for attaching to a session."""
+        # Detect platform
+        is_windows = sys.platform == "win32"
+        is_termux = os.path.exists("/data/data/com.termux")
+
+        # Base SSH arguments
+        ssh_args = [
+            f"{host.user}@{host.hostname}",
+            "-p",
+            str(host.port),
+            "-t",  # Force pseudo-tty allocation
+            "tmux",
+            "attach-session",
+            "-t",
+            session_name,
+        ]
+
+        if is_windows:
+            # On Windows, use full path to ssh.exe
+            # Try common locations
+            ssh_path = "ssh"  # Default to PATH
+            for candidate in [
+                r"C:\Windows\System32\OpenSSH\ssh.exe",
+                r"C:\Program Files\Git\usr\bin\ssh.exe",
+            ]:
+                if os.path.exists(candidate):
+                    ssh_path = candidate
+                    break
+            return [ssh_path] + ssh_args
+        else:
+            # Unix-like systems (Linux, WSL, Termux)
+            return ["ssh"] + ssh_args
+
     async def action_attach_session(self) -> None:
         """Attaches to the selected session."""
         if self.selected_host_alias:
@@ -228,17 +286,11 @@ class SyncMuxApp(App):
             if host and session_list.highlighted is not None:
                 session = session_list.highlighted.session
                 await self.app.exit()
-                cmd = [
-                    "ssh",
-                    f"{host.user}@{host.hostname}",
-                    "-p",
-                    str(host.port),
-                    "-t",
-                    "tmux",
-                    "attach-session",
-                    "-t",
-                    session.name,
-                ]
+
+                # Get platform-specific SSH command
+                cmd = self._get_ssh_command(host, session.name)
+
+                # Replace current process with SSH
                 os.execvp(cmd[0], cmd)
 
     async def on_unmount(self) -> None:
