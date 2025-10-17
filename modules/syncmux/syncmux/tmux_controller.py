@@ -14,6 +14,27 @@ class TmuxController:
 
     FORMAT = "#{session_id}|#{session_name}|#{session_windows}|#{session_attached}|#{session_created}"
 
+    async def check_tmux_available(self, conn: asyncssh.SSHClientConnection) -> tuple[bool, str]:
+        """Check if tmux is installed and accessible on the remote host.
+
+        Returns:
+            tuple: (is_available: bool, message: str)
+        """
+        try:
+            # Try to get tmux version
+            result = await conn.run("tmux -V", check=False)
+
+            if result.exit_status == 0:
+                version = result.stdout.strip()
+                return (True, f"tmux is available: {version}")
+            else:
+                return (False, "tmux command found but returned an error")
+
+        except asyncssh.ProcessError:
+            return (False, "tmux is not installed on this host")
+        except Exception as e:
+            return (False, f"Error checking tmux availability: {e}")
+
     @staticmethod
     def sanitize_session_name(name: str) -> str:
         """Sanitize and validate a session name.

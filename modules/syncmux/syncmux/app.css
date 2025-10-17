@@ -92,3 +92,51 @@ SessionWidget {
 #kill-session-grid Static {
     column-span: 2;
 }
+
+#help-container {
+    width: 80;
+    height: 32;
+    border: thick $background 80%;
+    background: $surface;
+    padding: 2;
+}
+
+#help-text {
+    height: 1fr;
+    overflow-y: auto;
+}
+
+#help-container Button {
+    width: 20;
+    margin: 1 auto;
+}
+
+#error-dialog-container {
+    width: 70;
+    height: auto;
+    max-height: 25;
+    border: thick $error 80%;
+    background: $surface;
+    padding: 2;
+}
+
+#error-title {
+    text-align: center;
+    margin-bottom: 1;
+}
+
+#error-message {
+    margin-bottom: 1;
+}
+
+#error-details {
+    margin-bottom: 1;
+    height: auto;
+    max-height: 10;
+    overflow-y: auto;
+}
+
+#error-dialog-container Button {
+    width: 15;
+    margin: 1 auto;
+}

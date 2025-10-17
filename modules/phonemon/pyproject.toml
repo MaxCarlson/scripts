@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phonemon"
+version = "0.1.0"
+description = "Phone-friendly (Termux-ready) system monitor TUI similar to btop."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Max/ChatGPT Collab" }]
+license = { text = "MIT" }
+dependencies = [
+    "psutil>=5.9",
+    "plotille>=5.0",
+]
+
+[project.scripts]
+phonemon = "phonemon.cli:main"
+
+[tool.setuptools]
+# Discover packages from the repository root
+package-dir = { "" = "." }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["phonemon*"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
