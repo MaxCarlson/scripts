@@ -4,6 +4,8 @@ from textual.containers import Grid
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Static
 
+from .tmux_controller import TmuxController
+
 
 class NewSessionScreen(ModalScreen):
     """A screen to create a new session."""
@@ -11,14 +13,27 @@ class NewSessionScreen(ModalScreen):
     def compose(self) -> ComposeResult:
         """Compose the screen."""
         with Grid(id="new-session-grid"):
-            yield Input(placeholder="Session name")
+            yield Static("Create New Session", id="title")
+            yield Input(placeholder="Session name", id="session-name-input")
+            yield Static("", id="error-message", classes="error")
             yield Button("Create", variant="primary", id="create")
             yield Button("Cancel", id="cancel")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Called when a button is pressed."""
         if event.button.id == "create":
-            self.dismiss(self.query_one(Input).value)
+            input_widget = self.query_one("#session-name-input", Input)
+            error_widget = self.query_one("#error-message", Static)
+            session_name = input_widget.value.strip()
+
+            # Validate the session name
+            try:
+                sanitized_name = TmuxController.sanitize_session_name(session_name)
+                self.dismiss(sanitized_name)
+            except ValueError as e:
+                # Show error message
+                error_widget.update(f"⚠️ {str(e)}")
+                input_widget.focus()
         else:
             self.dismiss(None)
 

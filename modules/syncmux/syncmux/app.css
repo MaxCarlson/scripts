@@ -66,13 +66,27 @@ SessionWidget {
     grid-gutter: 1 2;
     padding: 1 2;
     width: 60;
-    height: 11;
+    height: 15;
     border: thick $background 80%;
     background: $surface;
 }
 
+#new-session-grid #title {
+    column-span: 2;
+    text-align: center;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
 #new-session-grid Input {
     column-span: 2;
+}
+
+#new-session-grid .error {
+    column-span: 2;
+    color: $error;
+    text-align: center;
+    height: 1;
 }
 
 #kill-session-grid Static {
