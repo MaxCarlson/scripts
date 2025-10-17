@@ -132,14 +132,16 @@ class SyncMuxApp(App):
                     sessions = await self.tmux_controller.list_sessions(conn)
                     self.sessions = {**self.sessions, self.selected_host_alias: sessions}
                     log.write(f"Found {len(sessions)} sessions for {host.alias}.")
-                    # Update status to connected
+                    # Update status to connected and session count
                     if self.selected_host_alias in self.host_widgets:
                         self.host_widgets[self.selected_host_alias].set_status_connected()
+                        self.host_widgets[self.selected_host_alias].update_session_count(len(sessions))
                 except ConnectionError as e:
                     log.write(str(e))
-                    # Update status to error
+                    # Update status to error and reset session count
                     if self.selected_host_alias in self.host_widgets:
                         self.host_widgets[self.selected_host_alias].set_status_error()
+                        self.host_widgets[self.selected_host_alias].update_session_count(0)
 
     async def _refresh_single_host(self, host: Host) -> tuple[str, List[Session] | None]:
         """Refresh sessions for a single host. Returns (alias, sessions or None)."""
@@ -154,16 +156,18 @@ class SyncMuxApp(App):
             sessions = await self.tmux_controller.list_sessions(conn)
             log.write(f"Found {len(sessions)} sessions for {host.alias}.")
 
-            # Update status to connected
+            # Update status to connected and session count
             if host.alias in self.host_widgets:
                 self.host_widgets[host.alias].set_status_connected()
+                self.host_widgets[host.alias].update_session_count(len(sessions))
 
             return (host.alias, sessions)
         except ConnectionError as e:
             log.write(str(e))
-            # Update status to error
+            # Update status to error and reset session count
             if host.alias in self.host_widgets:
                 self.host_widgets[host.alias].set_status_error()
+                self.host_widgets[host.alias].update_session_count(0)
             return (host.alias, None)
 
     async def action_refresh_all_hosts(self) -> None:

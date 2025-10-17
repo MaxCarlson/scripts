@@ -32,6 +32,11 @@ HostWidget {
     padding: 0 1;
 }
 
+HostWidget .session-count {
+    color: $text-muted;
+    margin-left: 1;
+}
+
 SessionWidget {
     height: auto;
     padding: 0 1;
