@@ -5,8 +5,21 @@ import os
 import sys
 from typing import Sequence
 
+import dataclasses as dc
+
 from . import __version__
 from .config import load_config, Settings, BackupSet, platform_config_default
+from .config_cli import (
+    config_add_set_command,
+    config_init_command,
+    config_list_sets_command,
+    config_remove_set_command,
+    config_retention_command,
+    config_set_command,
+    config_show_command,
+    config_wizard_command,
+)
+from .setup_wizard import run_setup_wizard
 from .runner import (
     RunError,
     start_backup,
@@ -47,6 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("setup", help="Initialize the restic repository (requires configured credentials).")
     sp.add_argument("--password-file", "-p", help="Optional override RESTIC_PASSWORD_FILE path for init")
     sp.add_argument("--remote-check", "-r", action="store_true", help="Run a remote accessibility check via restic unlock")
+    sp.add_argument("--wizard", "-w", action="store_true", help="Launch the interactive setup wizard.")
     sp.set_defaults(func=cmd_setup)
 
     # list snapshots
@@ -81,6 +95,72 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("progress", help="Show in-progress rrbackup tasks and restic locks.")
     sp.set_defaults(func=cmd_progress)
 
+    # config management
+    sp = sub.add_parser("config", help="Manage rrbackup configuration files.")
+    sp.add_argument("--path", "-p", help="Config path override (takes precedence over --config/env/default).")
+    cfg_sub = sp.add_subparsers(dest="config_cmd", required=True)
+
+    cp = cfg_sub.add_parser("init", help="Create a new configuration with default values.")
+    cp.add_argument("--force", "-f", action="store_true", help="Overwrite an existing file if present.")
+    cp.set_defaults(func=config_init_command)
+
+    cp = cfg_sub.add_parser("wizard", help="Interactive setup wizard to create a configuration.")
+    cp.add_argument("--force", "-f", action="store_true", help="Overwrite an existing file if present.")
+    cp.add_argument("--initialize-repo", "-i", action="store_true", help="Run restic init after saving the config.")
+    cp.set_defaults(func=config_wizard_command)
+
+    cp = cfg_sub.add_parser("show", help="Display the configuration as TOML.")
+    cp.add_argument("--effective", "-e", action="store_true", help="Show expanded values with defaults applied.")
+    cp.set_defaults(func=config_show_command)
+
+    cp = cfg_sub.add_parser("list-sets", help="List configured backup sets.")
+    cp.set_defaults(func=config_list_sets_command)
+
+    cp = cfg_sub.add_parser("add-set", help="Add a backup set to the configuration.")
+    cp.add_argument("--name", "-n", required=True, help="Name of the backup set.")
+    cp.add_argument("--include", "-i", action="append", required=True, help="Path to include (repeatable).")
+    cp.add_argument("--exclude", "-e", action="append", help="Exclude glob pattern (repeatable).")
+    cp.add_argument("--tag", "-t", action="append", help="Tag to apply to the set (repeatable).")
+    cp.add_argument("--one-fs", "-o", action="store_true", help="Enable restic --one-file-system.")
+    cp.add_argument("--dry-run-default", "-d", action="store_true", help="Enable dry-run by default.")
+    cp.add_argument("--schedule", "-S", help="Human-friendly schedule description for this set.")
+    cp.add_argument("--backup-type", "-B", default="incremental", help="Backup type descriptor (default: incremental).")
+    cp.add_argument(
+        "--max-snapshots",
+        "-M",
+        type=int,
+        help="Override snapshots to retain for this set (blank uses global retention).",
+    )
+    cp.add_argument("--encryption", "-E", help="Encryption notes for this set.")
+    cp.add_argument("--compression", "-C", help="Compression preference for this set.")
+    cp.set_defaults(func=config_add_set_command)
+
+    cp = cfg_sub.add_parser("remove-set", help="Remove a backup set from the configuration.")
+    cp.add_argument("--name", "-n", required=True, help="Name of the backup set to remove.")
+    cp.set_defaults(func=config_remove_set_command)
+
+    cp = cfg_sub.add_parser("set", help="Update repository, binary, or directory settings.")
+    cp.add_argument("--repo-url", "-r", help="Restic repository URL.")
+    cp.add_argument("--password-file", "-P", help="Path to restic password file (blank to clear).")
+    cp.add_argument("--password-env", "-E", help="Environment variable with restic password (blank to clear).")
+    cp.add_argument("--restic-bin", "-R", help="restic binary name or path.")
+    cp.add_argument("--rclone-bin", "-C", help="rclone binary name or path.")
+    cp.add_argument("--state-dir", "-S", help="State directory for logs/PID files (blank to use default).")
+    cp.add_argument("--log-dir", "-L", help="Log directory (blank to use default).")
+    cp.set_defaults(func=config_set_command)
+
+    cp = cfg_sub.add_parser("retention", help="Update retention policy settings.")
+    cp.add_argument("--keep-last", "-L", type=int, help="Number of latest snapshots to keep.")
+    cp.add_argument("--keep-hourly", "-H", type=int, help="Hourly snapshots to keep.")
+    cp.add_argument("--keep-daily", "-D", type=int, help="Daily snapshots to keep.")
+    cp.add_argument("--keep-weekly", "-W", type=int, help="Weekly snapshots to keep.")
+    cp.add_argument("--keep-monthly", "-M", type=int, help="Monthly snapshots to keep.")
+    cp.add_argument("--keep-yearly", "-Y", type=int, help="Yearly snapshots to keep.")
+    cp.add_argument("--max-total-size", "-Z", help="Maximum total repository size (e.g., 512GB).")
+    cp.add_argument("--clear", "-X", action="store_true", help="Clear all retention values.")
+    cp.add_argument("--use-defaults", "-u", action="store_true", help="Reset to default retention policy.")
+    cp.set_defaults(func=config_retention_command)
+
     return p
 
 
@@ -89,6 +169,9 @@ def _load_cfg_from_args(args: argparse.Namespace) -> Settings:
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
+    if getattr(args, "wizard", False):
+        return run_setup_wizard(args)
+
     cfg = _load_cfg_from_args(args)
     # Initialize repository
     extra = []
@@ -143,13 +226,12 @@ def cmd_backup(args: argparse.Namespace) -> int:
     bset = _get_set(cfg, args.set)
 
     # Apply per-run overrides
-    effective = BackupSet(
-        name=bset.name,
-        include=bset.include,
+    effective = dc.replace(
+        bset,
+        include=list(bset.include),
         exclude=list(bset.exclude) + (args.exclude or []),
         tags=list(bset.tags) + (args.tag or []),
-        one_fs=bset.one_fs,
-        dry_run_default=(True if args.dry_run else bset.dry_run_default),
+        dry_run_default=True if args.dry_run else bset.dry_run_default,
     )
 
     try:
