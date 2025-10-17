@@ -6,9 +6,9 @@ from typing import Dict, List, Optional
 
 from textual import on
 from textual.app import App, ComposeResult
-from textual.containers import Container
+from textual.containers import Container, Vertical
 from textual.reactive import var
-from textual.widgets import Footer, Header, ListView, RichLog
+from textual.widgets import Footer, Header, Input, ListView, RichLog, Static
 
 from .config import load_config
 from .connection import ConnectionManager
@@ -32,6 +32,8 @@ class SyncMuxApp(App):
         ("d", "kill_session", "Kill Session"),
         ("r", "refresh_host", "Refresh Host"),
         ("ctrl+r", "refresh_all_hosts", "Refresh All"),
+        ("slash", "toggle_filter", "Filter Sessions"),
+        ("s", "cycle_sort", "Cycle Sort"),
         ("question_mark,f1", "show_help", "Help"),
         ("q", "quit", "Quit"),
     ]
@@ -40,13 +42,21 @@ class SyncMuxApp(App):
     sessions: var[Dict[str, List[Session]]] = var({})
     selected_host_alias: var[Optional[str]] = var(None)
     host_widgets: Dict[str, HostWidget] = {}
+    filter_text: var[str] = var("")
+    filter_visible: var[bool] = var(False)
+    sort_mode: var[str] = var("name")  # name, created, windows, attached
 
     def compose(self) -> ComposeResult:
         """Compose the application."""
         yield Header()
-        with Container():
+        with Container(id="main-container"):
             yield ListView(id="host-list")
-            yield ListView(id="session-list")
+            with Vertical(id="session-panel"):
+                with Container(id="filter-container", classes="hidden"):
+                    yield Static("Filter:", id="filter-label")
+                    yield Input(placeholder="Type to filter sessions...", id="filter-input")
+                yield Static("", id="sort-indicator")
+                yield ListView(id="session-list")
         yield RichLog(id="log-view")
         yield Footer()
 
@@ -143,11 +153,98 @@ class SyncMuxApp(App):
 
     def watch_sessions(self) -> None:
         """Called when the sessions dictionary changes."""
+        self._update_session_list()
+
+    def watch_filter_text(self, old_text: str, new_text: str) -> None:
+        """Called when the filter text changes."""
+        self._update_session_list()
+
+    def watch_sort_mode(self, old_mode: str, new_mode: str) -> None:
+        """Called when the sort mode changes."""
+        self._update_session_list()
+        # Update sort indicator
+        sort_indicator = self.query_one("#sort-indicator", Static)
+        mode_display = {
+            "name": "Sort: Name (A-Z)",
+            "created": "Sort: Created (Newest First)",
+            "windows": "Sort: Window Count (Most First)",
+            "attached": "Sort: Attached Status"
+        }
+        sort_indicator.update(f"[dim]{mode_display.get(new_mode, '')}[/dim]")
+
+    def watch_filter_visible(self, old_visible: bool, new_visible: bool) -> None:
+        """Called when filter visibility changes."""
+        filter_container = self.query_one("#filter-container", Container)
+        filter_input = self.query_one("#filter-input", Input)
+
+        if new_visible:
+            filter_container.remove_class("hidden")
+            filter_input.focus()
+        else:
+            filter_container.add_class("hidden")
+            self.filter_text = ""  # Clear filter when hiding
+            # Return focus to session list
+            session_list = self.query_one("#session-list", ListView)
+            session_list.focus()
+
+    def _filter_sessions(self, sessions: List[Session]) -> List[Session]:
+        """Filter sessions based on filter_text."""
+        if not self.filter_text:
+            return sessions
+
+        filter_lower = self.filter_text.lower()
+        return [s for s in sessions if filter_lower in s.name.lower()]
+
+    def _sort_sessions(self, sessions: List[Session]) -> List[Session]:
+        """Sort sessions based on sort_mode."""
+        if self.sort_mode == "name":
+            return sorted(sessions, key=lambda s: s.name.lower())
+        elif self.sort_mode == "created":
+            return sorted(sessions, key=lambda s: s.created_at, reverse=True)
+        elif self.sort_mode == "windows":
+            return sorted(sessions, key=lambda s: s.windows, reverse=True)
+        elif self.sort_mode == "attached":
+            return sorted(sessions, key=lambda s: s.attached, reverse=True)
+        return sessions
+
+    def _update_session_list(self) -> None:
+        """Update the session list with filtered and sorted sessions."""
         if self.selected_host_alias:
             session_list = self.query_one("#session-list", ListView)
             session_list.clear()
-            for session in self.sessions.get(self.selected_host_alias, []):
+
+            sessions = self.sessions.get(self.selected_host_alias, [])
+            filtered_sessions = self._filter_sessions(sessions)
+            sorted_sessions = self._sort_sessions(filtered_sessions)
+
+            for session in sorted_sessions:
                 session_list.append(SessionWidget(session))
+
+    def action_toggle_filter(self) -> None:
+        """Toggle the filter input visibility."""
+        self.filter_visible = not self.filter_visible
+
+    def action_cycle_sort(self) -> None:
+        """Cycle through sort modes."""
+        sort_modes = ["name", "created", "windows", "attached"]
+        current_index = sort_modes.index(self.sort_mode)
+        next_index = (current_index + 1) % len(sort_modes)
+        self.sort_mode = sort_modes[next_index]
+        self._log(f"Sort mode: {self.sort_mode}", "info")
+
+    @on(Input.Changed, "#filter-input")
+    def on_filter_input_changed(self, event: Input.Changed) -> None:
+        """Handle changes to the filter input."""
+        self.filter_text = event.value
+
+    async def on_key(self, event) -> None:
+        """Handle key events for escape key when filter is focused."""
+        if event.key == "escape" and self.filter_visible:
+            filter_input = self.query_one("#filter-input", Input)
+            if self.focused == filter_input:
+                self.filter_visible = False
+                event.prevent_default()
+                event.stop()
 
     async def action_refresh_host(self) -> None:
         """Refreshes the sessions for the selected host."""

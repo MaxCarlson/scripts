@@ -80,6 +80,10 @@ class HelpScreen(ModalScreen):
   n            Create new session on selected host
   d            Kill selected session (with confirmation)
 
+[bold yellow]Filter & Sort:[/bold yellow]
+  /            Toggle session filter (Esc to close)
+  s            Cycle sort mode (name/created/windows/attached)
+
 [bold yellow]Refresh:[/bold yellow]
   r            Refresh current host's sessions
   Ctrl+R       Refresh all hosts concurrently
