@@ -1,6 +1,7 @@
 
 import os
 import sys
+from datetime import datetime
 from typing import Dict, List, Optional
 
 from textual import on
@@ -48,6 +49,23 @@ class SyncMuxApp(App):
         yield RichLog(id="log-view")
         yield Footer()
 
+    def _log(self, message: str, level: str = "info") -> None:
+        """Log a message with timestamp and optional level indicator."""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        log = self.query_one("#log-view", RichLog)
+
+        # Add level prefix with emoji
+        if level == "error":
+            prefix = "❌"
+        elif level == "success":
+            prefix = "✅"
+        elif level == "warning":
+            prefix = "⚠️"
+        else:
+            prefix = "ℹ️"
+
+        log.write(f"[{timestamp}] {prefix} {message}")
+
     async def on_mount(self) -> None:
         """Called when the app is mounted."""
         self.conn_manager = ConnectionManager()
@@ -61,9 +79,10 @@ class SyncMuxApp(App):
                 host_list.append(widget)
             # Set initial focus on host list
             host_list.focus()
+            self._log(f"Loaded {len(self.hosts)} hosts from configuration", "success")
             await self.action_refresh_all_hosts()
         except (FileNotFoundError, ValueError) as e:
-            self.query_one("#log-view", RichLog).write(str(e))
+            self._log(str(e), "error")
 
     def action_cursor_down(self) -> None:
         """Move the cursor down in the focused list view."""
@@ -120,10 +139,9 @@ class SyncMuxApp(App):
     async def action_refresh_host(self) -> None:
         """Refreshes the sessions for the selected host."""
         if self.selected_host_alias:
-            log = self.query_one("#log-view", RichLog)
             host = next((h for h in self.hosts if h.alias == self.selected_host_alias), None)
             if host:
-                log.write(f"Refreshing sessions for {host.alias}...")
+                self._log(f"Refreshing sessions for {host.alias}...", "info")
                 # Update status to connecting
                 if self.selected_host_alias in self.host_widgets:
                     self.host_widgets[self.selected_host_alias].set_status_connecting()
@@ -131,13 +149,13 @@ class SyncMuxApp(App):
                     conn = await self.conn_manager.get_connection(host)
                     sessions = await self.tmux_controller.list_sessions(conn)
                     self.sessions = {**self.sessions, self.selected_host_alias: sessions}
-                    log.write(f"Found {len(sessions)} sessions for {host.alias}.")
+                    self._log(f"Found {len(sessions)} sessions for {host.alias}", "success")
                     # Update status to connected and session count
                     if self.selected_host_alias in self.host_widgets:
                         self.host_widgets[self.selected_host_alias].set_status_connected()
                         self.host_widgets[self.selected_host_alias].update_session_count(len(sessions))
                 except ConnectionError as e:
-                    log.write(str(e))
+                    self._log(str(e), "error")
                     # Update status to error and reset session count
                     if self.selected_host_alias in self.host_widgets:
                         self.host_widgets[self.selected_host_alias].set_status_error()
@@ -145,8 +163,6 @@ class SyncMuxApp(App):
 
     async def _refresh_single_host(self, host: Host) -> tuple[str, List[Session] | None]:
         """Refresh sessions for a single host. Returns (alias, sessions or None)."""
-        log = self.query_one("#log-view", RichLog)
-
         # Update status to connecting
         if host.alias in self.host_widgets:
             self.host_widgets[host.alias].set_status_connecting()
@@ -154,7 +170,7 @@ class SyncMuxApp(App):
         try:
             conn = await self.conn_manager.get_connection(host)
             sessions = await self.tmux_controller.list_sessions(conn)
-            log.write(f"Found {len(sessions)} sessions for {host.alias}.")
+            self._log(f"Found {len(sessions)} sessions for {host.alias}", "success")
 
             # Update status to connected and session count
             if host.alias in self.host_widgets:
@@ -163,7 +179,7 @@ class SyncMuxApp(App):
 
             return (host.alias, sessions)
         except ConnectionError as e:
-            log.write(str(e))
+            self._log(str(e), "error")
             # Update status to error and reset session count
             if host.alias in self.host_widgets:
                 self.host_widgets[host.alias].set_status_error()
@@ -174,8 +190,7 @@ class SyncMuxApp(App):
         """Refreshes the sessions for all hosts concurrently."""
         import asyncio
 
-        log = self.query_one("#log-view", RichLog)
-        log.write("Refreshing all hosts...")
+        self._log(f"Refreshing all {len(self.hosts)} hosts...", "info")
 
         # Refresh all hosts concurrently
         results = await asyncio.gather(
@@ -190,6 +205,7 @@ class SyncMuxApp(App):
                 new_sessions[alias] = sessions
 
         self.sessions = {**self.sessions, **new_sessions}
+        self._log("All hosts refreshed", "success")
 
     
     async def action_create_session(self) -> None:
@@ -200,18 +216,19 @@ class SyncMuxApp(App):
                 async def create_session_callback(name: Optional[str]) -> None:
                     if name:
                         async def _create_session() -> None:
-                            log = self.query_one("#log-view", RichLog)
-                            log.write(f"Creating session '{name}' on {host.alias}...")
+                            self._log(f"Creating session '{name}' on {host.alias}...", "info")
                             try:
                                 conn = await self.conn_manager.get_connection(host)
                                 success = await self.tmux_controller.create_session(conn, name)
                                 if success:
-                                    log.write(f"Session '{name}' created successfully.")
+                                    self._log(f"Session '{name}' created successfully", "success")
                                     await self.action_refresh_host()
                                 else:
-                                    log.write(f"Failed to create session '{name}'.")
+                                    self._log(f"Failed to create session '{name}'", "error")
                             except ConnectionError as e:
-                                log.write(str(e))
+                                self._log(str(e), "error")
+                            except ValueError as e:
+                                self._log(f"Invalid session name: {e}", "error")
                         self.call_later(_create_session)
 
                 self.push_screen(NewSessionScreen(), create_session_callback)
@@ -229,18 +246,17 @@ class SyncMuxApp(App):
                 def kill_session_callback(confirm: bool) -> None:
                     if confirm:
                         async def _kill_session() -> None:
-                            log = self.query_one("#log-view", RichLog)
-                            log.write(f"Killing session '{session.name}' on {host.alias}...")
+                            self._log(f"Killing session '{session.name}' on {host.alias}...", "info")
                             try:
                                 conn = await self.conn_manager.get_connection(host)
                                 success = await self.tmux_controller.kill_session(conn, session.name)
                                 if success:
-                                    log.write(f"Session '{session.name}' killed successfully.")
+                                    self._log(f"Session '{session.name}' killed successfully", "success")
                                     await self.action_refresh_host()
                                 else:
-                                    log.write(f"Failed to kill session '{session.name}'.")
+                                    self._log(f"Failed to kill session '{session.name}'", "error")
                             except ConnectionError as e:
-                                log.write(str(e))
+                                self._log(str(e), "error")
                         self.call_later(_kill_session)
 
                 self.push_screen(

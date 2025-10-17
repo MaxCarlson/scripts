@@ -44,6 +44,7 @@ async def test_get_connection_key_auth(connection_manager, sample_host):
             password=None,
             client_keys=[sample_host.key_path],
             agent_forwarding=False,
+            connect_timeout=10.0,
         )
 
 
@@ -75,6 +76,7 @@ async def test_get_connection_password_auth(connection_manager):
             password="testpass",
             client_keys=None,
             agent_forwarding=False,
+            connect_timeout=10.0,
         )
 
 
@@ -105,6 +107,7 @@ async def test_get_connection_agent_auth(connection_manager):
             password=None,
             client_keys=None,
             agent_forwarding=True,
+            connect_timeout=10.0,
         )
 
 
