@@ -10,13 +10,15 @@ from textual.containers import Container, Vertical
 from textual.reactive import var
 from textual.widgets import Footer, Header, Input, ListView, RichLog, Static
 
-from .config import load_config
+from .config import load_config, save_config
 from .connection import ConnectionManager
 from .models import Host, Session
 from .tmux_controller import TmuxController
 from .screens import (
+    AddMachineScreen,
     ConfirmKillSessionScreen,
     ErrorDialog,
+    FirstRunPrompt,
     HelpScreen,
     NewSessionScreen,
     RenameSessionScreen,
@@ -122,12 +124,17 @@ class SyncMuxApp(App):
                 self.host_widgets[host.alias] = widget
                 host_list.append(widget)
             # Set initial focus on host list and select first host
-            host_list.focus()
+            self.set_focus(host_list)
             if len(self.hosts) > 0:
+                host_list.index = 0
                 self.selected_host_alias = self.hosts[0].alias
             self._log(f"✅ {len(self.hosts)} hosts loaded. Press J/K to navigate, ENTER to select", "success")
-            self.notify("🎯 Press J/K to navigate, ENTER to select host", title="Ready!", timeout=5)
+            self.notify("🎯 HOST LIST ACTIVE - Press J/K to navigate", title="Ready!", timeout=5)
             await self.action_refresh_all_hosts()
+
+            # First-run: Check if only localhost exists
+            if len(self.hosts) == 1 and self.hosts[0].alias == "localhost":
+                self._show_first_run_prompt()
         except FileNotFoundError as e:
             self._log(str(e), "error", show_dialog=True)
         except ValueError as e:
@@ -185,9 +192,10 @@ class SyncMuxApp(App):
         # If host list is focused, select the host
         if focused.id == "host-list":
             host_list = self.query_one("#host-list", ListView)
-            if host_list.highlighted is not None:
-                self.selected_host_alias = host_list.highlighted.host.alias
-                msg = f"✅ Selected: {host_list.highlighted.host.alias}"
+            if host_list.index is not None and host_list.index >= 0:
+                widget = host_list.children[host_list.index]
+                self.selected_host_alias = widget.host.alias
+                msg = f"✅ Selected: {widget.host.alias}"
                 self._log(msg, "success")
                 self.notify(msg, severity="information", timeout=2)
             else:
@@ -503,8 +511,9 @@ class SyncMuxApp(App):
         if self.selected_host_alias:
             host = next((h for h in self.hosts if h.alias == self.selected_host_alias), None)
             session_list = self.query_one("#session-list", ListView)
-            if host and session_list.highlighted is not None:
-                session = session_list.highlighted.session
+            if host and session_list.index is not None and session_list.index >= 0 and len(session_list.children) > 0:
+                widget = session_list.children[session_list.index]
+                session = widget.session
                 self._log(f"Confirm kill '{session.name}'?", "info")
 
                 def kill_session_callback(confirm: bool) -> None:
@@ -538,8 +547,9 @@ class SyncMuxApp(App):
         if self.selected_host_alias:
             host = next((h for h in self.hosts if h.alias == self.selected_host_alias), None)
             session_list = self.query_one("#session-list", ListView)
-            if host and session_list.highlighted is not None:
-                session = session_list.highlighted.session
+            if host and session_list.index is not None and session_list.index >= 0 and len(session_list.children) > 0:
+                widget = session_list.children[session_list.index]
+                session = widget.session
 
                 async def rename_session_callback(new_name: Optional[str]) -> None:
                     if new_name:
@@ -566,8 +576,9 @@ class SyncMuxApp(App):
         if self.selected_host_alias:
             host = next((h for h in self.hosts if h.alias == self.selected_host_alias), None)
             session_list = self.query_one("#session-list", ListView)
-            if host and session_list.highlighted is not None:
-                session = session_list.highlighted.session
+            if host and session_list.index is not None and session_list.index >= 0 and len(session_list.children) > 0:
+                widget = session_list.children[session_list.index]
+                session = widget.session
                 self._log(f"Loading session info for '{session.name}'...", "info")
                 try:
                     conn = await self.conn_manager.get_connection(host)
@@ -616,8 +627,9 @@ class SyncMuxApp(App):
         if self.selected_host_alias:
             host = next((h for h in self.hosts if h.alias == self.selected_host_alias), None)
             session_list = self.query_one("#session-list", ListView)
-            if host and session_list.highlighted is not None:
-                session = session_list.highlighted.session
+            if host and session_list.index is not None and session_list.index >= 0 and len(session_list.children) > 0:
+                widget = session_list.children[session_list.index]
+                session = widget.session
                 await self.app.exit()
 
                 # Get platform-specific SSH command
@@ -625,6 +637,51 @@ class SyncMuxApp(App):
 
                 # Replace current process with SSH
                 os.execvp(cmd[0], cmd)
+
+    def _show_first_run_prompt(self) -> None:
+        """Show first-run prompt to add machines."""
+        def handle_first_run_response(add_machines: bool) -> None:
+            if add_machines:
+                self._show_add_machine_screen()
+
+        self.push_screen(FirstRunPrompt(), handle_first_run_response)
+
+    def _show_add_machine_screen(self) -> None:
+        """Show the add machine screen."""
+        async def handle_machine_info(machine_info: dict | None) -> None:
+            if machine_info:
+                self._log(f"Adding machine: {machine_info['alias']}", "info")
+
+                # Create new Host object
+                new_host = Host(**machine_info)
+
+                # Add to current hosts list
+                self.hosts.append(new_host)
+
+                # Save to config file
+                try:
+                    save_config(self.hosts)
+                    self._log(f"✅ Saved {machine_info['alias']} to config", "success")
+                except Exception as e:
+                    self._log(f"❌ Failed to save config: {e}", "error")
+                    return
+
+                # Add widget to UI
+                host_list = self.query_one("#host-list", ListView)
+                widget = HostWidget(new_host)
+                self.host_widgets[new_host.alias] = widget
+                host_list.append(widget)
+
+                # Select the new host
+                self.selected_host_alias = new_host.alias
+                host_list.index = len(self.hosts) - 1
+
+                self.notify(f"✅ Machine '{machine_info['alias']}' added!", severity="information", timeout=3)
+
+                # Refresh the new host
+                await self.action_refresh_host()
+
+        self.push_screen(AddMachineScreen(), handle_machine_info)
 
     def action_show_help(self) -> None:
         """Show the keyboard shortcuts help screen."""

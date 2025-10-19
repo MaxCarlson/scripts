@@ -59,11 +59,25 @@
     border: solid $primary;
 }
 
+/* Strong focus indicators for mobile */
 ListView:focus {
     border: double $accent;
+    background: $panel;
 }
 
-ListView > .--highlight {
+/* Make selected item VERY obvious with thick left border */
+ListView:focus > ListItem.--highlight {
+    background: $accent;
+    color: $text;
+    border-left: thick $success;
+}
+
+ListView > ListItem.--highlight {
+    background: $accent 50%;
+    border-left: thick $accent;
+}
+
+ListView > ListItem:hover {
     background: $secondary;
 }
 
@@ -108,12 +122,14 @@ SessionWidget {
     color: $success;
 }
 
+/* Compact dialogs for mobile */
 #new-session-grid, #kill-session-grid {
     grid-size: 2;
     grid-gutter: 1 2;
     padding: 1 2;
-    width: 60;
-    height: 15;
+    width: 90%;
+    max-width: 50;
+    height: 12;
     border: thick $background 80%;
     background: $surface;
 }
@@ -123,10 +139,14 @@ SessionWidget {
     text-align: center;
     text-style: bold;
     margin-bottom: 1;
+    color: $text;
 }
 
 #new-session-grid Input {
     column-span: 2;
+    margin-bottom: 1;
+    background: $panel;
+    border: solid $primary;
 }
 
 #new-session-grid .error {
@@ -134,14 +154,72 @@ SessionWidget {
     color: $error;
     text-align: center;
     height: 1;
+    margin-bottom: 1;
+}
+
+/* Make buttons visible and full width on mobile */
+#new-session-grid Button,
+#kill-session-grid Button {
+    width: 100%;
+    min-width: 12;
+    height: 3;
+}
+
+/* Add Machine Dialog - mobile friendly */
+#add-machine-container {
+    width: 95%;
+    max-width: 55;
+    height: 20;
+    border: thick $background 80%;
+    background: $surface;
+    padding: 1;
+    overflow-y: scroll;
+}
+
+#add-machine-container Label {
+    color: $text;
+    margin-top: 1;
+    margin-bottom: 0;
+}
+
+#add-machine-container Input {
+    width: 100%;
+    margin-bottom: 1;
+    background: $panel;
+    border: solid $primary;
+}
+
+#add-machine-container #title {
+    text-align: center;
+    margin-bottom: 1;
+}
+
+#add-machine-container #error-message {
+    color: $error;
+    text-align: center;
+    margin: 1 0;
+}
+
+#add-machine-container #button-grid {
+    grid-size: 2;
+    grid-gutter: 1 2;
+    margin-top: 1;
+}
+
+#add-machine-container Button {
+    width: 100%;
+    height: 3;
 }
 
 #kill-session-grid Static {
     column-span: 2;
+    margin-bottom: 1;
 }
 
+/* Compact help for mobile */
 #help-container {
-    width: 80;
+    width: 95%;
+    max-width: 60;
     height: 32;
     border: thick $background 80%;
     background: $surface;
@@ -159,8 +237,10 @@ SessionWidget {
     margin-top: 1;
 }
 
+/* Compact error dialog for mobile */
 #error-dialog-container {
-    width: 70;
+    width: 95%;
+    max-width: 55;
     height: auto;
     max-height: 25;
     border: thick $error 80%;

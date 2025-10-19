@@ -25,3 +25,18 @@ def load_config() -> List[Host]:
         return [Host(**host) for host in config_data["hosts"]]
     except (ValidationError, KeyError) as e:
         raise ValidationError(f"Invalid configuration: {e}")
+
+
+def save_config(hosts: List[Host]) -> None:
+    """Saves the list of Host objects to the configuration file."""
+    # Ensure directory exists
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    # Convert hosts to dict format
+    config_data = {
+        "hosts": [host.model_dump(exclude_none=True) for host in hosts]
+    }
+
+    # Write to file
+    with open(CONFIG_PATH, "w") as f:
+        yaml.safe_dump(config_data, f, default_flow_style=False, sort_keys=False)
