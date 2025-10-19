@@ -2,7 +2,7 @@
 from textual.app import ComposeResult
 from textual.containers import Grid, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Static
+from textual.widgets import Button, Input, Label, Static
 
 from .tmux_controller import TmuxController
 from .models import Session
@@ -10,6 +10,10 @@ from .models import Session
 
 class NewSessionScreen(ModalScreen):
     """A screen to create a new session."""
+
+    BINDINGS = [
+        ("escape", "cancel", "Cancel"),
+    ]
 
     def compose(self) -> ComposeResult:
         """Compose the screen."""
@@ -19,6 +23,10 @@ class NewSessionScreen(ModalScreen):
             yield Static("", id="error-message", classes="error")
             yield Button("Create", variant="primary", id="create")
             yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        """Focus the input when mounted."""
+        self.query_one("#session-name-input", Input).focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Called when a button is pressed."""
@@ -38,9 +46,19 @@ class NewSessionScreen(ModalScreen):
         else:
             self.dismiss(None)
 
+    def action_cancel(self) -> None:
+        """Cancel and dismiss."""
+        self.dismiss(None)
+
 
 class ConfirmKillSessionScreen(ModalScreen):
     """A screen to confirm killing a session."""
+
+    BINDINGS = [
+        ("j,down", "focus_next", "Next"),
+        ("k,up", "focus_previous", "Previous"),
+        ("escape", "cancel", "Cancel"),
+    ]
 
     def __init__(self, session_name: str) -> None:
         super().__init__()
@@ -59,6 +77,10 @@ class ConfirmKillSessionScreen(ModalScreen):
             self.dismiss(True)
         else:
             self.dismiss(False)
+
+    def action_cancel(self) -> None:
+        """Cancel and dismiss as False."""
+        self.dismiss(False)
 
 
 class HelpScreen(ModalScreen):
@@ -217,3 +239,122 @@ class SessionInfoScreen(ModalScreen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Called when close button is pressed."""
         self.dismiss()
+
+
+class FirstRunPrompt(ModalScreen):
+    """A screen asking if user wants to add machines on first run."""
+
+    BINDINGS = [
+        ("j,down", "focus_next", "Next"),
+        ("k,up", "focus_previous", "Previous"),
+        ("escape", "cancel", "Cancel"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        """Compose the prompt."""
+        with Grid(id="kill-session-grid"):
+            yield Static("[bold cyan]localhost[/bold cyan] only found.\n\nAdd Machine(s)?")
+            yield Button("Yes - Add Machine", variant="primary", id="yes")
+            yield Button("No - Use localhost only", id="no")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Called when a button is pressed."""
+        self.dismiss(event.button.id == "yes")
+
+    def action_cancel(self) -> None:
+        """Cancel and dismiss as No."""
+        self.dismiss(False)
+
+
+class AddMachineScreen(ModalScreen):
+    """A screen to add a new machine/host."""
+
+    BINDINGS = [
+        ("escape", "cancel", "Cancel"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        """Compose the screen."""
+        with Vertical(id="add-machine-container"):
+            yield Static("[bold cyan]Add New Machine[/bold cyan]\n", id="title")
+
+            yield Label("Machine Name:")
+            yield Input(placeholder="e.g., myserver", id="machine-name")
+
+            yield Label("Hostname/IP:")
+            yield Input(placeholder="e.g., 192.168.1.100", id="hostname")
+
+            yield Label("Port:")
+            yield Input(value="22", id="port")
+
+            yield Label("Username:")
+            yield Input(placeholder="e.g., john", id="username")
+
+            yield Label("Password (optional):")
+            yield Input(placeholder="Leave blank for SSH key/agent", id="password", password=True)
+
+            yield Label("Default Session (optional):")
+            yield Input(placeholder="e.g., dev", id="default-session")
+
+            yield Static("", id="error-message", classes="error")
+
+            with Grid(id="button-grid"):
+                yield Button("Add Machine", variant="primary", id="add")
+                yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        """Focus first input when mounted."""
+        self.query_one("#machine-name", Input).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Called when a button is pressed."""
+        if event.button.id == "add":
+            machine_name = self.query_one("#machine-name", Input).value.strip()
+            hostname = self.query_one("#hostname", Input).value.strip()
+            port_str = self.query_one("#port", Input).value.strip()
+            username = self.query_one("#username", Input).value.strip()
+            password = self.query_one("#password", Input).value.strip()
+            default_session = self.query_one("#default-session", Input).value.strip()
+            error_widget = self.query_one("#error-message", Static)
+
+            # Validate inputs
+            if not machine_name:
+                error_widget.update("⚠️ Machine name is required")
+                self.query_one("#machine-name", Input).focus()
+                return
+            if not hostname:
+                error_widget.update("⚠️ Hostname/IP is required")
+                self.query_one("#hostname", Input).focus()
+                return
+            if not username:
+                error_widget.update("⚠️ Username is required")
+                self.query_one("#username", Input).focus()
+                return
+
+            try:
+                port = int(port_str) if port_str else 22
+                if port < 1 or port > 65535:
+                    raise ValueError("Port must be between 1-65535")
+            except ValueError as e:
+                error_widget.update(f"⚠️ Invalid port: {e}")
+                self.query_one("#port", Input).focus()
+                return
+
+            # Return machine info as dict
+            machine_info = {
+                "alias": machine_name,
+                "hostname": hostname,
+                "port": port,
+                "user": username,
+                "auth_method": "password" if password else "agent",
+                "password": password if password else None,
+                "default_session": default_session if default_session else None
+            }
+            self.dismiss(machine_info)
+        else:
+            self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        """Cancel and dismiss."""
+        self.dismiss(None)
+
