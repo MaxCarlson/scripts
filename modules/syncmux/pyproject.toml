@@ -16,5 +16,13 @@ pywin32 = { version = "*", platform = "win32" }
 [tool.poetry.dev-dependencies]
 pytest = "^8.4.2"
 pytest-asyncio = "^1.2.0"
+
+[tool.poetry.scripts]
+syncmux = "syncmux.__main__:main"
+
+[build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"

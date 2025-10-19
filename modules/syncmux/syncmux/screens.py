@@ -90,6 +90,9 @@ class HelpScreen(ModalScreen):
 [bold yellow]Refresh:[/bold yellow]
   r            Refresh current host's sessions
   Ctrl+R       Refresh all hosts concurrently
+  p            Toggle auto-refresh on/off
+  +, =         Increase auto-refresh interval (+10s)
+  -            Decrease auto-refresh interval (-10s)
 
 [bold yellow]Help & Exit:[/bold yellow]
   ?, F1        Show this help screen
