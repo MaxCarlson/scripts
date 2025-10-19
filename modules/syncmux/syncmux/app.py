@@ -41,6 +41,9 @@ class SyncMuxApp(App):
         ("i", "show_session_info", "Session Info"),
         ("r", "refresh_host", "Refresh Host"),
         ("ctrl+r", "refresh_all_hosts", "Refresh All"),
+        ("p", "toggle_auto_refresh", "Toggle Auto-Refresh"),
+        ("plus,equals", "increase_refresh_interval", "Increase Interval"),
+        ("minus", "decrease_refresh_interval", "Decrease Interval"),
         ("slash", "toggle_filter", "Filter Sessions"),
         ("s", "cycle_sort", "Cycle Sort"),
         ("question_mark,f1", "show_help", "Help"),
@@ -54,6 +57,9 @@ class SyncMuxApp(App):
     filter_text: var[str] = var("")
     filter_visible: var[bool] = var(False)
     sort_mode: var[str] = var("name")  # name, created, windows, attached
+    auto_refresh_enabled: var[bool] = var(False)
+    auto_refresh_interval: var[int] = var(30)  # seconds
+    auto_refresh_countdown: var[int] = var(0)
 
     def compose(self) -> ComposeResult:
         """Compose the application."""
@@ -64,7 +70,9 @@ class SyncMuxApp(App):
                 with Container(id="filter-container", classes="hidden"):
                     yield Static("Filter:", id="filter-label")
                     yield Input(placeholder="Type to filter sessions...", id="filter-input")
-                yield Static("", id="sort-indicator")
+                with Container(id="refresh-indicator-container"):
+                    yield Static("", id="sort-indicator")
+                    yield Static("", id="auto-refresh-indicator")
                 yield ListView(id="session-list")
         yield RichLog(id="log-view")
         yield Footer()
@@ -115,6 +123,9 @@ class SyncMuxApp(App):
             self._log(str(e), "error", show_dialog=True)
         except ValueError as e:
             self._log(f"Configuration error: {e}", "error", show_dialog=True)
+
+        # Start the auto-refresh timer (runs every second to update countdown)
+        self.set_interval(1.0, self._auto_refresh_tick)
 
     def action_cursor_down(self) -> None:
         """Move the cursor down in the focused list view."""
@@ -206,6 +217,52 @@ class SyncMuxApp(App):
         except Exception:
             pass  # Widgets not available (e.g., during testing)
 
+    def watch_auto_refresh_enabled(self, old_enabled: bool, new_enabled: bool) -> None:
+        """Called when auto-refresh is toggled."""
+        if new_enabled:
+            self.auto_refresh_countdown = self.auto_refresh_interval
+            self._log(f"Auto-refresh enabled ({self.auto_refresh_interval}s interval)", "success")
+        else:
+            self.auto_refresh_countdown = 0
+            self._log("Auto-refresh paused", "info")
+        self._update_refresh_indicator()
+
+    def watch_auto_refresh_countdown(self, old_countdown: int, new_countdown: int) -> None:
+        """Called when auto-refresh countdown changes."""
+        self._update_refresh_indicator()
+
+    def watch_auto_refresh_interval(self, old_interval: int, new_interval: int) -> None:
+        """Called when auto-refresh interval changes."""
+        if self.auto_refresh_enabled:
+            self.auto_refresh_countdown = new_interval
+        self._update_refresh_indicator()
+
+    def _update_refresh_indicator(self) -> None:
+        """Update the auto-refresh indicator widget."""
+        if not self.is_mounted:
+            return
+
+        try:
+            indicator = self.query_one("#auto-refresh-indicator", Static)
+            if self.auto_refresh_enabled:
+                indicator.update(f"[dim]Auto-refresh: {self.auto_refresh_countdown}s (interval: {self.auto_refresh_interval}s)[/dim]")
+            else:
+                indicator.update("[dim]Auto-refresh: OFF (Press P to enable)[/dim]")
+        except Exception:
+            pass  # Widget not available
+
+    async def _auto_refresh_tick(self) -> None:
+        """Called every second to handle auto-refresh countdown."""
+        if not self.auto_refresh_enabled:
+            return
+
+        self.auto_refresh_countdown -= 1
+
+        if self.auto_refresh_countdown <= 0:
+            # Time to refresh
+            await self.action_refresh_all_hosts()
+            self.auto_refresh_countdown = self.auto_refresh_interval
+
     def _filter_sessions(self, sessions: List[Session]) -> List[Session]:
         """Filter sessions based on filter_text."""
         if not self.filter_text:
@@ -255,6 +312,24 @@ class SyncMuxApp(App):
         next_index = (current_index + 1) % len(sort_modes)
         self.sort_mode = sort_modes[next_index]
         self._log(f"Sort mode: {self.sort_mode}", "info")
+
+    def action_toggle_auto_refresh(self) -> None:
+        """Toggle auto-refresh on/off."""
+        self.auto_refresh_enabled = not self.auto_refresh_enabled
+
+    def action_increase_refresh_interval(self) -> None:
+        """Increase auto-refresh interval by 10 seconds."""
+        new_interval = min(self.auto_refresh_interval + 10, 300)  # Max 5 minutes
+        if new_interval != self.auto_refresh_interval:
+            self.auto_refresh_interval = new_interval
+            self._log(f"Auto-refresh interval: {self.auto_refresh_interval}s", "info")
+
+    def action_decrease_refresh_interval(self) -> None:
+        """Decrease auto-refresh interval by 10 seconds."""
+        new_interval = max(self.auto_refresh_interval - 10, 10)  # Min 10 seconds
+        if new_interval != self.auto_refresh_interval:
+            self.auto_refresh_interval = new_interval
+            self._log(f"Auto-refresh interval: {self.auto_refresh_interval}s", "info")
 
     @on(Input.Changed, "#filter-input")
     def on_filter_input_changed(self, event: Input.Changed) -> None:

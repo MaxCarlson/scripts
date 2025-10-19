@@ -34,9 +34,19 @@
     width: 1fr;
 }
 
-#sort-indicator {
+#refresh-indicator-container {
+    layout: horizontal;
     height: auto;
     padding: 0 1;
+}
+
+#sort-indicator {
+    width: 1fr;
+    text-align: left;
+}
+
+#auto-refresh-indicator {
+    width: auto;
     text-align: right;
 }
 
