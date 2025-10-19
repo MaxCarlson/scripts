@@ -1,30 +1,49 @@
 # File: knowledge_manager/tui/widgets/dialogs.py
 from textual.app import ComposeResult
-from textual.containers import Vertical, Container
+from textual.containers import Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label
+from textual.widgets import Button, Input, Label, ListView, ListItem
 
-class InputDialog(ModalScreen[str]):
-    """A simple modal dialog to get text input."""
-    DEFAULT_CSS = """
-    InputDialog { align: center middle; }
-    InputDialog > Vertical { width: 80%; max-width: 60; height: auto; border: thick $primary-background-darken-2; background: $surface; padding: 1 2;}
-    InputDialog Input { margin-bottom: 1; border: tall $primary;}
-    InputDialog .buttons { width: 100%; align-horizontal: right; padding-top: 1;}
-    InputDialog Button { margin-left: 1;}
-    """
-    def __init__(self, prompt_text: str, initial_value: str = ""): 
-        super().__init__()
-        self.prompt_text=prompt_text
-        self.initial_value=initial_value
+class InputDialog(ModalScreen):
+    """A modal dialog for text input."""
+
+    def __init__(self, prompt_text: str, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.prompt_text = prompt_text
+
     def compose(self) -> ComposeResult:
-        with Vertical(): 
-            yield Label(self.prompt_text)
-            yield Input(value=self.initial_value, id="text_input_field")
-            with Container(classes="buttons"): 
-                yield Button("OK", variant="primary", id="ok_button")
-                yield Button("Cancel", id="cancel_button")
-    def on_mount(self) -> None: self.query_one(Input).focus()
+        yield Vertical(
+            Label(self.prompt_text),
+            Input(placeholder="Enter text..."),
+            Button("Submit", variant="primary", id="submit"),
+            Button("Cancel", variant="default", id="cancel"),
+            id="dialog",
+        )
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "ok_button": self.dismiss(self.query_one(Input).value)
-        else: self.dismiss("")
+        if event.button.id == "submit":
+            self.dismiss(self.query_one(Input).value)
+        else:
+            self.dismiss(None)
+
+class LinkSelectionDialog(ModalScreen):
+    """A modal dialog to select a link to follow."""
+
+    def __init__(self, links: list, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.links = links
+
+    def compose(self) -> ComposeResult:
+        yield Vertical(
+            Label("Multiple links found. Select one to follow:"),
+            ListView(*[ListItem(Label(link)) for link in self.links]),
+            Button("Cancel", variant="default", id="cancel"),
+            id="dialog",
+        )
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        self.dismiss(str(event.item.children[0].renderable))
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel":
+            self.dismiss(None)

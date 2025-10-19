@@ -181,9 +181,10 @@ def handle_project_add(args: argparse.Namespace):
                 project_name=args.name,
                 directory=Path.cwd(),
                 base_data_dir=args.data_dir,
+                force=args.force,
             )
             print(f"Local project file created: {link_path}")
-    except ValueError as e:
+    except (ValueError, FileExistsError) as e:
         print(f"Error: {e}", file=sys.stderr); sys.exit(1)
     except Exception as e:
         print(f"An unexpected error occurred: {e}", file=sys.stderr); sys.exit(1)
@@ -320,16 +321,18 @@ def handle_task_update(args: argparse.Namespace):
 
 # --- Added Handlers ---
 def handle_create_local_project(args: argparse.Namespace) -> int:
-    _, link_path = create_link_for_project(
-        project_name=args.create_local_project,
-        directory=Path.cwd(),
-        base_data_dir=args.data_dir,
-    )
-    print(str(link_path))
-    return 0
-
-
-def handle_open_link(args: argparse.Namespace) -> int:
+    try:
+        _, link_path = create_link_for_project(
+            project_name=args.create_local_project,
+            directory=Path.cwd(),
+            base_data_dir=args.data_dir,
+            force=args.force,
+        )
+        print(str(link_path))
+        return 0
+    except (ValueError, FileExistsError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
     link_path = Path(args.open).expanduser().resolve()
     link = load_link_file(link_path)
 
@@ -356,6 +359,7 @@ def handle_open_link(args: argparse.Namespace) -> int:
 
 
 def handle_print(args: argparse.Namespace) -> int:
+    log = logging.getLogger(__name__)
     base_dir = args.data_dir
 
     # Resolve the target project:
@@ -366,6 +370,7 @@ def handle_print(args: argparse.Namespace) -> int:
         # Auto-pick the first *.kmproj in CWD
         matches = sorted(Path.cwd().glob(f"*{LINK_EXT}"))
         if matches:
+            log.info(f"Found local link file: {matches[0]}")
             link = load_link_file(matches[0])
             base_dir = link.base_data_dir
             proj_id = link.project_id
@@ -375,14 +380,19 @@ def handle_print(args: argparse.Namespace) -> int:
     else:
         link_path = Path(identifier)
         if link_path.suffix.lower() == LINK_EXT and link_path.exists():
+            log.info(f"Loading from link file: {link_path}")
             link = load_link_file(link_path)
             base_dir = link.base_data_dir
             proj_id = link.project_id
         else:
+            log.info(f"Resolving project identifier: {identifier}")
             proj_id = _resolve_project_id(identifier, base_dir)
-            if not proj_id:
-                print(f"Project '{identifier}' was not found.")
-                return 2
+    
+    if not proj_id:
+        print(f"Project '{identifier}' was not found.")
+        return 2
+
+    log.info(f"Resolved project ID: {proj_id}")
 
     # Pull tasks (compat: do NOT pass 'status' kwarg to task_ops)
     tasks = task_ops.list_all_tasks(
@@ -391,6 +401,7 @@ def handle_print(args: argparse.Namespace) -> int:
         include_subtasks_of_any_parent=True,
         base_data_dir=base_dir,
     )
+    log.info(f"Found {len(tasks)} total tasks for the project.")
 
     # Filter locally per flags
     wanted: set[TaskStatus] = set()
@@ -399,6 +410,7 @@ def handle_print(args: argparse.Namespace) -> int:
     if args.done: wanted.add(TaskStatus.DONE)
     if wanted:
         tasks = [t for t in tasks if t.status in wanted]
+        log.info(f"{len(tasks)} tasks remaining after filtering.")
 
     print(_print_task_tree(tasks), end="")
     return 0
@@ -444,6 +456,7 @@ def create_parser() -> argparse.ArgumentParser:
                         help=f"Open the TUI focused on the project referenced by a {LINK_EXT} file.")
     parser.add_argument("-p", "--print", dest="print_project",
                         help="Alias for `print` (project name or link file).")
+    parser.add_argument("-f", "--force", action="store_true", help="Force overwrite of existing files.")
 
     subparsers = parser.add_subparsers(title="Commands", dest="command", metavar="<command>")
 
@@ -456,6 +469,7 @@ def create_parser() -> argparse.ArgumentParser:
     proj_add_parser.add_argument("-n", "--name", dest="name", type=str, required=True, help="Name of the project")
     proj_add_parser.add_argument("-d", "--description", dest="description", type=str, help="Markdown description")
     proj_add_parser.add_argument("-l", "--local", dest="create_local", action="store_true", help=f"Create a {LINK_EXT} file in the current directory")
+    proj_add_parser.add_argument("-f", "--force", action="store_true", help="Force overwrite of existing link file.")
     proj_add_parser.set_defaults(func=handle_project_add)
     proj_list_parser = project_subparsers.add_parser("list", help="List projects")
     proj_list_parser.add_argument("-s", "--status", dest="status", type=str, choices=[s.value for s in ProjectStatus], help="Filter by status")

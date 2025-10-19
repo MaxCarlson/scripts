@@ -20,7 +20,7 @@ from textual.widgets import (
 from ... import task_ops, utils, links
 from ...models import Project, Task, TaskStatus
 from ..widgets.lists import TaskList, TaskListItem
-from ..widgets.dialogs import InputDialog
+from ..widgets.dialogs import InputDialog, LinkSelectionDialog
 from ..widgets.footer import CustomFooter
 
 log = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ class TasksScreen(Screen):
         Binding("f", "cycle_filter", "Filter", show=True),
         Binding("m", "reparent_task", "Move", show=True),
         Binding("v", "toggle_view", "Toggle View", show=True),
-        Binding("ctrl+g", "follow_link", "Follow Link", show=True),
+        Binding("ctrl+enter", "follow_link", "Follow Link", show=True),
         Binding("ctrl+x", "delete_selected_task", "Delete", show=True),
         Binding("ctrl+r", "reload_tasks", "Reload", show=True),
         Binding("ctrl+d", "cycle_task_status_reverse", "Cycle Status Rev", show=False),
@@ -362,9 +362,16 @@ class TasksScreen(Screen):
 
         # Add link help at the bottom
         content_lines.append("\n---\n")
-        content_lines.append("*Links in title or details: `@project-name` or `&task-title` - Press Ctrl+G to follow*")
+        content_lines.append("*Links in title or details: `@project-name` or `&task-title` - Press Ctrl+Enter to follow*")
 
         markdown_widget.update("\n".join(content_lines))
+
+    async def _handle_link_selection(self, selected_link: Optional[str]) -> None:
+        if selected_link:
+            link_type_char = selected_link[0]
+            target = selected_link[1:]
+            link_type = "project" if link_type_char == "@" else "task"
+            await self._navigate_to_link(link_type, target)
 
     async def action_follow_link(self) -> None:
         """Follow a link in the current task's title or details."""
@@ -374,14 +381,13 @@ class TasksScreen(Screen):
             return
 
         all_links = []
-
-        # Extract links from task title
+        # Prioritize title links
         if selected_task.title:
             title_links = links.extract_links(selected_task.title)
             all_links.extend(title_links)
 
-        # Extract links from task details
-        if selected_task.details_md_path and selected_task.details_md_path.exists():
+        # Fallback to details links if no title links are found
+        if not all_links and selected_task.details_md_path and selected_task.details_md_path.exists():
             details_text = utils.read_markdown_file(selected_task.details_md_path)
             if details_text:
                 details_links = links.extract_links(details_text)
@@ -391,58 +397,39 @@ class TasksScreen(Screen):
             self.notify("No links found in task title or details.", severity="info")
             return
 
-        # If only one link, follow it immediately
         if len(all_links) == 1:
             link_type, target, _, _ = all_links[0]
             await self._navigate_to_link(link_type, target)
-            return
-
-        # Multiple links - show them and let user pick
-        link_list = []
-        for link_type, target, _, _ in all_links:
-            prefix = "@" if link_type == "project" else "&"
-            link_list.append(f"{prefix}{target}")
-
-        self.notify(
-            f"Found {len(all_links)} links: {', '.join(link_list)}. Following first one.",
-            title="Multiple Links",
-            timeout=5.0
-        )
-        # Follow the first link
-        link_type, target, _, _ = all_links[0]
-        await self._navigate_to_link(link_type, target)
+        else:
+            link_list = [f"{'@' if lt == 'project' else '&'}{t}" for lt, t, _, _ in all_links]
+            dialog = LinkSelectionDialog(links=link_list)
+            self.app.push_screen(dialog, self._handle_link_selection)
 
     async def _navigate_to_link(self, link_type: str, target: str) -> None:
         """Navigate to a project or task link."""
         if link_type == "project":
-            # Resolve and navigate to project
             project = links.resolve_project_link(target, base_data_dir=self.app.base_data_dir)
             if project:
                 self.notify(f"Opening project: {project.name}")
-                # Import here to avoid circular imports
                 from .projects import ProjectsScreen
-                # Pop current screen and push new TasksScreen for the project
                 self.app.pop_screen()
                 await self.app.push_screen(TasksScreen(project=project))
             else:
                 self.notify(f"Project not found: @{target}", severity="error")
 
         elif link_type == "task":
-            # Resolve task link
             task = links.resolve_task_link(
                 target,
                 project_context=self.current_project.id if self.current_project else None,
-                base_data_dir=self.app.base_data_dir
+                base_data_dir=self.app.base_data_dir,
             )
             if task:
                 self.notify(f"Navigating to task: {task.title}")
-                # If task is in a different project, switch to that project
                 if task.project_id and task.project_id != self.current_project.id:
                     try:
                         from ... import project_ops
                         target_project = project_ops.find_project(
-                            str(task.project_id),
-                            base_data_dir=self.app.base_data_dir
+                            str(task.project_id), base_data_dir=self.app.base_data_dir
                         )
                         if target_project:
                             self.app.pop_screen()
@@ -450,8 +437,6 @@ class TasksScreen(Screen):
                     except Exception as e:
                         log.error(f"Error switching to task's project: {e}")
                 else:
-                    # Task is in current project, just select it
-                    self.app.selected_task = task
                     await self.reload_tasks_action(task_id_to_reselect=task.id)
             else:
                 self.notify(f"Task not found: &{target}", severity="error")

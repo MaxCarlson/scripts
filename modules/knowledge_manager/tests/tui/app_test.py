@@ -12,6 +12,7 @@ from knowledge_manager.tui.screens.tasks import TasksScreen
 from knowledge_manager.tui.widgets.lists import ProjectList, ProjectListItem
 from knowledge_manager.models import Project, Task, ProjectStatus, TaskStatus
 from knowledge_manager.tui.widgets.footer import CustomFooter
+from knowledge_manager.tui.widgets.dialogs import LinkSelectionDialog
 
 pytestmark = pytest.mark.asyncio
 
@@ -61,3 +62,33 @@ async def test_project_selection_pushes_tasks_screen(mocker):
         await pilot.pause()
         assert len(app.screen_stack) == 2 # [_default, ProjectsScreen]
         assert isinstance(app.screen, ProjectsScreen)
+
+
+async def test_follow_link_with_multiple_links_shows_dialog(mocker):
+    """Test that following a link on a task with multiple links shows the selection dialog."""
+    # Create a mock app and screen
+    app = KmApp()
+    project = Project(name="Test Project")
+    screen = TasksScreen(project=project)
+
+    # Mock the app and its push_screen method
+    app.push_screen = MagicMock()
+
+    # Create a task with multiple links
+    task_with_links = Task(title="This task has @link1 and &link2")
+    screen.app.selected_task = task_with_links
+
+    # Mock the extract_links function to return multiple links
+    mocker.patch('knowledge_manager.links.extract_links', return_value=[
+        ('project', 'link1', 0, 0),
+        ('task', 'link2', 0, 0)
+    ])
+
+    # Call the action
+    await screen.action_follow_link()
+
+    # Assert that push_screen was called with the LinkSelectionDialog
+    app.push_screen.assert_called_once()
+    dialog = app.push_screen.call_args[0][0]
+    assert isinstance(dialog, LinkSelectionDialog)
+    assert dialog.links == ['@link1', '&link2']
