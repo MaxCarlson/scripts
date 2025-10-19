@@ -1,0 +1,203 @@
+Nice—`rclone about` shows the remote is healthy. You’re basically ready to wire this into the Python module.
+
+Below is a **concise spec you can hand to the LLM** that’s building your backup module. It tells it exactly how to use `rclone` + `restic`, how to verify/setup, what flags to pass, what to log, and what edge cases to handle.
+
+---
+
+# RRBackup – Integration Notes for the Python Module
+
+## 0) Assumptions
+
+* The user already has an `rclone` remote named `gdrive` and a Drive folder `gdrive:/backups/rrbackup`.
+* A `restic` repository may or may not be initialized yet at that path.
+* Config file provides:
+
+  * `repository.url` (e.g., `rclone:gdrive:/backups/rrbackup` or a local path)
+  * `repository.password_file`
+  * `restic.bin`, `rclone.bin`
+  * `state.dir` (default OK), `log.dir` (default OK)
+  * One or more `backup_sets` with `include`, `exclude`, `tags`, `one_fs`, `dry_run_default`
+
+## 1) Preflight checks (idempotent)
+
+1. **Verify executables**
+
+   * Ensure `restic` and `rclone` are on PATH, or use absolute paths from config.
+   * Print versions for logs: `restic version`, `rclone version`.
+2. **Verify rclone remote** (only if repo URL starts with `rclone:`)
+
+   * Extract remote name and path: `rclone:gdrive:/backups/rrbackup` → remote=`gdrive`, path=`/backups/rrbackup`.
+   * Run:
+
+     * `rclone about gdrive:` (log capacity/used)
+     * `rclone mkdir gdrive:/backups/rrbackup` (safe if exists)
+     * `rclone ls gdrive:/backups/rrbackup` (confirm write/list)
+   * On 401/403: prompt/action = advise `rclone config reconnect gdrive:`.
+3. **Verify restic password file**
+
+   * Check file exists and is non-empty; permissions warning if world-readable.
+
+## 2) Initialize repository if missing (safe to call repeatedly)
+
+* Detect with `restic -r <repo> snapshots`:
+
+  * If exit code indicates “repository does not exist,” run:
+
+    * `RESTIC_PASSWORD_FILE=<pwfile> restic -r <repo> init`
+* Always set environment:
+
+  * `RESTIC_PASSWORD_FILE` (preferred) or pass `--password-file` (avoid echoing secrets in logs).
+
+## 3) Backup command construction
+
+For each `backup_set`:
+
+* Base command:
+
+  * `restic -r <repo> backup <include...>`
+* Apply options from config:
+
+  * `--tag <tag>` for each tag in `tags`.
+  * `--one-file-system` if `one_fs = true`.
+  * Exclusions: for each `exclude` pattern, add `--exclude <pattern>`.
+  * If `dry_run_default = true` or a global `--dry-run/-n` flag is set: add `--dry-run`.
+* Cross-platform quoting:
+
+  * Treat each path/pattern as a separate argument; don’t join with spaces.
+  * On Windows, normalize `C:\path\to\dir\` → keep trailing slash if you intend the *contents*.
+* Suggested defaults the module should always add:
+
+  * `--verbose` one time (or a module `--verbose/-v` flag).
+  * Optional: `--json` (behind a `--json-logs/-j` flag) to parse machine outputs.
+
+### Example (Windows PowerShell, single line)
+
+```powershell
+$env:RESTIC_PASSWORD_FILE="C:/Users/mcarls/AppData/Roaming/rrbackup/restic_password.txt"; restic -r rclone:gdrive:/backups/rrbackup backup "C:/Users/mcarls/" --exclude "**/.git" --exclude "**/.venv" --exclude "**/node_modules" --exclude "**/__pycache__" --exclude "**/.cache" --exclude "**/*.tmp" --exclude "**/*.log" --exclude "C:/Users/mcarls/restic-backup-repo/**" --tag "tier:important" --tag "host:win11"
+```
+
+## 4) Retention / prune (map from config)
+
+Run after successful backups (or on a scheduled cadence):
+
+* `restic -r <repo> forget --prune --keep-daily N --keep-weekly N --keep-monthly N --keep-yearly N`
+* Show a dry-run first when a global `--dry-run/-n` is set (omit `--prune` during dry-run).
+
+## 5) Health & integrity commands (expose via CLI subcommands)
+
+* **List snapshots**: `restic -r <repo> snapshots --tag <optional>`
+* **Check repository** (expensive; schedule weekly/monthly): `restic -r <repo> check`
+* **Stats** (useful for reports): `restic -r <repo> stats`
+* **Unlock** (if a stale lock error occurs): `restic -r <repo> unlock`
+
+## 6) Restore operations (documented subcommands)
+
+* Restore by latest snapshot and path prefix:
+
+  * `restic -r <repo> restore latest --target <dir> --path <one of the include paths>`
+* Or restore by snapshot ID:
+
+  * `restic -r <repo> restore <snapshotID> --target <dir>`
+
+## 7) Logging strategy
+
+* Capture:
+
+  * Executed command (without secrets)
+  * Start/stop timestamps; duration
+  * Number of new/changed files; bytes uploaded (parse from restic output or `--json`)
+  * Exit code and stderr on failure
+* Log to `<state.dir>/logs/YYYYMMDD/*.log` with rotation.
+
+## 8) Error handling & retries
+
+* Detect and classify:
+
+  * **Auth errors** (401/403): suggest `rclone config reconnect gdrive:`.
+  * **Rate limiting / transient HTTP**: backoff + retry (e.g., exponential backoff, 3 attempts).
+  * **Lock errors**: run `restic unlock` (with user confirmation for safety) then retry once.
+* Non-zero exit codes should mark the set as failed; continue to next set unless `--fail-fast/-f` is set.
+
+## 9) Performance notes (Drive backend)
+
+* Lots of small files can be slower to upload to Drive. Two supported modes:
+
+  1. **Direct to Drive** (simple; your default): `rclone:gdrive:/backups/rrbackup`
+  2. **Local repo + later sync** (optional optimization):
+
+     * Primary repo: `C:\...\restic-backup-repo`
+     * Nightly `rclone sync <local_repo>/ gdrive:/backups/rrbackup/`
+       Use this only if direct backups prove too slow.
+
+## 10) CLI surface (short + long flags as per your conventions)
+
+* `-c, --config <file>`: path to TOML config
+* `-s, --set <name>`: run only a named backup set (repeatable)
+* `-n, --dry-run`: dry-run mode (applies to backup and forget)
+* `-v, --verbose`: verbose logging
+* `-f, --fail-fast`: stop on first set failure
+* `-j, --json-logs`: produce JSON logs from restic and aggregate
+* `-t, --tags <k=v>`: extra tag(s) to append for this run (repeatable)
+* `-r, --repo <url>`: override repo URL from config
+* `-p, --password-file <file>`: override password file
+* **Ops subcommands** (pick one at a time):
+
+  * `backup` (default if none)
+  * `snapshots`
+  * `forget`
+  * `check`
+  * `stats`
+  * `restore --snapshot <id|latest> --target <dir> [--path <prefix>]`
+
+## 11) Test matrix (module should implement)
+
+* **Dry-run both sets**: no errors, logs show would-upload counts.
+* **Init flow**: starting from empty Drive path auto-inits repo.
+* **Auth expiry**: simulate 401; module surfaces reconnect hint.
+* **Excludes**: place sentinel files under excluded patterns; verify they don’t upload.
+* **Retention**: create multiple snapshots, run forget/prune, verify expected snapshots remain.
+
+## 12) Things *not* to do
+
+* Don’t echo the repository password or dump the password file contents to logs.
+* Don’t assume admin rights or machine-scope installs.
+* Don’t hardcode Windows path separators—normalize and pass as separate args.
+
+---
+
+## Quick “Now Run” checklist for you
+
+1. **Ensure password file exists** (one line, create if needed):
+
+```powershell
+ni -Force "C:/Users/mcarls/AppData/Roaming/rrbackup/restic_password.txt" | Out-Null  # create if missing
+```
+
+2. **Init repo** (safe if already exists):
+
+```powershell
+$env:RESTIC_PASSWORD_FILE="C:/Users/mcarls/AppData/Roaming/rrbackup/restic_password.txt"; restic -r rclone:gdrive:/backups/rrbackup snapshots || (restic -r rclone:gdrive:/backups/rrbackup init)
+```
+
+3. **Dry-run both sets** (sanity):
+
+```powershell
+$env:RESTIC_PASSWORD_FILE="C:/Users/mcarls/AppData/Roaming/rrbackup/restic_password.txt"; restic -r rclone:gdrive:/backups/rrbackup backup "C:/Users/mcarls/" --dry-run && restic -r rclone:gdrive:/backups/rrbackup backup "D:/Pictures/" --dry-run
+```
+
+4. **First real backup**:
+
+```powershell
+$env:RESTIC_PASSWORD_FILE="C:/Users/mcarls/AppData/Roaming/rrbackup/restic_password.txt"; restic -r rclone:gdrive:/backups/rrbackup backup "C:/Users/mcarls/" && restic -r rclone:gdrive:/backups/rrbackup backup "D:/Pictures/"
+```
+
+5. **Apply retention**:
+
+```powershell
+$env:RESTIC_PASSWORD_FILE="C:/Users/mcarls/AppData/Roaming/rrbackup/restic_password.txt"; restic -r rclone:gdrive:/backups/rrbackup forget --prune --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --keep-yearly 2
+```
+
+---
+
+If you want, I can also draft the **Python runner** skeleton (argparse with your short/long flag rules, subprocess calls, JSON logging, and a small test harness) next.
+
