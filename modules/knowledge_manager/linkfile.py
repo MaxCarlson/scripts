@@ -95,9 +95,20 @@ def create_link_for_project(
     directory: Path,
     base_data_dir: Optional[Path] = None,
     file_name: Optional[str] = None,
+    force: bool = False,
 ) -> Tuple[ProjectLink, Path]:
     """
     Ensure project exists; write `<slug>.kmproj` to `directory`; return (link, path).
+
+    Args:
+        project_name: The name of the project.
+        directory: The directory to create the link file in.
+        base_data_dir: The base data directory for the project.
+        file_name: The name of the link file (without extension).
+        force: If True, overwrite an existing link file.
+
+    Raises:
+        FileExistsError: If the link file already exists and `force` is False.
     """
     directory = Path(directory).resolve()
     directory.mkdir(parents=True, exist_ok=True)
@@ -105,6 +116,9 @@ def create_link_for_project(
 
     slug = _slugify(file_name or project_name)
     link_path = directory / f"{slug}{LINK_EXT}"
+
+    if link_path.exists() and not force:
+        raise FileExistsError(f"Link file already exists: {link_path}. Use --force to overwrite.")
 
     link = ProjectLink(
         version=1,

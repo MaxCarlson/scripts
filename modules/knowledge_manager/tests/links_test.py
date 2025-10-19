@@ -141,3 +141,37 @@ def test_format_link_help():
     assert "@project-name" in help_text
     assert "&task-title" in help_text
     assert "Ctrl+G" in help_text
+
+def test_extract_links_from_task_title(init_db):
+    """Test extracting links from a task title."""
+    tmp_path = init_db
+    project = project_ops.create_new_project(name="Test Project", base_data_dir=tmp_path)
+    task = task_ops.create_new_task(title="This task is about @some-project", project_identifier=project.id, base_data_dir=tmp_path)
+
+    extracted = links.extract_links(task.title)
+    assert len(extracted) == 1
+    assert extracted[0][0] == 'project'
+    assert extracted[0][1] == 'some-project'
+
+def test_extract_links_from_title_and_details(init_db):
+    """Test extracting links from both title and details."""
+    tmp_path = init_db
+    project = project_ops.create_new_project(name="Test Project", base_data_dir=tmp_path)
+    task = task_ops.create_new_task(
+        title="This task is about @project1",
+        project_identifier=project.id,
+        base_data_dir=tmp_path
+    )
+    details_path = task_ops.get_task_file_path(task.id, base_data_dir=tmp_path, create_if_missing_in_object=True)
+    details_path.write_text("See also &task1")
+
+    title_links = links.extract_links(task.title)
+    details_links = links.extract_links(details_path.read_text())
+
+    all_links = title_links + details_links
+
+    assert len(all_links) == 2
+    assert all_links[0][0] == 'project'
+    assert all_links[0][1] == 'project1'
+    assert all_links[1][0] == 'task'
+    assert all_links[1][1] == 'task1'
