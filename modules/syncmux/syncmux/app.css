@@ -141,6 +141,7 @@ SessionWidget {
     border: thick $background 80%;
     background: $surface;
     padding: 2;
+    align-horizontal: center;
 }
 
 #help-text {
@@ -150,7 +151,7 @@ SessionWidget {
 
 #help-container Button {
     width: 20;
-    margin: 1 auto;
+    margin-top: 1;
 }
 
 #error-dialog-container {
@@ -160,6 +161,7 @@ SessionWidget {
     border: thick $error 80%;
     background: $surface;
     padding: 2;
+    align-horizontal: center;
 }
 
 #error-title {
@@ -180,5 +182,5 @@ SessionWidget {
 
 #error-dialog-container Button {
     width: 15;
-    margin: 1 auto;
+    margin-top: 1;
 }
