@@ -1,15 +1,18 @@
 
+/* Stack vertically for narrow terminals (mobile-friendly) */
 #main-container {
-    layout: horizontal;
+    layout: vertical;
 }
 
 #host-list {
-    width: 30;
+    height: 6;
+    width: 100%;
     border: solid $primary;
 }
 
 #session-panel {
-    width: 1fr;
+    height: 1fr;
+    width: 100%;
 }
 
 #filter-container {
@@ -40,14 +43,15 @@
     padding: 0 1;
 }
 
+/* Compact indicators for mobile */
 #sort-indicator {
     width: 1fr;
     text-align: left;
 }
 
 #auto-refresh-indicator {
-    width: auto;
-    text-align: right;
+    width: 1fr;
+    text-align: left;
 }
 
 #session-list {
@@ -63,8 +67,9 @@ ListView > .--highlight {
     background: $secondary;
 }
 
+/* Smaller log for mobile */
 #log-view {
-    height: 10;
+    height: 5;
     border: solid $primary;
     dock: bottom;
 }

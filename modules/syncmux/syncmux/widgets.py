@@ -1,13 +1,12 @@
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal
-from textual.widget import Widget
-from textual.widgets import Label, Static
+from textual.widgets import Label, ListItem, Static
 
 from .models import Host, Session
 
 
-class HostWidget(Widget):
+class HostWidget(ListItem):
     """A widget to display a host."""
 
     def __init__(self, host: Host) -> None:
@@ -48,7 +47,7 @@ class HostWidget(Widget):
             count_widget.update(f"({count} sessions)")
 
 
-class SessionWidget(Widget):
+class SessionWidget(ListItem):
     """A widget to display a session."""
 
     def __init__(self, session: Session) -> None:

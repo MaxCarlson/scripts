@@ -1,0 +1,168 @@
+❯ km p -h
+usage: km project [-h] <action> ...
+
+options:
+  -h, --help  show this help message and exit
+
+Project Actions:
+  <action>
+    add       Add a new project
+    list      List projects
+    view      View a project
+❯ xg km
+FUNC  "kmdone": Mark task done (default: last task, or by ID/prefix, or fzf)
+FUNC  "kmlink": Create a .kmproj here for an existing project by ID or name.
+FUNC  "kmlinks": List local *.kmproj files with project names and IDs.
+FUNC  "kmprint": Convenience wrapper: print a project's hierarchy; if no project, use first *.kmproj.
+FUNC  "kmtlp": List tasks for a specific project (prompts for project identifier)
+FUNC  "kmopen": Open the first *.kmproj in the current directory (or error if none).
+FUNC  "kmnew": Quickly add a new task. Sets it as last task. Opt: -e to edit.
+FUNC  "kmexamples": Show a quick help and common usage examples for km and its aliases
+FUNC  "kmtui": Open the KM TUI to the master project list.
+FUNC  "kmsub": Add a subtask (parent: last task, or by ID/prefix, or fzf).
+FUNC  "kmedit": Edit task details (default: last task, or by ID/title_prefix, or select via fzf).
+FUNC  "kmview": View task (default: last task, or by ID/prefix, or fzf)
+FUNC  "kml": Print just the names of all KM projects (optionally filter by status: active/backlog/completed)
+FUNC  "kmviewp": View a project's details (prompts for identifier if not provided)
+FUNC  "kmlocal": Create a KM project link (.kmproj) in the current directory (default name = folder name).
+ALIAS cdkm=/data/data/com.termux/files/home/scripts/modules/knowledge_manager
+ALIAS kmhelp='_km_runner -h'
+ALIAS kminit='_km_runner init'
+ALIAS kmp='_km_runner project'
+ALIAS kmpa='kmp add'
+ALIAS kmpl='kmp list'
+ALIAS kmplstat=_km_project_list_status_helper
+ALIAS kmt='_km_runner task'
+ALIAS kmta='kmt add'
+ALIAS kmtl='kmt list'
+ALIAS kmtla='kmt list --all-subtasks'
+❯ kmlocal
+/data/data/com.termux/files/home/scripts/modules/modules.kmproj
+❯ kml
+kml:1: read-only variable: status
+❯ kmtl
+usage: km task [-h] <action> ...
+km task: error: argument <action>: invalid choice: 'list' (choose from add)
+❯ km view
+usage: km view [-h] [-j PROJECT_CONTEXT] identifier
+km view: error: the following arguments are required: identifier
+❯ ll
+Size Git Name
+   -  -I  .claude
+   -  -I  .pytest_cache
+   -  --  .tmpmods
+   -  -I  __pycache__
+   -  --  agt
+   -  --  argparse_enforcer
+   -  --  clip_tools
+   -  --  clipboard_utils
+   -  --  code_tools
+   -  --  cross_platform
+   -  --  debug_utils
+   -  --  diff_utils
+   -  --  dlmanager
+   -  --  edit_commands
+   -  --  file_utils
+   -  --  history_watcher
+   -  --  imageshrink
+   -  --  knowledge_manager
+   -  --  llm-interface
+   -  --  logs
+   -  --  obfuscator
+   -  --  output
+   -  --  parallel_runner
+   -  --  phonemon
+   -  --  poe2craft
+   -  --  procparsers
+   -  --  python_setup
+   -  --  rrbackup
+   -  --  script_manager
+   -  --  setup_utils
+   -  --  standard_ui
+   -  --  stars
+   -  --  syncmux
+   -  --  system_tools
+   -  --  termdash
+   -  --  tmp
+   -  --  tmux_control
+   -  --  vdedup
+   -  --  web_ai_automator
+   -  --  ytaedl
+ 225  -N  modules.kmproj
+3.6k  -N  newinstructions.txt
+4.5k  -- 󰂺 README.md
+ 33k  --  setup.py
+2.5k  --  WorkLoop.md
+❯ kmtui
+ Error in stylesheet:
+ /data/data/com.termux/files/home/scripts/modules/kno
+wledge_manager/tui/km_tui.css:6:82
+╭───────────────────────────────────────────────────╮
+│    4 CustomFooter { dock: bottom; height: auto; m │
+│    5 #projects_view_container, #tasks_view_contai │
+│ ❱  6 .view_header { width: 100%; padding: 0 0 1 0 │
+│    7 #project_list_scroll, #task_list_scroll { wi │
+│    8 #project_detail_scroll, #task_detail_scroll  │
+╰───────────────────────────────────────────────────╯
+ • reference to undefined variable '$text-accent'
+ • did you mean '$accent'?
+  ~cdsm on   main ⇡3 *4 ?4         at  08:18:55
+❯ km
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Atuin v18.<esc>: exit, <tab>: edit, <entehistory co
+  Search │ Inspect
+    168ms 1mo ago km print -h
+    155ms 1mo ago km print -a tmux
+    167ms 1mo ago km print -a
+    167ms 1mo ago km print tmux
+    1s    1mo ago rwc tests/seekmake_test.py
+    78ms  1mo ago mv tests/seekmake_test.py tests/se
+    291ms 1mo ago kmprint tmux
+    6s    1mo ago kmplstat
+    2s    14d ago c2cd imageshrink2/imgshrink/metric
+    1s    14d ago cld imageshrink2/imgshrink/metrics
+    80ms  14d ago cp imageshrink2/imgshrink/metrics.
+  9 1s    4mo ago cld km_tui.css
+  8 1s    4mo ago rwc km_tui.css
+  7 62ms  4mo ago rm tui.py km_tui.css
+  6 2s    4mo ago gacamp "km tui working well."
+  5 786ms 4mo ago rwc tui/km_tui.css
+  4 774ms 4mo ago cld tui/km_tui.css
+  3 347ms 2mo ago kmtla
+  2 412ms 2mo ago kmt
+  1 161ms 31s ago kmtl
+  > 444ms 15s ago kmtui
+ [    GLOBAL    ] kmt
+ kmtui
+  ~cdsm on   main ⇡3 *4 ?4         at  08:18:55
+❯ kmtui
+❯ kmtui
+ Error in stylesheet:
+ /data/data/com.termux/files/home/scripts/modules/kno
+wledge_manager/tui/km_tui.css:6:82
+╭───────────────────────────────────────────────────╮
+│    4 CustomFooter { dock: bottom; height: auto; m │
+│    5 #projects_view_container, #tasks_view_contai │
+│ ❱  6 .view_header { width: 100%; padding: 0 0 1 0 │
+│    7 #project_list_scroll, #task_list_scroll { wi │
+│    8 #project_detail_scroll, #task_detail_scroll  │
+╰───────────────────────────────────────────────────╯
+ • reference to undefined variable '$text-accent'
+ • did you mean '$accent'?
+  ~cdsm on   main ⇡3 *4 ?4         at  08:19:11
+❯
+

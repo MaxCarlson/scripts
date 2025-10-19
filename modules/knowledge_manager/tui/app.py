@@ -132,7 +132,8 @@ class KmApp(App[None]):
                 self.selected_task = item.task_data
                 current_screen = self.screen
                 if isinstance(current_screen, TasksScreen):
-                    await current_screen.action_edit_selected_task()
+                    # Update the detail view to show task details
+                    current_screen.update_detail_view(item.task_data)
 
     # ---------- Helpers ----------
 

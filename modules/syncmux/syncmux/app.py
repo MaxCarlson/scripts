@@ -31,22 +31,22 @@ class SyncMuxApp(App):
     CSS_PATH = "app.css"
 
     BINDINGS = [
-        ("j", "cursor_down", "Cursor Down"),
-        ("k", "cursor_up", "Cursor Up"),
-        ("tab", "switch_list", "Switch List"),
+        ("j", "cursor_down", "Down"),
+        ("k", "cursor_up", "Up"),
+        ("tab", "switch_list", "Switch"),
         ("enter", "select_item", "Select"),
-        ("n", "create_session", "New Session"),
-        ("d", "kill_session", "Kill Session"),
-        ("upper_r", "rename_session", "Rename Session"),
-        ("i", "show_session_info", "Session Info"),
-        ("r", "refresh_host", "Refresh Host"),
-        ("ctrl+r", "refresh_all_hosts", "Refresh All"),
-        ("p", "toggle_auto_refresh", "Toggle Auto-Refresh"),
-        ("plus,equals", "increase_refresh_interval", "Increase Interval"),
-        ("minus", "decrease_refresh_interval", "Decrease Interval"),
-        ("slash", "toggle_filter", "Filter Sessions"),
-        ("s", "cycle_sort", "Cycle Sort"),
-        ("question_mark,f1", "show_help", "Help"),
+        ("n", "create_session", "New"),
+        ("d", "kill_session", "Kill"),
+        ("e", "rename_session", "Rename"),
+        ("i", "show_session_info", "Info"),
+        ("r", "refresh_host", "Refresh"),
+        ("a", "refresh_all_hosts", "Refresh All"),
+        ("p", "toggle_auto_refresh", "Auto"),
+        ("equals", "increase_refresh_interval", "+Time"),
+        ("minus", "decrease_refresh_interval", "-Time"),
+        ("slash,f", "toggle_filter", "Filter"),
+        ("s", "cycle_sort", "Sort"),
+        ("h,question_mark", "show_help", "Help"),
         ("q", "quit", "Quit"),
     ]
 
@@ -83,10 +83,16 @@ class SyncMuxApp(App):
         Args:
             message: The message to log
             level: The severity level (info, success, warning, error)
-            show_dialog: If True and level is error, show a modal error dialog
+            show_dialog: If True and level is error, show_dialog a modal error dialog
         """
+        # Try to get log view, but silently fail if widgets aren't ready yet
+        try:
+            log = self.query_one("#log-view", RichLog)
+        except Exception:
+            # Widgets not available yet (during initialization)
+            return
+
         timestamp = datetime.now().strftime("%H:%M:%S")
-        log = self.query_one("#log-view", RichLog)
 
         # Add level prefix with emoji
         if level == "error":
@@ -115,9 +121,12 @@ class SyncMuxApp(App):
                 widget = HostWidget(host)
                 self.host_widgets[host.alias] = widget
                 host_list.append(widget)
-            # Set initial focus on host list
+            # Set initial focus on host list and select first host
             host_list.focus()
-            self._log(f"Loaded {len(self.hosts)} hosts from configuration", "success")
+            if len(self.hosts) > 0:
+                self.selected_host_alias = self.hosts[0].alias
+            self._log(f"✅ {len(self.hosts)} hosts loaded. Press J/K to navigate, ENTER to select", "success")
+            self.notify("🎯 Press J/K to navigate, ENTER to select host", title="Ready!", timeout=5)
             await self.action_refresh_all_hosts()
         except FileNotFoundError as e:
             self._log(str(e), "error", show_dialog=True)
@@ -132,12 +141,22 @@ class SyncMuxApp(App):
         focused = self.focused
         if focused and isinstance(focused, ListView):
             focused.action_cursor_down()
+            self._log("↓", "info")
+            self.notify("↓ Down", timeout=1)
+        else:
+            self._log("❌ No list focused - press TAB", "warning")
+            self.notify("❌ No list focused - press TAB", timeout=2)
 
     def action_cursor_up(self) -> None:
         """Move the cursor up in the focused list view."""
         focused = self.focused
         if focused and isinstance(focused, ListView):
             focused.action_cursor_up()
+            self._log("↑", "info")
+            self.notify("↑ Up", timeout=1)
+        else:
+            self._log("❌ No list focused - press TAB", "warning")
+            self.notify("❌ No list focused - press TAB", timeout=2)
 
     def action_switch_list(self) -> None:
         """Switch focus between host and session lists."""
@@ -146,14 +165,21 @@ class SyncMuxApp(App):
 
         if self.focused == host_list:
             session_list.focus()
+            self._log("🎯 Switched to SESSIONS list", "info")
+            self.notify("🎯 SESSIONS list active", timeout=2)
         else:
             host_list.focus()
+            self._log("🎯 Switched to HOSTS list", "info")
+            self.notify("🎯 HOSTS list active", timeout=2)
 
     async def action_select_item(self) -> None:
         """Select an item in the focused list view."""
         # Get the focused widget
         focused = self.focused
         if focused is None:
+            msg = "❌ Nothing selected. Press TAB to switch lists"
+            self._log(msg, "warning")
+            self.notify(msg, severity="warning", timeout=3)
             return
 
         # If host list is focused, select the host
@@ -161,6 +187,13 @@ class SyncMuxApp(App):
             host_list = self.query_one("#host-list", ListView)
             if host_list.highlighted is not None:
                 self.selected_host_alias = host_list.highlighted.host.alias
+                msg = f"✅ Selected: {host_list.highlighted.host.alias}"
+                self._log(msg, "success")
+                self.notify(msg, severity="information", timeout=2)
+            else:
+                msg = "❌ No host to select"
+                self._log(msg, "warning")
+                self.notify(msg, severity="warning", timeout=2)
 
         # If session list is focused, attach to the session
         elif focused.id == "session-list":
@@ -187,10 +220,10 @@ class SyncMuxApp(App):
             try:
                 sort_indicator = self.query_one("#sort-indicator", Static)
                 mode_display = {
-                    "name": "Sort: Name (A-Z)",
-                    "created": "Sort: Created (Newest First)",
-                    "windows": "Sort: Window Count (Most First)",
-                    "attached": "Sort: Attached Status"
+                    "name": "Sort: Name",
+                    "created": "Sort: Newest",
+                    "windows": "Sort: Windows",
+                    "attached": "Sort: Attached"
                 }
                 sort_indicator.update(f"[dim]{mode_display.get(new_mode, '')}[/dim]")
             except Exception:
@@ -245,9 +278,9 @@ class SyncMuxApp(App):
         try:
             indicator = self.query_one("#auto-refresh-indicator", Static)
             if self.auto_refresh_enabled:
-                indicator.update(f"[dim]Auto-refresh: {self.auto_refresh_countdown}s (interval: {self.auto_refresh_interval}s)[/dim]")
+                indicator.update(f"[dim]Refresh: {self.auto_refresh_countdown}s[/dim]")
             else:
-                indicator.update("[dim]Auto-refresh: OFF (Press P to enable)[/dim]")
+                indicator.update("[dim]Refresh: OFF (P)[/dim]")
         except Exception:
             pass  # Widget not available
 
@@ -304,6 +337,10 @@ class SyncMuxApp(App):
     def action_toggle_filter(self) -> None:
         """Toggle the filter input visibility."""
         self.filter_visible = not self.filter_visible
+        if self.filter_visible:
+            self._log("Filter ON (press F/SLASH again to close)", "info")
+        else:
+            self._log("Filter OFF", "info")
 
     def action_cycle_sort(self) -> None:
         """Cycle through sort modes."""
@@ -311,11 +348,13 @@ class SyncMuxApp(App):
         current_index = sort_modes.index(self.sort_mode)
         next_index = (current_index + 1) % len(sort_modes)
         self.sort_mode = sort_modes[next_index]
-        self._log(f"Sort mode: {self.sort_mode}", "info")
+        self._log(f"Sort: {self.sort_mode}", "info")
 
     def action_toggle_auto_refresh(self) -> None:
         """Toggle auto-refresh on/off."""
         self.auto_refresh_enabled = not self.auto_refresh_enabled
+        state = "ON" if self.auto_refresh_enabled else "OFF"
+        self._log(f"Auto-refresh: {state}", "info")
 
     def action_increase_refresh_interval(self) -> None:
         """Increase auto-refresh interval by 10 seconds."""
@@ -432,6 +471,7 @@ class SyncMuxApp(App):
         if self.selected_host_alias:
             host = next((h for h in self.hosts if h.alias == self.selected_host_alias), None)
             if host:
+                self._log(f"Opening new session dialog for {host.alias}", "info")
                 async def create_session_callback(name: Optional[str]) -> None:
                     if name:
                         async def _create_session() -> None:
@@ -440,17 +480,21 @@ class SyncMuxApp(App):
                                 conn = await self.conn_manager.get_connection(host)
                                 success = await self.tmux_controller.create_session(conn, name)
                                 if success:
-                                    self._log(f"Session '{name}' created successfully", "success")
+                                    self._log(f"✅ Session '{name}' created", "success")
                                     await self.action_refresh_host()
                                 else:
-                                    self._log(f"Failed to create session '{name}'", "error")
+                                    self._log(f"❌ Failed to create '{name}'", "error")
                             except ConnectionError as e:
-                                self._log(str(e), "error")
+                                self._log(f"❌ {e}", "error")
                             except ValueError as e:
-                                self._log(f"Invalid session name: {e}", "error")
+                                self._log(f"❌ Invalid name: {e}", "error")
                         self.call_later(_create_session)
+                    else:
+                        self._log("Cancelled", "info")
 
                 self.push_screen(NewSessionScreen(), create_session_callback)
+        else:
+            self._log("❌ No host selected. Press TAB to switch to host list", "warning")
 
 
     
@@ -461,26 +505,33 @@ class SyncMuxApp(App):
             session_list = self.query_one("#session-list", ListView)
             if host and session_list.highlighted is not None:
                 session = session_list.highlighted.session
+                self._log(f"Confirm kill '{session.name}'?", "info")
 
                 def kill_session_callback(confirm: bool) -> None:
                     if confirm:
                         async def _kill_session() -> None:
-                            self._log(f"Killing session '{session.name}' on {host.alias}...", "info")
+                            self._log(f"Killing '{session.name}' on {host.alias}...", "info")
                             try:
                                 conn = await self.conn_manager.get_connection(host)
                                 success = await self.tmux_controller.kill_session(conn, session.name)
                                 if success:
-                                    self._log(f"Session '{session.name}' killed successfully", "success")
+                                    self._log(f"✅ Killed '{session.name}'", "success")
                                     await self.action_refresh_host()
                                 else:
-                                    self._log(f"Failed to kill session '{session.name}'", "error")
+                                    self._log(f"❌ Failed to kill '{session.name}'", "error")
                             except ConnectionError as e:
-                                self._log(str(e), "error")
+                                self._log(f"❌ {e}", "error")
                         self.call_later(_kill_session)
+                    else:
+                        self._log("Cancelled", "info")
 
                 self.push_screen(
                     ConfirmKillSessionScreen(session.name), kill_session_callback
                 )
+            else:
+                self._log("❌ No session selected", "warning")
+        else:
+            self._log("❌ No host selected. Press TAB to switch lists", "warning")
 
     async def action_rename_session(self) -> None:
         """Renames the selected session."""
