@@ -124,3 +124,25 @@ async def test_kill_session(app):
 
     # Verify the tmux controller was called
     app.tmux_controller.kill_session.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_graceful_shutdown_without_conn_manager(app):
+    """Test that on_unmount handles missing conn_manager gracefully."""
+    # Don't set up conn_manager (simulating failure during on_mount)
+    # This should not raise an AttributeError
+    await app.on_unmount()
+    # If we got here without exception, test passes
+
+
+@pytest.mark.asyncio
+async def test_graceful_shutdown_with_conn_manager(app):
+    """Test that on_unmount closes conn_manager when it exists."""
+    # Setup mock conn_manager
+    app.conn_manager = AsyncMock()
+    app.conn_manager.close_all = AsyncMock()
+
+    await app.on_unmount()
+
+    # Verify close_all was called
+    app.conn_manager.close_all.assert_called_once()
