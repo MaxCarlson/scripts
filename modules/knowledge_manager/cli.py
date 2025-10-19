@@ -174,6 +174,15 @@ def handle_project_add(args: argparse.Namespace):
             name=args.name, description=args.description, base_data_dir=args.data_dir
         )
         print(f"Project '{project.name}' created successfully with ID: {project.id}")
+
+        # If --local flag is set, create a .kmproj file in current directory
+        if getattr(args, 'create_local', False):
+            _, link_path = create_link_for_project(
+                project_name=args.name,
+                directory=Path.cwd(),
+                base_data_dir=args.data_dir,
+            )
+            print(f"Local project file created: {link_path}")
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr); sys.exit(1)
     except Exception as e:
@@ -446,6 +455,7 @@ def create_parser() -> argparse.ArgumentParser:
     proj_add_parser = project_subparsers.add_parser("add", help="Add a new project")
     proj_add_parser.add_argument("-n", "--name", dest="name", type=str, required=True, help="Name of the project")
     proj_add_parser.add_argument("-d", "--description", dest="description", type=str, help="Markdown description")
+    proj_add_parser.add_argument("-l", "--local", dest="create_local", action="store_true", help=f"Create a {LINK_EXT} file in the current directory")
     proj_add_parser.set_defaults(func=handle_project_add)
     proj_list_parser = project_subparsers.add_parser("list", help="List projects")
     proj_list_parser.add_argument("-s", "--status", dest="status", type=str, choices=[s.value for s in ProjectStatus], help="Filter by status")
@@ -465,7 +475,7 @@ def create_parser() -> argparse.ArgumentParser:
     task_add_parser.add_argument("-U", "--due-date", dest="due_date", type=str, help="Due date (YYYY-MM-DD)")
     task_add_parser.set_defaults(func=handle_task_add)
 
-    task_list_parser = subparsers.add_parser("list", help="List tasks")
+    task_list_parser = task_subparsers.add_parser("list", help="List tasks")
     task_list_parser.add_argument("-p", "--project-id", dest="project_id", type=str, help="Filter by project (ID or name)")
     task_list_parser.add_argument("-s", "--status", dest="status", type=str, choices=[s.value for s in TaskStatus], help="Filter by status")
     task_list_parser.add_argument("-P", "--parent-id", dest="parent_id", type=str, help="Filter by parent task ID")
@@ -473,20 +483,20 @@ def create_parser() -> argparse.ArgumentParser:
     task_list_parser.add_argument("-d", "--details", dest="include_details", action="store_true", help="Include full task details (markdown content)")
     task_list_parser.set_defaults(func=handle_task_list)
 
-    task_view_parser = subparsers.add_parser("view", help="View a task")
+    task_view_parser = task_subparsers.add_parser("view", help="View a task")
     add_common_task_identifier_args(task_view_parser)
     task_view_parser.set_defaults(func=handle_task_view)
-    
-    task_done_parser = subparsers.add_parser("done", help="Mark a task as done")
+
+    task_done_parser = task_subparsers.add_parser("done", help="Mark a task as done")
     add_common_task_identifier_args(task_done_parser)
     task_done_parser.set_defaults(func=handle_task_done)
 
-    task_getpath_parser = subparsers.add_parser("getpath", help="Get task's details file path")
+    task_getpath_parser = task_subparsers.add_parser("getpath", help="Get task's details file path")
     add_common_task_identifier_args(task_getpath_parser)
     task_getpath_parser.set_defaults(func=handle_task_getpath)
 
-    task_update_parser = subparsers.add_parser("update", help="Update an existing task")
-    add_common_task_identifier_args(task_update_parser) 
+    task_update_parser = task_subparsers.add_parser("update", help="Update an existing task")
+    add_common_task_identifier_args(task_update_parser)
     task_update_parser.add_argument("-t", "--title", dest="title", type=str, default=None, help="New title")
     task_update_parser.add_argument("-s", "--status", dest="status", type=str, default=None, choices=[s.value for s in TaskStatus], help="New status")
     task_update_parser.add_argument("-r", "--priority", dest="priority", type=int, default=None, choices=range(1,6), help="New priority")
@@ -519,12 +529,21 @@ def create_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[List[str]] = None):
+    # Check if first argument is a .kmproj file (shorthand for -o)
+    cmd_args = argv if argv is not None else sys.argv[1:]
+    if cmd_args and cmd_args[0].endswith(LINK_EXT):
+        kmproj_path = cmd_args[0]
+        # Check if file exists
+        if Path(kmproj_path).exists():
+            # Rewrite args to use -o flag
+            cmd_args = ["-o", kmproj_path] + cmd_args[1:]
+
     parser = create_parser()
-    args = parser.parse_args(argv if argv is not None else sys.argv[1:])
+    args = parser.parse_args(cmd_args)
 
     _init_logging(getattr(args, "verbose", 0), getattr(args, "log_file", None))
 
-    global BASE_DATA_DIR 
+    global BASE_DATA_DIR
     if hasattr(args, 'data_dir') and args.data_dir is not None:
         BASE_DATA_DIR = args.data_dir
 

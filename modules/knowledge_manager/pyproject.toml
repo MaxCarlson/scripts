@@ -19,6 +19,7 @@ authors = [
 # For now, it mostly uses the standard library.
 # Example: dependencies = ["requests", "pydantic>2.0"]
 dependencies = [
+    "textual>=0.47.0",  # For TUI
     # "fastapi", # For future API
     # "uvicorn[standard]", # For future API
 ]
@@ -26,8 +27,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
-    "pytest-cov", # For coverage reports
-    "ruff",       # For linting and formatting (optional, but good)
+    "pytest-mock",    # For mocker fixture
+    "pytest-cov",     # For coverage reports
+    "pytest-asyncio", # For async tests (TUI tests)
+    "ruff",           # For linting and formatting (optional, but good)
 ]
 
 # This section defines the command-line script 'km'

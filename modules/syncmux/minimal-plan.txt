@@ -1,0 +1,203 @@
+File: plan-minimal.txt (Complete File)
+
+# SyncMux — Minimal Plan (LLM-Focused)
+
+> **Goal:** A fast, minimal cross-device *tmux* session switcher that feels like `prefix+w` across all your machines. The remote *tmux* servers are the source of truth; the UI is a thin, async viewer/launcher.
+
+---
+
+## 1) MVP Scope (What to Build Now)
+
+1. **Cross-device session browser**
+    - Aggregate sessions from configured hosts into one list/tree.
+    - Show `host → sessions → windows` (tree view).
+2. **Global switcher (`prefix+w` feel)**
+    - Open a TUI “switcher” that lists all sessions/windows across devices.
+    - Arrow/`j`/`k` navigate; `enter` attaches to the selected *window’s session* on its host.
+3. **Session lifecycle (minimal)**
+    - Create session on selected host (name prompt).
+    - Kill session on selected host (confirm).
+4. **Config-driven hosts**
+    - Load hosts from a YAML file.
+    - If a host is reachable and *tmux* is installed, it appears; otherwise, mark as offline.
+5. **Persistence**
+    - Save/keep only the hosts list; no app-side cache of sessions.
+    - *tmux* state is always fetched live.
+6. **(Stretch, optional for MVP)** Read-only “clone view”
+    - Open a non-interactive mirror of a remote window (observe only).
+    - Full interactive “move window across hosts” is **out of scope** for MVP.
+
+**Non-Goals (MVP)**
+- Auto device discovery, file transfer, pane/window move between hosts, multiplexed shared sessions, auth managers, secrets UIs, SSH tunnels, or agent forwarding UX. Keep the core small.
+
+---
+
+## 2) Architecture (Minimum Viable)
+
+- **Event model:** Single-threaded `asyncio`. Never block the UI.
+- **UI:** [Textual] single screen: `HostList` (left) + `SessionTree` (center) + `Log` (bottom).
+- **Transport:** [AsyncSSH] for SSH; one connection per host, reused.
+- **Truth model:** No app cache beyond current render. Always query `tmux` with `-F` formatted output.
+- **Attach:** Graceful TUI shutdown, then **process replacement** with `ssh -t ... tmux attach -t ...` via `os.execvp`/`os.execvpe`. This guarantees real TTY control.
+
+### 2.1 Key tmux commands
+- List sessions:
+  ```
+  tmux list-sessions -F "#{session_id}|#{session_name}|#{session_windows}|#{session_attached}|#{session_created}"
+  ```
+- Create (detached):
+  ```
+  tmux new-session -d -s "<name>"
+  ```
+- Kill:
+  ```
+  tmux kill-session -t "<target>"
+  ```
+- Exists:
+  ```
+  tmux has-session -t "<name>"
+  ```
+
+*(Windows attach uses `ssh.exe`; WSL/Termux use `ssh`. Always allocate TTY with `-t`.)*
+
+---
+
+## 3) Minimal Data & Config
+
+### 3.1 Models
+- **Host**: `alias`, `hostname`, `port=22`, `user`, `auth_method ∈ {password,key,agent}`, `key_path?`, `password?`
+- **Session**: `id`, `name`, `windows:int`, `attached:int`, `created_at:datetime`
+
+### 3.2 Config file
+- Location:
+  - **Linux/WSL/Termux:** `~/.config/syncmux/config.yml`
+  - **Windows:** `%APPDATA%\syncmux\config.yml`
+
+```yaml
+# ~/.config/syncmux/config.yml
+hosts:
+  - alias: local-wsl
+    hostname: localhost
+    user: youruser
+    auth_method: agent
+
+  - alias: dev-box
+    hostname: 192.168.1.120
+    port: 22
+    user: devops
+    auth_method: key
+    key_path: ~/.ssh/id_ed25519
+```
+
+**Security note:** Prefer keys/agent. Only allow plaintext passwords if user explicitly opts in and file perms are strict.
+
+---
+
+## 4) UI & Keys (Tight, Predictable)
+
+- **Lists:** Left `HostList`, center `SessionTree` (`host > session > window`).
+- **Log:** Bottom scrolling log for status/errors (“Connecting…”, “Refreshed X sessions”, etc.).
+
+**Bindings**
+- `j/down`, `k/up`: navigate lists
+- `tab`: switch focus between HostList / SessionTree
+- `enter`: attach to the selected *window’s session* (or select host)
+- `n`: new session on selected host
+- `d`/`x`: kill selected session (confirm)
+- `r`: refresh selected host
+- `ctrl+r`: refresh all
+- `q`: quit
+
+---
+
+## 5) Attach Flow (Correct TTY Handoff)
+
+1. Resolve selected **host + session**.
+2. **Exit** Textual app cleanly (restore terminal modes).
+3. Build command:
+   - Unix/Termux:
+     ```
+     ['ssh', f'{user}@{hostname}', '-p', str(port), '-t',
+      'tmux', 'attach-session', '-t', session_name]
+     ```
+   - Windows:
+     ```
+     [r'C:\Windows\System32\OpenSSH\ssh.exe', f'{user}@{hostname}', '-p', str(port), '-t',
+      'tmux', 'attach-session', '-t', session_name]
+     ```
+4. `os.execvp(cmd[0], cmd)` (or `os.execvpe` if env vars are needed). No return.
+
+---
+
+## 6) Errors & Resilience (Minimal)
+
+- **Connection:** Show per-host status: `Connected / Connecting… / Error`.
+- **Refresh:** If list fails, keep last UI but annotate host with error badge.
+- **Timeouts:** Set sane SSH timeouts; on failure, show toast/log message.
+- **Missing tmux:** If `tmux` not found or exit≠0 on list, mark host as “No tmux / Offline”.
+
+---
+
+## 7) Tests (High Value, Low Overhead)
+
+- **Unit:** Parse `list-sessions` → `Session` objects (cover empty, malformed lines).
+- **Unit:** Config loader validation (good/bad YAML; bad auth combos).
+- **Unit:** Attach command builder (Windows vs Unix).
+- **Integration (local):** Connect to `localhost`, create/kill sessions, list non-empty, attach command formation (exec call mocked).
+
+---
+
+## 8) Implementation Checklist (Do in Order)
+
+1. **Scaffold**
+    - Files: `syncmux/{app.py,config.py,connection.py,models.py,tmux_controller.py,widgets.py}`, `main.py`, `config.yml.example`, `pyproject.toml`, `syncmux/app.css`.
+2. **Models**
+    - `Host`, `Session` (Pydantic).
+3. **Config**
+    - Loader to platform path → `list[Host]` with validation & helpful errors.
+4. **SSH ConnectionManager**
+    - Cache by `alias`; handle `key/password/agent`; `close_all()`.
+5. **TmuxController**
+    - `list_sessions()`, `create_session()`, `kill_session()`, `session_exists()`.
+6. **UI (Textual)**
+    - Screen with `HostList`, `SessionTree`, `Log`.
+    - Reactive state: `hosts`, `sessions_by_host`, `selected_host_alias`.
+    - `watch_*` methods to repopulate views.
+7. **Actions**
+    - Refresh (host/all), create, kill (confirm), attach (exec handoff).
+8. **Styling**
+    - Basic CSS; fixed left pane width; 1fr center; bordered log.
+9. **Entry Point**
+    - `main.py` launching `SyncMuxApp`.
+10. **Tests**
+    - Parsing/config/attach builder; local integration for `list/create/kill`.
+
+---
+
+## 9) Post-MVP Roadmap (Keep Out of First Cut)
+
+- **Discovery:** Broadcast/mDNS to find peers; opt-in announce.
+- **Read-only clone view:** Non-interactive mirror with low bandwidth mode.
+- **Window/pane migration across hosts:** Requires file/process orchestration.
+- **Profiles & macros:** Named session recipes; quick launch.
+- **Credential UX:** Keypair bootstrapper; agent assistance; vault integration.
+
+---
+
+## 10) Assumptions
+
+- SSH reachable between devices; user manages keys/agent.
+- `tmux` installed on target hosts and in PATH.
+- Terminals support Textual (Windows Terminal recommended).
+- Python ≥ 3.10 recommended (3.9 supported if required by deps).
+
+---
+
+## 11) Minimal Dependencies
+
+- `textual` (TUI), `asyncssh` (SSH), `pyyaml` (config), `pydantic` (models).
+- Windows: use built-in `ssh.exe`; prefer key/agent auth.
+
+---
+
+End of File: plan-minimal.txt

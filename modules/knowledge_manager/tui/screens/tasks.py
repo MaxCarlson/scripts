@@ -13,11 +13,11 @@ from textual.containers import Vertical, VerticalScroll
 from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import (
-    Header, Static, 
+    Header, Static,
     Markdown, ListView, ListItem
 )
 
-from ... import task_ops, utils
+from ... import task_ops, utils, links
 from ...models import Project, Task, TaskStatus
 from ..widgets.lists import TaskList, TaskListItem
 from ..widgets.dialogs import InputDialog
@@ -34,14 +34,15 @@ class TaskViewFilter(Enum):
 
 class TasksScreen(Screen):
     BINDINGS = [
-        Binding("escape", "cancel_or_pop", "Back/Cancel", show=True, priority=True), 
-        Binding("a", "add_task_prompt", "Add Task", show=True), 
+        Binding("escape", "cancel_or_pop", "Back/Cancel", show=True, priority=True),
+        Binding("a", "add_task_prompt", "Add Task", show=True),
         Binding("s", "add_subtask_prompt", "Add Subtask", show=True),
-        Binding("e", "edit_selected_task", "Edit Details", show=True), 
+        Binding("e", "edit_selected_task", "Edit Details", show=True),
         Binding("d", "cycle_task_status", "Cycle Status", show=True),
         Binding("f", "cycle_filter", "Filter", show=True),
         Binding("m", "reparent_task", "Move", show=True),
         Binding("v", "toggle_view", "Toggle View", show=True),
+        Binding("ctrl+g", "follow_link", "Follow Link", show=True),
         Binding("ctrl+x", "delete_selected_task", "Delete", show=True),
         Binding("ctrl+r", "reload_tasks", "Reload", show=True),
         Binding("ctrl+d", "cycle_task_status_reverse", "Cycle Status Rev", show=False),
@@ -93,7 +94,7 @@ class TasksScreen(Screen):
         if self.reparenting_task:
             self.reparenting_task = None
         else:
-            await self.app.pop_screen()
+            self.app.pop_screen()
 
     async def action_toggle_view(self) -> None:
         self.view_mode = "full" if self.view_mode == "split" else "split"
@@ -136,26 +137,29 @@ class TasksScreen(Screen):
         
         if task_id_to_reselect:
             new_index_to_highlight: Optional[int] = None
+            reselected_task: Optional[Task] = None
             for idx, item_widget in enumerate(task_list_widget.children):
                 if isinstance(item_widget, TaskListItem) and item_widget.task_data and item_widget.task_data.id == task_id_to_reselect:
                     new_index_to_highlight = idx
+                    reselected_task = item_widget.task_data
                     break
             if new_index_to_highlight is not None:
                 task_list_widget.index = new_index_to_highlight
-        
+                if reselected_task:
+                    self.app.selected_task = reselected_task
+                    self.update_detail_view(reselected_task)
+
         task_list_widget.focus(); self.app.bell()
 
     async def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if event.list_view.id == "task_list_view":
-            md_viewer = self.query_one("#task_detail_markdown", Markdown)
-            item = event.item 
+            item = event.item
             if isinstance(item, TaskListItem) and item.task_data:
-                self.app.selected_task = item.task_data; task = item.task_data
-                if task.details_md_path and task.details_md_path.exists():
-                    try: content = utils.read_markdown_file(task.details_md_path); md_viewer.update(content or "*No details.*")
-                    except Exception as e: md_viewer.update(f"*Error: {e}*")
-                else: md_viewer.update("*No details file.*")
-            elif item is None: self.app.selected_task = None; md_viewer.update("No task selected.")
+                self.app.selected_task = item.task_data
+                self.update_detail_view(item.task_data)
+            elif item is None:
+                self.app.selected_task = None
+                self.update_detail_view(None)
     
     async def action_add_task_prompt(self) -> None: 
         if not self.current_project: self.notify(message="No project context.", title="Error", severity="error"); return
@@ -319,3 +323,135 @@ class TasksScreen(Screen):
                 child_id_to_reselect = child_task.id
                 self.reparenting_task = None
                 await self.reload_tasks_action(task_id_to_reselect=child_id_to_reselect)
+
+    def update_detail_view(self, task: Optional[Task] = None) -> None:
+        """Update the markdown detail view for the selected task."""
+        markdown_widget = self.query_one("#task_detail_markdown", Markdown)
+
+        if not task:
+            markdown_widget.update("*No task selected.*")
+            return
+
+        # Build markdown content
+        content_lines = []
+        content_lines.append(f"# {task.title}")
+        content_lines.append(f"**Status:** {task.status.value}")
+        content_lines.append(f"**Priority:** {task.priority}")
+
+        if task.due_date:
+            content_lines.append(f"**Due:** {task.due_date.strftime('%Y-%m-%d')}")
+
+        if task.project_id:
+            proj_name = "Unknown"
+            try:
+                proj = self.app.selected_project
+                if proj and proj.id == task.project_id:
+                    proj_name = proj.name
+            except:
+                pass
+            content_lines.append(f"**Project:** {proj_name}")
+
+        # Add task details from markdown file
+        if task.details_md_path and task.details_md_path.exists():
+            details = utils.read_markdown_file(task.details_md_path)
+            if details:
+                content_lines.append("\n---\n")
+                content_lines.append(details)
+        else:
+            content_lines.append("\n*No details yet. Press 'e' to edit.*")
+
+        # Add link help at the bottom
+        content_lines.append("\n---\n")
+        content_lines.append("*Links in title or details: `@project-name` or `&task-title` - Press Ctrl+G to follow*")
+
+        markdown_widget.update("\n".join(content_lines))
+
+    async def action_follow_link(self) -> None:
+        """Follow a link in the current task's title or details."""
+        selected_task = self.app.selected_task
+        if not selected_task:
+            self.notify("No task selected.", severity="warning")
+            return
+
+        all_links = []
+
+        # Extract links from task title
+        if selected_task.title:
+            title_links = links.extract_links(selected_task.title)
+            all_links.extend(title_links)
+
+        # Extract links from task details
+        if selected_task.details_md_path and selected_task.details_md_path.exists():
+            details_text = utils.read_markdown_file(selected_task.details_md_path)
+            if details_text:
+                details_links = links.extract_links(details_text)
+                all_links.extend(details_links)
+
+        if not all_links:
+            self.notify("No links found in task title or details.", severity="info")
+            return
+
+        # If only one link, follow it immediately
+        if len(all_links) == 1:
+            link_type, target, _, _ = all_links[0]
+            await self._navigate_to_link(link_type, target)
+            return
+
+        # Multiple links - show them and let user pick
+        link_list = []
+        for link_type, target, _, _ in all_links:
+            prefix = "@" if link_type == "project" else "&"
+            link_list.append(f"{prefix}{target}")
+
+        self.notify(
+            f"Found {len(all_links)} links: {', '.join(link_list)}. Following first one.",
+            title="Multiple Links",
+            timeout=5.0
+        )
+        # Follow the first link
+        link_type, target, _, _ = all_links[0]
+        await self._navigate_to_link(link_type, target)
+
+    async def _navigate_to_link(self, link_type: str, target: str) -> None:
+        """Navigate to a project or task link."""
+        if link_type == "project":
+            # Resolve and navigate to project
+            project = links.resolve_project_link(target, base_data_dir=self.app.base_data_dir)
+            if project:
+                self.notify(f"Opening project: {project.name}")
+                # Import here to avoid circular imports
+                from .projects import ProjectsScreen
+                # Pop current screen and push new TasksScreen for the project
+                self.app.pop_screen()
+                await self.app.push_screen(TasksScreen(project=project))
+            else:
+                self.notify(f"Project not found: @{target}", severity="error")
+
+        elif link_type == "task":
+            # Resolve task link
+            task = links.resolve_task_link(
+                target,
+                project_context=self.current_project.id if self.current_project else None,
+                base_data_dir=self.app.base_data_dir
+            )
+            if task:
+                self.notify(f"Navigating to task: {task.title}")
+                # If task is in a different project, switch to that project
+                if task.project_id and task.project_id != self.current_project.id:
+                    try:
+                        from ... import project_ops
+                        target_project = project_ops.find_project(
+                            str(task.project_id),
+                            base_data_dir=self.app.base_data_dir
+                        )
+                        if target_project:
+                            self.app.pop_screen()
+                            await self.app.push_screen(TasksScreen(project=target_project))
+                    except Exception as e:
+                        log.error(f"Error switching to task's project: {e}")
+                else:
+                    # Task is in current project, just select it
+                    self.app.selected_task = task
+                    await self.reload_tasks_action(task_id_to_reselect=task.id)
+            else:
+                self.notify(f"Task not found: &{target}", severity="error")
