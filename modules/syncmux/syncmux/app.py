@@ -581,7 +581,8 @@ class SyncMuxApp(App):
 
     async def on_unmount(self) -> None:
         """Called when the app is unmounted."""
-        await self.conn_manager.close_all()
+        if hasattr(self, 'conn_manager'):
+            await self.conn_manager.close_all()
 
 
 if __name__ == "__main__":
