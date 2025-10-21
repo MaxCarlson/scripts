@@ -37,12 +37,13 @@ class TasksScreen(Screen):
         Binding("escape", "cancel_or_pop", "Back/Cancel", show=True, priority=True),
         Binding("a", "add_task_prompt", "Add Task", show=True),
         Binding("s", "add_subtask_prompt", "Add Subtask", show=True),
-        Binding("e", "edit_selected_task", "Edit Details", show=True),
+        Binding("e", "edit_task_title", "Edit Title", show=True),
         Binding("d", "cycle_task_status", "Cycle Status", show=True),
         Binding("f", "cycle_filter", "Filter", show=True),
         Binding("m", "reparent_task", "Move", show=True),
         Binding("v", "toggle_view", "Toggle View", show=True),
         Binding("ctrl+enter", "follow_link", "Follow Link", show=True),
+        Binding("ctrl+e", "edit_task_details", "Edit Details", show=False),
         Binding("ctrl+x", "delete_selected_task", "Delete", show=True),
         Binding("ctrl+r", "reload_tasks", "Reload", show=True),
         Binding("ctrl+d", "cycle_task_status_reverse", "Cycle Status Rev", show=False),
@@ -218,13 +219,39 @@ class TasksScreen(Screen):
         
         await self.app.push_screen(InputDialog(prompt_text=f"Type 'delete' to confirm deleting '{task_to_delete.title}':"), confirm_cb)
 
-    async def action_edit_selected_task(self) -> None: 
-        selected_task_obj = self.app.selected_task
-        if not selected_task_obj: 
+    async def action_edit_task_title(self) -> None:
+        """Edit the selected task's title via dialog."""
+        selected_task = self.app.selected_task
+        if not selected_task:
             self.notify(message="No task selected to edit.", title="Edit Task", severity="warning")
             return
-        
-        task_id_to_edit = selected_task_obj.id 
+
+        async def cb(new_title: str):
+            if new_title and new_title != selected_task.title:
+                try:
+                    task_ops.update_task_details_and_status(
+                        task_identifier=selected_task.id,
+                        new_title=new_title,
+                        base_data_dir=self.app.base_data_dir
+                    )
+                    self.notify(message=f"Task renamed to '{new_title}'.", title="Task Updated")
+                    await self.reload_tasks_action(task_id_to_reselect=selected_task.id)
+                except Exception as e:
+                    self.notify(message=f"Error: {e}", title="Error", severity="error")
+
+        await self.app.push_screen(
+            InputDialog(prompt_text="Edit task title:", initial_value=selected_task.title),
+            cb
+        )
+
+    async def action_edit_task_details(self) -> None:
+        """Edit the selected task's details markdown in external editor (Ctrl+E)."""
+        selected_task_obj = self.app.selected_task
+        if not selected_task_obj:
+            self.notify(message="No task selected to edit.", title="Edit Task", severity="warning")
+            return
+
+        task_id_to_edit = selected_task_obj.id
         original_title_for_notification = selected_task_obj.title
         path_was_initially_none = selected_task_obj.details_md_path is None
         file_path: Optional[Path] = None
@@ -232,28 +259,28 @@ class TasksScreen(Screen):
             file_path=task_ops.get_task_file_path(task_id_to_edit, base_data_dir=self.app.base_data_dir, create_if_missing_in_object=True)
         except Exception as e:
             self.notify(message=f"Error getting path: {e}", title="File Path Error", severity="error"); return
-        if not file_path: 
+        if not file_path:
             self.notify(message=f"No path for '{original_title_for_notification}'.",title="Error",severity="error"); return
         editor=os.environ.get("EDITOR","nvim")
         with self.app.suspend():
-            try: 
+            try:
                 file_path.parent.mkdir(parents=True, exist_ok=True)
                 if not file_path.exists(): file_path.touch()
                 process = subprocess.run([editor,str(file_path)], check=False)
-                if process.returncode != 0: 
+                if process.returncode != 0:
                     print(f"Editor '{editor}' exited with code {process.returncode}. File: {file_path}")
                     input("Press Enter to continue...")
             except FileNotFoundError:
                  print(f"Editor '{editor}' not found. Set $EDITOR or install nvim.")
                  input("Press Enter to continue...")
-            except Exception as e: 
+            except Exception as e:
                  print(f"Editor error: {e}\nFile: {file_path}"); input("Press Enter...")
-        
+
         file_has_meaningful_content_after_edit = False
         if file_path.exists():
             content_after_edit = utils.read_markdown_file(file_path)
             if content_after_edit: file_has_meaningful_content_after_edit = True
-        
+
         if path_was_initially_none and file_has_meaningful_content_after_edit:
             try:
                 task_ops.update_task_details_and_status(
@@ -262,8 +289,8 @@ class TasksScreen(Screen):
             except Exception as e:
                 log.error(f"Failed to update task DB with new details_md_path: {e}")
                 self.notify(f"Warning: Could not save details path for {original_title_for_notification}.", "Warning", severity="warning")
-        
-        await self.reload_tasks_action(task_id_to_reselect=task_id_to_edit) 
+
+        await self.reload_tasks_action(task_id_to_reselect=task_id_to_edit)
         self.notify(message=f"Refreshed after editing '{original_title_for_notification}'.", title="Edit Complete")
 
     async def action_cycle_task_status(self, reverse: bool = False) -> None: 

@@ -6,7 +6,57 @@ from datetime import date, datetime, timezone
 
 from . import db
 from . import utils
+from . import links
 from .models import Task, TaskStatus, Project 
+
+def _sync_task_links(
+    conn: db.sqlite3.Connection,
+    task_id: uuid.UUID,
+    title: str,
+    origin_project_id: uuid.UUID,
+    base_data_dir: Optional[Path] = None
+) -> None:
+    """
+    Sync task links based on @mentions in the title.
+    - Creates link to origin project (is_origin=True)
+    - Creates links to all mentioned projects (is_origin=False)
+    - Removes links that are no longer mentioned
+    """
+    # Extract @project mentions from title
+    mentioned_projects = links.extract_project_mentions(title)
+
+    # Resolve mentioned project names to UUIDs
+    mentioned_project_ids = set()
+    for project_name in mentioned_projects:
+        proj = db.get_project_by_name(conn, project_name)
+        if not proj:
+            # Try UUID
+            try:
+                proj_uuid = uuid.UUID(project_name)
+                proj = db.get_project_by_id(conn, proj_uuid)
+            except ValueError:
+                pass
+        if proj:
+            mentioned_project_ids.add(proj.id)
+
+    # Always include origin project
+    all_linked_projects = mentioned_project_ids | {origin_project_id}
+
+    # Get existing links
+    existing_links = db.get_task_links(conn, task_id)
+    existing_project_ids = {proj_id for proj_id, _ in existing_links}
+
+    # Add new links
+    for proj_id in all_linked_projects:
+        if proj_id not in existing_project_ids:
+            is_origin = (proj_id == origin_project_id)
+            db.add_task_link(conn, task_id, proj_id, is_origin=is_origin)
+
+    # Remove links that are no longer mentioned (except origin)
+    for proj_id, is_origin in existing_links:
+        if proj_id not in all_linked_projects and not is_origin:
+            db.delete_task_link(conn, task_id, proj_id)
+
 
 def _resolve_project_id(conn: db.sqlite3.Connection, project_identifier: Optional[Union[str, uuid.UUID]]) -> Optional[uuid.UUID]:
     if not project_identifier: return None
@@ -86,11 +136,17 @@ def create_new_task(
             try: parsed_due_date = date.fromisoformat(due_date_iso)
             except ValueError: raise ValueError(f"Invalid due_date format: '{due_date_iso}'. Expected YYYY-MM-DD.")
         task = Task(
-            id=task_id, title=title, status=status, project_id=resolved_project_id, 
+            id=task_id, title=title, status=status, project_id=resolved_project_id,
             parent_task_id=resolved_parent_task_id, created_at=current_time, modified_at=current_time,
             priority=priority, due_date=parsed_due_date, details_md_path=md_path
         )
-        return db.add_task(conn, task)
+        created_task = db.add_task(conn, task)
+
+        # Auto-create task links based on @mentions in title
+        if resolved_project_id:
+            _sync_task_links(conn, task_id, title, resolved_project_id, base_data_dir)
+
+        return created_task
     finally:
         if conn: conn.close()
 
@@ -151,8 +207,11 @@ def update_task_details_and_status(
         if not task: return None 
 
         updated = False
+        title_changed = False
         if new_title is not None and task.title != new_title:
-            task.title = new_title; updated = True
+            task.title = new_title
+            updated = True
+            title_changed = True
         if new_status is not None and task.status != new_status:
             task.status = new_status; updated = True
             if new_status == TaskStatus.DONE and task.completed_at is None:
@@ -197,9 +256,15 @@ def update_task_details_and_status(
                 task.parent_task_id = resolved_new_parent_id
                 updated = True
 
-        if updated: return db.update_task(conn, task)
-        else: return task
-    except ValueError as e: raise e 
+        if updated:
+            updated_task = db.update_task(conn, task)
+            # Sync links if title changed
+            if title_changed and task.project_id:
+                _sync_task_links(conn, task.id, task.title, task.project_id, base_data_dir)
+            return updated_task
+        else:
+            return task
+    except ValueError as e: raise e
     finally:
         if conn: conn.close()
 
