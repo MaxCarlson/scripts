@@ -1,0 +1,397 @@
+============================= test session starts =============================
+platform win32 -- Python 3.10.17, pytest-8.3.5, pluggy-1.6.0
+rootdir: C:\Users\mcarls\Repos\scripts\modules\ytaedl
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.9.0, libtmux-0.46.2, cov-7.0.0, mock-3.15.1
+collected 74 items
+
+tests\test_downloader.py ...................F.........                   [ 39%]
+tests\test_entry_points.py .........s                                    [ 52%]
+tests\test_manager.py ....................                               [ 79%]
+tests\test_manager_pause.py ............                                 [ 95%]
+tests\test_proxy_mirror.py EEE                                           [100%]
+
+=================================== ERRORS ====================================
+_________ ERROR at setup of test_run_one_downloads_into_proxy_folder __________
+
+cls = <class '_pytest.runner.CallInfo'>
+func = <function call_and_report.<locals>.<lambda> at 0x00000291D4707F40>
+when = 'setup'
+reraise = (<class '_pytest.outcomes.Exit'>, <class 'KeyboardInterrupt'>)
+
+    @classmethod
+    def from_call(
+        cls,
+        func: Callable[[], TResult],
+        when: Literal["collect", "setup", "call", "teardown"],
+        reraise: type[BaseException] | tuple[type[BaseException], ...] | None = None,
+    ) -> CallInfo[TResult]:
+        """Call func, wrapping the result in a CallInfo.
+    
+        :param func:
+            The function to call. Called without arguments.
+        :type func: Callable[[], _pytest.runner.TResult]
+        :param when:
+            The phase in which the function is called.
+        :param reraise:
+            Exception or exceptions that shall propagate if raised by the
+            function, instead of being wrapped in the CallInfo.
+        """
+        excinfo = None
+        start = timing.time()
+        precise_start = timing.perf_counter()
+        try:
+>           result: TResult | None = func()
+
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\runner.py:341: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\runner.py:242: in <lambda>
+    lambda: runtest_hook(item=item, **kwds), when=when, reraise=reraise
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\pluggy\_hooks.py:512: in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\pluggy\_manager.py:120: in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\unraisableexception.py:90: in pytest_runtest_setup
+    yield from unraisable_exception_runtest_hook()
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\unraisableexception.py:70: in unraisable_exception_runtest_hook
+    yield
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\logging.py:840: in pytest_runtest_setup
+    yield from self._runtest_for(item, "setup")
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\logging.py:829: in _runtest_for
+    yield
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\capture.py:893: in pytest_runtest_setup
+    return (yield)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\threadexception.py:87: in pytest_runtest_setup
+    yield from thread_exception_runtest_hook()
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\threadexception.py:68: in thread_exception_runtest_hook
+    yield
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\runner.py:160: in pytest_runtest_setup
+    item.session._setupstate.setup(item)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\runner.py:514: in setup
+    col.setup()
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\python.py:1630: in setup
+    self._request._fillfixtures()
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:697: in _fillfixtures
+    item.funcargs[argname] = self.getfixturevalue(argname)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:532: in getfixturevalue
+    fixturedef = self._get_active_fixturedef(argname)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:617: in _get_active_fixturedef
+    fixturedef.execute(request=subrequest)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:1047: in execute
+    fixturedef = request._get_active_fixturedef(argname)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:617: in _get_active_fixturedef
+    fixturedef.execute(request=subrequest)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:1091: in execute
+    result = ihook.pytest_fixture_setup(fixturedef=self, request=request)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\pluggy\_hooks.py:512: in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\pluggy\_manager.py:120: in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\pluggy\_callers.py:53: in run_old_style_hookwrapper
+    return result.get_result()
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\pluggy\_callers.py:38: in run_old_style_hookwrapper
+    res = yield
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\setuponly.py:36: in pytest_fixture_setup
+    return (yield)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:1140: in pytest_fixture_setup
+    result = call_fixture_func(fixturefunc, request, kwargs)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:891: in call_fixture_func
+    fixture_result = next(generator)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\tmpdir.py:265: in tmp_path
+    path = _mk_tmp(request, tmp_path_factory)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\tmpdir.py:252: in _mk_tmp
+    return factory.mktemp(name, numbered=True)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\tmpdir.py:131: in mktemp
+    basename = self._ensure_relative_to_basetemp(basename)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\tmpdir.py:112: in _ensure_relative_to_basetemp
+    if (self.getbasetemp() / basename).resolve().parent != self.getbasetemp():
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\tmpdir.py:187: in getbasetemp
+    basetemp = make_numbered_dir_with_cleanup(
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\pathlib.py:407: in make_numbered_dir_with_cleanup
+    raise e
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\pathlib.py:388: in make_numbered_dir_with_cleanup
+    p = make_numbered_dir(root, prefix, mode)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\pathlib.py:229: in make_numbered_dir
+    max_existing = max(map(parse_num, find_suffixes(root, prefix)), default=-1)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\pathlib.py:188: in extract_suffixes
+    for entry in iter:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+root = WindowsPath('C:/Users/mcarls/AppData/Local/Temp/pytest-of-mcarls')
+prefix = 'pytest-'
+
+    def find_prefixed(root: Path, prefix: str) -> Iterator[os.DirEntry[str]]:
+        """Find all elements in root that begin with the prefix, case-insensitive."""
+        l_prefix = prefix.lower()
+>       for x in os.scandir(root):
+E       PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
+
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\pathlib.py:176: PermissionError
+________ ERROR at setup of test_run_one_skips_when_canonical_has_file _________
+
+cls = <class '_pytest.runner.CallInfo'>
+func = <function call_and_report.<locals>.<lambda> at 0x00000291D4707BE0>
+when = 'setup'
+reraise = (<class '_pytest.outcomes.Exit'>, <class 'KeyboardInterrupt'>)
+
+    @classmethod
+    def from_call(
+        cls,
+        func: Callable[[], TResult],
+        when: Literal["collect", "setup", "call", "teardown"],
+        reraise: type[BaseException] | tuple[type[BaseException], ...] | None = None,
+    ) -> CallInfo[TResult]:
+        """Call func, wrapping the result in a CallInfo.
+    
+        :param func:
+            The function to call. Called without arguments.
+        :type func: Callable[[], _pytest.runner.TResult]
+        :param when:
+            The phase in which the function is called.
+        :param reraise:
+            Exception or exceptions that shall propagate if raised by the
+            function, instead of being wrapped in the CallInfo.
+        """
+        excinfo = None
+        start = timing.time()
+        precise_start = timing.perf_counter()
+        try:
+>           result: TResult | None = func()
+
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\runner.py:341: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\runner.py:242: in <lambda>
+    lambda: runtest_hook(item=item, **kwds), when=when, reraise=reraise
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\pluggy\_hooks.py:512: in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\pluggy\_manager.py:120: in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\unraisableexception.py:90: in pytest_runtest_setup
+    yield from unraisable_exception_runtest_hook()
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\unraisableexception.py:70: in unraisable_exception_runtest_hook
+    yield
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\logging.py:840: in pytest_runtest_setup
+    yield from self._runtest_for(item, "setup")
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\logging.py:829: in _runtest_for
+    yield
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\capture.py:893: in pytest_runtest_setup
+    return (yield)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\threadexception.py:87: in pytest_runtest_setup
+    yield from thread_exception_runtest_hook()
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\threadexception.py:68: in thread_exception_runtest_hook
+    yield
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\runner.py:160: in pytest_runtest_setup
+    item.session._setupstate.setup(item)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\runner.py:514: in setup
+    col.setup()
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\python.py:1630: in setup
+    self._request._fillfixtures()
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:697: in _fillfixtures
+    item.funcargs[argname] = self.getfixturevalue(argname)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:532: in getfixturevalue
+    fixturedef = self._get_active_fixturedef(argname)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:617: in _get_active_fixturedef
+    fixturedef.execute(request=subrequest)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:1047: in execute
+    fixturedef = request._get_active_fixturedef(argname)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:617: in _get_active_fixturedef
+    fixturedef.execute(request=subrequest)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:1091: in execute
+    result = ihook.pytest_fixture_setup(fixturedef=self, request=request)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\pluggy\_hooks.py:512: in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\pluggy\_manager.py:120: in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\pluggy\_callers.py:53: in run_old_style_hookwrapper
+    return result.get_result()
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\pluggy\_callers.py:38: in run_old_style_hookwrapper
+    res = yield
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\setuponly.py:36: in pytest_fixture_setup
+    return (yield)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:1140: in pytest_fixture_setup
+    result = call_fixture_func(fixturefunc, request, kwargs)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:891: in call_fixture_func
+    fixture_result = next(generator)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\tmpdir.py:265: in tmp_path
+    path = _mk_tmp(request, tmp_path_factory)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\tmpdir.py:252: in _mk_tmp
+    return factory.mktemp(name, numbered=True)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\tmpdir.py:131: in mktemp
+    basename = self._ensure_relative_to_basetemp(basename)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\tmpdir.py:112: in _ensure_relative_to_basetemp
+    if (self.getbasetemp() / basename).resolve().parent != self.getbasetemp():
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\tmpdir.py:187: in getbasetemp
+    basetemp = make_numbered_dir_with_cleanup(
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\pathlib.py:407: in make_numbered_dir_with_cleanup
+    raise e
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\pathlib.py:388: in make_numbered_dir_with_cleanup
+    p = make_numbered_dir(root, prefix, mode)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\pathlib.py:229: in make_numbered_dir
+    max_existing = max(map(parse_num, find_suffixes(root, prefix)), default=-1)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\pathlib.py:188: in extract_suffixes
+    for entry in iter:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+root = WindowsPath('C:/Users/mcarls/AppData/Local/Temp/pytest-of-mcarls')
+prefix = 'pytest-'
+
+    def find_prefixed(root: Path, prefix: str) -> Iterator[os.DirEntry[str]]:
+        """Find all elements in root that begin with the prefix, case-insensitive."""
+        l_prefix = prefix.lower()
+>       for x in os.scandir(root):
+E       PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
+
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\pathlib.py:176: PermissionError
+______ ERROR at setup of test_manager_start_worker_propagates_proxy_flag ______
+
+cls = <class '_pytest.runner.CallInfo'>
+func = <function call_and_report.<locals>.<lambda> at 0x00000291D46855A0>
+when = 'setup'
+reraise = (<class '_pytest.outcomes.Exit'>, <class 'KeyboardInterrupt'>)
+
+    @classmethod
+    def from_call(
+        cls,
+        func: Callable[[], TResult],
+        when: Literal["collect", "setup", "call", "teardown"],
+        reraise: type[BaseException] | tuple[type[BaseException], ...] | None = None,
+    ) -> CallInfo[TResult]:
+        """Call func, wrapping the result in a CallInfo.
+    
+        :param func:
+            The function to call. Called without arguments.
+        :type func: Callable[[], _pytest.runner.TResult]
+        :param when:
+            The phase in which the function is called.
+        :param reraise:
+            Exception or exceptions that shall propagate if raised by the
+            function, instead of being wrapped in the CallInfo.
+        """
+        excinfo = None
+        start = timing.time()
+        precise_start = timing.perf_counter()
+        try:
+>           result: TResult | None = func()
+
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\runner.py:341: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\runner.py:242: in <lambda>
+    lambda: runtest_hook(item=item, **kwds), when=when, reraise=reraise
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\pluggy\_hooks.py:512: in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\pluggy\_manager.py:120: in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\unraisableexception.py:90: in pytest_runtest_setup
+    yield from unraisable_exception_runtest_hook()
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\unraisableexception.py:70: in unraisable_exception_runtest_hook
+    yield
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\logging.py:840: in pytest_runtest_setup
+    yield from self._runtest_for(item, "setup")
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\logging.py:829: in _runtest_for
+    yield
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\capture.py:893: in pytest_runtest_setup
+    return (yield)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\threadexception.py:87: in pytest_runtest_setup
+    yield from thread_exception_runtest_hook()
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\threadexception.py:68: in thread_exception_runtest_hook
+    yield
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\runner.py:160: in pytest_runtest_setup
+    item.session._setupstate.setup(item)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\runner.py:514: in setup
+    col.setup()
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\python.py:1630: in setup
+    self._request._fillfixtures()
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:697: in _fillfixtures
+    item.funcargs[argname] = self.getfixturevalue(argname)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:532: in getfixturevalue
+    fixturedef = self._get_active_fixturedef(argname)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:617: in _get_active_fixturedef
+    fixturedef.execute(request=subrequest)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:1047: in execute
+    fixturedef = request._get_active_fixturedef(argname)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:617: in _get_active_fixturedef
+    fixturedef.execute(request=subrequest)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:1091: in execute
+    result = ihook.pytest_fixture_setup(fixturedef=self, request=request)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\pluggy\_hooks.py:512: in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\pluggy\_manager.py:120: in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\pluggy\_callers.py:53: in run_old_style_hookwrapper
+    return result.get_result()
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\pluggy\_callers.py:38: in run_old_style_hookwrapper
+    res = yield
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\setuponly.py:36: in pytest_fixture_setup
+    return (yield)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:1140: in pytest_fixture_setup
+    result = call_fixture_func(fixturefunc, request, kwargs)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\fixtures.py:891: in call_fixture_func
+    fixture_result = next(generator)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\tmpdir.py:265: in tmp_path
+    path = _mk_tmp(request, tmp_path_factory)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\tmpdir.py:252: in _mk_tmp
+    return factory.mktemp(name, numbered=True)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\tmpdir.py:131: in mktemp
+    basename = self._ensure_relative_to_basetemp(basename)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\tmpdir.py:112: in _ensure_relative_to_basetemp
+    if (self.getbasetemp() / basename).resolve().parent != self.getbasetemp():
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\tmpdir.py:187: in getbasetemp
+    basetemp = make_numbered_dir_with_cleanup(
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\pathlib.py:407: in make_numbered_dir_with_cleanup
+    raise e
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\pathlib.py:388: in make_numbered_dir_with_cleanup
+    p = make_numbered_dir(root, prefix, mode)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\pathlib.py:229: in make_numbered_dir
+    max_existing = max(map(parse_num, find_suffixes(root, prefix)), default=-1)
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\pathlib.py:188: in extract_suffixes
+    for entry in iter:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+root = WindowsPath('C:/Users/mcarls/AppData/Local/Temp/pytest-of-mcarls')
+prefix = 'pytest-'
+
+    def find_prefixed(root: Path, prefix: str) -> Iterator[os.DirEntry[str]]:
+        """Find all elements in root that begin with the prefix, case-insensitive."""
+        l_prefix = prefix.lower()
+>       for x in os.scandir(root):
+E       PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
+
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\pathlib.py:176: PermissionError
+================================== FAILURES ===================================
+____________________ TestProgLogger.test_prog_logger_start ____________________
+
+self = <test_downloader.TestProgLogger object at 0x00000291D4619C30>
+
+    def test_prog_logger_start(self):
+        """Test ProgLogger start method."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "test.log"
+    
+            with patch('time.time', return_value=1001.5):
+                logger = downloader.ProgLogger(log_path, t0=1000.0)
+>               logger.start(1, "https://example.com/video")
+E               TypeError: ProgLogger.start() missing 1 required positional argument: 'url'
+
+tests\test_downloader.py:252: TypeError
+============================== warnings summary ===============================
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\cacheprovider.py:475
+  C:\Users\mcarls\mambaforge\envs\dlpn\lib\site-packages\_pytest\cacheprovider.py:475: PytestCacheWarning: could not create cache path C:\Users\mcarls\Repos\scripts\modules\ytaedl\.pytest_cache\v\cache\nodeids: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\Repos\\scripts\\modules\\ytaedl\\.pytest_cache\\v\\cache'
+    config.cache.set("cache/nodeids", sorted(self.cached_nodeids))
+
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\cacheprovider.py:429
+  C:\Users\mcarls\mambaforge\envs\dlpn\lib\site-packages\_pytest\cacheprovider.py:429: PytestCacheWarning: could not create cache path C:\Users\mcarls\Repos\scripts\modules\ytaedl\.pytest_cache\v\cache\lastfailed: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\Repos\\scripts\\modules\\ytaedl\\.pytest_cache\\v\\cache'
+    config.cache.set("cache/lastfailed", self.lastfailed)
+
+..\..\..\..\mambaforge\envs\dlpn\lib\site-packages\_pytest\stepwise.py:51
+  C:\Users\mcarls\mambaforge\envs\dlpn\lib\site-packages\_pytest\stepwise.py:51: PytestCacheWarning: could not create cache path C:\Users\mcarls\Repos\scripts\modules\ytaedl\.pytest_cache\v\cache\stepwise: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\Repos\\scripts\\modules\\ytaedl\\.pytest_cache\\v\\cache'
+    session.config.cache.set(STEPWISE_CACHE_DIR, [])
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_entry_points.py:96: Process handling differs on Windows
+ERROR tests/test_proxy_mirror.py::test_run_one_downloads_into_proxy_folder - ...
+ERROR tests/test_proxy_mirror.py::test_run_one_skips_when_canonical_has_file
+ERROR tests/test_proxy_mirror.py::test_manager_start_worker_propagates_proxy_flag
+FAILED tests/test_downloader.py::TestProgLogger::test_prog_logger_start - Typ...
+======== 1 failed, 69 passed, 1 skipped, 3 warnings, 3 errors in 2.09s ========
