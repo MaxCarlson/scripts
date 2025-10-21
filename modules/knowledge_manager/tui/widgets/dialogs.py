@@ -7,14 +7,15 @@ from textual.widgets import Button, Input, Label, ListView, ListItem
 class InputDialog(ModalScreen):
     """A modal dialog for text input."""
 
-    def __init__(self, prompt_text: str, **kwargs) -> None:
-        super().__init__(**kwargs)
+    def __init__(self, prompt_text: str, initial_value: str = "", **kwargs) -> None:
+        super().__init__()
         self.prompt_text = prompt_text
+        self.initial_value = initial_value
 
     def compose(self) -> ComposeResult:
         yield Vertical(
             Label(self.prompt_text),
-            Input(placeholder="Enter text..."),
+            Input(value=self.initial_value, placeholder="Enter text..."),
             Button("Submit", variant="primary", id="submit"),
             Button("Cancel", variant="default", id="cancel"),
             id="dialog",
