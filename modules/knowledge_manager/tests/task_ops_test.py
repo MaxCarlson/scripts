@@ -12,6 +12,15 @@ from knowledge_manager.models import Task, TaskStatus, Project, ProjectStatus
 
 # --- Fixtures ---
 
+@pytest.fixture(autouse=True)
+def mock_link_operations(mocker):
+    """Auto-mock link operations for all tests to avoid 'no such table' errors."""
+    mocker.patch('knowledge_manager.db.get_task_links', return_value=[])
+    mocker.patch('knowledge_manager.db.add_task_link', return_value=True)
+    mocker.patch('knowledge_manager.db.delete_task_link', return_value=True)
+    mocker.patch('knowledge_manager.db.get_project_by_name', return_value=None)
+
+
 @pytest.fixture
 def mock_db_conn():
     return MagicMock(spec=sqlite3.Connection)
@@ -20,7 +29,7 @@ def mock_db_conn():
 def mock_task_ops_db_module(mocker, mock_db_conn):
     # Mock all db functions that task_ops might call
     mock_get_conn = mocker.patch('knowledge_manager.db.get_db_connection', return_value=mock_db_conn)
-    
+
     # Task related
     mocker.patch('knowledge_manager.db.add_task')
     mocker.patch('knowledge_manager.db.get_task_by_id')
@@ -32,7 +41,12 @@ def mock_task_ops_db_module(mocker, mock_db_conn):
     # Project related (for resolving project identifiers)
     mocker.patch('knowledge_manager.db.get_project_by_id')
     mocker.patch('knowledge_manager.db.get_project_by_name')
-    
+
+    # Task links (for cross-project linking feature)
+    mocker.patch('knowledge_manager.db.get_task_links', return_value=[])
+    mocker.patch('knowledge_manager.db.add_task_link', return_value=True)
+    mocker.patch('knowledge_manager.db.delete_task_link', return_value=True)
+
     # Return a dictionary of the *actual module functions* from db, not the mocks,
     # so tests can configure individual mocks as needed using 'mocker.patch' on 'knowledge_manager.db.func_name'
     # or by accessing them via this fixture if we returned the mocks.
@@ -84,7 +98,11 @@ def test_create_new_task_success_basic(tmp_path: Path, mocker, sample_project_fo
     task_title = "Basic New Task"
     mocker.patch('knowledge_manager.db.get_project_by_id', return_value=sample_project_for_task)
     mock_add_task = mocker.patch('knowledge_manager.db.add_task', side_effect=lambda conn, t: t)
-    
+    # Mock link operations for new linking system
+    mocker.patch('knowledge_manager.db.get_task_links', return_value=[])
+    mocker.patch('knowledge_manager.db.add_task_link', return_value=True)
+    mocker.patch('knowledge_manager.db.get_project_by_name', return_value=None)
+
     created_task = task_ops.create_new_task(title=task_title, project_identifier=sample_project_for_task.id, base_data_dir=tmp_path)
     assert created_task.title == task_title
     mock_add_task.assert_called_once()
