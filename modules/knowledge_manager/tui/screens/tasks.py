@@ -35,6 +35,7 @@ class TaskViewFilter(Enum):
 class TasksScreen(Screen):
     BINDINGS = [
         Binding("escape", "cancel_or_pop", "Back/Cancel", show=True, priority=True),
+        Binding("enter", "follow_link_or_select", "Open/Follow", show=True),
         Binding("a", "add_task_prompt", "Add Task", show=True),
         Binding("s", "add_subtask_prompt", "Add Subtask", show=True),
         Binding("e", "edit_task_title", "Edit Title", show=True),
@@ -42,7 +43,7 @@ class TasksScreen(Screen):
         Binding("f", "cycle_filter", "Filter", show=True),
         Binding("m", "reparent_task", "Move", show=True),
         Binding("v", "toggle_view", "Toggle View", show=True),
-        Binding("ctrl+enter", "follow_link", "Follow Link", show=True),
+        Binding("ctrl+enter", "follow_link", "Follow Link", show=False),
         Binding("ctrl+e", "edit_task_details", "Edit Details", show=False),
         Binding("ctrl+x", "delete_selected_task", "Delete", show=True),
         Binding("ctrl+r", "reload_tasks", "Reload", show=True),
@@ -399,6 +400,19 @@ class TasksScreen(Screen):
             target = selected_link[1:]
             link_type = "project" if link_type_char == "@" else "task"
             await self._navigate_to_link(link_type, target)
+
+    async def action_follow_link_or_select(self) -> None:
+        """Enter key: Follow link if task has @mention, otherwise do nothing."""
+        selected_task = self.app.selected_task
+        if not selected_task:
+            return
+
+        # Check if task title has @project mentions
+        project_mentions = links.extract_project_mentions(selected_task.title)
+        if project_mentions:
+            # Has links - navigate to first mentioned project
+            await self._navigate_to_link("project", project_mentions[0])
+        # If no links, do nothing (task is already selected)
 
     async def action_follow_link(self) -> None:
         """Follow a link in the current task's title or details."""
