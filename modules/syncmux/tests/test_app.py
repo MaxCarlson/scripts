@@ -88,7 +88,8 @@ async def test_kill_session(app):
             return log_mock
         elif selector == "#session-list":
             session_list_mock = MagicMock(spec=ListView)
-            session_list_mock.highlighted = session_widget
+            session_list_mock.index = 0
+            session_list_mock.children = [session_widget]
             return session_list_mock
         return MagicMock()
 

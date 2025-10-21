@@ -21,8 +21,8 @@ from .models import Project, Task
 
 
 # Link patterns
-PROJECT_LINK_PATTERN = re.compile(r'@(?:"([^"]+)"|(\S+))')
-TASK_LINK_PATTERN = re.compile(r'&(?:"([^"]+)"|(\S+))')
+PROJECT_LINK_PATTERN = re.compile(r'@(?:"([^"]+)"|([^\s@&]+))')
+TASK_LINK_PATTERN = re.compile(r'&(?:"([^"]+)"|([^\s@&]+))')
 
 
 def extract_links(text: str) -> List[Tuple[str, str, int, int]]:
@@ -45,6 +45,21 @@ def extract_links(text: str) -> List[Tuple[str, str, int, int]]:
         links.append(('task', target, match.start(), match.end()))
 
     return links
+
+
+def extract_project_mentions(text: str) -> List[str]:
+    """
+    Extract all @project mentions from text (for auto-linking).
+
+    Returns list of project names/identifiers.
+    Example: "Fix bug @todo @modules" -> ["todo", "modules"]
+    """
+    mentions = []
+    for match in PROJECT_LINK_PATTERN.finditer(text):
+        target = match.group(1) or match.group(2)
+        if target:
+            mentions.append(target)
+    return mentions
 
 
 def find_link_at_position(text: str, position: int) -> Optional[Tuple[str, str]]:

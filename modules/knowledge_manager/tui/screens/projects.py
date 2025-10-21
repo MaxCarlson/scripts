@@ -19,11 +19,12 @@ from .tasks import TasksScreen
 
 log = logging.getLogger(__name__)
 
-class ProjectsScreen(Screen): 
+class ProjectsScreen(Screen):
     BINDINGS = [
         Binding("a", "add_project_prompt", "Add", show=True),
-        Binding("e", "edit_selected_project", "Edit", show=True),
+        Binding("e", "open_selected_project", "Open", show=True),
         Binding("v", "toggle_detail_view", "View", show=True),
+        Binding("ctrl+e", "edit_selected_project", "Edit Name", show=False),
         Binding("ctrl+x", "delete_selected_project", "Delete", show=True),
         Binding("ctrl+r", "reload_projects", "Reload", show=True),
         Binding("q", "app.quit", "Quit", show=True),
@@ -148,6 +149,14 @@ class ProjectsScreen(Screen):
             self.app.bell()
             return
         self.detail_view_mode = "tasks" if self.detail_view_mode == "description" else "description"
+
+    async def action_open_selected_project(self) -> None:
+        """Open the selected project in TasksScreen (same as Enter)."""
+        selected_project = self.app.selected_project
+        if not selected_project:
+            self.notify(message="No project selected.", title="Open Project", severity="warning")
+            return
+        self.app.push_screen(TasksScreen(project=selected_project))
 
     async def action_edit_selected_project(self) -> None:
         selected_project = self.app.selected_project

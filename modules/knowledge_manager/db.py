@@ -2,7 +2,7 @@
 import sqlite3
 import uuid
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Tuple
 from datetime import datetime, timezone, date
 
 from .models import Project, ProjectStatus, Task, TaskStatus
@@ -13,14 +13,48 @@ def get_db_connection(db_path: Path) -> sqlite3.Connection:
     """
     Establishes a database connection to the SQLite database specified by db_path.
     Enables foreign key constraint enforcement for the connection.
+    Runs migrations if needed.
     """
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA foreign_keys = ON;")
+    _run_migrations(conn)
     return conn
+
+
+def _run_migrations(conn: sqlite3.Connection) -> None:
+    """
+    Run database migrations to upgrade schema.
+    Safe to call multiple times - migrations are idempotent.
+    """
+    cursor = conn.cursor()
+
+    # Migration 1: Add task_links table (for cross-project linking)
+    # Check if table exists
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='task_links'")
+    if not cursor.fetchone():
+        # Table doesn't exist - create it
+        cursor.execute("""
+        CREATE TABLE task_links (
+            task_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            is_origin BOOLEAN NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            modified_at TEXT NOT NULL,
+            PRIMARY KEY (task_id, project_id),
+            FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        )
+        """)
+
+        # Create indexes
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_task_links_task_id ON task_links(task_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_task_links_project_id ON task_links(project_id)")
+
+        conn.commit()
 
 def init_db(db_path: Path) -> None:
     """
-    Initializes the database by creating the 'projects' and 'tasks' tables
+    Initializes the database by creating the 'projects', 'tasks', and 'task_links' tables
     if they do not already exist.
     """
     conn = None
@@ -50,15 +84,33 @@ def init_db(db_path: Path) -> None:
             modified_at TEXT NOT NULL,
             completed_at TEXT,
             priority INTEGER,
-            due_date TEXT, 
+            due_date TEXT,
             details_md_path TEXT,
             FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
             FOREIGN KEY (parent_task_id) REFERENCES tasks(id) ON DELETE CASCADE
         )
         """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS task_links (
+            task_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            is_origin BOOLEAN NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            modified_at TEXT NOT NULL,
+            PRIMARY KEY (task_id, project_id),
+            FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        )
+        """)
+
+        # Create indexes for performance
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_task_links_task_id ON task_links(task_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_task_links_project_id ON task_links(project_id)")
+
         conn.commit()
     except sqlite3.Error as e:
-        raise 
+        raise
     finally:
         if conn:
             conn.close()
@@ -271,24 +323,58 @@ def get_tasks_by_title_prefix(
         ) for row in rows
     ]
 
-def list_tasks(conn: sqlite3.Connection, 
-               project_id: Optional[uuid.UUID] = None, 
+def list_tasks(conn: sqlite3.Connection,
+               project_id: Optional[uuid.UUID] = None,
                status_filter: Optional[List[TaskStatus]] = None,
                parent_task_id: Optional[uuid.UUID] = None,
                include_subtasks_of_any_parent: bool = False) -> List[Task]:
-    base_sql = """
-    SELECT id, title, status, project_id, parent_task_id, 
-           created_at, modified_at, completed_at, 
-           priority, due_date, details_md_path 
-    FROM tasks
     """
-    params = []
-    conditions = []
+    List tasks for a project, including:
+    1. Tasks with project_id set (legacy/backward compatibility)
+    2. Tasks linked via task_links table (new cross-project linking)
+    """
 
     if project_id:
-        conditions.append("project_id = ?")
-        params.append(str(project_id))
-    
+        # Get task IDs from both sources
+        task_ids_set = set()
+
+        # 1. Get tasks with project_id set (legacy)
+        legacy_sql = "SELECT id FROM tasks WHERE project_id = ?"
+        cursor = conn.cursor()
+        cursor.execute(legacy_sql, (str(project_id),))
+        for row in cursor.fetchall():
+            task_ids_set.add(row[0])
+
+        # 2. Get tasks linked via task_links
+        linked_task_ids = get_linked_tasks(conn, project_id)
+        for task_id in linked_task_ids:
+            task_ids_set.add(str(task_id))
+
+        # Build query for these specific tasks
+        if not task_ids_set:
+            return []
+
+        placeholders = ','.join('?' for _ in task_ids_set)
+        base_sql = f"""
+        SELECT id, title, status, project_id, parent_task_id,
+               created_at, modified_at, completed_at,
+               priority, due_date, details_md_path
+        FROM tasks
+        WHERE id IN ({placeholders})
+        """
+        params = list(task_ids_set)
+    else:
+        # No project filter - return all tasks
+        base_sql = """
+        SELECT id, title, status, project_id, parent_task_id,
+               created_at, modified_at, completed_at,
+               priority, due_date, details_md_path
+        FROM tasks
+        """
+        params = []
+
+    conditions = []
+
     if status_filter:
         placeholders = ','.join('?' for _ in status_filter)
         conditions.append(f"status IN ({placeholders})")
@@ -301,14 +387,17 @@ def list_tasks(conn: sqlite3.Connection,
         conditions.append("parent_task_id IS NULL")
 
     if conditions:
-        base_sql += " WHERE " + " AND ".join(conditions)
-    
+        if " WHERE " in base_sql:
+            base_sql += " AND " + " AND ".join(conditions)
+        else:
+            base_sql += " WHERE " + " AND ".join(conditions)
+
     base_sql += """
-    ORDER BY 
-        CASE status 
+    ORDER BY
+        CASE status
             WHEN 'done' THEN 1
-            ELSE 0 
-        END, 
+            ELSE 0
+        END,
         modified_at DESC
     """
 
@@ -370,3 +459,89 @@ def delete_task(conn: sqlite3.Connection, task_id: uuid.UUID) -> bool:
     except sqlite3.Error as e:
         raise
     return cursor.rowcount > 0
+
+# --- Task Link Operations ---
+
+def add_task_link(
+    conn: sqlite3.Connection,
+    task_id: uuid.UUID,
+    project_id: uuid.UUID,
+    is_origin: bool = False
+) -> bool:
+    """
+    Create a link between a task and a project.
+    Returns True if link was created, False if it already existed.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    sql = """
+    INSERT OR REPLACE INTO task_links (task_id, project_id, is_origin, created_at, modified_at)
+    VALUES (?, ?, ?, ?, ?)
+    """
+    cursor = conn.cursor()
+    try:
+        cursor.execute(sql, (str(task_id), str(project_id), 1 if is_origin else 0, now, now))
+        conn.commit()
+        return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        raise
+
+def get_task_links(conn: sqlite3.Connection, task_id: uuid.UUID) -> List[Tuple[uuid.UUID, bool]]:
+    """
+    Get all project links for a task.
+    Returns list of (project_id, is_origin) tuples.
+    """
+    sql = "SELECT project_id, is_origin FROM task_links WHERE task_id = ?"
+    cursor = conn.cursor()
+    cursor.execute(sql, (str(task_id),))
+    rows = cursor.fetchall()
+    return [(uuid.UUID(row[0]), bool(row[1])) for row in rows]
+
+def get_linked_tasks(conn: sqlite3.Connection, project_id: uuid.UUID) -> List[uuid.UUID]:
+    """
+    Get all tasks linked to a project (via task_links table).
+    Returns list of task IDs.
+    """
+    sql = "SELECT task_id FROM task_links WHERE project_id = ?"
+    cursor = conn.cursor()
+    cursor.execute(sql, (str(project_id),))
+    rows = cursor.fetchall()
+    return [uuid.UUID(row[0]) for row in rows]
+
+def delete_task_link(
+    conn: sqlite3.Connection,
+    task_id: uuid.UUID,
+    project_id: uuid.UUID
+) -> bool:
+    """
+    Remove a link between a task and a project.
+    Returns True if link was deleted, False if it didn't exist.
+    """
+    sql = "DELETE FROM task_links WHERE task_id = ? AND project_id = ?"
+    cursor = conn.cursor()
+    try:
+        cursor.execute(sql, (str(task_id), str(project_id)))
+        conn.commit()
+        return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        raise
+
+def get_task_origin_project(conn: sqlite3.Connection, task_id: uuid.UUID) -> Optional[uuid.UUID]:
+    """
+    Get the origin project for a task (where is_origin = TRUE).
+    Returns project_id or None if no origin found.
+    """
+    sql = "SELECT project_id FROM task_links WHERE task_id = ? AND is_origin = 1"
+    cursor = conn.cursor()
+    cursor.execute(sql, (str(task_id),))
+    row = cursor.fetchone()
+    return uuid.UUID(row[0]) if row else None
+
+def is_task_origin(conn: sqlite3.Connection, task_id: uuid.UUID, project_id: uuid.UUID) -> bool:
+    """
+    Check if a task originated in a specific project.
+    """
+    sql = "SELECT is_origin FROM task_links WHERE task_id = ? AND project_id = ?"
+    cursor = conn.cursor()
+    cursor.execute(sql, (str(task_id), str(project_id)))
+    row = cursor.fetchone()
+    return bool(row[0]) if row else False
