@@ -120,6 +120,7 @@ class KmApp(App[None]):
     async def on_list_view_selected(self, event: ListView.Selected) -> None:
         # These class names exist in widgets.lists
         from .widgets.lists import ProjectListItem, TaskListItem  # lazy import to avoid circulars
+        from . import links  # Import links module
 
         if event.list_view.id == "project_list_view":
             item = event.item
@@ -132,8 +133,22 @@ class KmApp(App[None]):
                 self.selected_task = item.task_data
                 current_screen = self.screen
                 if isinstance(current_screen, TasksScreen):
-                    # Update the detail view to show task details
-                    current_screen.update_detail_view(item.task_data)
+                    # Check if task has @project links
+                    task = item.task_data
+                    project_mentions = links.extract_project_mentions(task.title)
+
+                    if project_mentions:
+                        # Task has @mention - navigate to first mentioned project
+                        target_project_name = project_mentions[0]
+                        target_project = links.resolve_project_link(target_project_name, base_data_dir=self.base_data_dir)
+                        if target_project:
+                            self.notify(f"Jumping to project: {target_project.name}")
+                            self.push_screen(TasksScreen(project=target_project))
+                        else:
+                            self.notify(f"Project '@{target_project_name}' not found", severity="error")
+                    else:
+                        # No links - just update detail view
+                        current_screen.update_detail_view(item.task_data)
 
     # ---------- Helpers ----------
 
