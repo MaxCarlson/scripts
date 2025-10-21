@@ -120,7 +120,7 @@ class KmApp(App[None]):
     async def on_list_view_selected(self, event: ListView.Selected) -> None:
         # These class names exist in widgets.lists
         from .widgets.lists import ProjectListItem, TaskListItem  # lazy import to avoid circulars
-        from . import links  # Import links module
+        from .. import links  # Import links module from parent package
 
         if event.list_view.id == "project_list_view":
             item = event.item
