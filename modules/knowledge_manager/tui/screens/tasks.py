@@ -163,17 +163,29 @@ class TasksScreen(Screen):
                 self.app.selected_task = None
                 self.update_detail_view(None)
     
-    async def action_add_task_prompt(self) -> None: 
-        if not self.current_project: self.notify(message="No project context.", title="Error", severity="error"); return
-        async def cb(title:str):
-            if title: 
-                try: 
-                    nt=task_ops.create_new_task(title,self.current_project.id if self.current_project else None , base_data_dir=self.app.base_data_dir)
+    async def action_add_task_prompt(self) -> None:
+        if not self.current_project:
+            self.notify(message="No project context.", title="Error", severity="error")
+            return
+
+        async def cb(title: str):
+            if title:
+                try:
+                    nt = task_ops.create_new_task(
+                        title,
+                        self.current_project.id if self.current_project else None,
+                        base_data_dir=self.app.base_data_dir
+                    )
                     await self.reload_tasks_action(task_id_to_reselect=nt.id)
                     self.notify(message=f"Task '{nt.title}' added.", title="Task Added")
-                except Exception as e: 
+                except Exception as e:
                     self.notify(message=f"Error: {e}", title="Error", severity="error")
-        await self.app.push_screen(InputDialog(prompt_text="New task title:"), cb)
+
+        # Show hint about @mentions in the prompt
+        await self.app.push_screen(
+            InputDialog(prompt_text="New task title (use @project-name to link):"),
+            cb
+        )
 
     async def action_add_subtask_prompt(self) -> None:
         parent_task = self.app.selected_task
