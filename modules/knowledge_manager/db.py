@@ -25,8 +25,16 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     """
     Run database migrations to upgrade schema.
     Safe to call multiple times - migrations are idempotent.
+    Ensures base tables exist before adding new ones.
     """
     cursor = conn.cursor()
+
+    # Ensure base tables exist (projects and tasks)
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='projects'")
+    if not cursor.fetchone():
+        # Base tables don't exist - this is likely a test or new database
+        # Don't run migrations, let init_db handle it
+        return
 
     # Migration 1: Add task_links table (for cross-project linking)
     # Check if table exists
