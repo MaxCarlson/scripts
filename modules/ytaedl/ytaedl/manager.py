@@ -36,6 +36,9 @@ except ImportError:
     ENFORCER_AVAILABLE = False
 
 from .downloader import MAX_RESOLUTION_CHOICES
+from .mp4_watcher import MP4Watcher, WatcherConfig, WatcherSnapshot
+
+MP4_VALID_OPERATIONS = ("copy", "move")
 
 # Use TermDash for robust in-place dashboard rendering
 # We avoid TermDash here for maximal compatibility across shells; do manual frames
@@ -332,6 +335,48 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("-v", "--max-resolution", choices=MAX_RESOLUTION_CHOICES, default=None, help="Highest video resolution workers should request")
     p.add_argument("-z", "--max-total-dl-speed", type=float, default=None, help="Global max download speed across all workers (MiB/s)")
     p.add_argument("-b", "--show-bars", action="store_true", help="Show an ASCII progress bar per worker")
+    p.add_argument("-w", "--enable-mp4-watcher", action="store_true", help="Enable MP4 watcher integration")
+    p.add_argument(
+        "-o",
+        "--mp4-operation",
+        choices=sorted(MP4_VALID_OPERATIONS),
+        default="move",
+        help="Default MP4 watcher operation to apply when syncing staged MP4 files",
+    )
+    p.add_argument(
+        "-k",
+        "--mp4-max-files",
+        type=int,
+        default=None,
+        help="Cap how many MP4 files the watcher processes per run (omit for unlimited)",
+    )
+    p.add_argument(
+        "-G",
+        "--mp4-trigger-download-gb",
+        type=float,
+        default=None,
+        help="Automatically trigger the watcher after this many GiB have downloaded since the last sync",
+    )
+    p.add_argument(
+        "-F",
+        "--mp4-trigger-free-gb",
+        type=float,
+        default=None,
+        help="Automatically trigger the watcher when staging free space drops below this GiB threshold",
+    )
+    p.add_argument(
+        "-K",
+        "--mp4-keep-source",
+        action="store_true",
+        help="Keep staging MP4 files after syncing (skip deletion of source files)",
+    )
+    p.add_argument(
+        "-L",
+        "--mp4-log-file",
+        type=str,
+        default=None,
+        help="Custom log file for MP4 watcher activity (defaults to <log-dir>/mp4_watcher.log)",
+    )
     return p
 
 
@@ -356,6 +401,55 @@ def main() -> int:
         archive_dir.mkdir(parents=True, exist_ok=True)
     finished_log = Path(args.finished_log).expanduser().resolve()
     finished_log.parent.mkdir(parents=True, exist_ok=True)
+
+    watcher: Optional[MP4Watcher] = None
+    if args.enable_mp4_watcher:
+        staging_root = Path(args.proxy_dl_location).expanduser().resolve() if args.proxy_dl_location else None
+        destination_root = stars_dir
+        log_path = Path(args.mp4_log_file).expanduser().resolve() if args.mp4_log_file else (log_dir / "mp4_watcher.log")
+        download_trigger_bytes = (
+            int(args.mp4_trigger_download_gb * (1024 ** 3))
+            if isinstance(args.mp4_trigger_download_gb, (int, float)) and args.mp4_trigger_download_gb > 0
+            else None
+        )
+        free_space_trigger_bytes = (
+            int(args.mp4_trigger_free_gb * (1024 ** 3))
+            if isinstance(args.mp4_trigger_free_gb, (int, float)) and args.mp4_trigger_free_gb > 0
+            else None
+        )
+        max_files = args.mp4_max_files if isinstance(args.mp4_max_files, int) and args.mp4_max_files > 0 else None
+        if staging_root is None:
+            mlog.error("MP4 watcher requested but --proxy-dl-location was not provided; watcher disabled")
+        else:
+            config = WatcherConfig(
+                staging_root=staging_root,
+                destination_root=destination_root,
+                log_path=log_path,
+                default_operation=args.mp4_operation,
+                max_files=max_files,
+                keep_source=args.mp4_keep_source,
+                download_trigger_bytes=download_trigger_bytes,
+                free_space_trigger_bytes=free_space_trigger_bytes,
+            )
+            watcher = MP4Watcher(config=config, enabled=True)
+            if watcher.is_enabled():
+                mlog.info(
+                    "MP4 watcher enabled: staging=%s destination=%s operation=%s",
+                    staging_root,
+                    destination_root,
+                    args.mp4_operation,
+                )
+            else:
+                mlog.error(
+                    "MP4 watcher initialisation failed; staging=%s destination=%s exists=%s/%s",
+                    staging_root,
+                    destination_root,
+                    staging_root.exists(),
+                    destination_root.exists(),
+                )
+                watcher = MP4Watcher(config=config, enabled=False)
+    elif args.mp4_operation or args.mp4_max_files or args.mp4_trigger_download_gb or args.mp4_trigger_free_gb:
+        mlog.info("MP4 watcher configuration ignored because --enable-mp4-watcher was not set")
 
     roots: List[Path] = [stars_dir, aebn_dir]
     pool, priority_pool = _gather_from_roots(roots, finished_log, args.priority_files)
@@ -634,6 +728,11 @@ def main() -> int:
             if deadline and time.time() >= deadline:
                 stop.set()
                 break
+            if watcher:
+                auto_reason = watcher.update_download_progress(total_completed_bytes)
+                if auto_reason:
+                    mlog.info("MP4 watcher auto-triggered: %s", auto_reason)
+                watcher.snapshot()
             # Dynamic total throttle: proportional caps across yt-dlp workers
             now_check = time.time()
             if isinstance(args.max_total_dl_speed, (int, float)) and args.max_total_dl_speed and args.max_total_dl_speed > 0:

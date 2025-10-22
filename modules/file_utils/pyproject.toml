@@ -4,12 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "file_utils"
-version = "1.0.0"
-description = "A Python library for advanced file manipulation and management."
-requires-python = ">=3.6"
-dependencies = []
+version = "1.1.0"
+description = "A Python library for advanced file manipulation and management, including an interactive lister."
+requires-python = ">=3.7"
+dependencies = [
+    "termdash @ file:///${PROJECT_ROOT}/modules/termdash",
+    "windows-curses; sys_platform == 'win32'"
+]
+
 [[project.authors]]
 name = "Your Name"
 email = "carlsonamax@gmail.com"
+
+[project.scripts]
+"file-util" = "file_utils.cli:main"
+"fu" = "file_utils.cli:main"
 
 [tool.setuptools.packages.find]
