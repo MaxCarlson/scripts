@@ -5,21 +5,124 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, ListView, ListItem
 
 class InputDialog(ModalScreen):
-    """A modal dialog for text input."""
+    """A modal dialog for text input with @mention autocomplete."""
 
-    def __init__(self, prompt_text: str, initial_value: str = "", **kwargs) -> None:
+    DEFAULT_CSS = """
+    #suggestion_label {
+        color: $text-muted;
+        text-style: italic;
+    }
+    """
+
+    def __init__(self, prompt_text: str, initial_value: str = "", enable_autocomplete: bool = False, **kwargs) -> None:
         super().__init__()
         self.prompt_text = prompt_text
         self.initial_value = initial_value
+        self.enable_autocomplete = enable_autocomplete
+        self.project_names = []
+        self.current_suggestions = []
+        self.suggestion_index = 0
 
     def compose(self) -> ComposeResult:
         yield Vertical(
             Label(self.prompt_text),
-            Input(value=self.initial_value, placeholder="Enter text..."),
+            Label("", id="suggestion_label"),  # For showing suggestions
+            Input(value=self.initial_value, placeholder="Enter text...", id="text_input"),
             Button("Submit", variant="primary", id="submit"),
             Button("Cancel", variant="default", id="cancel"),
             id="dialog",
         )
+
+    async def on_mount(self) -> None:
+        """Load project names for autocomplete."""
+        if self.enable_autocomplete:
+            try:
+                from ... import project_ops
+                projects = project_ops.list_all_projects(base_data_dir=self.app.base_data_dir)
+                self.project_names = [p.name for p in projects]
+            except Exception:
+                self.project_names = []
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Update suggestions as user types."""
+        if not self.enable_autocomplete:
+            return
+
+        text = event.value
+        # Find last @ mention
+        at_index = text.rfind('@')
+        if at_index == -1:
+            self.query_one("#suggestion_label", Label).update("")
+            return
+
+        # Extract partial project name after @
+        partial = text[at_index + 1:]
+
+        # Find matching projects
+        matches = [p for p in self.project_names if p.lower().startswith(partial.lower())]
+
+        if matches:
+            self.current_suggestions = matches
+            self.suggestion_index = 0
+            suggestion = matches[0]
+            # Show suggestion
+            remaining = suggestion[len(partial):]
+            self.query_one("#suggestion_label", Label).update(
+                f"Suggestion: @{suggestion} (Tab to complete, ↓ for more)"
+            )
+        else:
+            self.current_suggestions = []
+            self.query_one("#suggestion_label", Label).update("")
+
+    def on_key(self, event) -> None:
+        """Handle Tab and arrow keys for autocomplete."""
+        if not self.enable_autocomplete or not self.current_suggestions:
+            return
+
+        if event.key == "tab":
+            # Accept current suggestion
+            event.prevent_default()
+            event.stop()
+            self._accept_suggestion()
+        elif event.key == "down":
+            # Cycle to next suggestion
+            event.prevent_default()
+            event.stop()
+            self.suggestion_index = (self.suggestion_index + 1) % len(self.current_suggestions)
+            self._update_suggestion_display()
+        elif event.key == "up":
+            # Cycle to previous suggestion
+            event.prevent_default()
+            event.stop()
+            self.suggestion_index = (self.suggestion_index - 1) % len(self.current_suggestions)
+            self._update_suggestion_display()
+
+    def _accept_suggestion(self) -> None:
+        """Replace partial text with full suggestion."""
+        if not self.current_suggestions:
+            return
+
+        input_widget = self.query_one("#text_input", Input)
+        text = input_widget.value
+        at_index = text.rfind('@')
+
+        if at_index != -1:
+            suggestion = self.current_suggestions[self.suggestion_index]
+            # Replace from @ to end with full suggestion
+            new_text = text[:at_index] + "@" + suggestion
+            input_widget.value = new_text
+            # Clear suggestions
+            self.current_suggestions = []
+            self.query_one("#suggestion_label", Label).update("")
+
+    def _update_suggestion_display(self) -> None:
+        """Update the suggestion label when cycling."""
+        if self.current_suggestions:
+            suggestion = self.current_suggestions[self.suggestion_index]
+            count_text = f"({self.suggestion_index + 1}/{len(self.current_suggestions)})"
+            self.query_one("#suggestion_label", Label).update(
+                f"Suggestion: @{suggestion} {count_text} (Tab to complete, ↑↓ to cycle)"
+            )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "submit":

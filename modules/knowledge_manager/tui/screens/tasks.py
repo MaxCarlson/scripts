@@ -183,7 +183,7 @@ class TasksScreen(Screen):
 
         # Show hint about @mentions in the prompt
         await self.app.push_screen(
-            InputDialog(prompt_text="New task title (use @project-name to link):"),
+            InputDialog(prompt_text="New task title (use @project-name to link):", enable_autocomplete=True),
             cb
         )
 
@@ -207,7 +207,10 @@ class TasksScreen(Screen):
                 except Exception as e:
                     self.notify(f"Error: {e}", title="Error", severity="error")
         
-        await self.app.push_screen(InputDialog(prompt_text=f"New subtask for '{parent_task.title}':"), cb)
+        await self.app.push_screen(
+            InputDialog(prompt_text=f"New subtask for '{parent_task.title}':", enable_autocomplete=True),
+            cb
+        )
 
     async def action_delete_selected_task(self) -> None:
         task_to_delete = self.app.selected_task
@@ -253,7 +256,7 @@ class TasksScreen(Screen):
                     self.notify(message=f"Error: {e}", title="Error", severity="error")
 
         await self.app.push_screen(
-            InputDialog(prompt_text="Edit task title:", initial_value=selected_task.title),
+            InputDialog(prompt_text="Edit task title:", initial_value=selected_task.title, enable_autocomplete=True),
             cb
         )
 

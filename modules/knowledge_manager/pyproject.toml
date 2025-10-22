@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "knowledge_manager"
-version = "0.1.0"
+version = "0.5.0"
 description = "A Python CLI application for managing personal knowledge, projects, tasks, and LLM assets."
 readme = "README.md" # You'll want to create this file later
 requires-python = ">=3.8" # Specify your minimum Python version
