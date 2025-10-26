@@ -269,3 +269,107 @@ def test_lister_manager_get_visible_entries(temp_dir_structure: Path):
     # Now file3.txt should be visible
     visible_names = [e.name for e in visible]
     assert "file3.txt" in visible_names
+
+def test_calculate_folder_size(temp_dir_structure: Path):
+    """Test folder size calculation."""
+    # Write some data to files
+    (temp_dir_structure / "file1.txt").write_text("a" * 100)
+    sub_dir = temp_dir_structure / "sub_dir"
+    (sub_dir / "file2.txt").write_text("b" * 200)
+    deep_dir = sub_dir / "deep_dir"
+    (deep_dir / "file3.txt").write_text("c" * 300)
+
+    # Calculate size of sub_dir (should include deep_dir contents)
+    total_size, item_count = lister.calculate_folder_size(sub_dir)
+
+    # Should count file2.txt (200) + file3.txt (300) = 500 bytes
+    # Item count: file2.txt, deep_dir, file3.txt = 3
+    assert total_size == 500
+    assert item_count == 3
+
+def test_entry_calculated_size():
+    """Test Entry calculated size methods."""
+    now = datetime.now()
+    entry = lister.Entry(
+        path=Path("/fake/mydir"),
+        name="mydir",
+        is_dir=True,
+        size=4096,  # stat size
+        created=now,
+        modified=now,
+        accessed=now,
+        depth=0,
+    )
+
+    # Initially no calculated size
+    assert not entry.has_calculated_size()
+    assert entry.get_display_size() == 4096
+
+    # Set calculated size
+    entry.calculated_size = 1024000
+    entry.item_count = 42
+
+    assert entry.has_calculated_size()
+    assert entry.get_display_size() == 1024000
+
+def test_format_entry_line_folder_with_calculated_size():
+    """Test folder formatting with calculated size."""
+    now = datetime.now()
+    entry = lister.Entry(
+        path=Path("/fake/mydir"),
+        name="mydir",
+        is_dir=True,
+        size=4096,
+        created=now,
+        modified=now,
+        accessed=now,
+        depth=0,
+        expanded=True,
+        calculated_size=1024000,
+        item_count=42,
+    )
+    formatted_line = lister.format_entry_line(entry, "created", 100, show_date=True, show_time=True, scroll_offset=0)
+
+    # Should show calculated size with item count
+    assert "1000.0 KB" in formatted_line or "1.0 MB" in formatted_line
+    assert "42 items" in formatted_line
+
+def test_format_entry_line_folder_calculating():
+    """Test folder formatting while calculating size."""
+    now = datetime.now()
+    entry = lister.Entry(
+        path=Path("/fake/mydir"),
+        name="mydir",
+        is_dir=True,
+        size=4096,
+        created=now,
+        modified=now,
+        accessed=now,
+        depth=0,
+        expanded=False,
+        size_calculating=True,
+    )
+    formatted_line = lister.format_entry_line(entry, "created", 100, show_date=True, show_time=True, scroll_offset=0)
+
+    # Should show spinner indicator
+    assert "[...]" in formatted_line
+
+def test_format_entry_line_folder_not_calculated():
+    """Test folder formatting without calculated size."""
+    now = datetime.now()
+    entry = lister.Entry(
+        path=Path("/fake/mydir"),
+        name="mydir",
+        is_dir=True,
+        size=4096,
+        created=now,
+        modified=now,
+        accessed=now,
+        depth=0,
+        expanded=False,
+    )
+    formatted_line = lister.format_entry_line(entry, "created", 100, show_date=True, show_time=True, scroll_offset=0)
+
+    # Should show blank size for uncalculated folders
+    # The size part should be empty/blank, but other parts should be present
+    assert "mydir/" in formatted_line

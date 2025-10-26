@@ -59,6 +59,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Don't group directories before files (default: dirs first).",
     )
+    ls_parser.add_argument(
+        "-S",
+        "--calc-sizes",
+        action="store_true",
+        help="Calculate actual recursive sizes for directories.",
+    )
 
     args = parser.parse_args(argv)
 

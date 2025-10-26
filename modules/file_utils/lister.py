@@ -4,6 +4,7 @@ import argparse
 import curses
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from fnmatch import fnmatch
@@ -63,6 +64,27 @@ def human_size(num: int) -> str:
         value /= step_unit
     return f"{value:.1f} PB"
 
+def calculate_folder_size(path: Path) -> Tuple[int, int]:
+    """Calculate total size and item count for a folder recursively.
+    Returns (total_bytes, item_count)."""
+    total_size = 0
+    item_count = 0
+
+    try:
+        for item in path.rglob('*'):
+            try:
+                if item.is_file():
+                    total_size += item.stat().st_size
+                    item_count += 1
+                elif item.is_dir():
+                    item_count += 1
+            except (OSError, PermissionError):
+                continue
+    except (OSError, PermissionError):
+        pass
+
+    return total_size, item_count
+
 def read_entries_recursive(target: Path, max_depth: int, parent_path: Path = None) -> List[Entry]:
     entries: List[Entry] = []
 
@@ -111,7 +133,20 @@ def format_entry_line(entry: Entry, sort_field: str, width: int, show_date: bool
         timestamp_parts.append(time_source.strftime("%H:%M:%S"))
 
     timestamp = " ".join(timestamp_parts) if timestamp_parts else ""
-    size_text = human_size(entry.size)
+
+    # For folders, show calculated size if available, otherwise show blank or spinner
+    if entry.is_dir:
+        if entry.size_calculating:
+            size_text = "[...]"  # Spinner/progress indicator
+        elif entry.has_calculated_size():
+            size_text = human_size(entry.get_display_size())
+            # Add item count for expanded folders
+            if entry.expanded and entry.item_count is not None:
+                size_text = f"{size_text} ({entry.item_count} items)"
+        else:
+            size_text = ""  # Blank if not calculated
+    else:
+        size_text = human_size(entry.size)
 
     indent = "  " * entry.depth
     # Add expansion indicator for directories
@@ -402,8 +437,14 @@ def run_lister(args: argparse.Namespace) -> int:
     def action_handler(key: int, item: Entry) -> Tuple[bool, bool]:
         """Handle custom actions for folder navigation.
         Returns (handled, should_refresh)"""
-        # ESC key - collapse parent folder and move selection to it
+        # ESC key - cancel calculation or collapse parent folder
         if key == 27:  # ESC
+            # Check if calculation is running
+            if list_view.state.calculating_sizes:
+                list_view.state.calc_cancel = True
+                list_view.state.calculating_sizes = False
+                return True, False
+
             if item.parent_path:
                 # Find the parent folder
                 parent = next((e for e in manager.all_entries if e.path == item.parent_path), None)
@@ -438,6 +479,21 @@ def run_lister(args: argparse.Namespace) -> int:
                 # Update the items list to reflect expansion (with hierarchical sorting)
                 sort_func = SORT_FUNCS[list_view.state.sort_field]
                 list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending)
+
+                # Calculate size for this folder if not already calculated
+                if not item.has_calculated_size() and not item.size_calculating:
+                    def calc_single():
+                        item.size_calculating = True
+                        try:
+                            total_size, item_count = calculate_folder_size(item.path)
+                            item.calculated_size = total_size
+                            item.item_count = item_count
+                        except Exception:
+                            pass
+                        item.size_calculating = False
+
+                    threading.Thread(target=calc_single, daemon=True).start()
+
                 # Need to refresh to copy items to visible
                 return True, True  # Handled, call _update_visible_items to update state.visible
             return False, False  # Not handled, let default detail view happen
@@ -487,6 +543,47 @@ def run_lister(args: argparse.Namespace) -> int:
                 sys.stderr.write("Clipboard utilities not available\n")
             return True, False  # Handled, no refresh needed
 
+        # 'S' key - calculate folder sizes
+        elif key == ord('S'):
+            if list_view.state.calculating_sizes:
+                # Already calculating
+                return True, False
+
+            # Start calculation in background thread
+            def calc_thread():
+                # Get all directories
+                folders = [e for e in manager.all_entries if e.is_dir]
+                list_view.state.calc_progress = (0, len(folders))
+                list_view.state.calc_cancel = False
+
+                for idx, folder in enumerate(folders):
+                    # Check for cancellation
+                    if list_view.state.calc_cancel:
+                        break
+
+                    # Mark folder as calculating
+                    folder.size_calculating = True
+
+                    # Calculate size
+                    try:
+                        total_size, item_count = calculate_folder_size(folder.path)
+                        folder.calculated_size = total_size
+                        folder.item_count = item_count
+                    except Exception:
+                        pass  # Silently skip errors
+
+                    folder.size_calculating = False
+
+                    # Update progress
+                    list_view.state.calc_progress = (idx + 1, len(folders))
+
+                # Done
+                list_view.state.calculating_sizes = False
+
+            list_view.state.calculating_sizes = True
+            threading.Thread(target=calc_thread, daemon=True).start()
+            return True, False  # Handled, no refresh needed (progress updates will trigger redraws)
+
         # Handle sort key changes (c/m/a/s/n) with hierarchical sorting
         elif key in (ord('c'), ord('m'), ord('a'), ord('s'), ord('n')):
             # Map key to sort field
@@ -522,9 +619,9 @@ def run_lister(args: argparse.Namespace) -> int:
     }
 
     footer_lines = [
-        "↑↓/j/k/PgUp/PgDn: move | f: filter | Enter: toggle folder/details | ESC: collapse parent | Ctrl+Q: quit",
+        "↑↓/j/k/PgUp/PgDn: move | f: filter | Enter: toggle folder/details | ESC: collapse/cancel | Ctrl+Q: quit",
         "c: created | m: modified | a: accessed | n: name | s: size | e: expand all | o: open new",
-        "d: toggle date | t: toggle time | F: toggle dirs-first | y: copy path | ←→: scroll",
+        "d: toggle date | t: toggle time | F: toggle dirs-first | y: copy path | S: calc sizes | ←→: scroll",
     ]
 
     list_view = InteractiveList(
@@ -547,6 +644,36 @@ def run_lister(args: argparse.Namespace) -> int:
 
     if args.glob:
         list_view.state.filter_pattern = args.glob
+
+    # Start size calculation if requested via CLI
+    if getattr(args, 'calc_sizes', False):
+        # Trigger calculation after TUI starts
+        def start_calc():
+            import time
+            time.sleep(0.1)  # Brief delay to let TUI initialize
+            # Simulate pressing 'S' key
+            folders = [e for e in manager.all_entries if e.is_dir]
+            list_view.state.calc_progress = (0, len(folders))
+            list_view.state.calc_cancel = False
+            list_view.state.calculating_sizes = True
+
+            for idx, folder in enumerate(folders):
+                if list_view.state.calc_cancel:
+                    break
+
+                folder.size_calculating = True
+                try:
+                    total_size, item_count = calculate_folder_size(folder.path)
+                    folder.calculated_size = total_size
+                    folder.item_count = item_count
+                except Exception:
+                    pass
+                folder.size_calculating = False
+                list_view.state.calc_progress = (idx + 1, len(folders))
+
+            list_view.state.calculating_sizes = False
+
+        threading.Thread(target=start_calc, daemon=True).start()
 
     list_view.run()
     return 0

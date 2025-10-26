@@ -12,37 +12,42 @@ def test_calculate_size_color_same_size():
 
 def test_calculate_size_color_smallest():
     """Smallest file should be green."""
-    color = calculate_size_color(0, 0, 1000)
+    color = calculate_size_color(0, 0, 1000000)
     assert color == 4  # green
 
 
 def test_calculate_size_color_small():
-    """Small file (10%) should be green."""
-    color = calculate_size_color(100, 0, 1000)
+    """Small file should be green (log scale)."""
+    # Using powers of 10 to test logarithmic distribution
+    # Size 10 out of 1,000,000 should be in the lower range
+    color = calculate_size_color(10, 1, 1000000)
     assert color == 4  # green
 
 
 def test_calculate_size_color_medium_low():
-    """Medium-low file (40%) should be cyan."""
-    color = calculate_size_color(400, 0, 1000)
+    """Medium-low file should be cyan (log scale)."""
+    # Size 100 out of 1,000,000: log ratio ~0.34, should be cyan (0.20-0.40)
+    color = calculate_size_color(100, 1, 1000000)
     assert color == 5  # cyan
 
 
 def test_calculate_size_color_medium():
-    """Medium file (60%) should be yellow."""
-    color = calculate_size_color(600, 0, 1000)
+    """Medium file should be yellow (log scale)."""
+    # Size 1,000 out of 1,000,000: log ratio ~0.47, should be yellow (0.40-0.60)
+    color = calculate_size_color(1000, 1, 1000000)
     assert color == 6  # yellow
 
 
 def test_calculate_size_color_large():
-    """Large file (80%) should be magenta."""
-    color = calculate_size_color(800, 0, 1000)
+    """Large file should be magenta (log scale)."""
+    # Size 10,000 out of 1,000,000: log ratio ~0.65, should be magenta (0.60-0.80)
+    color = calculate_size_color(10000, 1, 1000000)
     assert color == 7  # magenta
 
 
 def test_calculate_size_color_largest():
     """Largest file should be red."""
-    color = calculate_size_color(1000, 0, 1000)
+    color = calculate_size_color(1000000, 1, 1000000)
     assert color == 8  # red
 
 
@@ -63,6 +68,10 @@ def test_list_state_defaults():
     assert state.scroll_offset == 0
     assert state.show_date == True
     assert state.show_time == True
+    assert state.dirs_first == True
+    assert state.calculating_sizes == False
+    assert state.calc_progress == (0, 0)
+    assert state.calc_cancel == False
 
 
 def test_list_state_toggle_display_options():
