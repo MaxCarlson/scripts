@@ -278,8 +278,9 @@ GroupMap = Dict[str, List[Meta]]
 
 
 def run_pipeline(
-    root: Path,
+    root: Optional[Path] = None,
     *,
+    roots: Optional[Sequence[Path]] = None,
     patterns: Optional[Sequence[str]],
     max_depth: Optional[int],
     selected_stages: Sequence[int],
@@ -296,25 +297,56 @@ def run_pipeline(
       - Q3 metadata groups are EXCLUDED from Q4.
     skip_paths: if provided, any file in this set is ignored during scanning.
     """
-    root = Path(root).expanduser().resolve()
     reporter = reporter or ProgressReporter(enable_dash=False)
 
-    # -----------------------------
-    # Stage: scanning / enumeration
-    # -----------------------------
     import logging
     logger = logging.getLogger(__name__)
-    logger.info(f"Starting file enumeration for root: {root}, patterns: {patterns}, max_depth: {max_depth}")
-    files: List[Path] = list(_iter_files(root, patterns, max_depth))
-    logger.info(f"File enumeration completed. Found {len(files)} files.")
 
-    # Apply excludes early
-    if skip_paths:
-        skip_norm = {p.expanduser().resolve() for p in skip_paths}
-        files = [f for f in files if f.expanduser().resolve() not in skip_norm]
+    scan_roots: List[Path] = []
+    if root is not None:
+        scan_roots.append(Path(root))
+    if roots:
+        scan_roots.extend(Path(r) for r in roots)
+    if not scan_roots:
+        raise ValueError("run_pipeline requires at least one root directory")
+    scan_roots = [p.expanduser().resolve() for p in scan_roots]
+
+    skip_norm: Set[Path] = {p.expanduser().resolve() for p in skip_paths} if skip_paths else set()
+
+    reporter.set_status("Enumerating files")
+    reporter.start_stage("discovering files", total=0)
+    reporter.update_root_progress(current=None, completed=0, total=len(scan_roots))
+
+    files: List[Path] = []
+    skipped_during_enum = 0
+    for index, scan_root in enumerate(scan_roots, start=1):
+        logger.info("Starting file enumeration for root: %s, patterns: %s, max_depth: %s", scan_root, patterns, max_depth)
+        reporter.update_root_progress(current=scan_root, completed=index - 1, total=len(scan_roots))
+        reporter.set_status(f"Discovering files under {scan_root}")
+
+        for path in _iter_files(scan_root, patterns, max_depth):
+            resolved = path.expanduser().resolve()
+            if skip_norm and resolved in skip_norm:
+                skipped_during_enum += 1
+                continue
+            files.append(path)
+            if len(files) % 1000 == 0:
+                reporter.update_discovery(len(files), skipped=skipped_during_enum)
+
+        reporter.update_root_progress(current=scan_root, completed=index, total=len(scan_roots))
+
+    reporter.update_discovery(len(files), skipped=skipped_during_enum)
+    logger.info(
+        "File enumeration completed across %d root(s). Found %d files (skipped %d excluded paths).",
+        len(scan_roots),
+        len(files),
+        skipped_during_enum,
+    )
 
     reporter.set_total_files(len(files))
-    reporter.start_stage("scanning", total=len(files))
+    reporter.update_root_progress(current=None, completed=len(scan_roots), total=len(scan_roots))
+    reporter.start_stage("scanning files", total=len(files))
+    reporter.set_status("Scanning files for metadata")
     logger.info(f"Starting scanning stage with {cfg.threads} threads")
 
     metas: List[FileMeta] = []
@@ -357,10 +389,13 @@ def run_pipeline(
     size_collisions: List[FileMeta] = []
     if 1 in selected_stages:
         logger.info("Starting Q1: size bucket analysis")
+        reporter.set_status("Q1 size bucketing")
         for bucket in by_size.values():
             if len(bucket) > 1:
                 size_collisions.extend(bucket)
         logger.info(f"Q1 completed. Found {len(size_collisions)} files in size collision groups")
+    else:
+        reporter.set_status("Skipping Q1 (size buckets disabled)")
 
     groups: GroupMap = {}
     excluded_after_q2: Set[Path] = set()
@@ -371,6 +406,7 @@ def run_pipeline(
     # -------------------------------------------------------
     if 2 in selected_stages and size_collisions:
         logger.info(f"Starting Q2: partial hashing for {len(size_collisions)} files")
+        reporter.set_status("Q2 partial hashing")
         reporter.start_stage("Q2 partial", total=len(size_collisions))
         reporter.set_hash_total(len(size_collisions))
 
@@ -409,6 +445,7 @@ def run_pipeline(
         to_full: List[FileMeta] = [m for lst in partial_map.values() if len(lst) > 1 for m in lst]
 
         reporter.start_stage("Q2 sha256", total=len(to_full))
+        reporter.set_status("Q2 SHA-256 verification")
         reporter.set_hash_total(len(to_full))
 
         by_hash: Dict[str, List[FileMeta]] = defaultdict(list)
@@ -479,6 +516,10 @@ def run_pipeline(
         if formed:
             reporter.inc_group("hash", formed)
             reporter.flush()
+    elif 2 in selected_stages:
+        reporter.set_status("Q2 skipped (no size collisions)")
+    else:
+        reporter.set_status("Skipping Q2 (stage disabled)")
 
     if reporter.should_quit():
         reporter.flush()
@@ -496,6 +537,7 @@ def run_pipeline(
         ]
 
         if vids_in:
+            reporter.set_status("Q3 metadata clustering")
             reporter.start_stage("Q3 metadata", total=len(vids_in))
             reporter.set_hash_total(len(vids_in))  # reuse hashed bar for "probed"
 
@@ -614,9 +656,11 @@ def run_pipeline(
 
             video_for_q4 = probed
         else:
+            reporter.set_status("Q3 skipped (no eligible videos)")
             video_for_q4 = []
     else:
-        # Q3 not selected — allow Q4 on all videos not excluded by Q2
+        reporter.set_status("Skipping Q3 (stage disabled)")
+        # Q3 not selected - allow Q4 on all videos not excluded by Q2
         video_for_q4 = [
             VideoMeta(path=m.path, size=m.size, mtime=m.mtime)
             for m in metas
@@ -642,6 +686,7 @@ def run_pipeline(
             phash_distance = None  # type: ignore
 
         if compute_phash_signature and phash_distance and pending_for_q4:
+            reporter.set_status("Q4 visual similarity analysis")
             reporter.start_stage("Q4 pHash", total=len(pending_for_q4))
             reporter.set_hash_total(len(pending_for_q4))
 
@@ -755,9 +800,13 @@ def run_pipeline(
                         gid += 1
                         formed_subset += 1
 
-                if formed_subset:
-                    reporter.groups_subset += formed_subset  # surface in UI
-                    reporter.flush()
+            if formed_subset:
+                reporter.groups_subset += formed_subset  # surface in UI
+                reporter.flush()
+        else:
+            reporter.set_status("Q4 skipped (no analyzable videos)")
+    elif 4 in selected_stages:
+        reporter.set_status("Q4 skipped (stage disabled by upstream filters)")
 
     if reporter.should_quit():
         reporter.flush()
@@ -768,6 +817,7 @@ def run_pipeline(
     # ----------------------------------------------------------
     if 6 in selected_stages and video_for_q4:
         logger.info("Q6: Audio fingerprinting stage - currently placeholder")
+        reporter.set_status("Q6 audio fingerprinting")
         reporter.start_stage("Q6 audio", total=len(video_for_q4))
 
         # Placeholder implementation for audio analysis
@@ -783,6 +833,8 @@ def run_pipeline(
             reporter.update_progress_periodically(i + 1, len(video_for_q4))
 
         logger.info("Q6: Audio analysis stage completed (placeholder)")
+    elif 6 in selected_stages:
+        reporter.set_status("Q6 skipped (stage disabled or no videos)")
 
     if reporter.should_quit():
         reporter.flush()
@@ -793,6 +845,7 @@ def run_pipeline(
     # ----------------------------------------------------------
     if 7 in selected_stages and video_for_q4:
         logger.info("Q7: Advanced content analysis stage - currently placeholder")
+        reporter.set_status("Q7 advanced analysis")
         reporter.start_stage("Q7 content", total=len(video_for_q4))
 
         # Placeholder implementation for advanced content analysis
@@ -809,8 +862,11 @@ def run_pipeline(
             reporter.update_progress_periodically(i + 1, len(video_for_q4))
 
         logger.info("Q7: Advanced content analysis stage completed (placeholder)")
+    elif 7 in selected_stages:
+        reporter.set_status("Q7 skipped (stage disabled or no videos)")
 
     # Final flush of results (CLI will compute losers/bytes after keep-policy)
+    reporter.set_status("Pipeline stages complete")
     reporter.set_results(dup_groups=len(groups), losers_count=0, bytes_total=0)
     reporter.flush()
     return groups

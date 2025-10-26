@@ -23,6 +23,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 # Try to import TermDash (user-provided module)
@@ -106,6 +107,19 @@ class ProgressReporter:
         self.scanned_files = 0
         self.video_files = 0
         self.bytes_seen = 0
+
+        # Discovery / root tracking
+        self.status_line = "Initializing"
+        self.discovery_files = 0
+        self.discovery_skipped = 0
+        self.roots_total = 0
+        self.roots_completed = 0
+        self.current_root_display = ""
+        self._spinner_chars = "|/-\\"
+        self._spinner_idx = 0
+        no_color_env = os.environ.get("NO_COLOR")
+        disable_color_env = os.environ.get("VDDEDUP_NO_COLOR")
+        self._color_enabled = not bool(no_color_env or disable_color_env)
 
         # Hash/probe counters (generic "hashed" progress bar reused by stages)
         self.hash_total = 0
@@ -213,6 +227,47 @@ class ProgressReporter:
             return f"{value:.1f} {unit}/s"
         else:
             return f"{value:.2f} {unit}/s"
+
+    def _colorize(self, text: str, color_code: str) -> str:
+        if not self.enable_dash or not self._color_enabled or not color_code:
+            return text
+        return f"\033[{color_code}m{text}\033[0m"
+
+    def _shorten(self, text: str, width: int = 60) -> str:
+        if not text:
+            return ""
+        if len(text) <= width:
+            return text
+        return f"…{text[-(width - 1):]}"
+
+    def _next_spinner(self) -> str:
+        self._spinner_idx = (self._spinner_idx + 1) % len(self._spinner_chars)
+        return self._spinner_chars[self._spinner_idx]
+
+    def set_status(self, text: str) -> None:
+        with self.lock:
+            self.status_line = text
+        if self.enable_dash:
+            self.flush()
+
+    def update_root_progress(self, *, current: Optional[Path], completed: int, total: int) -> None:
+        if not self.enable_dash:
+            return
+        with self.lock:
+            self.roots_total = max(0, int(total))
+            self.roots_completed = max(0, min(int(completed), self.roots_total))
+            self.current_root_display = str(current) if current else ""
+        self.flush()
+
+    def update_discovery(self, discovered: int, *, skipped: int = 0) -> None:
+        if not self.enable_dash:
+            return
+        with self.lock:
+            self.discovery_files = max(0, int(discovered))
+            self.discovery_skipped = max(0, int(skipped))
+            if self.stage_total <= 0:
+                self.stage_done = self.discovery_files
+        self.flush()
 
     # --------------- keyboard handling ---------------
 
@@ -351,50 +406,102 @@ class ProgressReporter:
         # No need for TermDash-specific banner updates
 
     def flush(self):
-        if self.enable_dash and hasattr(self, '_simple_ui_initialized'):
-            # STEP 15: Simple ANSI-based UI update (no TermDash)
-            if not hasattr(self, '_flush_lock'):
-                self._flush_lock = threading.Lock()
+        if not (self.enable_dash and hasattr(self, "_simple_ui_initialized")):
+            return
 
-            # Non-blocking lock attempt - if UI is busy, skip this update
-            if not self._flush_lock.acquire(blocking=False):
-                return
+        if not hasattr(self, "_flush_lock"):
+            self._flush_lock = threading.Lock()
 
-            try:
-                with self.lock:
-                    # Calculate metrics
-                    self._calculate_throughput()
+        if not self._flush_lock.acquire(blocking=False):
+            return
 
-                    # Format data sizes
-                    scanned_text = self._format_data_size(self.bytes_seen)
-                    remove_text = self._format_data_size(self.bytes_to_remove)
+        try:
+            with self.lock:
+                self._calculate_throughput()
 
-                    # Calculate timing
-                    import time
-                    eta_text = _fmt_hms(self._estimate_remaining())
-                    elapsed_stage = _fmt_hms(time.time() - self.stage_start_ts)
-                    elapsed_total = _fmt_hms(time.time() - self.start_ts)
+                scanned_text = self._format_data_size(self.bytes_seen)
+                remove_text = self._format_data_size(self.bytes_to_remove)
+                eta_text = _fmt_hms(self._estimate_remaining())
 
-                    # Simple progress bar
-                    progress_pct = (self.stage_done / self.stage_total) if self.stage_total > 0 else 0
-                    filled = int(progress_pct * 30)
-                    bar_text = f"[{'#' * filled}{'.' * (30 - filled)}] {progress_pct * 100:.1f}%"
+                now = time.time()
+                elapsed_stage = _fmt_hms(now - self.stage_start_ts)
+                elapsed_total = _fmt_hms(now - self.start_ts)
+                clock_display = time.strftime("%H:%M:%S")
 
-                    # Clear screen and show update
-                    print("\033[2J\033[H", end="", flush=True)  # Clear screen and go to top
-                    print("=== Video Deduplication Pipeline ===")
-                    print(f"Stage: {self.stage_name} | Files: {self.scanned_files}/{self.total_files}")
-                    print(f"Progress: {bar_text}")
-                    print(f"Hashed: {self.hash_done}/{self.hash_total} | Videos: {self.video_files}")
-                    print(f"Data: {scanned_text} | Groups: H={self.groups_hash} M={self.groups_meta} P={self.groups_phash}")
-                    print(f"Results: {self.losers_total} duplicates | Space: {remove_text}")
-                    print(f"Time: {elapsed_stage} / {elapsed_total} | ETA: {eta_text}")
-                    if self.throughput_files_per_sec > 0:
-                        print(f"Speed: {self.throughput_files_per_sec:.1f} files/sec")
-                    print("Press Ctrl+C to stop")
-                    print("-" * 50)
-            finally:
-                self._flush_lock.release()
+                bar_width = 30
+                if self.stage_total > 0:
+                    progress_pct = self.stage_done / self.stage_total if self.stage_total else 0.0
+                    progress_pct = max(0.0, min(progress_pct, 1.0))
+                    filled = int(progress_pct * bar_width)
+                    bar_text = f"[{'#' * filled}{'.' * (bar_width - filled)}] {progress_pct * 100:5.1f}%"
+                else:
+                    spinner = self._next_spinner()
+                    bar_text = f"[{spinner}{'.' * (bar_width - 1)}]  --.-%"
+
+                indicator = self._get_status_indicator()
+                stage_label = self._colorize(self.stage_name.title(), self._get_stage_color(self.stage_name))
+                status_text = self.status_line or "Working"
+
+                cache_line = f"Hashed: {self.hash_done}/{self.hash_total}"
+                hit_pct = (self.cache_hits / self.hash_done * 100.0) if self.hash_done else 0.0
+                if self.hash_done:
+                    cache_line += f" | Cache hits: {self.cache_hits} ({hit_pct:.1f}%)"
+
+                root_line = ""
+                if self.roots_total:
+                    active_root = self._shorten(self.current_root_display, 64) if self.current_root_display else "—"
+                    root_line = f"Roots: {self.roots_completed}/{self.roots_total} | Active: {active_root}"
+
+                discovery_line = ""
+                if self.discovery_files and self.stage_name.lower().startswith("discover"):
+                    discovery_line = f"Discovered: {self.discovery_files}"
+                    if self.discovery_skipped:
+                        discovery_line += f" | Skipped: {self.discovery_skipped}"
+
+                throughput_line = ""
+                if self.throughput_files_per_sec > 0:
+                    mib_per_sec = self.throughput_bytes_per_sec / (1024 * 1024)
+                    throughput_line = f"Speed: {self.throughput_files_per_sec:.1f} files/s, {mib_per_sec:.1f} MiB/s"
+
+                files_line = f"Files: {self.scanned_files}/{self.total_files} | Videos: {self.video_files}"
+                groups_line = f"Groups: H={self.groups_hash} M={self.groups_meta} P={self.groups_phash} S={self.groups_subset}"
+                summary_line = f"Summary: groups={self.dup_groups_total} losers={self.losers_total} reclaim={remove_text}"
+                data_line = f"Data seen: {scanned_text}"
+                timing_line = f"Clock: {clock_display} | Stage: {elapsed_stage} | Total: {elapsed_total} | ETA: {eta_text}"
+
+                render_lines = [
+                    "=== Video Deduplication Pipeline ===",
+                    f"{indicator}{stage_label}",
+                    f"Status: {status_text}",
+                ]
+
+                if root_line:
+                    render_lines.append(root_line)
+                if discovery_line:
+                    render_lines.append(discovery_line)
+
+                render_lines.extend(
+                    [
+                        f"Progress: {bar_text}",
+                        files_line,
+                        cache_line,
+                        groups_line,
+                        summary_line,
+                        data_line,
+                        timing_line,
+                    ]
+                )
+
+                if throughput_line:
+                    render_lines.append(throughput_line)
+
+                render_lines.append("-" * 60)
+
+            print("\033[2J\033[H", end="", flush=True)
+            for line in render_lines:
+                print(line, flush=True)
+        finally:
+            self._flush_lock.release()
 
     def _format_data_size(self, bytes_value: int) -> str:
         """Format byte values with appropriate units and colors."""
@@ -419,6 +526,10 @@ class ProgressReporter:
             self.stage_done = 0
             self.stage_start_ts = time.time()
             self._ema_rate = 0.0
+            self.status_line = name
+            if not name.lower().startswith("discover"):
+                self.discovery_files = 0
+                self.discovery_skipped = 0
         self.flush()
 
     def _bump_stage(self, n: int = 1):
