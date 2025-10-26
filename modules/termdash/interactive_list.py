@@ -46,6 +46,11 @@ class ListState:
     show_time: bool = True
     dirs_first: bool = True  # Group directories before files
 
+    # Folder size calculation state
+    calculating_sizes: bool = False
+    calc_progress: Tuple[int, int] = (0, 0)  # (current, total)
+    calc_cancel: bool = False
+
 def calculate_size_color(size: int, min_size: int, max_size: int) -> int:
     """
     Calculate color pair based on size using logarithmic scale for better distribution.
@@ -372,6 +377,24 @@ class InteractiveList:
         toggle_str = f" [{', '.join(toggles)}]" if toggles else ""
         sort_line = f"{self.state.header} | Sort: {self.state.sort_field} ({sort_order}) | Items: {len(self.state.visible)}{toggle_str}"
         stdscr.addnstr(1, 0, sort_line[:max_x - 1], max_x - 1, curses.color_pair(2))
+
+        # Progress bar (if calculating sizes)
+        if self.state.calculating_sizes:
+            current, total = self.state.calc_progress
+            if total > 0:
+                progress_pct = int((current / total) * 100)
+                bar_width = min(40, max_x - 30)
+                filled = int((current / total) * bar_width)
+                bar = "█" * filled + "░" * (bar_width - filled)
+                progress_line = f"Calculating sizes: [{bar}] {progress_pct}% ({current}/{total})"
+                try:
+                    stdscr.addnstr(2, 0, progress_line[:max_x - 1], max_x - 1, curses.color_pair(3))
+                    header_lines += 1
+                    list_start += 1
+                    list_height = max(1, max_y - (header_lines + footer_lines))
+                    self.state.viewport_height = list_height
+                except curses.error:
+                    pass
 
         if self.state.editing_filter:
             cursor_x = min(len("Filter: ") + len(self.state.edit_buffer), max_x - 1)
