@@ -102,6 +102,46 @@ def run_lister(args: argparse.Namespace) -> int:
 
     entries = read_entries_recursive(target, args.depth)
 
+    # Normalize abbreviated sort field names
+    sort_field_map = {
+        "c": "created",
+        "m": "modified",
+        "a": "accessed",
+        "s": "size",
+        "n": "name",
+    }
+    sort_field = sort_field_map.get(args.sort, args.sort)
+
+    # If JSON output requested, skip TUI
+    if getattr(args, "json", False):
+        import json
+        from datetime import datetime
+
+        # Apply filter if specified
+        if args.glob:
+            entries = [e for e in entries if filter_entry(e, args.glob)]
+
+        # Sort entries
+        entries.sort(key=SORT_FUNCS[sort_field], reverse=(args.order == "desc"))
+
+        # Convert to JSON
+        output = [
+            {
+                "path": str(e.path),
+                "name": e.name,
+                "is_dir": e.is_dir,
+                "size": e.size,
+                "size_human": human_size(e.size),
+                "created": e.created.isoformat(),
+                "modified": e.modified.isoformat(),
+                "accessed": e.accessed.isoformat(),
+                "depth": e.depth,
+            }
+            for e in entries
+        ]
+        print(json.dumps(output, indent=2))
+        return 0
+
     sort_keys_mapping = {
         ord("c"): "created",
         ord("m"): "modified",
@@ -121,13 +161,13 @@ def run_lister(args: argparse.Namespace) -> int:
         sorters=SORT_FUNCS,
         formatter=format_entry_line,
         filter_func=filter_entry,
-        initial_sort=args.sort,
+        initial_sort=sort_field,
         initial_order=args.order,
         header=f"Path: {target}",
         sort_keys_mapping=sort_keys_mapping,
         footer_lines=footer_lines,
     )
-    
+
     if args.glob:
         list_view.state.filter_pattern = args.glob
 
