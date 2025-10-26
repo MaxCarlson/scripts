@@ -37,9 +37,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     ls_parser.add_argument(
         "-s",
         "--sort",
-        choices=("created", "modified", "accessed", "size", "name"),
+        choices=("created", "modified", "accessed", "size", "name", "c", "m", "a", "s", "n"),
         default="created",
-        help="Initial sort field to use.",
+        help="Initial sort field: created/c, modified/m, accessed/a, size/s, name/n.",
     )
     ls_parser.add_argument(
         "-o",
@@ -47,6 +47,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         choices=("asc", "desc"),
         default="desc",
         help="Initial sort order to use.",
+    )
+    ls_parser.add_argument(
+        "-j",
+        "--json",
+        action="store_true",
+        help="Output in JSON format instead of launching TUI.",
     )
 
     args = parser.parse_args(argv)
