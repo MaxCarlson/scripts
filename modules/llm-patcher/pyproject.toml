@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-patcher"
+version = "0.1.0"
+description = "Apply LLM-generated repository edits using a strict, safe LEP/v1 format."
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [{name = "Your Name"}]
+
+dependencies = []
+
+# Optional extras:
+# - clipboard: prefer the user's cross_platform module, otherwise fallback to pyperclip
+[project.optional-dependencies]
+clipboard = ["pyperclip>=1.8.2"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+
+[project.urls]
+Homepage = "https://example.com/llm-patcher"
+Repository = "https://example.com/llm-patcher"
+
+[tool.setuptools.package-data]
+llm_patcher = ["py.typed"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["llm_patcher*"]
+
+[project.scripts]
+llm-patcher = "llm_patcher.cli:main"
