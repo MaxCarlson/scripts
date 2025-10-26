@@ -383,6 +383,62 @@ class TestMainFunction:
                             result = manager.main()
                             assert result == 0
 
+    def test_main_with_mp4_watcher(self, monkeypatch, tmp_path):
+        """Ensure enabling the MP4 watcher does not raise runtime errors."""
+        stars_dir = tmp_path / "stars"
+        stars_dir.mkdir()
+        (stars_dir / "test1.txt").write_text("https://example.com/video1\n", encoding="utf-8")
+        aebn_dir = tmp_path / "aebn"
+        aebn_dir.mkdir()
+        proxy_dir = tmp_path / "proxy"
+        proxy_dir.mkdir()
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+
+        class DummyWatcher:
+            def __init__(self, config, enabled):
+                self._config = config
+                self._enabled = enabled
+
+            def is_enabled(self):
+                return self._enabled
+
+            def update_download_progress(self, *_):
+                return None
+
+            def snapshot(self):
+                return None
+
+            def manual_run(self, **_):
+                return False
+
+        monkeypatch.setattr(manager, "MP4Watcher", DummyWatcher)
+
+        args = [
+            "--threads", "1",
+            "--time-limit", "2",
+            "--stars-dir", str(stars_dir),
+            "--aebn-dir", str(aebn_dir),
+            "--finished-log", str(tmp_path / "finished.txt"),
+            "--log-dir", str(log_dir),
+            "--refresh-hz", "2.0",
+            "--exit-at-time", "1",
+            "--enable-mp4-watcher",
+            "--proxy-dl-location", str(proxy_dir),
+        ]
+
+        with patch('sys.argv', ['dlmanager'] + args):
+            with patch('subprocess.Popen') as mock_popen:
+                mock_process = MagicMock()
+                mock_process.poll.return_value = 0
+                mock_process.stdout = iter([])
+                mock_popen.return_value = mock_process
+
+                with patch('os.get_terminal_size', return_value=MagicMock(columns=80, lines=24)):
+                    with patch('sys.stdout'):
+                        result = manager.main()
+                        assert result == 0
+
 
 class TestUtilityFunctions:
     """Test utility functions in the manager module."""

@@ -131,6 +131,161 @@ def _hms(elapsed_s: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def _watcher_bytes(value: Optional[int | float]) -> str:
+    if not isinstance(value, (int, float)) or value < 0:
+        return "0 B"
+    if value < 1024:
+        return f"{int(value)} B"
+    units = ["KB", "MB", "GB", "TB", "PB"]
+    size = float(value)
+    for unit in units:
+        size /= 1024.0
+        if size < 1024.0:
+            return f"{size:.2f} {unit}"
+    return f"{size:.2f} EB"
+
+
+def _watcher_rate(bps: Optional[float]) -> str:
+    if not isinstance(bps, (int, float)) or bps <= 0:
+        return "0 B/s"
+    units = ["B/s", "KB/s", "MB/s", "GB/s", "TB/s"]
+    value = float(bps)
+    idx = 0
+    while value >= 1024.0 and idx < len(units) - 1:
+        value /= 1024.0
+        idx += 1
+    return f"{value:.2f} {units[idx]}"
+
+
+def _watcher_duration(seconds: Optional[float]) -> str:
+    if not isinstance(seconds, (int, float)) or seconds < 0:
+        return "0:00:00.000"
+    frac = float(seconds) - int(seconds)
+    millis = int(frac * 1000)
+    total = int(seconds)
+    mins, secs = divmod(total, 60)
+    hours, mins = divmod(mins, 60)
+    return f"{hours:d}:{mins:02d}:{secs:02d}.{millis:03d}"
+
+
+def _render_screen(lines: List[str]) -> None:
+    sys.stdout.write("\x1b[0m\x1b[2J\x1b[H")
+    sys.stdout.write("\n".join(lines) + "\n")
+    sys.stdout.flush()
+
+
+def _render_watcher_panel(
+    *,
+    cols: int,
+    watcher_enabled: bool,
+    snapshot: Optional[WatcherSnapshot],
+    quit_confirm: bool,
+) -> List[str]:
+    lines: List[str] = []
+    header = "MP4 Folder Synchroniser"
+    if snapshot:
+        header_state = "running" if snapshot.running else "idle"
+        if snapshot.dry_run:
+            header_state += " · dry-run"
+        lines.append(f"{header} ({header_state})"[:cols])
+    else:
+        lines.append(header[:cols])
+
+    if not watcher_enabled:
+        lines.append("Watcher disabled. Launch with --watcher to enable the cleaner."[:cols])
+        lines.append("-" * min(cols, 100))
+    elif not snapshot:
+        lines.append("Watcher status unavailable."[:cols])
+        lines.append("-" * min(cols, 100))
+    else:
+        progress = snapshot.progress or {}
+        elapsed_txt = _watcher_duration(time.time() - snapshot.start_time) if snapshot.start_time else "n/a"
+        lines.append(f"Elapsed: {elapsed_txt}"[:cols])
+        lines.append(f"Current folder: {progress.get('current_folder', '-')}"[:cols])
+        lines.append(f"Current file: {progress.get('current_file', '-')}"[:cols])
+        files_total = progress.get("total_files") or 0
+        files_done = progress.get("processed_files") or 0
+        lines.append(f"Files processed: {files_done} / {files_total}"[:cols])
+        copied = progress.get("copied_without_collision") or 0
+        collisions = progress.get("collisions") or 0
+        replaced = progress.get("replaced_dest") or 0
+        kept = progress.get("kept_dest") or 0
+        lines.append(
+            f"Copied (no collision): {copied} | Collisions: {collisions} (replaced: {replaced}, kept dest: {kept})"[:cols]
+        )
+        total_bytes = progress.get("total_bytes") or 0
+        processed_bytes = progress.get("processed_bytes") or 0
+        total_pct = (processed_bytes / total_bytes * 100.0) if total_bytes else 0.0
+        lines.append(
+            f"Total progress: {_watcher_bytes(processed_bytes)} / {_watcher_bytes(total_bytes)} ({total_pct:.1f}%)"[:cols]
+        )
+        lines.append("")
+        lines.append("Transfer Progress"[:cols])
+        file_size = progress.get("current_file_size") or 0
+        file_done = progress.get("current_file_done") or 0
+        if file_size:
+            file_pct = (file_done / file_size * 100.0) if file_size else 0.0
+            lines.append(
+                f"File progress: {_watcher_bytes(file_done)} / {_watcher_bytes(file_size)} ({file_pct:.1f}%) "
+                f"@ {_watcher_rate(progress.get('current_speed'))}"[:cols]
+            )
+        folder_total_files = progress.get("current_folder_total_files") or 0
+        folder_processed_files = progress.get("current_folder_processed_files") or 0
+        folder_total_bytes = progress.get("current_folder_total_bytes") or 0
+        folder_processed_bytes = progress.get("current_folder_processed_bytes") or 0
+        if folder_total_files:
+            folder_pct = (folder_processed_bytes / folder_total_bytes * 100.0) if folder_total_bytes else 0.0
+            lines.append(
+                f"Folder progress: {folder_processed_files}/{folder_total_files} files | "
+                f"{_watcher_bytes(folder_processed_bytes)} / {_watcher_bytes(folder_total_bytes)} ({folder_pct:.1f}%)"[
+                    :cols
+                ]
+            )
+        if progress.get("scanning"):
+            lines.append(f"Scan mode: new files handled {progress.get('scan_new_files', 0)}"[:cols])
+        if progress.get("last_message"):
+            lines.append(f"Status: {progress.get('last_message')}"[:cols])
+        if snapshot.bytes_since_last is not None:
+            lines.append(f"Bytes since last run: {_watcher_bytes(snapshot.bytes_since_last)}"[:cols])
+        lines.append("")
+        lines.append("Recent Activity"[:cols])
+        recent_logs = progress.get("recent_logs") or []
+        if recent_logs:
+            for entry in recent_logs[-6:]:
+                display = entry if len(entry) <= cols - 2 else entry[: max(0, cols - 5)] + "..."
+                lines.append(f"  {display}"[:cols])
+        else:
+            lines.append("  (no events yet)"[:cols])
+        if snapshot.last_result:
+            last = snapshot.last_result
+            lines.append("")
+            lines.append(
+                (
+                    f"Last run: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last.completed_at))} "
+                    f"duration={_watcher_duration(last.duration_s)}"
+                )[:cols]
+            )
+            lines.append(
+                (
+                    f"Processed {last.processed_actions}/{last.plan_actions} actions | "
+                    f"bytes={_watcher_bytes(last.processed_bytes)} / {_watcher_bytes(last.plan_bytes)}"
+                )[:cols]
+            )
+        if snapshot.last_error:
+            lines.append("")
+            lines.append(f"Error: {snapshot.last_error}"[:cols])
+        lines.append("-" * min(cols, 100))
+
+    if quit_confirm:
+        lines.append("Press Y to quit, N to cancel"[:cols])
+    else:
+        if watcher_enabled:
+            lines.append("Keys: w=back, c=start cleaner, d=dry-run analyze, q=quit"[:cols])
+        else:
+            lines.append("Keys: w=back to downloads, q=quit"[:cols])
+    return lines
+
+
 def _pause_process(proc: subprocess.Popen) -> bool:
     """Pause a process. Returns True if successful."""
     if not proc or proc.poll() is not None:
@@ -434,18 +589,12 @@ def main() -> int:
             watcher = MP4Watcher(config=config, enabled=True)
             if watcher.is_enabled():
                 mlog.info(
-                    "MP4 watcher enabled: staging=%s destination=%s operation=%s",
-                    staging_root,
-                    destination_root,
-                    args.mp4_operation,
+                    f"MP4 watcher enabled: staging={staging_root} destination={destination_root} operation={args.mp4_operation}"
                 )
             else:
                 mlog.error(
-                    "MP4 watcher initialisation failed; staging=%s destination=%s exists=%s/%s",
-                    staging_root,
-                    destination_root,
-                    staging_root.exists(),
-                    destination_root.exists(),
+                    f"MP4 watcher initialisation failed; staging={staging_root} destination={destination_root} "
+                    f"exists={staging_root.exists()}/{destination_root.exists()}"
                 )
                 watcher = MP4Watcher(config=config, enabled=False)
     elif args.mp4_operation or args.mp4_max_files or args.mp4_trigger_download_gb or args.mp4_trigger_free_gb:
@@ -720,6 +869,8 @@ def main() -> int:
     # Interactive verbose pane state: 0=off, 1=NDJSON, 2=Program log
     verbose_mode = 0
     verbose_slot = 1
+    selected_worker_slot = workers[0].slot if workers else 1
+    active_panel = "downloads"
     # Pause/quit state
     paused = False
     quit_confirm = False
@@ -728,11 +879,14 @@ def main() -> int:
             if deadline and time.time() >= deadline:
                 stop.set()
                 break
+            watcher_enabled = bool(watcher and watcher.is_enabled())
             if watcher:
                 auto_reason = watcher.update_download_progress(total_completed_bytes)
                 if auto_reason:
-                    mlog.info("MP4 watcher auto-triggered: %s", auto_reason)
-                watcher.snapshot()
+                    mlog.info(f"MP4 watcher auto-triggered: {auto_reason}")
+                watcher_status = watcher.snapshot()
+            else:
+                watcher_status = None
             # Dynamic total throttle: proportional caps across yt-dlp workers
             now_check = time.time()
             if isinstance(args.max_total_dl_speed, (int, float)) and args.max_total_dl_speed and args.max_total_dl_speed > 0:
@@ -839,6 +993,17 @@ def main() -> int:
                 cols = os.get_terminal_size().columns
             except OSError:
                 cols = 80
+
+            if active_panel == "watcher":
+                lines = _render_watcher_panel(
+                    cols=cols,
+                    watcher_enabled=watcher_enabled,
+                    snapshot=watcher_status,
+                    quit_confirm=quit_confirm,
+                )
+                _render_screen(lines)
+                time.sleep(refresh_dt)
+                continue
             lines: List[str] = []
             active_workers = sum(1 for w in workers if w.proc)
             current_regular, current_priority = _gather_from_roots(roots, finished_log, args.priority_files)
@@ -919,11 +1084,12 @@ def main() -> int:
                 else:
                     eta_txt = "?"
                 sizes = f"{_human_short_bytes(ws.downloaded_bytes)}/{_human_short_bytes(ws.total_bytes)}" if (isinstance(ws.downloaded_bytes, int) and isinstance(ws.total_bytes, int) and ws.total_bytes) else ""
+                sel_marker = ">" if ws.slot == selected_worker_slot else " "
 
                 if cols >= 110:
                     # Single row packed
                     tag = "[Y]" if ws.downloader == 'yt-dlp' else ("[A]" if ws.downloader == 'aebndl' else "   ")
-                    c0 = col(f"[{ws.slot:02d}]", 4)
+                    c0 = col(f"{sel_marker}[{ws.slot:02d}]", 5)
                     c1 = col(name, 40)
                     c2 = col(url_idx, 12)
                     c3 = col(f"Elapsed {elapsed}", 16)
@@ -934,17 +1100,17 @@ def main() -> int:
                     mainline = " | ".join([c0, c1, c2, c3, c4, c5, c6, c7])[:cols]
                     lines.append(ws.overlay_msg[:cols] if ws.overlay_msg else mainline)
                     barw = max(20, cols - 8)
-                    lines.append(f"  {tag}  " + make_bar(ws.percent, barw, speed_color_prefix(ws.speed_bps))[:max(0, cols-6)])
+                    lines.append(f"  {sel_marker}{tag}  " + make_bar(ws.percent, barw, speed_color_prefix(ws.speed_bps))[:max(0, cols-7)])
                 elif cols >= 90:
                     # Two rows
                     tag = "[Y]" if ws.downloader == 'yt-dlp' else ("[A]" if ws.downloader == 'aebndl' else "   ")
-                    c0 = col(f"[{ws.slot:02d}]", 4)
+                    c0 = col(f"{sel_marker}[{ws.slot:02d}]", 5)
                     c1 = col(name, 36)
                     c2 = col(url_idx, 12)
                     c3 = col(sizes, 14)
                     main1 = " | ".join([c0, c1, c2, c3])[:cols]
                     lines.append(ws.overlay_msg[:cols] if ws.overlay_msg else main1)
-                    c0b = col(tag, 4)
+                    c0b = col(f"{sel_marker}{tag}", 4)
                     c1b = col(f"Elapsed {elapsed}", 20)
                     c2b = col(pct, 10)
                     c3b = col(sp, 12)
@@ -955,10 +1121,10 @@ def main() -> int:
                 else:
                     # Three rows compact
                     tag = "[Y]" if ws.downloader == 'yt-dlp' else ("[A]" if ws.downloader == 'aebndl' else "   ")
-                    c0 = col(f"[{ws.slot:02d}]", 4)
+                    c0 = col(f"{sel_marker}[{ws.slot:02d}]", 5)
                     c1 = col(name, max(20, cols - 7))
                     lines.append(ws.overlay_msg[:cols] if ws.overlay_msg else " | ".join([c0, c1])[:cols])
-                    c0b = col(tag, 4)
+                    c0b = col(f"{sel_marker}{tag}", 4)
                     c1b = col(f"{url_idx}  Elapsed {elapsed}", max(20, cols - 7))
                     lines.append(" | ".join([c0b, c1b])[:cols])
                     c1c = col(f"{pct}  {sp}  ETA {eta_txt}  {sizes}", max(20, cols - 7))
@@ -970,30 +1136,51 @@ def main() -> int:
             if quit_confirm:
                 lines.append("Press Y to quit, N to cancel"[:cols])
             else:
-                lines.append("Keys: p=pause/unpause, q=quit, v=cycle verbose (NDJSON->LOG->off), 1-9=select worker"[:cols])
+                lines.append("Keys: w=watcher, p=pause/unpause, q=quit, v=cycle verbose (NDJSON->LOG->off), 1-9=select worker"[:cols])
             if os.name == 'nt':
                 try:
                     import msvcrt  # type: ignore
                     while msvcrt.kbhit():
                         ch = msvcrt.getwch()
+                        key = ch.lower() if ch else ""
                         if quit_confirm:
                             # Handle quit confirmation
-                            if ch and ch.lower() == 'y':
+                            if key == 'y':
                                 stop.set()
                                 break
-                            elif ch and ch.lower() == 'n':
+                            elif key == 'n':
                                 quit_confirm = False
                         else:
                             # Normal key handling
-                            if ch and ch.lower() == 'v':
+                            if not key:
+                                continue
+                            if key == 'w':
+                                active_panel = "watcher" if active_panel == "downloads" else "downloads"
+                                continue
+                            if active_panel == "watcher":
+                                if key == 'c' and watcher and watcher_enabled:
+                                    if watcher.manual_run(dry_run=False, trigger="manual-ui"):
+                                        mlog.info("MP4 watcher run started (manual).")
+                                    else:
+                                        mlog.info("MP4 watcher run request ignored (already running or disabled).")
+                                elif key == 'd' and watcher and watcher_enabled:
+                                    if watcher.manual_run(dry_run=True, trigger="manual-ui-dry-run"):
+                                        mlog.info("MP4 watcher dry-run started.")
+                                    else:
+                                        mlog.info("MP4 watcher dry-run request ignored (already running or disabled).")
+                                elif key == 'q':
+                                    quit_confirm = True
+                                continue
+                            if key == 'v':
                                 try:
                                     verbose_mode = int(verbose_mode)
                                 except Exception:
                                     verbose_mode = 0
                                 verbose_mode = (verbose_mode + 1) % 3
-                            elif ch and ch.isdigit() and ch != '0':
+                            elif ch.isdigit() and ch != '0':
                                 verbose_slot = int(ch)
-                            elif ch and ch.lower() == 'p':
+                                selected_worker_slot = verbose_slot
+                            elif key == 'p':
                                 # Toggle pause
                                 paused = not paused
                                 if paused:
@@ -1030,7 +1217,7 @@ def main() -> int:
                                         elif not ws.proc:
                                             # Assign work to idle workers
                                             _assign(ws)
-                            elif ch and ch.lower() == 'q':
+                            elif key == 'q':
                                 # Request quit confirmation
                                 quit_confirm = True
                 except Exception:
@@ -1139,5 +1326,3 @@ if __name__ == "__main__":
         sys.exit(main())
     except KeyboardInterrupt:
         sys.exit(130)
-
-
