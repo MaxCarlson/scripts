@@ -64,12 +64,17 @@ def _normalize_patterns(patts: Optional[List[str]]) -> Optional[List[str]]:
     if not patts:
         return None
     out: List[str] = []
+    seen: set[str] = set()
     for p in patts:
         s = (p or "").strip()
         if not s:
             continue
         if not any(ch in s for ch in "*?["):
             s = f"*.{s.lstrip('.')}"
+        key = s.lower()
+        if key in seen:
+            continue
+        seen.add(key)
         out.append(s)
     return out or None
 
@@ -1077,10 +1082,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         logger.info(f"Total groups found: {len(groups_all)}")
         logger.info("Choosing winners from duplicate groups...")
+        reporter.set_status("Selecting winners from duplicate groups")
         keep_order = ["longer", "resolution", "video-bitrate", "newer", "smaller", "deeper"]
         winners = choose_winners(groups_all, keep_order)
 
         logger.info(f"Writing report with {len(winners)} groups to: {report_path}")
+        reporter.set_status("Writing report to disk")
         write_report(report_path, winners)
         print(f"Wrote report to: {report_path}")
 
@@ -1088,6 +1095,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         bytes_total = sum(int(getattr(l, "size", 0)) for l in losers)
         logger.info(f"Final results: {len(winners)} duplicate groups, {len(losers)} losers, {_fmt_bytes(bytes_total)} reclaimable")
         reporter.set_results(dup_groups=len(winners), losers_count=len(losers), bytes_total=bytes_total)
+        reporter.set_status("Scan complete")
 
         # If they also passed -P or -Y with directories, run those too (after scan)
         if args.print_report:
