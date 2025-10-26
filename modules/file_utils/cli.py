@@ -54,6 +54,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Output in JSON format instead of launching TUI.",
     )
+    ls_parser.add_argument(
+        "--no-dirs-first",
+        action="store_true",
+        help="Don't group directories before files (default: dirs first).",
+    )
 
     args = parser.parse_args(argv)
 

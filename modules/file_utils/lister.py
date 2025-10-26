@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import curses
+import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Callable, Dict, List, Any
+from typing import Callable, Dict, List, Any, Tuple, Optional
 
 from termdash.interactive_list import InteractiveList
 
@@ -20,6 +22,8 @@ class Entry:
     modified: datetime
     accessed: datetime
     depth: int
+    expanded: bool = False  # Track if directory is expanded
+    parent_path: Path = None  # Track parent for filtering
 
 SORT_FUNCS: Dict[str, Callable[[Entry], object]] = {
     "created": lambda entry: entry.created.timestamp(),
@@ -42,10 +46,10 @@ def human_size(num: int) -> str:
         value /= step_unit
     return f"{value:.1f} PB"
 
-def read_entries_recursive(target: Path, max_depth: int) -> List[Entry]:
+def read_entries_recursive(target: Path, max_depth: int, parent_path: Path = None) -> List[Entry]:
     entries: List[Entry] = []
-    
-    def _walk(curr_path: Path, current_depth: int):
+
+    def _walk(curr_path: Path, current_depth: int, parent: Path = None):
         if current_depth > max_depth:
             return
         try:
@@ -62,19 +66,22 @@ def read_entries_recursive(target: Path, max_depth: int) -> List[Entry]:
                             modified=datetime.fromtimestamp(stats.st_mtime),
                             accessed=datetime.fromtimestamp(stats.st_atime),
                             depth=current_depth,
+                            expanded=False,
+                            parent_path=parent,
                         )
                     )
                     if item.is_dir():
-                        _walk(item, current_depth + 1)
+                        # Pass the current item's path as parent for its children
+                        _walk(item, current_depth + 1, item)
                 except OSError:
                     continue
         except OSError as exc:
             sys.stderr.write(f"Cannot read directory {curr_path}: {exc}\n")
 
-    _walk(target, 0)
+    _walk(target, 0, parent_path)
     return entries
 
-def format_entry_line(entry: Entry, sort_field: str, width: int, show_date: bool = True, show_time: bool = True) -> str:
+def format_entry_line(entry: Entry, sort_field: str, width: int, show_date: bool = True, show_time: bool = True, scroll_offset: int = 0) -> str:
     time_source = entry.created
     if sort_field in DATE_FIELDS:
         time_source = getattr(entry, sort_field)
@@ -90,21 +97,39 @@ def format_entry_line(entry: Entry, sort_field: str, width: int, show_date: bool
     size_text = human_size(entry.size)
 
     indent = "  " * entry.depth
-    name = f"{indent}{entry.name}" + ("/" if entry.is_dir else "")
+    # Add expansion indicator for directories
+    if entry.is_dir:
+        indicator = "▼ " if entry.expanded else "▶ "
+        name = f"{indent}{indicator}{entry.name}/"
+    else:
+        name = f"{indent}  {entry.name}"
 
     # Calculate available space for name
     timestamp_len = len(timestamp) + 2 if timestamp else 0
     size_len = len(size_text) + 2
     name_space = max(1, width - timestamp_len - size_len)
 
-    if len(name) > name_space:
+    # Apply scroll offset to the name (not the whole line)
+    if scroll_offset > 0 and len(name) > name_space:
+        # Scroll through the name part only
+        max_scroll = max(0, len(name) - name_space)
+        actual_offset = min(scroll_offset, max_scroll)
+        scrolled_name = name[actual_offset:]
+        if len(scrolled_name) > name_space:
+            scrolled_name = scrolled_name[:name_space - 3] + "..."
+        name = scrolled_name.ljust(name_space)
+    elif len(name) > name_space:
         name = name[:name_space - 3] + "..." if name_space > 3 else name[:name_space]
+    else:
+        name = name.ljust(name_space)
 
     # Build final line
     if timestamp:
-        return f"{timestamp}  {name.ljust(name_space)}  {size_text}"
+        line = f"{timestamp}  {name}  {size_text}"
     else:
-        return f"{name.ljust(name_space)}  {size_text}"
+        line = f"{name}  {size_text}"
+
+    return line
 
 def filter_entry(entry: Entry, pattern: str) -> bool:
     return fnmatch(entry.name, pattern)
@@ -125,6 +150,180 @@ def detail_formatter(entry: Entry) -> List[str]:
 def size_extractor(entry: Entry) -> int:
     """Extract size from an entry for color gradient calculation."""
     return entry.size
+
+class FileTypeColorManager:
+    """Manages file type to color mappings."""
+
+    # Map color names to curses color pair numbers
+    COLOR_MAP = {
+        "white": 1,
+        "cyan": 2,
+        "yellow": 3,
+        "green": 9,
+        "red": 10,
+        "blue": 11,
+        "magenta": 12,
+    }
+
+    def __init__(self, config_path: Optional[Path] = None):
+        self.config: Dict[str, Any] = {}
+        self.load_config(config_path)
+
+    def load_config(self, config_path: Optional[Path] = None):
+        """Load color config from JSON file."""
+        import json
+
+        if config_path is None:
+            # Try XDG first, fallback to module dir
+            xdg_path = Path.home() / ".config" / "file-util" / "file_type_colors.json"
+            module_path = Path(__file__).parent / "file_type_colors.json"
+
+            if xdg_path.exists():
+                config_path = xdg_path
+            elif module_path.exists():
+                config_path = module_path
+            else:
+                # Use defaults
+                self.config = {"directories": "cyan", "extensions": {}, "default": "white"}
+                return
+
+        try:
+            with open(config_path, 'r') as f:
+                self.config = json.load(f)
+        except Exception as e:
+            sys.stderr.write(f"Failed to load color config from {config_path}: {e}\n")
+            self.config = {"directories": "cyan", "extensions": {}, "default": "white"}
+
+    def get_color_pair(self, entry: Entry) -> int:
+        """Get curses color pair number for an entry."""
+        if entry.is_dir:
+            color_name = self.config.get("directories", "cyan")
+        else:
+            ext = entry.path.suffix.lower()
+            extensions = self.config.get("extensions", {})
+            # Skip comment entries (those starting with _comment)
+            color_name = extensions.get(ext, self.config.get("default", "white"))
+
+        return self.COLOR_MAP.get(color_name, 1)  # Default to white
+
+class ListerManager:
+    """Manages the state and actions for the interactive file lister."""
+
+    def __init__(self, all_entries: List[Entry], max_depth: int):
+        self.all_entries = all_entries
+        self.max_depth = max_depth
+        self.expanded_folders = set()  # Set of expanded folder paths
+        self.hidden_entries = set()  # Set of hidden entry paths
+
+    def get_visible_entries(self, sort_func: Optional[Callable[[Entry], object]] = None, descending: bool = True) -> List[Entry]:
+        """Get the list of currently visible entries in hierarchical order.
+
+        Returns entries sorted hierarchically: parent, then its children, then next parent.
+        This maintains the tree structure while respecting the sort order.
+        """
+        visible = []
+
+        def add_entry_and_children(entry: Entry):
+            """Recursively add entry and its children if expanded."""
+            visible.append(entry)
+
+            # If this entry is an expanded folder, add its children
+            if entry.is_dir and entry.path in self.expanded_folders:
+                # Get all direct children
+                children = [e for e in self.all_entries if e.parent_path == entry.path]
+
+                # Sort children if sort function provided
+                if sort_func:
+                    children.sort(key=sort_func, reverse=descending)
+
+                # Recursively add each child and their children
+                for child in children:
+                    add_entry_and_children(child)
+
+        # Get top-level entries (those with no parent or parent not in our list)
+        top_level = [e for e in self.all_entries if e.parent_path is None or
+                     not any(p.path == e.parent_path for p in self.all_entries)]
+
+        # Sort top-level entries
+        if sort_func:
+            top_level.sort(key=sort_func, reverse=descending)
+
+        # Build hierarchical list
+        for entry in top_level:
+            add_entry_and_children(entry)
+
+        return visible
+
+    def _should_hide(self, entry: Entry) -> bool:
+        """Check if entry should be hidden due to collapsed parent."""
+        # Walk up the parent chain
+        current_path = entry.parent_path
+        while current_path:
+            if current_path not in self.expanded_folders:
+                # Parent is not expanded, so hide this entry
+                return True
+            # Find parent entry to continue walking up
+            parent_entry = next((e for e in self.all_entries if e.path == current_path), None)
+            if not parent_entry:
+                break
+            current_path = parent_entry.parent_path
+        return False
+
+    def toggle_folder(self, entry: Entry) -> bool:
+        """Toggle folder expansion. Dynamically loads contents if not already loaded. Returns True if state changed."""
+        if not entry.is_dir:
+            return False
+
+        if entry.path in self.expanded_folders:
+            # Collapse
+            self.expanded_folders.discard(entry.path)
+            entry.expanded = False
+        else:
+            # Expand - check if children need to be loaded
+            has_children = any(e.parent_path == entry.path for e in self.all_entries)
+
+            if not has_children:
+                # Dynamically load this folder's contents (1 level only)
+                try:
+                    new_entries = []
+                    stats_list = []
+                    for item in entry.path.iterdir():
+                        try:
+                            stats = item.stat()
+                            stats_list.append((item, stats))
+                        except OSError:
+                            continue
+
+                    for item, stats in stats_list:
+                        new_entries.append(
+                            Entry(
+                                path=item,
+                                name=item.name,
+                                is_dir=item.is_dir(),
+                                size=stats.st_size,
+                                created=datetime.fromtimestamp(stats.st_ctime),
+                                modified=datetime.fromtimestamp(stats.st_mtime),
+                                accessed=datetime.fromtimestamp(stats.st_atime),
+                                depth=entry.depth + 1,
+                                expanded=False,
+                                parent_path=entry.path,
+                            )
+                        )
+
+                    self.all_entries.extend(new_entries)
+                except OSError as e:
+                    sys.stderr.write(f"Failed to read directory {entry.path}: {e}\n")
+
+            self.expanded_folders.add(entry.path)
+            entry.expanded = True
+        return True
+
+    def expand_all_at_depth(self, depth: int):
+        """Expand all folders at the specified depth."""
+        for entry in self.all_entries:
+            if entry.is_dir and entry.depth == depth and not self._should_hide(entry):
+                self.expanded_folders.add(entry.path)
+                entry.expanded = True
 
 def run_lister(args: argparse.Namespace) -> int:
     target = Path(args.directory).expanduser()
@@ -175,6 +374,83 @@ def run_lister(args: argparse.Namespace) -> int:
         print(json.dumps(output, indent=2))
         return 0
 
+    # Initialize the lister manager
+    manager = ListerManager(entries, args.depth)
+
+    # Note: Depth 0 items are visible by default since their parent_path is None
+
+    def action_handler(key: int, item: Entry) -> Tuple[bool, bool]:
+        """Handle custom actions for folder navigation.
+        Returns (handled, should_refresh)"""
+        # Enter key - toggle folder expansion inline
+        if key in (curses.KEY_ENTER, 10, 13):
+            if item.is_dir:
+                manager.toggle_folder(item)
+                # Update the items list to reflect expansion (with hierarchical sorting)
+                sort_func = SORT_FUNCS[list_view.state.sort_field]
+                list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending)
+                # Need to refresh to copy items to visible
+                return True, True  # Handled, call _update_visible_items to update state.visible
+            return False, False  # Not handled, let default detail view happen
+
+        # Ctrl+Enter (key code 10 with Ctrl modifier, or we use 'o' as alternative)
+        # Using 'o' for "open in new window" since Ctrl+Enter is hard to detect
+        elif key == ord('o'):
+            if item.is_dir:
+                # Open folder in new terminal window
+                try:
+                    if sys.platform == 'win32':
+                        # Windows - open new cmd window with file-util
+                        subprocess.Popen(['start', 'cmd', '/k', 'file-util', 'ls', str(item.path)], shell=True)
+                    else:
+                        # Linux/Mac - try various terminal emulators
+                        for term in ['x-terminal-emulator', 'gnome-terminal', 'xterm']:
+                            try:
+                                subprocess.Popen([term, '-e', f'file-util ls {item.path}'])
+                                break
+                            except FileNotFoundError:
+                                continue
+                except Exception as e:
+                    sys.stderr.write(f"Failed to open new window: {e}\n")
+                return True, False  # Handled, no refresh needed
+            return False, False
+
+        # 'e' key - expand all at current depth
+        elif key == ord('e'):
+            # Find the depth of the current item
+            current_depth = item.depth
+            manager.expand_all_at_depth(current_depth)
+            # Update the items list (with hierarchical sorting)
+            sort_func = SORT_FUNCS[list_view.state.sort_field]
+            list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending)
+            return True, True  # Handled, refresh to update state.visible
+
+        # Handle sort key changes (c/m/a/s/n) with hierarchical sorting
+        elif key in (ord('c'), ord('m'), ord('a'), ord('s'), ord('n')):
+            # Map key to sort field
+            sort_key_map = {
+                ord('c'): 'created',
+                ord('m'): 'modified',
+                ord('a'): 'accessed',
+                ord('s'): 'size',
+                ord('n'): 'name',
+            }
+            new_field = sort_key_map.get(key)
+            if new_field:
+                # Toggle descending if same field, otherwise default to descending
+                if list_view.state.sort_field == new_field:
+                    list_view.state.descending = not list_view.state.descending
+                else:
+                    list_view.state.sort_field = new_field
+                    list_view.state.descending = True
+
+                # Re-sort hierarchically
+                sort_func = SORT_FUNCS[list_view.state.sort_field]
+                list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending)
+                return True, True  # Handled, refresh to update state.visible
+
+        return False, False  # Not handled
+
     sort_keys_mapping = {
         ord("c"): "created",
         ord("m"): "modified",
@@ -184,13 +460,13 @@ def run_lister(args: argparse.Namespace) -> int:
     }
 
     footer_lines = [
-        "Up/Down/j/k: move | f: filter | Enter: details | Left/Right: scroll | Ctrl+Q: quit",
-        "c: created | m: modified | a: accessed | n: name | s: size",
-        "d: toggle date | t: toggle time | Repeat sort key to toggle order",
+        "↑↓/j/k/PgUp/PgDn: move | f: filter | Enter: toggle folder/details | o: open new | Ctrl+Q: quit",
+        "c: created | m: modified | a: accessed | n: name | s: size | e: expand all at depth",
+        "d: toggle date | t: toggle time | F: toggle dirs-first | ←→: scroll",
     ]
 
     list_view = InteractiveList(
-        items=entries,
+        items=manager.get_visible_entries(SORT_FUNCS[sort_field], args.order == "desc"),
         sorters=SORT_FUNCS,
         formatter=format_entry_line,
         filter_func=filter_entry,
@@ -202,6 +478,8 @@ def run_lister(args: argparse.Namespace) -> int:
         detail_formatter=detail_formatter,
         size_extractor=size_extractor,
         enable_color_gradient=True,
+        custom_action_handler=action_handler,
+        dirs_first=not getattr(args, 'no_dirs_first', False),
     )
 
     if args.glob:
