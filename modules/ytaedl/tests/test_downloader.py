@@ -249,10 +249,10 @@ class TestProgLogger:
 
             with patch('time.time', return_value=1001.5):
                 logger = downloader.ProgLogger(log_path, t0=1000.0)
-                logger.start(1, "https://example.com/video")
+                logger.start(1, 1, "https://example.com/video")
 
             content = log_path.read_text()
-            assert "[0001][00:00:01.500] START  [1] https://example.com/video" in content
+            assert "[0001][00:00:01.500] START  [1/1] https://example.com/video" in content
             assert logger.counter == 1
 
     def test_prog_logger_finish(self):
