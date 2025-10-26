@@ -441,8 +441,7 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("-r", "--refresh-hz", type=float, default=5.0, help="UI refresh rate")
     p.add_argument("-e", "--exit-at-time", type=int, default=-1, help="Exit the manager after N seconds (<=0 disables)")
     p.add_argument("-a", "--archive", type=str, default=None, help="Archive folder to store per-urlfile status files")
-    p.add_argument("-g", "--log-dir", type=str, default="./logs", help="Directory for manager and worker program logs")
-    p.add_argument("-m", "--manager-log", type=str, default=None, help="Explicit path for manager log file (overrides --log-dir)")
+    p.add_argument("-g", "--log-dir", type=str, default="./logs", help="Directory for all logs (manager, workers, watcher)")
     p.add_argument("-x", "--max-process-dl-speed", type=float, default=None, help="Per-worker max download speed (MiB/s)")
     p.add_argument("-v", "--max-resolution", choices=MAX_RESOLUTION_CHOICES, default=None, help="Highest video resolution workers should request")
     p.add_argument("-z", "--max-total-dl-speed", type=float, default=None, help="Global max download speed across all workers (MiB/s)")
@@ -464,16 +463,16 @@ def make_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "-G",
-        "--mp4-trigger-download-gb",
+        "--mp4-trigger-total-gb",
         type=float,
         default=None,
-        help="Automatically trigger the watcher after this many GiB have downloaded since the last sync",
+        help="Automatically trigger the watcher when total size of complete MP4 files in proxy location exceeds this GiB threshold (off by default)",
     )
     p.add_argument(
         "-F",
         "--mp4-trigger-free-gb",
         type=float,
-        default=None,
+        default=75.0,
         help="Automatically trigger the watcher when staging free space drops below this GiB threshold",
     )
     p.add_argument(
@@ -481,13 +480,6 @@ def make_parser() -> argparse.ArgumentParser:
         "--mp4-keep-source",
         action="store_true",
         help="Keep staging MP4 files after syncing (skip deletion of source files)",
-    )
-    p.add_argument(
-        "-L",
-        "--mp4-log-file",
-        type=str,
-        default=None,
-        help="Custom log file for MP4 watcher activity (defaults to <log-dir>/mp4_watcher.log)",
     )
     return p
 
@@ -498,14 +490,11 @@ def main() -> int:
     deadline = (t0 + args.exit_at_time) if (args.exit_at_time and args.exit_at_time>0) else None
     stars_dir = Path(args.stars_dir).expanduser().resolve()
     aebn_dir = Path(args.aebn_dir).expanduser().resolve()
-    # Logs
+    # Logs - all logs go in log_dir with timestamps
     log_dir = Path(args.log_dir).expanduser().resolve()
     log_dir.mkdir(parents=True, exist_ok=True)
-    if args.manager_log:
-        manager_log_path = Path(args.manager_log).expanduser().resolve()
-    else:
-        ts = time.strftime("%Y%m%d-%H%M%S")
-        manager_log_path = log_dir / f"dlmanager-{ts}-{os.getpid()}.log"
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    manager_log_path = log_dir / f"dlmanager-{ts}-{os.getpid()}.log"
     mlog = ManagerLogger(manager_log_path)
 
     archive_dir: Optional[Path] = Path(args.archive).expanduser().resolve() if args.archive else None
@@ -518,10 +507,10 @@ def main() -> int:
     if args.enable_mp4_watcher:
         staging_root = Path(args.proxy_dl_location).expanduser().resolve() if args.proxy_dl_location else None
         destination_root = stars_dir
-        log_path = Path(args.mp4_log_file).expanduser().resolve() if args.mp4_log_file else (log_dir / "mp4_watcher.log")
-        download_trigger_bytes = (
-            int(args.mp4_trigger_download_gb * (1024 ** 3))
-            if isinstance(args.mp4_trigger_download_gb, (int, float)) and args.mp4_trigger_download_gb > 0
+        watcher_log_path = log_dir / f"mp4_watcher-{ts}.log"
+        total_size_trigger_bytes = (
+            int(args.mp4_trigger_total_gb * (1024 ** 3))
+            if isinstance(args.mp4_trigger_total_gb, (int, float)) and args.mp4_trigger_total_gb > 0
             else None
         )
         free_space_trigger_bytes = (
@@ -536,11 +525,11 @@ def main() -> int:
             config = WatcherConfig(
                 staging_root=staging_root,
                 destination_root=destination_root,
-                log_path=log_path,
+                log_path=watcher_log_path,
                 default_operation=args.mp4_operation,
                 max_files=max_files,
                 keep_source=args.mp4_keep_source,
-                download_trigger_bytes=download_trigger_bytes,
+                total_size_trigger_bytes=total_size_trigger_bytes,
                 free_space_trigger_bytes=free_space_trigger_bytes,
             )
             watcher = MP4Watcher(config=config, enabled=True)
@@ -554,7 +543,7 @@ def main() -> int:
                     f"exists={staging_root.exists()}/{destination_root.exists()}"
                 )
                 watcher = MP4Watcher(config=config, enabled=False)
-    elif args.mp4_operation or args.mp4_max_files or args.mp4_trigger_download_gb or args.mp4_trigger_free_gb:
+    elif args.mp4_operation or args.mp4_max_files or args.mp4_trigger_total_gb or args.mp4_trigger_free_gb:
         mlog.info("MP4 watcher configuration ignored because --enable-mp4-watcher was not set")
 
     roots: List[Path] = [stars_dir, aebn_dir]

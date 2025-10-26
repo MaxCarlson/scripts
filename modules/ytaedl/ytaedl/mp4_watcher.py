@@ -16,8 +16,8 @@ class WatcherConfig:
     default_operation: str
     max_files: Optional[int]
     keep_source: bool
-    download_trigger_bytes: Optional[int]
-    free_space_trigger_bytes: Optional[int]
+    total_size_trigger_bytes: Optional[int]  # Auto-trigger when total MP4 size exceeds this
+    free_space_trigger_bytes: Optional[int]  # Auto-trigger when free space drops below this
 
 
 @dataclass
@@ -90,16 +90,36 @@ class MP4Watcher:
         eff_max = max_files if max_files is not None else self._config.max_files
         return self._start_run(operation=op, dry_run=dry_run, trigger=trigger, max_files=eff_max)
 
+    def _calculate_total_mp4_size(self) -> int:
+        """Calculate total size of all MP4 files in staging root subdirectories."""
+        total_bytes = 0
+        try:
+            if not self._config.staging_root.exists():
+                return 0
+            for mp4_file in self._config.staging_root.rglob("*.mp4"):
+                if mp4_file.is_file():
+                    try:
+                        total_bytes += mp4_file.stat().st_size
+                    except Exception:
+                        pass  # Skip files we can't read
+        except Exception:
+            pass
+        return total_bytes
+
     def update_download_progress(self, total_download_bytes: int) -> Optional[str]:
         with self._lock:
             self._known_download_bytes = total_download_bytes
             if not self.is_enabled() or self._running:
                 return None
             trigger: Optional[str] = None
-            if self._config.download_trigger_bytes:
-                delta = total_download_bytes - self._bytes_at_last_run
-                if delta >= self._config.download_trigger_bytes:
-                    trigger = f"{delta / (1024 ** 3):.2f} GiB downloaded since last sync"
+
+            # Check total MP4 file size threshold
+            if self._config.total_size_trigger_bytes:
+                total_mp4_bytes = self._calculate_total_mp4_size()
+                if total_mp4_bytes >= self._config.total_size_trigger_bytes:
+                    trigger = f"total MP4 size {total_mp4_bytes / (1024 ** 3):.2f} GiB exceeds threshold"
+
+            # Check free space threshold
             if trigger is None and self._config.free_space_trigger_bytes is not None:
                 try:
                     free_bytes = shutil.disk_usage(self._config.staging_root).free
@@ -107,6 +127,7 @@ class MP4Watcher:
                     free_bytes = None
                 if free_bytes is not None and free_bytes <= self._config.free_space_trigger_bytes:
                     trigger = f"staging free space low ({free_bytes / (1024 ** 3):.2f} GiB)"
+
             if trigger:
                 started = self._start_run(
                     operation=self._config.default_operation,
