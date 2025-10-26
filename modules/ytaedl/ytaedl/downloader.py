@@ -189,10 +189,10 @@ class ProgLogger:
                 except Exception:
                     pass
 
-    def start(self, url_index: int, url: str) -> None:
+    def start(self, url_index: int, url_total: int, url: str) -> None:
         self.counter += 1
         elapsed = _hms_ms(time.time() - self.t0)
-        self._write(f"[{self.counter:04d}][{elapsed}] START  [{url_index}] {url}")
+        self._write(f"[{self.counter:04d}][{elapsed}] START  [{url_index}/{url_total}] {url}")
 
     def finish(self, url_index: int, elapsed_url_s: float, status: str) -> None:
         elapsed_prog = _hms_ms(time.time() - self.t0)
@@ -403,7 +403,7 @@ def _run_one(
     url = urls[0]
     stem = _urlfile_stem(Path(url))
 
-    proglog.start(url_index, url)
+    proglog.start(url_index, len(urls), url)
     t_url_start = time.time()
 
     canonical_out_dir = canonical_out_dir.expanduser().resolve()
