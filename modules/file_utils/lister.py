@@ -74,24 +74,57 @@ def read_entries_recursive(target: Path, max_depth: int) -> List[Entry]:
     _walk(target, 0)
     return entries
 
-def format_entry_line(entry: Entry, sort_field: str, width: int) -> str:
+def format_entry_line(entry: Entry, sort_field: str, width: int, show_date: bool = True, show_time: bool = True) -> str:
     time_source = entry.created
     if sort_field in DATE_FIELDS:
         time_source = getattr(entry, sort_field)
-    timestamp = time_source.strftime("%Y-%m-%d %H:%M:%S")
+
+    # Build timestamp based on visibility flags
+    timestamp_parts = []
+    if show_date:
+        timestamp_parts.append(time_source.strftime("%Y-%m-%d"))
+    if show_time:
+        timestamp_parts.append(time_source.strftime("%H:%M:%S"))
+
+    timestamp = " ".join(timestamp_parts) if timestamp_parts else ""
     size_text = human_size(entry.size)
-    
+
     indent = "  " * entry.depth
     name = f"{indent}{entry.name}" + ("/" if entry.is_dir else "")
 
-    name_space = max(1, width - len(timestamp) - len(size_text) - 4)
+    # Calculate available space for name
+    timestamp_len = len(timestamp) + 2 if timestamp else 0
+    size_len = len(size_text) + 2
+    name_space = max(1, width - timestamp_len - size_len)
+
     if len(name) > name_space:
         name = name[:name_space - 3] + "..." if name_space > 3 else name[:name_space]
-    
-    return f"{timestamp}  {name.ljust(name_space)}  {size_text}"
+
+    # Build final line
+    if timestamp:
+        return f"{timestamp}  {name.ljust(name_space)}  {size_text}"
+    else:
+        return f"{name.ljust(name_space)}  {size_text}"
 
 def filter_entry(entry: Entry, pattern: str) -> bool:
     return fnmatch(entry.name, pattern)
+
+def detail_formatter(entry: Entry) -> List[str]:
+    """Format detailed information about a file/directory entry."""
+    lines = []
+    lines.append(f"Name: {entry.name}")
+    lines.append(f"Path: {entry.path}")
+    lines.append(f"Type: {'Directory' if entry.is_dir else 'File'}")
+    lines.append(f"Size: {human_size(entry.size)} ({entry.size:,} bytes)")
+    lines.append(f"Created:  {entry.created.strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"Modified: {entry.modified.strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"Accessed: {entry.accessed.strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"Depth: {entry.depth}")
+    return lines
+
+def size_extractor(entry: Entry) -> int:
+    """Extract size from an entry for color gradient calculation."""
+    return entry.size
 
 def run_lister(args: argparse.Namespace) -> int:
     target = Path(args.directory).expanduser()
@@ -151,9 +184,9 @@ def run_lister(args: argparse.Namespace) -> int:
     }
 
     footer_lines = [
-        "Up/Down: move | f: filter | Ctrl+Q: quit",
+        "Up/Down/j/k: move | f: filter | Enter: details | Left/Right: scroll | Ctrl+Q: quit",
         "c: created | m: modified | a: accessed | n: name | s: size",
-        "Repeat sort key to toggle order",
+        "d: toggle date | t: toggle time | Repeat sort key to toggle order",
     ]
 
     list_view = InteractiveList(
@@ -166,6 +199,9 @@ def run_lister(args: argparse.Namespace) -> int:
         header=f"Path: {target}",
         sort_keys_mapping=sort_keys_mapping,
         footer_lines=footer_lines,
+        detail_formatter=detail_formatter,
+        size_extractor=size_extractor,
+        enable_color_gradient=True,
     )
 
     if args.glob:
