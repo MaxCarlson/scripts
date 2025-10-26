@@ -330,9 +330,9 @@ def test_format_entry_line_folder_with_calculated_size():
     )
     formatted_line = lister.format_entry_line(entry, "created", 100, show_date=True, show_time=True, scroll_offset=0)
 
-    # Should show calculated size with item count
+    # Should show calculated size with item count (abbreviated)
     assert "1000.0 KB" in formatted_line or "1.0 MB" in formatted_line
-    assert "42 items" in formatted_line
+    assert "(42)" in formatted_line  # Count < 1000 shows as just number in parens
 
 def test_format_entry_line_folder_calculating():
     """Test folder formatting while calculating size."""
@@ -373,3 +373,104 @@ def test_format_entry_line_folder_not_calculated():
     # Should show blank size for uncalculated folders
     # The size part should be empty/blank, but other parts should be present
     assert "mydir/" in formatted_line
+
+def test_folders_first_sorting_by_name():
+    """Test folders-first with name sorting (ascending)."""
+    now = datetime.now()
+    entries = [
+        lister.Entry(Path("/a/file.txt"), "file.txt", False, 100, now, now, now, 0),
+        lister.Entry(Path("/a/zdir"), "zdir", True, 0, now, now, now, 0),
+        lister.Entry(Path("/a/adir"), "adir", True, 0, now, now, now, 0),
+        lister.Entry(Path("/a/bfile.txt"), "bfile.txt", False, 200, now, now, now, 0),
+    ]
+    manager = lister.ListerManager(entries, max_depth=0)
+
+    # Get visible with dirs_first=True, ascending
+    visible = manager.get_visible_entries(lambda e: e.name.lower(), descending=False, dirs_first=True)
+
+    # Should see: adir, zdir, bfile.txt, file.txt
+    assert visible[0].name == "adir"
+    assert visible[1].name == "zdir"
+    assert visible[2].name == "bfile.txt"
+    assert visible[3].name == "file.txt"
+
+def test_folders_first_sorting_by_name_descending():
+    """Test folders-first with name sorting (descending) - CRITICAL FIX TEST."""
+    now = datetime.now()
+    entries = [
+        lister.Entry(Path("/a/file.txt"), "file.txt", False, 100, now, now, now, 0),
+        lister.Entry(Path("/a/zdir"), "zdir", True, 0, now, now, now, 0),
+        lister.Entry(Path("/a/adir"), "adir", True, 0, now, now, now, 0),
+        lister.Entry(Path("/a/bfile.txt"), "bfile.txt", False, 200, now, now, now, 0),
+    ]
+    manager = lister.ListerManager(entries, max_depth=0)
+
+    # Get visible with dirs_first=True, descending
+    visible = manager.get_visible_entries(lambda e: e.name.lower(), descending=True, dirs_first=True)
+
+    # Folders should STILL come first, but sorted descending within their group
+    # Should see: zdir, adir, file.txt, bfile.txt
+    assert visible[0].name == "zdir"
+    assert visible[1].name == "adir"
+    assert visible[2].name == "file.txt"
+    assert visible[3].name == "bfile.txt"
+
+def test_folders_first_toggle_off():
+    """Test that dirs_first=False mixes files and folders."""
+    now = datetime.now()
+    entries = [
+        lister.Entry(Path("/a/file.txt"), "file.txt", False, 100, now, now, now, 0),
+        lister.Entry(Path("/a/zdir"), "zdir", True, 0, now, now, now, 0),
+        lister.Entry(Path("/a/adir"), "adir", True, 0, now, now, now, 0),
+    ]
+    manager = lister.ListerManager(entries, max_depth=0)
+
+    # Get visible with dirs_first=False
+    visible = manager.get_visible_entries(lambda e: e.name.lower(), descending=False, dirs_first=False)
+
+    # Should see: adir, file.txt, zdir (all mixed by name)
+    assert visible[0].name == "adir"
+    assert visible[1].name == "file.txt"
+    assert visible[2].name == "zdir"
+
+def test_item_count_abbreviation():
+    """Test item count abbreviation for large numbers."""
+    now = datetime.now()
+
+    # < 1000: show full number
+    entry1 = lister.Entry(Path("/a"), "folder1", True, 0, now, now, now, 0, expanded=True, calculated_size=1000000, item_count=999)
+    line1 = lister.format_entry_line(entry1, "created", 100, True, True, 0)
+    assert "(999)" in line1
+
+    # < 1000000: show "Nk"
+    entry2 = lister.Entry(Path("/b"), "folder2", True, 0, now, now, now, 0, expanded=True, calculated_size=1000000, item_count=45282)
+    line2 = lister.format_entry_line(entry2, "created", 100, True, True, 0)
+    assert "(45k)" in line2
+
+    # >= 1000000: show "N.NM"
+    entry3 = lister.Entry(Path("/c"), "folder3", True, 0, now, now, now, 0, expanded=True, calculated_size=1000000, item_count=1234567)
+    line3 = lister.format_entry_line(entry3, "created", 100, True, True, 0)
+    assert "(1.2M)" in line3
+
+def test_deep_nesting_size_display(temp_dir_structure: Path):
+    """Test that size column is visible even with deep nesting."""
+    # Create a deeply nested structure with long names
+    deep = temp_dir_structure / "level1_very_long_folder_name_that_could_cause_issues"
+    deep.mkdir()
+    deeper = deep / "level2_another_extremely_long_folder_name_with_many_characters"
+    deeper.mkdir()
+    deepest = deeper / "level3_yet_another_absurdly_long_name_for_testing_purposes"
+    deepest.mkdir()
+    (deepest / "test_file_with_long_name.txt").write_text("x" * 1000)
+
+    entries = lister.read_entries_recursive(temp_dir_structure, max_depth=5)
+
+    # Format lines for deeply nested items with terminal width constraints
+    for entry in entries:
+        if entry.depth >= 2:
+            # Use typical terminal width of 80
+            line = lister.format_entry_line(entry, "created", 80, True, True, 0)
+            # Line should not exceed 80 characters
+            assert len(line) <= 80
+            # Should still have content (not completely truncated)
+            assert len(line) > 20

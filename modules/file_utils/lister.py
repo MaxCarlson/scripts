@@ -140,9 +140,16 @@ def format_entry_line(entry: Entry, sort_field: str, width: int, show_date: bool
             size_text = "[...]"  # Spinner/progress indicator
         elif entry.has_calculated_size():
             size_text = human_size(entry.get_display_size())
-            # Add item count for expanded folders
+            # Add abbreviated item count for expanded folders
             if entry.expanded and entry.item_count is not None:
-                size_text = f"{size_text} ({entry.item_count} items)"
+                # Abbreviate counts to save space
+                if entry.item_count < 1000:
+                    count_str = f"{entry.item_count}"
+                elif entry.item_count < 1000000:
+                    count_str = f"{entry.item_count / 1000:.0f}k"
+                else:
+                    count_str = f"{entry.item_count / 1000000:.1f}M"
+                size_text = f"{size_text} ({count_str})"
         else:
             size_text = ""  # Blank if not calculated
     else:
@@ -267,7 +274,7 @@ class ListerManager:
         self.expanded_folders = set()  # Set of expanded folder paths
         self.hidden_entries = set()  # Set of hidden entry paths
 
-    def get_visible_entries(self, sort_func: Optional[Callable[[Entry], object]] = None, descending: bool = True) -> List[Entry]:
+    def get_visible_entries(self, sort_func: Optional[Callable[[Entry], object]] = None, descending: bool = True, dirs_first: bool = True) -> List[Entry]:
         """Get the list of currently visible entries in hierarchical order.
 
         Returns entries sorted hierarchically: parent, then its children, then next parent.
@@ -286,7 +293,13 @@ class ListerManager:
 
                 # Sort children if sort function provided
                 if sort_func:
-                    children.sort(key=sort_func, reverse=descending)
+                    if dirs_first:
+                        # Use stable sort: first by field, then by is_dir
+                        # This ensures dirs_first works regardless of descending flag
+                        children.sort(key=sort_func, reverse=descending)
+                        children.sort(key=lambda x: not x.is_dir)  # Stable sort: dirs (False) before files (True)
+                    else:
+                        children.sort(key=sort_func, reverse=descending)
 
                 # Recursively add each child and their children
                 for child in children:
@@ -298,7 +311,13 @@ class ListerManager:
 
         # Sort top-level entries
         if sort_func:
-            top_level.sort(key=sort_func, reverse=descending)
+            if dirs_first:
+                # Use stable sort: first by field, then by is_dir
+                # This ensures dirs_first works regardless of descending flag
+                top_level.sort(key=sort_func, reverse=descending)
+                top_level.sort(key=lambda x: not x.is_dir)  # Stable sort: dirs (False) before files (True)
+            else:
+                top_level.sort(key=sort_func, reverse=descending)
 
         # Build hierarchical list
         for entry in top_level:
@@ -453,7 +472,7 @@ def run_lister(args: argparse.Namespace) -> int:
                     manager.toggle_folder(parent)
                     # Update visible entries
                     sort_func = SORT_FUNCS[list_view.state.sort_field]
-                    new_visible = manager.get_visible_entries(sort_func, list_view.state.descending)
+                    new_visible = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
                     list_view.state.items = new_visible
                     list_view.state.visible = new_visible
 
@@ -478,7 +497,7 @@ def run_lister(args: argparse.Namespace) -> int:
                 manager.toggle_folder(item)
                 # Update the items list to reflect expansion (with hierarchical sorting)
                 sort_func = SORT_FUNCS[list_view.state.sort_field]
-                list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending)
+                list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
 
                 # Calculate size for this folder if not already calculated
                 if not item.has_calculated_size() and not item.size_calculating:
@@ -527,7 +546,7 @@ def run_lister(args: argparse.Namespace) -> int:
             manager.expand_all_at_depth(current_depth)
             # Update the items list (with hierarchical sorting)
             sort_func = SORT_FUNCS[list_view.state.sort_field]
-            list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending)
+            list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
             return True, True  # Handled, refresh to update state.visible
 
         # 'y' key - copy path to clipboard (vim-style "yank")
@@ -605,7 +624,7 @@ def run_lister(args: argparse.Namespace) -> int:
 
                 # Re-sort hierarchically
                 sort_func = SORT_FUNCS[list_view.state.sort_field]
-                list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending)
+                list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
                 return True, True  # Handled, refresh to update state.visible
 
         return False, False  # Not handled
@@ -619,13 +638,12 @@ def run_lister(args: argparse.Namespace) -> int:
     }
 
     footer_lines = [
-        "↑↓/j/k/PgUp/PgDn: move | f: filter | Enter: toggle folder/details | ESC: collapse/cancel | Ctrl+Q: quit",
-        "c: created | m: modified | a: accessed | n: name | s: size | e: expand all | o: open new",
-        "d: toggle date | t: toggle time | F: toggle dirs-first | y: copy path | S: calc sizes | ←→: scroll",
+        "↑↓/jk/PgUp/Dn │ f:filter x:exclude │ ↵:expand ESC:collapse ^Q:quit",
+        "Sort c/m/a/n/s │ e:all o:open F:dirs │ d:date t:time │ y:copy S:calc │ ←→",
     ]
 
     list_view = InteractiveList(
-        items=manager.get_visible_entries(SORT_FUNCS[sort_field], args.order == "desc"),
+        items=manager.get_visible_entries(SORT_FUNCS[sort_field], args.order == "desc", not getattr(args, 'no_dirs_first', False)),
         sorters=SORT_FUNCS,
         formatter=format_entry_line,
         filter_func=filter_entry,
