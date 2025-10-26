@@ -12,6 +12,12 @@ from typing import Callable, Dict, List, Any, Tuple, Optional
 
 from termdash.interactive_list import InteractiveList
 
+try:
+    from cross_platform.clipboard_utils import set_clipboard
+    CLIPBOARD_AVAILABLE = True
+except ImportError:
+    CLIPBOARD_AVAILABLE = False
+
 @dataclass
 class Entry:
     path: Path
@@ -24,6 +30,17 @@ class Entry:
     depth: int
     expanded: bool = False  # Track if directory is expanded
     parent_path: Path = None  # Track parent for filtering
+    calculated_size: Optional[int] = None  # Actual recursive size for folders
+    item_count: Optional[int] = None  # Number of items in folder
+    size_calculating: bool = False  # Show spinner while calculating
+
+    def get_display_size(self) -> int:
+        """Return calculated size if available, else stat size."""
+        return self.calculated_size if self.calculated_size is not None else self.size
+
+    def has_calculated_size(self) -> bool:
+        """Check if folder size has been calculated."""
+        return self.calculated_size is not None
 
 SORT_FUNCS: Dict[str, Callable[[Entry], object]] = {
     "created": lambda entry: entry.created.timestamp(),
@@ -377,13 +394,45 @@ def run_lister(args: argparse.Namespace) -> int:
     # Initialize the lister manager
     manager = ListerManager(entries, args.depth)
 
+    # Initialize file type color manager
+    file_color_manager = FileTypeColorManager()
+
     # Note: Depth 0 items are visible by default since their parent_path is None
 
     def action_handler(key: int, item: Entry) -> Tuple[bool, bool]:
         """Handle custom actions for folder navigation.
         Returns (handled, should_refresh)"""
+        # ESC key - collapse parent folder and move selection to it
+        if key == 27:  # ESC
+            if item.parent_path:
+                # Find the parent folder
+                parent = next((e for e in manager.all_entries if e.path == item.parent_path), None)
+                if parent and parent.expanded:
+                    # Collapse the parent
+                    manager.toggle_folder(parent)
+                    # Update visible entries
+                    sort_func = SORT_FUNCS[list_view.state.sort_field]
+                    new_visible = manager.get_visible_entries(sort_func, list_view.state.descending)
+                    list_view.state.items = new_visible
+                    list_view.state.visible = new_visible
+
+                    # Find parent in new visible list and move selection to it
+                    try:
+                        parent_idx = new_visible.index(parent)
+                        list_view.state.selected_index = parent_idx
+                        # Adjust scroll if needed
+                        if parent_idx < list_view.state.top_index:
+                            list_view.state.top_index = parent_idx
+                        elif parent_idx >= list_view.state.top_index + list_view.state.viewport_height:
+                            list_view.state.top_index = parent_idx - list_view.state.viewport_height + 1
+                    except ValueError:
+                        pass  # Parent not in visible list
+
+                    return True, False  # Handled, don't call _update_visible_items
+            return False, False  # Not in expanded folder, let default ESC handling
+
         # Enter key - toggle folder expansion inline
-        if key in (curses.KEY_ENTER, 10, 13):
+        elif key in (curses.KEY_ENTER, 10, 13):
             if item.is_dir:
                 manager.toggle_folder(item)
                 # Update the items list to reflect expansion (with hierarchical sorting)
@@ -425,6 +474,19 @@ def run_lister(args: argparse.Namespace) -> int:
             list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending)
             return True, True  # Handled, refresh to update state.visible
 
+        # 'y' key - copy path to clipboard (vim-style "yank")
+        elif key == ord('y'):
+            if CLIPBOARD_AVAILABLE:
+                try:
+                    full_path = str(item.path.resolve())
+                    set_clipboard(full_path)
+                    # Could show a brief message, but for now just do it silently
+                except Exception as e:
+                    sys.stderr.write(f"Failed to copy path to clipboard: {e}\n")
+            else:
+                sys.stderr.write("Clipboard utilities not available\n")
+            return True, False  # Handled, no refresh needed
+
         # Handle sort key changes (c/m/a/s/n) with hierarchical sorting
         elif key in (ord('c'), ord('m'), ord('a'), ord('s'), ord('n')):
             # Map key to sort field
@@ -460,9 +522,9 @@ def run_lister(args: argparse.Namespace) -> int:
     }
 
     footer_lines = [
-        "↑↓/j/k/PgUp/PgDn: move | f: filter | Enter: toggle folder/details | o: open new | Ctrl+Q: quit",
-        "c: created | m: modified | a: accessed | n: name | s: size | e: expand all at depth",
-        "d: toggle date | t: toggle time | F: toggle dirs-first | ←→: scroll",
+        "↑↓/j/k/PgUp/PgDn: move | f: filter | Enter: toggle folder/details | ESC: collapse parent | Ctrl+Q: quit",
+        "c: created | m: modified | a: accessed | n: name | s: size | e: expand all | o: open new",
+        "d: toggle date | t: toggle time | F: toggle dirs-first | y: copy path | ←→: scroll",
     ]
 
     list_view = InteractiveList(
@@ -480,6 +542,7 @@ def run_lister(args: argparse.Namespace) -> int:
         enable_color_gradient=True,
         custom_action_handler=action_handler,
         dirs_first=not getattr(args, 'no_dirs_first', False),
+        name_color_getter=file_color_manager.get_color_pair,
     )
 
     if args.glob:
