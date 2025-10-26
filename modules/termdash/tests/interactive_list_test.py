@@ -95,3 +95,59 @@ def test_list_state_toggle_display_options():
     state.show_time = not state.show_time
     assert state.show_date == True
     assert state.show_time == True
+
+def test_exclusion_filter_defaults():
+    """Test exclusion filter default values in ListState."""
+    state = ListState(
+        items=[],
+        sorters={},
+        filter_func=lambda item, p: True,
+    )
+    assert state.exclusion_pattern == ""
+    assert state.editing_exclusion == False
+    assert state.exclusion_edit_buffer == ""
+
+def test_matches_pattern_single():
+    """Test _matches_pattern with single pattern."""
+    from termdash.interactive_list import InteractiveList
+    from fnmatch import fnmatch
+
+    list_view = InteractiveList(
+        items=[],
+        sorters={"name": lambda x: x},
+        formatter=lambda item, field, width, date, time, scroll: str(item),
+        filter_func=lambda item, pattern: fnmatch(str(item), pattern),
+    )
+
+    # Single pattern should match
+    assert list_view._matches_pattern("test.py", "*.py") == True
+    assert list_view._matches_pattern("test.txt", "*.py") == False
+
+def test_matches_pattern_multi():
+    """Test _matches_pattern with multiple patterns using | separator."""
+    from termdash.interactive_list import InteractiveList
+    from fnmatch import fnmatch
+
+    list_view = InteractiveList(
+        items=[],
+        sorters={"name": lambda x: x},
+        formatter=lambda item, field, width, date, time, scroll: str(item),
+        filter_func=lambda item, pattern: fnmatch(str(item), pattern),
+    )
+
+    # Multi-pattern with | should match if any pattern matches
+    assert list_view._matches_pattern("test.py", "*.py|*.txt") == True
+    assert list_view._matches_pattern("test.txt", "*.py|*.txt") == True
+    assert list_view._matches_pattern("test.log", "*.py|*.txt") == False
+
+def test_footer_fits_80_columns():
+    """Test that footer lines fit in 80-column terminal."""
+    # These are the actual footer lines from lister.py
+    footer_lines = [
+        "↑↓/jk/PgUp/Dn │ f:filter x:exclude │ ↵:expand ESC:collapse ^Q:quit",
+        "Sort c/m/a/n/s │ e:all o:open F:dirs │ d:date t:time │ y:copy S:calc │ ←→",
+    ]
+
+    for line in footer_lines:
+        # Each line should fit in 80 columns
+        assert len(line) <= 80, f"Footer line too long ({len(line)} chars): {line}"

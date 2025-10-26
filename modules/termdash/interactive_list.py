@@ -23,6 +23,7 @@ class ListState:
 
     header: str = "Interactive List"
     filter_pattern: str = ""
+    exclusion_pattern: str = ""
     sort_field: str = ""
     descending: bool = True
 
@@ -32,7 +33,9 @@ class ListState:
     viewport_height: int = 1
 
     editing_filter: bool = False
+    editing_exclusion: bool = False
     edit_buffer: str = ""
+    exclusion_edit_buffer: str = ""
 
     # Detail view state
     detail_view: bool = False
@@ -136,6 +139,14 @@ class InteractiveList:
         """Default detail formatter shows item representation."""
         return [str(item)]
 
+    def _matches_pattern(self, item: Any, pattern: str) -> bool:
+        """Check if item matches pattern. Supports multiple patterns with | separator."""
+        if not pattern:
+            return True
+        if '|' in pattern:
+            return any(self.state.filter_func(item, p.strip()) for p in pattern.split('|'))
+        return self.state.filter_func(item, pattern)
+
     def run(self) -> None:
         """Starts the curses-based TUI."""
         curses.wrapper(self._tui_main)
@@ -167,8 +178,18 @@ class InteractiveList:
         self._update_visible_items(reset_selection=True)
 
         while True:
+            # Set timeout for auto-refresh when calculating sizes
+            if self.state.calculating_sizes:
+                stdscr.timeout(100)  # 100ms timeout for auto-refresh
+            else:
+                stdscr.timeout(-1)   # Blocking wait for input
+
             self._draw_screen(stdscr)
             key = stdscr.getch()
+
+            # Handle timeout (no key pressed)
+            if key == -1:
+                continue  # Just redraw and continue
 
             if key in (17,):  # Ctrl+Q
                 break
@@ -182,6 +203,11 @@ class InteractiveList:
 
             if self.state.editing_filter:
                 if self._handle_filter_input(key):
+                    self._update_visible_items(reset_selection=True)
+                continue
+
+            if self.state.editing_exclusion:
+                if self._handle_exclusion_input(key):
                     self._update_visible_items(reset_selection=True)
                 continue
 
@@ -199,6 +225,8 @@ class InteractiveList:
                 self.state.scroll_offset = 0
             elif key == ord("f"):
                 self._start_filter_edit()
+            elif key == ord("x"):
+                self._start_exclusion_edit()
             elif key == ord("d"):
                 # Toggle date visibility
                 self.state.show_date = not self.state.show_date
@@ -254,6 +282,14 @@ class InteractiveList:
         except curses.error:
             pass
 
+    def _start_exclusion_edit(self) -> None:
+        self.state.editing_exclusion = True
+        self.state.exclusion_edit_buffer = self.state.exclusion_pattern
+        try:
+            curses.curs_set(1)
+        except curses.error:
+            pass
+
     def _handle_filter_input(self, key: int) -> bool:
         if key in (curses.KEY_ENTER, 10, 13):
             self.state.filter_pattern = self.state.edit_buffer
@@ -275,6 +311,29 @@ class InteractiveList:
             self.state.edit_buffer = self.state.edit_buffer[:-1]
         elif 32 <= key <= 126:
             self.state.edit_buffer += chr(key)
+        return False
+
+    def _handle_exclusion_input(self, key: int) -> bool:
+        if key in (curses.KEY_ENTER, 10, 13):
+            self.state.exclusion_pattern = self.state.exclusion_edit_buffer
+            self.state.editing_exclusion = False
+            try:
+                curses.curs_set(0)
+            except curses.error:
+                pass
+            return True
+        if key in (27,):  # Escape
+            self.state.editing_exclusion = False
+            self.state.exclusion_edit_buffer = self.state.exclusion_pattern
+            try:
+                curses.curs_set(0)
+            except curses.error:
+                pass
+            return False
+        if key in (curses.KEY_BACKSPACE, 127, 8):
+            self.state.exclusion_edit_buffer = self.state.exclusion_edit_buffer[:-1]
+        elif 32 <= key <= 126:
+            self.state.exclusion_edit_buffer += chr(key)
         return False
 
     def _handle_sort_key(self, key: int) -> bool:
@@ -300,13 +359,19 @@ class InteractiveList:
             self.state.top_index = self.state.selected_index - self.state.viewport_height + 1
 
     def _update_visible_items(self, reset_selection: bool = False) -> None:
-        # Filter
+        # Apply inclusion filter
         if self.state.filter_pattern:
             self.state.visible = [
-                item for item in self.state.items if self.state.filter_func(item, self.state.filter_pattern)
+                item for item in self.state.items if self._matches_pattern(item, self.state.filter_pattern)
             ]
         else:
             self.state.visible = list(self.state.items)
+
+        # Apply exclusion filter
+        if self.state.exclusion_pattern:
+            self.state.visible = [
+                item for item in self.state.visible if not self._matches_pattern(item, self.state.exclusion_pattern)
+            ]
 
         # Check if items have hierarchical structure (parent_path attribute)
         # If so, preserve order (items are pre-sorted hierarchically)
@@ -347,7 +412,8 @@ class InteractiveList:
             return 1
 
     def _draw_screen(self, stdscr) -> None:
-        stdscr.erase()
+        # Clear entire screen to prevent corruption
+        stdscr.clear()
         max_y, max_x = stdscr.getmaxyx()
 
         # Detail view mode
@@ -362,9 +428,16 @@ class InteractiveList:
         self.state.viewport_height = list_height
 
         # Header
-        filter_display = self.state.edit_buffer if self.state.editing_filter else self.state.filter_pattern or "*"
-        filter_line = f"Filter: {filter_display}"
-        stdscr.addnstr(0, 0, filter_line.ljust(max_x), max_x - 1, curses.color_pair(2) | curses.A_BOLD)
+        if self.state.editing_filter:
+            filter_display = f"Filter: {self.state.edit_buffer}"
+        elif self.state.editing_exclusion:
+            filter_display = f"Exclude: {self.state.exclusion_edit_buffer}"
+        else:
+            filter_display = self.state.filter_pattern or "*"
+            if self.state.exclusion_pattern:
+                filter_display = f"{filter_display} !{self.state.exclusion_pattern}"
+            filter_display = f"Filter: {filter_display}"
+        stdscr.addnstr(0, 0, filter_display.ljust(max_x), max_x - 1, curses.color_pair(2) | curses.A_BOLD)
 
         sort_order = 'desc' if self.state.descending else 'asc'
         toggles = []
@@ -399,6 +472,9 @@ class InteractiveList:
         if self.state.editing_filter:
             cursor_x = min(len("Filter: ") + len(self.state.edit_buffer), max_x - 1)
             stdscr.move(0, cursor_x)
+        elif self.state.editing_exclusion:
+            cursor_x = min(len("Exclude: ") + len(self.state.exclusion_edit_buffer), max_x - 1)
+            stdscr.move(0, cursor_x)
 
         # Calculate size range for color gradient
         min_size, max_size = 0, 0
@@ -420,8 +496,9 @@ class InteractiveList:
                 item = self.state.visible[entry_idx]
 
                 # Pass scroll_offset only for the selected item
+                # Use max_x - 1 to ensure line doesn't exceed terminal width
                 scroll_off = self.state.scroll_offset if entry_idx == self.state.selected_index else 0
-                line = self.formatter(item, self.state.sort_field, max_x, self.state.show_date, self.state.show_time, scroll_off)
+                line = self.formatter(item, self.state.sort_field, max_x - 1, self.state.show_date, self.state.show_time, scroll_off)
 
                 # Ensure line doesn't exceed terminal width
                 if len(line) > max_x - 1:
@@ -435,7 +512,7 @@ class InteractiveList:
                 is_selected = entry_idx == self.state.selected_index
 
                 try:
-                    # Clear the line first to avoid attribute bleeding
+                    # Clear the entire line first to prevent corruption from wide characters
                     stdscr.move(list_start + draw_idx, 0)
                     stdscr.clrtoeol()
 
@@ -454,28 +531,39 @@ class InteractiveList:
                             if is_selected:
                                 name_attr |= curses.A_REVERSE
 
-                            stdscr.addnstr(list_start + draw_idx, 0, name_part, len(name_part), name_attr)
+                            # Use addstr and get cursor position to handle wide characters
+                            try:
+                                stdscr.addstr(list_start + draw_idx, 0, name_part[:max_x - 1], name_attr)
+                                # Get actual cursor position after rendering (accounts for wide chars)
+                                y, x = stdscr.getyx()
+                            except curses.error:
+                                # If name_part is too long, truncate it
+                                safe_len = min(len(name_part), max_x - len(size_part) - 5)
+                                stdscr.addstr(list_start + draw_idx, 0, name_part[:safe_len], name_attr)
+                                y, x = stdscr.getyx()
 
-                            # Render size part with size gradient color
+                            # Render size part at cursor position
                             size_attr = curses.color_pair(size_color_pair)
                             if is_selected:
                                 size_attr |= curses.A_REVERSE
 
-                            size_x = len(name_part)
-                            if size_x < max_x:
-                                stdscr.addnstr(list_start + draw_idx, size_x, size_part, max_x - size_x - 1, size_attr)
+                            if x < max_x - len(size_part):
+                                try:
+                                    stdscr.addstr(y, x, size_part[:max_x - x - 1], size_attr)
+                                except curses.error:
+                                    pass  # Ignore if we can't render size part
                         else:
                             # Fallback: render whole line with name color
                             attr = curses.color_pair(name_color_pair)
                             if is_selected:
                                 attr |= curses.A_REVERSE
-                            stdscr.addnstr(list_start + draw_idx, 0, line, max_x - 1, attr)
+                            stdscr.addstr(list_start + draw_idx, 0, line[:max_x - 1], attr)
                     else:
                         # Single color rendering (original behavior)
                         attr = curses.color_pair(size_color_pair)
                         if is_selected:
                             attr |= curses.A_REVERSE
-                        stdscr.addnstr(list_start + draw_idx, 0, line, max_x - 1, attr)
+                        stdscr.addstr(list_start + draw_idx, 0, line[:max_x - 1], attr)
 
                     # Reset attributes after drawing
                     stdscr.attrset(curses.color_pair(1))
