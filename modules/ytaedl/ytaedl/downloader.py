@@ -370,6 +370,30 @@ def _build_aebndl_cmd(
         cmd += ["-r", str(max_height)]
     cmd.append(url)
     return cmd
+def _clamp_progress(evt: dict) -> dict:
+    """Clamp progress event values to prevent >100% display."""
+    if evt.get("event") != "progress":
+        return evt
+
+    clamped = evt.copy()
+    dl = evt.get("downloaded")
+    tot = evt.get("total")
+    pct = evt.get("percent")
+
+    # If we have downloaded and total bytes, clamp downloaded
+    if isinstance(dl, int) and isinstance(tot, int) and tot > 0:
+        if dl > tot:
+            clamped["downloaded"] = tot
+        # Recalculate percentage from clamped values
+        actual_dl = min(dl, tot)
+        pct_calc = (actual_dl / tot) * 100.0
+        clamped["percent"] = min(99.9, pct_calc)
+    elif isinstance(pct, (int, float)):
+        # Clamp raw percentage if provided without bytes
+        clamped["percent"] = min(99.9, max(0.0, float(pct)))
+
+    return clamped
+
 def _emit_json(d: dict) -> None:
     sys.stdout.write(json.dumps(d, ensure_ascii=False) + "\n")
     sys.stdout.flush()
@@ -497,11 +521,13 @@ def _run_one(
             if evt.get("event") == "progress":
                 pending_progress = {**evt}
             if min_progress_interval <= 0 and evt.get("event") == "progress":
-                _emit_json({**evt, "downloader": tool, "url_index": url_index, "url": url})
+                clamped_evt = _clamp_progress(evt)
+                _emit_json({**clamped_evt, "downloader": tool, "url_index": url_index, "url": url})
                 last_emit_progress_t = now
                 pending_progress = None
             elif min_progress_interval > 0 and pending_progress and (now - last_emit_progress_t) >= min_progress_interval:
-                _emit_json({**pending_progress, "downloader": tool, "url_index": url_index, "url": url})
+                clamped_progress = _clamp_progress(pending_progress)
+                _emit_json({**clamped_progress, "downloader": tool, "url_index": url_index, "url": url})
                 last_emit_progress_t = now
                 pending_progress = None
             if rc is not None:

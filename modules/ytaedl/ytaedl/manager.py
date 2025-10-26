@@ -479,7 +479,7 @@ def make_parser() -> argparse.ArgumentParser:
         "-K",
         "--mp4-keep-source",
         action="store_true",
-        help="Keep staging MP4 files after syncing (skip deletion of source files)",
+        help="Force keep source files after syncing (overrides operation mode to never delete source)",
     )
     return p
 
@@ -519,6 +519,15 @@ def main() -> int:
             else None
         )
         max_files = args.mp4_max_files if isinstance(args.mp4_max_files, int) and args.mp4_max_files > 0 else None
+
+        # Determine keep_source based on operation mode
+        # move = delete source (keep_source=False), copy = keep source (keep_source=True)
+        # But -K flag can override to always keep source
+        if args.mp4_keep_source:
+            keep_source = True  # -K flag overrides
+        else:
+            keep_source = (args.mp4_operation == "copy")  # copy mode keeps source, move mode deletes
+
         if staging_root is None:
             mlog.error("MP4 watcher requested but --proxy-dl-location was not provided; watcher disabled")
         else:
@@ -528,7 +537,7 @@ def main() -> int:
                 log_path=watcher_log_path,
                 default_operation=args.mp4_operation,
                 max_files=max_files,
-                keep_source=args.mp4_keep_source,
+                keep_source=keep_source,
                 total_size_trigger_bytes=total_size_trigger_bytes,
                 free_space_trigger_bytes=free_space_trigger_bytes,
             )
@@ -631,11 +640,17 @@ def main() -> int:
                             pct_calc = 100.0 * (float(show_dl) / float(tot))
                             ws.percent = min(99.9, pct_calc)
                         else:
+                            # Clamp percentage even when bytes unavailable
                             if isinstance(pct, (int, float)):
-                                ws.percent = min(99.9, float(pct))
-                            # Keep downloaded/total as-is if provided
-                            ws.downloaded_bytes = dl if isinstance(dl, int) else ws.downloaded_bytes
-                            ws.total_bytes = tot if isinstance(tot, int) else ws.total_bytes
+                                ws.percent = min(99.9, max(0.0, float(pct)))
+                            # Clamp downloaded bytes to total if both provided
+                            if isinstance(dl, int) and isinstance(tot, int) and tot > 0:
+                                ws.downloaded_bytes = min(dl, tot)
+                                ws.total_bytes = tot
+                            else:
+                                # Keep values as-is only if no total to compare against
+                                ws.downloaded_bytes = dl if isinstance(dl, int) else ws.downloaded_bytes
+                                ws.total_bytes = tot if isinstance(tot, int) else ws.total_bytes
                         ws.speed_bps = float(sp) if isinstance(sp, (int, float)) else ws.speed_bps
                         # eta may be 0 or negative near completion
                         ws.eta_s = float(eta) if isinstance(eta, (int, float)) else ws.eta_s
