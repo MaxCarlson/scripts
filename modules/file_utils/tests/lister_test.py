@@ -74,7 +74,7 @@ def test_format_entry_line_no_indent():
         accessed=now,
         depth=0,
     )
-    formatted_line = lister.format_entry_line(entry, "created", 80)
+    formatted_line = lister.format_entry_line(entry, "created", 80, show_date=True, show_time=True)
     assert formatted_line.startswith(now.strftime("%Y-%m-%d"))
     assert "  file.txt" in formatted_line
     assert not formatted_line.lstrip().startswith("  ")
@@ -92,6 +92,58 @@ def test_format_entry_line_with_indent():
         accessed=now,
         depth=2,
     )
-    formatted_line = lister.format_entry_line(entry, "created", 80)
+    formatted_line = lister.format_entry_line(entry, "created", 80, show_date=True, show_time=True)
     # Check for 2 levels of indentation (4 spaces)
     assert "    file.txt" in formatted_line
+
+def test_format_entry_line_no_date():
+    now = datetime.now()
+    entry = lister.Entry(
+        path=Path("/fake/file.txt"),
+        name="file.txt",
+        is_dir=False,
+        size=1024,
+        created=now,
+        modified=now,
+        accessed=now,
+        depth=0,
+    )
+    formatted_line = lister.format_entry_line(entry, "created", 80, show_date=False, show_time=True)
+    assert now.strftime("%Y-%m-%d") not in formatted_line
+    assert now.strftime("%H:%M:%S") in formatted_line
+    assert "1.0 KB" in formatted_line
+
+def test_format_entry_line_no_time():
+    now = datetime.now()
+    entry = lister.Entry(
+        path=Path("/fake/file.txt"),
+        name="file.txt",
+        is_dir=False,
+        size=1024,
+        created=now,
+        modified=now,
+        accessed=now,
+        depth=0,
+    )
+    formatted_line = lister.format_entry_line(entry, "created", 80, show_date=True, show_time=False)
+    assert now.strftime("%Y-%m-%d") in formatted_line
+    assert now.strftime("%H:%M:%S") not in formatted_line
+    assert "1.0 KB" in formatted_line
+
+def test_format_entry_line_no_date_no_time():
+    now = datetime.now()
+    entry = lister.Entry(
+        path=Path("/fake/file.txt"),
+        name="file.txt",
+        is_dir=False,
+        size=1024,
+        created=now,
+        modified=now,
+        accessed=now,
+        depth=0,
+    )
+    formatted_line = lister.format_entry_line(entry, "created", 80, show_date=False, show_time=False)
+    assert now.strftime("%Y-%m-%d") not in formatted_line
+    assert now.strftime("%H:%M:%S") not in formatted_line
+    assert "file.txt" in formatted_line
+    assert "1.0 KB" in formatted_line
