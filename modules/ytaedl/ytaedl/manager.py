@@ -180,6 +180,8 @@ def _render_watcher_panel(
     watcher_enabled: bool,
     snapshot: Optional[WatcherSnapshot],
     quit_confirm: bool,
+    manager_elapsed: float,
+    total_downloaded_bytes: int,
 ) -> List[str]:
     lines: List[str] = []
     header = "MP4 Folder Synchroniser"
@@ -191,98 +193,53 @@ def _render_watcher_panel(
     else:
         lines.append(header[:cols])
 
+    lines.append(f"Manager elapsed: {_hms(manager_elapsed)}"[:cols])
+    lines.append(f"Total downloaded: {_watcher_bytes(total_downloaded_bytes)}"[:cols])
+
     if not watcher_enabled:
         lines.append("Watcher disabled. Launch with --watcher to enable the cleaner."[:cols])
         lines.append("-" * min(cols, 100))
-    elif not snapshot:
-        lines.append("Watcher status unavailable."[:cols])
-        lines.append("-" * min(cols, 100))
-    else:
-        progress = snapshot.progress or {}
-        elapsed_txt = _watcher_duration(time.time() - snapshot.start_time) if snapshot.start_time else "n/a"
-        lines.append(f"Elapsed: {elapsed_txt}"[:cols])
-        lines.append(f"Current folder: {progress.get('current_folder', '-')}"[:cols])
-        lines.append(f"Current file: {progress.get('current_file', '-')}"[:cols])
-        files_total = progress.get("total_files") or 0
-        files_done = progress.get("processed_files") or 0
-        lines.append(f"Files processed: {files_done} / {files_total}"[:cols])
-        copied = progress.get("copied_without_collision") or 0
-        collisions = progress.get("collisions") or 0
-        replaced = progress.get("replaced_dest") or 0
-        kept = progress.get("kept_dest") or 0
-        lines.append(
-            f"Copied (no collision): {copied} | Collisions: {collisions} (replaced: {replaced}, kept dest: {kept})"[:cols]
-        )
-        total_bytes = progress.get("total_bytes") or 0
-        processed_bytes = progress.get("processed_bytes") or 0
-        total_pct = (processed_bytes / total_bytes * 100.0) if total_bytes else 0.0
-        lines.append(
-            f"Total progress: {_watcher_bytes(processed_bytes)} / {_watcher_bytes(total_bytes)} ({total_pct:.1f}%)"[:cols]
-        )
-        lines.append("")
-        lines.append("Transfer Progress"[:cols])
-        file_size = progress.get("current_file_size") or 0
-        file_done = progress.get("current_file_done") or 0
-        if file_size:
-            file_pct = (file_done / file_size * 100.0) if file_size else 0.0
-            lines.append(
-                f"File progress: {_watcher_bytes(file_done)} / {_watcher_bytes(file_size)} ({file_pct:.1f}%) "
-                f"@ {_watcher_rate(progress.get('current_speed'))}"[:cols]
-            )
-        folder_total_files = progress.get("current_folder_total_files") or 0
-        folder_processed_files = progress.get("current_folder_processed_files") or 0
-        folder_total_bytes = progress.get("current_folder_total_bytes") or 0
-        folder_processed_bytes = progress.get("current_folder_processed_bytes") or 0
-        if folder_total_files:
-            folder_pct = (folder_processed_bytes / folder_total_bytes * 100.0) if folder_total_bytes else 0.0
-            lines.append(
-                f"Folder progress: {folder_processed_files}/{folder_total_files} files | "
-                f"{_watcher_bytes(folder_processed_bytes)} / {_watcher_bytes(folder_total_bytes)} ({folder_pct:.1f}%)"[
-                    :cols
-                ]
-            )
-        if progress.get("scanning"):
-            lines.append(f"Scan mode: new files handled {progress.get('scan_new_files', 0)}"[:cols])
-        if progress.get("last_message"):
-            lines.append(f"Status: {progress.get('last_message')}"[:cols])
-        if snapshot.bytes_since_last is not None:
-            lines.append(f"Bytes since last run: {_watcher_bytes(snapshot.bytes_since_last)}"[:cols])
-        lines.append("")
-        lines.append("Recent Activity"[:cols])
-        recent_logs = progress.get("recent_logs") or []
-        if recent_logs:
-            for entry in recent_logs[-6:]:
-                display = entry if len(entry) <= cols - 2 else entry[: max(0, cols - 5)] + "..."
-                lines.append(f"  {display}"[:cols])
-        else:
-            lines.append("  (no events yet)"[:cols])
-        if snapshot.last_result:
-            last = snapshot.last_result
+    elif snapshot:
+        if snapshot.progress:
+            lines.append(f"Elapsed: {_watcher_duration(snapshot.progress.get('elapsed'))}"[:cols])
+            lines.append(f"Current folder: {snapshot.progress.get('current_folder') or '-'}"[:cols])
+            lines.append(f"Current file: {snapshot.progress.get('current_file') or '-'}"[:cols])
+            lines.append(f"Files processed: {snapshot.progress.get('processed_files', 0)} / {snapshot.progress.get('total_files', 0)}"[:cols])
+            lines.append(f"Copied (no collision): {snapshot.progress.get('copied_without_collision', 0)} | Collisions: {snapshot.progress.get('collisions', 0)} (replaced: {snapshot.progress.get('replaced_dest', 0)}, kept: {snapshot.progress.get('kept_dest', 0)})"[:cols])
+            total_prog_pct = snapshot.progress.get('total_percent', 0.0)
+            lines.append(f"Total progress: {_watcher_bytes(snapshot.progress.get('processed_bytes', 0))} / {_watcher_bytes(snapshot.progress.get('total_bytes', 0))} ({total_prog_pct:.1f}%)"[:cols])
             lines.append("")
-            lines.append(
-                (
-                    f"Last run: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last.completed_at))} "
-                    f"duration={_watcher_duration(last.duration_s)}"
-                )[:cols]
-            )
-            lines.append(
-                (
-                    f"Processed {last.processed_actions}/{last.plan_actions} actions | "
-                    f"bytes={_watcher_bytes(last.processed_bytes)} / {_watcher_bytes(last.plan_bytes)}"
-                )[:cols]
-            )
-        if snapshot.last_error:
-            lines.append("")
-            lines.append(f"Error: {snapshot.last_error}"[:cols])
-        lines.append("-" * min(cols, 100))
+            lines.append("Transfer Progress")
+            if snapshot.progress.get('current_file_size'):
+                file_prog_pct = snapshot.progress.get('file_percent', 0.0)
+                rate = _watcher_rate(snapshot.progress.get('current_speed', 0.0))
+                lines.append(f"File progress: {_watcher_bytes(snapshot.progress.get('current_file_done', 0))} / {_watcher_bytes(snapshot.progress.get('current_file_size', 0))} ({file_prog_pct:.1f}%) @ {rate}"[:cols])
 
+        pending_actions = snapshot.plan_actions or (snapshot.last_result.planned_actions if snapshot.last_result else None)
+        pending_bytes = snapshot.plan_bytes or (snapshot.last_result.plan_bytes if snapshot.last_result else None)
+        if pending_actions is not None or pending_bytes is not None:
+            lines.append(
+                f"Potential transfers: {pending_actions or 0} files | {_watcher_bytes(pending_bytes or 0)}"
+            )
+
+        lines.append(f"Bytes since last run: {_watcher_bytes(snapshot.bytes_since_last or 0)}"[:cols])
+        lines.append("")
+        lines.append("Recent Activity")
+        if snapshot.progress and snapshot.progress.get('recent_logs'):
+            for log in snapshot.progress.get('recent_logs'):
+                lines.append(log[:cols])
+        else:
+            lines.append("(no events yet)")
+    else:
+        lines.append("(no snapshot yet)")
+
+
+    lines.append("-" * min(cols, 100))
     if quit_confirm:
         lines.append("Press Y to quit, N to cancel"[:cols])
     else:
-        if watcher_enabled:
-            lines.append("Keys: w=back, c=start cleaner, d=dry-run analyze, q=quit"[:cols])
-        else:
-            lines.append("Keys: w=back to downloads, q=quit"[:cols])
+        lines.append("Keys: w=back, c=start cleaner, d=dry-run analyze, q=quit"[:cols])
+
     return lines
 
 
@@ -994,149 +951,157 @@ def main() -> int:
             except OSError:
                 cols = 80
 
+            lines: List[str] = []
+
             if active_panel == "watcher":
+                manager_elapsed = time.time() - t0
+                total_completed_bytes = sum(ws.downloaded_bytes or 0 for ws in workers if ws.rc == 0)
                 lines = _render_watcher_panel(
                     cols=cols,
                     watcher_enabled=watcher_enabled,
                     snapshot=watcher_status,
                     quit_confirm=quit_confirm,
+                    manager_elapsed=manager_elapsed,
+                    total_downloaded_bytes=total_completed_bytes,
                 )
                 _render_screen(lines)
-                time.sleep(refresh_dt)
-                continue
-            lines: List[str] = []
-            active_workers = sum(1 for w in workers if w.proc)
-            current_regular, current_priority = _gather_from_roots(roots, finished_log, args.priority_files)
-            total_available = len([p for p in current_regular if str(p.resolve()) not in active]) + len([p for p in current_priority if str(p.resolve()) not in active])
-            pause_status = " [PAUSED]" if paused else ""
-            quit_status = " [Press Y to confirm quit]" if quit_confirm else ""
-            header = f"DL Manager{pause_status}{quit_status}  |  threads={args.threads}  active={active_workers}  pool={total_available}  time_limit={args.time_limit}"
-            lines.append(header[:cols])
-            total_speed_bps = sum(float(w.speed_bps) for w in workers if isinstance(w.speed_bps, (int, float)) and not w.is_paused)
-            total_speed_mib = total_speed_bps / (1024 * 1024) if total_speed_bps else 0.0
-            inprog_bytes = sum(int(w.downloaded_bytes) for w in workers if isinstance(w.downloaded_bytes, int))
-            agg_bytes = total_completed_bytes + inprog_bytes
-            avg_mib_s = (agg_bytes / max(1.0, (time.time() - t0))) / (1024*1024)
-            lines.append(f"Totals: speed={total_speed_mib:.2f}MiB/s  avg={avg_mib_s:.2f}MiB/s  downloaded={(agg_bytes/1048576):.1f}MiB  urls: started={total_started_urls} processed={total_processed_urls} completed={total_completed_urls}"[:cols])
-            lines.append("-" * min(cols, 100))
-            now = time.time()
-
-            def col(text: str, width: int) -> str:
-                return (text[:width]).ljust(width)
-
-            # Build quartiles for color-coding speeds
-            speeds = [float(w.speed_bps) for w in workers if isinstance(w.speed_bps, (int, float)) and w.speed_bps and w.speed_bps > 0]
-            speeds.sort()
-            def _quantile(xs, q):
-                if not xs:
-                    return None
-                idx = int(round((len(xs)-1) * q))
-                return xs[max(0, min(len(xs)-1, idx))]
-            q1 = _quantile(speeds, 0.25)
-            q2 = _quantile(speeds, 0.50)
-            q3 = _quantile(speeds, 0.75)
-            def speed_color_prefix(sp_bps: Optional[float]) -> str:
-                try:
-                    v = float(sp_bps)
-                except Exception:
-                    return "\x1b[37m"
-                if not speeds or q1 is None or q2 is None or q3 is None:
-                    return "\x1b[37m"
-                if v <= q1:
-                    return "\x1b[31m"  # red
-                if v <= q2:
-                    return "\x1b[33m"  # yellow
-                if v <= q3:
-                    return "\x1b[32m"  # green
-                return "\x1b[36m"      # cyan
-
-            def make_bar(pct: Optional[float], width: int, color_prefix: str = "") -> str:
-                try:
-                    p = float(pct)
-                except Exception:
-                    p = -1
-                inner = max(0, width-2)
-                if p < 0:
-                    return "[" + ("." * inner) + "]"
-                p = max(0.0, min(100.0, p))
-                filled = int(inner * (p/100.0))
-                reset = "\x1b[0m"
-                if color_prefix:
-                    return "[" + (f"{color_prefix}" + ("=" * filled) + f"{reset}") + ("." * (inner - filled)) + "]"
-                else:
-                    return "[" + ("=" * filled) + ("." * (inner - filled)) + "]"
-
-            for ws in workers:
-                name = ws.urlfile.name if (ws.urlfile) else "idle"
-                url_idx = f"URL {ws.url_index or 0}/{ws.url_count or 0}"
-                elapsed = _hms(now - ws.assign_t0) if ws.urlfile else "00:00:00"
-                pct = f"{ws.percent:.2f}%" if isinstance(ws.percent, (int, float)) else "?%"
-                if ws.is_paused:
-                    sp = "PAUSED"
-                else:
-                    sp = f"{(float(ws.speed_bps)/(1024*1024)):.2f}MiB/s" if isinstance(ws.speed_bps, (int, float)) and ws.speed_bps is not None else "?/s"
-                # Render ETA; if near completion and eta ≤ 0, show '?' to avoid stuck 00:00:00
-                if isinstance(ws.eta_s, (int, float)) and ws.eta_s is not None:
-                    if isinstance(ws.percent, (int, float)) and ws.percent is not None and ws.percent >= 99.5 and float(ws.eta_s) <= 0:
-                        eta_txt = "?"
-                    else:
-                        eta_txt = _hms(float(ws.eta_s))
-                else:
-                    eta_txt = "?"
-                sizes = f"{_human_short_bytes(ws.downloaded_bytes)}/{_human_short_bytes(ws.total_bytes)}" if (isinstance(ws.downloaded_bytes, int) and isinstance(ws.total_bytes, int) and ws.total_bytes) else ""
-                sel_marker = ">" if ws.slot == selected_worker_slot else " "
-
-                if cols >= 110:
-                    # Single row packed
-                    tag = "[Y]" if ws.downloader == 'yt-dlp' else ("[A]" if ws.downloader == 'aebndl' else "   ")
-                    c0 = col(f"{sel_marker}[{ws.slot:02d}]", 5)
-                    c1 = col(name, 40)
-                    c2 = col(url_idx, 12)
-                    c3 = col(f"Elapsed {elapsed}", 16)
-                    c4 = col(pct, 8)
-                    c5 = col(sp, 12)
-                    c6 = col(f"ETA {eta_txt}", 12)
-                    c7 = col(sizes, 12)
-                    mainline = " | ".join([c0, c1, c2, c3, c4, c5, c6, c7])[:cols]
-                    lines.append(ws.overlay_msg[:cols] if ws.overlay_msg else mainline)
-                    barw = max(20, cols - 8)
-                    lines.append(f"  {sel_marker}{tag}  " + make_bar(ws.percent, barw, speed_color_prefix(ws.speed_bps))[:max(0, cols-7)])
-                elif cols >= 90:
-                    # Two rows
-                    tag = "[Y]" if ws.downloader == 'yt-dlp' else ("[A]" if ws.downloader == 'aebndl' else "   ")
-                    c0 = col(f"{sel_marker}[{ws.slot:02d}]", 5)
-                    c1 = col(name, 36)
-                    c2 = col(url_idx, 12)
-                    c3 = col(sizes, 14)
-                    main1 = " | ".join([c0, c1, c2, c3])[:cols]
-                    lines.append(ws.overlay_msg[:cols] if ws.overlay_msg else main1)
-                    c0b = col(f"{sel_marker}{tag}", 4)
-                    c1b = col(f"Elapsed {elapsed}", 20)
-                    c2b = col(pct, 10)
-                    c3b = col(sp, 12)
-                    c4b = col(f"ETA {eta_txt}", 14)
-                    lines.append(" | ".join([c0b, c1b, c2b, c3b, c4b])[:cols])
-                    barw = max(20, cols - 8)
-                    lines.append("     " + make_bar(ws.percent, barw, speed_color_prefix(ws.speed_bps))[:cols])
-                else:
-                    # Three rows compact
-                    tag = "[Y]" if ws.downloader == 'yt-dlp' else ("[A]" if ws.downloader == 'aebndl' else "   ")
-                    c0 = col(f"{sel_marker}[{ws.slot:02d}]", 5)
-                    c1 = col(name, max(20, cols - 7))
-                    lines.append(ws.overlay_msg[:cols] if ws.overlay_msg else " | ".join([c0, c1])[:cols])
-                    c0b = col(f"{sel_marker}{tag}", 4)
-                    c1b = col(f"{url_idx}  Elapsed {elapsed}", max(20, cols - 7))
-                    lines.append(" | ".join([c0b, c1b])[:cols])
-                    c1c = col(f"{pct}  {sp}  ETA {eta_txt}  {sizes}", max(20, cols - 7))
-                    lines.append(" | ".join([c0, c1c])[:cols])
-                    barw = max(20, cols - 8)
-                    lines.append("     " + make_bar(ws.percent, barw, speed_color_prefix(ws.speed_bps))[:cols])
-
-            # Controls and optional verbose pane
-            if quit_confirm:
-                lines.append("Press Y to quit, N to cancel"[:cols])
             else:
-                lines.append("Keys: w=watcher, p=pause/unpause, q=quit, v=cycle verbose (NDJSON->LOG->off), 1-9=select worker"[:cols])
+                # Downloads panel
+                active_workers = sum(1 for w in workers if w.proc)
+                current_regular, current_priority = _gather_from_roots(roots, finished_log, args.priority_files)
+                total_available = len([p for p in current_regular if str(p.resolve()) not in active]) + len([p for p in current_priority if str(p.resolve()) not in active])
+                pause_status = " [PAUSED]" if paused else ""
+                quit_status = " [Press Y to confirm quit]" if quit_confirm else ""
+                header = f"DL Manager{pause_status}{quit_status}  |  threads={args.threads}  active={active_workers}  pool={total_available}  time_limit={args.time_limit}"
+                lines.append(header[:cols])
+                total_speed_bps = sum(float(w.speed_bps) for w in workers if isinstance(w.speed_bps, (int, float)) and not w.is_paused)
+                total_speed_mib = total_speed_bps / (1024 * 1024) if total_speed_bps else 0.0
+                inprog_bytes = sum(int(w.downloaded_bytes) for w in workers if isinstance(w.downloaded_bytes, int))
+                agg_bytes = total_completed_bytes + inprog_bytes
+                avg_mib_s = (agg_bytes / max(1.0, (time.time() - t0))) / (1024*1024)
+                lines.append(f"Totals: speed={total_speed_mib:.2f}MiB/s  avg={avg_mib_s:.2f}MiB/s  downloaded={(agg_bytes/1048576):.1f}MiB  urls: started={total_started_urls} processed={total_processed_urls} completed={total_completed_urls}"[:cols])
+                lines.append("-" * min(cols, 100))
+                now = time.time()
+
+                def col(text: str, width: int) -> str:
+                    return (text[:width]).ljust(width)
+
+                # Build quartiles for color-coding speeds
+                speeds = [float(w.speed_bps) for w in workers if isinstance(w.speed_bps, (int, float)) and w.speed_bps and w.speed_bps > 0]
+                speeds.sort()
+                def _quantile(xs, q):
+                    if not xs:
+                        return None
+                    idx = int(round((len(xs)-1) * q))
+                    return xs[max(0, min(len(xs)-1, idx))]
+                q1 = _quantile(speeds, 0.25)
+                q2 = _quantile(speeds, 0.50)
+                q3 = _quantile(speeds, 0.75)
+                def speed_color_prefix(sp_bps: Optional[float]) -> str:
+                    try:
+                        v = float(sp_bps)
+                    except Exception:
+                        return "\x1b[37m"
+                    if not speeds or q1 is None or q2 is None or q3 is None:
+                        return "\x1b[37m"
+                    if v <= q1:
+                        return "\x1b[31m"  # red
+                    if v <= q2:
+                        return "\x1b[33m"  # yellow
+                    if v <= q3:
+                        return "\x1b[32m"  # green
+                    return "\x1b[36m"      # cyan
+
+                def make_bar(pct: Optional[float], width: int, color_prefix: str = "") -> str:
+                    try:
+                        p = float(pct)
+                    except Exception:
+                        p = -1
+                    inner = max(0, width-2)
+                    if p < 0:
+                        return "[" + ("." * inner) + "]"
+                    p = max(0.0, min(100.0, p))
+                    filled = int(inner * (p/100.0))
+                    reset = "\x1b[0m"
+                    if color_prefix:
+                        return "[" + (f"{color_prefix}" + ("=" * filled) + f"{reset}") + ("." * (inner - filled)) + "]"
+                    else:
+                        return "[" + ("=" * filled) + ("." * (inner - filled)) + "]"
+
+                for ws in workers:
+                    name = ws.urlfile.name if (ws.urlfile) else "idle"
+                    url_idx = f"URL {ws.url_index or 0}/{ws.url_count or 0}"
+                    elapsed = _hms(now - ws.assign_t0) if ws.urlfile else "00:00:00"
+                    pct = f"{ws.percent:.2f}%" if isinstance(ws.percent, (int, float)) else "?%"
+                    if ws.is_paused:
+                        sp = "PAUSED"
+                    else:
+                        sp = f"{(float(ws.speed_bps)/(1024*1024)):.2f}MiB/s" if isinstance(ws.speed_bps, (int, float)) and ws.speed_bps is not None else "?/s"
+                    # Render ETA; if near completion and eta ≤ 0, show '?' to avoid stuck 00:00:00
+                    if isinstance(ws.eta_s, (int, float)) and ws.eta_s is not None:
+                        if isinstance(ws.percent, (int, float)) and ws.percent is not None and ws.percent >= 99.5 and float(ws.eta_s) <= 0:
+                            eta_txt = "?"
+                        else:
+                            eta_txt = _hms(float(ws.eta_s))
+                    else:
+                        eta_txt = "?"
+                    sizes = f"{_human_short_bytes(ws.downloaded_bytes)}/{_human_short_bytes(ws.total_bytes)}" if (isinstance(ws.downloaded_bytes, int) and isinstance(ws.total_bytes, int) and ws.total_bytes) else ""
+                    sel_marker = ">" if ws.slot == selected_worker_slot else " "
+
+                    if cols >= 110:
+                        # Single row packed
+                        tag = "[Y]" if ws.downloader == 'yt-dlp' else ("[A]" if ws.downloader == 'aebndl' else "   ")
+                        c0 = col(f"{sel_marker}[{ws.slot:02d}]", 5)
+                        c1 = col(name, 40)
+                        c2 = col(url_idx, 12)
+                        c3 = col(f"Elapsed {elapsed}", 16)
+                        c4 = col(pct, 8)
+                        c5 = col(sp, 12)
+                        c6 = col(f"ETA {eta_txt}", 12)
+                        c7 = col(sizes, 12)
+                        mainline = " | ".join([c0, c1, c2, c3, c4, c5, c6, c7])[:cols]
+                        lines.append(ws.overlay_msg[:cols] if ws.overlay_msg else mainline)
+                        barw = max(20, cols - 8)
+                        lines.append(f"  {sel_marker}{tag}  " + make_bar(ws.percent, barw, speed_color_prefix(ws.speed_bps))[:max(0, cols-7)])
+                    elif cols >= 90:
+                        # Two rows
+                        tag = "[Y]" if ws.downloader == 'yt-dlp' else ("[A]" if ws.downloader == 'aebndl' else "   ")
+                        c0 = col(f"{sel_marker}[{ws.slot:02d}]", 5)
+                        c1 = col(name, 36)
+                        c2 = col(url_idx, 12)
+                        c3 = col(sizes, 14)
+                        main1 = " | ".join([c0, c1, c2, c3])[:cols]
+                        lines.append(ws.overlay_msg[:cols] if ws.overlay_msg else main1)
+                        c0b = col(f"{sel_marker}{tag}", 4)
+                        c1b = col(f"Elapsed {elapsed}", 20)
+                        c2b = col(pct, 10)
+                        c3b = col(sp, 12)
+                        c4b = col(f"ETA {eta_txt}", 14)
+                        lines.append(" | ".join([c0b, c1b, c2b, c3b, c4b])[:cols])
+                        barw = max(20, cols - 8)
+                        lines.append("     " + make_bar(ws.percent, barw, speed_color_prefix(ws.speed_bps))[:cols])
+                    else:
+                        # Three rows compact
+                        tag = "[Y]" if ws.downloader == 'yt-dlp' else ("[A]" if ws.downloader == 'aebndl' else "   ")
+                        c0 = col(f"{sel_marker}[{ws.slot:02d}]", 5)
+                        c1 = col(name, max(20, cols - 7))
+                        lines.append(ws.overlay_msg[:cols] if ws.overlay_msg else " | ".join([c0, c1])[:cols])
+                        c0b = col(f"{sel_marker}{tag}", 4)
+                        c1b = col(f"{url_idx}  Elapsed {elapsed}", max(20, cols - 7))
+                        lines.append(" | ".join([c0b, c1b])[:cols])
+                        c1c = col(f"{pct}  {sp}  ETA {eta_txt}  {sizes}", max(20, cols - 7))
+                        lines.append(" | ".join([c0, c1c])[:cols])
+                        barw = max(20, cols - 8)
+                        lines.append("     " + make_bar(ws.percent, barw, speed_color_prefix(ws.speed_bps))[:cols])
+
+                # Controls and optional verbose pane
+                if quit_confirm:
+                    lines.append("Press Y to quit, N to cancel"[:cols])
+                else:
+                    lines.append("Keys: w=watcher, p=pause/unpause, q=quit, v=cycle verbose (NDJSON->LOG->off), 1-9=select worker"[:cols])
+                _render_screen(lines)
+
+            # Keyboard handling (for both panels)
             if os.name == 'nt':
                 try:
                     import msvcrt  # type: ignore
