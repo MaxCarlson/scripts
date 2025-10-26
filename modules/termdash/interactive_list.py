@@ -437,7 +437,11 @@ class InteractiveList:
             if self.state.exclusion_pattern:
                 filter_display = f"{filter_display} !{self.state.exclusion_pattern}"
             filter_display = f"Filter: {filter_display}"
-        stdscr.addnstr(0, 0, filter_display.ljust(max_x), max_x - 1, curses.color_pair(2) | curses.A_BOLD)
+
+        # Clear line and render with addstr
+        stdscr.move(0, 0)
+        stdscr.clrtoeol()
+        stdscr.addstr(0, 0, filter_display.ljust(max_x)[:max_x - 1], curses.color_pair(2) | curses.A_BOLD)
 
         sort_order = 'desc' if self.state.descending else 'asc'
         toggles = []
@@ -449,7 +453,11 @@ class InteractiveList:
             toggles.append("NoDirsFirst")
         toggle_str = f" [{', '.join(toggles)}]" if toggles else ""
         sort_line = f"{self.state.header} | Sort: {self.state.sort_field} ({sort_order}) | Items: {len(self.state.visible)}{toggle_str}"
-        stdscr.addnstr(1, 0, sort_line[:max_x - 1], max_x - 1, curses.color_pair(2))
+
+        # Clear line and render with addstr
+        stdscr.move(1, 0)
+        stdscr.clrtoeol()
+        stdscr.addstr(1, 0, sort_line[:max_x - 1], curses.color_pair(2))
 
         # Progress bar (if calculating sizes)
         if self.state.calculating_sizes:
@@ -461,7 +469,9 @@ class InteractiveList:
                 bar = "█" * filled + "░" * (bar_width - filled)
                 progress_line = f"Calculating sizes: [{bar}] {progress_pct}% ({current}/{total})"
                 try:
-                    stdscr.addnstr(2, 0, progress_line[:max_x - 1], max_x - 1, curses.color_pair(3))
+                    stdscr.move(2, 0)
+                    stdscr.clrtoeol()
+                    stdscr.addstr(2, 0, progress_line[:max_x - 1], curses.color_pair(3))
                     header_lines += 1
                     list_start += 1
                     list_height = max(1, max_y - (header_lines + footer_lines))
@@ -591,9 +601,13 @@ class InteractiveList:
 
         for idx, text in enumerate(self.footer_lines):
             try:
-                stdscr.addnstr(
-                    max_y - footer_lines + idx, 0, text.ljust(max_x), max_x - 1, curses.color_pair(2)
-                )
+                # Clear the line first
+                y_pos = max_y - footer_lines + idx + 1
+                stdscr.move(y_pos, 0)
+                stdscr.clrtoeol()
+                # Use addstr instead of addnstr to handle wide characters better
+                padded_text = text.ljust(max_x)[:max_x - 1]
+                stdscr.addstr(y_pos, 0, padded_text, curses.color_pair(2))
             except curses.error:
                 pass
 
