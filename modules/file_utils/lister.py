@@ -47,7 +47,7 @@ SORT_FUNCS: Dict[str, Callable[[Entry], object]] = {
     "created": lambda entry: entry.created.timestamp(),
     "modified": lambda entry: entry.modified.timestamp(),
     "accessed": lambda entry: entry.accessed.timestamp(),
-    "size": lambda entry: entry.size,
+    "size": lambda entry: entry.get_display_size(),  # Use calculated size if available
     "name": lambda entry: entry.name.lower(),
 }
 
