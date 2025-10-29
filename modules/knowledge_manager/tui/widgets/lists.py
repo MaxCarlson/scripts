@@ -3,14 +3,25 @@ from pathlib import Path
 from typing import Optional, List as PyList
 import logging
 import uuid
+import re
 
 from textual.app import App, ComposeResult
 from textual.widgets import ListView, ListItem, Label
 
-from ... import project_ops, task_ops
+from ... import project_ops, task_ops, links
 from ...models import Project, Task, TaskStatus
 
 log = logging.getLogger(__name__)
+
+def _format_title_with_links(title: str) -> str:
+    """Format task title with blue @mentions using Rich markup."""
+    # Use the existing PROJECT_LINK_PATTERN from links module
+    def replace_mention(match):
+        # Get the full match including @
+        full_match = match.group(0)
+        return f"[blue]{full_match}[/blue]"
+
+    return links.PROJECT_LINK_PATTERN.sub(replace_mention, title)
 
 class ProjectListItem(ListItem):
     def __init__(self, project: Project) -> None:
@@ -20,19 +31,24 @@ class ProjectListItem(ListItem):
     def compose(self) -> ComposeResult:
         yield Label(f"{self.project.name} [{self.project.status.value}]", classes="list-item-label")
 
-class TaskListItem(ListItem): 
-    def __init__(self, task_obj: Task, level: int = 0) -> None: 
+class TaskListItem(ListItem):
+    def __init__(self, task_obj: Task, level: int = 0) -> None:
         super().__init__()
         self.task_data: Task = task_obj
         self.level = level
         self.id = f"task-item-{task_obj.id}"
-    def compose(self) -> ComposeResult: 
+    def compose(self) -> ComposeResult:
         indent = "  " * self.level
         status_icon = "✓" if self.task_data.status == TaskStatus.DONE else ("…" if self.task_data.status == TaskStatus.IN_PROGRESS else "☐")
         due_str = f" (Due: {self.task_data.due_date.strftime('%b %d')})" if self.task_data.due_date else ""
-        prio_str = f" P{self.task_data.priority}" if self.task_data.priority != 3 else "" 
-        display_string = f"{indent}{status_icon} {self.task_data.title}{prio_str}{due_str}"
-        yield Label(display_string, classes="list-item-label")
+        prio_str = f" P{self.task_data.priority}" if self.task_data.priority != 3 else ""
+
+        # Format title with blue @mentions
+        formatted_title = _format_title_with_links(self.task_data.title)
+        display_string = f"{indent}{status_icon} {formatted_title}{prio_str}{due_str}"
+
+        # Enable Rich markup so [blue]...[/blue] renders correctly
+        yield Label(display_string, classes="list-item-label", markup=True)
 
 class ProjectList(ListView):
     def compose(self) -> ComposeResult: yield from [] 
