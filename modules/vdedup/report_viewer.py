@@ -15,6 +15,13 @@ ANSI_LOSE = "\033[91m"   # Bright red
 ANSI_METHOD = "\033[96m"  # Cyan
 ANSI_STATS = "\033[95m"   # Magenta
 
+NAME_MIN_WIDTH = 30
+DUP_WIDTH = 4
+RECLAIM_WIDTH = 12
+SIZE_WIDTH = 12
+DELTA_WIDTH = 8
+COLUMN_SPACING = 1
+
 
 def _fmt_bytes(n: int) -> str:
     n = int(n or 0)
@@ -39,6 +46,60 @@ def _term_width(default: int = 120) -> int:
         return default
 
 
+def _compute_layout(width: int) -> Tuple[int, int, int, int, int]:
+    meta_width = (
+        DUP_WIDTH
+        + RECLAIM_WIDTH
+        + SIZE_WIDTH
+        + DELTA_WIDTH
+        + COLUMN_SPACING * 4
+    )
+    name_width = max(NAME_MIN_WIDTH, width - meta_width)
+    return name_width, DUP_WIDTH, RECLAIM_WIDTH, SIZE_WIDTH, DELTA_WIDTH
+
+
+def _column_header(width: int) -> str:
+    name_width, dup_w, reclaim_w, size_w, delta_w = _compute_layout(width)
+    return (
+        f"{'NAME':<{name_width}}"
+        f"{'':<{COLUMN_SPACING}}"
+        f"{'DUP':>{dup_w}}"
+        f"{'':<{COLUMN_SPACING}}"
+        f"{'RECLAIM':>{reclaim_w}}"
+        f"{'':<{COLUMN_SPACING}}"
+        f"{'SIZE':>{size_w}}"
+        f"{'':<{COLUMN_SPACING}}"
+        f"{'Δ':>{delta_w}}"
+    )
+
+
+def _unique_suffixes(paths: Sequence[Path]) -> Dict[Path, str]:
+    if not paths:
+        return {}
+    parts_map = {path: list(path.parts) for path in paths}
+    max_depth = max(len(parts) for parts in parts_map.values())
+    result: Dict[Path, str] = {}
+
+    for depth in range(1, max_depth + 1):
+        suffix_map: Dict[Tuple[str, ...], List[Path]] = {}
+        for path, parts in parts_map.items():
+            if path in result:
+                continue
+            suffix = tuple(parts[-depth:])
+            suffix_map.setdefault(suffix, []).append(path)
+        for suffix, entries in suffix_map.items():
+            if len(entries) == 1:
+                path = entries[0]
+                result[path] = "/".join(suffix)
+        if len(result) == len(paths):
+            break
+
+    for path in paths:
+        if path not in result:
+            result[path] = str(path)
+    return result
+
+
 @dataclass(slots=True)
 class DuplicateListRow:
     group_id: str
@@ -53,6 +114,7 @@ class DuplicateListRow:
     parent_path: Optional[str]
     keep_size: int
     expanded: bool = False
+    display_name: str = ""
 
     def is_loser(self) -> bool:
         return not self.is_keep
