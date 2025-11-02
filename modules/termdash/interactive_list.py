@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import curses
+import shutil
 import sys
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
@@ -613,6 +614,34 @@ class InteractiveList:
 
         stdscr.refresh()
 
+
+def render_items_to_text(
+    items: Sequence[Any],
+    formatter: Callable[[Any, str, int, bool, bool, int], str],
+    *,
+    sort_field: str = "",
+    width: Optional[int] = None,
+    show_date: bool = True,
+    show_time: bool = True,
+) -> List[str]:
+    """
+    Render list items using the provided formatter into plain text lines.
+
+    Args:
+        items: sequence of items matching the formatter signature.
+        formatter: same formatter used by InteractiveList.
+        sort_field: name of the active sort field (passed to formatter).
+        width: optional target width (defaults to terminal width or 120 fallback).
+        show_date: whether formatter should include date information.
+        show_time: whether formatter should include time information.
+    """
+    if width is None:
+        width = shutil.get_terminal_size(fallback=(120, 40)).columns
+
+    lines: List[str] = []
+    for item in items:
+        lines.append(formatter(item, sort_field, max(10, width), show_date, show_time, 0))
+    return lines
     def _draw_detail_view(self, stdscr, max_y: int, max_x: int) -> None:
         """Draw the detail view for the selected item with text wrapping."""
         detail_lines = self.detail_formatter(self.state.detail_item)

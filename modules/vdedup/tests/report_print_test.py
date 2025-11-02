@@ -18,10 +18,11 @@ def test_pretty_and_exclusions(tmp_path: Path):
     }
     rp.write_text(json.dumps(data), encoding="utf-8")
 
-    # pretty print
     text = pretty_print_reports([rp], verbosity=1)
-    assert "Groups:" in text
-    assert "By method:" in text
+    assert "Report:" in text
+    assert "KEEP [hash]" in text
+    assert "LOSE" in text
+    assert "Summary:" in text
 
     # exclusions
     losers = collect_exclusions([rp])
