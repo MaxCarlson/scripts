@@ -66,11 +66,119 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Calculate actual recursive sizes for directories.",
     )
 
+    # --- replace command ---
+    replace_parser = subparsers.add_parser(
+        "replace",
+        help="Mass find and replace using ripgrep.",
+        description="Find and replace text across multiple files using ripgrep. "
+                    "Supports replacing text or deleting entire lines.",
+    )
+    replace_parser.add_argument(
+        "-p",
+        "--pattern",
+        required=True,
+        help="Regex pattern to search for.",
+    )
+    replace_parser.add_argument(
+        "-r",
+        "--replacement",
+        default=None,
+        help="Replacement text. Cannot be used with --delete-line.",
+    )
+    replace_parser.add_argument(
+        "-d",
+        "--delete-line",
+        action="store_true",
+        help="Delete entire line containing match. Cannot be used with --replacement.",
+    )
+    replace_parser.add_argument(
+        "-n",
+        "--dry-run",
+        action="store_true",
+        help="Show what would be changed without making actual changes.",
+    )
+    replace_parser.add_argument(
+        "-f",
+        "--first-only",
+        action="store_true",
+        help="Only replace the first match in each file.",
+    )
+    replace_parser.add_argument(
+        "-l",
+        "--line-number",
+        type=int,
+        metavar="N",
+        help="Only replace matches on line number N (1-indexed).",
+    )
+    replace_parser.add_argument(
+        "-m",
+        "--max-per-file",
+        type=int,
+        metavar="N",
+        help="Maximum number of replacements per file.",
+    )
+    replace_parser.add_argument(
+        "-i",
+        "--ignore-case",
+        action="store_true",
+        help="Case insensitive search.",
+    )
+    replace_parser.add_argument(
+        "-g",
+        "--glob",
+        metavar="PATTERN",
+        help="Glob pattern to filter files (e.g., '*.py').",
+    )
+    replace_parser.add_argument(
+        "-t",
+        "--type",
+        metavar="TYPE",
+        help="File type filter (e.g., 'py', 'js'). Uses ripgrep's --type.",
+    )
+    replace_parser.add_argument(
+        "--path",
+        default=".",
+        help="Directory or file to search in (default: current directory).",
+    )
+    replace_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Verbose output showing each file processed.",
+    )
+    replace_parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Quiet mode - only show errors.",
+    )
+    replace_parser.add_argument(
+        "-a",
+        "--analyze",
+        action="store_true",
+        help="Analyze mode - show statistics about matches without making changes.",
+    )
+    replace_parser.add_argument(
+        "-s",
+        "--show-stats",
+        action="store_true",
+        help="Show detailed statistics after replacements.",
+    )
+    replace_parser.add_argument(
+        "-b",
+        "--blank-on-delete",
+        action="store_true",
+        help="Leave blank line when deleting (default: pull up line below).",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "ls":
         from . import lister
         return lister.run_lister(args)
+    elif args.command == "replace":
+        from . import replacer
+        return replacer.run_replacer(args)
 
     return 0
 
