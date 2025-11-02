@@ -57,6 +57,7 @@ from vdedup.report import (
     load_report,
     collapse_report_file,
 )
+from vdedup.report_viewer import launch_report_viewer
 
 # -------- helpers --------
 
@@ -555,7 +556,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
     # Report utilities
     p.add_argument("-P", "--print-report", action="append", help="Path to a JSON report to pretty-print (repeatable)")
-    p.add_argument("-v", "--verbosity", type=int, default=1, choices=[0, 1, 2], help="Report/apply verbosity (0–2). Default: 1")
+    p.add_argument("-V", "--view-report", action="append", help="Path to a JSON report to inspect interactively (repeatable)")
+    p.add_argument("-v", "--verbosity", type=int, default=1, choices=[0, 1, 2], help="Report/apply verbosity (0-2). Default: 1")
     p.add_argument("-e", "--exclude-by-report", action="append", help="Path to a JSON report; losers listed will be skipped during scan (repeatable)")
 
     # Report analysis
@@ -586,17 +588,29 @@ def _maybe_print_or_analyze(args: argparse.Namespace) -> Optional[int]:
     If only -P/--print-report or -Y/--analyze-report were supplied (no directories / apply),
     do that and exit.
     """
-    # Pretty print
-    if args.print_report and not args.directories and not args.apply_report and not args.analyze_report:
+    if args.directories or args.apply_report:
+        return None
+
+    performed = False
+
+    if args.view_report:
+        paths = [Path(p).expanduser().resolve() for p in args.view_report]
+        launch_report_viewer(paths)
+        performed = True
+
+    if args.print_report:
         paths = [Path(p).expanduser().resolve() for p in args.print_report]
         text = pretty_print_reports(paths, verbosity=int(args.verbosity))
         print(text)
-        return 0
-    # Analyze
-    if args.analyze_report and not args.directories and not args.apply_report:
+        performed = True
+
+    if args.analyze_report:
         paths = [Path(p).expanduser().resolve() for p in args.analyze_report]
         text = render_analysis_for_reports(paths, verbosity=1, show_progress=True)
         print(text)
+        performed = True
+
+    if performed:
         return 0
     return None
 
@@ -696,6 +710,11 @@ def _validate_args(args: argparse.Namespace) -> Optional[str]:
 
     if args.print_report:
         for report in args.print_report:
+            report_path = Path(report).expanduser().resolve()
+            if not report_path.exists():
+                return f"Report file not found: {report_path}"
+    if args.view_report:
+        for report in args.view_report:
             report_path = Path(report).expanduser().resolve()
             if not report_path.exists():
                 return f"Report file not found: {report_path}"
@@ -1136,6 +1155,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             logger.info(f"Pretty printing reports: {args.print_report}")
             paths = [Path(p).expanduser().resolve() for p in args.print_report]
             print(pretty_print_reports(paths, verbosity=int(args.verbosity)))
+        if args.view_report:
+            logger.info(f"Launching interactive viewer for reports: {args.view_report}")
+            paths = [Path(p).expanduser().resolve() for p in args.view_report]
+            launch_report_viewer(paths)
         if args.analyze_report:
             logger.info(f"Analyzing reports: {args.analyze_report}")
             paths = [Path(p).expanduser().resolve() for p in args.analyze_report]
