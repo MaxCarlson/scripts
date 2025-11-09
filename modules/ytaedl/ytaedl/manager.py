@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 import traceback
 from pathlib import Path
@@ -40,6 +41,20 @@ from .mp4_watcher import MP4Watcher, WatcherConfig, WatcherSnapshot
 from termdash import utils as td_utils
 
 MP4_VALID_OPERATIONS = ("copy", "move")
+WATCHER_LOG_STATUS_COLOURS = {
+    "MOVE": "green",
+    "COPY": "cyan",
+    "DELETE": "red",
+    "REPLACE": "magenta",
+    "SKIP": "yellow",
+    "START": "cyan",
+    "FINISH": "green",
+    "FINISH_BAD": "red",
+    "INFO": "bright",
+    "ERROR": "red",
+    "DRYRUN": "yellow",
+    "SCAN": "cyan",
+}
 GIB = 1024 ** 3
 
 # Use TermDash for robust in-place dashboard rendering
@@ -159,6 +174,45 @@ def _watcher_keep_source_label(config: WatcherConfig) -> str:
     if config.keep_source_locked:
         label += " (locked -K)"
     return label
+
+
+def _format_watcher_log_line(line: str) -> str:
+    stripped = line.rstrip()
+    if not stripped:
+        return ""
+    status = None
+    parts = stripped.split("] ")
+    if len(parts) >= 3:
+        token = parts[2].split()[0]
+        token_clean = token.strip("[]")
+        if token_clean.isupper():
+            status = token_clean
+    colour = WATCHER_LOG_STATUS_COLOURS.get(status or "")
+    if colour:
+        coloured_status = td_utils.color_text(status, colour)
+        return stripped.replace(status, coloured_status, 1)
+    return stripped
+
+
+def _read_watcher_log_lines(log_path: Optional[Path], max_lines: int) -> List[str]:
+    if not log_path:
+        return []
+    try:
+        path = Path(log_path)
+    except Exception:
+        return []
+    if not path.exists():
+        return []
+    entries: deque[str] = deque(maxlen=max_lines)
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for raw in handle:
+                formatted = _format_watcher_log_line(raw.rstrip("\n"))
+                if formatted:
+                    entries.append(formatted)
+    except Exception:
+        return []
+    return list(entries)
 
 
 def _color_operation(op: Optional[str]) -> str:
@@ -358,8 +412,11 @@ def _render_watcher_panel(
         )
 
     # Recent log section
-    log_entries = []
-    if snapshot and snapshot.progress:
+    log_entries: List[str] = []
+    log_path = snapshot.config.log_path if snapshot else None
+    if log_path:
+        log_entries = _read_watcher_log_lines(log_path, rows * 4)
+    if not log_entries and snapshot and snapshot.progress:
         log_entries = snapshot.progress.get('recent_logs') or []
     control_lines = 1 + len(hotkey_lines)
     available_rows = max(5, rows - len(lines) - control_lines)
