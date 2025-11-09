@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass, field
 import traceback
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 # Import EnforcedArgumentParser with fallback
 try:
@@ -37,8 +37,10 @@ except ImportError:
 
 from .downloader import MAX_RESOLUTION_CHOICES
 from .mp4_watcher import MP4Watcher, WatcherConfig, WatcherSnapshot
+from termdash import utils as td_utils
 
 MP4_VALID_OPERATIONS = ("copy", "move")
+GIB = 1024 ** 3
 
 # Use TermDash for robust in-place dashboard rendering
 # We avoid TermDash here for maximal compatibility across shells; do manual frames
@@ -134,38 +136,15 @@ def _hms(elapsed_s: float) -> str:
 def _watcher_bytes(value: Optional[int | float]) -> str:
     if not isinstance(value, (int, float)) or value < 0:
         return "0 B"
-    if value < 1024:
-        return f"{int(value)} B"
-    units = ["KB", "MB", "GB", "TB", "PB"]
-    size = float(value)
-    for unit in units:
-        size /= 1024.0
-        if size < 1024.0:
-            return f"{size:.2f} {unit}"
-    return f"{size:.2f} EB"
+    return td_utils.format_bytes_binary(value)
 
 
 def _watcher_rate(bps: Optional[float]) -> str:
-    if not isinstance(bps, (int, float)) or bps <= 0:
-        return "0 B/s"
-    units = ["B/s", "KB/s", "MB/s", "GB/s", "TB/s"]
-    value = float(bps)
-    idx = 0
-    while value >= 1024.0 and idx < len(units) - 1:
-        value /= 1024.0
-        idx += 1
-    return f"{value:.2f} {units[idx]}"
+    return td_utils.format_rate_bps(bps)
 
 
 def _watcher_duration(seconds: Optional[float]) -> str:
-    if not isinstance(seconds, (int, float)) or seconds < 0:
-        return "0:00:00.000"
-    frac = float(seconds) - int(seconds)
-    millis = int(frac * 1000)
-    total = int(seconds)
-    mins, secs = divmod(total, 60)
-    hours, mins = divmod(mins, 60)
-    return f"{hours:d}:{mins:02d}:{secs:02d}.{millis:03d}"
+    return td_utils.format_duration_hms(seconds)
 
 
 def _watcher_trigger_label(value: Optional[int]) -> str:
@@ -176,10 +155,98 @@ def _watcher_trigger_label(value: Optional[int]) -> str:
 
 
 def _watcher_keep_source_label(config: WatcherConfig) -> str:
-    label = "on" if config.keep_source else "off"
+    label = td_utils.color_text("on", "green") if config.keep_source else td_utils.color_text("off", "yellow")
     if config.keep_source_locked:
         label += " (locked -K)"
     return label
+
+
+def _color_operation(op: Optional[str]) -> str:
+    if not op:
+        return "-"
+    op_lower = op.lower()
+    color = "yellow" if op_lower == "move" else "cyan"
+    return td_utils.color_text(op_lower, color)
+
+
+def _wrap_hotkey_lines(text: str, cols: int) -> List[str]:
+    return td_utils.wrap_text(text, max(20, cols))
+
+
+def _prepare_log_window(logs: List[str], available_rows: int, scroll: int) -> tuple[List[str], int]:
+    if available_rows <= 0:
+        return [], 0
+    total = len(logs)
+    max_scroll = max(0, total - available_rows)
+    scroll = max(0, min(scroll, max_scroll))
+    start = max(0, total - available_rows - scroll)
+    end = start + available_rows
+    return logs[start:end], max_scroll
+
+
+def _format_buffer_delta(delta_bytes: int) -> str:
+    color = "green" if delta_bytes > 5 * GIB else "yellow" if delta_bytes >= 0 else "red"
+    sign = "+" if delta_bytes >= 0 else "-"
+    human = td_utils.format_bytes_binary(abs(delta_bytes))
+    return td_utils.color_text(f"{sign}{human}", color)
+
+
+def _storage_summary_lines(
+    staging_stats: Optional[td_utils.DiskStats],
+    destination_stats: Optional[td_utils.DiskStats],
+    *,
+    threshold_bytes: Optional[int],
+    download_speed_bps: float,
+) -> List[str]:
+    lines: List[str] = []
+    if not staging_stats and not destination_stats:
+        return lines
+    lines.append("Storage")
+    if staging_stats:
+        lines.append(_describe_storage("Staging", staging_stats, threshold_bytes, download_speed_bps, show_disabled=True))
+    if destination_stats:
+        same = staging_stats and td_utils.same_disk(staging_stats, destination_stats)
+        lines.append(
+            _describe_storage(
+                "Destination",
+                destination_stats,
+                threshold_bytes if same else None,
+                download_speed_bps,
+                same_volume=bool(same),
+                show_disabled=bool(same),
+            )
+        )
+    return lines
+
+
+def _describe_storage(
+    label: str,
+    stats: td_utils.DiskStats,
+    threshold_bytes: Optional[int],
+    download_speed_bps: float,
+    *,
+    same_volume: bool = False,
+    show_disabled: bool = False,
+) -> str:
+    free_str = td_utils.format_bytes_binary(stats.free_bytes)
+    total_str = td_utils.format_bytes_binary(stats.total_bytes)
+    line = f"{label}: {free_str} free / {total_str} total ({stats.label})"
+    extras: List[str] = []
+    if same_volume:
+        extras.append("shares staging volume")
+    if threshold_bytes and threshold_bytes > 0:
+        delta = stats.free_bytes - threshold_bytes
+        extras.append(f"buffer {_format_buffer_delta(delta)} @ {td_utils.format_bytes_binary(threshold_bytes)}")
+        if delta > 0 and download_speed_bps > 0:
+            eta = delta / download_speed_bps
+            extras.append(f"ETA {td_utils.format_duration_hms(eta)}")
+        elif delta <= 0:
+            extras.append(td_utils.color_text("AUTO CLEAN NOW", "red"))
+    elif show_disabled:
+        extras.append("auto-halt disabled")
+    if extras:
+        line += " | " + " | ".join(extras)
+    return line
 
 
 def _render_screen(lines: List[str]) -> None:
@@ -191,11 +258,18 @@ def _render_screen(lines: List[str]) -> None:
 def _render_watcher_panel(
     *,
     cols: int,
+    rows: int,
     watcher_enabled: bool,
     snapshot: Optional[WatcherSnapshot],
     quit_confirm: bool,
     manager_elapsed: float,
     total_downloaded_bytes: int,
+    log_scroll: int,
+    log_meta: Optional[Dict[str, int]],
+    download_speed_bps: float,
+    staging_stats: Optional[td_utils.DiskStats],
+    destination_stats: Optional[td_utils.DiskStats],
+    auto_trigger_bytes: Optional[int],
 ) -> List[str]:
     lines: List[str] = []
     header = "MP4 Folder Synchroniser"
@@ -203,63 +277,112 @@ def _render_watcher_panel(
         header_state = "running" if snapshot.running else "idle"
         if snapshot.dry_run:
             header_state += " · dry-run"
-        lines.append(f"{header} ({header_state})"[:cols])
-    else:
-        lines.append(header[:cols])
+        header = f"{header} ({header_state})"
+    lines.append(header[:cols])
 
     lines.append(f"Manager elapsed: {_hms(manager_elapsed)}"[:cols])
     lines.append(f"Total downloaded: {_watcher_bytes(total_downloaded_bytes)}"[:cols])
-    if snapshot:
-        cfg = snapshot.config
-        lines.append(f"Default op: {cfg.default_operation} | Keep source: {_watcher_keep_source_label(cfg)}"[:cols])
+
+    cfg = snapshot.config if snapshot else None
+    if cfg:
+        op_line = f"Default op: {_color_operation(cfg.default_operation)} | Keep source: {_watcher_keep_source_label(cfg)}"
+        lines.append(op_line[:cols])
         max_label = cfg.max_files if cfg.max_files is not None else "unlimited"
-        lines.append(f"Max files/run: {max_label} | Free trigger: {_watcher_trigger_label(cfg.free_space_trigger_bytes)}"[:cols])
+        trigger_bytes = cfg.free_space_trigger_bytes or auto_trigger_bytes
+        lines.append(
+            f"Max files/run: {max_label} | Free trigger: {_watcher_trigger_label(trigger_bytes)}"[:cols]
+        )
         lines.append(f"Staged size trigger: {_watcher_trigger_label(cfg.total_size_trigger_bytes)}"[:cols])
+
+    storage_lines = _storage_summary_lines(
+        staging_stats,
+        destination_stats,
+        threshold_bytes=cfg.free_space_trigger_bytes if cfg else auto_trigger_bytes,
+        download_speed_bps=download_speed_bps,
+    )
+    for line in storage_lines:
+        lines.append(line[:cols])
 
     if not watcher_enabled:
         lines.append("Watcher disabled. Launch with --watcher to enable the cleaner."[:cols])
-        lines.append("-" * min(cols, 100))
     elif snapshot:
-        if snapshot.progress:
-            lines.append(f"Elapsed: {_watcher_duration(snapshot.progress.get('elapsed'))}"[:cols])
-            lines.append(f"Current folder: {snapshot.progress.get('current_folder') or '-'}"[:cols])
-            lines.append(f"Current file: {snapshot.progress.get('current_file') or '-'}"[:cols])
-            lines.append(f"Files processed: {snapshot.progress.get('processed_files', 0)} / {snapshot.progress.get('total_files', 0)}"[:cols])
-            lines.append(f"Copied (no collision): {snapshot.progress.get('copied_without_collision', 0)} | Collisions: {snapshot.progress.get('collisions', 0)} (replaced: {snapshot.progress.get('replaced_dest', 0)}, kept: {snapshot.progress.get('kept_dest', 0)})"[:cols])
-            total_prog_pct = snapshot.progress.get('total_percent', 0.0)
-            lines.append(f"Total progress: {_watcher_bytes(snapshot.progress.get('processed_bytes', 0))} / {_watcher_bytes(snapshot.progress.get('total_bytes', 0))} ({total_prog_pct:.1f}%)"[:cols])
+        progress = snapshot.progress or {}
+        if progress:
+            lines.append(f"Elapsed: {_watcher_duration(progress.get('elapsed'))}"[:cols])
+            lines.append(f"Current folder: {progress.get('current_folder') or '-'}"[:cols])
+            lines.append(f"Current file: {progress.get('current_file') or '-'}"[:cols])
+            lines.append(
+                f"Files processed: {progress.get('processed_files', 0)} / {progress.get('total_files', 0)}"[:cols]
+            )
+            lines.append(
+                f"Copied (no collision): {progress.get('copied_without_collision', 0)} | "
+                f"Collisions: {progress.get('collisions', 0)} (replaced: {progress.get('replaced_dest', 0)}, kept: {progress.get('kept_dest', 0)})"[:cols]
+            )
+            total_prog_pct = progress.get('total_percent', 0.0)
+            lines.append(
+                f"Total progress: {_watcher_bytes(progress.get('processed_bytes', 0))} / "
+                f"{_watcher_bytes(progress.get('total_bytes', 0))} ({total_prog_pct:.1f}%)"[:cols]
+            )
             lines.append("")
             lines.append("Transfer Progress")
-            if snapshot.progress.get('current_file_size'):
-                file_prog_pct = snapshot.progress.get('file_percent', 0.0)
-                rate = _watcher_rate(snapshot.progress.get('current_speed', 0.0))
-                lines.append(f"File progress: {_watcher_bytes(snapshot.progress.get('current_file_done', 0))} / {_watcher_bytes(snapshot.progress.get('current_file_size', 0))} ({file_prog_pct:.1f}%) @ {rate}"[:cols])
+            if progress.get('current_file_size'):
+                file_prog_pct = progress.get('file_percent', 0.0)
+                rate = _watcher_rate(progress.get('current_speed', 0.0))
+                lines.append(
+                    f"File progress: {_watcher_bytes(progress.get('current_file_done', 0))} / "
+                    f"{_watcher_bytes(progress.get('current_file_size', 0))} ({file_prog_pct:.1f}%) @ {rate}"[:cols]
+                )
 
         pending_actions = snapshot.plan_actions or (snapshot.last_result.planned_actions if snapshot.last_result else None)
         pending_bytes = snapshot.plan_bytes or (snapshot.last_result.plan_bytes if snapshot.last_result else None)
         if pending_actions is not None or pending_bytes is not None:
             lines.append(
-                f"Potential transfers: {pending_actions or 0} files | {_watcher_bytes(pending_bytes or 0)}"
+                f"Potential transfers: {pending_actions or 0} files | {_watcher_bytes(pending_bytes or 0)}"[:cols]
             )
 
         lines.append(f"Bytes since last run: {_watcher_bytes(snapshot.bytes_since_last or 0)}"[:cols])
-        lines.append("")
-        lines.append("Recent Activity")
-        if snapshot.progress and snapshot.progress.get('recent_logs'):
-            for log in snapshot.progress.get('recent_logs'):
-                lines.append(log[:cols])
-        else:
-            lines.append("(no events yet)")
     else:
-        lines.append("(no snapshot yet)")
+        lines.append("(no snapshot yet)"[:cols])
 
+    # Hotkey block (precompute for spacing)
+    if quit_confirm:
+        hotkey_lines = ["Press Y to quit, N to cancel"]
+    else:
+        hotkey_lines = _wrap_hotkey_lines(
+            "Keys: w=back, c=start cleaner, s=scan (dry-run), o=toggle copy/move, "
+            "k=set max-files, f=set free GiB, [=scroll log up, ]=scroll log down, q=quit",
+            cols,
+        )
+
+    # Recent log section
+    log_entries = []
+    if snapshot and snapshot.progress:
+        log_entries = snapshot.progress.get('recent_logs') or []
+    control_lines = 1 + len(hotkey_lines)
+    available_rows = max(5, rows - len(lines) - control_lines)
+    window, max_scroll = _prepare_log_window(log_entries, available_rows, log_scroll)
+    if log_meta is not None:
+        log_meta["log_max_scroll"] = max_scroll
+        log_meta["log_window"] = available_rows
+        log_meta["log_total"] = len(log_entries)
+
+    lines.append("Recent Activity"[:cols])
+    if log_entries:
+        lines.append(
+            f"(showing {len(window)}/{len(log_entries)} – scroll {log_scroll}/{max_scroll})"[:cols]
+        )
+        for entry in window:
+            lines.append(entry[:cols])
+        # pad if needed
+        for _ in range(max(0, available_rows - len(window))):
+            lines.append("")
+    else:
+        lines.append("(no events yet)"[:cols])
+        for _ in range(max(0, available_rows - 1)):
+            lines.append("")
 
     lines.append("-" * min(cols, 100))
-    if quit_confirm:
-        lines.append("Press Y to quit, N to cancel"[:cols])
-    else:
-        lines.append("Keys: w=back, c=start cleaner, s=scan (dry-run), o=toggle copy/move, k=set max-files, f=set free GiB, q=quit"[:cols])
-
+    lines.extend(line[:cols] for line in hotkey_lines)
     return lines
 
 
@@ -530,21 +653,23 @@ def main() -> int:
     finished_log = Path(args.finished_log).expanduser().resolve()
     finished_log.parent.mkdir(parents=True, exist_ok=True)
 
+    mp4_trigger_total_bytes = (
+        int(args.mp4_trigger_total_gb * (1024 ** 3))
+        if isinstance(args.mp4_trigger_total_gb, (int, float)) and args.mp4_trigger_total_gb > 0
+        else None
+    )
+    mp4_trigger_free_bytes = (
+        int(args.mp4_trigger_free_gb * (1024 ** 3))
+        if isinstance(args.mp4_trigger_free_gb, (int, float)) and args.mp4_trigger_free_gb > 0
+        else None
+    )
+    proxy_root: Optional[Path] = Path(args.proxy_dl_location).expanduser().resolve() if args.proxy_dl_location else None
+
     watcher: Optional[MP4Watcher] = None
     if args.enable_mp4_watcher:
-        staging_root = Path(args.proxy_dl_location).expanduser().resolve() if args.proxy_dl_location else None
+        staging_root = proxy_root
         destination_root = stars_dir
         watcher_log_path = log_dir / f"mp4_watcher-{ts}.log"
-        total_size_trigger_bytes = (
-            int(args.mp4_trigger_total_gb * (1024 ** 3))
-            if isinstance(args.mp4_trigger_total_gb, (int, float)) and args.mp4_trigger_total_gb > 0
-            else None
-        )
-        free_space_trigger_bytes = (
-            int(args.mp4_trigger_free_gb * (1024 ** 3))
-            if isinstance(args.mp4_trigger_free_gb, (int, float)) and args.mp4_trigger_free_gb > 0
-            else None
-        )
         max_files = args.mp4_max_files if isinstance(args.mp4_max_files, int) and args.mp4_max_files > 0 else None
 
         # Determine keep_source based on operation mode
@@ -567,8 +692,8 @@ def main() -> int:
                 max_files=max_files,
                 keep_source=keep_source,
                 keep_source_locked=keep_source_locked,
-                total_size_trigger_bytes=total_size_trigger_bytes,
-                free_space_trigger_bytes=free_space_trigger_bytes,
+                total_size_trigger_bytes=mp4_trigger_total_bytes,
+                free_space_trigger_bytes=mp4_trigger_free_bytes,
             )
             watcher = MP4Watcher(config=config, enabled=True)
             if watcher.is_enabled():
@@ -596,6 +721,9 @@ def main() -> int:
     random.shuffle(pool)
     random.shuffle(priority_pool)
     active: set[str] = set()
+    watcher_log_scroll = 0
+    watcher_log_follow = True
+    watcher_log_meta: Dict[str, int] = {"log_max_scroll": 0, "log_window": 0}
 
     workers: List[WorkerState] = [WorkerState(slot=i) for i in range(1, args.threads + 1)]
     stop = threading.Event()
@@ -877,6 +1005,19 @@ def main() -> int:
                 watcher_status = watcher.snapshot()
             else:
                 watcher_status = None
+            try:
+                staging_stats = td_utils.get_disk_stats(proxy_root) if proxy_root else None
+            except Exception:
+                staging_stats = None
+            try:
+                destination_stats = td_utils.get_disk_stats(stars_dir)
+            except Exception:
+                destination_stats = None
+            current_auto_trigger_bytes = (
+                watcher_status.config.free_space_trigger_bytes
+                if watcher_status and watcher_status.config.free_space_trigger_bytes
+                else mp4_trigger_free_bytes
+            )
             # Dynamic total throttle: proportional caps across yt-dlp workers
             now_check = time.time()
             if isinstance(args.max_total_dl_speed, (int, float)) and args.max_total_dl_speed and args.max_total_dl_speed > 0:
@@ -980,23 +1121,48 @@ def main() -> int:
 
             # Build frame lines and redraw whole screen
             try:
-                cols = os.get_terminal_size().columns
+                term_size = os.get_terminal_size()
+                cols = term_size.columns
+                rows = term_size.lines
             except OSError:
-                cols = 80
+                cols, rows = 80, 40
 
             lines: List[str] = []
 
+            manager_elapsed = time.time() - t0
+            total_completed_bytes = sum(ws.downloaded_bytes or 0 for ws in workers if ws.rc == 0)
+            total_speed_bps = sum(float(w.speed_bps) for w in workers if isinstance(w.speed_bps, (int, float)) and not w.is_paused)
+            total_speed_mib = total_speed_bps / (1024 * 1024) if total_speed_bps else 0.0
+            inprog_bytes = sum(int(w.downloaded_bytes) for w in workers if isinstance(w.downloaded_bytes, int))
+            agg_bytes = total_completed_bytes + inprog_bytes
+            avg_mib_s = (agg_bytes / max(1.0, (time.time() - t0))) / (1024 * 1024)
+            avg_speed_bps = avg_mib_s * (1024 * 1024)
+
             if active_panel == "watcher":
-                manager_elapsed = time.time() - t0
-                total_completed_bytes = sum(ws.downloaded_bytes or 0 for ws in workers if ws.rc == 0)
+                layout_meta: Dict[str, int] = {}
                 lines = _render_watcher_panel(
                     cols=cols,
+                    rows=rows,
                     watcher_enabled=watcher_enabled,
                     snapshot=watcher_status,
                     quit_confirm=quit_confirm,
                     manager_elapsed=manager_elapsed,
                     total_downloaded_bytes=total_completed_bytes,
+                    log_scroll=watcher_log_scroll,
+                    log_meta=layout_meta,
+                    download_speed_bps=avg_speed_bps,
+                    staging_stats=staging_stats,
+                    destination_stats=destination_stats,
+                    auto_trigger_bytes=current_auto_trigger_bytes,
                 )
+                watcher_log_meta = {
+                    "log_max_scroll": layout_meta.get("log_max_scroll", 0),
+                    "log_window": layout_meta.get("log_window", 0),
+                }
+                if watcher_log_follow:
+                    watcher_log_scroll = 0
+                else:
+                    watcher_log_scroll = min(watcher_log_scroll, watcher_log_meta["log_max_scroll"])
                 _render_screen(lines)
             else:
                 # Downloads panel
@@ -1007,12 +1173,18 @@ def main() -> int:
                 quit_status = " [Press Y to confirm quit]" if quit_confirm else ""
                 header = f"DL Manager{pause_status}{quit_status}  |  threads={args.threads}  active={active_workers}  pool={total_available}  time_limit={args.time_limit}"
                 lines.append(header[:cols])
-                total_speed_bps = sum(float(w.speed_bps) for w in workers if isinstance(w.speed_bps, (int, float)) and not w.is_paused)
-                total_speed_mib = total_speed_bps / (1024 * 1024) if total_speed_bps else 0.0
-                inprog_bytes = sum(int(w.downloaded_bytes) for w in workers if isinstance(w.downloaded_bytes, int))
-                agg_bytes = total_completed_bytes + inprog_bytes
-                avg_mib_s = (agg_bytes / max(1.0, (time.time() - t0))) / (1024*1024)
-                lines.append(f"Totals: speed={total_speed_mib:.2f}MiB/s  avg={avg_mib_s:.2f}MiB/s  downloaded={(agg_bytes/1048576):.1f}MiB  urls: started={total_started_urls} processed={total_processed_urls} completed={total_completed_urls}"[:cols])
+                lines.append(
+                    f"Totals: speed={total_speed_mib:.2f}MiB/s  avg={avg_mib_s:.2f}MiB/s  downloaded={(agg_bytes/1048576):.1f}MiB  urls: started={total_started_urls} processed={total_processed_urls} completed={total_completed_urls}"[
+                        :cols
+                    ]
+                )
+                for storage_line in _storage_summary_lines(
+                    staging_stats,
+                    destination_stats,
+                    threshold_bytes=current_auto_trigger_bytes,
+                    download_speed_bps=avg_speed_bps,
+                ):
+                    lines.append(storage_line[:cols])
                 lines.append("-" * min(cols, 100))
                 now = time.time()
 
@@ -1159,11 +1331,13 @@ def main() -> int:
                                 if key == 'c' and watcher and watcher_enabled:
                                     if watcher.manual_run(dry_run=False, trigger="manual-ui"):
                                         mlog.info("MP4 watcher run started (manual).")
+                                        watcher_log_follow = True
                                     else:
                                         mlog.info("MP4 watcher run request ignored (already running or disabled).")
                                 elif key in ('d', 's') and watcher and watcher_enabled:
                                     if watcher.manual_run(dry_run=True, trigger="manual-ui-dry-run"):
                                         mlog.info("MP4 watcher scan (dry-run) started.")
+                                        watcher_log_follow = True
                                     else:
                                         mlog.info("MP4 watcher scan request ignored (already running or disabled).")
                                 elif key == 'o' and watcher and watcher_enabled:
@@ -1209,6 +1383,17 @@ def main() -> int:
                                         mlog.info(f"MP4 watcher free-space trigger set to {new_threshold:.1f} GiB.")
                                     else:
                                         mlog.info("MP4 watcher free-space trigger disabled.")
+                                elif key == '[' and watcher and watcher_enabled:
+                                    step = max(1, watcher_log_meta.get("log_window", 10) // 2 or 1)
+                                    watcher_log_scroll = min(
+                                        watcher_log_scroll + step,
+                                        watcher_log_meta.get("log_max_scroll", 0),
+                                    )
+                                    watcher_log_follow = watcher_log_scroll == 0
+                                elif key == ']' and watcher and watcher_enabled:
+                                    step = max(1, watcher_log_meta.get("log_window", 10) // 2 or 1)
+                                    watcher_log_scroll = max(0, watcher_log_scroll - step)
+                                    watcher_log_follow = watcher_log_scroll == 0
                                 elif key == 'q':
                                     quit_confirm = True
                                 continue

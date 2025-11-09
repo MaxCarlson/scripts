@@ -332,7 +332,7 @@ class ProgressState:
             self.running = True
             self.last_message = ""
             self.console_index = 0
-            self.recent_logs: deque[str] = deque(maxlen=6)
+            self.recent_logs: deque[str] = deque(maxlen=200)
             self.total_bytes = 0
             self.processed_bytes = 0
             self.current_file_size = 0
