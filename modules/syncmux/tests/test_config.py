@@ -1,51 +1,54 @@
+"""Tests for the config module."""
 
-import os
+import pathlib
 import tempfile
 
 import pytest
 import yaml
 
-from syncmux.config import load_config, CONFIG_PATH
+from syncmux.config import default_config_path, load_config
 from syncmux.models import Host
 
 
-@pytest.fixture
-def temp_config_file():
+def test_load_config_missing_file():
+    """Test that loading a non-existent config file raises an error."""
+    # Use a path that definitely doesn't exist
+    non_existent = pathlib.Path("/tmp/definitely_does_not_exist_syncmux_test.yml")
+    with pytest.raises(FileNotFoundError):
+        load_config(non_existent)
+
+
+def test_load_config_valid():
+    """Test loading a valid config file."""
     config_data = {
         "hosts": [
             {
-                "alias": "test1",
+                "alias": "test-host",
                 "hostname": "localhost",
-                "user": "testuser1",
+                "user": "testuser",
                 "auth_method": "agent",
-            },
-            {
-                "alias": "test2",
-                "hostname": "192.168.1.1",
-                "user": "testuser2",
-                "auth_method": "password",
-                "password": "testpassword",
-            },
+            }
         ]
     }
-    with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
-        yaml.dump(config_data, f)
-        yield f.name
-    os.unlink(f.name)
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        yaml.safe_dump(config_data, f)
+        config_path = pathlib.Path(f.name)
+
+    try:
+        hosts = load_config(config_path)
+        assert len(hosts) == 1
+        assert hosts[0].alias == "test-host"
+        assert hosts[0].hostname == "localhost"
+        assert hosts[0].user == "testuser"
+        assert hosts[0].auth_method == "agent"
+    finally:
+        config_path.unlink()
 
 
-def test_load_config(monkeypatch, temp_config_file):
-    from pathlib import Path
-    monkeypatch.setattr("syncmux.config.CONFIG_PATH", Path(temp_config_file))
-    hosts = load_config()
-    assert len(hosts) == 2
-    assert isinstance(hosts[0], Host)
-    assert hosts[0].alias == "test1"
-    assert hosts[1].password == "testpassword"
-
-
-def test_load_config_not_found(monkeypatch):
-    from pathlib import Path
-    monkeypatch.setattr("syncmux.config.CONFIG_PATH", Path("/tmp/nonexistentfile"))
-    with pytest.raises(FileNotFoundError):
-        load_config()
+def test_default_config_path():
+    """Test that default_config_path returns a valid Path object."""
+    path = default_config_path()
+    assert isinstance(path, pathlib.Path)
+    assert path.name == "config.yml"
+    assert "syncmux" in str(path)

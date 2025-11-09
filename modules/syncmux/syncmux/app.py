@@ -1,5 +1,6 @@
 
 import os
+import pathlib
 import sys
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -63,6 +64,16 @@ class SyncMuxApp(App):
     auto_refresh_interval: var[int] = var(30)  # seconds
     auto_refresh_countdown: var[int] = var(0)
 
+    def __init__(self, config_path: Optional[pathlib.Path] = None):
+        """
+        Initialize the SyncMux application.
+
+        Args:
+            config_path: Optional path to config file. If None, uses platform default.
+        """
+        super().__init__()
+        self.config_path = config_path
+
     def compose(self) -> ComposeResult:
         """Compose the application."""
         yield Header()
@@ -117,7 +128,7 @@ class SyncMuxApp(App):
         self.conn_manager = ConnectionManager()
         self.tmux_controller = TmuxController()
         try:
-            self.hosts = load_config()
+            self.hosts = load_config(self.config_path)
             host_list = self.query_one("#host-list", ListView)
             for host in self.hosts:
                 widget = HostWidget(host)
@@ -136,7 +147,10 @@ class SyncMuxApp(App):
             if len(self.hosts) == 1 and self.hosts[0].alias == "localhost":
                 self._show_first_run_prompt()
         except FileNotFoundError as e:
-            self._log(str(e), "error", show_dialog=True)
+            # Config file doesn't exist - launch wizard to help user get started
+            self._log("⚠️ No config file found. Starting setup wizard...", "warning")
+            self.notify("Welcome! Let's add your first machine.", title="First Run", timeout=5)
+            self._show_add_machine_screen()
         except ValueError as e:
             self._log(f"Configuration error: {e}", "error", show_dialog=True)
 
@@ -588,8 +602,16 @@ class SyncMuxApp(App):
                     self._log(str(e), "error")
 
 
-    def _get_ssh_command(self, host: Host, session_name: str) -> list[str]:
-        """Construct platform-specific SSH command for attaching to a session."""
+    def _get_ssh_command(self, host: Host, session_name: str) -> Optional[list[str]]:
+        """
+        Construct platform-specific SSH command for attaching to a session.
+
+        Returns:
+            Optional[list[str]]: SSH command as list, or None if SSH not found
+
+        Raises:
+            FileNotFoundError: If SSH is not found with helpful install instructions
+        """
         # Detect platform
         is_windows = sys.platform == "win32"
         is_termux = os.path.exists("/data/data/com.termux")
@@ -607,19 +629,71 @@ class SyncMuxApp(App):
         ]
 
         if is_windows:
-            # On Windows, use full path to ssh.exe
-            # Try common locations
-            ssh_path = "ssh"  # Default to PATH
-            for candidate in [
-                r"C:\Windows\System32\OpenSSH\ssh.exe",
-                r"C:\Program Files\Git\usr\bin\ssh.exe",
-            ]:
+            # On Windows, check common SSH locations in order
+            ssh_candidates = [
+                r"C:\Windows\System32\OpenSSH\ssh.exe",  # Windows OpenSSH
+                r"C:\Program Files\Git\usr\bin\ssh.exe",  # Git for Windows
+            ]
+
+            # Try to find SSH in common locations
+            for candidate in ssh_candidates:
                 if os.path.exists(candidate):
-                    ssh_path = candidate
-                    break
-            return [ssh_path] + ssh_args
+                    return [candidate] + ssh_args
+
+            # Fallback to PATH
+            import shutil
+            if shutil.which("ssh"):
+                return ["ssh"] + ssh_args
+
+            # SSH not found - provide helpful error
+            error_msg = """❌ SSH client not found on Windows.
+
+To fix this, install SSH using one of these methods:
+
+1. Windows OpenSSH (recommended):
+   - Open Settings → Apps → Optional Features
+   - Click "Add a feature"
+   - Search for "OpenSSH Client" and install it
+
+2. Git for Windows:
+   - Download from: https://git-scm.com/download/win
+   - During installation, ensure "Git Bash" is selected
+
+After installing, restart your terminal and try again."""
+            raise FileNotFoundError(error_msg)
+
+        elif is_termux:
+            # Termux: Check if openssh is installed
+            import shutil
+            if not shutil.which("ssh"):
+                error_msg = """❌ SSH client not found on Termux.
+
+To fix this, install OpenSSH:
+   pkg install openssh
+
+Then restart SyncMux and try again."""
+                raise FileNotFoundError(error_msg)
+            return ["ssh"] + ssh_args
+
         else:
-            # Unix-like systems (Linux, WSL, Termux)
+            # Linux/WSL: Check if SSH is available
+            import shutil
+            if not shutil.which("ssh"):
+                error_msg = """❌ SSH client not found.
+
+To fix this, install OpenSSH client:
+
+Ubuntu/Debian/WSL:
+   sudo apt update && sudo apt install openssh-client
+
+Fedora/RHEL:
+   sudo dnf install openssh-clients
+
+Arch Linux:
+   sudo pacman -S openssh
+
+After installing, try again."""
+                raise FileNotFoundError(error_msg)
             return ["ssh"] + ssh_args
 
     async def action_attach_session(self) -> None:
@@ -630,13 +704,23 @@ class SyncMuxApp(App):
             if host and session_list.index is not None and session_list.index >= 0 and len(session_list.children) > 0:
                 widget = session_list.children[session_list.index]
                 session = widget.session
-                await self.app.exit()
 
-                # Get platform-specific SSH command
-                cmd = self._get_ssh_command(host, session.name)
+                try:
+                    # Get platform-specific SSH command
+                    cmd = self._get_ssh_command(host, session.name)
 
-                # Replace current process with SSH
-                os.execvp(cmd[0], cmd)
+                    # Exit TUI cleanly before process replacement
+                    await self.app.exit()
+
+                    # Replace current process with SSH (never returns)
+                    os.execvp(cmd[0], cmd)
+
+                except FileNotFoundError as e:
+                    # SSH not found - show error with install instructions
+                    self._log(str(e), "error", show_dialog=True)
+                except Exception as e:
+                    # Other errors during attach
+                    self._log(f"❌ Failed to attach to session: {e}", "error", show_dialog=True)
 
     def _show_first_run_prompt(self) -> None:
         """Show first-run prompt to add machines."""
@@ -660,7 +744,7 @@ class SyncMuxApp(App):
 
                 # Save to config file
                 try:
-                    save_config(self.hosts)
+                    save_config(self.hosts, self.config_path)
                     self._log(f"✅ Saved {machine_info['alias']} to config", "success")
                 except Exception as e:
                     self._log(f"❌ Failed to save config: {e}", "error")

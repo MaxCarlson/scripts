@@ -1,0 +1,13 @@
+
+Look at the files status.txt, status1.txt, status2.txt, etc.
+
+these shiw what the ui looks like at variois stages.
+The ui is too static fod my liking. While numbers and stats do and are uodated, there isnt much going on, nor js there the ability to pause/start things from the ui.
+
+better progress indiators would be good. Since we seem to have so mich screen spacs unused, it would also be nice to jave a toggleable scrolling in-place view of different live log files (like the module ytaedl does with the termdash module)
+
+ Additionally, we need to do deeper research to fogure iut how to best find videos that might be subsets of a longer video, worh both videos at differemt resolhtionss - we ahould srill be able tk detect these complex cases and determine which video is the master video.
+
+ we zhould also be add another catagory of duplicates... overlaps.. we sbould be able to detect videos that are unique except for some period of overlap time (again, with both videos at potentially different resolutions, bitrates, etc.)
+
+ On that note.. Im not sure about how sound/valid the processing merhods are after q 1-5, so im skeptical of q 6+, and we should look into these and ensure thru are valid, effecient, amd effecrive for their task.

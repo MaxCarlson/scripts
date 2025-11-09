@@ -430,6 +430,22 @@ def demo_seemake(args: argparse.Namespace) -> int:
     return 0
 
 
+def demo_progress(args: argparse.Namespace) -> int:
+    total = max(1, int(args.total))
+    width = max(6, int(args.width))
+    interval = max(0.0, float(args.interval))
+    pb = ProgressBar("progress", total=total, width=width, show_percent=True)
+
+    for current in range(total + 1):
+        pb.set(current)
+        bar = str(pb)
+        sys.stdout.write(f"\r{bar} {current}/{total}")
+        sys.stdout.flush()
+        _sleep(interval)
+
+    sys.stdout.write("\n")
+    return 0
+
 # ---------------------------------------------------------------------------
 # ARGPARSE
 
@@ -497,6 +513,14 @@ def build_parser() -> argparse.ArgumentParser:
         duration=4.0, update=0.1, width=a.width,
         bars=a.bars, extra_stats=a.extra_stats, header=a.header, header_bar=a.header_bar,
     )))
+
+    # progress (single bar utility)
+    sp = sub.add_parser("progress", help="Single progress bar demo")
+    add_common(sp)
+    sp.add_argument("-t", "--total", type=int, default=10, help="Total steps to simulate.")
+    sp.add_argument("-i", "--interval", type=float, default=0.25, help="Seconds between updates.")
+    sp.add_argument("-w", "--width", type=int, default=30, help="Progress bar width (characters).")
+    sp.set_defaults(func=demo_progress)
 
     return p
 

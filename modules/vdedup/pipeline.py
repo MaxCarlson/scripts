@@ -125,9 +125,16 @@ def _is_video_suffix(p: Path) -> bool:
 
 def _iter_files(root: Path, patterns: Optional[Sequence[str]], max_depth: Optional[int]) -> Iterator[Path]:
     """Yield files under root matching any of the provided glob patterns. Case-insensitive on Windows."""
+    import logging
+    logger = logging.getLogger(__name__)
+
     root = Path(root).resolve()
+    logger.info(f"_iter_files: Starting enumeration of {root}")
+    logger.info(f"_iter_files: patterns={patterns}, max_depth={max_depth}")
+
     patterns = list(patterns or [])
     if not patterns:
+        logger.info("_iter_files: No patterns specified, yielding all files")
         # all files
         for dp, dn, fn in os.walk(root):
             if max_depth is not None:
@@ -150,20 +157,41 @@ def _iter_files(root: Path, patterns: Optional[Sequence[str]], max_depth: Option
             s = f"*.{s.lstrip('.')}"
         norm.append(s)
 
+    logger.info(f"_iter_files: Normalized patterns: {norm}")
+
     # On Windows, match case-insensitively by lowering names
     ci = sys.platform.startswith("win")
+    logger.info(f"_iter_files: Case-insensitive matching: {ci}")
 
-    for dp, dn, fn in os.walk(root):
-        if max_depth is not None:
-            rel = Path(dp).resolve().relative_to(root)
-            depth = 0 if str(rel) == "." else len(rel.parts)
-            if depth > max_depth:
-                dn[:] = []
-                continue
-        for name in fn:
-            to_match = name.lower() if ci else name
-            if any(Path(to_match).match(p.lower() if ci else p) for p in norm):
-                yield Path(dp) / name
+    file_count = 0
+    dir_count = 0
+
+    logger.info(f"_iter_files: Starting os.walk() on {root}")
+    try:
+        for dp, dn, fn in os.walk(root):
+            dir_count += 1
+            if dir_count % 100 == 0:
+                logger.info(f"_iter_files: Walked {dir_count} directories, yielded {file_count} files so far")
+
+            if max_depth is not None:
+                rel = Path(dp).resolve().relative_to(root)
+                depth = 0 if str(rel) == "." else len(rel.parts)
+                if depth > max_depth:
+                    dn[:] = []
+                    continue
+
+            for name in fn:
+                to_match = name.lower() if ci else name
+                if any(Path(to_match).match(p.lower() if ci else p) for p in norm):
+                    file_count += 1
+                    if file_count <= 10:  # Log first 10 matches
+                        logger.debug(f"_iter_files: Yielding file #{file_count}: {name}")
+                    yield Path(dp) / name
+
+        logger.info(f"_iter_files: Completed. Walked {dir_count} directories, yielded {file_count} total files")
+    except Exception as e:
+        logger.error(f"_iter_files: Error during enumeration: {e}", exc_info=True)
+        raise
 
 
 def _sha256_file(path: Path, block: int = 1 << 20) -> str:
@@ -302,6 +330,9 @@ def run_pipeline(
     import logging
     logger = logging.getLogger(__name__)
 
+    logger.info("=== run_pipeline() ENTRY ===")
+    logger.info(f"Received {len(roots) if roots else 0} roots, max_depth={max_depth}, stages={selected_stages}")
+
     scan_roots: List[Path] = []
     if root is not None:
         scan_roots.append(Path(root))
@@ -310,30 +341,83 @@ def run_pipeline(
     if not scan_roots:
         raise ValueError("run_pipeline requires at least one root directory")
     scan_roots = [p.expanduser().resolve() for p in scan_roots]
+    logger.info(f"Resolved scan_roots: {scan_roots}")
 
     skip_norm: Set[Path] = {p.expanduser().resolve() for p in skip_paths} if skip_paths else set()
+    logger.info(f"Exclusions: {len(skip_norm)} paths")
 
-    reporter.set_status("Enumerating files")
-    reporter.start_stage("discovering files", total=0)
-    reporter.update_root_progress(current=None, completed=0, total=len(scan_roots))
+    logger.info("Calling reporter.set_status()...")
+    try:
+        reporter.set_status("Enumerating files")
+        logger.info("set_status() completed successfully")
+    except Exception as e:
+        logger.error(f"set_status() failed: {e}")
+        raise
+
+    logger.info("Calling reporter.start_stage()...")
+    try:
+        reporter.start_stage("discovering files", total=0)
+        logger.info("start_stage() completed successfully")
+    except Exception as e:
+        logger.error(f"start_stage() failed: {e}")
+        raise
+
+    logger.info("Calling reporter.update_root_progress()...")
+    try:
+        reporter.update_root_progress(current=None, completed=0, total=len(scan_roots))
+        logger.info("update_root_progress() completed successfully")
+    except Exception as e:
+        logger.error(f"update_root_progress() failed: {e}")
+        raise
 
     files: List[Path] = []
     skipped_during_enum = 0
     for index, scan_root in enumerate(scan_roots, start=1):
-        logger.info("Starting file enumeration for root: %s, patterns: %s, max_depth: %s", scan_root, patterns, max_depth)
-        reporter.update_root_progress(current=scan_root, completed=index - 1, total=len(scan_roots))
-        reporter.set_status(f"Discovering files under {scan_root}")
+        logger.info("=== File enumeration starting for root %d/%d: %s (patterns: %s, max_depth: %s) ===",
+                    index, len(scan_roots), scan_root, patterns, max_depth)
 
-        for path in _iter_files(scan_root, patterns, max_depth):
-            resolved = path.expanduser().resolve()
-            if skip_norm and resolved in skip_norm:
-                skipped_during_enum += 1
-                continue
-            files.append(path)
-            if len(files) % 1000 == 0:
-                reporter.update_discovery(len(files), skipped=skipped_during_enum)
+        try:
+            reporter.update_root_progress(current=scan_root, completed=index - 1, total=len(scan_roots))
+            reporter.set_status(f"Discovering files under {scan_root}")
+            logger.info("Reporter status updated successfully")
+        except Exception as e:
+            logger.error(f"Reporter update failed: {e}")
+            raise
 
-        reporter.update_root_progress(current=scan_root, completed=index, total=len(scan_roots))
+        file_count_at_start = len(files)
+        logger.info(f"Starting _iter_files() generator for: {scan_root}")
+
+        try:
+            for file_idx, path in enumerate(_iter_files(scan_root, patterns, max_depth)):
+                resolved = path.expanduser().resolve()
+                if skip_norm and resolved in skip_norm:
+                    skipped_during_enum += 1
+                    continue
+                files.append(path)
+
+                # Frequent UI updates for better responsiveness
+                if len(files) % 50 == 0:
+                    reporter.update_discovery(len(files), skipped=skipped_during_enum)
+
+                # Log progress every 500 files
+                if len(files) % 500 == 0:
+                    logger.info(f"Discovered {len(files):,} files (current root: {file_idx + 1:,} files)")
+
+                # Detailed log every 100 files for first 1000, then every 1000
+                elif len(files) < 1000 and len(files) % 100 == 0:
+                    logger.debug(f"Discovery progress: {len(files)} files found")
+        except Exception as e:
+            logger.error(f"Error during file enumeration: {e}", exc_info=True)
+            raise
+
+        files_from_this_root = len(files) - file_count_at_start
+        logger.info(f"Completed root {index}/{len(scan_roots)}: found {files_from_this_root:,} files")
+
+        try:
+            reporter.update_root_progress(current=scan_root, completed=index, total=len(scan_roots))
+        except Exception as e:
+            logger.error(f"Root progress update failed: {e}")
+            raise
 
     reporter.update_discovery(len(files), skipped=skipped_during_enum)
     logger.info(
@@ -367,17 +451,24 @@ def run_pipeline(
 
     if files:
         # SIMPLIFIED: Use single-threaded processing for complete reliability
-        logger.info(f"Scanning {len(files)} files (single-threaded for stability)")
+        logger.info(f"Starting metadata scan of {len(files):,} files")
         for i, file_path in enumerate(files):
-            if i % 500 == 0:
-                logger.info(f"Scanning progress: {i+1}/{len(files)} files")
             scan_one(file_path)
-            # Update UI periodically during scanning
-            if i % 100 == 0:  # STEP 6: Reduce update frequency to prevent UI spam
+
+            # Update UI periodically (every 50 files for responsiveness)
+            if i % 50 == 0:
                 reporter.update_progress_periodically(i + 1, len(files))
+
+            # Log progress
+            if i % 500 == 0 and i > 0:
+                pct = (i / len(files)) * 100
+                logger.info(f"Scanning: {i:,}/{len(files):,} files ({pct:.1f}%)")
+            elif i < 500 and i % 100 == 0 and i > 0:
+                logger.debug(f"Scanned {i} files...")
+
         # Final update
         reporter.update_progress_periodically(len(files), len(files), force_update=True)
-        logger.info(f"Scanning completed. Processed {len(metas)} files")
+        logger.info(f"Scanning complete: processed {len(metas):,} files ({sum(m.size for m in metas) / (1024**3):.2f} GiB)")
 
     if reporter.should_quit():
         reporter.flush()
@@ -423,19 +514,39 @@ def run_pipeline(
                 pass  # Only catch specific UI threading issues
             return m, sig
 
-        # SIMPLIFIED: Use single-threaded processing to eliminate threading deadlocks
-        logger.info(f"Processing partial hashes for {len(size_collisions)} files (single-threaded for stability)")
-        for i, m in enumerate(size_collisions):
-            if i % 10 == 0:
-                logger.info(f"Partial hash progress: {i+1}/{len(size_collisions)} files")
-            m_result, sig = _do_partial(m)
-            partial_map[sig].append(m_result)
-            # Update UI periodically during partial hashing
-            if i % 20 == 0:  # STEP 6: Update every 20 files to reduce UI overhead
-                reporter.update_progress_periodically(i + 1, len(size_collisions))
+        # Multi-threaded partial hashing with progress tracking
+        logger.info(f"Starting partial hash computation for {len(size_collisions):,} files using {cfg.threads} threads")
+
+        # Thread-safe counter for progress
+        completed = threading.Lock()
+        completed_count = [0]
+
+        def _do_partial_tracked(m: FileMeta) -> Tuple[FileMeta, str]:
+            result = _do_partial(m)
+            # Update counter atomically
+            with completed:
+                completed_count[0] += 1
+                current = completed_count[0]
+
+                # Log progress every 100 files
+                if current % 100 == 0:
+                    pct = (current / len(size_collisions)) * 100
+                    logger.info(f"Partial hashing: {current:,}/{len(size_collisions):,} ({pct:.1f}%) - {cfg.threads} workers")
+
+                # Update UI every 20 files
+                if current % 20 == 0:
+                    reporter.update_progress_periodically(current, len(size_collisions))
+
+            return result
+
+        # Execute with thread pool
+        with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.threads) as ex:
+            for m_result, sig in ex.map(_do_partial_tracked, size_collisions):
+                partial_map[sig].append(m_result)
+
         # Final update
         reporter.update_progress_periodically(len(size_collisions), len(size_collisions), force_update=True)
-        logger.info(f"Partial hashing completed. Found {len(partial_map)} unique partial hashes")
+        logger.info(f"Partial hashing complete: {len(partial_map):,} unique signatures using {cfg.threads} threads")
 
         if reporter.should_quit():
             reporter.flush();
@@ -489,21 +600,40 @@ def run_pipeline(
                 return m, None, False
 
         if to_full:
-            # SIMPLIFIED: Use single-threaded processing to eliminate threading deadlocks
-            # This is slower but guaranteed to work reliably
-            logger.info(f"Processing SHA256 hashes for {len(to_full)} files (single-threaded for stability)")
-            for i, m in enumerate(to_full):
-                if i % 10 == 0:
-                    logger.info(f"SHA256 progress: {i+1}/{len(to_full)} files")
-                m_result, sha, _hit = _do_full(m)
-                if sha:
-                    by_hash[sha].append(m_result)
-                # Update UI periodically during SHA256 hashing
-                if i % 10 == 0:  # STEP 6: Update every 10 files (balanced for SHA256)
-                    reporter.update_progress_periodically(i + 1, len(to_full))
+            # Multi-threaded SHA-256 hashing with progress tracking
+            logger.info(f"Starting SHA-256 full hash computation for {len(to_full):,} files using {cfg.threads} threads")
+
+            # Thread-safe counter for progress
+            completed = threading.Lock()
+            completed_count = [0]  # Use list for mutability in closure
+
+            def _do_full_tracked(m: FileMeta) -> Tuple[FileMeta, Optional[str], bool]:
+                result = _do_full(m)
+                # Update counter atomically
+                with completed:
+                    completed_count[0] += 1
+                    current = completed_count[0]
+
+                    # Log progress every 50 files
+                    if current % 50 == 0:
+                        pct = (current / len(to_full)) * 100
+                        logger.info(f"SHA-256 hashing: {current:,}/{len(to_full):,} ({pct:.1f}%) - {cfg.threads} workers")
+
+                    # Update UI every 10 files
+                    if current % 10 == 0:
+                        reporter.update_progress_periodically(current, len(to_full))
+
+                return result
+
+            # Execute with thread pool
+            with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.threads) as ex:
+                for m_result, sha, _hit in ex.map(_do_full_tracked, to_full):
+                    if sha:
+                        by_hash[sha].append(m_result)
+
             # Final update
-            reporter.update_progress_periodically(len(to_full), len(to_full), force_update=True)
-            logger.info(f"SHA256 processing completed. Found {len(by_hash)} unique hashes")
+        reporter.update_progress_periodically(len(to_full), len(to_full), force_update=True)
+        logger.info(f"SHA-256 complete: {len(by_hash):,} unique full hashes using {cfg.threads} threads")
 
         # Form groups from exact hashes and mark **all members** excluded for later stages
         formed = 0
@@ -526,7 +656,7 @@ def run_pipeline(
         return groups
 
     # ---------------------------------------------
-    # Q3: ffprobe metadata (duration/format/codec…)
+    # Q3: ffprobe metadata (duration/format/codec...)
     # ---------------------------------------------
     if 3 in selected_stages:
         # Keep only videos not excluded by Q2
@@ -745,8 +875,8 @@ def run_pipeline(
                 reporter.flush()
 
             # Enhanced subset detection with cross-resolution support
+            formed_subset = 0  # Initialize before conditional block
             if cfg.subset_detect and phashed:
-                formed_subset = 0
                 gid = 0
                 vids_sorted = sorted([v for v in phashed if v.duration], key=lambda v: v.duration or 0.0)
 
