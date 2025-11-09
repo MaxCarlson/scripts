@@ -13,13 +13,15 @@ def main():
     win_manager = TmuxWindowManager()
 
     parser = argparse.ArgumentParser(
-        prog='tmwin',
-        description="Tmux Window Manager - Advanced window operations for tmux",
+        prog='tmx',
+        description="Tmux Manager - Advanced tmux session and window operations",
         epilog="Examples:\n"
-               "  tmwin closew 4..10           # Close windows 4-10\n"
-               "  tmwin mvw -i 0               # Move current window to index 0\n"
-               "  tmwin mvws -s ai             # Move current window to session 'ai'\n"
-               "  tmwin sww                    # Swap with fzf-selected window\n",
+               "  tmx closew 4..10             # Close windows 4-10\n"
+               "  tmx mvw -i 0                 # Move current window to index 0\n"
+               "  tmx mvws -s ai               # Move current window to session 'ai'\n"
+               "  tmx sww                      # Swap with fzf-selected window\n"
+               "  tmx spawn -c 3 -p 2          # Create 3 windows with 2 panes each\n"
+               "  tmx jump ai                  # Jump to session 'ai'\n",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
 
@@ -87,6 +89,28 @@ def main():
     parser_swws.add_argument('--from', dest='source_session', default=None,
                              help="Source session (default: current session)")
 
+    # spawn: create new windows
+    parser_spawn = subparsers.add_parser('spawn',
+        help="Spawn new window(s) with optional panes",
+        description="Create one or more windows, optionally with multiple panes.")
+    parser_spawn.add_argument('-c', '--count', dest='count', type=int, default=1,
+                              help="Number of windows to create (default: 1)")
+    parser_spawn.add_argument('-p', '--panes', dest='panes_per_window', type=int, default=1,
+                              help="Number of panes per window (default: 1)")
+    parser_spawn.add_argument('-i', '--index', dest='target_index', type=int, default=None,
+                              help="Index where to insert windows (default: after current window)")
+    parser_spawn.add_argument('-t', '--session', dest='session_name', default=None,
+                              help="Target session (default: current session)")
+    parser_spawn.add_argument('-n', '--name', dest='window_name', default=None,
+                              help="Name for the window(s)")
+
+    # jump: jump to session
+    parser_jump = subparsers.add_parser('jump',
+        help="Jump to (switch to or attach) a session",
+        description="Jump to a session. Uses fzf for selection if no session specified.")
+    parser_jump.add_argument('session_name', nargs='?', default=None,
+                             help="Session to jump to (default: fzf select)")
+
     args = parser.parse_args()
 
     if not win_manager._is_tmux_installed():
@@ -128,6 +152,18 @@ def main():
             source_index=args.source_index,
             source_session=args.source_session
         )
+
+    elif args.command == 'spawn':
+        success = win_manager.spawn_windows(
+            count=args.count,
+            panes_per_window=args.panes_per_window,
+            target_index=args.target_index,
+            session_name=args.session_name,
+            window_name=args.window_name
+        )
+
+    elif args.command == 'jump':
+        success = win_manager.jump_to_session(session_name=args.session_name)
 
     sys.exit(0 if success else 1)
 

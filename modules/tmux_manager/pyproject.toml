@@ -10,7 +10,7 @@ requires-python = ">=3.7"
 dependencies = []
 
 [project.scripts]
-tmwin = "tmux_manager.cli:main"
+tmx = "tmux_manager.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
