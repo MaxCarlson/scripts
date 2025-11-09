@@ -79,12 +79,13 @@ class ProgressBar:
             self.fill_char, self.empty_char = "█", "·"
 
         # Stat that renders this bar; value is `self` so Stat->format->str(self)
+        display_width = None if self.full_width else self.width
         self._stat = Stat(
             name,
             value=self,
             format_string="{}",
             no_expand=True,  # never push column widths
-            display_width=None,  # let the string carry its own width
+            display_width=display_width,  # provide width hint for no_expand columns
         )
         # Optional live bindings
         self._current_fn: Optional[Callable[[], float]] = None

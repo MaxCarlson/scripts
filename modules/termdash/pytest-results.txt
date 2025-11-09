@@ -71,7 +71,7 @@ E               argparse.ArgumentError: argument cmd: invalid choice: 'progress'
 
 During handling of the above exception, another exception occurred:
 
-capsys = <_pytest.capture.CaptureFixture object at 0x0000027468E0DA90>
+capsys = <_pytest.capture.CaptureFixture object at 0x000002442F27DA90>
 
     def test_cli_parses_and_runs_plain_progress(capsys):
         parser = build_parser()
