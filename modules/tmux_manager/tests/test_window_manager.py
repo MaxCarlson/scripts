@@ -344,3 +344,259 @@ class TestFuzzySelection:
         """Test fuzzy selection when fzf is not installed."""
         result = manager._fuzzy_select_window('test_session')
         assert result is None
+
+
+class TestSpawnWindows:
+    """Tests for window spawning functionality."""
+
+    @patch.object(TmuxWindowManager, '_run_tmux_command')
+    @patch.object(TmuxWindowManager, '_get_current_session', return_value='test_session')
+    @patch.object(TmuxWindowManager, '_get_current_window_index', return_value=2)
+    @patch.object(TmuxWindowManager, 'session_exists', return_value=True)
+    def test_spawn_single_window(self, mock_sess_exists, mock_current_win,
+                                 mock_session, mock_run, manager):
+        """Test spawning a single window."""
+        mock_run.return_value = (0, "", "")
+
+        result = manager.spawn_windows()
+
+        assert result is True
+        # Should create window at index 3 (current + 1)
+        assert mock_run.call_count >= 1
+        first_call = mock_run.call_args_list[0][0][0]
+        assert 'new-window' in first_call
+        assert 'test_session:3' in first_call
+
+    @patch.object(TmuxWindowManager, '_run_tmux_command')
+    @patch.object(TmuxWindowManager, '_get_current_session', return_value='test_session')
+    @patch.object(TmuxWindowManager, '_get_current_window_index', return_value=2)
+    @patch.object(TmuxWindowManager, 'session_exists', return_value=True)
+    def test_spawn_multiple_windows(self, mock_sess_exists, mock_current_win,
+                                    mock_session, mock_run, manager):
+        """Test spawning multiple windows."""
+        mock_run.return_value = (0, "", "")
+
+        result = manager.spawn_windows(count=3)
+
+        assert result is True
+        # Should have at least 3 new-window calls
+        new_window_calls = [call for call in mock_run.call_args_list
+                           if 'new-window' in call[0][0]]
+        assert len(new_window_calls) == 3
+
+    @patch.object(TmuxWindowManager, '_run_tmux_command')
+    @patch.object(TmuxWindowManager, '_get_current_session', return_value='test_session')
+    @patch.object(TmuxWindowManager, '_get_current_window_index', return_value=2)
+    @patch.object(TmuxWindowManager, 'session_exists', return_value=True)
+    def test_spawn_with_panes(self, mock_sess_exists, mock_current_win,
+                             mock_session, mock_run, manager):
+        """Test spawning window with multiple panes."""
+        mock_run.return_value = (0, "", "")
+
+        result = manager.spawn_windows(panes_per_window=3)
+
+        assert result is True
+        # Should have new-window call and split-window calls
+        split_calls = [call for call in mock_run.call_args_list
+                      if 'split-window' in call[0][0]]
+        assert len(split_calls) == 2  # 3 panes = 2 splits
+
+    @patch.object(TmuxWindowManager, '_run_tmux_command')
+    @patch.object(TmuxWindowManager, '_get_current_session', return_value='test_session')
+    @patch.object(TmuxWindowManager, '_get_current_window_index', return_value=2)
+    @patch.object(TmuxWindowManager, 'session_exists', return_value=True)
+    def test_spawn_with_window_name(self, mock_sess_exists, mock_current_win,
+                                    mock_session, mock_run, manager):
+        """Test spawning window with custom name."""
+        mock_run.return_value = (0, "", "")
+
+        result = manager.spawn_windows(window_name="mywindow")
+
+        assert result is True
+        first_call = mock_run.call_args_list[0][0][0]
+        assert '-n' in first_call
+        assert 'mywindow' in first_call
+
+    @patch.object(TmuxWindowManager, '_run_tmux_command')
+    @patch.object(TmuxWindowManager, '_get_current_session', return_value='test_session')
+    @patch.object(TmuxWindowManager, '_get_current_window_index', return_value=2)
+    @patch.object(TmuxWindowManager, 'session_exists', return_value=True)
+    def test_spawn_multiple_windows_with_name(self, mock_sess_exists, mock_current_win,
+                                              mock_session, mock_run, manager):
+        """Test spawning multiple windows with name numbering."""
+        mock_run.return_value = (0, "", "")
+
+        result = manager.spawn_windows(count=3, window_name="workspace")
+
+        assert result is True
+        new_window_calls = [call for call in mock_run.call_args_list
+                           if 'new-window' in call[0][0]]
+        # Check that windows are named workspace-1, workspace-2, workspace-3
+        assert any('workspace-1' in str(call) for call in new_window_calls)
+        assert any('workspace-2' in str(call) for call in new_window_calls)
+        assert any('workspace-3' in str(call) for call in new_window_calls)
+
+    @patch.object(TmuxWindowManager, '_run_tmux_command')
+    @patch.object(TmuxWindowManager, '_get_current_session', return_value='test_session')
+    @patch.object(TmuxWindowManager, 'session_exists', return_value=True)
+    def test_spawn_at_specific_index(self, mock_sess_exists, mock_session, mock_run, manager):
+        """Test spawning window at specific index."""
+        mock_run.return_value = (0, "", "")
+
+        result = manager.spawn_windows(target_index=0)
+
+        assert result is True
+        first_call = mock_run.call_args_list[0][0][0]
+        assert 'test_session:0' in first_call
+
+    @patch.object(TmuxWindowManager, '_run_tmux_command')
+    @patch.object(TmuxWindowManager, '_get_current_session', return_value='test_session')
+    @patch.object(TmuxWindowManager, 'session_exists', return_value=True)
+    @patch.object(TmuxWindowManager, 'get_window_indices', return_value=[0, 1, 2, 5])
+    def test_spawn_with_negative_index(self, mock_indices, mock_sess_exists,
+                                       mock_session, mock_run, manager):
+        """Test spawning window with negative index."""
+        mock_run.return_value = (0, "", "")
+
+        result = manager.spawn_windows(target_index=-1)
+
+        assert result is True
+        # -1 should resolve to index 5 (last in [0,1,2,5])
+        first_call = mock_run.call_args_list[0][0][0]
+        assert 'test_session:5' in first_call
+
+    @patch.object(TmuxWindowManager, '_run_tmux_command')
+    @patch.object(TmuxWindowManager, '_get_current_session', return_value='test_session')
+    @patch.object(TmuxWindowManager, 'session_exists', return_value=True)
+    def test_spawn_complex_scenario(self, mock_sess_exists, mock_session, mock_run, manager):
+        """Test spawning multiple windows with multiple panes and names."""
+        mock_run.return_value = (0, "", "")
+
+        result = manager.spawn_windows(count=2, panes_per_window=3,
+                                       target_index=0, window_name="dev")
+
+        assert result is True
+        # Should have 2 new-window calls and 4 split-window calls (2 per window)
+        new_window_calls = [call for call in mock_run.call_args_list
+                           if 'new-window' in call[0][0]]
+        split_calls = [call for call in mock_run.call_args_list
+                      if 'split-window' in call[0][0]]
+        assert len(new_window_calls) == 2
+        assert len(split_calls) == 4
+
+    @patch.object(TmuxWindowManager, '_get_current_session', return_value=None)
+    def test_spawn_not_in_tmux(self, mock_session, manager):
+        """Test error when not in tmux and no session specified."""
+        result = manager.spawn_windows()
+        assert result is False
+
+    @patch.object(TmuxWindowManager, '_get_current_session', return_value='test_session')
+    @patch.object(TmuxWindowManager, 'session_exists', return_value=False)
+    def test_spawn_invalid_session(self, mock_sess_exists, mock_session, manager):
+        """Test error when session doesn't exist."""
+        result = manager.spawn_windows()
+        assert result is False
+
+    @patch.object(TmuxWindowManager, '_get_current_session', return_value='test_session')
+    @patch.object(TmuxWindowManager, 'session_exists', return_value=True)
+    def test_spawn_invalid_count(self, mock_sess_exists, mock_session, manager):
+        """Test error when count is invalid."""
+        result = manager.spawn_windows(count=0)
+        assert result is False
+
+    @patch.object(TmuxWindowManager, '_get_current_session', return_value='test_session')
+    @patch.object(TmuxWindowManager, 'session_exists', return_value=True)
+    def test_spawn_invalid_panes(self, mock_sess_exists, mock_session, manager):
+        """Test error when panes count is invalid."""
+        result = manager.spawn_windows(panes_per_window=0)
+        assert result is False
+
+    @patch.object(TmuxWindowManager, '_run_tmux_command')
+    @patch.object(TmuxWindowManager, '_get_current_session', return_value='test_session')
+    @patch.object(TmuxWindowManager, '_get_current_window_index', return_value=2)
+    @patch.object(TmuxWindowManager, 'session_exists', return_value=True)
+    def test_spawn_window_creation_fails(self, mock_sess_exists, mock_current_win,
+                                         mock_session, mock_run, manager):
+        """Test handling when window creation fails."""
+        mock_run.return_value = (1, "", "error creating window")
+
+        result = manager.spawn_windows()
+
+        assert result is False
+
+
+class TestJumpToSession:
+    """Tests for session jumping functionality."""
+
+    @patch('os.environ.get', return_value='/tmp/tmux-1000/default,12345,0')
+    @patch.object(TmuxWindowManager, '_run_tmux_command')
+    @patch.object(TmuxWindowManager, 'session_exists', return_value=True)
+    def test_jump_inside_tmux(self, mock_sess_exists, mock_run, mock_env, manager):
+        """Test jumping to session when inside tmux."""
+        mock_run.return_value = (0, "", "")
+
+        result = manager.jump_to_session('target_session')
+
+        assert result is True
+        mock_run.assert_called_once_with(['switch-client', '-t', 'target_session'])
+
+    @patch('os.environ.get', return_value=None)
+    @patch('subprocess.call')
+    @patch.object(TmuxWindowManager, 'session_exists', return_value=True)
+    def test_jump_outside_tmux(self, mock_sess_exists, mock_call, mock_env, manager):
+        """Test attaching to session when outside tmux."""
+        mock_call.return_value = 0
+
+        result = manager.jump_to_session('target_session')
+
+        assert result is True
+        mock_call.assert_called_once_with(['tmux', 'attach-session', '-t', 'target_session'])
+
+    @patch('os.environ.get', return_value='/tmp/tmux-1000/default,12345,0')
+    @patch.object(TmuxWindowManager, '_fuzzy_select_session', return_value='selected_session')
+    @patch.object(TmuxWindowManager, '_run_tmux_command')
+    @patch.object(TmuxWindowManager, 'session_exists', return_value=True)
+    def test_jump_with_fzf_selection(self, mock_sess_exists, mock_run,
+                                     mock_fzf, mock_env, manager):
+        """Test jumping with fzf session selection."""
+        mock_run.return_value = (0, "", "")
+
+        result = manager.jump_to_session()  # No session specified
+
+        assert result is True
+        mock_fzf.assert_called_once()
+        mock_run.assert_called_once_with(['switch-client', '-t', 'selected_session'])
+
+    @patch.object(TmuxWindowManager, '_fuzzy_select_session', return_value=None)
+    def test_jump_fzf_cancelled(self, mock_fzf, manager):
+        """Test behavior when fzf selection is cancelled."""
+        result = manager.jump_to_session()
+
+        assert result is False
+
+    @patch.object(TmuxWindowManager, 'session_exists', return_value=False)
+    def test_jump_nonexistent_session(self, mock_sess_exists, manager):
+        """Test error when jumping to non-existent session."""
+        result = manager.jump_to_session('nonexistent')
+
+        assert result is False
+
+    @patch('os.environ.get', return_value='/tmp/tmux-1000/default,12345,0')
+    @patch.object(TmuxWindowManager, '_run_tmux_command')
+    @patch.object(TmuxWindowManager, 'session_exists', return_value=True)
+    def test_jump_switch_client_fails(self, mock_sess_exists, mock_run, mock_env, manager):
+        """Test error handling when switch-client fails."""
+        mock_run.return_value = (1, "", "error switching client")
+
+        result = manager.jump_to_session('target_session')
+
+        assert result is False
+
+    @patch('os.environ.get', return_value=None)
+    @patch('subprocess.call', side_effect=Exception("Connection error"))
+    @patch.object(TmuxWindowManager, 'session_exists', return_value=True)
+    def test_jump_attach_fails(self, mock_sess_exists, mock_call, mock_env, manager):
+        """Test error handling when attach fails."""
+        result = manager.jump_to_session('target_session')
+
+        assert result is False
