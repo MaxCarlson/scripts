@@ -270,6 +270,7 @@ def _render_watcher_panel(
     staging_stats: Optional[td_utils.DiskStats],
     destination_stats: Optional[td_utils.DiskStats],
     auto_trigger_bytes: Optional[int],
+    auto_block_reason: Optional[str],
 ) -> List[str]:
     lines: List[str] = []
     header = "MP4 Folder Synchroniser"
@@ -302,6 +303,8 @@ def _render_watcher_panel(
     )
     for line in storage_lines:
         lines.append(line[:cols])
+    if auto_block_reason:
+        lines.append(td_utils.color_text(auto_block_reason, "yellow")[:cols])
 
     if not watcher_enabled:
         lines.append("Watcher disabled. Launch with --watcher to enable the cleaner."[:cols])
@@ -666,6 +669,7 @@ def main() -> int:
     proxy_root: Optional[Path] = Path(args.proxy_dl_location).expanduser().resolve() if args.proxy_dl_location else None
 
     watcher: Optional[MP4Watcher] = None
+    watcher_auto_delay_until: Optional[float] = None
     if args.enable_mp4_watcher:
         staging_root = proxy_root
         destination_root = stars_dir
@@ -700,6 +704,7 @@ def main() -> int:
                 mlog.info(
                     f"MP4 watcher enabled: staging={staging_root} destination={destination_root} operation={args.mp4_operation}"
                 )
+                watcher_auto_delay_until = time.time() + 60.0
             else:
                 mlog.error(
                     f"MP4 watcher initialisation failed; staging={staging_root} destination={destination_root} "
@@ -724,6 +729,7 @@ def main() -> int:
     watcher_log_scroll = 0
     watcher_log_follow = True
     watcher_log_meta: Dict[str, int] = {"log_max_scroll": 0, "log_window": 0}
+    auto_block_reason: Optional[str] = None
 
     workers: List[WorkerState] = [WorkerState(slot=i) for i in range(1, args.threads + 1)]
     stop = threading.Event()
@@ -998,13 +1004,33 @@ def main() -> int:
                 stop.set()
                 break
             watcher_enabled = bool(watcher and watcher.is_enabled())
+            now = time.time()
             if watcher:
-                auto_reason = watcher.update_download_progress(total_completed_bytes)
+                allow_auto = True
+                auto_block_reason = None
+                if watcher_auto_delay_until is not None:
+                    if now >= watcher_auto_delay_until:
+                        watcher_auto_delay_until = None
+                    else:
+                        allow_auto = False
+                        auto_block_reason = "Watcher auto-clean pending (startup delay)"
+                auto_reason = None
+                if allow_auto:
+                    auto_reason = watcher.update_download_progress(total_completed_bytes)
                 if auto_reason:
                     mlog.info(f"MP4 watcher auto-triggered: {auto_reason}")
                 watcher_status = watcher.snapshot()
+                trigger_bytes_candidate = (
+                    watcher_status.config.free_space_trigger_bytes
+                    if watcher_status and watcher_status.config.free_space_trigger_bytes
+                    else mp4_trigger_free_bytes
+                )
+                if (not allow_auto) and trigger_bytes_candidate:
+                    trig_gib = trigger_bytes_candidate / GIB
+                    auto_block_reason = auto_block_reason or f"Auto-clean queued (free-space trigger {trig_gib:.1f} GiB)."
             else:
                 watcher_status = None
+                auto_block_reason = None
             try:
                 staging_stats = td_utils.get_disk_stats(proxy_root) if proxy_root else None
             except Exception:
@@ -1154,6 +1180,7 @@ def main() -> int:
                     staging_stats=staging_stats,
                     destination_stats=destination_stats,
                     auto_trigger_bytes=current_auto_trigger_bytes,
+                    auto_block_reason=auto_block_reason,
                 )
                 watcher_log_meta = {
                     "log_max_scroll": layout_meta.get("log_max_scroll", 0),
@@ -1185,6 +1212,8 @@ def main() -> int:
                     download_speed_bps=avg_speed_bps,
                 ):
                     lines.append(storage_line[:cols])
+                if auto_block_reason:
+                    lines.append(td_utils.color_text(auto_block_reason, "yellow")[:cols])
                 lines.append("-" * min(cols, 100))
                 now = time.time()
 
