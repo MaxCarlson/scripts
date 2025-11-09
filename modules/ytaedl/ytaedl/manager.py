@@ -168,6 +168,20 @@ def _watcher_duration(seconds: Optional[float]) -> str:
     return f"{hours:d}:{mins:02d}:{secs:02d}.{millis:03d}"
 
 
+def _watcher_trigger_label(value: Optional[int]) -> str:
+    if not isinstance(value, (int, float)) or value <= 0:
+        return "disabled"
+    gib = float(value) / (1024 ** 3)
+    return f"{gib:.1f} GiB"
+
+
+def _watcher_keep_source_label(config: WatcherConfig) -> str:
+    label = "on" if config.keep_source else "off"
+    if config.keep_source_locked:
+        label += " (locked -K)"
+    return label
+
+
 def _render_screen(lines: List[str]) -> None:
     sys.stdout.write("\x1b[0m\x1b[2J\x1b[H")
     sys.stdout.write("\n".join(lines) + "\n")
@@ -195,6 +209,12 @@ def _render_watcher_panel(
 
     lines.append(f"Manager elapsed: {_hms(manager_elapsed)}"[:cols])
     lines.append(f"Total downloaded: {_watcher_bytes(total_downloaded_bytes)}"[:cols])
+    if snapshot:
+        cfg = snapshot.config
+        lines.append(f"Default op: {cfg.default_operation} | Keep source: {_watcher_keep_source_label(cfg)}"[:cols])
+        max_label = cfg.max_files if cfg.max_files is not None else "unlimited"
+        lines.append(f"Max files/run: {max_label} | Free trigger: {_watcher_trigger_label(cfg.free_space_trigger_bytes)}"[:cols])
+        lines.append(f"Staged size trigger: {_watcher_trigger_label(cfg.total_size_trigger_bytes)}"[:cols])
 
     if not watcher_enabled:
         lines.append("Watcher disabled. Launch with --watcher to enable the cleaner."[:cols])
@@ -238,9 +258,16 @@ def _render_watcher_panel(
     if quit_confirm:
         lines.append("Press Y to quit, N to cancel"[:cols])
     else:
-        lines.append("Keys: w=back, c=start cleaner, d=dry-run analyze, q=quit"[:cols])
+        lines.append("Keys: w=back, c=start cleaner, s=scan (dry-run), o=toggle copy/move, k=set max-files, f=set free GiB, q=quit"[:cols])
 
     return lines
+
+
+def _prompt_text(prompt: str) -> Optional[str]:
+    try:
+        return input(f"\n{prompt.strip()} ").strip()
+    except EOFError:
+        return None
 
 
 def _pause_process(proc: subprocess.Popen) -> bool:
@@ -523,7 +550,8 @@ def main() -> int:
         # Determine keep_source based on operation mode
         # move = delete source (keep_source=False), copy = keep source (keep_source=True)
         # But -K flag can override to always keep source
-        if args.mp4_keep_source:
+        keep_source_locked = bool(args.mp4_keep_source)
+        if keep_source_locked:
             keep_source = True  # -K flag overrides
         else:
             keep_source = (args.mp4_operation == "copy")  # copy mode keeps source, move mode deletes
@@ -538,6 +566,7 @@ def main() -> int:
                 default_operation=args.mp4_operation,
                 max_files=max_files,
                 keep_source=keep_source,
+                keep_source_locked=keep_source_locked,
                 total_size_trigger_bytes=total_size_trigger_bytes,
                 free_space_trigger_bytes=free_space_trigger_bytes,
             )
@@ -1132,11 +1161,54 @@ def main() -> int:
                                         mlog.info("MP4 watcher run started (manual).")
                                     else:
                                         mlog.info("MP4 watcher run request ignored (already running or disabled).")
-                                elif key == 'd' and watcher and watcher_enabled:
+                                elif key in ('d', 's') and watcher and watcher_enabled:
                                     if watcher.manual_run(dry_run=True, trigger="manual-ui-dry-run"):
-                                        mlog.info("MP4 watcher dry-run started.")
+                                        mlog.info("MP4 watcher scan (dry-run) started.")
                                     else:
-                                        mlog.info("MP4 watcher dry-run request ignored (already running or disabled).")
+                                        mlog.info("MP4 watcher scan request ignored (already running or disabled).")
+                                elif key == 'o' and watcher and watcher_enabled:
+                                    new_op = watcher.toggle_operation()
+                                    cfg_snapshot = watcher.config_snapshot()
+                                    keep_desc = "keep source" if cfg_snapshot.keep_source else "delete source"
+                                    if cfg_snapshot.keep_source_locked:
+                                        keep_desc += " (locked -K)"
+                                    mlog.info(f"MP4 watcher default operation set to {new_op} ({keep_desc}).")
+                                elif key == 'k' and watcher and watcher_enabled:
+                                    response = _prompt_text("Max MP4 files per watcher run (blank=unlimited)")
+                                    if response is None:
+                                        continue
+                                    if not response:
+                                        watcher.set_max_files(None)
+                                        mlog.info("MP4 watcher max-files set to unlimited.")
+                                        continue
+                                    try:
+                                        new_limit = int(response)
+                                    except ValueError:
+                                        mlog.error("Invalid max-files value; expected a positive integer.")
+                                        continue
+                                    limit = watcher.set_max_files(new_limit)
+                                    if limit is None:
+                                        mlog.info("MP4 watcher max-files set to unlimited.")
+                                    else:
+                                        mlog.info(f"MP4 watcher max-files set to {limit}.")
+                                elif key == 'f' and watcher and watcher_enabled:
+                                    response = _prompt_text("Trigger watcher when staging free space (GiB) drops below (blank=disable)")
+                                    if response is None:
+                                        continue
+                                    if not response:
+                                        watcher.set_free_space_trigger_gib(None)
+                                        mlog.info("MP4 watcher free-space trigger disabled.")
+                                        continue
+                                    try:
+                                        new_threshold = float(response)
+                                    except ValueError:
+                                        mlog.error("Invalid free-space threshold; expected a number.")
+                                        continue
+                                    threshold_bytes = watcher.set_free_space_trigger_gib(new_threshold)
+                                    if threshold_bytes:
+                                        mlog.info(f"MP4 watcher free-space trigger set to {new_threshold:.1f} GiB.")
+                                    else:
+                                        mlog.info("MP4 watcher free-space trigger disabled.")
                                 elif key == 'q':
                                     quit_confirm = True
                                 continue
