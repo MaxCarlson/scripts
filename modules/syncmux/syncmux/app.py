@@ -147,7 +147,10 @@ class SyncMuxApp(App):
             if len(self.hosts) == 1 and self.hosts[0].alias == "localhost":
                 self._show_first_run_prompt()
         except FileNotFoundError as e:
-            self._log(str(e), "error", show_dialog=True)
+            # Config file doesn't exist - launch wizard to help user get started
+            self._log("⚠️ No config file found. Starting setup wizard...", "warning")
+            self.notify("Welcome! Let's add your first machine.", title="First Run", timeout=5)
+            self._show_add_machine_screen()
         except ValueError as e:
             self._log(f"Configuration error: {e}", "error", show_dialog=True)
 

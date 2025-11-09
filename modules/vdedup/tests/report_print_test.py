@@ -20,8 +20,8 @@ def test_pretty_and_exclusions(tmp_path: Path):
 
     text = pretty_print_reports([rp], verbosity=1)
     assert "Report:" in text
-    assert "KEEP [hash]" in text
-    assert "LOSE" in text
+    assert "K keep.mp4" in text
+    assert "L lose.mp4" in text
     assert "Summary:" in text
 
     # exclusions

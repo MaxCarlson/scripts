@@ -293,9 +293,6 @@ class AddMachineScreen(ModalScreen):
             yield Label("Password (optional):")
             yield Input(placeholder="Leave blank for SSH key/agent", id="password", password=True)
 
-            yield Label("Default Session (optional):")
-            yield Input(placeholder="e.g., dev", id="default-session")
-
             yield Static("", id="error-message", classes="error")
 
             with Grid(id="button-grid"):
@@ -314,7 +311,6 @@ class AddMachineScreen(ModalScreen):
             port_str = self.query_one("#port", Input).value.strip()
             username = self.query_one("#username", Input).value.strip()
             password = self.query_one("#password", Input).value.strip()
-            default_session = self.query_one("#default-session", Input).value.strip()
             error_widget = self.query_one("#error-message", Static)
 
             # Validate inputs
@@ -348,7 +344,6 @@ class AddMachineScreen(ModalScreen):
                 "user": username,
                 "auth_method": "password" if password else "agent",
                 "password": password if password else None,
-                "default_session": default_session if default_session else None
             }
             self.dismiss(machine_info)
         else:

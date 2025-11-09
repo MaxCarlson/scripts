@@ -169,11 +169,12 @@ SessionWidget {
 #add-machine-container {
     width: 95%;
     max-width: 55;
-    height: 20;
+    height: auto;
+    max-height: 90%;
     border: thick $background 80%;
     background: $surface;
     padding: 1;
-    overflow-y: scroll;
+    overflow-y: auto;
 }
 
 #add-machine-container Label {
