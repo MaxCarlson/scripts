@@ -180,18 +180,17 @@ def _format_watcher_log_line(line: str) -> str:
     stripped = line.rstrip()
     if not stripped:
         return ""
-    status = None
-    parts = stripped.split("] ")
-    if len(parts) >= 3:
-        token = parts[2].split()[0]
-        token_clean = token.strip("[]")
-        if token_clean.isupper():
-            status = token_clean
-    colour = WATCHER_LOG_STATUS_COLOURS.get(status or "")
+    parts = stripped.split(" ", 2)
+    if len(parts) < 3:
+        return stripped
+    timestamp = parts[0].strip("[]")
+    status = parts[1]
+    payload = parts[2]
+    colour = WATCHER_LOG_STATUS_COLOURS.get(status.strip("[]"), "")
+    status_formatted = status
     if colour:
-        coloured_status = td_utils.color_text(status, colour)
-        return stripped.replace(status, coloured_status, 1)
-    return stripped
+        status_formatted = td_utils.color_text(status, colour)
+    return f"[{timestamp}] {status_formatted} {payload}"
 
 
 def _read_watcher_log_lines(log_path: Optional[Path], max_lines: int) -> List[str]:
