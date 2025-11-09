@@ -3,7 +3,7 @@ from __future__ import annotations
 import shutil
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -16,6 +16,7 @@ class WatcherConfig:
     default_operation: str
     max_files: Optional[int]
     keep_source: bool
+    keep_source_locked: bool
     total_size_trigger_bytes: Optional[int]  # Auto-trigger when total MP4 size exceeds this
     free_space_trigger_bytes: Optional[int]  # Auto-trigger when free space drops below this
 
@@ -49,6 +50,7 @@ class WatcherSnapshot:
     last_error: Optional[str]
     last_result: Optional[WatcherRunSummary]
     bytes_since_last: Optional[int]
+    config: WatcherConfig
 
 
 class MP4Watcher:
@@ -82,6 +84,42 @@ class MP4Watcher:
     @property
     def config(self) -> WatcherConfig:
         return self._config
+
+    def config_snapshot(self) -> WatcherConfig:
+        with self._lock:
+            return replace(self._config)
+
+    def _apply_operation_locked(self, operation: str) -> str:
+        normalized = operation.lower()
+        if normalized not in {"copy", "move"}:
+            raise ValueError(f"Unsupported MP4 operation: {operation}")
+        self._config.default_operation = normalized
+        if not self._config.keep_source_locked:
+            self._config.keep_source = normalized == "copy"
+        return normalized
+
+    def set_default_operation(self, operation: str) -> str:
+        with self._lock:
+            return self._apply_operation_locked(operation)
+
+    def toggle_operation(self) -> str:
+        with self._lock:
+            next_operation = "copy" if self._config.default_operation == "move" else "move"
+            return self._apply_operation_locked(next_operation)
+
+    def set_max_files(self, value: Optional[int]) -> Optional[int]:
+        normalized = value if isinstance(value, int) and value > 0 else None
+        with self._lock:
+            self._config.max_files = normalized
+            return self._config.max_files
+
+    def set_free_space_trigger_gib(self, value: Optional[float]) -> Optional[int]:
+        with self._lock:
+            if value is None or (isinstance(value, (int, float)) and value <= 0):
+                self._config.free_space_trigger_bytes = None
+            else:
+                self._config.free_space_trigger_bytes = int(float(value) * (1024 ** 3))
+            return self._config.free_space_trigger_bytes
 
     def manual_run(self, *, dry_run: bool, trigger: str, operation: Optional[str] = None, max_files: Optional[int] = None) -> bool:
         if not self.is_enabled():
@@ -157,6 +195,7 @@ class MP4Watcher:
                 last_error=self._last_error,
                 last_result=self._last_result,
                 bytes_since_last=bytes_since_last,
+                config=replace(self._config),
             )
 
     def _load_mp4_sync(self):
@@ -268,4 +307,3 @@ class MP4Watcher:
                 self._start_time = None
                 self._current_operation = None
                 self._current_dry_run = False
-
