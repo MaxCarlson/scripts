@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import ytaedl.manager as manager
+from termdash import utils as td_utils
 
 
 class TestManager:
@@ -42,6 +43,75 @@ class TestManager:
 
         args_with_show = parser.parse_args(["-b"])
         assert args_with_show.show_bars is True
+
+    def test_prepare_log_window(self):
+        logs = [f"line {i}" for i in range(6)]
+        window, max_scroll = manager._prepare_log_window(logs, available_rows=3, scroll=0)
+        assert window == ["line 3", "line 4", "line 5"]
+        assert max_scroll == 3
+
+        window2, max_scroll2 = manager._prepare_log_window(logs, available_rows=3, scroll=5)
+        assert window2 == ["line 0", "line 1", "line 2"]
+        assert max_scroll2 == 3
+
+    def test_wrap_hotkey_lines(self):
+        text = " ".join(f"word{i}" for i in range(10))
+        lines = manager._wrap_hotkey_lines(text, cols=20)
+        assert len(lines) >= 2
+        assert all(len(line) <= 20 for line in lines)
+        assert " ".join(lines).split() == text.split()
+
+    def test_storage_summary_lines_same_volume(self):
+        staging = td_utils.DiskStats(
+            path=Path("/staging"),
+            total_bytes=50 * manager.GIB,
+            used_bytes=10 * manager.GIB,
+            free_bytes=40 * manager.GIB,
+            device=1,
+            label="disk-a",
+        )
+        dest = td_utils.DiskStats(
+            path=Path("/dest"),
+            total_bytes=50 * manager.GIB,
+            used_bytes=5 * manager.GIB,
+            free_bytes=45 * manager.GIB,
+            device=1,
+            label="disk-a",
+        )
+        lines = manager._storage_summary_lines(
+            staging,
+            dest,
+            threshold_bytes=20 * manager.GIB,
+            download_speed_bps=1024 * 1024,
+        )
+        assert any("buffer" in line for line in lines)
+        assert any("shares staging volume" in line for line in lines)
+
+    def test_storage_summary_lines_separate_volume(self):
+        staging = td_utils.DiskStats(
+            path=Path("/staging"),
+            total_bytes=20 * manager.GIB,
+            used_bytes=5 * manager.GIB,
+            free_bytes=15 * manager.GIB,
+            device=1,
+            label="disk-a",
+        )
+        dest = td_utils.DiskStats(
+            path=Path("/dest"),
+            total_bytes=30 * manager.GIB,
+            used_bytes=10 * manager.GIB,
+            free_bytes=20 * manager.GIB,
+            device=2,
+            label="disk-b",
+        )
+        lines = manager._storage_summary_lines(
+            staging,
+            dest,
+            threshold_bytes=None,
+            download_speed_bps=0,
+        )
+        assert any("disk-b" in line for line in lines)
+        assert all("shares staging volume" not in line for line in lines)
 
     def test_read_urls(self):
         """Test reading URLs from a file."""
