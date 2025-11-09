@@ -1,0 +1,137 @@
+.F.........................F.s....                                       [100%]
+================================== FAILURES ===================================
+___________________ test_cli_parses_and_runs_plain_progress ___________________
+
+self = ArgumentParser(prog='termdash', usage=None, description='TermDash CLI demos', formatter_class=<class 'argparse.HelpFormatter'>, conflict_handler='error', add_help=True)
+args = ['progress', '--plain', '--total', '5', '--interval', '0', ...]
+namespace = Namespace(cmd=None), intermixed = False
+
+    def _parse_known_args2(self, args, namespace, intermixed):
+        if args is None:
+            # args default to the system args
+            args = _sys.argv[1:]
+        else:
+            # make sure that args are mutable
+            args = list(args)
+    
+        # default Namespace built from parser defaults
+        if namespace is None:
+            namespace = Namespace()
+    
+        # add any action defaults that aren't present
+        for action in self._actions:
+            if action.dest is not SUPPRESS:
+                if not hasattr(namespace, action.dest):
+                    if action.default is not SUPPRESS:
+                        setattr(namespace, action.dest, action.default)
+    
+        # add any parser defaults that aren't present
+        for dest in self._defaults:
+            if not hasattr(namespace, dest):
+                setattr(namespace, dest, self._defaults[dest])
+    
+        # parse the arguments and exit if there are any errors
+        if self.exit_on_error:
+            try:
+>               namespace, args = self._parse_known_args(args, namespace, intermixed)
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+..\..\AppData\Local\Programs\Python\Python313\Lib\argparse.py:1937: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+..\..\AppData\Local\Programs\Python\Python313\Lib\argparse.py:2169: in _parse_known_args
+    positionals_end_index = consume_positionals(start_index)
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python313\Lib\argparse.py:2144: in consume_positionals
+    take_action(action, args)
+..\..\AppData\Local\Programs\Python\Python313\Lib\argparse.py:1998: in take_action
+    argument_values = self._get_values(action, argument_strings)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python313\Lib\argparse.py:2528: in _get_values
+    self._check_value(action, value[0])
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = ArgumentParser(prog='termdash', usage=None, description='TermDash CLI demos', formatter_class=<class 'argparse.HelpFormatter'>, conflict_handler='error', add_help=True)
+action = _SubParsersAction(option_strings=[], dest='cmd', nargs='A...', const=None, default=None, type=None, choices={'multista...e.HelpFormatter'>, conflict_handler='error', add_help=True)}, required=True, help=None, metavar=None, deprecated=False)
+value = 'progress'
+
+    def _check_value(self, action, value):
+        # converted value must be one of the choices (if specified)
+        choices = action.choices
+        if choices is not None:
+            if isinstance(choices, str):
+                choices = iter(choices)
+            if value not in choices:
+                args = {'value': str(value),
+                        'choices': ', '.join(map(str, action.choices))}
+                msg = _('invalid choice: %(value)r (choose from %(choices)s)')
+>               raise ArgumentError(action, msg % args)
+E               argparse.ArgumentError: argument cmd: invalid choice: 'progress' (choose from multistats, threads, seemake, stats)
+
+..\..\AppData\Local\Programs\Python\Python313\Lib\argparse.py:2578: ArgumentError
+
+During handling of the above exception, another exception occurred:
+
+capsys = <_pytest.capture.CaptureFixture object at 0x000002442F27DA90>
+
+    def test_cli_parses_and_runs_plain_progress(capsys):
+        parser = build_parser()
+>       ns = parser.parse_args(["progress", "--plain", "--total", "5", "--interval", "0", "--width", "10"])
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+modules\termdash\tests\cli_test.py:9: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+..\..\AppData\Local\Programs\Python\Python313\Lib\argparse.py:1898: in parse_args
+    args, argv = self.parse_known_args(args, namespace)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python313\Lib\argparse.py:1908: in parse_known_args
+    return self._parse_known_args2(args, namespace, intermixed=False)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python313\Lib\argparse.py:1939: in _parse_known_args2
+    self.error(str(err))
+..\..\AppData\Local\Programs\Python\Python313\Lib\argparse.py:2658: in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = ArgumentParser(prog='termdash', usage=None, description='TermDash CLI demos', formatter_class=<class 'argparse.HelpFormatter'>, conflict_handler='error', add_help=True)
+status = 2
+message = "termdash: error: argument cmd: invalid choice: 'progress' (choose from multistats, threads, seemake, stats)\n"
+
+    def exit(self, status=0, message=None):
+        if message:
+            self._print_message(message, _sys.stderr)
+>       _sys.exit(status)
+E       SystemExit: 2
+
+..\..\AppData\Local\Programs\Python\Python313\Lib\argparse.py:2645: SystemExit
+---------------------------- Captured stderr call -----------------------------
+usage: termdash [-h] {multistats,threads,seemake,stats} ...
+termdash: error: argument cmd: invalid choice: 'progress' (choose from multistats, threads, seemake, stats)
+_______________________ test_simpleboard_add_and_update _______________________
+
+    def test_simpleboard_add_and_update():
+        b = SimpleBoard(title="T")
+        # row with two stats
+        b.add_row("r1",
+            Stat("done", 0, prefix="Done: "),
+            Stat("total", 10, prefix="Total: "),
+        )
+        # bar bound to stat values
+        pb = ProgressBar("bar", total=10, width=18)
+        pb.bind(current_fn=lambda: b.read_stat("r1", "done"), total_fn=lambda: b.read_stat("r1", "total"))
+        b.add_row("r2", pb.cell())
+    
+        # mutate and read back
+        b.update("r1", "done", 4)
+        assert b.read_stat("r1", "done") == 4
+    
+        # render the bar cell and ensure it's width-stable
+        rendered = pb.cell().render()
+        # markers are present (width hint + NOEXPAND markers)
+>       assert "[W18]" in rendered
+E       AssertionError: assert '[W18]' in '\\x1e[\u2588\u2588\u2588\u2588\u2588\u2588 40%\xb7\xb7\xb7\xb7\xb7\xb7]\\x1f'
+
+modules\termdash\tests\simpleboard_test.py:27: AssertionError
+=========================== short test summary info ===========================
+FAILED modules\termdash\tests\cli_test.py::test_cli_parses_and_runs_plain_progress
+FAILED modules\termdash\tests\simpleboard_test.py::test_simpleboard_add_and_update
+2 failed, 31 passed, 1 skipped in 0.34s

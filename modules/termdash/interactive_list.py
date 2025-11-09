@@ -1,10 +1,36 @@
 from __future__ import annotations
 
 import curses
+import shutil
 import sys
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from typing import Any, Callable, Dict, List, Sequence, Optional, Tuple
+
+
+@dataclass
+class DetailEntry:
+    """Represents a collapsible block within the detail view."""
+
+    summary: str
+    body: List[str] = field(default_factory=list)
+    focusable: bool = True
+    expanded: bool = False
+
+
+@dataclass
+class DetailViewData:
+    """Container object produced by detail formatters."""
+
+    title: str
+    entries: List[DetailEntry]
+    footer: Optional[str] = None
+
+
+DETAIL_FOOTER_DEFAULT = (
+    "Up/Down: move | Enter: toggle | e: expand | c: collapse | g/G: start/end | Esc/q: back"
+)
+
 
 def ensure_curses_available() -> None:
     """Checks if the curses module is available and raises SystemExit if not."""
@@ -40,9 +66,15 @@ class ListState:
     # Detail view state
     detail_view: bool = False
     detail_item: Any = None
+    detail_entries: List[DetailEntry] = field(default_factory=list)
+    detail_selection: int = 0
+    detail_title: str = ""
+    detail_footer: str = DETAIL_FOOTER_DEFAULT
 
     # Horizontal scroll state
     scroll_offset: int = 0
+    detail_scroll: int = 0
+    columns_line: Optional[str] = None
 
     # Display options
     show_date: bool = True
@@ -106,6 +138,8 @@ class InteractiveList:
         custom_action_handler: Optional[Callable[[int, Any], Tuple[bool, bool]]] = None,
         dirs_first: bool = True,
         name_color_getter: Optional[Callable[[Any], int]] = None,
+        columns_line: Optional[str] = None,
+        sort_change_handler: Optional[Callable[[str, bool], None]] = None,
     ):
         ensure_curses_available()
         self.formatter = formatter
@@ -117,6 +151,7 @@ class InteractiveList:
         self.detail_formatter = detail_formatter or self._default_detail_formatter
         self.size_extractor = size_extractor
         self.enable_color_gradient = enable_color_gradient
+        self.sort_change_handler = sort_change_handler
         self.custom_action_handler = custom_action_handler
         self.name_color_getter = name_color_getter
 
@@ -134,9 +169,21 @@ class InteractiveList:
             descending=initial_order == "desc",
             dirs_first=dirs_first,
         )
+        self.state.columns_line = columns_line
+        self._detail_lines: List[str] = []
+        self._detail_meta: List[Tuple[int, bool]] = []
+        self._detail_focusable: List[int] = []
+        self._detail_content_height = 0
+        self._detail_lines: List[str] = []
+        self._detail_meta: List[Tuple[int, bool]] = []
+        self._detail_content_height: int = 0
 
     def _default_detail_formatter(self, item: Any) -> List[str]:
         """Default detail formatter shows item representation."""
+        if item is None:
+            return []
+        if isinstance(item, list):
+            return list(item)
         return [str(item)]
 
     def _matches_pattern(self, item: Any, pattern: str) -> bool:
@@ -196,9 +243,9 @@ class InteractiveList:
 
             # Detail view mode
             if self.state.detail_view:
-                if key in (27, ord('q'), curses.KEY_ENTER, 10, 13):  # Escape, q, or Enter to exit
-                    self.state.detail_view = False
-                    self.state.detail_item = None
+                if self._handle_detail_key(key):
+                    continue
+                # Unhandled keys just refresh view without exiting detail mode
                 continue
 
             if self.state.editing_filter:
@@ -246,6 +293,10 @@ class InteractiveList:
             elif key == curses.KEY_LEFT:
                 # Scroll name to the left
                 self.state.scroll_offset = max(0, self.state.scroll_offset - 5)
+            elif key == ord("i"):
+                if self.state.visible and self.state.selected_index < len(self.state.visible):
+                    self._prepare_detail_view(self.state.visible[self.state.selected_index])
+                    self.state.scroll_offset = 0
             elif key in (curses.KEY_ENTER, 10, 13):
                 # Check if custom handler wants to handle this key
                 handled = False
@@ -257,8 +308,7 @@ class InteractiveList:
 
                 # Default behavior: Enter detail view
                 if not handled and self.state.visible and self.state.selected_index < len(self.state.visible):
-                    self.state.detail_view = True
-                    self.state.detail_item = self.state.visible[self.state.selected_index]
+                    self._prepare_detail_view(self.state.visible[self.state.selected_index])
                     self.state.scroll_offset = 0
             else:
                 # Check if custom handler wants to handle this key
@@ -345,6 +395,11 @@ class InteractiveList:
         else:
             self.state.sort_field = field
             self.state.descending = True  # Default to descending for new fields
+        if self.sort_change_handler:
+            try:
+                self.sort_change_handler(self.state.sort_field, self.state.descending)
+            except Exception:
+                pass
         return True
 
     def _move_selection(self, delta: int) -> None:
@@ -459,6 +514,18 @@ class InteractiveList:
         stdscr.clrtoeol()
         stdscr.addstr(1, 0, sort_line[:max_x - 1], curses.color_pair(2))
 
+        if self.state.columns_line:
+            try:
+                stdscr.move(header_lines, 0)
+                stdscr.clrtoeol()
+                stdscr.addstr(header_lines, 0, self.state.columns_line[:max_x - 1], curses.color_pair(2) | curses.A_BOLD)
+                header_lines += 1
+                list_start += 1
+                list_height = max(1, max_y - (header_lines + footer_lines))
+                self.state.viewport_height = list_height
+            except curses.error:
+                pass
+
         # Progress bar (if calculating sizes)
         if self.state.calculating_sizes:
             current, total = self.state.calc_progress
@@ -466,12 +533,12 @@ class InteractiveList:
                 progress_pct = int((current / total) * 100)
                 bar_width = min(40, max_x - 30)
                 filled = int((current / total) * bar_width)
-                bar = "█" * filled + "░" * (bar_width - filled)
+                bar = "#" * filled + "-" * (bar_width - filled)
                 progress_line = f"Calculating sizes: [{bar}] {progress_pct}% ({current}/{total})"
                 try:
-                    stdscr.move(2, 0)
+                    stdscr.move(header_lines, 0)
                     stdscr.clrtoeol()
-                    stdscr.addstr(2, 0, progress_line[:max_x - 1], curses.color_pair(3))
+                    stdscr.addstr(header_lines, 0, progress_line[:max_x - 1], curses.color_pair(3))
                     header_lines += 1
                     list_start += 1
                     list_height = max(1, max_y - (header_lines + footer_lines))
@@ -613,41 +680,277 @@ class InteractiveList:
 
         stdscr.refresh()
 
+
+def render_items_to_text(
+    items: Sequence[Any],
+    formatter: Callable[[Any, str, int, bool, bool, int], str],
+    *,
+    sort_field: str = "",
+    width: Optional[int] = None,
+    show_date: bool = True,
+    show_time: bool = True,
+) -> List[str]:
+    """
+    Render list items using the provided formatter into plain text lines.
+
+    Args:
+        items: sequence of items matching the formatter signature.
+        formatter: same formatter used by InteractiveList.
+        sort_field: name of the active sort field (passed to formatter).
+        width: optional target width (defaults to terminal width or 120 fallback).
+        show_date: whether formatter should include date information.
+        show_time: whether formatter should include time information.
+    """
+    if width is None:
+        width = shutil.get_terminal_size(fallback=(120, 40)).columns
+
+    lines: List[str] = []
+    for item in items:
+        lines.append(formatter(item, sort_field, max(10, width), show_date, show_time, 0))
+    return lines
     def _draw_detail_view(self, stdscr, max_y: int, max_x: int) -> None:
-        """Draw the detail view for the selected item with text wrapping."""
-        detail_lines = self.detail_formatter(self.state.detail_item)
+        """Render the structured detail view with navigation support."""
+        title = self.state.detail_title or "Detail View"
+        footer = self.state.detail_footer or DETAIL_FOOTER_DEFAULT
 
-        # Header
-        stdscr.addnstr(0, 0, "Detail View (press ESC/Enter/q to return)".ljust(max_x), max_x - 1,
-                      curses.color_pair(2) | curses.A_BOLD)
-        stdscr.addnstr(1, 0, "─" * (max_x - 1), max_x - 1, curses.color_pair(2))
+        stdscr.addnstr(0, 0, title.ljust(max_x)[: max_x - 1], max_x - 1, curses.color_pair(2) | curses.A_BOLD)
+        stdscr.addnstr(1, 0, "-" * (max_x - 1), max_x - 1, curses.color_pair(2))
 
-        # Content with wrapping
         content_start = 2
-        content_height = max_y - content_start - 1
-        current_row = 0
+        content_height = max(1, max_y - content_start - 1)
+        self._detail_content_height = content_height
 
-        for line in detail_lines:
-            if current_row >= content_height:
-                break
+        lines = self._detail_lines
+        total_lines = len(lines)
+        max_scroll = max(0, total_lines - content_height)
+        if self.state.detail_scroll > max_scroll:
+            self.state.detail_scroll = max_scroll
 
-            # Wrap long lines
-            if len(line) > max_x - 1:
-                # Split into chunks
-                remaining = line
-                while remaining and current_row < content_height:
-                    chunk = remaining[:max_x - 1]
-                    try:
-                        stdscr.addnstr(content_start + current_row, 0, chunk, max_x - 1, curses.color_pair(1))
-                    except curses.error:
-                        pass
-                    remaining = remaining[max_x - 1:]
-                    current_row += 1
+        visible_end = min(total_lines, self.state.detail_scroll + content_height)
+
+        # Clear content area
+        for row in range(content_height):
+            try:
+                stdscr.move(content_start + row, 0)
+                stdscr.clrtoeol()
+            except curses.error:
+                pass
+
+        for idx, line_index in enumerate(range(self.state.detail_scroll, visible_end)):
+            text = lines[line_index] if line_index < total_lines else ""
+            attr = curses.color_pair(1)
+            if self._detail_meta and line_index < len(self._detail_meta):
+                entry_idx, is_summary = self._detail_meta[line_index]
+                if is_summary:
+                    attr = curses.color_pair(3)
+                    if (
+                        self.state.detail_entries
+                        and entry_idx == self.state.detail_selection
+                        and entry_idx < len(self.state.detail_entries)
+                    ):
+                        attr |= curses.A_REVERSE
+            try:
+                stdscr.addnstr(content_start + idx, 0, text.ljust(max_x)[: max_x - 1], max_x - 1, attr)
+            except curses.error:
+                pass
+
+        # Footer
+        try:
+            stdscr.addnstr(
+                max_y - 1,
+                0,
+                footer.ljust(max_x)[: max_x - 1],
+                max_x - 1,
+                curses.color_pair(2),
+            )
+        except curses.error:
+            pass
+
+    def _handle_detail_key(self, key: int) -> bool:
+        """Handle keypresses while the detail pane is active."""
+        if not self.state.detail_view:
+            return False
+
+        if self.state.detail_entries:
+            if key in (curses.KEY_UP, ord("k")):
+                self._detail_move_selection(-1)
+            elif key in (curses.KEY_DOWN, ord("j")):
+                self._detail_move_selection(1)
+            elif key == curses.KEY_PPAGE:
+                self._detail_page(-1)
+            elif key == curses.KEY_NPAGE:
+                self._detail_page(1)
+            elif key in (ord("g"),):
+                self._detail_jump(start=True)
+            elif key in (ord("G"),):
+                self._detail_jump(start=False)
+            elif key == ord("e"):
+                self._detail_set_expanded(True)
+            elif key == ord("c"):
+                self._detail_set_expanded(False)
+            elif key in (curses.KEY_ENTER, 10, 13):
+                self._detail_toggle_selected()
+            elif key in (27, ord("q")):
+                self._exit_detail_view()
             else:
-                try:
-                    stdscr.addnstr(content_start + current_row, 0, line, max_x - 1, curses.color_pair(1))
-                except curses.error:
-                    pass
-                current_row += 1
+                return False
+            return True
 
-        stdscr.refresh()
+        # Fallback handling when detail formatter returns simple text
+        total_lines = len(self._detail_lines)
+        content_height = max(1, self._detail_content_height or 1)
+        max_scroll = max(0, total_lines - content_height)
+
+        if key in (curses.KEY_UP, ord("k")):
+            if self.state.detail_scroll > 0:
+                self.state.detail_scroll -= 1
+        elif key in (curses.KEY_DOWN, ord("j")):
+            if self.state.detail_scroll < max_scroll:
+                self.state.detail_scroll += 1
+        elif key == curses.KEY_PPAGE:
+            self.state.detail_scroll = max(0, self.state.detail_scroll - content_height)
+        elif key == curses.KEY_NPAGE:
+            self.state.detail_scroll = min(max_scroll, self.state.detail_scroll + content_height)
+        elif key in (27, ord("q"), curses.KEY_ENTER, 10, 13):
+            self._exit_detail_view()
+        else:
+            return False
+        return True
+
+    def _normalize_detail_payload(self, payload: Any) -> Tuple[DetailViewData, Optional[List[str]]]:
+        if isinstance(payload, DetailViewData):
+            return payload, None
+        if isinstance(payload, list):
+            fallback = [str(line) for line in payload]
+        elif payload is None:
+            fallback = []
+        else:
+            fallback = [str(payload)]
+        return DetailViewData(title="Detail View", entries=[], footer=None), fallback
+
+    def _prepare_detail_view(self, item: Any) -> None:
+        """Initialise detail view state for the selected item."""
+        raw = self.detail_formatter(item) if self.detail_formatter else []
+        data, fallback = self._normalize_detail_payload(raw)
+
+        self.state.detail_view = True
+        self.state.detail_item = item
+        self.state.detail_title = data.title
+        self.state.detail_footer = data.footer or DETAIL_FOOTER_DEFAULT
+        self.state.detail_entries = list(data.entries)
+        self.state.detail_selection = 0
+        self.state.detail_scroll = 0
+
+        if self.state.detail_entries:
+            self._detail_rebuild_lines()
+            self._detail_ensure_visible()
+        else:
+            self._detail_lines = list(fallback or [])
+            self._detail_meta = []
+            self._detail_focusable = []
+
+    def _detail_rebuild_lines(self) -> None:
+        """Recompute flattened detail lines for rendering."""
+        lines: List[str] = []
+        meta: List[Tuple[int, bool]] = []
+        focusable: List[int] = []
+
+        for idx, entry in enumerate(self.state.detail_entries):
+            marker = "-" if entry.expanded else "+"
+            summary = f"{marker} {entry.summary}"
+            lines.append(summary)
+            meta.append((idx, True))
+            if entry.focusable:
+                focusable.append(idx)
+            if entry.expanded:
+                for body in entry.body:
+                    body_line = f"    {body}"
+                    lines.append(body_line)
+                    meta.append((idx, False))
+
+        self._detail_lines = lines
+        self._detail_meta = meta
+        self._detail_focusable = focusable or ([0] if self.state.detail_entries else [])
+
+        if self.state.detail_entries and self._detail_focusable:
+            if self.state.detail_selection not in self._detail_focusable:
+                self.state.detail_selection = self._detail_focusable[0]
+
+    def _detail_move_selection(self, delta: int) -> None:
+        if not self._detail_focusable:
+            return
+        current = self.state.detail_selection
+        if current not in self._detail_focusable:
+            current = self._detail_focusable[0]
+        pos = self._detail_focusable.index(current)
+        new_pos = max(0, min(len(self._detail_focusable) - 1, pos + delta))
+        self.state.detail_selection = self._detail_focusable[new_pos]
+        self._detail_ensure_visible()
+
+    def _detail_page(self, direction: int) -> None:
+        if not self._detail_focusable:
+            return
+        step = max(1, self._detail_content_height or 1) * direction
+        self._detail_move_selection(step)
+
+    def _detail_toggle_selected(self) -> None:
+        idx = self.state.detail_selection
+        if not (0 <= idx < len(self.state.detail_entries)):
+            return
+        entry = self.state.detail_entries[idx]
+        if not entry.focusable:
+            return
+        entry.expanded = not entry.expanded
+        self._detail_rebuild_lines()
+        self._detail_ensure_visible()
+
+    def _detail_set_expanded(self, value: bool) -> None:
+        changed = False
+        for entry in self.state.detail_entries:
+            if entry.focusable and entry.expanded != value:
+                entry.expanded = value
+                changed = True
+        if changed:
+            self._detail_rebuild_lines()
+            self._detail_ensure_visible()
+
+    def _detail_jump(self, start: bool) -> None:
+        if not self._detail_focusable:
+            return
+        target = self._detail_focusable[0] if start else self._detail_focusable[-1]
+        self.state.detail_selection = target
+        self._detail_ensure_visible(force=True)
+
+    def _detail_ensure_visible(self, force: bool = False) -> None:
+        if not self._detail_meta:
+            return
+        if self._detail_content_height <= 0:
+            return
+        selected = self.state.detail_selection
+        summary_line = next(
+            (idx for idx, (entry_idx, is_summary) in enumerate(self._detail_meta) if is_summary and entry_idx == selected),
+            None,
+        )
+        if summary_line is None:
+            return
+        top = self.state.detail_scroll
+        bottom = top + self._detail_content_height - 1
+        if force or summary_line < top:
+            self.state.detail_scroll = summary_line
+        elif summary_line > bottom:
+            self.state.detail_scroll = summary_line - self._detail_content_height + 1
+        max_scroll = max(0, len(self._detail_lines) - self._detail_content_height)
+        if self.state.detail_scroll > max_scroll:
+            self.state.detail_scroll = max_scroll
+
+    def _exit_detail_view(self) -> None:
+        self.state.detail_view = False
+        self.state.detail_item = None
+        self.state.detail_entries = []
+        self.state.detail_scroll = 0
+        self.state.detail_selection = 0
+        self._detail_lines = []
+        self._detail_meta = []
+        self._detail_focusable = []
+
+

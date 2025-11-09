@@ -6,7 +6,11 @@ Command-line entry point for the application.
 """
 
 import argparse
+import logging
 import sys
+from pathlib import Path
+
+from . import __version__
 
 
 def main():
@@ -19,14 +23,38 @@ def main():
     parser.add_argument(
         "-v", "--version",
         action="version",
-        version="syncmux 0.1.0"
+        version=f"syncmux {__version__}"
+    )
+    parser.add_argument(
+        "-c", "--config",
+        type=Path,
+        metavar="PATH",
+        help="Path to config file (default: platform-specific, see docs)"
+    )
+    parser.add_argument(
+        "-l", "--log-level",
+        choices=["info", "debug", "warning", "error"],
+        default="info",
+        help="Set logging level (default: info)"
     )
 
     args = parser.parse_args()
 
+    # Configure logging based on log level
+    log_levels = {
+        "info": logging.INFO,
+        "debug": logging.DEBUG,
+        "warning": logging.WARNING,
+        "error": logging.ERROR,
+    }
+    logging.basicConfig(
+        level=log_levels[args.log_level],
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+
     from .app import SyncMuxApp
 
-    app = SyncMuxApp()
+    app = SyncMuxApp(config_path=args.config)
     app.run()
 
 

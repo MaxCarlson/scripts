@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .models import FileMeta, VideoMeta
+from .report_models import load_report_groups
+from .report_viewer import render_reports_to_text
 
 Meta = FileMeta | VideoMeta
 
@@ -122,49 +125,27 @@ def load_report(path: Path) -> Dict[str, Any]:
 
 
 def pretty_print_reports(paths: List[Path], verbosity: int = 1) -> str:
-    out: List[str] = []
-    tot_groups = tot_losers = tot_bytes = 0
-    by_method: Dict[str, int] = {}
+    if verbosity <= 0:
+        # Minimal summary output
+        tot_groups = tot_losers = tot_bytes = 0
+        lines = []
+        for rp in paths:
+            report_groups = load_report_groups(rp)
+            group_count = len(report_groups)
+            loser_count = sum(g.duplicate_count for g in report_groups)
+            reclaim_bytes = sum(g.reclaimable_bytes for g in report_groups)
+            tot_groups += group_count
+            tot_losers += loser_count
+            tot_bytes += reclaim_bytes
+            lines.append(f"{rp}: {group_count} groups, {loser_count} losers, {_fmt_bytes(reclaim_bytes)} reclaimable")
+        lines.append("Overall:")
+        lines.append(f"  groups : {tot_groups}")
+        lines.append(f"  losers : {tot_losers}")
+        lines.append(f"  space  : {_fmt_bytes(tot_bytes)}")
+        return "\n".join(lines)
 
-    for rp in paths:
-        d = load_report(rp)
-        out.append(f"Report: {rp}")
-        out.append("Groups:")
-        groups = d.get("groups") or {}
-        for gid, g in groups.items():
-            method = g.get("method", "unknown")
-            by_method[method] = by_method.get(method, 0) + 1
-            if verbosity >= 1:
-                keep = g.get("keep", "")
-                losers = g.get("losers") or []
-                out.append(f"  [{method}] {gid}")
-                out.append(f"    keep   : {keep}")
-                out.append(f"    losers : {len(losers)}")
-        # summary (use provided or compute minimal)
-        s = d.get("summary") or {}
-        groups_n = int(s.get("groups", len(groups)))
-        losers_n = int(s.get("losers", sum(len((g or {}).get("losers") or []) for g in groups.values())))
-        size_b = int(s.get("size_bytes", 0))
-        out.append("")
-        out.append("By method:")
-        for k, v in sorted(by_method.items()):
-            out.append(f"  {k:<8}: {v}")
-        out.append("")
-        out.append("Summary:")
-        out.append(f"  groups : {groups_n}")
-        out.append(f"  losers : {losers_n}")
-        out.append(f"  space  : { _fmt_bytes(size_b) }")
-        out.append("")
-
-        tot_groups += groups_n
-        tot_losers += losers_n
-        tot_bytes += size_b
-
-    out.append("Overall totals:")
-    out.append(f"  groups : {tot_groups}")
-    out.append(f"  losers : {tot_losers}")
-    out.append(f"  space  : { _fmt_bytes(tot_bytes) }")
-    return "\n".join(out)
+    color_output = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+    return render_reports_to_text(paths, color=color_output)
 
 
 def collect_exclusions(paths: List[Path]) -> set[Path]:

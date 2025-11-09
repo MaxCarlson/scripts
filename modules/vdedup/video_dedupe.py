@@ -57,6 +57,7 @@ from vdedup.report import (
     load_report,
     collapse_report_file,
 )
+from vdedup.report_viewer import launch_report_viewer
 
 # -------- helpers --------
 
@@ -75,7 +76,7 @@ def _normalize_patterns(patts: Optional[List[str]]) -> Optional[List[str]]:
         if key in seen:
             continue
         seen.add(key)
-        out.append(s)
+        out.append(key)  # Append lowercased version for consistency
     return out or None
 
 
@@ -555,7 +556,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
     # Report utilities
     p.add_argument("-P", "--print-report", action="append", help="Path to a JSON report to pretty-print (repeatable)")
-    p.add_argument("-v", "--verbosity", type=int, default=1, choices=[0, 1, 2], help="Report/apply verbosity (0–2). Default: 1")
+    p.add_argument("-V", "--view-report", action="append", help="Path to a JSON report to inspect interactively (repeatable)")
+    p.add_argument("-v", "--verbosity", type=int, default=1, choices=[0, 1, 2], help="Report/apply verbosity (0-2). Default: 1")
     p.add_argument("-e", "--exclude-by-report", action="append", help="Path to a JSON report; losers listed will be skipped during scan (repeatable)")
 
     # Report analysis
@@ -586,17 +588,29 @@ def _maybe_print_or_analyze(args: argparse.Namespace) -> Optional[int]:
     If only -P/--print-report or -Y/--analyze-report were supplied (no directories / apply),
     do that and exit.
     """
-    # Pretty print
-    if args.print_report and not args.directories and not args.apply_report and not args.analyze_report:
+    if args.directories or args.apply_report:
+        return None
+
+    performed = False
+
+    if args.view_report:
+        paths = [Path(p).expanduser().resolve() for p in args.view_report]
+        launch_report_viewer(paths)
+        performed = True
+
+    if args.print_report:
         paths = [Path(p).expanduser().resolve() for p in args.print_report]
         text = pretty_print_reports(paths, verbosity=int(args.verbosity))
         print(text)
-        return 0
-    # Analyze
-    if args.analyze_report and not args.directories and not args.apply_report:
+        performed = True
+
+    if args.analyze_report:
         paths = [Path(p).expanduser().resolve() for p in args.analyze_report]
         text = render_analysis_for_reports(paths, verbosity=1, show_progress=True)
         print(text)
+        performed = True
+
+    if performed:
         return 0
     return None
 
@@ -699,6 +713,11 @@ def _validate_args(args: argparse.Namespace) -> Optional[str]:
             report_path = Path(report).expanduser().resolve()
             if not report_path.exists():
                 return f"Report file not found: {report_path}"
+    if args.view_report:
+        for report in args.view_report:
+            report_path = Path(report).expanduser().resolve()
+            if not report_path.exists():
+                return f"Report file not found: {report_path}"
 
     if args.analyze_report:
         for report in args.analyze_report:
@@ -751,21 +770,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # Set up signal handling for proper Ctrl+C behavior
     def signal_handler(sig, frame):
         nonlocal quit_requested, active_reporter
+        if quit_requested:
+            # Second Ctrl+C = force quit immediately
+            print("\n\nForce quitting...", file=sys.stderr)
+            os._exit(1)
+
         quit_requested = True
-        print("\n\nInterrupted by user. Shutting down gracefully...", file=sys.stderr)
+        print("\n\n=== Interrupt detected! Shutting down... ===", file=sys.stderr)
+        print("(Press Ctrl+C again to force quit)", file=sys.stderr)
+
         if active_reporter:
             try:
                 active_reporter._quit_evt.set()
-                active_reporter.flush()
-            except Exception:
-                pass
-        # Give threads a moment to clean up
-        import threading
-        import time
-        time.sleep(0.5)
-        # Force exit if threads don't respond
-        print("Forcing exit...", file=sys.stderr)
-        sys.exit(1)
+                active_reporter.add_log("User requested shutdown (Ctrl+C)", "WARNING")
+                active_reporter.stop()
+            except Exception as e:
+                print(f"Error during cleanup: {e}", file=sys.stderr)
+
+        # Exit cleanly
+        sys.exit(130)  # Standard exit code for SIGINT
 
     signal.signal(signal.SIGINT, signal_handler)
     if hasattr(signal, 'SIGTERM'):
@@ -792,6 +815,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     logger.info(f"Quality level: {args.quality}")
     if log_file:
         logger.info(f"Logging to: {log_file}")
+
+    # If live UI is enabled, suppress console logging NOW
+    if args.live:
+        logger.info("Live UI enabled - suppressing console output")
+        # Remove console handlers from all loggers
+        for handler in logger.handlers[:]:
+            if isinstance(handler, logging.StreamHandler):
+                if handler.stream in (sys.stdout, sys.stderr):
+                    logger.removeHandler(handler)
+        # Also suppress the root logger
+        root_logger = logging.getLogger()
+        for handler in root_logger.handlers[:]:
+            if isinstance(handler, logging.StreamHandler):
+                if handler.stream in (sys.stdout, sys.stderr):
+                    root_logger.removeHandler(handler)
 
     # If they only want to print/analyze reports, do that and exit
     maybe = _maybe_print_or_analyze(args)
@@ -932,12 +970,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     reporter = ProgressReporter(enable_dash=enable_ui, refresh_rate=0.2, banner=banner, stacked_ui=None)
     active_reporter = reporter
     logger.info("Starting ProgressReporter...")
-    reporter.start()
+    try:
+        reporter.start()
+    except Exception as e:
+        logger.error(f"reporter.start() crashed: {e}", exc_info=True)
+        raise
     logger.info("ProgressReporter started successfully")
 
     logger.info("Initializing hash cache...")
-    cache = HashCache(cache_path)
-    cache.open_append()
+    try:
+        cache = HashCache(cache_path)
+    except Exception as e:
+        logger.error(f"HashCache() creation crashed: {e}", exc_info=True)
+        raise
+    logger.info("HashCache created")
+
+    try:
+        cache.open_append()
+    except Exception as e:
+        logger.error(f"cache.open_append() crashed: {e}", exc_info=True)
+        raise
+    logger.info("HashCache opened for append")
 
     # Build exclusion set from reports, if any
     skip_paths = set()
@@ -1102,6 +1155,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             logger.info(f"Pretty printing reports: {args.print_report}")
             paths = [Path(p).expanduser().resolve() for p in args.print_report]
             print(pretty_print_reports(paths, verbosity=int(args.verbosity)))
+        if args.view_report:
+            logger.info(f"Launching interactive viewer for reports: {args.view_report}")
+            paths = [Path(p).expanduser().resolve() for p in args.view_report]
+            launch_report_viewer(paths)
         if args.analyze_report:
             logger.info(f"Analyzing reports: {args.analyze_report}")
             paths = [Path(p).expanduser().resolve() for p in args.analyze_report]
