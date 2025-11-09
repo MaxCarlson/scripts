@@ -514,3 +514,145 @@ class TmuxWindowManager:
         else:
             print(f"Error swapping windows: {err}")
             return False
+
+    def spawn_windows(self, count=1, panes_per_window=1, target_index=None, session_name=None, window_name=None):
+        """
+        Spawn new window(s) in a session.
+
+        Args:
+            count: Number of windows to create (default: 1)
+            panes_per_window: Number of panes in each window (default: 1)
+            target_index: Index where to insert windows (default: after current window)
+            session_name: Target session (default: current session)
+            window_name: Name for the window(s) (default: None for tmux default)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if session_name is None:
+            session_name = self._get_current_session()
+            if session_name is None:
+                print("Error: Not in tmux and no session specified")
+                return False
+
+        # Validate session exists
+        if not self.session_exists(session_name):
+            print(f"Error: Session '{session_name}' does not exist")
+            return False
+
+        # Determine target index
+        if target_index is None:
+            current_window = self._get_current_window_index()
+            if current_window is not None:
+                target_index = current_window + 1
+            else:
+                # Get last window index and add 1
+                indices = self.get_window_indices(session_name)
+                target_index = max(indices) + 1 if indices else 0
+
+        # Resolve negative index
+        if target_index < 0:
+            indices = sorted(self.get_window_indices(session_name))
+            if abs(target_index) <= len(indices):
+                target_index = indices[target_index]
+            else:
+                target_index = 0
+
+        # Validate counts
+        if count < 1:
+            print("Error: Count must be at least 1")
+            return False
+        if panes_per_window < 1:
+            print("Error: Panes per window must be at least 1")
+            return False
+
+        created_windows = []
+
+        for i in range(count):
+            # Create window at target index
+            window_idx = target_index + i
+            cmd = ['new-window', '-t', f'{session_name}:{window_idx}']
+
+            if window_name:
+                if count > 1:
+                    # Append index if creating multiple windows
+                    cmd.extend(['-n', f'{window_name}-{i+1}'])
+                else:
+                    cmd.extend(['-n', window_name])
+
+            rc, _, err = self._run_tmux_command(cmd)
+
+            if rc != 0:
+                print(f"Error creating window at index {window_idx}: {err}")
+                continue
+
+            created_windows.append(window_idx)
+            print(f"Created window at index {window_idx} in session '{session_name}'")
+
+            # Split panes if needed
+            if panes_per_window > 1:
+                # The window we just created is at window_idx
+                for pane_num in range(1, panes_per_window):
+                    # Split horizontally to create additional panes
+                    split_cmd = ['split-window', '-t', f'{session_name}:{window_idx}', '-h']
+                    rc, _, err = self._run_tmux_command(split_cmd)
+
+                    if rc != 0:
+                        print(f"Error creating pane {pane_num + 1} in window {window_idx}: {err}")
+                        continue
+
+                    print(f"Created pane {pane_num + 1}/{panes_per_window} in window {window_idx}")
+
+                # Rebalance the layout so all panes are evenly sized
+                balance_cmd = ['select-layout', '-t', f'{session_name}:{window_idx}', 'even-horizontal']
+                self._run_tmux_command(balance_cmd)
+
+        if not created_windows:
+            print("Failed to create any windows")
+            return False
+
+        print(f"Successfully created {len(created_windows)} window(s) with {panes_per_window} pane(s) each")
+        return True
+
+    def jump_to_session(self, session_name=None):
+        """
+        Jump to (switch to or attach) a session.
+        If session_name is None, use fzf to select.
+
+        Args:
+            session_name: Name of session to jump to (default: fzf selection)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        # Determine target session
+        if session_name is None:
+            session_name = self._fuzzy_select_session("Jump to session: ")
+            if session_name is None:
+                print("No session selected")
+                return False
+
+        # Validate session exists
+        if not self.session_exists(session_name):
+            print(f"Error: Session '{session_name}' does not exist")
+            return False
+
+        # Check if we're inside tmux
+        if os.environ.get("TMUX"):
+            # Switch client to target session
+            rc, _, err = self._run_tmux_command(['switch-client', '-t', session_name])
+            if rc == 0:
+                print(f"Switched to session '{session_name}'")
+                return True
+            else:
+                print(f"Error switching to session: {err}")
+                return False
+        else:
+            # Attach to session from outside tmux
+            # We need to use subprocess.call to let tmux take over the terminal
+            try:
+                subprocess.call(['tmux', 'attach-session', '-t', session_name])
+                return True
+            except Exception as e:
+                print(f"Error attaching to session: {e}")
+                return False
