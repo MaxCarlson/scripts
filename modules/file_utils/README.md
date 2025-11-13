@@ -44,7 +44,13 @@ To offer a robust and flexible toolkit for:
 
 ## Usage
 
-Each script within `file_utils` is designed to be run from the command line. Refer to the individual script files for detailed argument usage (e.g., `python file_manager.py --help` or `python file_utils.py --help`).
+CLI entry points installed:
+
+- `file-util` — primary command
+- `fu` — short alias
+- `fsu` — alternate short alias
+
+Each script within `file_utils` is designed to be run from the command line. Refer to the individual script files for detailed argument usage (e.g., `python file_manager.py --help` or `python file_utils.py --help`). For the lister/replace CLI, use one of the installed entry points, e.g. `fsu -h`.
 
 Example of `file_manager.py` usage (finding and deleting duplicates):
 ```bash

@@ -215,8 +215,8 @@ Set-Clipboard -Value $str
                 _log("Warning", f"Termux clipboard set failed (continuing): {e}")
                 # Fall through to OSC52-only behavior
 
-        # WSL prefers bridging to Windows clipboard
-        if self.is_wsl2():
+        # WSL prefers bridging to Windows clipboard (only when Linux kernel is active)
+        if osname == "linux" and self.is_wsl2():
             # Best: win32yank bridges WSL <-> Windows clipboard
             if shutil.which("win32yank"):
                 try:
@@ -290,8 +290,17 @@ Set-Clipboard -Value $str
     def get_clipboard(self) -> str:
         osname = self.os_name()
 
-        # WSL prefers Windows clipboard
-        if self.is_wsl2():
+        # Termux first
+        if self.is_termux():
+            try:
+                res = self._run(["termux-clipboard-get"], check=True)
+                return res.stdout
+            except Exception as e:
+                _log("Warning", f"Termux clipboard get failed: {e}")
+                return ""
+
+        # WSL prefers Windows clipboard (only when Linux kernel is active)
+        if osname == "linux" and self.is_wsl2():
             # Prefer win32yank output (Windows clipboard)
             if shutil.which("win32yank"):
                 try:
@@ -317,14 +326,6 @@ Set-Clipboard -Value $str
                     except Exception as e:
                         _log("Warning", f"{' '.join(prog)} failed: {e}")
             return ""
-
-        if self.is_termux():
-            try:
-                res = self._run(["termux-clipboard-get"], check=True)
-                return res.stdout
-            except Exception as e:
-                _log("Warning", f"Termux clipboard get failed: {e}")
-                return ""
 
         if osname == "darwin":
             try:
@@ -379,4 +380,3 @@ def get_clipboard() -> str:
     return _U().get_clipboard()
 
 __all__ = ["ClipboardUtils", "set_clipboard", "get_clipboard"]
-
