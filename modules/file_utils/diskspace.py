@@ -51,7 +51,35 @@ def _default_scan_root(sysu: SystemUtils, requested: Optional[str]) -> Path:
     return Path.home()
 
 
-def scan_largest_files(sysu: SystemUtils, path: Optional[str], top_n: int, min_size: Optional[str]) -> List[FileEntry]:
+def _match_ext(name: str, exts: Optional[List[str]]) -> bool:
+    if not exts:
+        return True
+    lowered = name.lower()
+    norm_exts = [e.lower().lstrip(".") for e in exts]
+    return any(lowered.endswith("." + e) for e in norm_exts)
+
+
+def _match_globs(path: str, patterns: Optional[List[str]]) -> bool:
+    if not patterns:
+        return True
+    from fnmatch import fnmatch
+
+    return any(fnmatch(path, p) for p in patterns)
+
+
+def summarize_total_size(files: Iterable[FileEntry]) -> int:
+    return sum(f.size_bytes for f in files)
+
+
+def scan_largest_files(
+    sysu: SystemUtils,
+    path: Optional[str],
+    top_n: int,
+    min_size: Optional[str],
+    *,
+    exts: Optional[List[str]] = None,
+    globs: Optional[List[str]] = None,
+) -> List[FileEntry]:
     """
     Return top-N largest files at or under `path` (platform-specific defaults if None).
     Uses platform-native tools for speed; falls back to Python if necessary.
@@ -77,7 +105,11 @@ def scan_largest_files(sysu: SystemUtils, path: Optional[str], top_n: int, min_s
             if isinstance(data, dict):
                 data = [data]
             for item in data:
-                entries.append(FileEntry(path=item.get("FullName", ""), size_bytes=int(item.get("SizeBytes", 0))))
+                p = item.get("FullName", "")
+                s = int(item.get("SizeBytes", 0))
+                if not _match_ext(p, exts) or not _match_globs(p, globs):
+                    continue
+                entries.append(FileEntry(path=p, size_bytes=s))
             return entries
         except Exception:
             logger.warning("PowerShell JSON parse failed; falling back to empty result.")
@@ -95,6 +127,8 @@ def scan_largest_files(sysu: SystemUtils, path: Optional[str], top_n: int, min_s
     for line in (out or "").splitlines():
         try:
             sz_s, p = line.split("\t", 1)
+            if not _match_ext(p, exts) or not _match_globs(p, globs):
+                continue
             entries.append(FileEntry(path=p, size_bytes=int(sz_s)))
         except Exception:
             continue
@@ -209,7 +243,56 @@ def detect_common_caches(sysu: SystemUtils, root: Optional[str]) -> Dict[str, Li
     return found
 
 
-def clean_caches(sysu: SystemUtils, categories: Iterable[str], *, dry_run: bool = True) -> List[str]:
+def _estimate_path_size_bytes(sysu: SystemUtils, p: str) -> int:
+    """Best-effort estimate of path size in bytes without raising."""
+    try:
+        path = Path(p)
+        if path.is_file():
+            return path.stat().st_size
+        if path.is_dir():
+            total = 0
+            # Prefer du -sb when available (Linux/Termux)
+            if sysu.is_linux() or sysu.is_termux() or sysu.is_wsl2():
+                out = sysu.run_command(f"du -sb '{p}' 2>/dev/null | awk '{{print $1}}'")
+                if out.strip().isdigit():
+                    return int(out.strip())
+            # Fallback: Python walk
+            for dp, _, files in os.walk(p, onerror=lambda e: None):
+                for fn in files:
+                    try:
+                        total += (Path(dp) / fn).stat().st_size
+                    except Exception:
+                        pass
+            return total
+    except Exception:
+        pass
+    return 0
+
+
+def estimate_caches_bytes(sysu: SystemUtils, caches: Dict[str, List[str]], *, max_paths_per_category: int = 200) -> Tuple[Dict[str, int], int]:
+    """Estimate bytes per cache category and total. Limits per-category samples to avoid huge walks."""
+    per_cat: Dict[str, int] = {}
+    total = 0
+    for cat, paths in caches.items():
+        if not paths:
+            per_cat[cat] = 0
+            continue
+        # Cap to avoid extremely expensive deep walks (e.g., thousands of build dirs)
+        subset = paths[:max_paths_per_category]
+        s = 0
+        for p in subset:
+            s += _estimate_path_size_bytes(sysu, p)
+        per_cat[cat] = s
+        total += s
+    return per_cat, total
+
+
+def clean_caches(
+    sysu: SystemUtils,
+    categories: Iterable[str],
+    *,
+    dry_run: bool = True,
+) -> List[str]:
     """
     Execute cache cleanup operations for the selected categories.
     Returns a list of human-readable action lines performed (or that would be performed in dry-run).
@@ -257,6 +340,47 @@ def clean_caches(sysu: SystemUtils, categories: Iterable[str], *, dry_run: bool 
     return actions
 
 
+def containers_scan(sysu: SystemUtils, provider: str, *, list_items: bool = False) -> Dict[str, Any]:
+    """Return container info: running, all containers, images, and system df summary."""
+    prov = (provider or "auto").lower()
+    result: Dict[str, Any] = {"provider": prov, "running": [], "all": [], "images": [], "system_df": ""}
+
+    def _run(cmd: str) -> str:
+        return sysu.run_command(cmd)
+
+    if prov in ("docker", "auto"):
+        if list_items:
+            r = _run("docker ps --format '{{.ID}} {{.Image}} {{.Size}} {{.Names}}' || true")
+            a = _run("docker ps -a --format '{{.ID}} {{.Image}} {{.Size}} {{.Names}}' || true")
+            i = _run("docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' || true")
+            result.update({
+                "running": r.splitlines() if r else [],
+                "all": a.splitlines() if a else [],
+                "images": i.splitlines() if i else [],
+            })
+        df = _run("docker system df -v || true")
+        result["system_df"] = df
+        result["provider"] = "docker"
+        return result
+
+    if prov in ("podman", "auto"):
+        if list_items:
+            r = _run("podman ps --format '{{.ID}} {{.Image}} {{.Size}} {{.Names}}' || true")
+            a = _run("podman ps -a --format '{{.ID}} {{.Image}} {{.Size}} {{.Names}}' || true")
+            i = _run("podman images --format '{{.Repository}}:{{.Tag}} {{.Size}}' || true")
+            result.update({
+                "running": r.splitlines() if r else [],
+                "all": a.splitlines() if a else [],
+                "images": i.splitlines() if i else [],
+            })
+        df = _run("podman system df -v || true")
+        result["system_df"] = df
+        result["provider"] = "podman"
+        return result
+
+    return result
+
+
 def containers_maint(sysu: SystemUtils, provider: str, *, dry_run: bool = True) -> List[str]:
     """
     Show and clean Docker/Podman stores.
@@ -286,6 +410,28 @@ def containers_maint(sysu: SystemUtils, provider: str, *, dry_run: bool = True) 
         run("Podman system prune", "podman system prune -a -f --volumes || true")
 
     return actions
+
+
+def containers_store_size(sysu: SystemUtils, provider: str) -> int:
+    """Estimate container store size in bytes for docker/podman."""
+    prov = (provider or "auto").lower()
+    cand_paths: List[str] = []
+    # Docker default
+    cand_paths.append("/var/lib/docker")
+    # Podman rootless
+    cand_paths.append(str(Path.home() / ".local/share/containers/storage"))
+    # Try both on auto; otherwise prioritize provider
+    if prov == "docker":
+        paths = [cand_paths[0]]
+    elif prov == "podman":
+        paths = [cand_paths[1]]
+    else:
+        paths = cand_paths
+    total = 0
+    for p in paths:
+        if Path(p).exists():
+            total += _estimate_path_size_bytes(sysu, p)
+    return total
 
 
 def wsl_reclaim(sysu: SystemUtils, *, dry_run: bool = True) -> List[str]:
@@ -365,3 +511,101 @@ def build_report(
 
     md = "\n".join(lines)
     return data, md
+
+
+def space_summary(sysu: SystemUtils) -> str:
+    """Return human-readable summary of free space across drives."""
+    if sysu.is_windows():
+        cmd = (
+            "pwsh -NoProfile -Command "
+            "Get-PSDrive -PSProvider FileSystem | Select-Object Name,Used,Free,@{n='UsedGB';e={[math]::Round($_.Used/1GB,2)}},@{n='FreeGB';e={[math]::Round($_.Free/1GB,2)}} | Format-Table -AutoSize"
+        )
+        return sysu.run_command(cmd)
+    # Linux/WSL/Termux
+    return sysu.run_command("df -h")
+
+
+def clean_largest(
+    sysu: SystemUtils,
+    path: Optional[str],
+    top_n: int,
+    min_size: Optional[str],
+    *,
+    exts: Optional[List[str]] = None,
+    globs: Optional[List[str]] = None,
+    dry_run: bool = True,
+) -> Tuple[List[str], int, int]:
+    """
+    Find largest files (respecting filters) and delete them. Returns (actions, count, total_bytes).
+    In dry_run mode, does not delete; still reports would-delete summary.
+    """
+    items = scan_largest_files(sysu, path, top_n, min_size, exts=exts, globs=globs)
+    total = summarize_total_size(items)
+    actions: List[str] = []
+    if dry_run:
+        for it in items:
+            actions.append(f"DRY-RUN: rm '{it.path}' ({format_bytes_binary(it.size_bytes)})")
+        return actions, len(items), total
+
+    # delete
+    deleted = 0
+    for it in items:
+        try:
+            Path(it.path).unlink(missing_ok=True)
+            actions.append(f"Deleted: {it.path} ({format_bytes_binary(it.size_bytes)})")
+            deleted += 1
+        except Exception as e:
+            actions.append(f"Failed: {it.path} — {e}")
+    return actions, deleted, total
+
+
+def run_full_scan(
+    sysu: SystemUtils,
+    *,
+    path: Optional[str] = None,
+    top_n: int = 50,
+    min_size: Optional[str] = None,
+    exts: Optional[List[str]] = None,
+    globs: Optional[List[str]] = None,
+    provider: str = "auto",
+    list_containers: bool = False,
+) -> Dict[str, Any]:
+    """Run largest, caches, and containers scans and return a structured summary."""
+    largest = scan_largest_files(sysu, path, top_n, min_size, exts=exts, globs=globs)
+    largest_total = summarize_total_size(largest)
+
+    caches = detect_common_caches(sysu, path)
+    caches_per_cat, caches_total = estimate_caches_bytes(sysu, caches)
+
+    cont_info = containers_scan(sysu, provider, list_items=list_containers)
+    cont_bytes = containers_store_size(sysu, provider)
+
+    overall = largest_total + caches_total + cont_bytes
+    return {
+        "largest": {
+            "items": [{"path": i.path, "size_bytes": i.size_bytes, "size_human": format_bytes_binary(i.size_bytes)} for i in largest],
+            "count": len(largest),
+            "total_bytes": largest_total,
+            "total_human": format_bytes_binary(largest_total),
+        },
+        "caches": {
+            "detected": caches,
+            "per_category_bytes": caches_per_cat,
+            "per_category_human": {k: format_bytes_binary(v) for k, v in caches_per_cat.items()},
+            "total_bytes": caches_total,
+            "total_human": format_bytes_binary(caches_total),
+        },
+        "containers": {
+            "provider": cont_info.get("provider"),
+            "running": cont_info.get("running", []),
+            "all": cont_info.get("all", []),
+            "images": cont_info.get("images", []),
+            "system_df": cont_info.get("system_df", ""),
+            "store_bytes": cont_bytes,
+            "store_human": format_bytes_binary(cont_bytes),
+        },
+        "overall": {
+            "total_bytes": overall,
+            "total_human": format_bytes_binary(overall),
+        },
+    }
