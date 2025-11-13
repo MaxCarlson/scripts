@@ -38,6 +38,7 @@ def compact(
 
     if env == "wsl":
         _run("WSL fstrim", "fstrim -av", sudo=True)
+        actions.append("Tip: To reduce host 'size on disk', run 'fsu wsl compact' on Windows, or re-run here with -H to print the script.")
         if show_host_instructions:
             actions.append(
                 "On Windows host, run PowerShell to compact the VHDX (guarded):\n"

@@ -693,5 +693,21 @@ def run_lister(args: argparse.Namespace) -> int:
 
         threading.Thread(target=start_calc, daemon=True).start()
 
-    list_view.run()
-    return 0
+    # Try to launch curses TUI; if terminal/terminfo unavailable, fall back to plain output.
+    try:
+        list_view.run()
+        return 0
+    except SystemExit as exc:
+        # InteractiveList emits SystemExit(2) on terminal capability failures.
+        if getattr(exc, "code", None) == 2:
+            sys.stderr.write("Terminal UI unavailable; showing plain listing. Use -j for JSON.\n")
+            # Render a simple table-like listing using formatter.
+            width = 120
+            # Recompute visible list consistent with current sort/order/dirs_first
+            sort_func = SORT_FUNCS[sort_field]
+            visible = manager.get_visible_entries(sort_func, args.order == "desc", not getattr(args, 'no_dirs_first', False))
+            for e in visible:
+                line = format_entry_line(e, sort_field, width, show_date=True, show_time=True, scroll_offset=0)
+                print(line)
+            return 0
+        raise
