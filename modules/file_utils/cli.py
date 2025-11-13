@@ -11,6 +11,7 @@ import logging
 import json as _json
 from cross_platform.system_utils import SystemUtils
 from . import diskspace
+from . import wsltool
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -232,7 +233,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     cl_cont.add_argument("-v", "--verbose", action="store_true", help="Verbose logging.")
 
     # wsl-reclaim and report keep as-is under disk
-    d_wsl = disk_sub.add_parser("wsl-reclaim", help="Reclaim WSL disk space.")
+    d_wsl = disk_sub.add_parser("wsl-reclaim", help="Reclaim WSL disk space (moved to 'wsl').")
     d_wsl.add_argument("-d", "--dry-run", action="store_true", help="Preview actions only.")
     d_wsl.add_argument("-y", "--yes", action="store_true", help="Skip interactive confirmation.")
     d_wsl.add_argument("-v", "--verbose", action="store_true", help="Verbose logging.")
@@ -243,6 +244,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     d_report.add_argument("-m", "--min-size", default=None, help="Minimum file size, e.g. 500M.")
     d_report.add_argument("-f", "--format", choices=("json", "md"), default="md", help="Output format.")
     d_report.add_argument("-v", "--verbose", action="store_true", help="Verbose logging.")
+
+    # --- wsl command ---
+    _add_wsl_commands(subparsers)
 
     args = parser.parse_args(argv)
 
@@ -409,7 +413,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if resp.strip().lower() not in ("y", "yes"):
                     print("Aborted.")
                     return 0
-            actions = diskspace.wsl_reclaim(sysu, dry_run=args.dry_run)
+            print("[Warning] Use 'fsu wsl compact' going forward. Running legacy path.")
+            actions = wsltool.compact(sysu, dry_run=args.dry_run)
             for line in actions:
                 print(line)
             return 0
@@ -425,7 +430,48 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(md)
             return 0
 
+    elif args.command == "wsl":
+        sysu = SystemUtils()
+        if args.wsl_cmd == "compact":
+            if not args.yes:
+                resp = input("This will compact WSL disks if supported. Proceed? [y/N] ")
+                if resp.strip().lower() not in ("y", "yes"):
+                    print("Aborted.")
+                    return 0
+            actions = wsltool.compact(sysu, guard_gb=args.guard_gb, dry_run=args.dry_run, show_host_instructions=getattr(args, "show_host_help", False))
+            for line in actions:
+                print(line)
+            return 0
+        if args.wsl_cmd == "docker-fixups":
+            if not args.yes:
+                resp = input("This will attempt to recover Docker Desktop contexts. Proceed? [y/N] ")
+                if resp.strip().lower() not in ("y", "yes"):
+                    print("Aborted.")
+                    return 0
+            actions = wsltool.docker_desktop_fixups(sysu, dry_run=args.dry_run)
+            for line in actions:
+                print(line)
+            return 0
+        return 0
+
     return 0
+
+def _add_wsl_commands(subparsers):
+    wsl_parser = subparsers.add_parser("wsl", help="WSL utilities (compaction, docker fixups)")
+    wsl_sub = wsl_parser.add_subparsers(dest="wsl_cmd", required=True)
+
+    wsl_compact = wsl_sub.add_parser("compact", help="Compact WSL VHDX (guarded).")
+    wsl_compact.add_argument("-g", "--guard-gb", type=int, default=15, help="Minimum free GB required on host before compact.")
+    wsl_compact.add_argument("-d", "--dry-run", action="store_true", help="Preview actions only.")
+    wsl_compact.add_argument("-y", "--yes", action="store_true", help="Skip interactive confirmation.")
+    wsl_compact.add_argument("-H", "--show-host-help", action="store_true", help="When inside WSL, also print host PowerShell instructions.")
+
+    wsl_dd = wsl_sub.add_parser("docker-fixups", help="Recover Docker Desktop contexts and restart components (Windows).")
+    wsl_dd.add_argument("-d", "--dry-run", action="store_true", help="Preview actions only.")
+    wsl_dd.add_argument("-y", "--yes", action="store_true", help="Skip interactive confirmation.")
+
+    return wsl_parser
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -62,10 +62,14 @@ def test_build_report_shapes():
 
 def test_clean_caches_dry_run_linux():
     sysu = DummySys(os_name="linux")
-    actions = diskspace.clean_caches(sysu, ["python", "node", "build", "apt", "journals", "git"], dry_run=True)
+    actions = diskspace.clean_caches(sysu, ["python", "node", "build", "apt", "journals", "git", "fstrim"], dry_run=True)
     assert any("DRY-RUN" in a for a in actions)
-    assert any("APT clean" in a for a in actions)  # linux-specific
+    assert any("APT clean" in a for a in actions)
     assert any("Git GC" in a for a in actions)
+    # node_modules included
+    assert any("node_modules" in a for a in actions)
+    # fstrim present
+    assert any("FSTRIM" in a for a in actions)
 
 
 def test_containers_maint_auto():
