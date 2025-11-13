@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import List, Tuple
 from cross_platform.system_utils import SystemUtils
+import shutil
 
 
 def detect_env(sysu: SystemUtils) -> str:
@@ -80,12 +81,25 @@ def docker_desktop_fixups(sysu: SystemUtils, *, dry_run: bool = True) -> List[st
         actions.append(f"{label}: {cmd}\n{out}")
 
     if sysu.is_windows():
+        ps = shutil.which("pwsh") or shutil.which("powershell") or "pwsh"
+        def PS(cmd: str) -> str:
+            return f"{ps} -NoProfile -Command \"{cmd}\""
+
         _run("Docker contexts", "docker context ls")
         _run("Use desktop-linux", "docker context use desktop-linux")
-        # Recovery steps for 500 errors on named pipe
-        _run("Terminate WSL docker backends", "wsl --terminate docker-desktop 2>$null && wsl --terminate docker-desktop-data 2>$null && wsl --shutdown")
-        _run("Stop Docker Desktop processes", "Stop-Process -Name 'Docker Desktop','com.docker.*' -Force -ErrorAction SilentlyContinue")
-        _run("Start Docker Desktop", r"Start-Process \"$env:ProgramFiles\Docker\Docker\Docker Desktop.exe\"")
+        # Recovery steps for 500 errors on named pipe — run via PowerShell
+        _run(
+            "Terminate WSL docker backends",
+            PS("wsl --terminate docker-desktop; wsl --terminate docker-desktop-data; wsl --shutdown"),
+        )
+        _run(
+            "Stop Docker Desktop processes",
+            PS("Stop-Process -Name 'Docker Desktop','com.docker.*' -Force -ErrorAction SilentlyContinue"),
+        )
+        _run(
+            "Start Docker Desktop",
+            PS(r"Start-Process \"$env:ProgramFiles\Docker\Docker\Docker Desktop.exe\""),
+        )
         _run("Use desktop-linux", "docker context use desktop-linux")
         _run("Docker df", "docker system df -v")
         return actions
