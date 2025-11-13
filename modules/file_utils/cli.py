@@ -10,6 +10,7 @@ from typing import Sequence
 import logging
 import json as _json
 from cross_platform.system_utils import SystemUtils
+from cross_platform.debug_utils import set_console_verbosity, set_log_verbosity
 from . import diskspace
 from . import wsltool
 
@@ -251,6 +252,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.DEBUG if getattr(args, "verbose", False) else logging.INFO)
+    # Suppress noisy [Debug] console output by default
+    if getattr(args, "verbose", False):
+        set_console_verbosity("Debug")
+        set_log_verbosity("Information")
+    else:
+        set_console_verbosity("Information")
+        set_log_verbosity("Warning")
 
     if args.command == "ls":
         from . import lister
@@ -420,14 +428,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if dc == "report":
-            files = diskspace.scan_largest_files(sysu, args.path, args.top, args.min_size)
-            dirs = diskspace.scan_heaviest_dirs(sysu, args.path, args.top)
-            caches = diskspace.detect_common_caches(sysu, args.path)
-            data, md = diskspace.build_report(files, dirs, caches)
+            info = diskspace.run_full_scan(
+                sysu,
+                path=getattr(args, "path", None),
+                top_n=getattr(args, "top", 50),
+                min_size=getattr(args, "min_size", None),
+                exts=None,
+                globs=None,
+                provider="auto",
+                list_containers=False,
+            )
             if args.format == "json":
-                print(_json.dumps(data, indent=2))
+                print(_json.dumps(info, indent=2))
             else:
-                print(md)
+                print(diskspace.build_full_markdown(info))
             return 0
 
     elif args.command == "wsl":
