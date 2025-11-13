@@ -91,14 +91,17 @@ def scan_largest_files(
 
     entries: List[FileEntry] = []
     if sysu.is_windows():
-        # PowerShell pipeline for performance
-        cmd = (
-            "pwsh -NoProfile -Command "
-            "Get-ChildItem -File -Recurse -ErrorAction SilentlyContinue '" + str(root) + "' | "
-            "Where-Object { $_.Length -ge %d } | "
-            "Sort-Object Length -Descending | Select-Object -First %d "
-            "@{n='SizeBytes';e={$_.Length}}, @{n='FullName';e={$_.FullName}} | ConvertTo-Json"
-        ) % (min_bytes, max(1, top_n))
+        # PowerShell via -EncodedCommand to avoid cmd.exe pipe parsing
+        ps = shutil.which("pwsh") or shutil.which("powershell") or "pwsh"  # type: ignore
+        script = (
+            f"$root=\"{str(root)}\"; $min={min_bytes}; "
+            "Get-ChildItem -LiteralPath $root -File -Recurse -ErrorAction SilentlyContinue | "
+            "Where-Object { $_.Length -ge $min } | Sort-Object Length -Descending | "
+            f"Select-Object -First {max(1, top_n)} @{{n='SizeBytes';e={{$_.Length}}}}, @{{n='FullName';e={{$_.FullName}}}} | ConvertTo-Json"
+        )
+        import base64 as _b64
+        encoded = _b64.b64encode(script.encode("utf-16le")).decode("ascii")
+        cmd = f"{ps} -NoProfile -EncodedCommand {encoded}"
         out = sysu.run_command(cmd)
         try:
             data = json.loads(out) if out else []
@@ -143,13 +146,17 @@ def scan_heaviest_dirs(sysu: SystemUtils, path: Optional[str], top_n: int) -> Li
     logger.debug("scan_heaviest_dirs: root=%s top_n=%s", root, top_n)
 
     if sysu.is_windows():
-        cmd = (
-            "pwsh -NoProfile -Command "
-            "Get-ChildItem -File -Recurse -ErrorAction SilentlyContinue '" + str(root) + "' | "
+        import shutil as _sh
+        import base64 as _b64
+        ps = _sh.which("pwsh") or _sh.which("powershell") or "pwsh"
+        script = (
+            f"$root=\"{str(root)}\"; "
+            "Get-ChildItem -LiteralPath $root -File -Recurse -ErrorAction SilentlyContinue | "
             "Group-Object DirectoryName | ForEach-Object { [pscustomobject]@{ Path=$_.Name; SizeBytes=($_.Group | Measure-Object Length -Sum).Sum } } | "
-            "Sort-Object SizeBytes -Descending | Select-Object -First %d Path,SizeBytes | ConvertTo-Json"
-        ) % max(1, top_n)
-        out = sysu.run_command(cmd)
+            f"Sort-Object SizeBytes -Descending | Select-Object -First {max(1, top_n)} Path,SizeBytes | ConvertTo-Json"
+        )
+        enc = _b64.b64encode(script.encode("utf-16le")).decode("ascii")
+        out = sysu.run_command(f"{ps} -NoProfile -EncodedCommand {enc}")
         try:
             data = json.loads(out) if out else []
             if isinstance(data, dict):
@@ -606,13 +613,22 @@ def run_full_scan(
     overall = largest_total + caches_total + cont_bytes
     extra: Dict[str, Any] = {}
     if sysu.is_windows():
-        # Host triage helpers
+        ps = shutil.which("pwsh") or shutil.which("powershell") or "pwsh"  # type: ignore
+        import base64 as _b64
+        def run_ps(script: str) -> str:
+            enc = _b64.b64encode(script.encode("utf-16le")).decode("ascii")
+            return sysu.run_command(f"{ps} -NoProfile -EncodedCommand {enc}")
+
         tri = {
-            "top_files": sysu.run_command("pwsh -NoProfile -Command \"Get-ChildItem C:\\ -File -Recurse -Force -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 40 @{n='GB';e={[math]::Round($_.Length/1GB,2)}}, FullName\""),
-            "per_root": sysu.run_command("pwsh -NoProfile -Command \"$roots = 'C:\\Users','C:\\ProgramData','C:\\Program Files','C:\\Program Files (x86)','C:\\Windows'; foreach($r in $roots){ try{ $sum = (Get-ChildItem $r -Recurse -Force -ErrorAction SilentlyContinue -File | Measure-Object Length -Sum).Sum; '{0,-28}  {1,8:N2} GB' -f $r, ($sum/1GB) }catch{} }\""),
-            "per_user": sysu.run_command("pwsh -NoProfile -Command \"Get-ChildItem 'C:\\Users' -Directory -ErrorAction SilentlyContinue | ForEach-Object { $p=$_.FullName; try{ $sz=(Get-ChildItem $p -Recurse -Force -ErrorAction SilentlyContinue -File | Measure-Object Length -Sum).Sum; [pscustomobject]@{ GB=[math]::Round($sz/1GB,2); Path=$p } }catch{} } | Sort-Object GB -Descending | Select-Object -First 10\""),
+            "top_files": run_ps("Get-ChildItem C:\\ -File -Recurse -Force -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 40 @{n='GB';e={[math]::Round($_.Length/1GB,2)}}, FullName"),
+            "per_root": run_ps("$roots = 'C:\\Users','C:\\ProgramData','C:\\Program Files','C:\\Program Files (x86)','C:\\Windows'; foreach($r in $roots){ try{ $sum = (Get-ChildItem $r -Recurse -Force -ErrorAction SilentlyContinue -File | Measure-Object Length -Sum).Sum; '{0,-28}  {1,8:N2} GB' -f $r, ($sum/1GB) }catch{} }"),
+            "per_user": run_ps("Get-ChildItem 'C:\\Users' -Directory -ErrorAction SilentlyContinue | ForEach-Object { $p=$_.FullName; try{ $sz=(Get-ChildItem $p -Recurse -Force -ErrorAction SilentlyContinue -File | Measure-Object Length -Sum).Sum; [pscustomobject]@{ GB=[math]::Round($sz/1GB,2); Path=$p } }catch{} } | Sort-Object GB -Descending | Select-Object -First 10"),
         }
         extra["windows_triage"] = tri
+        extra["windows_drives"] = run_ps("Get-PSDrive -PSProvider FileSystem | Select Name,Used,Free,@{n='UsedGB';e={[math]::Round($_.Used/1GB,2)}},@{n='FreeGB';e={[math]::Round($_.Free/1GB,2)}} | Format-Table -AutoSize | Out-String")
+    else:
+        # Linux/WSL/Termux drive overview
+        extra["linux_df"] = sysu.run_command("df -h")
     return {
         "largest": {
             "items": [{"path": i.path, "size_bytes": i.size_bytes, "size_human": format_bytes_binary(i.size_bytes)} for i in largest],
@@ -642,3 +658,58 @@ def run_full_scan(
         },
         **extra,
     }
+
+
+def build_full_markdown(info: Dict[str, Any]) -> str:
+    lines: List[str] = ["# Disk Space Report", ""]
+    # Largest
+    lg = info.get("largest", {})
+    lines.append("## Largest Files")
+    for it in lg.get("items", [])[:10]:
+        lines.append(f"- {it.get('size_human','')}  {it.get('path','')}")
+    if lg.get("count", 0) > 10:
+        lines.append(f"... and {lg['count']-10} more")
+    lines.append(f"\nTotal: {lg.get('total_human','0 B')} across {lg.get('count',0)} files\n")
+    # Heaviest dirs not directly in info; rely on caches per-category
+    ch = info.get("caches", {})
+    lines.append("## Detected Caches")
+    per_cat = ch.get("per_category_human", {})
+    detected = ch.get("detected", {})
+    for k in sorted(per_cat.keys()):
+        v = per_cat[k]
+        n = len(detected.get(k, []))
+        if v != "0 B" or n:
+            lines.append(f"- {k}: {v}  ({n} paths)")
+    lines.append(f"\nCaches Total: {ch.get('total_human','0 B')}\n")
+    # Containers
+    ct = info.get("containers", {})
+    lines.append("## Containers")
+    lines.append(f"Estimated store size: {ct.get('store_human','0 B')}\n")
+    # Drives overview
+    if "windows_drives" in info:
+        lines.append("## Drives Overview (Windows)")
+        lines.append("```")
+        lines.append(info["windows_drives"].strip())
+        lines.append("``" + "`")
+    if "linux_df" in info:
+        lines.append("## Filesystems (df -h)")
+        lines.append("```")
+        lines.append(info["linux_df"].strip())
+        lines.append("``" + "`")
+    # Windows triage
+    if "windows_triage" in info:
+        tri = info["windows_triage"]
+        lines.append("## Windows Host Triage")
+        lines.append("### Top Files (C:)\n```")
+        lines.append(tri.get("top_files", "").strip())
+        lines.append("``" + "`")
+        lines.append("### Size by Root\n```")
+        lines.append(tri.get("per_root", "").strip())
+        lines.append("``" + "`")
+        lines.append("### Largest User Profiles\n```")
+        lines.append(tri.get("per_user", "").strip())
+        lines.append("``" + "`")
+    # Overall
+    ov = info.get("overall", {})
+    lines.append(f"## Overall Total\n{ov.get('total_human','0 B')}")
+    return "\n".join(lines)

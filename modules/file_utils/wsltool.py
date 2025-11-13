@@ -51,15 +51,19 @@ def compact(
         return actions
 
     if env == "windows":
-        # Guard: ensure enough free space before compaction
-        ps = (
-            "pwsh -NoProfile -Command "
+        # Guard: ensure enough free space before compaction; use -EncodedCommand to avoid quoting issues.
+        ps_exe = shutil.which("pwsh") or shutil.which("powershell") or "pwsh"
+        script = (
             f"$min={guard_gb}; $free=[math]::Round((Get-PSDrive C).Free/1GB,2); "
-            f"if ($free -lt $min) {{ Write-Output \"Skipping compact: only $free GB free (< $min GB).\" }} else {{ "
-            "wsl --shutdown; $v=(Get-ChildItem \"$env:LOCALAPPDATA\\wsl\\*\\ext4.vhdx\", \"$env:LOCALAPPDATA\\Packages\\*\\LocalState\\ext4.vhdx\", \"$env:LOCALAPPDATA\\Docker\\wsl\\data\\ext4.vhdx\" -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 1).FullName; "
+            "if ($free -lt $min) { Write-Output \"Skipping compact: only $free GB free (< $min GB).\" } else { "
+            "wsl --shutdown; "
+            "$v=(Get-ChildItem \"$env:LOCALAPPDATA\\wsl\\*\\ext4.vhdx\", \"$env:LOCALAPPDATA\\Packages\\*\\LocalState\\ext4.vhdx\", \"$env:LOCALAPPDATA\\Docker\\wsl\\data\\ext4.vhdx\" -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 1).FullName; "
             "if ($v) { compact /c /a /f /i /exe:lzx \"$v\"; compact /q \"$v\" } }"
         )
-        _run("Windows VHDX LZX compact", ps)
+        import base64 as _b64
+        encoded = _b64.b64encode(script.encode("utf-16le")).decode("ascii")
+        cmd = f"{ps_exe} -NoProfile -EncodedCommand {encoded}"
+        _run("Windows VHDX LZX compact", cmd)
         return actions
 
     actions.append("Unsupported environment for WSL compaction (not Windows host nor WSL).")
