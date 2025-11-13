@@ -6,13 +6,23 @@ import sys
 import glob
 import datetime
 from pathlib import Path
-from rich.table import Table
-from rich.console import Console
-
-console = Console()
+try:
+    from rich.table import Table  # type: ignore
+    from rich.console import Console  # type: ignore
+    console = Console()
+except Exception:  # Fallback when 'rich' is not installed
+    class _PlainConsole:
+        def print(self, *args, **kwargs):
+            print(*args)
+    class Table:  # minimal placeholder
+        def __init__(self, *args, **kwargs):
+            self.rows = []
+        def add_row(self, *cols):
+            self.rows.append(cols)
+    console = _PlainConsole()
 
 # --- Configuration ---
-DEFAULT_CONSOLE_VERBOSITY = "Debug"
+DEFAULT_CONSOLE_VERBOSITY = "Information"
 DEFAULT_LOG_VERBOSITY = "Warning"  # Log only more important messages by default
 DEFAULT_LOG_DIR = os.path.expanduser("~/logs")
 MAX_LOG_FILE_SIZE_KB = 128         # Max size per log file in KB
