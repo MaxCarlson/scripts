@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import curses
+import os
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -141,6 +142,9 @@ class InteractiveList:
         columns_line: Optional[str] = None,
         sort_change_handler: Optional[Callable[[str, bool], None]] = None,
     ):
+        # Keep the import-availability check here so construction fails fast on
+        # platforms that truly lack curses. More detailed terminal checks are
+        # deferred to run(), so tests can instantiate without a TTY.
         ensure_curses_available()
         self.formatter = formatter
         self.sort_keys_mapping = sort_keys_mapping or {}
@@ -196,7 +200,75 @@ class InteractiveList:
 
     def run(self) -> None:
         """Starts the curses-based TUI."""
-        curses.wrapper(self._tui_main)
+        # Perform runtime terminal readiness checks before initializing curses.
+        self._ensure_terminal_ready()
+        try:
+            curses.wrapper(self._tui_main)
+        except curses.error as e:
+            # Convert low-level curses errors into an actionable message.
+            term = os.environ.get("TERM", "unknown")
+            sys.stderr.write(
+                "Failed to initialize the interactive UI (curses error).\n"
+                f"TERM={term}. Error: {e}\n"
+                "Tips: install the terminfo database (ncurses) for your system,\n"
+                "and run in a real TTY. Examples:\n"
+                "  - Debian/Ubuntu: sudo apt-get install ncurses-term\n"
+                "  - Fedora:        sudo dnf install ncurses-term\n"
+                "  - Arch:          sudo pacman -S ncurses\n"
+                "  - Termux:        pkg install ncurses\n"
+                "Alternatively, use a non-TUI mode if available (e.g., --json).\n"
+            )
+            raise SystemExit(2)
+
+    def _ensure_terminal_ready(self) -> None:
+        """Validate that a TTY and terminfo database are available.
+
+        This is stricter than a mere 'curses' import: it checks that stdin/stdout
+        are TTYs and that the terminfo database can be initialized. It avoids
+        running `curses.wrapper(...)` only to crash with a cryptic error.
+        """
+        # Ensure we are attached to an interactive terminal.
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            sys.stderr.write(
+                "An interactive terminal (TTY) is required for the TUI.\n"
+                "Run this command directly in a terminal, or use a non-TUI mode (e.g., --json).\n"
+            )
+            raise SystemExit(2)
+
+        # Attempt to initialize terminfo if supported by the platform.
+        # Some Windows curses builds might not expose setupterm; guard accordingly.
+        if hasattr(curses, "setupterm"):
+            try:
+                curses.setupterm()
+            except Exception as e:  # pragma: no cover - platform dependent
+                # Try safe fallbacks for TERM if a specific entry is missing.
+                current_term = os.environ.get("TERM", "unknown")
+                for fallback_term in ("xterm-256color", "screen-256color"):
+                    if current_term == fallback_term:
+                        continue
+                    try:
+                        os.environ["TERM"] = fallback_term
+                        curses.setupterm()
+                        sys.stderr.write(
+                            f"Warning: TERM={current_term} failed; using TERM={fallback_term} as a fallback.\n"
+                        )
+                        break
+                    except Exception:
+                        continue
+                else:
+                    # No fallback worked — provide actionable guidance.
+                    term = current_term
+                    sys.stderr.write(
+                        "Unable to initialize terminal capabilities (terminfo).\n"
+                        f"TERM={term}. Error: {e}\n"
+                        "Install the terminfo database for your system. Examples:\n"
+                        "  - Debian/Ubuntu: sudo apt-get install ncurses-term\n"
+                        "  - Fedora:        sudo dnf install ncurses-term\n"
+                        "  - Arch:          sudo pacman -S ncurses\n"
+                        "  - Termux:        pkg install ncurses\n"
+                        "Then re-run this command, or use a non-TUI mode (e.g., --json).\n"
+                    )
+                    raise SystemExit(2)
 
     def _tui_main(self, stdscr) -> None:
         try:
@@ -952,5 +1024,3 @@ def render_items_to_text(
         self._detail_lines = []
         self._detail_meta = []
         self._detail_focusable = []
-
-
