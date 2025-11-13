@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
-import curses
+try:
+    import curses  # type: ignore
+except Exception:  # On Windows without windows-curses
+    curses = None  # type: ignore
 import subprocess
 import sys
 import threading
@@ -662,6 +665,22 @@ def run_lister(args: argparse.Namespace) -> int:
 
     if args.glob:
         list_view.state.filter_pattern = args.glob
+
+    # If curses is unavailable (e.g., Windows without windows-curses), print a plain listing
+    if curses is None:
+        sys.stderr.write(
+            "Curses UI not available. On Windows, install windows-curses or use -j for JSON.\n"
+        )
+        width = 120
+        # Filter and sort like the TUI would
+        sort_field_map = {"c": "created", "m": "modified", "a": "accessed", "s": "size", "n": "name"}
+        sort_field = sort_field_map.get(args.sort, args.sort)
+        if args.glob:
+            entries = [e for e in entries if filter_entry(e, args.glob)]
+        entries.sort(key=SORT_FUNCS[sort_field], reverse=(args.order == "desc"))
+        for e in entries:
+            print(format_entry_line(e, sort_field, width, True, True, 0))
+        return 0
 
     # Start size calculation if requested via CLI
     if getattr(args, 'calc_sizes', False):
