@@ -1,0 +1,458 @@
+# pyproject.toml
+[project]
+name = "sshs"
+version = "0.1.0"
+description = "Simple, admin-friendly SSH manager with tagging, interactive picker, and a fast CLI."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Max Carlson" }]
+license = { text = "MIT" }
+dependencies = []
+
+[project.scripts]
+sshs = "sshs.cli:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+```
+
+```python
+# README.md
+# sshs — Simple SSH Manager
+
+A small, zero-dependency SSH device manager with:
+- Per-device **type** (non-removable) and arbitrary **tags**
+- Add/delete devices, add/delete tags
+- List devices (optionally by `--filter` type/tag)
+- **Interactive picker** when run with no arguments
+- Direct connect: `sshs <device-name>` or `sshs -r -n <device-name>`
+- User-scope config (no admin required)
+
+Config lives at:
+- **Windows:** `%APPDATA%\sshs\devices.json` (e.g. `C:\Users\<you>\AppData\Roaming\sshs\devices.json`)
+- **Linux/WSL/macOS:** `~/.config/sshs/devices.json`
+
+First run seeds sample devices.
+
+## Install (editable dev)
+```
+pip install -e .
+```
+
+## Examples
+```
+sshs                           # interactive picker
+sshs prism-1                   # direct connect by name
+sshs -L                        # list all devices
+sshs -L -f prism               # list only type/tag "prism"
+sshs -A -n prism-2 -u metro -H mpi2-25-obeya2.telestream.net -y prism
+sshs -t -N prism-2 -g lab,staging
+sshs -T -N prism-2 -g staging
+sshs -D -n prism-2
+```
+```
+
+```python
+# sshs/__init__.py
+__all__ = ["__version__"]
+__version__ = "0.1.0"
+```
+
+```python
+# sshs/config.py
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Dict, Any, List
+
+APP_DIR_NAME = "sshs"
+CONFIG_FILENAME = "devices.json"
+NON_REMOVABLE_KEY = "type"  # enforced as non-removable; not stored inside 'tags'
+
+DEFAULT_DEVICES = [
+    {
+        "name": "prism-1",
+        "user": "metro",
+        "host": "mpp-rion.telestream.net",
+        "port": 22,
+        "type": "prism",
+        "tags": []
+    },
+    {
+        "name": "prism-2",
+        "user": "metro",
+        "host": "mpi2-25-obeya2.telestream.net",
+        "port": 22,
+        "type": "prism",
+        "tags": []
+    },
+    {
+        "name": "prism-3",
+        "user": "metro",
+        "host": "tron-tronniest-tron.telestream.net",
+        "port": 22,
+        "type": "prism",
+        "tags": []
+    },
+    {
+        "name": "builder-1",
+        "user": "rwilsony",
+        "host": "builder-rionV2.telestream.net",
+        "port": 22,
+        "type": "builder",
+        "tags": []
+    },
+]
+
+def _config_base_dir() -> Path:
+    # Windows: %APPDATA%\sshs ; Others: ~/.config/sshs
+    if os.name == "nt":
+        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(base) / APP_DIR_NAME
+    return Path.home() / ".config" / APP_DIR_NAME
+
+def get_config_path() -> Path:
+    return _config_base_dir() / CONFIG_FILENAME
+
+def ensure_config() -> Path:
+    cfg_path = get_config_path()
+    if not cfg_path.parent.exists():
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    if not cfg_path.exists():
+        save_config({"devices": DEFAULT_DEVICES})
+    return cfg_path
+
+def load_config() -> Dict[str, Any]:
+    cfg_path = ensure_config()
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if "devices" not in data or not isinstance(data["devices"], list):
+            raise ValueError("Invalid config format")
+        # Hardening: normalize items
+        for d in data["devices"]:
+            d.setdefault("tags", [])
+            d.setdefault("port", 22)
+        return data
+    except Exception as e:
+        print(f"[ERROR] Failed to read config: {e}", file=sys.stderr)
+        return {"devices": []}
+
+def save_config(data: Dict[str, Any]) -> None:
+    cfg_path = ensure_config()
+    tmp = cfg_path.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+    os.replace(tmp, cfg_path)
+
+def find_device(data: Dict[str, Any], name: str) -> Dict[str, Any] | None:
+    name_l = name.lower()
+    for d in data.get("devices", []):
+        if d.get("name", "").lower() == name_l:
+            return d
+    return None
+
+def list_devices(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return list(data.get("devices", []))
+```
+
+```python
+# sshs/manager.py
+from __future__ import annotations
+import subprocess
+import sys
+from typing import Dict, Any, List, Iterable
+from .config import (
+    load_config, save_config, find_device, list_devices, NON_REMOVABLE_KEY,
+)
+
+def _err(msg: str) -> None:
+    print(f"[ERROR] {msg}", file=sys.stderr)
+
+def _info(msg: str) -> None:
+    print(f"[INFO] {msg}")
+
+def add_device(
+    name: str,
+    user: str,
+    host: str,
+    port: int = 22,
+    dev_type: str = "unknown",
+) -> bool:
+    cfg = load_config()
+    if find_device(cfg, name):
+        _err(f"Device '{name}' already exists.")
+        return False
+    dev = {
+        "name": name,
+        "user": user,
+        "host": host,
+        "port": int(port),
+        "type": dev_type,
+        "tags": [],
+    }
+    cfg["devices"].append(dev)
+    save_config(cfg)
+    _info(f"Added device '{name}' ({dev_type}) → {user}@{host}:{port}")
+    return True
+
+def delete_device(name: str) -> bool:
+    cfg = load_config()
+    before = len(cfg["devices"])
+    cfg["devices"] = [d for d in cfg["devices"] if d.get("name") != name]
+    after = len(cfg["devices"])
+    if after == before:
+        _err(f"Device '{name}' not found.")
+        return False
+    save_config(cfg)
+    _info(f"Deleted device '{name}'.")
+    return True
+
+def add_tags(names: Iterable[str], tags: Iterable[str]) -> bool:
+    cfg = load_config()
+    names_l = {n.lower() for n in names}
+    tags_set = {t.strip() for t in tags if t.strip()}
+    if not tags_set:
+        _err("No tags provided.")
+        return False
+    # Guard: never allow changing the non-removable 'type' via tag ops
+    if NON_REMOVABLE_KEY in tags_set:
+        _err(f"'{NON_REMOVABLE_KEY}' is reserved and cannot be added as a tag.")
+        return False
+
+    updated_any = False
+    for d in cfg["devices"]:
+        if d.get("name", "").lower() in names_l:
+            d.setdefault("tags", [])
+            for t in tags_set:
+                if t not in d["tags"]:
+                    d["tags"].append(t)
+                    updated_any = True
+            d["tags"].sort()
+    if updated_any:
+        save_config(cfg)
+        _info(f"Added tags {sorted(tags_set)} to {sorted(names_l)}")
+    else:
+        _info("No changes made.")
+    return updated_any
+
+def remove_tags(names: Iterable[str], tags: Iterable[str]) -> bool:
+    cfg = load_config()
+    names_l = {n.lower() for n in names}
+    tags_set = {t.strip() for t in tags if t.strip()}
+    if not tags_set:
+        _err("No tags provided.")
+        return False
+    if NON_REMOVABLE_KEY in tags_set:
+        _err(f"'{NON_REMOVABLE_KEY}' is reserved and cannot be removed as a tag.")
+        return False
+
+    updated_any = False
+    for d in cfg["devices"]:
+        if d.get("name", "").lower() in names_l:
+            before = set(d.get("tags", []))
+            after = [t for t in d.get("tags", []) if t not in tags_set]
+            if set(after) != before:
+                d["tags"] = after
+                updated_any = True
+    if updated_any:
+        save_config(cfg)
+        _info(f"Removed tags {sorted(tags_set)} from {sorted(names_l)}")
+    else:
+        _info("No changes made.")
+    return updated_any
+
+def filter_devices(
+    data: Dict[str, Any],
+    flt: str | None,
+) -> List[Dict[str, Any]]:
+    devices = list_devices(data)
+    if not flt:
+        return devices
+    flt_l = flt.lower()
+    out = []
+    for d in devices:
+        # match on type or any tag or name
+        if (
+            d.get("type", "").lower() == flt_l
+            or flt_l in [t.lower() for t in d.get("tags", [])]
+            or flt_l in d.get("name", "").lower()
+        ):
+            out.append(d)
+    return out
+
+def print_devices(devs: List[Dict[str, Any]]) -> None:
+    if not devs:
+        print("(no devices)")
+        return
+    name_w = max(len(d["name"]) for d in devs)
+    type_w = max(len(d.get("type", "")) for d in devs)
+    host_w = max(len(d["host"]) for d in devs)
+    print(f"{'NAME'.ljust(name_w)}  {'TYPE'.ljust(type_w)}  USER@HOST:PORT{' ' * max(0, host_w-9)}  TAGS")
+    print("-" * (name_w + type_w + host_w + 26))
+    for d in devs:
+        tags = ",".join(sorted(d.get("tags", [])))
+        endpoint = f"{d['user']}@{d['host']}:{d.get('port',22)}"
+        print(f"{d['name'].ljust(name_w)}  {d.get('type','').ljust(type_w)}  {endpoint.ljust(host_w+len(d['user'])+6)}  {tags}")
+
+def connect(name: str) -> int:
+    cfg = load_config()
+    dev = find_device(cfg, name)
+    if not dev:
+        _err(f"Device '{name}' not found.")
+        return 2
+    cmd = ["ssh", f"{dev['user']}@{dev['host']}", "-p", str(dev.get("port", 22))]
+    _info(f"Connecting: {' '.join(cmd)}")
+    try:
+        return subprocess.call(cmd)
+    except FileNotFoundError:
+        _err("ssh client not found on PATH.")
+        return 127
+    except KeyboardInterrupt:
+        return 130
+```
+
+```python
+# sshs/cli.py
+from __future__ import annotations
+import argparse
+import sys
+from .config import load_config
+from .manager import (
+    add_device, delete_device, add_tags, remove_tags,
+    filter_devices, print_devices, connect,
+)
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="sshs",
+        description="Simple SSH manager with tagging and interactive picker.",
+        add_help=True,
+    )
+    # Positional 'target' to allow: sshs <device-name>
+    p.add_argument("target", nargs="?", help="Device name (direct connect).")
+
+    # Actions (mutually exclusive-ish by convention)
+    p.add_argument("-L", "--list", action="store_true",
+                   help="List devices (optionally with -f/--filter).")
+
+    p.add_argument("-f", "--filter", metavar="TAG_OR_TYPE",
+                   help="Filter list/interactive by tag or device type.")
+
+    p.add_argument("-A", "--add-device", action="store_true",
+                   help="Add a new device (use with -n, -u, -H, -p, -y).")
+    p.add_argument("-D", "--delete-device", action="store_true",
+                   help="Delete a device (use with -n).")
+
+    p.add_argument("-t", "--add-tag", action="store_true",
+                   help="Add tag(s) to device(s) (use with -N and -g).")
+    p.add_argument("-T", "--delete-tag", action="store_true",
+                   help="Delete tag(s) from device(s) (use with -N and -g).")
+
+    p.add_argument("-r", "--run", action="store_true",
+                   help="Connect to device by name (use with -n).")
+
+    # Device fields
+    p.add_argument("-n", "--name", help="Device name (unique).")
+    p.add_argument("-N", "--names", help="Comma-separated device names for tag ops.")
+    p.add_argument("-u", "--user", help="SSH username.")
+    p.add_argument("-H", "--host", help="SSH host.")
+    p.add_argument("-p", "--port", type=int, default=22, help="SSH port (default 22).")
+    p.add_argument("-y", "--type", dest="dtype", help="Device type (e.g., prism, builder).")
+
+    # Tag list for tag ops
+    p.add_argument("-g", "--tags", help="Comma-separated tag names.")
+    return p
+
+def _parse_csv(val: str | None) -> list[str]:
+    if not val:
+        return []
+    return [x.strip() for x in val.split(",") if x.strip()]
+
+def interactive_picker(filter_val: str | None) -> int:
+    data = load_config()
+    devs = filter_devices(data, filter_val)
+    if not devs:
+        print("(no devices to select)")
+        return 0
+
+    # Present a neat 1–n list; allow multi-digit indices
+    print("\nSelect a device:")
+    for idx, d in enumerate(devs, start=1):
+        tags = ",".join(sorted(d.get("tags", [])))
+        print(f"  {idx:>2}. {d['name']}  [{d.get('type','')}]  {d['user']}@{d['host']}:{d.get('port',22)}  {tags}")
+
+    try:
+        choice = input("\nEnter number (or 'q' to quit): ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return 130
+
+    if choice in ("q", "quit", "exit"):
+        return 0
+
+    if not choice.isdigit():
+        print("[ERROR] Invalid selection.", file=sys.stderr)
+        return 2
+    idx = int(choice)
+    if idx < 1 or idx > len(devs):
+        print("[ERROR] Out of range.", file=sys.stderr)
+        return 2
+    return connect(devs[idx - 1]["name"])
+
+def main(argv: list[str] | None = None) -> int:
+    argv = argv if argv is not None else sys.argv[1:]
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    # If a bare device name is given, connect immediately.
+    if args.target and not any([args.list, args.add_device, args.delete_device, args.add_tag, args.delete_tag, args.run]):
+        return connect(args.target)
+
+    # List
+    if args.list:
+        data = load_config()
+        devs = filter_devices(data, args.filter)
+        print_devices(devs)
+        return 0
+
+    # Add / delete device
+    if args.add_device:
+        if not (args.name and args.user and args.host and args.dtype):
+            parser.error("Adding a device requires -n/--name, -u/--user, -H/--host, -y/--type")
+        ok = add_device(args.name, args.user, args.host, args.port, args.dtype)
+        return 0 if ok else 2
+
+    if args.delete_device:
+        if not args.name:
+            parser.error("Deleting a device requires -n/--name")
+        ok = delete_device(args.name)
+        return 0 if ok else 2
+
+    # Tag ops
+    if args.add_tag or args.delete_tag:
+        names = _parse_csv(args.names)
+        tags = _parse_csv(args.tags)
+        if not names or not tags:
+            parser.error("Tag operations require -N/--names and -g/--tags")
+        if args.add_tag:
+            ok = add_tags(names, tags)
+        else:
+            ok = remove_tags(names, tags)
+        return 0 if ok else 2
+
+    # Connect
+    if args.run:
+        if not args.name:
+            parser.error("Connecting with -r/--run requires -n/--name")
+        return connect(args.name)
+
+    # No arguments → interactive mode (optionally filtered)
+    return interactive_picker(args.filter)
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+

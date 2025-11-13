@@ -2,288 +2,207 @@
 """
 llm_project_parser.py
 
-This script reads an input file containing an LLM output (with file definitions and code blocks)
-and then creates a folder structure and individual files in a target output directory.
+This script intelligently parses LLM-generated project files. It automatically
+detects one of two formats and extracts the files accordingly:
 
-Files are only created if a valid file header is immediately followed by a code block.
-Filenames are cleaned of markdown formatting and validated for proper file extensions.
-If no folder structure is found, a flat structure is used (all files are created directly under the output directory).
+1.  Fenced Format: Identifies code within triple-backtick (```) blocks and
+    searches for a filename in the vicinity.
+2.  Header-Only Format: Identifies file headers (e.g., '# file.py') and
+    treats all text between one header and the next as the file's content.
+
+It detects and reports overlapping blocks (in fenced mode) and provides a
+detailed preview before creating the project structure.
 
 Usage example:
-    python llm_project_parser.py --input project.txt --output output_dir --confirm --verbose --dry-run
-
-Arguments:
-    --input / -i      : Path to the input file containing the LLM output.
-    --output / -o     : Destination directory where files will be created.
-    --dry-run / -d    : Perform a dry run (print actions without creating files).
-    --verbose / -v    : Enable verbose output.
-    --confirm / -c    : Enable interactive confirmation for ambiguous file blocks.
+    python llm_project_parser.py -i project.txt -o output_dir
 """
-
+import argparse
 import os
 import re
-import argparse
 import sys
 import logging
+from typing import List, Dict, Optional, Tuple
 
-# Allowed file extensions (adjust as needed)
-ALLOWED_EXTENSIONS = {".py", ".txt", ".md", ".json", ".yaml", ".yml"}
+# --- Constants ---
+RED_TEXT = "\033[91m"
+RESET_TEXT = "\033[0m"
+ALLOWED_EXTENSIONS = {".py", ".txt", ".md", ".json", ".yaml", ".yml", ".toml"}
+# This regex looks for a line that is primarily a filename, ignoring markdown noise.
+FILENAME_REGEX = re.compile(r'^(?:[#*`\s]*)?([\w\./\\-]+\.[\w]+)[`*]*\s*$')
+LEGACY_HEADER_REGEX = re.compile(r'^(?:#{1,6}\s*)?(\d+\.\s+.*)$')
+COMMENT_HEADER_REGEX = re.compile(r'^\s*#\s+([\w\./\\-]+\.[\w]+)\s*$')
 
+# --- Argument Parsing ---
 def parse_args():
+    """Parses command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Parse LLM output file and create folder structure and files."
+        description="Parse LLM output and extract code blocks into files.",
+        formatter_class=argparse.RawTextHelpFormatter
     )
-    parser.add_argument("--input", "-i", type=str, required=True,
-                        help="Path to the input file containing the LLM output.")
-    parser.add_argument("--output", "-o", type=str, default=".",
-                        help="Output directory where the files will be created.")
-    parser.add_argument("--dry-run", "-d", action="store_true",
-                        help="Perform a dry run without actually creating files.")
-    parser.add_argument("--verbose", "-v", action="store_true",
-                        help="Enable verbose output.")
-    parser.add_argument("--confirm", "-c", action="store_true",
-                        help="Enable interactive confirmation for ambiguous file blocks.")
+    parser.add_argument("-i", "--input", type=str, required=True,
+                        help="Path to the input file.")
+    parser.add_argument("-o", "--output", type=str, default=".",
+                        help="Output directory for created files.")
+    parser.add_argument("-d", "--dry-run", action="store_true",
+                        help="Perform a dry run without creating files.")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="Enable verbose (DEBUG level) logging.")
+    parser.add_argument("-s", "--search-radius", type=int, default=3,
+                        help="Line search radius for filenames in fenced mode (default: 3).")
+    parser.add_argument("-p", "--preview-lines", type=int, default=5,
+                        help="Lines to show in file previews (default: 5).")
     return parser.parse_args()
 
-def clean_filename(raw_name):
-    """
-    Removes markdown formatting (e.g. **, __, backticks) from the file name.
-    """
-    cleaned = re.sub(r'[\*_`]+', '', raw_name).strip()
-    return cleaned
+# --- Fenced Mode Logic ---
+def find_code_blocks(lines: List[str]) -> Tuple[List[Dict], bool]:
+    """Finds all fenced code blocks."""
+    blocks, in_block, start_line, has_errors = [], False, -1, False
+    for i, line in enumerate(lines):
+        if line.strip().startswith("```"):
+            if not in_block:
+                in_block, start_line = True, i
+            else:
+                blocks.append({"start_line": start_line, "end_line": i, "content_lines": lines[start_line + 1:i]})
+                in_block, start_line = False, -1
+    
+    sorted_blocks = sorted(blocks, key=lambda b: b['start_line'])
+    for i in range(len(sorted_blocks) - 1):
+        if sorted_blocks[i]['end_line'] > sorted_blocks[i+1]['start_line']:
+            logging.error(f"{RED_TEXT}ERROR: OVERLAPPING CODE BLOCKS DETECTED! "
+                          f"Block at lines {sorted_blocks[i]['start_line']}-{sorted_blocks[i]['end_line']} "
+                          f"overlaps with block at {sorted_blocks[i+1]['start_line']}-{sorted_blocks[i+1]['end_line']}.{RESET_TEXT}")
+            has_errors = True
+    return sorted_blocks, has_errors
 
-def has_valid_extension(filename):
-    """
-    Checks if the file has one of the allowed extensions.
-    """
-    _, ext = os.path.splitext(filename)
-    valid = ext.lower() in ALLOWED_EXTENSIONS
-    if not valid:
-        logging.warning("File '%s' does not have a valid extension.", filename)
-    return valid
+def find_filename_for_block(block: Dict, all_lines: List[str], radius: int, all_blocks: List[Dict]) -> Optional[str]:
+    """Searches for a filename near a code block."""
+    for i in range(1, radius + 1):
+        for direction in [-1, 1]: # Up, then Down
+            line_num = block['start_line' if direction == -1 else 'end_line'] + (i * direction)
+            if 0 <= line_num < len(all_lines):
+                if any(b['start_line'] <= line_num <= b['end_line'] for b in all_blocks if b != block): break
+                match = FILENAME_REGEX.search(all_lines[line_num])
+                if match: return match.group(1)
+    return None
 
-def preview_file_content(filename, content):
-    """
-    Prints a preview of the file content: first 5 lines and last 5 lines (or at least 3 if fewer).
-    """
+def extract_fenced_files(lines: List[str], search_radius: int) -> List[Dict]:
+    """Orchestrates parsing for files with fenced code blocks."""
+    all_blocks, has_errors = find_code_blocks(lines)
+    if has_errors: sys.exit(1)
+    if not all_blocks: return []
+    
+    logging.info(f"Found {len(all_blocks)} distinct code blocks. Searching for filenames...")
+    valid_files = []
+    for block in all_blocks:
+        filename = find_filename_for_block(block, lines, search_radius, all_blocks)
+        if filename:
+            content = "".join(block['content_lines']).strip()
+            valid_files.append({"name": filename, "content": content})
+            logging.debug(f"Associated block at lines {block['start_line']}-{block['end_line']} with filename '{filename}'")
+        else:
+            logging.warning(f"Could not find a filename for code block at lines {block['start_line']}-{block['end_line']}.")
+    return valid_files
+
+# --- Header-Only Mode Logic ---
+def clean_header_filename(raw_name: str) -> str:
+    """Cleans filenames found in headers."""
+    cleaned = re.sub(r'^\d+\.\s*', '', raw_name).strip()
+    return re.sub(r'[\*_`]+', '', cleaned).strip()
+
+def extract_header_only_files(lines: List[str]) -> List[Dict]:
+    """Orchestrates parsing for files with headers and no fences."""
+    headers = []
+    for i, line in enumerate(lines):
+        line_stripped = line.strip()
+        match = LEGACY_HEADER_REGEX.match(line_stripped) or COMMENT_HEADER_REGEX.match(line_stripped)
+        if match:
+            filename = clean_header_filename(match.group(1))
+            headers.append({'filename': filename, 'start_line': i})
+            logging.debug(f"Found header for '%s' at line %d", filename, i)
+    
+    if not headers: return []
+    logging.info(f"Found {len(headers)} file headers. Extracting content...")
+    
+    valid_files = []
+    for i, header in enumerate(headers):
+        start_content = header['start_line'] + 1
+        end_content = headers[i + 1]['start_line'] if i + 1 < len(headers) else len(lines)
+        content = "".join(lines[start_content:end_content]).strip()
+        valid_files.append({"name": header['filename'], "content": content})
+    return valid_files
+
+# --- Output and File Operations ---
+def display_file_preview(filename: str, content: str, num_lines: int):
+    """Prints a formatted preview of a file's content with line numbers."""
+    print(f"--- File: {filename} ---")
     lines = content.splitlines()
-    total = len(lines)
-    start_count = min(5, total) if total >= 3 else total
-    end_count = min(5, total) if total >= 3 else total
-    start_lines = lines[:start_count]
-    end_lines = lines[-end_count:]
-    preview = "\n".join(start_lines) + "\n...\n" + "\n".join(end_lines)
-    print(f"\nFile: {filename}\nPreview:\n{preview}\n")
-
-def confirm_file_creation(filename, content):
-    """
-    Shows a preview of the file content and asks the user to confirm file creation.
-    Returns True if the user confirms, False otherwise.
-    """
-    preview_file_content(filename, content)
-    answer = input(f"Create file '{filename}'? (y/N): ").strip().lower()
-    return answer == 'y'
-
-def extract_files_from_lines(lines, interactive=False):
-    """
-    Iterates line-by-line through the input lines and extracts (filename, code_block)
-    pairs. A file header is expected to be a line that optionally starts with markdown header markers
-    (like "##") followed by a number, a dot, and a file name.
-    The very next encountered code block (delimited by triple backticks) is associated with that header.
-    """
-    files = []
-    candidate_header = None
-    header_regex = re.compile(r'^(?:#{1,6}\s*)?(\d+\.\s+.*)$')
-    i = 0
-    total_lines = len(lines)
-    while i < total_lines:
-        line = lines[i].rstrip("\n")
-        header_match = header_regex.match(line)
-        if header_match:
-            # Found a file header; extract and clean filename.
-            raw_header = header_match.group(1)
-            candidate_header = clean_filename(raw_header)
-            logging.debug("Found header at line %d: %s", i, candidate_header)
-            i += 1
-            continue
-        if line.startswith("```"):
-            # Found the start of a code block.
-            if candidate_header is not None:
-                # Optionally, capture language info (ignored here).
-                i += 1  # skip the opening backticks line
-                code_lines = []
-                while i < total_lines and not lines[i].startswith("```"):
-                    code_lines.append(lines[i])
-                    i += 1
-                # Skip the closing backticks, if present.
-                if i < total_lines and lines[i].startswith("```"):
-                    i += 1
-                candidate_code = "\n".join(code_lines).strip()
-                num_lines = len(candidate_code.splitlines())
-                if num_lines < 6:
-                    logging.warning("Code block for '%s' is very short (%d lines).", candidate_header, num_lines)
-                    if interactive:
-                        if not confirm_file_creation(candidate_header, candidate_code):
-                            logging.info("User chose not to create file '%s'.", candidate_header)
-                            candidate_header = None
-                            continue
-                    else:
-                        logging.info("Skipping file '%s' due to short code block (use --confirm for interactive confirmation).", candidate_header)
-                        candidate_header = None
-                        continue
-                if not has_valid_extension(candidate_header):
-                    logging.warning("Skipping file '%s' due to invalid extension.", candidate_header)
-                else:
-                    files.append((candidate_header, candidate_code))
-                    logging.info("Valid file found: %s", candidate_header)
-                candidate_header = None  # reset header after pairing with code block
-                continue
-            else:
-                # Found a code block without a preceding header.
-                logging.debug("Encountered a code block at line %d with no candidate header; skipping.", i)
-                # Skip this code block entirely.
-                i += 1
-                while i < total_lines and not lines[i].startswith("```"):
-                    i += 1
-                if i < total_lines and lines[i].startswith("```"):
-                    i += 1
-                continue
-        i += 1
-    return files
-
-def parse_folder_structure(sections):
-    """
-    Attempts to extract a folder structure (a tree) from a section.
-    We assume that the tree starts with a line ending with "/" (the root directory)
-    and then subsequent lines representing files or subdirectories.
-    
-    Returns a dict with keys:
-        'root'        : the root folder name.
-        'directories' : a list of directory paths.
-        'files'       : a list of file paths (as given in the tree).
-    """
-    lines = sections.splitlines()
-    tree_lines = []
-    start_collecting = False
-    for line in lines:
-        stripped = line.strip()
-        if not start_collecting and stripped.endswith("/"):
-            start_collecting = True
-        if start_collecting and stripped:
-            tree_lines.append(line.rstrip())
-    logging.debug("Collected %d tree lines from folder structure section.", len(tree_lines))
-    directories = set()
-    files = set()
-    root = ""
-    if tree_lines:
-        root = tree_lines[0].strip().rstrip("/")
-        directories.add(root)
-        for line in tree_lines[1:]:
-            # Remove common tree-drawing characters and extra whitespace.
-            line_clean = re.sub(r'^[\s│├└─]+', '', line).strip()
-            if not line_clean:
-                continue
-            if line_clean.endswith("/"):
-                directories.add(os.path.join(root, line_clean.rstrip("/")))
-            else:
-                files.add(os.path.join(root, line_clean))
-    logging.debug("Parsed folder structure: root=%s, directories=%s, files=%s", root, directories, files)
-    return {"root": root, "directories": list(directories), "files": list(files)}
-
-def create_directories(directories, base_dir, dry_run=False):
-    """
-    Creates each directory (relative to base_dir) if it does not exist.
-    """
-    for directory in directories:
-        full_path = os.path.join(base_dir, directory)
-        logging.info("Creating directory: %s", full_path)
-        if dry_run:
-            logging.debug("Dry run enabled; directory not actually created.")
-        else:
-            try:
-                os.makedirs(full_path, exist_ok=True)
-                logging.debug("Directory created or already exists: %s", full_path)
-            except Exception as e:
-                logging.error("Failed to create directory %s: %s", full_path, e)
-
-def write_file(file_path, content, base_dir, dry_run=False):
-    """
-    Writes the given content to file_path (relative to base_dir),
-    creating any missing parent directories.
-    """
-    full_file_path = os.path.join(base_dir, file_path)
-    parent_dir = os.path.dirname(full_file_path)
-    if not os.path.exists(parent_dir):
-        logging.info("Creating parent directory: %s", parent_dir)
-        if dry_run:
-            logging.debug("Dry run enabled; parent directory not actually created.")
-        else:
-            try:
-                os.makedirs(parent_dir, exist_ok=True)
-                logging.debug("Parent directory created: %s", parent_dir)
-            except Exception as e:
-                logging.error("Failed to create parent directory %s: %s", parent_dir, e)
-    logging.info("Writing file: %s", full_file_path)
-    if dry_run:
-        logging.debug("Dry run enabled; file not actually written.")
+    if not lines:
+        print("    (empty file)")
     else:
-        try:
-            with open(full_file_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            logging.debug("File written successfully: %s", full_file_path)
-        except Exception as e:
-            logging.error("Error writing file %s: %s", full_file_path, e)
+        total_lines = len(lines)
+        max_ln_len = len(str(total_lines - 1))
+        def print_line(i): print(f"  {str(i).rjust(max_ln_len)}:    {lines[i]}")
+        if total_lines <= num_lines * 2:
+            for i in range(total_lines): print_line(i)
+        else:
+            for i in range(num_lines): print_line(i)
+            print(f"  {' ' * max_ln_len}      ....skipping....")
+            for i in range(total_lines - num_lines, total_lines): print_line(i)
+    print("-" * (len(filename) + 8) + "\n")
 
+def write_file(file_path: str, content: str, base_dir: str, dry_run: bool):
+    """Writes content to a file, creating parent directories."""
+    full_path = os.path.join(base_dir, file_path)
+    parent_dir = os.path.dirname(full_path)
+    logging.info(f"Preparing to write file: {full_path}")
+    if dry_run:
+        logging.info(f"[Dry Run] Would write {len(content.splitlines())} lines to {full_path}")
+        return
+    if parent_dir and not os.path.exists(parent_dir):
+        try:
+            os.makedirs(parent_dir, exist_ok=True)
+        except Exception as e:
+            logging.error(f"Failed to create parent directory {parent_dir}: {e}")
+            return
+    try:
+        with open(full_path, "w", encoding="utf-8", newline="\n") as f: f.write(content)
+        logging.debug(f"Successfully wrote file: {full_path}")
+    except Exception as e:
+        logging.error(f"Error writing file {full_path}: {e}")
+
+# --- Main Orchestrator ---
 def main():
+    """Main script execution."""
     args = parse_args()
-    
-    # Configure logging.
-    log_level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(level=log_level, format='%(levelname)s: %(message)s')
-    
-    logging.info("Starting llm_project_parser.py")
-    logging.debug("Arguments: input=%s, output=%s, dry_run=%s, confirm=%s, verbose=%s",
-                  args.input, args.output, args.dry_run, args.confirm, args.verbose)
-    
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
+                        format='%(levelname)s: %(message)s', stream=sys.stdout)
+    logging.debug(f"Arguments: {args}")
+
     try:
         with open(args.input, "r", encoding="utf-8") as f:
             text = f.read()
-        logging.info("Successfully read input file: %s", args.input)
+            lines = text.splitlines(keepends=True)
+        logging.info(f"Successfully read {len(lines)} lines from '{args.input}'.")
     except Exception as exc:
-        logging.error("Error reading input file %s: %s", args.input, exc)
-        sys.exit(1)
-    
-    # Split into sections to try to find a folder structure (if present).
-    sections = re.split(r'^\s*-{3,}\s*$', text, flags=re.MULTILINE)
-    sections = [s.strip() for s in sections if s.strip()]
-    
-    folder_section = None
-    for sec in sections:
-        if "Folder Structure" in sec:
-            folder_section = sec
-            break
-    if folder_section:
-        try:
-            folder_structure = parse_folder_structure(folder_section)
-            logging.info("Folder structure parsed successfully.")
-            logging.debug("Folder structure: %s", folder_structure)
-            create_directories(folder_structure["directories"], args.output, dry_run=args.dry_run)
-        except Exception as e:
-            logging.error("Error parsing folder structure: %s", e)
+        logging.error(f"Error reading input file '{args.input}': {exc}"); sys.exit(1)
+
+    if "```" in text:
+        logging.info("Detected fenced code blocks. Using 'fenced' parsing mode.")
+        valid_files = extract_fenced_files(lines, args.search_radius)
     else:
-        logging.info("No folder structure section found; defaulting to flat structure.")
-    
-    # Process the entire file line-by-line to extract file definitions.
-    file_lines = text.splitlines()
-    valid_files = extract_files_from_lines(file_lines, interactive=args.confirm)
-    logging.info("Found %d valid file(s).", len(valid_files))
-    
-    base_output = args.output
-    for filename, content in valid_files:
-        write_file(filename, content, base_output, dry_run=args.dry_run)
-    
+        logging.info("No fences detected. Using 'header-only' parsing mode.")
+        valid_files = extract_header_only_files(lines)
+
+    if not valid_files:
+        logging.info("Could not find any valid files to create."); sys.exit(0)
+
+    print("\n" + "="*20 + " FILE PREVIEW " + "="*20 + "\n")
+    for f in valid_files: display_file_preview(f['name'], f['content'], args.preview_lines)
+    print("="*54 + "\n")
+
+    if args.dry_run: logging.info("Dry run is enabled. No files will be written.")
+    for f in valid_files: write_file(f['name'], f['content'], args.output, args.dry_run)
     logging.info("Processing complete.")
 
 if __name__ == "__main__":
     main()
-

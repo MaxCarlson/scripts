@@ -1,0 +1,18 @@
+# pyproject.toml
+[project]
+name = "mypysetup"
+version = "0.2.0"
+description = "Cross-platform Python project/setup helper (uv/pipx/micromamba) + project bootstrap."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Max Carlson" }]
+license = { text = "MIT" }
+dependencies = []
+
+[project.scripts]
+mps = "mypysetup.cli:main"
+mypysetup = "mypysetup.cli:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
