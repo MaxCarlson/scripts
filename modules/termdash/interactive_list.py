@@ -86,6 +86,8 @@ class ListState:
     calculating_sizes: bool = False
     calc_progress: Tuple[int, int] = (0, 0)  # (current, total)
     calc_cancel: bool = False
+    # Quit confirmation state
+    confirm_quit: bool = False
 
 def calculate_size_color(size: int, min_size: int, max_size: int) -> int:
     """
@@ -256,7 +258,27 @@ class InteractiveList:
                     except Exception:
                         continue
                 else:
-                    # No fallback worked — provide actionable guidance.
+                    # No TERM fallback worked — try to set TERMINFO_DIRS to common locations and retry.
+                    candidates = [
+                        "/usr/share/terminfo",
+                        "/lib/terminfo",
+                        "/usr/lib/terminfo",
+                        "/data/data/com.termux/files/usr/share/terminfo",
+                    ]
+                    existing = os.environ.get("TERMINFO_DIRS", "")
+                    probe_dirs = [d for d in candidates if os.path.isdir(d)]
+                    if probe_dirs:
+                        merged = ":".join([p for p in [existing] if p] + probe_dirs)
+                        os.environ["TERMINFO_DIRS"] = merged
+                        try:
+                            curses.setupterm()
+                            sys.stderr.write(
+                                f"Warning: terminfo database not found initially; set TERMINFO_DIRS={merged} and continued.\n"
+                            )
+                            return
+                        except Exception:
+                            pass
+                    # Still failing — provide actionable guidance and exit.
                     term = current_term
                     sys.stderr.write(
                         "Unable to initialize terminal capabilities (terminfo).\n"
@@ -266,6 +288,7 @@ class InteractiveList:
                         "  - Fedora:        sudo dnf install ncurses-term\n"
                         "  - Arch:          sudo pacman -S ncurses\n"
                         "  - Termux:        pkg install ncurses\n"
+                        "Alternatively, export TERMINFO_DIRS to the correct terminfo path.\n"
                         "Then re-run this command, or use a non-TUI mode (e.g., --json).\n"
                     )
                     raise SystemExit(2)
@@ -310,8 +333,16 @@ class InteractiveList:
             if key == -1:
                 continue  # Just redraw and continue
 
-            if key in (17,):  # Ctrl+Q
+            # Quit handling
+            if key in (17,):  # Ctrl+Q immediate
                 break
+            # If awaiting confirmation, handle y/n
+            if getattr(self.state, "confirm_quit", False):
+                if key in (ord('y'), ord('Y')):
+                    break
+                if key in (ord('n'), ord('N'), 27):  # ESC cancels
+                    self.state.confirm_quit = False
+                continue
 
             # Detail view mode
             if self.state.detail_view:
@@ -359,6 +390,9 @@ class InteractiveList:
                 self.state.dirs_first = not self.state.dirs_first
                 self._update_visible_items()
                 self.state.scroll_offset = 0
+            elif key == ord('q'):
+                # Prompt before quitting; use Ctrl+Q for immediate exit
+                self.state.confirm_quit = True
             elif key == curses.KEY_RIGHT:
                 # Scroll name to the right (increment by 5 for smoother feel)
                 self.state.scroll_offset += 5
@@ -750,36 +784,20 @@ class InteractiveList:
             except curses.error:
                 pass
 
+        # Quit confirmation prompt overlay
+        if getattr(self.state, "confirm_quit", False):
+            prompt = "Quit? (y/N)"
+            try:
+                stdscr.move(max_y - 1, 0)
+                stdscr.clrtoeol()
+                stdscr.addstr(max_y - 1, 0, prompt.ljust(max_x)[:max_x - 1], curses.color_pair(3) | curses.A_REVERSE)
+            except curses.error:
+                pass
+
         stdscr.refresh()
 
 
-def render_items_to_text(
-    items: Sequence[Any],
-    formatter: Callable[[Any, str, int, bool, bool, int], str],
-    *,
-    sort_field: str = "",
-    width: Optional[int] = None,
-    show_date: bool = True,
-    show_time: bool = True,
-) -> List[str]:
-    """
-    Render list items using the provided formatter into plain text lines.
-
-    Args:
-        items: sequence of items matching the formatter signature.
-        formatter: same formatter used by InteractiveList.
-        sort_field: name of the active sort field (passed to formatter).
-        width: optional target width (defaults to terminal width or 120 fallback).
-        show_date: whether formatter should include date information.
-        show_time: whether formatter should include time information.
-    """
-    if width is None:
-        width = shutil.get_terminal_size(fallback=(120, 40)).columns
-
-    lines: List[str] = []
-    for item in items:
-        lines.append(formatter(item, sort_field, max(10, width), show_date, show_time, 0))
-    return lines
+ 
     def _draw_detail_view(self, stdscr, max_y: int, max_x: int) -> None:
         """Render the structured detail view with navigation support."""
         title = self.state.detail_title or "Detail View"
@@ -1024,3 +1042,32 @@ def render_items_to_text(
         self._detail_lines = []
         self._detail_meta = []
         self._detail_focusable = []
+
+
+def render_items_to_text(
+    items: Sequence[Any],
+    formatter: Callable[[Any, str, int, bool, bool, int], str],
+    *,
+    sort_field: str = "",
+    width: Optional[int] = None,
+    show_date: bool = True,
+    show_time: bool = True,
+) -> List[str]:
+    """
+    Render list items using the provided formatter into plain text lines.
+
+    Args:
+        items: sequence of items matching the formatter signature.
+        formatter: same formatter used by InteractiveList.
+        sort_field: name of the active sort field (passed to formatter).
+        width: optional target width (defaults to terminal width or 120 fallback).
+        show_date: whether formatter should include date information.
+        show_time: whether formatter should include time information.
+    """
+    if width is None:
+        width = shutil.get_terminal_size(fallback=(120, 40)).columns
+
+    lines: List[str] = []
+    for item in items:
+        lines.append(formatter(item, sort_field, max(10, width), show_date, show_time, 0))
+    return lines
