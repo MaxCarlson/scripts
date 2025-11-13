@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from cross_platform.system_utils import SystemUtils
+import shutil
 from cross_platform.size_utils import parse_size_to_bytes, format_bytes_binary
 
 
@@ -610,6 +611,9 @@ def run_full_scan(
     cont_info = containers_scan(sysu, provider, list_items=list_containers)
     cont_bytes = containers_store_size(sysu, provider)
 
+    # Heaviest directories (top-level rollup)
+    heaviest = scan_heaviest_dirs(sysu, path, top_n)
+
     overall = largest_total + caches_total + cont_bytes
     extra: Dict[str, Any] = {}
     if sysu.is_windows():
@@ -643,6 +647,7 @@ def run_full_scan(
             "total_bytes": caches_total,
             "total_human": format_bytes_binary(caches_total),
         },
+        "heaviest_dirs": [{"path": d.path, "size": d.size_human} for d in heaviest],
         "containers": {
             "provider": cont_info.get("provider"),
             "running": cont_info.get("running", []),
@@ -685,6 +690,13 @@ def build_full_markdown(info: Dict[str, Any]) -> str:
     ct = info.get("containers", {})
     lines.append("## Containers")
     lines.append(f"Estimated store size: {ct.get('store_human','0 B')}\n")
+    # Heaviest directories
+    hd = info.get("heaviest_dirs", [])
+    lines.append("## Heaviest Directories")
+    for d in hd[:10]:
+        lines.append(f"- {d.get('size','')}  {d.get('path','')}")
+    if len(hd) > 10:
+        lines.append(f"... and {len(hd)-10} more")
     # Drives overview
     if "windows_drives" in info:
         lines.append("## Drives Overview (Windows)")

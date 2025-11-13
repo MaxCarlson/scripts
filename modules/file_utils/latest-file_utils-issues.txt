@@ -1,0 +1,103 @@
+scripts on  main [?] via 🐍 v3.13.9 (.venv) took 7s
+❯ git pull
+Already up to date.
+
+scripts on  main [?] via 🐍 v3.13.9 (.venv) took 2s
+❯ fsu ls
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "C:\Users\Max.Carlson\src\scripts\.venv\Scripts\fsu.exe\__main__.py", line 6, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "C:\Users\Max.Carlson\src\scripts\modules\file_utils\cli.py", line 256, in main
+    from . import lister
+  File "C:\Users\Max.Carlson\src\scripts\modules\file_utils\lister.py", line 4, in <module>
+    import curses
+  File "C:\Program Files\Python313\Lib\curses\__init__.py", line 13, in <module>
+    from _curses import *
+ModuleNotFoundError: No module named '_curses'
+
+scripts on  main [?] via 🐍 v3.13.9 (.venv)
+❯ fsu disk report
+[Debug] Initialized SystemUtils for OS: windows
+[Debug] is_windows: True
+[Debug] is_windows: True
+[Debug] Running command: pwsh -NoProfile -Command Get-ChildItem -File -Recurse -ErrorAction SilentlyContinue 'C:\Users\Max.Carlson' | Where-Object { $_.Length -ge 0 } | Sort-Object Length -Descending | Select-Object -First 50 @{n='SizeBytes';e={$_.Length}}, @{n='FullName';e={$_.FullName}} | ConvertTo-Json
+[Error] Command failed: pwsh -NoProfile -Command Get-ChildItem -File -Recurse -ErrorAction SilentlyContinue 'C:\Users\Max.Carlson' | Where-Object { $_.Length -ge 0 } | Sort-Object Length -Descending | Select-Object -First 50 @{n='SizeBytes';e={$_.Length}}, @{n='FullName';e={$_.FullName}} | ConvertTo-Json
+Error: 'Where-Object' is not recognized as an internal or external command,
+operable program or batch file.
+[Debug] is_windows: True
+[Debug] is_windows: True
+[Debug] Running command: pwsh -NoProfile -Command Get-ChildItem -File -Recurse -ErrorAction SilentlyContinue 'C:\Users\Max.Carlson' | Group-Object DirectoryName | ForEach-Object { [pscustomobject]@{ Path=$_.Name; SizeBytes=($_.Group | Measure-Object Length -Sum).Sum } } | Sort-Object SizeBytes -Descending | Select-Object -First 50 Path,SizeBytes | ConvertTo-Json
+[Error] Command failed: pwsh -NoProfile -Command Get-ChildItem -File -Recurse -ErrorAction SilentlyContinue 'C:\Users\Max.Carlson' | Group-Object DirectoryName | ForEach-Object { [pscustomobject]@{ Path=$_.Name; SizeBytes=($_.Group | Measure-Object Length -Sum).Sum } } | Sort-Object SizeBytes -Descending | Select-Object -First 50 Path,SizeBytes | ConvertTo-Json
+Error: 'Group-Object' is not recognized as an internal or external command,
+operable program or batch file.
+[Debug] is_linux: False
+# Disk Space Report
+
+## Largest Files
+
+## Heaviest Directories
+
+## Detected Caches
+- build: 1307 paths
+- git: 4 paths
+
+scripts on  main [?] via 🐍 v3.13.9 (.venv) took 8s
+❯ fsu disk scan
+[Debug] Initialized SystemUtils for OS: windows
+[Debug] is_windows: True
+[Debug] is_windows: True
+[Debug] Running command: pwsh -NoProfile -Command Get-ChildItem -File -Recurse -ErrorAction SilentlyContinue 'C:\Users\Max.Carlson' | Where-Object { $_.Length -ge 0 } | Sort-Object Length -Descending | Select-Object -First 50 @{n='SizeBytes';e={$_.Length}}, @{n='FullName';e={$_.FullName}} | ConvertTo-Json
+[Error] Command failed: pwsh -NoProfile -Command Get-ChildItem -File -Recurse -ErrorAction SilentlyContinue 'C:\Users\Max.Carlson' | Where-Object { $_.Length -ge 0 } | Sort-Object Length -Descending | Select-Object -First 50 @{n='SizeBytes';e={$_.Length}}, @{n='FullName';e={$_.FullName}} | ConvertTo-Json
+Error: 'Where-Object' is not recognized as an internal or external command,
+operable program or batch file.
+[Debug] is_linux: False
+[Debug] is_linux: False
+[Debug] is_termux: False
+[Debug] is_wsl2: False
+[Debug] is_linux: False
+[Debug] is_termux: False
+[Debug] is_wsl2: False
+[Debug] is_linux: False
+[Debug] is_termux: False
+[Debug] is_wsl2: False
+[Debug] is_linux: False
+[Debug] is_termux: False
+....500 lines cut out here..
+[Debug] is_linux: False
+[Debug] is_termux: False
+[Debug] is_wsl2: False
+[Debug] Running command: docker ps --format '{{.ID}} {{.Image}} {{.Size}} {{.Names}}' || true
+[Debug] Command succeeded: docker ps --format '{{.ID}} {{.Image}} {{.Size}} {{.Names}}' || true
+[Debug] Running command: docker ps -a --format '{{.ID}} {{.Image}} {{.Size}} {{.Names}}' || true
+[Debug] Command succeeded: docker ps -a --format '{{.ID}} {{.Image}} {{.Size}} {{.Names}}' || true
+[Debug] Running command: docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' || true
+[Debug] Command succeeded: docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' || true
+[Debug] Running command: docker system df -v || true
+[Debug] Command succeeded: docker system df -v || true
+[Debug] is_windows: True
+[Debug] Running command: pwsh -NoProfile -Command "Get-ChildItem C:\ -File -Recurse -Force -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 40 @{n='GB';e={[math]::Round($_.Length/1GB,2)}}, FullName"
+[Error] Command failed: pwsh -NoProfile -Command "Get-ChildItem C:\ -File -Recurse -Force -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 40 @{n='GB';e={[math]::Round($_.Length/1GB,2)}}, FullName"
+Error:
+[Debug] Running command: pwsh -NoProfile -Command "$roots = 'C:\Users','C:\ProgramData','C:\Program Files','C:\Program Files (x86)','C:\Windows'; foreach($r in $roots){ try{ $sum = (Get-ChildItem $r -Recurse -Force -ErrorAction SilentlyContinue -File | Measure-Object Length -Sum).Sum; '{0,-28}  {1,8:N2} GB' -f $r, ($sum/1GB) }catch{} }"
+[Debug] Command succeeded: pwsh -NoProfile -Command "$roots = 'C:\Users','C:\ProgramData','C:\Program Files','C:\Program Files (x86)','C:\Windows'; foreach($r in $roots){ try{ $sum = (Get-ChildItem $r -Recurse -Force -ErrorAction SilentlyContinue -File | Measure-Object Length -Sum).Sum; '{0,-28}  {1,8:N2} GB' -f $r, ($sum/1GB) }catch{} }"
+[Debug] Running command: pwsh -NoProfile -Command "Get-ChildItem 'C:\Users' -Directory -ErrorAction SilentlyContinue | ForEach-Object { $p=$_.FullName; try{ $sz=(Get-ChildItem $p -Recurse -Force -ErrorAction SilentlyContinue -File | Measure-Object Length -Sum).Sum; [pscustomobject]@{ GB=[math]::Round($sz/1GB,2); Path=$p } }catch{} } | Sort-Object GB -Descending | Select-Object -First 10"
+[Debug] Command succeeded: pwsh -NoProfile -Command "Get-ChildItem 'C:\Users' -Directory -ErrorAction SilentlyContinue | ForEach-Object { $p=$_.FullName; try{ $sz=(Get-ChildItem $p -Recurse -Force -ErrorAction SilentlyContinue -File | Measure-Object Length -Sum).Sum; [pscustomobject]@{ GB=[math]::Round($sz/1GB,2); Path=$p } }catch{} } | Sort-Object GB -Descending | Select-Object -First 10"
+== Largest Files ==
+Total: 0 B across 0 files
+
+== Caches ==
+build       : 36.56 MiB  (1307 paths)
+git         : 458.45 MiB  (4 paths)
+Total: 495.01 MiB
+
+== Containers ==
+Estimated store size: 0 B
+
+== Overall Total ==
+495.01 MiB
+
+scripts on  main [?] via 🐍 v3.13.9 (.venv) took 1m51s
+❯
