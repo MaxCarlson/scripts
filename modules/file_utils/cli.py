@@ -175,47 +175,70 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Leave blank line when deleting (default: pull up line below).",
     )
 
-    # --- disk command ---
-    disk_parser = subparsers.add_parser("disk", help="Disk space scanning and cleanup tools.")
+    # --- disk command (scan/clean families) ---
+    disk_parser = subparsers.add_parser("disk", help="Disk space tools (scan/clean).")
     disk_sub = disk_parser.add_subparsers(dest="disk_cmd", required=True)
 
-    # scan-largest
-    d_scan_largest = disk_sub.add_parser("scan-largest", help="List largest files.")
-    d_scan_largest.add_argument("-p", "--path", default=None, help="Scan root path (default varies by platform).")
-    d_scan_largest.add_argument("-n", "--top", type=int, default=50, help="Number of results to show.")
-    d_scan_largest.add_argument("-m", "--min-size", default=None, help="Minimum file size threshold, e.g. 500M, 2G.")
-    d_scan_largest.add_argument("-f", "--format", choices=("json", "table", "md"), default="table", help="Output format.")
-    d_scan_largest.add_argument("-v", "--verbose", action="store_true", help="Verbose logging.")
+    # disk scan
+    scan_p = disk_sub.add_parser("scan", help="Scan disk usage: largest, caches, containers, space.")
+    scan_sub = scan_p.add_subparsers(dest="scan_cmd")
 
-    # scan-caches
-    d_scan_caches = disk_sub.add_parser("scan-caches", help="Detect common caches.")
-    d_scan_caches.add_argument("-p", "--path", default=None, help="Home path to scan (defaults to ~).")
-    d_scan_caches.add_argument("-f", "--format", choices=("json", "table"), default="table", help="Output format.")
-    d_scan_caches.add_argument("-v", "--verbose", action="store_true", help="Verbose logging.")
+    sc_largest = scan_sub.add_parser("largest", help="List largest files.")
+    sc_largest.add_argument("-p", "--path", default=None, help="Scan root path.")
+    sc_largest.add_argument("-n", "--top", type=int, default=50, help="Number of results.")
+    sc_largest.add_argument("-m", "--min-size", default=None, help="Minimum file size, e.g. 500M.")
+    sc_largest.add_argument("-e", "--ext", action="append", help="Filter by file extension (repeatable).")
+    sc_largest.add_argument("-g", "--glob", action="append", help="Filter by glob pattern (repeatable).")
+    sc_largest.add_argument("-f", "--format", choices=("json", "table", "md"), default="table", help="Output format.")
+    sc_largest.add_argument("-v", "--verbose", action="store_true", help="Verbose logging.")
 
-    # clean
-    d_clean = disk_sub.add_parser("clean", help="Remove caches/artifacts safely.")
-    d_clean.add_argument("-w", "--what", nargs="+", default=["python", "node", "build"], help="Categories: python conda node apt journals build git all")
-    d_clean.add_argument("-d", "--dry-run", action="store_true", help="Preview actions only.")
-    d_clean.add_argument("-y", "--yes", action="store_true", help="Skip interactive confirmation.")
-    d_clean.add_argument("-v", "--verbose", action="store_true", help="Verbose logging.")
+    sc_caches = scan_sub.add_parser("caches", help="Detect common caches.")
+    sc_caches.add_argument("-p", "--path", default=None, help="Home path to scan (defaults to ~).")
+    sc_caches.add_argument("-f", "--format", choices=("json", "table"), default="table", help="Output format.")
+    sc_caches.add_argument("-v", "--verbose", action="store_true", help="Verbose logging.")
 
-    # containers
-    d_cont = disk_sub.add_parser("containers", help="Show and prune container stores.")
-    d_cont.add_argument("-P", "--provider", default="auto", choices=("auto", "docker", "podman"), help="Container provider.")
-    d_cont.add_argument("-d", "--dry-run", action="store_true", help="Preview actions only.")
-    d_cont.add_argument("-y", "--yes", action="store_true", help="Skip interactive confirmation.")
-    d_cont.add_argument("-v", "--verbose", action="store_true", help="Verbose logging.")
+    sc_cont = scan_sub.add_parser("containers", help="Show container usage.")
+    sc_cont.add_argument("-P", "--provider", default="auto", choices=("auto", "docker", "podman"), help="Provider.")
+    sc_cont.add_argument("-l", "--ls", action="store_true", help="List running and all containers and images.")
+    sc_cont.add_argument("-v", "--verbose", action="store_true", help="Verbose logging.")
 
-    # wsl-reclaim
+    sc_space = scan_sub.add_parser("space", help="Show remaining space on all drives.")
+    sc_space.add_argument("-v", "--verbose", action="store_true", help="Verbose logging.")
+
+    # disk clean
+    clean_p = disk_sub.add_parser("clean", help="Clean artifacts: largest, caches, containers.")
+    clean_sub = clean_p.add_subparsers(dest="clean_cmd", required=True)
+
+    cl_largest = clean_sub.add_parser("largest", help="Delete largest files (dry-run by default).")
+    cl_largest.add_argument("-p", "--path", default=None, help="Scan root path.")
+    cl_largest.add_argument("-n", "--top", type=int, default=50, help="Number of files to target.")
+    cl_largest.add_argument("-m", "--min-size", default=None, help="Minimum file size, e.g. 500M.")
+    cl_largest.add_argument("-e", "--ext", action="append", help="Only delete files with these extensions.")
+    cl_largest.add_argument("-g", "--glob", action="append", help="Only delete files matching globs.")
+    cl_largest.add_argument("-d", "--dry-run", action="store_true", help="Preview actions only (default).")
+    cl_largest.add_argument("-y", "--yes", action="store_true", help="Skip interactive confirmation.")
+    cl_largest.add_argument("-v", "--verbose", action="store_true", help="Verbose logging.")
+
+    cl_caches = clean_sub.add_parser("caches", help="Clean common caches/artifacts.")
+    cl_caches.add_argument("-w", "--what", nargs="+", default=["python", "node", "build"], help="Categories: python conda node apt journals build git all")
+    cl_caches.add_argument("-d", "--dry-run", action="store_true", help="Preview actions only.")
+    cl_caches.add_argument("-y", "--yes", action="store_true", help="Skip interactive confirmation.")
+    cl_caches.add_argument("-v", "--verbose", action="store_true", help="Verbose logging.")
+
+    cl_cont = clean_sub.add_parser("containers", help="Prune Docker/Podman stores.")
+    cl_cont.add_argument("-P", "--provider", default="auto", choices=("auto", "docker", "podman"), help="Provider.")
+    cl_cont.add_argument("-d", "--dry-run", action="store_true", help="Preview actions only.")
+    cl_cont.add_argument("-y", "--yes", action="store_true", help="Skip interactive confirmation.")
+    cl_cont.add_argument("-v", "--verbose", action="store_true", help="Verbose logging.")
+
+    # wsl-reclaim and report keep as-is under disk
     d_wsl = disk_sub.add_parser("wsl-reclaim", help="Reclaim WSL disk space.")
     d_wsl.add_argument("-d", "--dry-run", action="store_true", help="Preview actions only.")
     d_wsl.add_argument("-y", "--yes", action="store_true", help="Skip interactive confirmation.")
     d_wsl.add_argument("-v", "--verbose", action="store_true", help="Verbose logging.")
 
-    # report
     d_report = disk_sub.add_parser("report", help="Emit JSON and Markdown disk report.")
-    d_report.add_argument("-p", "--path", default=None, help="Scan root path (default varies by platform).")
+    d_report.add_argument("-p", "--path", default=None, help="Scan root path.")
     d_report.add_argument("-n", "--top", type=int, default=50, help="Top N for largest files and heaviest dirs.")
     d_report.add_argument("-m", "--min-size", default=None, help="Minimum file size, e.g. 500M.")
     d_report.add_argument("-f", "--format", choices=("json", "md"), default="md", help="Output format.")
@@ -235,53 +258,150 @@ def main(argv: Sequence[str] | None = None) -> int:
         sysu = SystemUtils()
         dc = args.disk_cmd
 
-        if dc == "scan-largest":
-            items = diskspace.scan_largest_files(sysu, args.path, args.top, args.min_size)
-            if args.format == "json":
-                print(_json.dumps([{"path": i.path, "size_bytes": i.size_bytes} for i in items], indent=2))
-            elif args.format == "md":
-                for i in items:
-                    print(f"- {diskspace.format_bytes_binary(i.size_bytes)}  {i.path}")
-            else:
-                for i in items:
-                    print(f"{diskspace.format_bytes_binary(i.size_bytes):>10}  {i.path}")
-            return 0
+        if dc == "scan":
+            sc = args.scan_cmd
+            if sc is None:
+                # Full scan across largest, caches, containers
+                info = diskspace.run_full_scan(
+                    sysu,
+                    path=getattr(args, "path", None),
+                    top_n=getattr(args, "top", 50),
+                    min_size=getattr(args, "min_size", None),
+                    exts=getattr(args, "ext", None),
+                    globs=getattr(args, "glob", None),
+                    provider="auto",
+                    list_containers=True,
+                )
+                # Human-readable summary with subsections + overall total
+                lg = info["largest"]; ch = info["caches"]; ct = info["containers"]; ov = info["overall"]
+                print("== Largest Files ==")
+                for it in lg["items"][:min(10, lg["count"])]:
+                    print(f"{it['size_human']:>10}  {it['path']}")
+                if lg["count"] > 10:
+                    print(f"... and {lg['count']-10} more")
+                print(f"Total: {lg['total_human']} across {lg['count']} files\n")
 
-        if dc == "scan-caches":
-            found = diskspace.detect_common_caches(sysu, args.path)
-            if args.format == "json":
-                print(_json.dumps(found, indent=2))
-            else:
-                for k in sorted(found.keys()):
-                    vals = found[k]
-                    print(f"{k}: {len(vals)}")
-                    for v in vals[:10]:
-                        print(f"  - {v}")
-                    if len(vals) > 10:
-                        print("  - ...")
-            return 0
+                print("== Caches ==")
+                for k, v in sorted(ch["per_category_human"].items()):
+                    if v != "0 B":
+                        print(f"{k:12}: {v}  ({len(ch['detected'].get(k, []))} paths)")
+                print(f"Total: {ch['total_human']}\n")
+
+                print("== Containers ==")
+                if ct.get("running"):
+                    print("Running:")
+                    for line in ct["running"][:10]:
+                        print(f"  {line}")
+                    if len(ct["running"]) > 10:
+                        print("  ...")
+                if ct.get("all"):
+                    print("All:")
+                    for line in ct["all"][:10]:
+                        print(f"  {line}")
+                    if len(ct["all"]) > 10:
+                        print("  ...")
+                print(f"Estimated store size: {ct['store_human']}\n")
+
+                print(f"== Overall Total ==\n{ov['total_human']}")
+                return 0
+            if sc == "largest":
+                items = diskspace.scan_largest_files(sysu, args.path, args.top, args.min_size, exts=getattr(args, "ext", None), globs=getattr(args, "glob", None))
+                total = diskspace.summarize_total_size(items)
+                if args.format == "json":
+                    print(_json.dumps({
+                        "items": [{"path": i.path, "size_bytes": i.size_bytes} for i in items],
+                        "total_bytes": total,
+                        "total_human": diskspace.format_bytes_binary(total),
+                        "count": len(items),
+                    }, indent=2))
+                elif args.format == "md":
+                    for i in items:
+                        print(f"- {diskspace.format_bytes_binary(i.size_bytes)}  {i.path}")
+                    print(f"\nTotal: {diskspace.format_bytes_binary(total)} across {len(items)} files")
+                else:
+                    for i in items:
+                        print(f"{diskspace.format_bytes_binary(i.size_bytes):>10}  {i.path}")
+                    print(f"Total: {diskspace.format_bytes_binary(total)} across {len(items)} files")
+                return 0
+
+            if sc == "caches":
+                found = diskspace.detect_common_caches(sysu, args.path)
+                if args.format == "json":
+                    print(_json.dumps(found, indent=2))
+                else:
+                    for k in sorted(found.keys()):
+                        vals = found[k]
+                        print(f"{k}: {len(vals)}")
+                        for v in vals[:10]:
+                            print(f"  - {v}")
+                        if len(vals) > 10:
+                            print("  - ...")
+                return 0
+
+            if sc == "containers":
+                info = diskspace.containers_scan(sysu, args.provider, list_items=args.ls)
+                if args.ls:
+                    if info.get("running"):
+                        print("Running:")
+                        for line in info["running"]:
+                            print(f"  {line}")
+                    if info.get("all"):
+                        print("All:")
+                        for line in info["all"]:
+                            print(f"  {line}")
+                    if info.get("images"):
+                        print("Images:")
+                        for line in info["images"]:
+                            print(f"  {line}")
+                if info.get("system_df"):
+                    print("\nSystem usage:\n" + info["system_df"])
+                return 0
+
+            if sc == "space":
+                print(diskspace.space_summary(sysu))
+                return 0
 
         if dc == "clean":
-            if not args.yes:
-                resp = input("About to clean: %s. Proceed? [y/N] " % (", ".join(args.what)))
-                if resp.strip().lower() not in ("y", "yes"):
-                    print("Aborted.")
-                    return 0
-            actions = diskspace.clean_caches(sysu, args.what, dry_run=args.dry_run)
-            for line in actions:
-                print(line)
-            return 0
+            cl = args.clean_cmd
+            if cl == "largest":
+                dry = True if getattr(args, "dry_run", False) else True
+                if not args.yes:
+                    print("About to clean largest files (may be dry-run). Filters applied.")
+                    resp = input("Proceed? [y/N] ")
+                    if resp.strip().lower() not in ("y", "yes"):
+                        print("Aborted.")
+                        return 0
+                actions, count, total = diskspace.clean_largest(
+                    sysu, args.path, args.top, args.min_size,
+                    exts=getattr(args, "ext", None), globs=getattr(args, "glob", None), dry_run=dry,
+                )
+                for line in actions:
+                    print(line)
+                label = "Would delete" if dry else "Deleted"
+                print(f"{label} {count} files totaling {diskspace.format_bytes_binary(total)}")
+                return 0
 
-        if dc == "containers":
-            if not args.yes:
-                resp = input(f"About to prune {args.provider} containers. Proceed? [y/N] ")
-                if resp.strip().lower() not in ("y", "yes"):
-                    print("Aborted.")
-                    return 0
-            actions = diskspace.containers_maint(sysu, args.provider, dry_run=args.dry_run)
-            for line in actions:
-                print(line)
-            return 0
+            if cl == "caches":
+                if not args.yes:
+                    resp = input("About to clean caches: %s. Proceed? [y/N] " % (", ".join(args.what)))
+                    if resp.strip().lower() not in ("y", "yes"):
+                        print("Aborted.")
+                        return 0
+                actions = diskspace.clean_caches(sysu, args.what, dry_run=args.dry_run)
+                for line in actions:
+                    print(line)
+                return 0
+
+            if cl == "containers":
+                if not args.yes:
+                    resp = input(f"About to prune {args.provider} containers. Proceed? [y/N] ")
+                    if resp.strip().lower() not in ("y", "yes"):
+                        print("Aborted.")
+                        return 0
+                actions = diskspace.containers_maint(sysu, args.provider, dry_run=args.dry_run)
+                for line in actions:
+                    print(line)
+                return 0
 
         if dc == "wsl-reclaim":
             if not args.yes:
