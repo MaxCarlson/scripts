@@ -334,7 +334,7 @@ class InteractiveList:
                 continue  # Just redraw and continue
 
             # Quit handling
-            if key in (17,):  # Ctrl+Q immediate
+            if key in (17, ord('Q')):  # Ctrl+Q or uppercase Q => immediate
                 break
             # If awaiting confirmation, handle y/n
             if getattr(self.state, "confirm_quit", False):
