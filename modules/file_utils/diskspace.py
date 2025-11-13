@@ -323,19 +323,42 @@ def clean_caches(
 
     # APT & journal
     if any(c in cats for c in ("apt", "journals", "all")) and sysu.is_linux() and not sysu.is_termux():
-        run("APT clean", "apt-get clean && bash -lc 'rm -f /var/cache/apt/*pkgcache* || true' && rm -rf /var/lib/apt/lists/*", sudo=True)
-        run("Journal vacuum", "journalctl --vacuum-time=7d", sudo=True)
+        run("APT clean", "apt-get clean && rm -rf /var/lib/apt/lists/* 2>/dev/null || true", sudo=True)
+        run("Journal vacuum", "journalctl --vacuum-time=3d", sudo=True)
 
     # Build artifacts
     if any(c in cats for c in ("build", "all")):
         run(
             "Build artifacts",
-            r'find "$HOME" -maxdepth 6 -type d \( -name build -o -name dist -o -name .pytest_cache -o -name __pycache__ \) -prune -print0 | xargs -0 -r rm -rf --',
+            r'find "$HOME" -maxdepth 6 -type d \( -name build -o -name dist -o -name .pytest_cache -o -name __pycache__ -o -name node_modules \) -prune -print0 | xargs -0 -r rm -rf --',
         )
 
     # Git stores: aggressive gc
     if any(c in cats for c in ("git", "all")):
         run("Git GC", "find \"$HOME\" -type d -name .git -prune -print 2>/dev/null | sed 's|/\\.git$||' | xargs -r -I{} bash -lc 'cd \"{}\" && git gc --aggressive --prune=now || true'")
+
+    # Windows browser/app caches
+    if any(c in cats for c in ("browser", "all")) and sysu.is_windows():
+        ps = (
+            "pwsh -NoProfile -Command "
+            "$paths=@(" 
+            r"'$env:APPDATA\Microsoft\Teams\Cache',"
+            r"'$env:APPDATA\Microsoft\Teams\GPUCache',"
+            r"'$env:LOCALAPPDATA\Microsoft\Olk\EBWebView',"
+            r"'$env:LOCALAPPDATA\Microsoft\Edge\User Data\*\Cache',"
+            r"'$env:LOCALAPPDATA\Microsoft\Edge\User Data\*\Code Cache',"
+            r"'$env:LOCALAPPDATA\Microsoft\Edge\User Data\*\GPUCache',"
+            r"'$env:LOCALAPPDATA\Google\Chrome\User Data\*\Cache',"
+            r"'$env:LOCALAPPDATA\Google\Chrome\User Data\*\Code Cache',"
+            r"'$env:LOCALAPPDATA\Google\Chrome\User Data\*\GPUCache'"
+            "); "
+            "$paths | ForEach-Object { Get-ChildItem $_ -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue }"
+        )
+        run("Windows browser caches", ps)
+
+    # fstrim free blocks to backing store (Linux/WSL)
+    if any(c in cats for c in ("fstrim", "all")) and (sysu.is_linux() or sysu.is_wsl2()):
+        run("FSTRIM", "fstrim -av", sudo=True)
 
     return actions
 
@@ -581,6 +604,15 @@ def run_full_scan(
     cont_bytes = containers_store_size(sysu, provider)
 
     overall = largest_total + caches_total + cont_bytes
+    extra: Dict[str, Any] = {}
+    if sysu.is_windows():
+        # Host triage helpers
+        tri = {
+            "top_files": sysu.run_command("pwsh -NoProfile -Command \"Get-ChildItem C:\\ -File -Recurse -Force -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 40 @{n='GB';e={[math]::Round($_.Length/1GB,2)}}, FullName\""),
+            "per_root": sysu.run_command("pwsh -NoProfile -Command \"$roots = 'C:\\Users','C:\\ProgramData','C:\\Program Files','C:\\Program Files (x86)','C:\\Windows'; foreach($r in $roots){ try{ $sum = (Get-ChildItem $r -Recurse -Force -ErrorAction SilentlyContinue -File | Measure-Object Length -Sum).Sum; '{0,-28}  {1,8:N2} GB' -f $r, ($sum/1GB) }catch{} }\""),
+            "per_user": sysu.run_command("pwsh -NoProfile -Command \"Get-ChildItem 'C:\\Users' -Directory -ErrorAction SilentlyContinue | ForEach-Object { $p=$_.FullName; try{ $sz=(Get-ChildItem $p -Recurse -Force -ErrorAction SilentlyContinue -File | Measure-Object Length -Sum).Sum; [pscustomobject]@{ GB=[math]::Round($sz/1GB,2); Path=$p } }catch{} } | Sort-Object GB -Descending | Select-Object -First 10\""),
+        }
+        extra["windows_triage"] = tri
     return {
         "largest": {
             "items": [{"path": i.path, "size_bytes": i.size_bytes, "size_human": format_bytes_binary(i.size_bytes)} for i in largest],
@@ -608,4 +640,5 @@ def run_full_scan(
             "total_bytes": overall,
             "total_human": format_bytes_binary(overall),
         },
+        **extra,
     }
