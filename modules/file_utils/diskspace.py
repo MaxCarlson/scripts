@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from cross_platform.system_utils import SystemUtils
+import shutil as _sh
 import shutil
 from cross_platform.size_utils import parse_size_to_bytes, format_bytes_binary
 
@@ -93,7 +94,7 @@ def scan_largest_files(
     entries: List[FileEntry] = []
     if sysu.is_windows():
         # PowerShell via -EncodedCommand to avoid cmd.exe pipe parsing
-        ps = shutil.which("pwsh") or shutil.which("powershell") or "pwsh"  # type: ignore
+        ps = _sh.which("pwsh") or _sh.which("powershell") or "pwsh"  # type: ignore
         script = (
             f"$root=\"{str(root)}\"; $min={min_bytes}; "
             "Get-ChildItem -LiteralPath $root -File -Recurse -ErrorAction SilentlyContinue | "
@@ -102,7 +103,7 @@ def scan_largest_files(
         )
         import base64 as _b64
         encoded = _b64.b64encode(script.encode("utf-16le")).decode("ascii")
-        cmd = f"{ps} -NoProfile -EncodedCommand {encoded}"
+        cmd = f'"{ps}" -NoProfile -EncodedCommand {encoded}'
         out = sysu.run_command(cmd)
         try:
             data = json.loads(out) if out else []
@@ -147,7 +148,6 @@ def scan_heaviest_dirs(sysu: SystemUtils, path: Optional[str], top_n: int) -> Li
     logger.debug("scan_heaviest_dirs: root=%s top_n=%s", root, top_n)
 
     if sysu.is_windows():
-        import shutil as _sh
         import base64 as _b64
         ps = _sh.which("pwsh") or _sh.which("powershell") or "pwsh"
         script = (
@@ -157,7 +157,7 @@ def scan_heaviest_dirs(sysu: SystemUtils, path: Optional[str], top_n: int) -> Li
             f"Sort-Object SizeBytes -Descending | Select-Object -First {max(1, top_n)} Path,SizeBytes | ConvertTo-Json"
         )
         enc = _b64.b64encode(script.encode("utf-16le")).decode("ascii")
-        out = sysu.run_command(f"{ps} -NoProfile -EncodedCommand {enc}")
+        out = sysu.run_command(f'"{ps}" -NoProfile -EncodedCommand {enc}')
         try:
             data = json.loads(out) if out else []
             if isinstance(data, dict):
@@ -347,22 +347,23 @@ def clean_caches(
 
     # Windows browser/app caches
     if any(c in cats for c in ("browser", "all")) and sysu.is_windows():
-        ps = (
-            "pwsh -NoProfile -Command "
+        ps = _sh.which("pwsh") or _sh.which("powershell") or "pwsh"
+        script = (
             "$paths=@(" 
-            r"'$env:APPDATA\Microsoft\Teams\Cache',"
-            r"'$env:APPDATA\Microsoft\Teams\GPUCache',"
-            r"'$env:LOCALAPPDATA\Microsoft\Olk\EBWebView',"
-            r"'$env:LOCALAPPDATA\Microsoft\Edge\User Data\*\Cache',"
-            r"'$env:LOCALAPPDATA\Microsoft\Edge\User Data\*\Code Cache',"
-            r"'$env:LOCALAPPDATA\Microsoft\Edge\User Data\*\GPUCache',"
-            r"'$env:LOCALAPPDATA\Google\Chrome\User Data\*\Cache',"
-            r"'$env:LOCALAPPDATA\Google\Chrome\User Data\*\Code Cache',"
-            r"'$env:LOCALAPPDATA\Google\Chrome\User Data\*\GPUCache'"
-            "); "
-            "$paths | ForEach-Object { Get-ChildItem $_ -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue }"
+            "$env:APPDATA\\Microsoft\\Teams\\Cache,"
+            "$env:APPDATA\\Microsoft\\Teams\\GPUCache,"
+            "$env:LOCALAPPDATA\\Microsoft\\Olk\\EBWebView,"
+            "$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\*\\Cache,"
+            "$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\*\\Code Cache,"
+            "$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\*\\GPUCache,"
+            "$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\*\\Cache,"
+            "$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\*\\Code Cache,"
+            "$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\*\\GPUCache" 
+            "); $paths | ForEach-Object { Get-ChildItem $_ -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue }"
         )
-        run("Windows browser caches", ps)
+        import base64 as _b64
+        enc = _b64.b64encode(script.encode("utf-16le")).decode("ascii")
+        run("Windows browser caches", f'"{ps}" -NoProfile -EncodedCommand {enc}')
 
     # fstrim free blocks to backing store (Linux/WSL)
     if any(c in cats for c in ("fstrim", "all")) and (sysu.is_linux() or sysu.is_wsl2()):
@@ -617,11 +618,11 @@ def run_full_scan(
     overall = largest_total + caches_total + cont_bytes
     extra: Dict[str, Any] = {}
     if sysu.is_windows():
-        ps = shutil.which("pwsh") or shutil.which("powershell") or "pwsh"  # type: ignore
+        ps = _sh.which("pwsh") or _sh.which("powershell") or "pwsh"  # type: ignore
         import base64 as _b64
         def run_ps(script: str) -> str:
             enc = _b64.b64encode(script.encode("utf-16le")).decode("ascii")
-            return sysu.run_command(f"{ps} -NoProfile -EncodedCommand {enc}")
+            return sysu.run_command(f'"{ps}" -NoProfile -EncodedCommand {enc}')
 
         tri = {
             "top_files": run_ps("Get-ChildItem C:\\ -File -Recurse -Force -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 40 @{n='GB';e={[math]::Round($_.Length/1GB,2)}}, FullName"),
