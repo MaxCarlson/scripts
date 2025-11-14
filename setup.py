@@ -567,7 +567,8 @@ def main():
     elif env_scripts:
         scripts_dir = Path(env_scripts)
     else:
-        scripts_dir = Path.home() / "scripts"
+        # Default to the directory containing this setup.py script
+        scripts_dir = SCRIPTS_DIR
 
     if args.dotfiles_dir:
         dotfiles_dir = args.dotfiles_dir
@@ -666,6 +667,23 @@ def main():
         run_setup(SCRIPTS_SETUP_PACKAGE_DIR / "setup_pwsh_profile.py",
                   "--scripts-dir", str(scripts_dir),
                   "--dotfiles-dir", str(dotfiles_dir))
+
+    # Setup automatic venv activation
+    with sui_section("Virtual environment auto-activation setup", level="major"):
+        try:
+            from python_setup.venv_activation import setup_auto_activation
+            ps_changed, bash_changed = setup_auto_activation(dotfiles_dir, verbose=args.verbose)
+            if ps_changed or bash_changed:
+                log_success("Auto-activation configured for Python venvs")
+                if ps_changed:
+                    log_info(f"PowerShell: source {dotfiles_dir / 'dynamic' / 'venv_auto_activation.ps1'} in your profile")
+                if bash_changed:
+                    log_info(f"Bash/Zsh: source {dotfiles_dir / 'dynamic' / 'venv_auto_activation.sh'} in your rc file")
+            else:
+                status_line("Auto-activation already configured", "unchanged")
+        except Exception as e:
+            log_warning(f"Could not setup venv auto-activation: {e}")
+            log_info("You can manually run: setup-venv-activation -D /path/to/dotfiles")
 
     try:
         print_global_elapsed()
