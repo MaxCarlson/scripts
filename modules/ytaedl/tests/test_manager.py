@@ -32,6 +32,8 @@ class TestManager:
         assert args.time_limit == -1
         assert args.max_ndjson_rate == 5.0
         assert args.max_resolution is None
+        assert args.download_root == "./stars"
+        assert args.url_random_order is False
 
         assert args.proxy_dl_location is None
 
@@ -139,7 +141,7 @@ class TestManager:
             str(stars_dir),
             "--aebn-dir",
             str(ae_dir),
-            "--url-media-dir",
+            "--download-root",
             str(media_dir),
             "--finished-log",
             str(finished_log),
@@ -164,7 +166,14 @@ class TestManager:
 
         assert result == 0
         assert mock_popen.call_args_list, "Worker was never started"
-        assigned_files = [Path(call.args[0][3]).name for call in mock_popen.call_args_list]
+        assigned_files = []
+        for call in mock_popen.call_args_list:
+            cmd = call.args[0]
+            if "-f" in cmd:
+                assigned_files.append(Path(cmd[cmd.index("-f") + 1]).name)
+            if "-o" in cmd:
+                output_dir = Path(cmd[cmd.index("-o") + 1])
+                assert output_dir.parent == media_dir
         assert "pending.txt" in assigned_files
         assert "complete.txt" not in assigned_files
 
@@ -401,7 +410,11 @@ class TestStartWorker:
 
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
-                log_dir = Path(tmpdir)
+                tmp_path = Path(tmpdir)
+                log_dir = tmp_path / "logs"
+                log_dir.mkdir()
+                canonical_root = tmp_path / "downloads"
+                canonical_root.mkdir()
                 urlfile = Path(temp_path)
 
                 # Mock the downloader script to avoid actually running it
@@ -412,6 +425,7 @@ class TestStartWorker:
                     proc = manager._start_worker(
                         slot=1,
                         urlfile=urlfile,
+                        canonical_root=canonical_root,
                         max_rate=5.0,
                         quiet=True,
                         archive_dir=None,
@@ -444,9 +458,13 @@ class TestStartWorker:
 
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
-                log_dir = Path(tmpdir)
-                archive_dir = Path(tmpdir) / "archive"
+                tmp_root = Path(tmpdir)
+                log_dir = tmp_root / "logs"
+                log_dir.mkdir()
+                archive_dir = tmp_root / "archive"
                 urlfile = Path(temp_path)
+                canonical_root = tmp_root / "downloads"
+                canonical_root.mkdir()
 
                 with patch("subprocess.Popen") as mock_popen:
                     mock_process = MagicMock()
@@ -455,6 +473,7 @@ class TestStartWorker:
                     proc = manager._start_worker(
                         slot=2,
                         urlfile=urlfile,
+                        canonical_root=canonical_root,
                         max_rate=10.0,
                         quiet=False,
                         archive_dir=archive_dir,

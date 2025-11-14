@@ -154,9 +154,13 @@ def test_manager_start_worker_propagates_proxy_flag(monkeypatch, tmp_path):
 
     monkeypatch.setattr(manager.subprocess, "Popen", lambda cmd, **_: captured_cmd.append(cmd) or fake_proc)
 
+    canonical_root = tmp_path / "downloads"
+    canonical_root.mkdir()
+
     proc = manager._start_worker(
         slot=1,
         urlfile=url_file,
+        canonical_root=canonical_root,
         max_rate=5.0,
         quiet=False,
         archive_dir=None,
