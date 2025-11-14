@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from file_utils import diskspace
+import shutil as _sh
 
 
 class WinSys:
@@ -22,9 +23,14 @@ class WinSys:
 
 def test_windows_largest_uses_encodedcommand_and_parses():
     ws = WinSys()
+    # Simulate pwsh path with spaces
+    old = diskspace._sh.which
+    diskspace._sh.which = lambda exe: r"C:\Program Files\PowerShell\7\pwsh.exe" if exe in ("pwsh","powershell") else None
     items = diskspace.scan_largest_files(ws, "C:/Users", top_n=1, min_size=None)
     assert any("-EncodedCommand" in c for c in ws.last_cmds)
+    assert any(c.startswith('"C:\\Program Files') for c in ws.last_cmds)
     assert items and items[0].path.endswith("big.bin")
+    diskspace._sh.which = old
 
 
 def test_windows_heaviest_dirs_uses_encodedcommand_and_parses():
