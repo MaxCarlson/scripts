@@ -1,137 +1,140 @@
-.F.........................F.s....                                       [100%]
+.............................Fs....                                      [100%]
 ================================== FAILURES ===================================
-___________________ test_cli_parses_and_runs_plain_progress ___________________
+________________ test_terminfo_fallback_sets_env_and_recovers _________________
 
-self = ArgumentParser(prog='termdash', usage=None, description='TermDash CLI demos', formatter_class=<class 'argparse.HelpFormatter'>, conflict_handler='error', add_help=True)
-args = ['progress', '--plain', '--total', '5', '--interval', '0', ...]
-namespace = Namespace(cmd=None), intermixed = False
+args = (), kwargs = {}
 
-    def _parse_known_args2(self, args, namespace, intermixed):
-        if args is None:
-            # args default to the system args
-            args = _sys.argv[1:]
-        else:
-            # make sure that args are mutable
-            args = list(args)
-    
-        # default Namespace built from parser defaults
-        if namespace is None:
-            namespace = Namespace()
-    
-        # add any action defaults that aren't present
-        for action in self._actions:
-            if action.dest is not SUPPRESS:
-                if not hasattr(namespace, action.dest):
-                    if action.default is not SUPPRESS:
-                        setattr(namespace, action.dest, action.default)
-    
-        # add any parser defaults that aren't present
-        for dest in self._defaults:
-            if not hasattr(namespace, dest):
-                setattr(namespace, dest, self._defaults[dest])
-    
-        # parse the arguments and exit if there are any errors
-        if self.exit_on_error:
-            try:
->               namespace, args = self._parse_known_args(args, namespace, intermixed)
-                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    def fake_setupterm(*args, **kwargs):
+        calls["count"] += 1
+        # First two attempts fail; third succeeds
+        if calls["count"] < 3:
+>           raise Exception("no terminfo")
+E           Exception: no terminfo
 
-..\..\AppData\Local\Programs\Python\Python313\Lib\argparse.py:1937: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
-..\..\AppData\Local\Programs\Python\Python313\Lib\argparse.py:2169: in _parse_known_args
-    positionals_end_index = consume_positionals(start_index)
-                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-..\..\AppData\Local\Programs\Python\Python313\Lib\argparse.py:2144: in consume_positionals
-    take_action(action, args)
-..\..\AppData\Local\Programs\Python\Python313\Lib\argparse.py:1998: in take_action
-    argument_values = self._get_values(action, argument_strings)
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-..\..\AppData\Local\Programs\Python\Python313\Lib\argparse.py:2528: in _get_values
-    self._check_value(action, value[0])
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
-
-self = ArgumentParser(prog='termdash', usage=None, description='TermDash CLI demos', formatter_class=<class 'argparse.HelpFormatter'>, conflict_handler='error', add_help=True)
-action = _SubParsersAction(option_strings=[], dest='cmd', nargs='A...', const=None, default=None, type=None, choices={'multista...e.HelpFormatter'>, conflict_handler='error', add_help=True)}, required=True, help=None, metavar=None, deprecated=False)
-value = 'progress'
-
-    def _check_value(self, action, value):
-        # converted value must be one of the choices (if specified)
-        choices = action.choices
-        if choices is not None:
-            if isinstance(choices, str):
-                choices = iter(choices)
-            if value not in choices:
-                args = {'value': str(value),
-                        'choices': ', '.join(map(str, action.choices))}
-                msg = _('invalid choice: %(value)r (choose from %(choices)s)')
->               raise ArgumentError(action, msg % args)
-E               argparse.ArgumentError: argument cmd: invalid choice: 'progress' (choose from multistats, threads, seemake, stats)
-
-..\..\AppData\Local\Programs\Python\Python313\Lib\argparse.py:2578: ArgumentError
+modules\termdash\tests\terminfo_fallback_test.py:26: Exception
 
 During handling of the above exception, another exception occurred:
 
-capsys = <_pytest.capture.CaptureFixture object at 0x000002442F27DA90>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002308BFC79B0>
 
-    def test_cli_parses_and_runs_plain_progress(capsys):
-        parser = build_parser()
->       ns = parser.parse_args(["progress", "--plain", "--total", "5", "--interval", "0", "--width", "10"])
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    def test_terminfo_fallback_sets_env_and_recovers(monkeypatch):
+        # Ensure stdio looks like a TTY
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    
+        calls = {"count": 0}
+    
+        real_setupterm = curses.setupterm
+    
+        def fake_setupterm(*args, **kwargs):
+            calls["count"] += 1
+            # First two attempts fail; third succeeds
+            if calls["count"] < 3:
+                raise Exception("no terminfo")
+            return real_setupterm(*args, **kwargs)
+    
+        monkeypatch.setattr(curses, "setupterm", fake_setupterm)
+    
+        # Pick a known-good TERM
+        monkeypatch.setenv("TERM", "xterm-256color")
+        # Clear TERMINFO_DIRS to let fallback set it
+        if "TERMINFO_DIRS" in os.environ:
+            monkeypatch.delenv("TERMINFO_DIRS", raising=False)
+    
+        # Create a minimal InteractiveList (won't run the UI in this test)
+        il = InteractiveList(items=[], sorters={"name": lambda x: x}, formatter=lambda *a, **k: "", filter_func=lambda i, p: True)
+    
+        # Call the readiness check directly; it should attempt TERMINFO_DIRS fallback and not raise
+>       il._ensure_terminal_ready()
 
-modules\termdash\tests\cli_test.py:9: 
+modules\termdash\tests\terminfo_fallback_test.py:41: 
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
-..\..\AppData\Local\Programs\Python\Python313\Lib\argparse.py:1898: in parse_args
-    args, argv = self.parse_known_args(args, namespace)
-                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-..\..\AppData\Local\Programs\Python\Python313\Lib\argparse.py:1908: in parse_known_args
-    return self._parse_known_args2(args, namespace, intermixed=False)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-..\..\AppData\Local\Programs\Python\Python313\Lib\argparse.py:1939: in _parse_known_args2
-    self.error(str(err))
-..\..\AppData\Local\Programs\Python\Python313\Lib\argparse.py:2658: in error
-    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
-self = ArgumentParser(prog='termdash', usage=None, description='TermDash CLI demos', formatter_class=<class 'argparse.HelpFormatter'>, conflict_handler='error', add_help=True)
-status = 2
-message = "termdash: error: argument cmd: invalid choice: 'progress' (choose from multistats, threads, seemake, stats)\n"
+self = <termdash.interactive_list.InteractiveList object at 0x000002308BF97110>
 
-    def exit(self, status=0, message=None):
-        if message:
-            self._print_message(message, _sys.stderr)
->       _sys.exit(status)
-E       SystemExit: 2
+    def _ensure_terminal_ready(self) -> None:
+        """Validate that a TTY and terminfo database are available.
+    
+        This is stricter than a mere 'curses' import: it checks that stdin/stdout
+        are TTYs and that the terminfo database can be initialized. It avoids
+        running `curses.wrapper(...)` only to crash with a cryptic error.
+        """
+        # Ensure we are attached to an interactive terminal.
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            sys.stderr.write(
+                "An interactive terminal (TTY) is required for the TUI.\n"
+                "Run this command directly in a terminal, or use a non-TUI mode (e.g., --json).\n"
+            )
+            raise SystemExit(2)
+    
+        # Attempt to initialize terminfo if supported by the platform.
+        # Some Windows curses builds might not expose setupterm; guard accordingly.
+        if hasattr(curses, "setupterm"):
+            try:
+                curses.setupterm()
+            except Exception as e:  # pragma: no cover - platform dependent
+                # Try safe fallbacks for TERM if a specific entry is missing.
+                current_term = os.environ.get("TERM", "unknown")
+                for fallback_term in ("xterm-256color", "screen-256color"):
+                    if current_term == fallback_term:
+                        continue
+                    try:
+                        os.environ["TERM"] = fallback_term
+                        curses.setupterm()
+                        sys.stderr.write(
+                            f"Warning: TERM={current_term} failed; using TERM={fallback_term} as a fallback.\n"
+                        )
+                        break
+                    except Exception:
+                        continue
+                else:
+                    # No TERM fallback worked — try to set TERMINFO_DIRS to common locations and retry.
+                    candidates = [
+                        "/usr/share/terminfo",
+                        "/lib/terminfo",
+                        "/usr/lib/terminfo",
+                        "/data/data/com.termux/files/usr/share/terminfo",
+                    ]
+                    existing = os.environ.get("TERMINFO_DIRS", "")
+                    probe_dirs = [d for d in candidates if os.path.isdir(d)]
+                    if probe_dirs:
+                        merged = ":".join([p for p in [existing] if p] + probe_dirs)
+                        os.environ["TERMINFO_DIRS"] = merged
+                        try:
+                            curses.setupterm()
+                            sys.stderr.write(
+                                f"Warning: terminfo database not found initially; set TERMINFO_DIRS={merged} and continued.\n"
+                            )
+                            return
+                        except Exception:
+                            pass
+                    # Still failing — provide actionable guidance and exit.
+                    term = current_term
+                    sys.stderr.write(
+                        "Unable to initialize terminal capabilities (terminfo).\n"
+                        f"TERM={term}. Error: {e}\n"
+                        "Install the terminfo database for your system. Examples:\n"
+                        "  - Debian/Ubuntu: sudo apt-get install ncurses-term\n"
+                        "  - Fedora:        sudo dnf install ncurses-term\n"
+                        "  - Arch:          sudo pacman -S ncurses\n"
+                        "  - Termux:        pkg install ncurses\n"
+                        "Alternatively, export TERMINFO_DIRS to the correct terminfo path.\n"
+                        "Then re-run this command, or use a non-TUI mode (e.g., --json).\n"
+                    )
+>                   raise SystemExit(2)
+E                   SystemExit: 2
 
-..\..\AppData\Local\Programs\Python\Python313\Lib\argparse.py:2645: SystemExit
+modules\termdash\interactive_list.py:294: SystemExit
 ---------------------------- Captured stderr call -----------------------------
-usage: termdash [-h] {multistats,threads,seemake,stats} ...
-termdash: error: argument cmd: invalid choice: 'progress' (choose from multistats, threads, seemake, stats)
-_______________________ test_simpleboard_add_and_update _______________________
-
-    def test_simpleboard_add_and_update():
-        b = SimpleBoard(title="T")
-        # row with two stats
-        b.add_row("r1",
-            Stat("done", 0, prefix="Done: "),
-            Stat("total", 10, prefix="Total: "),
-        )
-        # bar bound to stat values
-        pb = ProgressBar("bar", total=10, width=18)
-        pb.bind(current_fn=lambda: b.read_stat("r1", "done"), total_fn=lambda: b.read_stat("r1", "total"))
-        b.add_row("r2", pb.cell())
-    
-        # mutate and read back
-        b.update("r1", "done", 4)
-        assert b.read_stat("r1", "done") == 4
-    
-        # render the bar cell and ensure it's width-stable
-        rendered = pb.cell().render()
-        # markers are present (width hint + NOEXPAND markers)
->       assert "[W18]" in rendered
-E       AssertionError: assert '[W18]' in '\\x1e[\u2588\u2588\u2588\u2588\u2588\u2588 40%\xb7\xb7\xb7\xb7\xb7\xb7]\\x1f'
-
-modules\termdash\tests\simpleboard_test.py:27: AssertionError
+Unable to initialize terminal capabilities (terminfo).
+TERM=xterm-256color. Error: no terminfo
+Install the terminfo database for your system. Examples:
+  - Debian/Ubuntu: sudo apt-get install ncurses-term
+  - Fedora:        sudo dnf install ncurses-term
+  - Arch:          sudo pacman -S ncurses
+  - Termux:        pkg install ncurses
+Alternatively, export TERMINFO_DIRS to the correct terminfo path.
+Then re-run this command, or use a non-TUI mode (e.g., --json).
 =========================== short test summary info ===========================
-FAILED modules\termdash\tests\cli_test.py::test_cli_parses_and_runs_plain_progress
-FAILED modules\termdash\tests\simpleboard_test.py::test_simpleboard_add_and_update
-2 failed, 31 passed, 1 skipped in 0.34s
+FAILED modules\termdash\tests\terminfo_fallback_test.py::test_terminfo_fallback_sets_env_and_recovers
+1 failed, 33 passed, 1 skipped in 0.21s

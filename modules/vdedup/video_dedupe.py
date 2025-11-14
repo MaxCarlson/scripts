@@ -579,6 +579,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                          help="Per-frame Hamming distance threshold for pHash matching (default: 12)")
     advanced.add_argument("-s", "--subset-min-ratio", type=float, default=0.30,
                          help="Minimum duration ratio (short/long) for subset detection (default: 0.30)")
+    advanced.add_argument(
+        "-A", "--include-partials",
+        action="store_true",
+        help="Include partial/incomplete downloads (.part, .partial, .tmp, .crdownload) during scan (default: skip them)",
+    )
 
     return p.parse_args(argv)
 
@@ -952,6 +957,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         subset_min_ratio=getattr(args, 'subset_min_ratio', 0.30),
         subset_frame_threshold=max(getattr(args, 'phash_threshold', 12), 12),
         gpu=bool(args.gpu),
+        include_partials=bool(getattr(args, "include_partials", False)),
     )
 
     logger.info(f"Pipeline configuration: threads={cfg.threads}, GPU={cfg.gpu}, subset_detect={cfg.subset_detect}")

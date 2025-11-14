@@ -180,3 +180,121 @@ def phash_distance(sig_a: Sequence[int], sig_b: Sequence[int]) -> int:
         x = int(a) ^ int(b)
         dist += x.bit_count() if hasattr(int, "bit_count") else bin(x).count("1")
     return dist
+
+
+def compute_scene_fingerprint(
+    path: Path,
+    max_scenes: int = 24,
+    scene_threshold: float = 0.35,
+    *,
+    gpu: bool = False,
+) -> Optional[Tuple[int, ...]]:
+    """
+    Build scene-level perceptual hashes to enable coarse similarity comparisons.
+    Returns a tuple of pHash integers, one per detected scene boundary.
+    """
+    try:
+        from PIL import Image
+        import imagehash
+        import tempfile
+    except Exception:
+        return None
+
+    threshold = max(0.05, min(scene_threshold, 1.0))
+    max_scenes = max(4, max_scenes)
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output = Path(tmp_dir) / "scene_%05d.png"
+            cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
+            if gpu:
+                cmd.extend(["-hwaccel", "cuda"])
+            cmd += [
+                "-i",
+                str(path),
+                "-vf",
+                f"select=gt(scene\\,{threshold:.2f}),scale=96:96",
+                "-vsync",
+                "vfr",
+                "-frames:v",
+                str(max_scenes),
+                str(output),
+            ]
+            result = subprocess.run(cmd, capture_output=True)
+            if result.returncode != 0:
+                return None
+
+            sig: List[int] = []
+            for frame in sorted(Path(tmp_dir).glob("scene_*.png")):
+                if len(sig) >= max_scenes:
+                    break
+                try:
+                    with Image.open(frame) as img:
+                        h = imagehash.phash(img)
+                        sig.append(int(str(h), 16))
+                except Exception:
+                    continue
+
+            if len(sig) < 2:
+                return None
+            return tuple(sig)
+    except Exception:
+        return None
+
+
+def compute_timeline_signature(
+    path: Path,
+    fps: float = 2.0,
+    max_frames: int = 120,
+    *,
+    gpu: bool = False,
+) -> Optional[Tuple[int, ...]]:
+    """
+    Produce a dense timeline fingerprint by sampling frames at a fixed FPS.
+    Useful for motion-aware duplicate detection and subset alignment.
+    """
+    try:
+        from PIL import Image
+        import imagehash
+        import tempfile
+    except Exception:
+        return None
+
+    fps = max(0.25, min(fps, 10.0))
+    max_frames = max(10, max_frames)
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output = Path(tmp_dir) / "timeline_%05d.png"
+            cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
+            if gpu:
+                cmd.extend(["-hwaccel", "cuda"])
+            cmd += [
+                "-i",
+                str(path),
+                "-vf",
+                f"fps={fps:.2f},scale=64:64",
+                "-frames:v",
+                str(max_frames),
+                str(output),
+            ]
+            result = subprocess.run(cmd, capture_output=True)
+            if result.returncode != 0:
+                return None
+
+            sig: List[int] = []
+            for frame in sorted(Path(tmp_dir).glob("timeline_*.png")):
+                if len(sig) >= max_frames:
+                    break
+                try:
+                    with Image.open(frame) as img:
+                        h = imagehash.phash(img)
+                        sig.append(int(str(h), 16))
+                except Exception:
+                    continue
+
+            if len(sig) < max(6, max_frames // 8):
+                return None
+            return tuple(sig)
+    except Exception:
+        return None

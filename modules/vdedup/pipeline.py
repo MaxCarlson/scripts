@@ -68,6 +68,8 @@ class PipelineConfig:
     subset_frame_threshold: int = 14
     # gpu hint for pHash
     gpu: bool = False
+    # artifact handling
+    include_partials: bool = False
 
 
 def parse_pipeline(spec: Optional[str]) -> List[int]:
@@ -117,10 +119,39 @@ def parse_pipeline(spec: Optional[str]) -> List[int]:
 # -------------------------------------------------------------------------------------------------
 
 _VIDEO_EXT = {".mp4", ".mkv", ".mov", ".avi", ".wmv", ".flv", ".webm", ".m4v"}
+_ARTIFACT_SUFFIXES = (
+    ".part",
+    ".partial",
+    ".download",
+    ".crdownload",
+    ".tmp",
+    ".ytdl",
+    ".aria2",
+    ".f4v_frag",
+)
+_ARTIFACT_INFIXES = (
+    ".part.",
+    ".partial.",
+    ".download.",
+    ".crdownload.",
+    ".tmp.",
+    ".ytdl.",
+    ".aria2.",
+)
 
 
 def _is_video_suffix(p: Path) -> bool:
     return p.suffix.lower() in _VIDEO_EXT
+
+
+def _looks_like_artifact(path: Path) -> bool:
+    """Return True if the path name suggests a partial/incomplete download."""
+    name = path.name.lower()
+    if any(name.endswith(suf) for suf in _ARTIFACT_SUFFIXES):
+        return True
+    if any(marker in name for marker in _ARTIFACT_INFIXES):
+        return True
+    return False
 
 
 def _iter_files(root: Path, patterns: Optional[Sequence[str]], max_depth: Optional[int]) -> Iterator[Path]:
@@ -297,6 +328,38 @@ def _alignable_distance(a_sig, b_sig, per_frame_thresh: int) -> Optional[float]:
     return best_distance if (best_distance is not None and best_distance <= adaptive_threshold) else None
 
 
+def _normalized_path(path: Path) -> Path:
+    """Normalize paths for consistent set membership."""
+    try:
+        return path.expanduser().resolve()
+    except Exception:
+        return path
+
+
+def _effective_length(meta: VideoMeta) -> float:
+    """
+    Approximate comparable length for duration-based heuristics.
+    Falls back to file size (MiB) when duration is unavailable.
+    """
+    if meta.duration and meta.duration > 0:
+        return float(meta.duration)
+    return max(1.0, float(meta.size) / float(1024 * 1024))
+
+
+def _avg_signature_distance(sig_a: Sequence[int], sig_b: Sequence[int]) -> float:
+    """Return average bit distance between two equal-length signatures."""
+    if not sig_a or not sig_b:
+        return float("inf")
+    count = min(len(sig_a), len(sig_b))
+    if count == 0:
+        return float("inf")
+    total = 0
+    for a, b in zip(sig_a[:count], sig_b[:count]):
+        x = int(a) ^ int(b)
+        total += x.bit_count() if hasattr(int, "bit_count") else bin(x).count("1")
+    return total / count
+
+
 # -------------------------------------------------------------------------------------------------
 # Main pipeline
 # -------------------------------------------------------------------------------------------------
@@ -372,6 +435,8 @@ def run_pipeline(
 
     files: List[Path] = []
     skipped_during_enum = 0
+    artifact_skipped = 0
+    discovery_bytes = 0
     for index, scan_root in enumerate(scan_roots, start=1):
         logger.info("=== File enumeration starting for root %d/%d: %s (patterns: %s, max_depth: %s) ===",
                     index, len(scan_roots), scan_root, patterns, max_depth)
@@ -393,11 +458,23 @@ def run_pipeline(
                 if skip_norm and resolved in skip_norm:
                     skipped_during_enum += 1
                     continue
+                if not cfg.include_partials and _looks_like_artifact(path):
+                    artifact_skipped += 1
+                    continue
                 files.append(path)
+                try:
+                    discovery_bytes += path.stat().st_size
+                except Exception:
+                    pass
 
                 # Frequent UI updates for better responsiveness
                 if len(files) % 50 == 0:
-                    reporter.update_discovery(len(files), skipped=skipped_during_enum)
+                    reporter.update_discovery(
+                        len(files),
+                        skipped=skipped_during_enum,
+                        artifacts=artifact_skipped,
+                        bytes_total=discovery_bytes,
+                    )
 
                 # Log progress every 500 files
                 if len(files) % 500 == 0:
@@ -419,56 +496,80 @@ def run_pipeline(
             logger.error(f"Root progress update failed: {e}")
             raise
 
-    reporter.update_discovery(len(files), skipped=skipped_during_enum)
+    reporter.update_discovery(
+        len(files),
+        skipped=skipped_during_enum,
+        artifacts=artifact_skipped,
+        bytes_total=discovery_bytes,
+    )
     logger.info(
-        "File enumeration completed across %d root(s). Found %d files (skipped %d excluded paths).",
+        "File enumeration completed across %d root(s). Found %d files (skipped %d excluded paths, %d artifacts).",
         len(scan_roots),
         len(files),
         skipped_during_enum,
+        artifact_skipped,
     )
 
     reporter.set_total_files(len(files))
     reporter.update_root_progress(current=None, completed=len(scan_roots), total=len(scan_roots))
+    reporter.finish_stage("discovering files")
     reporter.start_stage("scanning files", total=len(files))
     reporter.set_status("Scanning files for metadata")
+    reporter.update_stage_metrics("scanning files", queued=f"{len(files):,}")
     logger.info(f"Starting scanning stage with {cfg.threads} threads")
 
     metas: List[FileMeta] = []
     by_size: Dict[int, List[FileMeta]] = defaultdict(list)
 
-    def scan_one(p: Path) -> None:
-        # Avoid problematic blocking calls in thread workers
-        # Skip: reporter.wait_if_paused() and reporter.should_quit() to prevent deadlocks
+    def scan_one(p: Path) -> FileMeta:
         try:
             st = p.stat()
-            fm = FileMeta(path=p, size=int(st.st_size), mtime=float(st.st_mtime))
+            return FileMeta(path=p, size=int(st.st_size), mtime=float(st.st_mtime))
         except Exception:
-            fm = FileMeta(path=p, size=0, mtime=0.0)
-        metas.append(fm)
-        by_size[fm.size].append(fm)
-        # Safe call: simple counter increment - test without exception handling
-        reporter.inc_scanned(1, bytes_added=fm.size, is_video=_is_video_suffix(p))
+            return FileMeta(path=p, size=0, mtime=0.0)
+
+    total_bytes = 0
+    video_bytes = 0
 
     if files:
-        # SIMPLIFIED: Use single-threaded processing for complete reliability
-        logger.info(f"Starting metadata scan of {len(files):,} files")
-        for i, file_path in enumerate(files):
-            scan_one(file_path)
+        logger.info(f"Starting metadata scan of {len(files):,} files across {cfg.threads} thread(s)")
 
-            # Update UI periodically (every 50 files for responsiveness)
-            if i % 50 == 0:
-                reporter.update_progress_periodically(i + 1, len(files))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(cfg.threads))) as ex:
+            for idx, meta in enumerate(ex.map(scan_one, files), start=1):
+                metas.append(meta)
+                by_size[meta.size].append(meta)
+                is_video = _is_video_suffix(meta.path)
+                reporter.inc_scanned(1, bytes_added=meta.size, is_video=is_video)
 
-            # Log progress
-            if i % 500 == 0 and i > 0:
-                pct = (i / len(files)) * 100
-                logger.info(f"Scanning: {i:,}/{len(files):,} files ({pct:.1f}%)")
-            elif i < 500 and i % 100 == 0 and i > 0:
-                logger.debug(f"Scanned {i} files...")
+                total_bytes += meta.size
+                if is_video:
+                    video_bytes += meta.size
 
-        # Final update
+                if idx % 50 == 0 or idx == len(files):
+                    reporter.update_progress_periodically(idx, len(files))
+
+                if idx % 500 == 0:
+                    pct = (idx / len(files)) * 100 if files else 0
+                    logger.info(f"Scanning: {idx:,}/{len(files):,} files ({pct:.1f}%)")
+
+                if idx < 500 and idx % 100 == 0:
+                    logger.debug(f"Scanned {idx} files...")
+
         reporter.update_progress_periodically(len(files), len(files), force_update=True)
-        logger.info(f"Scanning complete: processed {len(metas):,} files ({sum(m.size for m in metas) / (1024**3):.2f} GiB)")
+        logger.info(
+            "Scanning complete: processed %d files (%.2f GiB)",
+            len(metas),
+            total_bytes / (1024**3) if total_bytes else 0.0,
+        )
+
+    reporter.set_total_bytes(total_bytes)
+    reporter.mark_video_bytes_total(video_bytes)
+    reporter.update_stage_metrics(
+        "scanning files",
+        scanned=f"{len(metas):,}",
+        data=f"{total_bytes / (1024**3):.2f} GiB",
+    )
+    reporter.finish_stage("scanning files")
 
     if reporter.should_quit():
         reporter.flush()
@@ -481,9 +582,21 @@ def run_pipeline(
     if 1 in selected_stages:
         logger.info("Starting Q1: size bucket analysis")
         reporter.set_status("Q1 size bucketing")
-        for bucket in by_size.values():
+        reporter.start_stage("Q1 size bucketing", total=len(by_size))
+
+        for idx, bucket in enumerate(by_size.values(), start=1):
             if len(bucket) > 1:
                 size_collisions.extend(bucket)
+            if idx % 250 == 0:
+                reporter.update_progress_periodically(idx, len(by_size) or 1)
+
+        reporter.update_progress_periodically(len(by_size), len(by_size) or 1, force_update=True)
+        reporter.update_stage_metrics(
+            "Q1 size bucketing",
+            buckets=len(by_size),
+            collisions=f"{len(size_collisions):,}",
+        )
+        reporter.finish_stage("Q1 size bucketing")
         logger.info(f"Q1 completed. Found {len(size_collisions)} files in size collision groups")
     else:
         reporter.set_status("Skipping Q1 (size buckets disabled)")
@@ -491,6 +604,10 @@ def run_pipeline(
     groups: GroupMap = {}
     excluded_after_q2: Set[Path] = set()
     excluded_after_q3: Set[Path] = set()
+    excluded_after_q4: Set[Path] = set()
+    excluded_after_q5: Set[Path] = set()
+    excluded_after_q6: Set[Path] = set()
+    excluded_after_q7: Set[Path] = set()
 
     # -------------------------------------------------------
     # Q2: partial (blake3 slices) -> full sha256 on collisions
@@ -547,6 +664,12 @@ def run_pipeline(
         # Final update
         reporter.update_progress_periodically(len(size_collisions), len(size_collisions), force_update=True)
         logger.info(f"Partial hashing complete: {len(partial_map):,} unique signatures using {cfg.threads} threads")
+        reporter.update_stage_metrics(
+            "Q2 partial",
+            candidates=f"{len(size_collisions):,}",
+            unique=f"{len(partial_map):,}",
+        )
+        reporter.finish_stage("Q2 partial")
 
         if reporter.should_quit():
             reporter.flush();
@@ -637,15 +760,25 @@ def run_pipeline(
 
         # Form groups from exact hashes and mark **all members** excluded for later stages
         formed = 0
+        duplicate_members = 0
         for h, lst in by_hash.items():
             if len(lst) > 1:
                 groups[f"hash:{h}"] = lst
                 for fm in lst:
-                    excluded_after_q2.add(fm.path.expanduser().resolve())
+                    excluded_after_q2.add(_normalized_path(fm.path))
                 formed += 1
+                duplicate_members += max(0, len(lst) - 1)
         if formed:
             reporter.inc_group("hash", formed)
-            reporter.flush()
+        if duplicate_members:
+            reporter.add_duplicate_files(duplicate_members)
+        reporter.update_stage_metrics(
+            "Q2 sha256",
+            collisions=f"{len(to_full):,}",
+            exact_groups=f"{formed:,}",
+        )
+        reporter.finish_stage("Q2 sha256")
+        reporter.flush()
     elif 2 in selected_stages:
         reporter.set_status("Q2 skipped (no size collisions)")
     else:
@@ -655,6 +788,7 @@ def run_pipeline(
         reporter.flush()
         return groups
 
+
     # ---------------------------------------------
     # Q3: ffprobe metadata (duration/format/codec...)
     # ---------------------------------------------
@@ -663,7 +797,7 @@ def run_pipeline(
         vids_in: List[VideoMeta] = [
             VideoMeta(path=m.path, size=m.size, mtime=m.mtime)
             for m in metas
-            if _is_video_suffix(m.path) and (m.path.expanduser().resolve() not in excluded_after_q2)
+            if _is_video_suffix(m.path) and (_normalized_path(m.path) not in excluded_after_q2)
         ]
 
         if vids_in:
@@ -772,29 +906,41 @@ def run_pipeline(
                 comps[_find(id(v))].append(v)
 
             formed = 0
+            duplicate_members = 0
             gid = 0
             for comp in comps.values():
                 if len(comp) > 1:
                     groups[f"meta:{gid}"] = comp
                     for vm in comp:
-                        excluded_after_q3.add(vm.path.expanduser().resolve())
+                        excluded_after_q3.add(_normalized_path(vm.path))
                     gid += 1
                     formed += 1
+                    duplicate_members += len(comp) - 1
             if formed:
                 reporter.inc_group("meta", formed)
-                reporter.flush()
+            if duplicate_members:
+                reporter.add_duplicate_files(duplicate_members)
+            reporter.update_stage_metrics(
+                "Q3 metadata",
+                probed=f"{len(probed):,}",
+                groups=f"{formed:,}",
+                tolerance=f"{tol:.1f}s",
+            )
+            reporter.flush()
 
             video_for_q4 = probed
+            reporter.finish_stage("Q3 metadata")
         else:
             reporter.set_status("Q3 skipped (no eligible videos)")
             video_for_q4 = []
+            reporter.finish_stage("Q3 metadata")
     else:
         reporter.set_status("Skipping Q3 (stage disabled)")
         # Q3 not selected - allow Q4 on all videos not excluded by Q2
         video_for_q4 = [
             VideoMeta(path=m.path, size=m.size, mtime=m.mtime)
             for m in metas
-            if _is_video_suffix(m.path) and (m.path.expanduser().resolve() not in excluded_after_q2)
+            if _is_video_suffix(m.path) and (_normalized_path(m.path) not in excluded_after_q2)
         ]
 
     if reporter.should_quit():
@@ -806,7 +952,7 @@ def run_pipeline(
     # ----------------------------------------------------------
     if 4 in selected_stages and video_for_q4:
         # Exclude videos already grouped by Q3
-        pending_for_q4 = [v for v in video_for_q4 if v.path.expanduser().resolve() not in excluded_after_q3]
+        pending_for_q4 = [v for v in video_for_q4 if _normalized_path(v.path) not in excluded_after_q3]
 
         # Lazy import phash helpers here (avoid import-time errors in minimal env/tests)
         try:
@@ -843,6 +989,7 @@ def run_pipeline(
 
             # Group by pHash proximity (same-length matches)
             formed_phash = 0
+            duplicate_members = 0
             if phashed:
                 used = set()
                 gid = 0
@@ -868,11 +1015,19 @@ def run_pipeline(
                             used.add(j)
                     if len(grp) > 1:
                         groups[f"phash:{gid}"] = grp
+                        for vm in grp:
+                            excluded_after_q4.add(_normalized_path(vm.path))
                         gid += 1
                         formed_phash += 1
+                        duplicate_members += len(grp) - 1
             if formed_phash:
                 reporter.inc_group("phash", formed_phash)
-                reporter.flush()
+            reporter.update_stage_metrics(
+                "Q4 pHash",
+                signatures=f"{len(phashed):,}",
+                groups=f"{formed_phash:,}",
+            )
+            reporter.flush()
 
             # Enhanced subset detection with cross-resolution support
             formed_subset = 0  # Initialize before conditional block
@@ -927,16 +1082,137 @@ def run_pipeline(
                         groups[f"subset:{gid}"] = [short, long]
                         processed_paths.add(short.path)
                         processed_paths.add(long.path)
+                        excluded_after_q4.add(_normalized_path(short.path))
+                        excluded_after_q4.add(_normalized_path(long.path))
                         gid += 1
                         formed_subset += 1
+                        duplicate_members += 1
 
             if formed_subset:
-                reporter.groups_subset += formed_subset  # surface in UI
+                reporter.inc_group("subset", formed_subset)
                 reporter.flush()
+            if duplicate_members:
+                reporter.add_duplicate_files(duplicate_members)
+            reporter.update_stage_metrics(
+                "Q4 pHash",
+                subset_matches=f"{formed_subset:,}",
+            )
+            reporter.finish_stage("Q4 pHash")
         else:
             reporter.set_status("Q4 skipped (no analyzable videos)")
     elif 4 in selected_stages:
         reporter.set_status("Q4 skipped (stage disabled by upstream filters)")
+
+    # ----------------------------------------------------------
+    # Q5: Scene-aware fingerprinting (advanced visual matching)
+    # ----------------------------------------------------------
+    if 5 in selected_stages and video_for_q4:
+        pending_for_q5 = [
+            v
+            for v in video_for_q4
+            if _normalized_path(v.path) not in excluded_after_q3
+            and _normalized_path(v.path) not in excluded_after_q4
+        ]
+
+        try:
+            from vdedup.phash import compute_scene_fingerprint  # type: ignore
+        except Exception:
+            compute_scene_fingerprint = None  # type: ignore
+
+        if compute_scene_fingerprint and pending_for_q5:
+            reporter.set_status("Q5 scene fingerprinting")
+            reporter.start_stage("Q5 scene", total=len(pending_for_q5))
+            reporter.set_hash_total(len(pending_for_q5))
+
+            scene_fps: Dict[Path, Tuple[VideoMeta, Tuple[int, ...]]] = {}
+
+            def _do_scene(vm: VideoMeta) -> Tuple[VideoMeta, Optional[Tuple[int, ...]]]:
+                reporter.wait_if_paused()
+                if reporter.should_quit():
+                    return vm, None
+                sig = compute_scene_fingerprint(vm.path, max_scenes=max(12, cfg.phash_frames * 2), gpu=cfg.gpu)
+                reporter.inc_hashed(1, cache_hit=False)
+                return vm, sig
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(cfg.threads))) as ex:
+                for vm, sig in ex.map(_do_scene, pending_for_q5):
+                    if sig:
+                        scene_fps[_normalized_path(vm.path)] = (vm, sig)
+
+            reporter.update_stage_metrics("Q5 scene", descriptors=f"{len(scene_fps):,}")
+
+            entries = list(scene_fps.values())
+            pairs_evaluated = 0
+            formed_scene = 0
+            duplicate_members = 0
+            subset_pairs = 0
+            gid = 0
+            processed: Set[Path] = set()
+            per_scene_thresh = max(8, int(cfg.subset_frame_threshold * 1.2))
+
+            for i in range(len(entries)):
+                vm_a, sig_a = entries[i]
+                path_a = _normalized_path(vm_a.path)
+                if path_a in processed or not sig_a:
+                    continue
+                for j in range(i + 1, len(entries)):
+                    vm_b, sig_b = entries[j]
+                    path_b = _normalized_path(vm_b.path)
+                    if path_b in processed or not sig_b:
+                        continue
+                    if abs(len(sig_a) - len(sig_b)) > 6:
+                        continue
+
+                    pairs_evaluated += 1
+                    len_a = _effective_length(vm_a)
+                    len_b = _effective_length(vm_b)
+                    diff = abs(len_a - len_b)
+                    max_len = max(len_a, len_b)
+
+                    if diff <= max(5.0, 0.05 * max_len):
+                        avg_dist = _avg_signature_distance(sig_a, sig_b)
+                        if avg_dist <= per_scene_thresh:
+                            groups[f"scene:{gid}"] = [vm_a, vm_b]
+                            processed.update({path_a, path_b})
+                            excluded_after_q5.update({path_a, path_b})
+                            formed_scene += 1
+                            duplicate_members += 1
+                            gid += 1
+                            break
+                    else:
+                        ratio = min(len_a, len_b) / max_len if max_len else 0.0
+                        if ratio < max(cfg.subset_min_ratio, 0.2):
+                            continue
+                        short_sig = sig_a if len_a <= len_b else sig_b
+                        long_sig = sig_b if short_sig is sig_a else sig_a
+                        best = _alignable_distance(short_sig, long_sig, per_scene_thresh)
+                        if best is not None:
+                            groups[f"scene-sub:{gid}"] = [vm_a, vm_b]
+                            processed.update({path_a, path_b})
+                            excluded_after_q5.update({path_a, path_b})
+                            formed_scene += 1
+                            subset_pairs += 1
+                            duplicate_members += 1
+                            gid += 1
+                            break
+
+            if formed_scene:
+                reporter.inc_group("scene", formed_scene)
+            if subset_pairs:
+                reporter.inc_group("subset", subset_pairs)
+            if duplicate_members:
+                reporter.add_duplicate_files(duplicate_members)
+            reporter.update_stage_metrics(
+                "Q5 scene",
+                comparisons=f"{pairs_evaluated:,}",
+                groups=f"{formed_scene:,}",
+                subset_pairs=f"{subset_pairs:,}",
+            )
+            reporter.finish_stage("Q5 scene")
+        else:
+            reporter.set_status("Q5 skipped (no analyzable videos)")
+    elif 5 in selected_stages:
+        reporter.set_status("Q5 skipped (stage disabled or no videos)")
 
     if reporter.should_quit():
         reporter.flush()
@@ -946,23 +1222,111 @@ def run_pipeline(
     # Q6: Audio fingerprinting and analysis (experimental)
     # ----------------------------------------------------------
     if 6 in selected_stages and video_for_q4:
-        logger.info("Q6: Audio fingerprinting stage - currently placeholder")
-        reporter.set_status("Q6 audio fingerprinting")
-        reporter.start_stage("Q6 audio", total=len(video_for_q4))
+        pending_for_q6 = [
+            v
+            for v in video_for_q4
+            if _normalized_path(v.path) not in excluded_after_q3
+            and _normalized_path(v.path) not in excluded_after_q4
+            and _normalized_path(v.path) not in excluded_after_q5
+        ]
 
-        # Placeholder implementation for audio analysis
-        # Future: Implement audio fingerprinting using librosa or similar
-        # - Extract audio spectrograms
-        # - Compare audio characteristics beyond metadata
-        # - Detect re-encoded audio with same content
+        try:
+            from vdedup.audio import compute_audio_fingerprint  # type: ignore
+        except Exception:
+            compute_audio_fingerprint = None  # type: ignore
 
-        for i, video in enumerate(video_for_q4):
-            if i % 20 == 0:
-                logger.info(f"Q6 Audio analysis progress: {i+1}/{len(video_for_q4)} files")
-            # Placeholder: Would extract audio features here
-            reporter.update_progress_periodically(i + 1, len(video_for_q4))
+        if compute_audio_fingerprint and pending_for_q6:
+            reporter.set_status("Q6 audio fingerprinting")
+            reporter.start_stage("Q6 audio", total=len(pending_for_q6))
+            reporter.set_hash_total(len(pending_for_q6))
 
-        logger.info("Q6: Audio analysis stage completed (placeholder)")
+            audio_fps: Dict[Path, Tuple[VideoMeta, Tuple[int, ...]]] = {}
+
+            def _do_audio(vm: VideoMeta) -> Tuple[VideoMeta, Optional[Tuple[int, ...]]]:
+                reporter.wait_if_paused()
+                if reporter.should_quit():
+                    return vm, None
+                sig = compute_audio_fingerprint(vm.path)
+                reporter.inc_hashed(1, cache_hit=False)
+                return vm, sig
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(cfg.threads))) as ex:
+                for vm, sig in ex.map(_do_audio, pending_for_q6):
+                    if sig:
+                        audio_fps[_normalized_path(vm.path)] = (vm, sig)
+
+            reporter.update_stage_metrics("Q6 audio", descriptors=f"{len(audio_fps):,}")
+
+            entries = list(audio_fps.values())
+            formed_audio = 0
+            audio_subset_pairs = 0
+            duplicate_members = 0
+            comparisons = 0
+            processed_audio: Set[Path] = set()
+            audio_dup_thresh = 12
+            audio_subset_thresh = max(14, int(cfg.subset_frame_threshold * 1.5))
+            gid = 0
+
+            for i in range(len(entries)):
+                vm_a, sig_a = entries[i]
+                path_a = _normalized_path(vm_a.path)
+                if path_a in processed_audio or not sig_a:
+                    continue
+                for j in range(i + 1, len(entries)):
+                    vm_b, sig_b = entries[j]
+                    path_b = _normalized_path(vm_b.path)
+                    if path_b in processed_audio or not sig_b:
+                        continue
+                    if abs(len(sig_a) - len(sig_b)) > 10:
+                        continue
+                    comparisons += 1
+                    len_a = _effective_length(vm_a)
+                    len_b = _effective_length(vm_b)
+                    diff = abs(len_a - len_b)
+                    max_len = max(len_a, len_b)
+
+                    if diff <= max(6.0, 0.08 * max_len):
+                        avg_dist = _avg_signature_distance(sig_a, sig_b)
+                        if avg_dist <= audio_dup_thresh:
+                            groups[f"audio:{gid}"] = [vm_a, vm_b]
+                            processed_audio.update({path_a, path_b})
+                            excluded_after_q6.update({path_a, path_b})
+                            formed_audio += 1
+                            duplicate_members += 1
+                            gid += 1
+                            break
+                    else:
+                        ratio = min(len_a, len_b) / max_len if max_len else 0.0
+                        if ratio < max(cfg.subset_min_ratio, 0.25):
+                            continue
+                        short_sig = sig_a if len_a <= len_b else sig_b
+                        long_sig = sig_b if short_sig is sig_a else sig_a
+                        best = _alignable_distance(short_sig, long_sig, audio_subset_thresh)
+                        if best is not None:
+                            groups[f"audio-sub:{gid}"] = [vm_a, vm_b]
+                            processed_audio.update({path_a, path_b})
+                            excluded_after_q6.update({path_a, path_b})
+                            formed_audio += 1
+                            duplicate_members += 1
+                            audio_subset_pairs += 1
+                            gid += 1
+                            break
+
+            if formed_audio:
+                reporter.inc_group("audio", formed_audio)
+            if audio_subset_pairs:
+                reporter.inc_group("subset", audio_subset_pairs)
+            if duplicate_members:
+                reporter.add_duplicate_files(duplicate_members)
+            reporter.update_stage_metrics(
+                "Q6 audio",
+                comparisons=f"{comparisons:,}",
+                groups=f"{formed_audio:,}",
+                subset_pairs=f"{audio_subset_pairs:,}",
+            )
+            reporter.finish_stage("Q6 audio")
+        else:
+            reporter.set_status("Q6 skipped (no analyzable audio)")
     elif 6 in selected_stages:
         reporter.set_status("Q6 skipped (stage disabled or no videos)")
 
@@ -974,24 +1338,110 @@ def run_pipeline(
     # Q7: Advanced content analysis (experimental)
     # ----------------------------------------------------------
     if 7 in selected_stages and video_for_q4:
-        logger.info("Q7: Advanced content analysis stage - currently placeholder")
-        reporter.set_status("Q7 advanced analysis")
-        reporter.start_stage("Q7 content", total=len(video_for_q4))
+        pending_for_q7 = [
+            v
+            for v in video_for_q4
+            if _normalized_path(v.path) not in excluded_after_q3
+            and _normalized_path(v.path) not in excluded_after_q4
+            and _normalized_path(v.path) not in excluded_after_q5
+            and _normalized_path(v.path) not in excluded_after_q6
+        ]
 
-        # Placeholder implementation for advanced content analysis
-        # Future: Implement scene detection and motion analysis
-        # - Extract keyframes at scene boundaries
-        # - Analyze motion vectors between frames
-        # - Compare video content beyond simple pHash
-        # - Detect cropped, scaled, or filtered versions
+        try:
+            from vdedup.phash import compute_timeline_signature  # type: ignore
+        except Exception:
+            compute_timeline_signature = None  # type: ignore
 
-        for i, video in enumerate(video_for_q4):
-            if i % 20 == 0:
-                logger.info(f"Q7 Content analysis progress: {i+1}/{len(video_for_q4)} files")
-            # Placeholder: Would extract content features here
-            reporter.update_progress_periodically(i + 1, len(video_for_q4))
+        if compute_timeline_signature and pending_for_q7:
+            reporter.set_status("Q7 timeline analysis")
+            reporter.start_stage("Q7 timeline", total=len(pending_for_q7))
+            reporter.set_hash_total(len(pending_for_q7))
 
-        logger.info("Q7: Advanced content analysis stage completed (placeholder)")
+            timeline_fps: Dict[Path, Tuple[VideoMeta, Tuple[int, ...]]] = {}
+
+            def _do_timeline(vm: VideoMeta) -> Tuple[VideoMeta, Optional[Tuple[int, ...]]]:
+                reporter.wait_if_paused()
+                if reporter.should_quit():
+                    return vm, None
+                sig = compute_timeline_signature(vm.path, fps=2.0, max_frames=120, gpu=cfg.gpu)
+                reporter.inc_hashed(1, cache_hit=False)
+                return vm, sig
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(cfg.threads))) as ex:
+                for vm, sig in ex.map(_do_timeline, pending_for_q7):
+                    if sig:
+                        timeline_fps[_normalized_path(vm.path)] = (vm, sig)
+
+            reporter.update_stage_metrics("Q7 timeline", descriptors=f"{len(timeline_fps):,}")
+
+            entries = list(timeline_fps.values())
+            formed_timeline = 0
+            timeline_subset_pairs = 0
+            duplicate_members = 0
+            comparisons = 0
+            processed_timeline: Set[Path] = set()
+            gid = 0
+            timeline_dup_thresh = max(10, int(cfg.phash_threshold))
+            timeline_subset_thresh = max(12, int(cfg.subset_frame_threshold * 1.1))
+
+            for i in range(len(entries)):
+                vm_a, sig_a = entries[i]
+                path_a = _normalized_path(vm_a.path)
+                if path_a in processed_timeline or not sig_a:
+                    continue
+                for j in range(i + 1, len(entries)):
+                    vm_b, sig_b = entries[j]
+                    path_b = _normalized_path(vm_b.path)
+                    if path_b in processed_timeline or not sig_b:
+                        continue
+                    comparisons += 1
+                    len_a = _effective_length(vm_a)
+                    len_b = _effective_length(vm_b)
+                    diff = abs(len_a - len_b)
+                    max_len = max(len_a, len_b)
+
+                    if diff <= max(8.0, 0.04 * max_len):
+                        avg_dist = _avg_signature_distance(sig_a, sig_b)
+                        if avg_dist <= timeline_dup_thresh:
+                            groups[f"timeline:{gid}"] = [vm_a, vm_b]
+                            processed_timeline.update({path_a, path_b})
+                            excluded_after_q7.update({path_a, path_b})
+                            formed_timeline += 1
+                            duplicate_members += 1
+                            gid += 1
+                            break
+                    else:
+                        ratio = min(len_a, len_b) / max_len if max_len else 0.0
+                        if ratio < max(cfg.subset_min_ratio, 0.3):
+                            continue
+                        short_sig = sig_a if len_a <= len_b else sig_b
+                        long_sig = sig_b if short_sig is sig_a else sig_a
+                        best = _alignable_distance(short_sig, long_sig, timeline_subset_thresh)
+                        if best is not None:
+                            groups[f"timeline-sub:{gid}"] = [vm_a, vm_b]
+                            processed_timeline.update({path_a, path_b})
+                            excluded_after_q7.update({path_a, path_b})
+                            formed_timeline += 1
+                            timeline_subset_pairs += 1
+                            duplicate_members += 1
+                            gid += 1
+                            break
+
+            if formed_timeline:
+                reporter.inc_group("timeline", formed_timeline)
+            if timeline_subset_pairs:
+                reporter.inc_group("subset", timeline_subset_pairs)
+            if duplicate_members:
+                reporter.add_duplicate_files(duplicate_members)
+            reporter.update_stage_metrics(
+                "Q7 timeline",
+                comparisons=f"{comparisons:,}",
+                groups=f"{formed_timeline:,}",
+                subset_pairs=f"{timeline_subset_pairs:,}",
+            )
+            reporter.finish_stage("Q7 timeline")
+        else:
+            reporter.set_status("Q7 skipped (no analyzable timelines)")
     elif 7 in selected_stages:
         reporter.set_status("Q7 skipped (stage disabled or no videos)")
 

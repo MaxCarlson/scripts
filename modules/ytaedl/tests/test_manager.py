@@ -1,15 +1,21 @@
 """Tests for ytaedl.manager module."""
 
 import os
+import re
 import tempfile
 import threading
-import time
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import ytaedl.manager as manager
 from termdash import utils as td_utils
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    return ANSI_RE.sub("", text)
 
 
 class TestManager:
@@ -60,6 +66,107 @@ class TestManager:
         assert len(lines) >= 2
         assert all(len(line) <= 20 for line in lines)
         assert " ".join(lines).split() == text.split()
+
+    def test_format_watcher_log_line_colors_and_brackets_status(self):
+        raw = "[00:00:01.000] \x1b[33mDRYRUN\x1b[0m syncing files"
+        formatted = manager._format_watcher_log_line(raw)
+        sanitized = _strip_ansi(formatted)
+        assert "[00:00:01.000]" in sanitized
+        assert "[DRYRUN]" in sanitized
+        assert "syncing files" in sanitized
+        # Ensure colour codes are present in the formatted output
+        assert "\x1b[" in formatted
+
+    def test_format_watcher_log_line_handles_unstructured_text(self):
+        raw = "PLAN summary only"
+        formatted = manager._format_watcher_log_line(raw)
+        assert formatted == raw
+
+    def test_manager_urls_subcommand(self, tmp_path):
+        """Ensure `ytaedl urls` subcommand executes the scanner CLI."""
+        stars_dir = tmp_path / "stars"
+        ae_dir = tmp_path / "ae"
+        media_dir = tmp_path / "media"
+        for d in (stars_dir, ae_dir, media_dir):
+            d.mkdir()
+        (stars_dir / "alpha.txt").write_text("https://example.com/a\n", encoding="utf-8")
+        (media_dir / "alpha").mkdir()
+        (media_dir / "alpha" / "clip.mp4").write_bytes(b"0")
+
+        argv = [
+            "urls",
+            "-N",
+            "-n",
+            "--stars-dir",
+            str(stars_dir),
+            "--ae-dir",
+            str(ae_dir),
+            "--media-dir",
+            str(media_dir),
+        ]
+        with patch("sys.stdout"):
+            result = manager.main(argv)
+        assert result == 0
+
+    def test_manager_skips_completed_urlfiles(self, tmp_path):
+        """Workers should not be assigned URL files that have zero remaining downloads."""
+        stars_dir = tmp_path / "stars"
+        stars_dir.mkdir()
+        ae_dir = tmp_path / "ae"
+        ae_dir.mkdir()
+        media_dir = tmp_path / "media"
+        media_dir.mkdir()
+
+        complete_file = stars_dir / "complete.txt"
+        complete_file.write_text("https://example.com/done\n", encoding="utf-8")
+        complete_media = media_dir / "complete"
+        complete_media.mkdir()
+        (complete_media / "done.mp4").write_bytes(b"0")
+
+        pending_file = stars_dir / "pending.txt"
+        pending_file.write_text("https://example.com/todo\n", encoding="utf-8")
+
+        finished_log = tmp_path / "finished.txt"
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+
+        args = [
+            "--threads",
+            "1",
+            "--time-limit",
+            "1",
+            "--stars-dir",
+            str(stars_dir),
+            "--aebn-dir",
+            str(ae_dir),
+            "--url-media-dir",
+            str(media_dir),
+            "--finished-log",
+            str(finished_log),
+            "--log-dir",
+            str(log_dir),
+            "--exit-at-time",
+            "1",
+        ]
+
+        dummy_process = MagicMock()
+        dummy_process.poll.return_value = 0
+        dummy_process.stdout = iter([])
+        dummy_process.wait.return_value = 0
+        dummy_process.terminate.return_value = None
+
+        with patch("sys.argv", ["dlmanager"] + args):
+            with patch("subprocess.Popen", return_value=dummy_process) as mock_popen:
+                with patch("os.get_terminal_size", return_value=MagicMock(columns=80, lines=24)):
+                    with patch("sys.stdout"):
+                        with patch("time.sleep", side_effect=lambda _: None):
+                            result = manager.main()
+
+        assert result == 0
+        assert mock_popen.call_args_list, "Worker was never started"
+        assigned_files = [Path(call.args[0][3]).name for call in mock_popen.call_args_list]
+        assert "pending.txt" in assigned_files
+        assert "complete.txt" not in assigned_files
 
     def test_storage_summary_lines_same_volume(self):
         staging = td_utils.DiskStats(
@@ -115,7 +222,7 @@ class TestManager:
 
     def test_read_urls(self):
         """Test reading URLs from a file."""
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             f.write("https://example.com/video1\n")
             f.write("https://example.com/video2\n")
             f.write("\n")  # empty line
@@ -223,7 +330,7 @@ class TestManagerLogger:
             log_path = Path(tmpdir) / "test.log"
             logger = manager.ManagerLogger(log_path)
 
-            with patch('time.strftime', return_value="12:34:56"):
+            with patch("time.strftime", return_value="12:34:56"):
                 logger.info("Test message")
 
             content = log_path.read_text()
@@ -235,7 +342,7 @@ class TestManagerLogger:
             log_path = Path(tmpdir) / "test.log"
             logger = manager.ManagerLogger(log_path)
 
-            with patch('time.strftime', return_value="12:34:56"):
+            with patch("time.strftime", return_value="12:34:56"):
                 logger.error("Error message")
 
             content = log_path.read_text()
@@ -288,7 +395,7 @@ class TestStartWorker:
 
     def test_start_worker_basic(self):
         """Test starting a worker with basic parameters."""
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             f.write("https://example.com/video1\n")
             temp_path = f.name
 
@@ -298,7 +405,7 @@ class TestStartWorker:
                 urlfile = Path(temp_path)
 
                 # Mock the downloader script to avoid actually running it
-                with patch('subprocess.Popen') as mock_popen:
+                with patch("subprocess.Popen") as mock_popen:
                     mock_process = MagicMock()
                     mock_popen.return_value = mock_process
 
@@ -310,7 +417,7 @@ class TestStartWorker:
                         archive_dir=None,
                         log_dir=log_dir,
                         cap_mibs=None,
-                        proxy_dl_location=None
+                        proxy_dl_location=None,
                     )
 
                     assert proc == mock_process
@@ -331,7 +438,7 @@ class TestStartWorker:
 
     def test_start_worker_with_options(self):
         """Test starting a worker with additional options."""
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             f.write("https://example.com/video1\n")
             temp_path = f.name
 
@@ -341,7 +448,7 @@ class TestStartWorker:
                 archive_dir = Path(tmpdir) / "archive"
                 urlfile = Path(temp_path)
 
-                with patch('subprocess.Popen') as mock_popen:
+                with patch("subprocess.Popen") as mock_popen:
                     mock_process = MagicMock()
                     mock_popen.return_value = mock_process
 
@@ -386,20 +493,28 @@ class TestMainFunction:
             aebn_dir.mkdir()
 
             args = [
-                "--threads", "1",
-                "--time-limit", "5",
-                "--stars-dir", str(stars_dir),
-                "--aebn-dir", str(aebn_dir),
-                "--finished-log", str(Path(tmpdir) / "finished.txt"),
-                "--log-dir", str(tmpdir),
-                "--refresh-hz", "1.0",
-                "--exit-at-time", "1"  # Exit after 1 second
+                "--threads",
+                "1",
+                "--time-limit",
+                "5",
+                "--stars-dir",
+                str(stars_dir),
+                "--aebn-dir",
+                str(aebn_dir),
+                "--finished-log",
+                str(Path(tmpdir) / "finished.txt"),
+                "--log-dir",
+                str(tmpdir),
+                "--refresh-hz",
+                "1.0",
+                "--exit-at-time",
+                "1",  # Exit after 1 second
             ]
 
-            with patch('sys.argv', ['dlmanager'] + args):
+            with patch("sys.argv", ["dlmanager"] + args):
                 # Mock terminal operations to avoid issues in test environment
-                with patch('os.get_terminal_size', return_value=MagicMock(columns=80, lines=24)):
-                    with patch('sys.stdout'):
+                with patch("os.get_terminal_size", return_value=MagicMock(columns=80, lines=24)):
+                    with patch("sys.stdout"):
                         result = manager.main()
                         assert result == 0
 
@@ -412,26 +527,34 @@ class TestMainFunction:
             (stars_dir / "test1.txt").write_text("https://example.com/video1\n")
 
             args = [
-                "--threads", "1",
-                "--time-limit", "2",
-                "--stars-dir", str(stars_dir),
-                "--aebn-dir", str(Path(tmpdir) / "aebn"),
-                "--finished-log", str(Path(tmpdir) / "finished.txt"),
-                "--log-dir", str(tmpdir),
-                "--refresh-hz", "2.0",
-                "--exit-at-time", "1"  # Exit after 1 second
+                "--threads",
+                "1",
+                "--time-limit",
+                "2",
+                "--stars-dir",
+                str(stars_dir),
+                "--aebn-dir",
+                str(Path(tmpdir) / "aebn"),
+                "--finished-log",
+                str(Path(tmpdir) / "finished.txt"),
+                "--log-dir",
+                str(tmpdir),
+                "--refresh-hz",
+                "2.0",
+                "--exit-at-time",
+                "1",  # Exit after 1 second
             ]
 
-            with patch('sys.argv', ['dlmanager'] + args):
+            with patch("sys.argv", ["dlmanager"] + args):
                 # Mock subprocess to avoid actually starting workers
-                with patch('subprocess.Popen') as mock_popen:
+                with patch("subprocess.Popen") as mock_popen:
                     mock_process = MagicMock()
                     mock_process.poll.return_value = 0  # Process finished successfully
                     mock_process.stdout = iter([])  # Empty output
                     mock_popen.return_value = mock_process
 
-                    with patch('os.get_terminal_size', return_value=MagicMock(columns=80, lines=24)):
-                        with patch('sys.stdout'):
+                    with patch("os.get_terminal_size", return_value=MagicMock(columns=80, lines=24)):
+                        with patch("sys.stdout"):
                             result = manager.main()
                             assert result == 0
 
@@ -439,17 +562,22 @@ class TestMainFunction:
         """Test main function handles KeyboardInterrupt gracefully."""
         with tempfile.TemporaryDirectory() as tmpdir:
             args = [
-                "--stars-dir", str(Path(tmpdir) / "stars"),
-                "--aebn-dir", str(Path(tmpdir) / "aebn"),
-                "--finished-log", str(Path(tmpdir) / "finished.txt"),
-                "--log-dir", str(tmpdir),
-                "--exit-at-time", "10"
+                "--stars-dir",
+                str(Path(tmpdir) / "stars"),
+                "--aebn-dir",
+                str(Path(tmpdir) / "aebn"),
+                "--finished-log",
+                str(Path(tmpdir) / "finished.txt"),
+                "--log-dir",
+                str(tmpdir),
+                "--exit-at-time",
+                "10",
             ]
 
-            with patch('sys.argv', ['dlmanager'] + args):
-                with patch('time.sleep', side_effect=KeyboardInterrupt):
-                    with patch('os.get_terminal_size', return_value=MagicMock(columns=80, lines=24)):
-                        with patch('sys.stdout'):
+            with patch("sys.argv", ["dlmanager"] + args):
+                with patch("time.sleep", side_effect=KeyboardInterrupt):
+                    with patch("os.get_terminal_size", return_value=MagicMock(columns=80, lines=24)):
+                        with patch("sys.stdout"):
                             result = manager.main()
                             assert result == 0
 
@@ -482,30 +610,42 @@ class TestMainFunction:
             def manual_run(self, **_):
                 return False
 
+            def log_event(self, *_args, **_kwargs):
+                return None
+
         monkeypatch.setattr(manager, "MP4Watcher", DummyWatcher)
 
         args = [
-            "--threads", "1",
-            "--time-limit", "2",
-            "--stars-dir", str(stars_dir),
-            "--aebn-dir", str(aebn_dir),
-            "--finished-log", str(tmp_path / "finished.txt"),
-            "--log-dir", str(log_dir),
-            "--refresh-hz", "2.0",
-            "--exit-at-time", "1",
+            "--threads",
+            "1",
+            "--time-limit",
+            "2",
+            "--stars-dir",
+            str(stars_dir),
+            "--aebn-dir",
+            str(aebn_dir),
+            "--finished-log",
+            str(tmp_path / "finished.txt"),
+            "--log-dir",
+            str(log_dir),
+            "--refresh-hz",
+            "2.0",
+            "--exit-at-time",
+            "1",
             "--enable-mp4-watcher",
-            "--proxy-dl-location", str(proxy_dir),
+            "--proxy-dl-location",
+            str(proxy_dir),
         ]
 
-        with patch('sys.argv', ['dlmanager'] + args):
-            with patch('subprocess.Popen') as mock_popen:
+        with patch("sys.argv", ["dlmanager"] + args):
+            with patch("subprocess.Popen") as mock_popen:
                 mock_process = MagicMock()
                 mock_process.poll.return_value = 0
                 mock_process.stdout = iter([])
                 mock_popen.return_value = mock_process
 
-                with patch('os.get_terminal_size', return_value=MagicMock(columns=80, lines=24)):
-                    with patch('sys.stdout'):
+                with patch("os.get_terminal_size", return_value=MagicMock(columns=80, lines=24)):
+                    with patch("sys.stdout"):
                         result = manager.main()
                         assert result == 0
 
@@ -515,12 +655,13 @@ class TestUtilityFunctions:
 
     def test_quantile_function(self):
         """Test the _quantile helper function used in speed color coding."""
+
         # This function is defined inline in main(), so we'll test the logic
         def _quantile(xs, q):
             if not xs:
                 return None
-            idx = int(round((len(xs)-1) * q))
-            return xs[max(0, min(len(xs)-1, idx))]
+            idx = int(round((len(xs) - 1) * q))
+            return xs[max(0, min(len(xs) - 1, idx))]
 
         # Test with various inputs
         assert _quantile([], 0.5) is None
@@ -532,16 +673,17 @@ class TestUtilityFunctions:
 
     def test_make_bar_function(self):
         """Test the progress bar creation logic."""
+
         def make_bar(pct, width, color_prefix=""):
             try:
                 p = float(pct) if pct is not None else -1
             except (ValueError, TypeError):
                 p = -1
-            inner = max(0, width-2)
+            inner = max(0, width - 2)
             if p < 0:
                 return "[" + ("." * inner) + "]"
             p = max(0.0, min(100.0, p))
-            filled = int(inner * (p/100.0))
+            filled = int(inner * (p / 100.0))
             reset = "\x1b[0m"
             if color_prefix:
                 return "[" + (f"{color_prefix}" + ("=" * filled) + f"{reset}") + ("." * (inner - filled)) + "]"
