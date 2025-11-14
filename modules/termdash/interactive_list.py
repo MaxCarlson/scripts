@@ -267,17 +267,18 @@ class InteractiveList:
                     ]
                     existing = os.environ.get("TERMINFO_DIRS", "")
                     probe_dirs = [d for d in candidates if os.path.isdir(d)]
-                    if probe_dirs:
-                        merged = ":".join([p for p in [existing] if p] + probe_dirs)
+                    merged = ":".join([p for p in [existing] if p] + probe_dirs)
+                    if merged:
                         os.environ["TERMINFO_DIRS"] = merged
-                        try:
-                            curses.setupterm()
+                    try:
+                        curses.setupterm()
+                        if merged:
                             sys.stderr.write(
                                 f"Warning: terminfo database not found initially; set TERMINFO_DIRS={merged} and continued.\n"
                             )
-                            return
-                        except Exception:
-                            pass
+                        return
+                    except Exception:
+                        pass
                     # Still failing — provide actionable guidance and exit.
                     term = current_term
                     sys.stderr.write(
@@ -363,10 +364,8 @@ class InteractiveList:
 
             if key in (curses.KEY_UP, ord("k")):
                 self._move_selection(-1)
-                self.state.scroll_offset = 0  # Reset scroll on selection change
             elif key in (curses.KEY_DOWN, ord("j")):
                 self._move_selection(1)
-                self.state.scroll_offset = 0
             elif key == curses.KEY_PPAGE:  # Page Up
                 self._move_selection(-self.state.viewport_height)
                 self.state.scroll_offset = 0
@@ -428,7 +427,6 @@ class InteractiveList:
 
                 if self._handle_sort_key(key):
                     self._update_visible_items()
-                    self.state.scroll_offset = 0
 
     def _start_filter_edit(self) -> None:
         self.state.editing_filter = True
@@ -624,7 +622,17 @@ class InteractiveList:
             try:
                 stdscr.move(header_lines, 0)
                 stdscr.clrtoeol()
-                stdscr.addstr(header_lines, 0, self.state.columns_line[:max_x - 1], curses.color_pair(2) | curses.A_BOLD)
+                columns_line = self.state.columns_line
+                if self.state.scroll_offset:
+                    max_scroll = max(0, len(columns_line) - (max_x - 1))
+                    offset = min(self.state.scroll_offset, max_scroll)
+                    columns_line = columns_line[offset:]
+                stdscr.addstr(
+                    header_lines,
+                    0,
+                    columns_line[: max_x - 1],
+                    curses.color_pair(2) | curses.A_BOLD,
+                )
                 header_lines += 1
                 list_start += 1
                 list_height = max(1, max_y - (header_lines + footer_lines))
@@ -678,10 +686,17 @@ class InteractiveList:
 
                 item = self.state.visible[entry_idx]
 
-                # Pass scroll_offset only for the selected item
+                # Pass scroll_offset for all rows to support horizontal panning
                 # Use max_x - 1 to ensure line doesn't exceed terminal width
-                scroll_off = self.state.scroll_offset if entry_idx == self.state.selected_index else 0
-                line = self.formatter(item, self.state.sort_field, max_x - 1, self.state.show_date, self.state.show_time, scroll_off)
+                scroll_off = self.state.scroll_offset
+                line = self.formatter(
+                    item,
+                    self.state.sort_field,
+                    max_x - 1,
+                    self.state.show_date,
+                    self.state.show_time,
+                    scroll_off,
+                )
 
                 # Ensure line doesn't exceed terminal width
                 if len(line) > max_x - 1:
