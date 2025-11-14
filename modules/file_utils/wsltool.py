@@ -62,7 +62,7 @@ def compact(
         )
         import base64 as _b64
         encoded = _b64.b64encode(script.encode("utf-16le")).decode("ascii")
-        cmd = f"{ps_exe} -NoProfile -EncodedCommand {encoded}"
+        cmd = f"{ps_exe} -NoProfile -ExecutionPolicy Bypass -EncodedCommand {encoded}"
         _run("Windows VHDX LZX compact", cmd)
         return actions
 
@@ -87,7 +87,7 @@ def docker_desktop_fixups(sysu: SystemUtils, *, dry_run: bool = True) -> List[st
     if sysu.is_windows():
         ps = shutil.which("pwsh") or shutil.which("powershell") or "pwsh"
         def PS(cmd: str) -> str:
-            return f"{ps} -NoProfile -Command \"{cmd}\""
+            return f"{ps} -NoProfile -ExecutionPolicy Bypass -Command \"{cmd}\""
 
         _run("Docker contexts", "docker context ls")
         _run("Use desktop-linux", "docker context use desktop-linux")

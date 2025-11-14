@@ -103,7 +103,8 @@ def scan_largest_files(
         )
         import base64 as _b64
         encoded = _b64.b64encode(script.encode("utf-16le")).decode("ascii")
-        cmd = f'"{ps}" -NoProfile -EncodedCommand {encoded}'
+        cmd = f'"{ps}" -NoProfile -ExecutionPolicy Bypass -EncodedCommand {encoded}'
+        print(f"Scanning {root} for largest files (this may take a while)...", flush=True)
         out = sysu.run_command(cmd)
         try:
             data = json.loads(out) if out else []
@@ -157,7 +158,8 @@ def scan_heaviest_dirs(sysu: SystemUtils, path: Optional[str], top_n: int) -> Li
             f"Sort-Object SizeBytes -Descending | Select-Object -First {max(1, top_n)} Path,SizeBytes | ConvertTo-Json"
         )
         enc = _b64.b64encode(script.encode("utf-16le")).decode("ascii")
-        out = sysu.run_command(f'"{ps}" -NoProfile -EncodedCommand {enc}')
+        print(f"Scanning {root} for largest directories (this may take a while)...", flush=True)
+        out = sysu.run_command(f'"{ps}" -NoProfile -ExecutionPolicy Bypass -EncodedCommand {enc}')
         try:
             data = json.loads(out) if out else []
             if isinstance(data, dict):
@@ -363,7 +365,7 @@ def clean_caches(
         )
         import base64 as _b64
         enc = _b64.b64encode(script.encode("utf-16le")).decode("ascii")
-        run("Windows browser caches", f'"{ps}" -NoProfile -EncodedCommand {enc}')
+        run("Windows browser caches", f'"{ps}" -NoProfile -ExecutionPolicy Bypass -EncodedCommand {enc}')
 
     # fstrim free blocks to backing store (Linux/WSL)
     if any(c in cats for c in ("fstrim", "all")) and (sysu.is_linux() or sysu.is_wsl2()):
@@ -492,7 +494,7 @@ def wsl_reclaim(sysu: SystemUtils, *, dry_run: bool = True) -> List[str]:
     if sysu.is_windows():
         # Attempt to find a WSL VHDX and compact it using NTFS LZX.
         pwsh = (
-            "pwsh -NoProfile -Command "
+            "pwsh -NoProfile -ExecutionPolicy Bypass -Command "
             "$v=(Get-ChildItem @(\"$env:LOCALAPPDATA\\wsl\\*\\ext4.vhdx\","
             "\"$env:LOCALAPPDATA\\Packages\\*\\LocalState\\ext4.vhdx\",\"$env:LOCALAPPDATA\\Docker\\wsl\\data\\ext4.vhdx\") "
             "-ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 1).FullName;"
@@ -549,7 +551,7 @@ def space_summary(sysu: SystemUtils) -> str:
     """Return human-readable summary of free space across drives."""
     if sysu.is_windows():
         cmd = (
-            "pwsh -NoProfile -Command "
+            "pwsh -NoProfile -ExecutionPolicy Bypass -Command "
             "Get-PSDrive -PSProvider FileSystem | Select-Object Name,Used,Free,@{n='UsedGB';e={[math]::Round($_.Used/1GB,2)}},@{n='FreeGB';e={[math]::Round($_.Free/1GB,2)}} | Format-Table -AutoSize"
         )
         return sysu.run_command(cmd)
@@ -603,26 +605,31 @@ def run_full_scan(
     list_containers: bool = False,
 ) -> Dict[str, Any]:
     """Run largest, caches, and containers scans and return a structured summary."""
+    print("Scanning largest files...", flush=True)
     largest = scan_largest_files(sysu, path, top_n, min_size, exts=exts, globs=globs)
     largest_total = summarize_total_size(largest)
 
+    print("Detecting caches...", flush=True)
     caches = detect_common_caches(sysu, path)
     caches_per_cat, caches_total = estimate_caches_bytes(sysu, caches)
 
+    print("Scanning containers...", flush=True)
     cont_info = containers_scan(sysu, provider, list_items=list_containers)
     cont_bytes = containers_store_size(sysu, provider)
 
     # Heaviest directories (top-level rollup)
+    print("Scanning heaviest directories...", flush=True)
     heaviest = scan_heaviest_dirs(sysu, path, top_n)
 
     overall = largest_total + caches_total + cont_bytes
     extra: Dict[str, Any] = {}
     if sysu.is_windows():
+        print("Gathering additional triage data (this may take a while)...", flush=True)
         ps = _sh.which("pwsh") or _sh.which("powershell") or "pwsh"  # type: ignore
         import base64 as _b64
         def run_ps(script: str) -> str:
             enc = _b64.b64encode(script.encode("utf-16le")).decode("ascii")
-            return sysu.run_command(f'"{ps}" -NoProfile -EncodedCommand {enc}')
+            return sysu.run_command(f'"{ps}" -NoProfile -ExecutionPolicy Bypass -EncodedCommand {enc}')
 
         tri = {
             "top_files": run_ps("Get-ChildItem C:\\ -File -Recurse -Force -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 40 @{n='GB';e={[math]::Round($_.Length/1GB,2)}}, FullName"),
