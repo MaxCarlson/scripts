@@ -506,8 +506,9 @@ def _write_text_if_changed(path: Path, content: str, verbose: bool, crlf: bool =
 
 def generate_console_proxies(installed_pkg_names: list[str]) -> None:
     """
-    Create/refresh tiny shims in <scripts>/bin that delegate to this repo’s venv entry points.
-    Only proxies console scripts that belong to the distributions we just installed/checked.
+    Create/refresh tiny shims in <scripts>/bin that delegate to this repo's venv entry points.
+    Generates proxies for all console scripts from packages in the modules directory,
+    not just the ones we touched in this run.
     """
     try:
         from importlib import metadata
@@ -521,12 +522,21 @@ def generate_console_proxies(installed_pkg_names: list[str]) -> None:
     venv_bin = venv_dir / ("Scripts" if os.name == "nt" else "bin")
     bin_dir.mkdir(parents=True, exist_ok=True)
 
-    desired = set(n.strip().lower() for n in installed_pkg_names if n.strip())
+    # If no packages were explicitly provided, generate for all installed packages
+    # Otherwise, use the provided list
+    if not installed_pkg_names:
+        desired = None  # None means "all packages"
+    else:
+        desired = set(n.strip().lower() for n in installed_pkg_names if n.strip())
+
     console_map: dict[str, str] = {}
 
     for dist in metadata.distributions():
         dist_name = (dist.metadata.get("Name") or "").lower()
-        if not dist_name or dist_name not in desired:
+        if not dist_name:
+            continue
+        # If desired is None, include all; otherwise only include if in desired set
+        if desired is not None and dist_name not in desired:
             continue
         for ep in dist.entry_points or []:
             if ep.group == "console_scripts" and ep.name:
@@ -610,9 +620,9 @@ def main():
         include_hidden=args.include_hidden,
     )
 
-    # Always refresh console proxies for anything we touched
+    # Always refresh console proxies for all packages (pass empty list to mean "all")
     try:
-        generate_console_proxies(touched_pkgs)
+        generate_console_proxies([])
     except Exception as e:
         log_warning(f"Console proxy generation encountered an issue: {e}")
 

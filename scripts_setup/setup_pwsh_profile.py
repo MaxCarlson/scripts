@@ -22,6 +22,7 @@ def main():
     dyn = (args.dotfiles_dir / "dynamic").resolve()
     ps_aliases = dyn / "setup_pyscripts_aliases.ps1"
     ps_funcs   = dyn / "setup_pyscripts_functions.ps1"
+    venv_activation = dyn / "venv_auto_activation.ps1"
     module_psm1 = (args.scripts_dir / "pwsh" / "ClipboardModule.psm1").resolve()
 
     snippet_lines = [
@@ -30,6 +31,7 @@ def main():
         f'$m = "{str(module_psm1)}"',
         'if (Test-Path (Join-Path $d "setup_pyscripts_aliases.ps1")) { . (Join-Path $d "setup_pyscripts_aliases.ps1") }',
         'if (Test-Path (Join-Path $d "setup_pyscripts_functions.ps1")) { . (Join-Path $d "setup_pyscripts_functions.ps1") }',
+        'if (Test-Path (Join-Path $d "venv_auto_activation.ps1")) { . (Join-Path $d "venv_auto_activation.ps1") }',
         'if (Test-Path $m) { Import-Module $m -ErrorAction SilentlyContinue }',
         "# ----- end added by setup_pwsh_profile.py -----",
         ""
@@ -40,12 +42,25 @@ def main():
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
             content = p.read_text(encoding="utf-8") if p.is_file() else ""
-            if "setup_pwsh_profile.py" in content:
-                if args.verbose: print(f"[INFO] Profile already contains our block: {p}")
-                continue
-            with open(p, "a", encoding="utf-8", newline="\n") as f:
-                f.write("\n" + snippet)
-            print(f"[OK] Updated PowerShell profile: {p}")
+
+            # Check if our block exists
+            if "# ----- added by setup_pwsh_profile.py -----" in content:
+                # Check if it's up-to-date (has venv_auto_activation)
+                if "venv_auto_activation.ps1" in content:
+                    if args.verbose: print(f"[INFO] Profile already up-to-date: {p}")
+                    continue
+                else:
+                    # Update the existing block by replacing it
+                    import re
+                    pattern = r"# ----- added by setup_pwsh_profile\.py -----.*?# ----- end added by setup_pwsh_profile\.py -----\n?"
+                    new_content = re.sub(pattern, snippet, content, flags=re.DOTALL)
+                    p.write_text(new_content, encoding="utf-8")
+                    print(f"[OK] Updated PowerShell profile block: {p}")
+            else:
+                # Append new block
+                with open(p, "a", encoding="utf-8", newline="\n") as f:
+                    f.write("\n" + snippet)
+                print(f"[OK] Added to PowerShell profile: {p}")
         except Exception as e:
             print(f"[WARN] Could not update PowerShell profile {p}: {e}")
 
