@@ -68,6 +68,7 @@ WATCHER_LOG_STATUS_COLOURS = {
 }
 GIB = 1024**3
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+URL_PANEL_AUTO_INTERVAL = 10.0
 
 # Use TermDash for robust in-place dashboard rendering
 # We avoid TermDash here for maximal compatibility across shells; do manual frames
@@ -255,6 +256,42 @@ def _prepare_log_window(logs: List[str], available_rows: int, scroll: int) -> tu
     return logs[start:end], max_scroll
 
 
+def _ansi_visible_len(text: str) -> int:
+    return len(urlscan.strip_ansi(text))
+
+
+def _ansi_slice(text: str, start: int, width: int) -> str:
+    if width <= 0:
+        return ""
+    result: List[str] = []
+    printable = 0
+    i = 0
+    active = []
+    while i < len(text):
+        ch = text[i]
+        if ch == "\x1b":
+            j = text.find("m", i)
+            if j == -1:
+                break
+            seq = text[i : j + 1]
+            result.append(seq)
+            if seq == "\x1b[0m":
+                active.clear()
+            else:
+                active.append(seq)
+            i = j + 1
+            continue
+        if start <= printable < start + width:
+            result.append(ch)
+        printable += 1
+        if printable >= start + width:
+            break
+        i += 1
+    if active:
+        result.append("\x1b[0m")
+    return "".join(result)
+
+
 def _format_buffer_delta(delta_bytes: int) -> str:
     color = "green" if delta_bytes > 5 * GIB else "yellow" if delta_bytes >= 0 else "red"
     sign = "+" if delta_bytes >= 0 else "-"
@@ -438,7 +475,7 @@ def _render_watcher_panel(
         hotkey_lines = ["Press Y to quit, N to cancel"]
     else:
         hotkey_lines = _wrap_hotkey_lines(
-            "Keys: w=back, c=start cleaner, s=scan (dry-run), o=toggle copy/move, "
+            "Keys: w=downloads, u=url stats, c=start cleaner, s=scan (dry-run), o=toggle copy/move, "
             "k=set max-files, f=set free GiB, [=scroll log up, ]=scroll log down, q=quit",
             cols,
         )
@@ -929,6 +966,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     next_url_scan: Optional[float] = None
     last_url_scan = 0.0
     url_scan_json_path = log_dir / "urlscan-latest.json"
+    url_scan_thread: Optional[threading.Thread] = None
+    url_scan_pending_trigger: Optional[str] = None
+    url_scan_status = "idle"
+    url_panel_auto_refresh = True
+    url_panel_hide_complete = True
+    url_panel_top = 0
+    url_panel_scroll = 0
+    url_panel_max_top = 0
+    url_panel_max_scroll = 0
 
     # Totals tracking
     total_completed_bytes = 0
@@ -936,8 +982,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     total_completed_urls = 0
     total_started_urls = 0
 
-    def _refresh_url_scan(trigger: str) -> bool:
-        nonlocal url_rankings, url_order_paths, url_scan_state, next_url_scan, last_url_scan
+    def _refresh_url_scan_sync(trigger: str) -> bool:
+        nonlocal url_rankings, url_order_paths, url_scan_state, next_url_scan, last_url_scan, url_panel_top, url_panel_scroll
         try:
             scan = urlscan.scan_url_stats(stars_dir, aebn_dir, download_root)
         except Exception as exc:
@@ -966,6 +1012,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         except Exception as exc:
             mlog.error(f"Failed to write URL scan summary: {exc}")
         last_url_scan = time.time()
+        url_panel_top = min(url_panel_top, max(0, len(ordered_entries) - 1))
+        url_panel_scroll = max(0, url_panel_scroll)
         if url_scan_interval:
             next_url_scan = last_url_scan + url_scan_interval
         else:
@@ -975,6 +1023,36 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             f"order_key={args.url_order_key} ascending={args.url_order_ascending}"
         )
         return True
+
+    def _schedule_url_scan(trigger: str) -> None:
+        nonlocal url_scan_thread, url_scan_pending_trigger, url_scan_status
+
+        def _launch(trigger_to_run: str) -> None:
+            nonlocal url_scan_thread, url_scan_pending_trigger, url_scan_status
+
+            def runner(req_trigger: str) -> None:
+                nonlocal url_scan_thread, url_scan_pending_trigger, url_scan_status
+                try:
+                    ok = _refresh_url_scan_sync(req_trigger)
+                    url_scan_status = f"scan {'ok' if ok else 'failed'} ({req_trigger})"
+                except Exception as exc:
+                    url_scan_status = f"scan error: {exc}"
+                finally:
+                    url_scan_thread = None
+                    if url_scan_pending_trigger:
+                        pending = url_scan_pending_trigger
+                        url_scan_pending_trigger = None
+                        _launch(pending)
+
+            url_scan_status = f"scan running ({trigger_to_run})"
+            url_scan_thread = threading.Thread(target=runner, args=(trigger_to_run,), daemon=True)
+            url_scan_thread.start()
+
+        if url_scan_thread and url_scan_thread.is_alive():
+            url_scan_pending_trigger = trigger
+            url_scan_status = f"scan queued ({trigger})"
+            return
+        _launch(trigger)
 
     def _path_remaining(path: Path) -> Optional[int]:
         if not url_scan_state:
@@ -1004,7 +1082,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return random.choice(eligible)
         return eligible[0]
 
-    _refresh_url_scan("startup")
+    _schedule_url_scan("startup")
 
     def _reader(ws: WorkerState):
         f = ws.proc.stdout  # type: ignore
@@ -1267,7 +1345,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ws.urlfile = None
         ws.canonical_dir = None
         if finished:
-            if _refresh_url_scan("post-finish") and args.url_preempt:
+            _schedule_url_scan("post-finish")
+            if args.url_preempt:
                 _maybe_preempt_workers()
 
     # Helpers for total throttle
@@ -1615,6 +1694,61 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 else:
                     watcher_log_scroll = min(watcher_log_scroll, watcher_log_meta["log_max_scroll"])
                 _render_screen(lines)
+            elif active_panel == "urls":
+                total_entries = len(url_scan_state.entries) if url_scan_state else 0
+                last_scan_label = (
+                    time.strftime("%H:%M:%S", time.localtime(last_url_scan)) if last_url_scan else "never"
+                )
+                order_desc = f"{args.url_order_key} ({'asc' if args.url_order_ascending else 'desc'})"
+                random_desc = "random" if args.url_random_order else "ranked"
+                palette = urlscan.Palette(enabled=True)
+                lines.append(
+                    f"URL Stats Panel | last refresh: {last_scan_label} | entries: {total_entries} | order: {order_desc} {random_desc}"
+                )
+                lines.append("-" * min(cols, 100))
+                if url_scan_state and url_scan_state.entries:
+                    ordered_entries = urlscan.sort_entries(
+                        url_scan_state.entries, args.url_order_key, args.url_order_ascending
+                    )
+                    max_rows = max(5, min(25, rows - 8))
+                    url_panel_max_top = max(0, len(ordered_entries) - max_rows)
+                    url_panel_top = max(0, min(url_panel_top, url_panel_max_top))
+                    header_values = [name for name, _, _ in urlscan.INTERACTIVE_COLUMN_LAYOUT]
+                    header_line = urlscan._format_interactive_columns(header_values)
+                    visible_entries = ordered_entries[url_panel_top : url_panel_top + max_rows]
+                    table_lines: List[str] = [header_line]
+                    for entry in visible_entries:
+                        row_values = [
+                            entry.name,
+                            urlscan.format_int(entry.total_unique_urls),
+                            urlscan.format_int(entry.ae_line_count),
+                            urlscan.format_int(entry.stars_unique_urls),
+                            urlscan.format_int(entry.mp4_count),
+                            urlscan.format_int(entry.remaining),
+                            urlscan.format_ratio(entry.ratio),
+                            f"{entry.mp4_bytes / urlscan.GBYTES:.2f}",
+                        ]
+                        table_lines.append(urlscan._format_interactive_columns(row_values))
+                    max_line_len = max((len(line) for line in table_lines), default=0)
+                    url_panel_max_scroll = max(0, max_line_len - cols + 2)
+                    url_panel_scroll = max(0, min(url_panel_scroll, url_panel_max_scroll))
+                    for line in table_lines:
+                        lines.append(line[url_panel_scroll : url_panel_scroll + cols])
+                    lines.append(urlscan.build_summary_line(url_scan_state.totals)[:cols])
+                else:
+                    lines.append("No scan data available. Press 'r' to run a scan.")
+                lines.append("-" * min(cols, 100))
+                auto_label = td_utils.color_text("ON", "green") if url_panel_auto_refresh else td_utils.color_text("OFF", "red")
+                lines.append(
+                    f"Auto refresh: {auto_label} | Keys: d=downloads, w=watcher, u=close, r=rescan, a=toggle auto, j/k=vert, h/l=horz, q=quit"
+                )
+                _render_screen(lines)
+                if (
+                    url_panel_auto_refresh
+                    and last_url_scan
+                    and (time.time() - last_url_scan) >= URL_PANEL_AUTO_INTERVAL
+                ):
+                    _refresh_url_scan("url-panel-auto")
             else:
                 # Downloads panel
                 active_workers = sum(1 for w in workers if w.proc)
@@ -1782,7 +1916,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     lines.append("Press Y to quit, N to cancel"[:cols])
                 else:
                     lines.append(
-                        "Keys: w=watcher, p=pause/unpause, q=quit, v=cycle verbose (NDJSON->LOG->off), 1-9=select worker"[
+                        "Keys: w=watcher, u=url stats, p=pause/unpause, q=quit, v=cycle verbose, 1-9=select worker"[
                             :cols
                         ]
                     )
@@ -1808,7 +1942,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             if not key:
                                 continue
                             if key == "w":
-                                active_panel = "watcher" if active_panel == "downloads" else "downloads"
+                                active_panel = "watcher" if active_panel != "watcher" else "downloads"
+                                continue
+                            if key == "u":
+                                active_panel = "urls" if active_panel != "urls" else "downloads"
+                                continue
+                            if key == "d":
+                                active_panel = "downloads"
+                                continue
+                            if active_panel == "urls":
+                                if key == "a":
+                                    url_panel_auto_refresh = not url_panel_auto_refresh
+                                elif key == "r":
+                                    _refresh_url_scan("url-panel-manual")
+                                elif key in ("j",):
+                                    url_panel_top = min(url_panel_top + 1, url_panel_max_top)
+                                elif key in ("k",):
+                                    url_panel_top = max(0, url_panel_top - 1)
+                                elif key in ("h",):
+                                    url_panel_scroll = max(0, url_panel_scroll - 4)
+                                elif key in ("l",):
+                                    url_panel_scroll = min(url_panel_scroll + 4, url_panel_max_scroll)
+                                elif key == "q":
+                                    quit_confirm = True
                                 continue
                             if active_panel == "watcher":
                                 if key == "c" and watcher and watcher_enabled:
@@ -1827,8 +1983,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                     new_op = watcher.toggle_operation()
                                     cfg_snapshot = watcher.config_snapshot()
                                     keep_desc = "keep source" if cfg_snapshot.keep_source else "delete source"
-                                    if cfg_snapshot.keep_source_locked:
-                                        keep_desc += " (locked -K)"
                                     mlog.info(f"MP4 watcher default operation set to {new_op} ({keep_desc}).")
                                 elif key == "k" and watcher and watcher_enabled:
                                     response = _prompt_text("Max MP4 files per watcher run (blank=unlimited)")
