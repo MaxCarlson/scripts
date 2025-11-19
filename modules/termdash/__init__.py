@@ -11,6 +11,9 @@ from .progress import ProgressBar
 from .simpleboard import SimpleBoard
 from .seemake import SeemakePrinter
 
+# Search statistics component (reusable across modules)
+from .search_stats import SearchStats
+
 __all__ = [
     "TermDash",
     "Line",
@@ -19,6 +22,7 @@ __all__ = [
     "ProgressBar",
     "SimpleBoard",
     "SeemakePrinter",
+    "SearchStats",
     "format_bytes",
     "fmt_hms",
     "bytes_to_mib",

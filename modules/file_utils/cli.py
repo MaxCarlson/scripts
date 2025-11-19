@@ -31,14 +31,68 @@ def main(argv: Sequence[str] | None = None) -> int:
         "-d",
         "--depth",
         type=int,
-        default=0,
-        help="Recursion depth. 0 for current directory only.",
+        default=None,
+        help="Recursion depth. 0 for current directory only. Defaults to 0, or 999999 if -e/--extension is used.",
+    )
+    ls_parser.add_argument(
+        "--max-depth",
+        type=int,
+        default=None,
+        help="Override maximum recursion depth (takes precedence over --depth).",
+    )
+    ls_parser.add_argument(
+        "-e",
+        "--extension",
+        metavar="EXT",
+        help="File extension(s) to filter. Single: 'pdf', Multiple: 'pdf|doc|docx'. Enables deep recursion by default.",
+    )
+    ls_parser.add_argument(
+        "-t",
+        "--type",
+        metavar="TYPE",
+        help="File type to filter (alias for --extension).",
+    )
+    ls_parser.add_argument(
+        "--min-size",
+        metavar="SIZE",
+        help="Minimum file size (e.g., '1M', '500KB', '2G'). Excludes directories.",
+    )
+    ls_parser.add_argument(
+        "--max-size",
+        metavar="SIZE",
+        help="Maximum file size (e.g., '100M', '1G'). Excludes directories.",
+    )
+    ls_parser.add_argument(
+        "-n",
+        "--name",
+        metavar="PATTERN",
+        help="Filename glob pattern (e.g., 'report*', '*2024*'). Case-insensitive by default.",
+    )
+    ls_parser.add_argument(
+        "--name-regex",
+        metavar="REGEX",
+        help="Filename regex pattern (e.g., 'report_\\d{4}'). Case-insensitive by default.",
+    )
+    ls_parser.add_argument(
+        "--case-sensitive",
+        action="store_true",
+        help="Make name/extension matching case-sensitive.",
     )
     ls_parser.add_argument(
         "-g",
         "--glob",
         metavar="PATTERN",
         help="Initial glob pattern to filter entries (e.g. '*.py').",
+    )
+    ls_parser.add_argument(
+        "--collapse-paths",
+        action="store_true",
+        help="Collapse intermediate folders when showing filtered results.",
+    )
+    ls_parser.add_argument(
+        "--no-collapse-paths",
+        action="store_true",
+        help="Don't collapse intermediate folders (default).",
     )
     ls_parser.add_argument(
         "-s",
