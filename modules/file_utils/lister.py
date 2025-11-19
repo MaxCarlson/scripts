@@ -8,19 +8,31 @@ except Exception:  # On Windows without windows-curses
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Callable, Dict, List, Any, Tuple, Optional
 
+# Cross-platform utilities
+from cross_platform.size_utils import format_bytes_binary, parse_size_to_bytes
+from cross_platform.fs_utils import matches_ext
+
+# TermDash components
 from termdash.interactive_list import InteractiveList
+from termdash.search_stats import SearchStats
+
+# File utils components
+from .filter_stack import FilterStack, FilterCriterion, FilterMode, FilterType
 
 try:
     from cross_platform.clipboard_utils import set_clipboard
     CLIPBOARD_AVAILABLE = True
 except ImportError:
     CLIPBOARD_AVAILABLE = False
+
+import re
 
 @dataclass
 class Entry:
@@ -37,6 +49,8 @@ class Entry:
     calculated_size: Optional[int] = None  # Actual recursive size for folders
     item_count: Optional[int] = None  # Number of items in folder
     size_calculating: bool = False  # Show spinner while calculating
+    collapsed_path: Optional[str] = None  # Collapsed path representation (e.g., "foo/.../bar")
+    original_depth: Optional[int] = None  # Original depth before collapsing
 
     def get_display_size(self) -> int:
         """Return calculated size if available, else stat size."""
@@ -56,16 +70,142 @@ SORT_FUNCS: Dict[str, Callable[[Entry], object]] = {
 
 DATE_FIELDS = {"created", "modified", "accessed"}
 
-def human_size(num: int) -> str:
-    step_unit = 1024.0
-    value = float(num)
-    for unit in ("B", "KB", "MB", "GB", "TB", "PB"):
-        if value < step_unit or unit == "PB":
-            if unit == "B":
-                return f"{int(value)} {unit}"
-            return f"{value:.1f} {unit}"
-        value /= step_unit
-    return f"{value:.1f} PB"
+# Alias for backward compatibility (uses cross_platform.size_utils)
+human_size = format_bytes_binary
+
+
+@dataclass
+class SearchFilter:
+    """
+    Comprehensive file search filter with multiple criteria.
+
+    All criteria are applied with AND logic (file must match all active filters).
+    """
+    extensions: Optional[List[str]] = None  # List of extensions (OR logic within)
+    min_size: Optional[int] = None  # Minimum size in bytes
+    max_size: Optional[int] = None  # Maximum size in bytes
+    name_pattern: Optional[str] = None  # Glob pattern for filename
+    name_regex: Optional[re.Pattern] = None  # Compiled regex for filename
+    case_sensitive: bool = False  # Case sensitivity for name/extension matching
+
+    def matches(self, entry: Entry) -> bool:
+        """Check if entry matches all active filter criteria."""
+        # Extension filter (only for files)
+        if self.extensions and not entry.is_dir:
+            if not any(matches_ext(entry.path, ext, case_sensitive=self.case_sensitive)
+                      for ext in self.extensions):
+                return False
+
+        # Size filters (only for files)
+        if not entry.is_dir:
+            if self.min_size is not None and entry.size < self.min_size:
+                return False
+            if self.max_size is not None and entry.size > self.max_size:
+                return False
+
+        # Name pattern filter (glob)
+        if self.name_pattern:
+            name = entry.name if self.case_sensitive else entry.name.lower()
+            pattern = self.name_pattern if self.case_sensitive else self.name_pattern.lower()
+            if not fnmatch(name, pattern):
+                return False
+
+        # Name regex filter
+        if self.name_regex:
+            if not self.name_regex.search(entry.name):
+                return False
+
+        return True
+
+    def describe(self) -> str:
+        """Return human-readable description of active filters."""
+        parts = []
+
+        if self.extensions:
+            if len(self.extensions) == 1:
+                parts.append(f"ext={self.extensions[0]}")
+            else:
+                parts.append(f"ext={{{','.join(self.extensions)}}}")
+
+        if self.min_size is not None:
+            parts.append(f"size>={format_bytes_binary(self.min_size)}")
+
+        if self.max_size is not None:
+            parts.append(f"size<={format_bytes_binary(self.max_size)}")
+
+        if self.name_pattern:
+            parts.append(f"name={self.name_pattern}")
+
+        if self.name_regex:
+            parts.append(f"regex={self.name_regex.pattern}")
+
+        return " AND ".join(parts) if parts else "No filters"
+
+    @classmethod
+    def from_args(cls, args: argparse.Namespace) -> 'SearchFilter':
+        """Create SearchFilter from CLI arguments."""
+        # Parse extensions (support pipe-separated list)
+        extensions = None
+        ext_arg = getattr(args, 'extension', None) or getattr(args, 'type', None)
+        if ext_arg:
+            # Split by pipe and normalize
+            extensions = [e.strip().lstrip('*').lstrip('.') for e in ext_arg.split('|')]
+            extensions = [e for e in extensions if e]  # Remove empty strings
+
+        # Parse size filters
+        min_size = None
+        max_size = None
+        if getattr(args, 'min_size', None):
+            try:
+                min_size = parse_size_to_bytes(args.min_size)
+            except ValueError as e:
+                sys.stderr.write(f"Invalid --min-size: {e}\n")
+                sys.exit(1)
+
+        if getattr(args, 'max_size', None):
+            try:
+                max_size = parse_size_to_bytes(args.max_size)
+            except ValueError as e:
+                sys.stderr.write(f"Invalid --max-size: {e}\n")
+                sys.exit(1)
+
+        # Validate size range
+        if min_size is not None and max_size is not None and min_size > max_size:
+            sys.stderr.write(f"Error: --min-size ({format_bytes_binary(min_size)}) "
+                           f"cannot be greater than --max-size ({format_bytes_binary(max_size)})\n")
+            sys.exit(1)
+
+        # Parse name filters
+        name_pattern = getattr(args, 'name', None)
+        name_regex = None
+        if getattr(args, 'name_regex', None):
+            try:
+                flags = 0 if getattr(args, 'case_sensitive', False) else re.IGNORECASE
+                name_regex = re.compile(args.name_regex, flags)
+            except re.error as e:
+                sys.stderr.write(f"Invalid --name-regex: {e}\n")
+                sys.exit(1)
+
+        case_sensitive = getattr(args, 'case_sensitive', False)
+
+        return cls(
+            extensions=extensions,
+            min_size=min_size,
+            max_size=max_size,
+            name_pattern=name_pattern,
+            name_regex=name_regex,
+            case_sensitive=case_sensitive,
+        )
+
+    def has_filters(self) -> bool:
+        """Check if any filters are active."""
+        return bool(
+            self.extensions or
+            self.min_size is not None or
+            self.max_size is not None or
+            self.name_pattern or
+            self.name_regex
+        )
 
 def calculate_folder_size(path: Path) -> Tuple[int, int]:
     """Calculate total size and item count for a folder recursively.
@@ -88,32 +228,208 @@ def calculate_folder_size(path: Path) -> Tuple[int, int]:
 
     return total_size, item_count
 
-def read_entries_recursive(target: Path, max_depth: int, parent_path: Path = None) -> List[Entry]:
+def matches_extension(path: Path, extension: Optional[str]) -> bool:
+    """
+    Check if file matches the extension filter.
+    Wrapper around cross_platform.fs_utils.matches_ext for compatibility.
+    """
+    if not extension:
+        return True
+    # Normalize extension (remove leading *. or .)
+    ext = extension.lstrip('*').lstrip('.')
+    return matches_ext(path, ext, case_sensitive=False)
+
+def collapse_intermediate_paths(entries: List[Entry], search_root: Path) -> List[Entry]:
+    """
+    Collapse intermediate folders that don't contain matching files.
+
+    When searching for specific files (e.g., PDFs), we often have deep
+    folder hierarchies where most folders are just containers. This function
+    collapses those paths to make the results cleaner.
+
+    Example:
+        Before: documents/2024/reports/Q1/file.pdf
+        After:  documents/.../Q1/file.pdf (collapsed_path)
+
+    Args:
+        entries: List of Entry objects (should only contain matching files)
+        search_root: Root directory of the search
+
+    Returns:
+        List of Entry objects with collapsed_path set
+    """
+    if not entries:
+        return entries
+
+    # Build a map of path -> entry for quick lookup
+    path_to_entry = {e.path: e for e in entries}
+
+    # For each entry, build a collapsed path
+    for entry in entries:
+        try:
+            # Get all parents from search_root to this entry
+            parents = []
+            current = entry.path.parent
+
+            while current != search_root and current != current.parent:
+                parents.append(current)
+                current = current.parent
+
+            if not parents:
+                # Entry is directly in search_root
+                entry.collapsed_path = entry.name
+                continue
+
+            # Reverse to go from root to entry
+            parents.reverse()
+
+            # Find significant parents (those with multiple children)
+            significant_parents = []
+            for parent in parents:
+                # Count children in this parent that are either:
+                # 1. In our entries list (matching files)
+                # 2. Parent of something in our entries list
+                children_count = sum(
+                    1 for e in entries
+                    if e.path.parent == parent or (
+                        e.path != parent and parent in e.path.parents
+                    )
+                )
+
+                # If this parent has multiple children, it's significant
+                if children_count > 1 or parent == parents[0] or parent == parents[-1]:
+                    significant_parents.append(parent)
+
+            # Build collapsed path
+            if len(significant_parents) <= 1:
+                # Simple case: just the filename
+                collapsed = entry.name
+            elif len(significant_parents) == len(parents):
+                # No collapsing needed - all parents are significant
+                collapsed = str(entry.path.relative_to(search_root))
+            else:
+                # Build path with "..." for collapsed sections
+                parts = []
+
+                # Add first significant parent
+                if significant_parents:
+                    parts.append(significant_parents[0].name)
+
+                # Add "..." if we skipped some parents
+                if len(significant_parents) < len(parents):
+                    parts.append("...")
+
+                # Add last significant parent if different from first
+                if len(significant_parents) > 1 and significant_parents[-1] != significant_parents[0]:
+                    parts.append(significant_parents[-1].name)
+
+                # Add filename
+                parts.append(entry.name)
+
+                collapsed = "/".join(parts)
+
+            entry.collapsed_path = collapsed
+
+        except (ValueError, OSError):
+            # Fallback to full path if something goes wrong
+            entry.collapsed_path = entry.name
+
+    return entries
+
+def read_entries_recursive(
+    target: Path,
+    max_depth: int,
+    parent_path: Path = None,
+    search_filter: Optional[SearchFilter] = None,
+    stats: Optional[SearchStats] = None,
+    progress_callback: Optional[Callable[[SearchStats], None]] = None
+) -> List[Entry]:
+    """
+    Recursively read directory entries with optional filtering.
+
+    Args:
+        target: Root directory to search
+        max_depth: Maximum recursion depth
+        parent_path: Parent path for hierarchical tracking
+        search_filter: Optional SearchFilter with multiple criteria
+        stats: Optional SearchStats object to track progress
+        progress_callback: Optional callback for progress updates
+
+    Returns:
+        List of Entry objects matching the filter criteria
+    """
     entries: List[Entry] = []
+    if stats is None:
+        stats = SearchStats()
+
+    # Call progress callback periodically
+    last_progress_time = time.time()
+    progress_interval = 0.1  # Update every 100ms
 
     def _walk(curr_path: Path, current_depth: int, parent: Path = None):
+        nonlocal last_progress_time
+
         if current_depth > max_depth:
             return
+
         try:
             for item in curr_path.iterdir():
                 try:
-                    stats = item.stat()
-                    entries.append(
-                        Entry(
-                            path=item,
-                            name=item.name,
-                            is_dir=item.is_dir(),
-                            size=stats.st_size,
-                            created=datetime.fromtimestamp(stats.st_ctime),
-                            modified=datetime.fromtimestamp(stats.st_mtime),
-                            accessed=datetime.fromtimestamp(stats.st_atime),
-                            depth=current_depth,
-                            expanded=False,
-                            parent_path=parent,
-                        )
+                    item_stats = item.stat()
+                    is_dir = item.is_dir()
+
+                    # Update statistics
+                    if is_dir:
+                        stats.dirs_searched += 1
+                    else:
+                        stats.files_searched += 1
+                        stats.bytes_searched += item_stats.st_size
+
+                    # Create temporary entry for filter matching
+                    temp_entry = Entry(
+                        path=item,
+                        name=item.name,
+                        is_dir=is_dir,
+                        size=item_stats.st_size,
+                        created=datetime.fromtimestamp(item_stats.st_ctime),
+                        modified=datetime.fromtimestamp(item_stats.st_mtime),
+                        accessed=datetime.fromtimestamp(item_stats.st_atime),
+                        depth=current_depth,
+                        expanded=False,
+                        parent_path=parent,
                     )
-                    if item.is_dir():
-                        # Pass the current item's path as parent for its children
+
+                    # Check if entry matches search filter
+                    matches_filter = True
+                    if search_filter:
+                        matches_filter = search_filter.matches(temp_entry)
+
+                    # Skip non-matching files
+                    if not is_dir and not matches_filter:
+                        continue
+
+                    # Update found stats for matching files
+                    if not is_dir and matches_filter:
+                        stats.files_found += 1
+                        stats.bytes_found += item_stats.st_size
+
+                    # When search filter is active, only add matching files (not directories)
+                    # This gives a clean list of just the matching files
+                    if search_filter and search_filter.has_filters() and is_dir:
+                        # Skip adding directories to entries when filtering
+                        # But still recurse into them to find matching files
+                        pass
+                    else:
+                        entries.append(temp_entry)
+
+                    # Call progress callback periodically
+                    current_time = time.time()
+                    if progress_callback and (current_time - last_progress_time) >= progress_interval:
+                        progress_callback(stats)
+                        last_progress_time = current_time
+
+                    if is_dir:
+                        # Recurse into subdirectories
                         _walk(item, current_depth + 1, item)
                 except OSError:
                     continue
@@ -121,6 +437,12 @@ def read_entries_recursive(target: Path, max_depth: int, parent_path: Path = Non
             sys.stderr.write(f"Cannot read directory {curr_path}: {exc}\n")
 
     _walk(target, 0, parent_path)
+    stats.end_time = time.time()
+
+    # Final progress callback
+    if progress_callback:
+        progress_callback(stats)
+
     return entries
 
 def format_entry_line(entry: Entry, sort_field: str, width: int, show_date: bool = True, show_time: bool = True, scroll_offset: int = 0) -> str:
@@ -162,9 +484,12 @@ def format_entry_line(entry: Entry, sort_field: str, width: int, show_date: bool
     # Add expansion indicator for directories
     if entry.is_dir:
         indicator = "▼ " if entry.expanded else "▶ "
-        name = f"{indent}{indicator}{entry.name}/"
+        display_name = entry.collapsed_path if entry.collapsed_path else entry.name
+        name = f"{indent}{indicator}{display_name}/"
     else:
-        name = f"{indent}  {entry.name}"
+        # Use collapsed_path if available, otherwise use regular name
+        display_name = entry.collapsed_path if entry.collapsed_path else entry.name
+        name = f"{indent}  {display_name}"
 
     # Calculate available space for name
     timestamp_len = len(timestamp) + 2 if timestamp else 0
@@ -406,7 +731,71 @@ def run_lister(args: argparse.Namespace) -> int:
         sys.stderr.write(f"Path does not exist or is not a directory: {target}\n")
         return 1
 
-    entries = read_entries_recursive(target, args.depth)
+    # Create search filter from arguments
+    search_filter = SearchFilter.from_args(args)
+
+    # Determine depth: max_depth > depth > default
+    # Default is 0 (current dir only), unless any filter is set (then 999999)
+    if getattr(args, 'max_depth', None) is not None:
+        depth = args.max_depth
+    elif getattr(args, 'depth', None) is not None:
+        depth = args.depth
+    elif search_filter.has_filters():
+        depth = 999999  # Deep search when filtering
+    else:
+        depth = 0  # Default: current directory only
+
+    # Determine path collapse setting
+    collapse_paths = getattr(args, 'collapse_paths', False)
+    if getattr(args, 'no_collapse_paths', False):
+        collapse_paths = False
+
+    # Create search stats tracker
+    search_stats = SearchStats()
+
+    # Progress callback for terminal output
+    last_update = [time.time()]  # Use list to allow modification in closure
+
+    def progress_callback(stats: SearchStats):
+        """Display progress during scan."""
+        current = time.time()
+        # Update every 0.5 seconds to avoid flooding terminal
+        if current - last_update[0] >= 0.5:
+            sys.stderr.write(
+                f"\rScanning... {stats.files_searched:,} files searched, "
+                f"{stats.files_found:,} found ({stats.match_percentage():.1f}%), "
+                f"{stats.files_per_second():.0f} files/sec"
+            )
+            sys.stderr.flush()
+            last_update[0] = current
+
+    # Show initial message
+    if search_filter.has_filters():
+        sys.stderr.write(f"Searching in {target} (depth: {depth}, filters: {search_filter.describe()})...\n")
+    else:
+        sys.stderr.write(f"Listing files in {target} (depth: {depth})...\n")
+    sys.stderr.flush()
+
+    # Read entries with progress tracking
+    entries = read_entries_recursive(
+        target,
+        depth,
+        search_filter=search_filter,
+        stats=search_stats,
+        progress_callback=progress_callback
+    )
+
+    # Clear progress line and show final stats
+    sys.stderr.write("\r" + " " * 100 + "\r")  # Clear line
+    if search_filter.has_filters() or depth > 0:
+        sys.stderr.write(f"{search_stats.format_summary()}\n")
+    sys.stderr.flush()
+
+    # Apply path collapsing if enabled and filters are active
+    if collapse_paths and search_filter.has_filters():
+        sys.stderr.write("Collapsing intermediate paths...\n")
+        entries = collapse_intermediate_paths(entries, target)
+        sys.stderr.write(f"Collapsed paths for {len(entries)} entries.\n")
 
     # Normalize abbreviated sort field names
     sort_field_map = {
@@ -640,10 +1029,52 @@ def run_lister(args: argparse.Namespace) -> int:
         ord("n"): "name",
     }
 
+    # Store search stats for header updates
+    initial_search_stats = search_stats
+
+    # Build header template function
+    def build_header(visible_count: Optional[int] = None, filter_active: bool = False):
+        """Build header with current filter state."""
+        parts = [f"Path: {target}"]
+
+        # Show active search filters
+        if search_filter.has_filters():
+            parts.append(f"Filters: {search_filter.describe()}")
+
+        # Show counts
+        if search_filter.has_filters() or depth > 0:
+            total_found = initial_search_stats.files_found
+            total_scanned = initial_search_stats.files_searched
+
+            if visible_count is not None and filter_active:
+                # TUI filter is active, show subset
+                parts.append(f"Showing: {visible_count:,} of {total_found:,} files")
+            elif visible_count is not None:
+                # No TUI filter, show all found files
+                parts.append(f"Showing: {visible_count:,} files (scanned {total_scanned:,}, {initial_search_stats.match_percentage():.1f}% match)")
+            else:
+                # Initial state
+                parts.append(f"Found: {total_found:,} of {total_scanned:,} files ({initial_search_stats.match_percentage():.1f}%)")
+
+        return " │ ".join(parts)
+
+    # Initial header
+    header = build_header(len(entries), bool(args.glob))
+
+    # Build footer with search stats
     footer_lines = [
         "↑↓/jk/PgUp/Dn │ f:filter x:exclude │ ↵:expand ESC:collapse ^Q:quit",
         "Sort c/m/a/n/s │ e:all o:open F:dirs │ d:date t:time │ y:copy S:calc │ ←→",
     ]
+
+    # Add search stats line if filters were used or deep search
+    if search_filter.has_filters() or depth > 0:
+        stats_line = (
+            f"Found: {search_stats.files_found:,} files ({human_size(search_stats.bytes_found)}) │ "
+            f"Match: {search_stats.match_percentage():.1f}% │ "
+            f"Rate: {search_stats.files_per_second():.0f} files/sec"
+        )
+        footer_lines.insert(0, stats_line)
 
     list_view = InteractiveList(
         items=manager.get_visible_entries(SORT_FUNCS[sort_field], args.order == "desc", not getattr(args, 'no_dirs_first', False)),
@@ -652,7 +1083,7 @@ def run_lister(args: argparse.Namespace) -> int:
         filter_func=filter_entry,
         initial_sort=sort_field,
         initial_order=args.order,
-        header=f"Path: {target}",
+        header=header,
         sort_keys_mapping=sort_keys_mapping,
         footer_lines=footer_lines,
         detail_formatter=detail_formatter,
