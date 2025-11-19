@@ -26,11 +26,17 @@ def main():
 
     snippet_lines = [
         "# ----- added by setup_pwsh_profile.py -----",
-        f'$d = "{str(dyn)}"',
-        f'$m = "{str(module_psm1)}"',
-        'if (Test-Path (Join-Path $d "setup_pyscripts_aliases.ps1")) { . (Join-Path $d "setup_pyscripts_aliases.ps1") }',
-        'if (Test-Path (Join-Path $d "setup_pyscripts_functions.ps1")) { . (Join-Path $d "setup_pyscripts_functions.ps1") }',
-        'if (Test-Path $m) { Import-Module $m -ErrorAction SilentlyContinue }',
+        "$dotfilesRoot = if ($env:DOTFILES_REPO) { $env:DOTFILES_REPO } elseif ($env:DOTFILES) { $env:DOTFILES } else { Join-Path $HOME 'dotfiles' }",
+        "if ($dotfilesRoot) {",
+        "    $dynamicDir = Join-Path $dotfilesRoot 'dynamic'",
+        "    if (Test-Path (Join-Path $dynamicDir 'setup_pyscripts_aliases.ps1')) { . (Join-Path $dynamicDir 'setup_pyscripts_aliases.ps1') }",
+        "    if (Test-Path (Join-Path $dynamicDir 'setup_pyscripts_functions.ps1')) { . (Join-Path $dynamicDir 'setup_pyscripts_functions.ps1') }",
+        "}",
+        "$scriptsRoot = if ($env:SCRIPTS_REPO) { $env:SCRIPTS_REPO } elseif ($env:SCRIPTS) { $env:SCRIPTS } else { $null }",
+        "if ($scriptsRoot) {",
+        "    $clipboardModule = Join-Path $scriptsRoot 'pwsh\\ClipboardModule.psm1'",
+        "    if (Test-Path $clipboardModule) { Import-Module $clipboardModule -ErrorAction SilentlyContinue }",
+        "}",
         "# ----- end added by setup_pwsh_profile.py -----",
         ""
     ]
@@ -51,3 +57,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
