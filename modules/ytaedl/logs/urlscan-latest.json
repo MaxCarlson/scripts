@@ -1,0 +1,39 @@
+{
+  "settings": {
+    "stars_dir": "D:\\Pictures\\Saved\\tmpvids\\ytaedl\\files\\downloads\\stars",
+    "ae_dir": "D:\\Pictures\\Saved\\tmpvids\\ytaedl\\files\\downloads\\ae-stars",
+    "media_dir": "D:\\Pictures\\Saved\\tmpvids\\ytaedl\\stars",
+    "sort_key": "ratio",
+    "ascending": false
+  },
+  "entries": [
+    {
+      "name": "regular_file",
+      "total_unique_urls": 2,
+      "ae_url_lines": 0,
+      "ae_unique_urls": 0,
+      "stars_url_lines": 2,
+      "stars_unique_urls": 2,
+      "downloaded_mp4s": 0,
+      "downloaded_bytes": 0,
+      "downloaded_gb": 0.0,
+      "mp4_files": [],
+      "remaining": 2,
+      "remaining_ratio": null,
+      "ae_file": null,
+      "stars_file": "D:\\Pictures\\Saved\\tmpvids\\ytaedl\\files\\downloads\\stars\\regular_file.txt",
+      "media_folder": "D:\\Pictures\\Saved\\tmpvids\\ytaedl\\stars\\regular_file"
+    }
+  ],
+  "totals": {
+    "total_unique_urls": 2,
+    "ae_url_lines": 0,
+    "ae_unique_urls": 0,
+    "stars_url_lines": 2,
+    "stars_unique_urls": 2,
+    "downloaded_mp4s": 0,
+    "downloaded_bytes": 0,
+    "downloaded_gb": 0.0,
+    "remaining": 2
+  }
+}

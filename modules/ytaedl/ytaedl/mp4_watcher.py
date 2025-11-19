@@ -16,7 +16,6 @@ class WatcherConfig:
     default_operation: str
     max_files: Optional[int]
     keep_source: bool
-    keep_source_locked: bool
     total_size_trigger_bytes: Optional[int]  # Auto-trigger when total MP4 size exceeds this
     free_space_trigger_bytes: Optional[int]  # Auto-trigger when free space drops below this
 
@@ -51,6 +50,38 @@ class WatcherSnapshot:
     last_result: Optional[WatcherRunSummary]
     bytes_since_last: Optional[int]
     config: WatcherConfig
+
+
+def _format_bytes(num_bytes: Optional[int | float]) -> str:
+    if not isinstance(num_bytes, (int, float)) or num_bytes <= 0:
+        return "0 B"
+    value = float(num_bytes)
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    idx = 0
+    while value >= 1024 and idx < len(units) - 1:
+        value /= 1024
+        idx += 1
+    precision = 0 if idx == 0 else 2
+    return f"{value:.{precision}f} {units[idx]}"
+
+
+def _format_duration(seconds: Optional[int | float]) -> str:
+    if not isinstance(seconds, (int, float)) or seconds < 0:
+        return "0:00:00.000"
+    total = float(seconds)
+    base = int(total)
+    millis = int((total - base) * 1000)
+    mins, secs = divmod(base, 60)
+    hours, mins = divmod(mins, 60)
+    return f"{hours:d}:{mins:02d}:{secs:02d}.{millis:03d}"
+
+
+def _format_max_files(value: Optional[int]) -> str:
+    return "unlimited" if not isinstance(value, int) or value <= 0 else str(value)
+
+
+def _operation_mode_label(keep_source: bool) -> str:
+    return "keep source" if keep_source else "delete source"
 
 
 class MP4Watcher:
@@ -89,13 +120,32 @@ class MP4Watcher:
         with self._lock:
             return replace(self._config)
 
+    def _resolve_max_files(self, requested: Optional[int]) -> Optional[int]:
+        if isinstance(requested, int) and requested > 0:
+            return requested
+        if isinstance(self._config.max_files, int) and self._config.max_files > 0:
+            return self._config.max_files
+        return None
+
+    def _log_status(self, status: str, message: str) -> None:
+        try:
+            mp4_sync = self._load_mp4_sync()
+            self._prepare_logging()
+            mp4_sync.log_event(status, message)
+        except Exception:
+            # Logging must never interrupt watcher operation
+            return
+
+    def log_event(self, status: str, message: str) -> None:
+        """Expose logging so callers (manager UI) can append watcher events."""
+        self._log_status(status, message)
+
     def _apply_operation_locked(self, operation: str) -> str:
         normalized = operation.lower()
         if normalized not in {"copy", "move"}:
             raise ValueError(f"Unsupported MP4 operation: {operation}")
         self._config.default_operation = normalized
-        if not self._config.keep_source_locked:
-            self._config.keep_source = normalized == "copy"
+        self._config.keep_source = normalized == "copy"
         return normalized
 
     def set_default_operation(self, operation: str) -> str:
@@ -105,28 +155,50 @@ class MP4Watcher:
     def toggle_operation(self) -> str:
         with self._lock:
             next_operation = "copy" if self._config.default_operation == "move" else "move"
-            return self._apply_operation_locked(next_operation)
+            result = self._apply_operation_locked(next_operation)
+            keep_source = self._config.keep_source
+        self._log_status("MODE", f"Default operation set to {result} ({_operation_mode_label(keep_source)}).")
+        return result
 
     def set_max_files(self, value: Optional[int]) -> Optional[int]:
         normalized = value if isinstance(value, int) and value > 0 else None
         with self._lock:
             self._config.max_files = normalized
-            return self._config.max_files
+            current = self._config.max_files
+        if current:
+            self._log_status("LIMIT", f"Max files per run set to {current}.")
+        else:
+            self._log_status("LIMIT", "Max files per run set to unlimited.")
+        return current
 
     def set_free_space_trigger_gib(self, value: Optional[float]) -> Optional[int]:
+        new_bytes: Optional[int]
         with self._lock:
             if value is None or (isinstance(value, (int, float)) and value <= 0):
                 self._config.free_space_trigger_bytes = None
+                new_bytes = None
             else:
-                self._config.free_space_trigger_bytes = int(float(value) * (1024 ** 3))
-            return self._config.free_space_trigger_bytes
+                self._config.free_space_trigger_bytes = int(float(value) * (1024**3))
+                new_bytes = self._config.free_space_trigger_bytes
+        if new_bytes:
+            gib = new_bytes / (1024**3)
+            self._log_status("TRIGGER", f"Free-space trigger set to {gib:.1f} GiB.")
+        else:
+            self._log_status("TRIGGER", "Free-space trigger disabled.")
+        return new_bytes
 
-    def manual_run(self, *, dry_run: bool, trigger: str, operation: Optional[str] = None, max_files: Optional[int] = None) -> bool:
+    def manual_run(
+        self, *, dry_run: bool, trigger: str, operation: Optional[str] = None, max_files: Optional[int] = None
+    ) -> bool:
         if not self.is_enabled():
+            self._log_status("WARN", f"{'Dry-run' if dry_run else 'Run'} ignored: watcher disabled or misconfigured.")
             return False
-        op = (operation or self._config.default_operation)
+        op = operation or self._config.default_operation
         eff_max = max_files if max_files is not None else self._config.max_files
-        return self._start_run(operation=op, dry_run=dry_run, trigger=trigger, max_files=eff_max)
+        started = self._start_run(operation=op, dry_run=dry_run, trigger=trigger, max_files=eff_max)
+        if not started:
+            self._log_status("WARN", f"{'Dry-run' if dry_run else 'Run'} request ignored (already running).")
+        return started
 
     def _calculate_total_mp4_size(self) -> int:
         """Calculate total size of all MP4 files in staging root subdirectories."""
@@ -174,6 +246,11 @@ class MP4Watcher:
                     max_files=self._config.max_files,
                 )
                 if started:
+                    limit_desc = _format_max_files(self._resolve_max_files(self._config.max_files))
+                    self._log_status(
+                        "AUTO",
+                        f"Auto-clean triggered ({trigger}); operation={self._config.default_operation}, max_files={limit_desc}.",
+                    )
                     return trigger
         return None
 
@@ -232,7 +309,14 @@ class MP4Watcher:
                 daemon=True,
             )
             self._thread.start()
-            return True
+            keep_source = self._config.keep_source
+        run_label = "Dry-run" if dry_run else "Run"
+        limit_desc = _format_max_files(self._resolve_max_files(max_files))
+        self._log_status(
+            "STATE",
+            f"{run_label} started ({operation}, max_files={limit_desc}, {_operation_mode_label(keep_source)}) via {trigger}",
+        )
+        return True
 
     def _run(self, operation: str, dry_run: bool, trigger: str, max_files: Optional[int]) -> None:
         mp4_sync = self._load_mp4_sync()
@@ -267,7 +351,7 @@ class MP4Watcher:
                 self._plan_actions = total_files
                 self._plan_bytes = total_bytes
 
-            effective_max = max_files if (max_files and max_files > 0) else self._config.max_files
+            effective_max = self._resolve_max_files(max_files)
             processed_actions = mp4_sync.execute_plan(
                 plan,
                 dry_run=dry_run,
@@ -290,12 +374,21 @@ class MP4Watcher:
                 processed_bytes=processed_bytes,
                 summary_rows=summary.rows,
             )
+            summary_bytes = processed_bytes if not dry_run else total_bytes
+            mode_label = "Dry-run" if dry_run else "Run"
+            action_desc = f"{len(processed_actions)}/{total_files} actions"
+            bytes_desc = f"{'planned' if dry_run else 'moved'} {_format_bytes(summary_bytes)}"
+            self._log_status(
+                "STATE",
+                f"{mode_label} complete in {_format_duration(run_summary.duration_s)} ({action_desc}, {bytes_desc}).",
+            )
             with self._lock:
                 self._last_result = run_summary
                 self._bytes_at_last_run = self._known_download_bytes
         except Exception as exc:
             with self._lock:
                 self._last_error = str(exc)
+            self._log_status("ERROR", f"Watcher run failed: {exc}")
         finally:
             if hasattr(progress, "set_running"):
                 progress.set_running(False)  # type: ignore[attr-defined]
@@ -307,3 +400,5 @@ class MP4Watcher:
                 self._start_time = None
                 self._current_operation = None
                 self._current_dry_run = False
+                self._plan_actions = None
+                self._plan_bytes = None

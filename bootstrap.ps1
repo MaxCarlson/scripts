@@ -13,6 +13,25 @@ $env:PYTHONIOENCODING = "utf-8"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $VenvDir = Join-Path $Root '.venv'
 $VenvPython = Join-Path $VenvDir 'Scripts\python.exe'
+$repoHelperPath = Join-Path $Root "pwsh\ResolveRepoPaths.ps1"
+if (Test-Path $repoHelperPath) {
+    try {
+        . $repoHelperPath
+        $repoEnv = Initialize-RepoEnvironment -AnchorPath $Root -AnchorRepoName 'scripts' -PersistScopes @('User')
+        if ($repoEnv.SCRIPTS) { $global:SCRIPTS_REPO = $repoEnv.SCRIPTS }
+        $summary = @()
+        foreach ($key in 'PWSH_REPO','SCRIPTS','DOTFILES') {
+            $value = if ($repoEnv[$key]) { $repoEnv[$key] } else { '<missing>' }
+            $summary += "${key}=$value"
+        }
+        Write-Host "[BOOTSTRAP] Repo env synchronized: $($summary -join ' | ')" -ForegroundColor DarkGray
+    } catch {
+        Write-Warning "[BOOTSTRAP] Repo env initialization failed: $_"
+    }
+} else {
+    Write-Warning "[BOOTSTRAP] Repo resolver missing at $repoHelperPath"
+}
+
 
 Write-Host "[BOOTSTRAP] Ensuring Python virtual environment..." -ForegroundColor Cyan
 
