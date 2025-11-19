@@ -78,7 +78,7 @@ def test_format_entry_line_no_indent():
     assert formatted_line.startswith(now.strftime("%Y-%m-%d"))
     assert "  file.txt" in formatted_line
     assert not formatted_line.lstrip().startswith("  ")
-    assert "1.0 KB" in formatted_line
+    assert "1.00 KiB" in formatted_line  # Binary units (KiB, not KB)
 
 def test_format_entry_line_with_indent():
     now = datetime.now()
@@ -111,7 +111,7 @@ def test_format_entry_line_no_date():
     formatted_line = lister.format_entry_line(entry, "created", 80, show_date=False, show_time=True, scroll_offset=0)
     assert now.strftime("%Y-%m-%d") not in formatted_line
     assert now.strftime("%H:%M:%S") in formatted_line
-    assert "1.0 KB" in formatted_line
+    assert "1.00 KiB" in formatted_line  # Binary units (KiB, not KB)
 
 def test_format_entry_line_no_time():
     now = datetime.now()
@@ -128,7 +128,7 @@ def test_format_entry_line_no_time():
     formatted_line = lister.format_entry_line(entry, "created", 80, show_date=True, show_time=False, scroll_offset=0)
     assert now.strftime("%Y-%m-%d") in formatted_line
     assert now.strftime("%H:%M:%S") not in formatted_line
-    assert "1.0 KB" in formatted_line
+    assert "1.00 KiB" in formatted_line  # Binary units (KiB, not KB)
 
 def test_format_entry_line_no_date_no_time():
     now = datetime.now()
@@ -146,7 +146,7 @@ def test_format_entry_line_no_date_no_time():
     assert now.strftime("%Y-%m-%d") not in formatted_line
     assert now.strftime("%H:%M:%S") not in formatted_line
     assert "file.txt" in formatted_line
-    assert "1.0 KB" in formatted_line
+    assert "1.00 KiB" in formatted_line  # Binary units (KiB, not KB)
 
 def test_format_entry_line_with_scroll():
     now = datetime.now()
@@ -331,7 +331,7 @@ def test_format_entry_line_folder_with_calculated_size():
     formatted_line = lister.format_entry_line(entry, "created", 100, show_date=True, show_time=True, scroll_offset=0)
 
     # Should show calculated size with item count (abbreviated)
-    assert "1000.0 KB" in formatted_line or "1.0 MB" in formatted_line
+    assert "1000.00 KiB" in formatted_line  # Binary units: 1024000 bytes = 1000 KiB
     assert "(42)" in formatted_line  # Count < 1000 shows as just number in parens
 
 def test_format_entry_line_folder_calculating():

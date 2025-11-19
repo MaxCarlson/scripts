@@ -1,0 +1,150 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.9, pytest-8.4.2, pluggy-1.6.0
+rootdir: C:\Users\mcarls\Repos\scripts\modules\file_utils
+configfile: pyproject.toml
+plugins: libtmux-0.46.2, asyncio-1.2.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 103 items
+
+file_utils\tests\diskspace_test.py ......                                [  5%]
+file_utils\tests\full_scan_test.py .                                     [  6%]
+file_utils\tests\lister_fallback_windows_test.py .                       [  7%]
+file_utils\tests\lister_test.py ...F.FFF........F.......                 [ 31%]
+file_utils\tests\replacer_operations_test.py ........................... [ 57%]
+.                                                                        [ 58%]
+file_utils\tests\replacer_state_test.py .......................          [ 80%]
+file_utils\tests\replacer_test.py ...............                        [ 95%]
+file_utils\tests\windows_scan_commands_test.py ..                        [ 97%]
+file_utils\tests\wsltool_test.py ..F                                     [100%]
+
+================================== FAILURES ===================================
+______________________ test_format_entry_line_no_indent _______________________
+
+    def test_format_entry_line_no_indent():
+        now = datetime.now()
+        entry = lister.Entry(
+            path=Path("/fake/file.txt"),
+            name="file.txt",
+            is_dir=False,
+            size=1024,
+            created=now,
+            modified=now,
+            accessed=now,
+            depth=0,
+        )
+        formatted_line = lister.format_entry_line(entry, "created", 80, show_date=True, show_time=True, scroll_offset=0)
+        assert formatted_line.startswith(now.strftime("%Y-%m-%d"))
+        assert "  file.txt" in formatted_line
+        assert not formatted_line.lstrip().startswith("  ")
+>       assert "1.0 KB" in formatted_line
+E       AssertionError: assert '1.0 KB' in '2025-11-19 07:45:09    file.txt                                         1.00 KiB'
+
+file_utils\tests\lister_test.py:81: AssertionError
+_______________________ test_format_entry_line_no_date ________________________
+
+    def test_format_entry_line_no_date():
+        now = datetime.now()
+        entry = lister.Entry(
+            path=Path("/fake/file.txt"),
+            name="file.txt",
+            is_dir=False,
+            size=1024,
+            created=now,
+            modified=now,
+            accessed=now,
+            depth=0,
+        )
+        formatted_line = lister.format_entry_line(entry, "created", 80, show_date=False, show_time=True, scroll_offset=0)
+        assert now.strftime("%Y-%m-%d") not in formatted_line
+        assert now.strftime("%H:%M:%S") in formatted_line
+>       assert "1.0 KB" in formatted_line
+E       AssertionError: assert '1.0 KB' in '07:45:09    file.txt                                                    1.00 KiB'
+
+file_utils\tests\lister_test.py:114: AssertionError
+_______________________ test_format_entry_line_no_time ________________________
+
+    def test_format_entry_line_no_time():
+        now = datetime.now()
+        entry = lister.Entry(
+            path=Path("/fake/file.txt"),
+            name="file.txt",
+            is_dir=False,
+            size=1024,
+            created=now,
+            modified=now,
+            accessed=now,
+            depth=0,
+        )
+        formatted_line = lister.format_entry_line(entry, "created", 80, show_date=True, show_time=False, scroll_offset=0)
+        assert now.strftime("%Y-%m-%d") in formatted_line
+        assert now.strftime("%H:%M:%S") not in formatted_line
+>       assert "1.0 KB" in formatted_line
+E       AssertionError: assert '1.0 KB' in '2025-11-19    file.txt                                                  1.00 KiB'
+
+file_utils\tests\lister_test.py:131: AssertionError
+___________________ test_format_entry_line_no_date_no_time ____________________
+
+    def test_format_entry_line_no_date_no_time():
+        now = datetime.now()
+        entry = lister.Entry(
+            path=Path("/fake/file.txt"),
+            name="file.txt",
+            is_dir=False,
+            size=1024,
+            created=now,
+            modified=now,
+            accessed=now,
+            depth=0,
+        )
+        formatted_line = lister.format_entry_line(entry, "created", 80, show_date=False, show_time=False, scroll_offset=0)
+        assert now.strftime("%Y-%m-%d") not in formatted_line
+        assert now.strftime("%H:%M:%S") not in formatted_line
+        assert "file.txt" in formatted_line
+>       assert "1.0 KB" in formatted_line
+E       AssertionError: assert '1.0 KB' in '  file.txt                                                              1.00 KiB'
+
+file_utils\tests\lister_test.py:149: AssertionError
+_____________ test_format_entry_line_folder_with_calculated_size ______________
+
+    def test_format_entry_line_folder_with_calculated_size():
+        """Test folder formatting with calculated size."""
+        now = datetime.now()
+        entry = lister.Entry(
+            path=Path("/fake/mydir"),
+            name="mydir",
+            is_dir=True,
+            size=4096,
+            created=now,
+            modified=now,
+            accessed=now,
+            depth=0,
+            expanded=True,
+            calculated_size=1024000,
+            item_count=42,
+        )
+        formatted_line = lister.format_entry_line(entry, "created", 100, show_date=True, show_time=True, scroll_offset=0)
+    
+        # Should show calculated size with item count (abbreviated)
+>       assert "1000.0 KB" in formatted_line or "1.0 MB" in formatted_line
+E       AssertionError: assert ('1000.0 KB' in '2025-11-19 07:45:09  \u25bc mydir/                                                       1000.00 KiB (42)' or '1.0 MB' in '2025-11-19 07:45:09  \u25bc mydir/                                                       1000.00 KiB (42)')
+
+file_utils\tests\lister_test.py:334: AssertionError
+___________________ test_docker_desktop_fixups_windows_only ___________________
+
+    def test_docker_desktop_fixups_windows_only():
+        acts = wsltool.docker_desktop_fixups(DummySys(win=True, wsl=False), dry_run=True)
+        # Should include PowerShell-wrapped cmdlets (Stop-Process/Start-Process) and docker context
+        assert any("docker context use desktop-linux" in a for a in acts)
+>       assert any("-NoProfile -Command" in a for a in acts)
+E       assert False
+E        +  where False = any(<generator object test_docker_desktop_fixups_windows_only.<locals>.<genexpr> at 0x000001D65973BD30>)
+
+file_utils\tests\wsltool_test.py:48: AssertionError
+=========================== short test summary info ===========================
+FAILED file_utils\tests\lister_test.py::test_format_entry_line_no_indent - As...
+FAILED file_utils\tests\lister_test.py::test_format_entry_line_no_date - Asse...
+FAILED file_utils\tests\lister_test.py::test_format_entry_line_no_time - Asse...
+FAILED file_utils\tests\lister_test.py::test_format_entry_line_no_date_no_time
+FAILED file_utils\tests\lister_test.py::test_format_entry_line_folder_with_calculated_size
+FAILED file_utils\tests\wsltool_test.py::test_docker_desktop_fixups_windows_only
+======================== 6 failed, 97 passed in 0.60s =========================
