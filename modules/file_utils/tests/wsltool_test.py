@@ -45,6 +45,7 @@ def test_docker_desktop_fixups_windows_only():
     acts = wsltool.docker_desktop_fixups(DummySys(win=True, wsl=False), dry_run=True)
     # Should include PowerShell-wrapped cmdlets (Stop-Process/Start-Process) and docker context
     assert any("docker context use desktop-linux" in a for a in acts)
-    assert any("-NoProfile -Command" in a for a in acts)
+    # Updated to check for ExecutionPolicy Bypass (better security/compatibility)
+    assert any("-NoProfile -ExecutionPolicy Bypass" in a for a in acts)
     acts2 = wsltool.docker_desktop_fixups(DummySys(win=False, wsl=True), dry_run=True)
     assert any("only applicable" in a for a in acts2)

@@ -601,6 +601,8 @@ class ListerManager:
         self.max_depth = max_depth
         self.expanded_folders = set()  # Set of expanded folder paths
         self.hidden_entries = set()  # Set of hidden entry paths
+        self.filter_stack = FilterStack()  # Filter pipeline
+        self.filter_panel_focused = False  # Track which panel has focus
 
     def get_visible_entries(self, sort_func: Optional[Callable[[Entry], object]] = None, descending: bool = True, dirs_first: bool = True) -> List[Entry]:
         """Get the list of currently visible entries in hierarchical order.
@@ -650,6 +652,10 @@ class ListerManager:
         # Build hierarchical list
         for entry in top_level:
             add_entry_and_children(entry)
+
+        # Apply filter stack if any filters are active
+        if self.filter_stack.has_filters():
+            visible = self.filter_stack.apply(visible)
 
         return visible
 
@@ -723,6 +729,221 @@ class ListerManager:
             if entry.is_dir and entry.depth == depth and not self._should_hide(entry):
                 self.expanded_folders.add(entry.path)
                 entry.expanded = True
+
+    # Filter panel management methods
+    def toggle_panel_focus(self):
+        """Toggle focus between file list and filter panel."""
+        self.filter_panel_focused = not self.filter_panel_focused
+
+    def filter_panel_up(self):
+        """Navigate up in filter panel."""
+        if self.filter_stack.filters and self.filter_stack.selected_index > 0:
+            self.filter_stack.selected_index -= 1
+
+    def filter_panel_down(self):
+        """Navigate down in filter panel."""
+        if self.filter_stack.filters and self.filter_stack.selected_index < len(self.filter_stack.filters) - 1:
+            self.filter_stack.selected_index += 1
+
+    def toggle_current_filter_mode(self):
+        """Toggle current filter between INCLUDE/EXCLUDE."""
+        if self.filter_stack.filters:
+            self.filter_stack.toggle_mode(self.filter_stack.selected_index)
+
+    def toggle_current_filter_enabled(self):
+        """Toggle current filter enabled/disabled."""
+        if self.filter_stack.filters:
+            self.filter_stack.toggle_enabled(self.filter_stack.selected_index)
+
+    def delete_current_filter(self):
+        """Delete current filter."""
+        if self.filter_stack.filters:
+            self.filter_stack.remove_filter(self.filter_stack.selected_index)
+
+    def move_current_filter_up(self):
+        """Move current filter up in stack."""
+        if self.filter_stack.filters:
+            if self.filter_stack.move_up(self.filter_stack.selected_index):
+                self.filter_stack.selected_index -= 1
+
+    def move_current_filter_down(self):
+        """Move current filter down in stack."""
+        if self.filter_stack.filters:
+            if self.filter_stack.move_down(self.filter_stack.selected_index):
+                self.filter_stack.selected_index += 1
+
+def create_filter_dialog(stdscr, mode: FilterMode) -> Optional[FilterCriterion]:
+    """
+    Show a dialog to create a new filter.
+
+    Args:
+        stdscr: Curses screen object
+        mode: FilterMode.INCLUDE or FilterMode.EXCLUDE
+
+    Returns:
+        FilterCriterion if created, None if cancelled
+    """
+    if not curses:
+        return None
+
+    # Save current cursor visibility
+    try:
+        old_cursor = curses.curs_set(1)
+    except:
+        old_cursor = 0
+
+    h, w = stdscr.getmaxyx()
+
+    # Create dialog window
+    dialog_height = 12
+    dialog_width = 60
+    dialog_y = (h - dialog_height) // 2
+    dialog_x = (w - dialog_width) // 2
+
+    dialog = curses.newwin(dialog_height, dialog_width, dialog_y, dialog_x)
+    dialog.keypad(True)
+    dialog.box()
+
+    mode_str = "INCLUDE" if mode == FilterMode.INCLUDE else "EXCLUDE"
+    title = f" Add {mode_str} Filter "
+    dialog.addstr(0, (dialog_width - len(title)) // 2, title, curses.A_BOLD)
+
+    # Menu options
+    options = [
+        "1. Extension (e.g., pdf|doc|txt)",
+        "2. Size Range (min/max)",
+        "3. Name Pattern (glob)",
+        "4. Name Regex",
+        "ESC: Cancel",
+    ]
+
+    for i, opt in enumerate(options):
+        dialog.addstr(2 + i, 2, opt)
+
+    dialog.addstr(8, 2, "Select [1-4] or ESC: ")
+    dialog.refresh()
+
+    # Get user choice
+    while True:
+        key = dialog.getch()
+
+        if key == 27:  # ESC
+            curses.curs_set(old_cursor)
+            return None
+
+        if key in (ord('1'), ord('2'), ord('3'), ord('4')):
+            choice = int(chr(key))
+            break
+
+    # Get filter details based on choice
+    criterion = None
+
+    if choice == 1:  # Extension
+        dialog.clear()
+        dialog.box()
+        dialog.addstr(0, (dialog_width - len(title)) // 2, title, curses.A_BOLD)
+        dialog.addstr(2, 2, "Extensions (e.g., 'pdf' or 'pdf|doc|txt'):")
+        dialog.addstr(4, 2, "")
+        dialog.refresh()
+
+        curses.echo()
+        ext_input = dialog.getstr(4, 2, 50).decode('utf-8').strip()
+        curses.noecho()
+
+        if ext_input:
+            extensions = [e.strip().lstrip('.') for e in ext_input.split('|')]
+            criterion = FilterCriterion(
+                filter_type=FilterType.EXTENSION,
+                mode=mode,
+                extensions=extensions,
+                description=f"ext={ext_input}"
+            )
+
+    elif choice == 2:  # Size range
+        dialog.clear()
+        dialog.box()
+        dialog.addstr(0, (dialog_width - len(title)) // 2, title, curses.A_BOLD)
+        dialog.addstr(2, 2, "Min size (e.g., '1M', '500K', or blank):")
+        dialog.addstr(4, 2, "")
+        dialog.refresh()
+
+        curses.echo()
+        min_input = dialog.getstr(4, 2, 20).decode('utf-8').strip()
+
+        dialog.addstr(6, 2, "Max size (e.g., '100M', '1G', or blank):")
+        dialog.addstr(8, 2, "")
+        dialog.refresh()
+
+        max_input = dialog.getstr(8, 2, 20).decode('utf-8').strip()
+        curses.noecho()
+
+        min_size = parse_size_to_bytes(min_input) if min_input else None
+        max_size = parse_size_to_bytes(max_input) if max_input else None
+
+        if min_size or max_size:
+            desc_parts = []
+            if min_size:
+                desc_parts.append(f"size>={format_bytes_binary(min_size)}")
+            if max_size:
+                desc_parts.append(f"size<={format_bytes_binary(max_size)}")
+
+            criterion = FilterCriterion(
+                filter_type=FilterType.SIZE_RANGE,
+                mode=mode,
+                min_size=min_size,
+                max_size=max_size,
+                description=" AND ".join(desc_parts)
+            )
+
+    elif choice == 3:  # Name glob
+        dialog.clear()
+        dialog.box()
+        dialog.addstr(0, (dialog_width - len(title)) // 2, title, curses.A_BOLD)
+        dialog.addstr(2, 2, "Name pattern (glob, e.g., '*report*'):")
+        dialog.addstr(4, 2, "")
+        dialog.refresh()
+
+        curses.echo()
+        pattern_input = dialog.getstr(4, 2, 50).decode('utf-8').strip()
+        curses.noecho()
+
+        if pattern_input:
+            criterion = FilterCriterion(
+                filter_type=FilterType.NAME_GLOB,
+                mode=mode,
+                name_pattern=pattern_input,
+                description=f"name={pattern_input}"
+            )
+
+    elif choice == 4:  # Name regex
+        dialog.clear()
+        dialog.box()
+        dialog.addstr(0, (dialog_width - len(title)) // 2, title, curses.A_BOLD)
+        dialog.addstr(2, 2, "Regex pattern (e.g., 'report_\\d{4}'):")
+        dialog.addstr(4, 2, "")
+        dialog.refresh()
+
+        curses.echo()
+        regex_input = dialog.getstr(4, 2, 50).decode('utf-8').strip()
+        curses.noecho()
+
+        if regex_input:
+            try:
+                regex_pattern = re.compile(regex_input, re.IGNORECASE)
+                criterion = FilterCriterion(
+                    filter_type=FilterType.NAME_REGEX,
+                    mode=mode,
+                    name_regex=regex_pattern,
+                    description=f"regex={regex_input}"
+                )
+            except re.error:
+                # Invalid regex, ignore
+                pass
+
+    # Restore cursor
+    curses.curs_set(old_cursor)
+
+    return criterion
 
 def run_lister(args: argparse.Namespace) -> int:
     target = Path(args.directory).expanduser()
@@ -844,6 +1065,9 @@ def run_lister(args: argparse.Namespace) -> int:
     file_color_manager = FileTypeColorManager()
 
     # Note: Depth 0 items are visible by default since their parent_path is None
+
+    # Store reference to stdscr for filter dialogs (set by InteractiveList)
+    stdscr_ref = [None]  # Use list to allow modification in closure
 
     def action_handler(key: int, item: Entry) -> Tuple[bool, bool]:
         """Handle custom actions for folder navigation.
@@ -1019,6 +1243,103 @@ def run_lister(args: argparse.Namespace) -> int:
                 list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
                 return True, True  # Handled, refresh to update state.visible
 
+        # Filter management keybindings
+        # Tab - Toggle focus between file list and filter panel
+        elif key == 9:  # Tab
+            manager.toggle_panel_focus()
+            return True, False
+
+        # 'F' - Add INCLUDE filter (capital F to avoid conflict with 'f' for filter)
+        elif key == ord('F'):
+            if stdscr_ref[0]:
+                criterion = create_filter_dialog(stdscr_ref[0], FilterMode.INCLUDE)
+                if criterion:
+                    manager.filter_stack.add_filter(criterion)
+                    # Refilter entries
+                    sort_func = SORT_FUNCS[list_view.state.sort_field]
+                    list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
+                    return True, True
+            return True, False
+
+        # 'X' - Add EXCLUDE filter
+        elif key == ord('X'):
+            if stdscr_ref[0]:
+                criterion = create_filter_dialog(stdscr_ref[0], FilterMode.EXCLUDE)
+                if criterion:
+                    manager.filter_stack.add_filter(criterion)
+                    # Refilter entries
+                    sort_func = SORT_FUNCS[list_view.state.sort_field]
+                    list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
+                    return True, True
+            return True, False
+
+        # 'T' - Toggle current filter mode (INCLUDE <-> EXCLUDE)
+        elif key == ord('T'):
+            if manager.filter_panel_focused:
+                manager.toggle_current_filter_mode()
+                # Refilter entries
+                sort_func = SORT_FUNCS[list_view.state.sort_field]
+                list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
+                return True, True
+            return False, False
+
+        # Space - Toggle current filter enabled/disabled
+        elif key == ord(' '):
+            if manager.filter_panel_focused:
+                manager.toggle_current_filter_enabled()
+                # Refilter entries
+                sort_func = SORT_FUNCS[list_view.state.sort_field]
+                list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
+                return True, True
+            return False, False
+
+        # 'D' - Delete current filter (when filter panel focused)
+        elif key == ord('D'):
+            if manager.filter_panel_focused:
+                manager.delete_current_filter()
+                # Refilter entries
+                sort_func = SORT_FUNCS[list_view.state.sort_field]
+                list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
+                return True, True
+            return False, False
+
+        # 'C' - Clear all filters
+        elif key == ord('C'):
+            manager.filter_stack.clear()
+            # Refilter entries
+            sort_func = SORT_FUNCS[list_view.state.sort_field]
+            list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
+            return True, True
+
+        # '[' or '<' - Move current filter up
+        elif key in (ord('['), ord('<')):
+            if manager.filter_panel_focused:
+                manager.move_current_filter_up()
+                # Refilter entries
+                sort_func = SORT_FUNCS[list_view.state.sort_field]
+                list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
+                return True, True
+            return False, False
+
+        # ']' or '>' - Move current filter down
+        elif key in (ord(']'), ord('>')):
+            if manager.filter_panel_focused:
+                manager.move_current_filter_down()
+                # Refilter entries
+                sort_func = SORT_FUNCS[list_view.state.sort_field]
+                list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
+                return True, True
+            return False, False
+
+        # Up/Down arrows in filter panel
+        elif key in (curses.KEY_UP, ord('k')) and manager.filter_panel_focused:
+            manager.filter_panel_up()
+            return True, False
+
+        elif key in (curses.KEY_DOWN, ord('j')) and manager.filter_panel_focused:
+            manager.filter_panel_down()
+            return True, False
+
         return False, False  # Not handled
 
     sort_keys_mapping = {
@@ -1040,6 +1361,12 @@ def run_lister(args: argparse.Namespace) -> int:
         # Show active search filters
         if search_filter.has_filters():
             parts.append(f"Filters: {search_filter.describe()}")
+
+        # Show filter stack info
+        if manager.filter_stack.has_filters():
+            enabled_count = manager.filter_stack.count_enabled()
+            total_filters = len(manager.filter_stack.filters)
+            parts.append(f"Stack: {enabled_count}/{total_filters} active")
 
         # Show counts
         if search_filter.has_filters() or depth > 0:

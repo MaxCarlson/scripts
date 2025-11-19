@@ -12,6 +12,8 @@ from .replacer import (
 )
 from .replacer_state import FileContent, FileState
 from .replacer_operations import Operation, OperationManager
+from . import lister
+from . import wsltool
 
 __all__ = [
     "find_duplicates",
@@ -31,4 +33,6 @@ __all__ = [
     "FileState",
     "Operation",
     "OperationManager",
+    "lister",
+    "wsltool",
 ]
