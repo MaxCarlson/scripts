@@ -163,6 +163,12 @@ LOG_COLOURS = {
     "ERROR": red,
     "DRYRUN": yellow,
     "SCAN": cyan,
+    "MODE": cyan,
+    "LIMIT": yellow,
+    "TRIGGER": yellow,
+    "STATE": cyan,
+    "AUTO": magenta,
+    "CONFIG": bright,
 }
 
 
@@ -554,8 +560,7 @@ class SummaryStats:
 
 def compute_summary(actions: Iterable[Action], *, delete_source: bool) -> SummaryStats:
     rows: Dict[str, SummaryRow] = {
-        action: SummaryRow(action=action, label=ACTION_LABELS[action])
-        for action in ACTIONS_ORDER
+        action: SummaryRow(action=action, label=ACTION_LABELS[action]) for action in ACTIONS_ORDER
     }
     stats = SummaryStats(rows=rows)
 
@@ -614,7 +619,9 @@ def compute_summary(actions: Iterable[Action], *, delete_source: bool) -> Summar
     return stats
 
 
-def format_summary_row(label: str, count, transfer: str, src_del: str, dest_add: str, dest_del: str, skipped: str) -> str:
+def format_summary_row(
+    label: str, count, transfer: str, src_del: str, dest_add: str, dest_del: str, skipped: str
+) -> str:
     def shorten(text: str, width: int) -> str:
         return text if len(text) <= width else text[: width - 1] + "…"
 
@@ -674,8 +681,11 @@ def print_summary_table(summary: SummaryStats, *, dry_run: bool = False) -> None
     console_print(f"  Destination additions: {format_bytes(summary.total_destination_added_size)}")
     console_print(f"  Total data processed: {format_bytes(summary.total_transfer_size)}")
     if summary.total_skipped_count:
-        console_print(f"  Skipped files: {summary.total_skipped_count} | {format_bytes(summary.total_skipped_size)} (destination kept)")
+        console_print(
+            f"  Skipped files: {summary.total_skipped_count} | {format_bytes(summary.total_skipped_size)} (destination kept)"
+        )
     console_print()
+
 
 class ProgressUI:
     """Background thread responsible for refreshing the console dashboard."""
@@ -718,9 +728,7 @@ class ProgressUI:
             folder_processed_files = snapshot.get("current_folder_processed_files", 0)
             folder_total_bytes = snapshot.get("current_folder_total_bytes", 0)
             folder_processed_bytes = snapshot.get("current_folder_processed_bytes", 0)
-            folder_percent = (
-                folder_processed_bytes / folder_total_bytes * 100 if folder_total_bytes else 0.0
-            )
+            folder_percent = folder_processed_bytes / folder_total_bytes * 100 if folder_total_bytes else 0.0
             current_speed = snapshot.get("current_speed", 0.0)
             lines = [
                 bright("MP4 Folder Synchroniser"),
@@ -1008,7 +1016,9 @@ def maybe_delete_source(src_path: Path, dry_run: bool, no_delete: bool) -> bool:
         return False
 
 
-def copy_with_progress(src_path: Path, dest_path: Path, progress: ProgressState, chunk_size: int = 8 * 1024 * 1024) -> None:
+def copy_with_progress(
+    src_path: Path, dest_path: Path, progress: ProgressState, chunk_size: int = 8 * 1024 * 1024
+) -> None:
     src_path.parent.mkdir(parents=True, exist_ok=True)
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     last_time = time.perf_counter()
@@ -1057,8 +1067,6 @@ def execute_action(
 
     src_path = Path(action.source)
     dest_path = Path(action.destination)
-    requested_operation = action.metadata.get("requested_operation", action.action)
-
     folder_key = action.metadata.get("folder_key")
     folder_display = str(src_path.parent)
     if not folder_key:
@@ -1174,18 +1182,10 @@ def execute_action(
         )
         log_event("REPLACE", msg)
     elif action.action == ACTION_MOVE:
-        msg = (
-            f"source: {src_path}\n"
-            f"→ {dest_path}\n"
-            f"source size: {format_bytes(action.source_size or 0)}"
-        )
+        msg = f"source: {src_path}\n" f"→ {dest_path}\n" f"source size: {format_bytes(action.source_size or 0)}"
         log_event("MOVE", msg)
     else:
-        msg = (
-            f"source: {src_path}\n"
-            f"→ {dest_path}\n"
-            f"source size: {format_bytes(action.source_size or 0)}"
-        )
+        msg = f"source: {src_path}\n" f"→ {dest_path}\n" f"source size: {format_bytes(action.source_size or 0)}"
         log_event("COPY", msg)
 
     progress.increment_processed()
@@ -1349,7 +1349,7 @@ def analyse_plan(plan: Plan, *, delete_source: bool) -> None:
         dest_size = format_bytes(action.destination_size or 0) if action.destination_size is not None else "n/a"
 
         if action.action == ACTION_SKIP:
-            op_line = yellow(f"Action: skip (destination kept)")
+            op_line = yellow("Action: skip (destination kept)")
             collision_line = yellow(f"Collision: destination >= source ({src_size} vs {dest_size})")
         elif action.action == ACTION_REPLACE:
             requested = action.metadata.get("requested_operation", action.action).upper()
@@ -1609,12 +1609,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     progress = ProgressState()
     set_progress_tracker(progress)
-    ui_enabled = (
-        not args.no_ui
-        and not args.dry_run
-        and not args.analyze
-        and not args.confirm
-    )
+    ui_enabled = not args.no_ui and not args.dry_run and not args.analyze and not args.confirm
     progress.set_ui_enabled(ui_enabled)
     ui = ProgressUI(progress, enabled=ui_enabled)
     ui.start()
