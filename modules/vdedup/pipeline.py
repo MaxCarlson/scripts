@@ -114,6 +114,25 @@ def parse_pipeline(spec: Optional[str]) -> List[int]:
     return r or [1, 2, 3, 4]
 
 
+def _build_stage_plan(selected_stages: Sequence[int]) -> List[str]:
+    plan: List[str] = ["discovering files", "scanning files"]
+    if 1 in selected_stages:
+        plan.append("Q1 size bucketing")
+    if 2 in selected_stages:
+        plan.extend(["Q2 partial", "Q2 sha256"])
+    if 3 in selected_stages:
+        plan.append("Q3 metadata")
+    if 4 in selected_stages:
+        plan.append("Q4 pHash")
+    if 5 in selected_stages:
+        plan.append("Q5 scene")
+    if 6 in selected_stages:
+        plan.append("Q6 audio")
+    if 7 in selected_stages:
+        plan.append("Q7 timeline")
+    return plan
+
+
 # -------------------------------------------------------------------------------------------------
 # Helpers
 # -------------------------------------------------------------------------------------------------
@@ -408,6 +427,8 @@ def run_pipeline(
 
     skip_norm: Set[Path] = {p.expanduser().resolve() for p in skip_paths} if skip_paths else set()
     logger.info(f"Exclusions: {len(skip_norm)} paths")
+
+    reporter.set_stage_plan(_build_stage_plan(selected_stages))
 
     logger.info("Calling reporter.set_status()...")
     try:
@@ -781,6 +802,8 @@ def run_pipeline(
         reporter.flush()
     elif 2 in selected_stages:
         reporter.set_status("Q2 skipped (no size collisions)")
+        reporter.mark_stage_skipped("Q2 partial")
+        reporter.mark_stage_skipped("Q2 sha256")
     else:
         reporter.set_status("Skipping Q2 (stage disabled)")
 
@@ -933,7 +956,7 @@ def run_pipeline(
         else:
             reporter.set_status("Q3 skipped (no eligible videos)")
             video_for_q4 = []
-            reporter.finish_stage("Q3 metadata")
+            reporter.finish_stage("Q3 metadata", status="skipped")
     else:
         reporter.set_status("Skipping Q3 (stage disabled)")
         # Q3 not selected - allow Q4 on all videos not excluded by Q2
@@ -1100,8 +1123,10 @@ def run_pipeline(
             reporter.finish_stage("Q4 pHash")
         else:
             reporter.set_status("Q4 skipped (no analyzable videos)")
+            reporter.mark_stage_skipped("Q4 pHash")
     elif 4 in selected_stages:
         reporter.set_status("Q4 skipped (stage disabled by upstream filters)")
+        reporter.mark_stage_skipped("Q4 pHash")
 
     # ----------------------------------------------------------
     # Q5: Scene-aware fingerprinting (advanced visual matching)
@@ -1211,8 +1236,10 @@ def run_pipeline(
             reporter.finish_stage("Q5 scene")
         else:
             reporter.set_status("Q5 skipped (no analyzable videos)")
+            reporter.mark_stage_skipped("Q5 scene")
     elif 5 in selected_stages:
         reporter.set_status("Q5 skipped (stage disabled or no videos)")
+        reporter.mark_stage_skipped("Q5 scene")
 
     if reporter.should_quit():
         reporter.flush()
@@ -1327,8 +1354,10 @@ def run_pipeline(
             reporter.finish_stage("Q6 audio")
         else:
             reporter.set_status("Q6 skipped (no analyzable audio)")
+            reporter.mark_stage_skipped("Q6 audio")
     elif 6 in selected_stages:
         reporter.set_status("Q6 skipped (stage disabled or no videos)")
+        reporter.mark_stage_skipped("Q6 audio")
 
     if reporter.should_quit():
         reporter.flush()
@@ -1442,8 +1471,10 @@ def run_pipeline(
             reporter.finish_stage("Q7 timeline")
         else:
             reporter.set_status("Q7 skipped (no analyzable timelines)")
+            reporter.mark_stage_skipped("Q7 timeline")
     elif 7 in selected_stages:
         reporter.set_status("Q7 skipped (stage disabled or no videos)")
+        reporter.mark_stage_skipped("Q7 timeline")
 
     # Final flush of results (CLI will compute losers/bytes after keep-policy)
     reporter.set_status("Pipeline stages complete")
