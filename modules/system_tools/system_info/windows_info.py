@@ -1,4 +1,4 @@
-from cross_platform.standard_ui import log_info, log_warning, section
+from standard_ui import log_info, log_warning, section
 
 def run_powershell_command(sys_utils, ps_command: str, require_admin: bool = False) -> str:
     """Run a PowerShell command via pwsh."""

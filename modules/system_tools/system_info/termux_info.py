@@ -1,4 +1,4 @@
-from cross_platform.standard_ui import log_info, log_warning, section
+from standard_ui import log_info, log_warning, section
 
 def get_termux_info(sections: dict, sys_utils, admin_mode: bool):
     # Termux/Android OS Information
