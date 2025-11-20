@@ -502,3 +502,8 @@ All changes are **backward compatible**:
 
 *Last Updated: 2025-10-26*
 *Author: Claude (Sonnet 4.5)*
+
+
+additional todos
+We produce tons od artifacts inside the folder stars/urlfile/_tmp/ of the file type "*.mp4.part" or "*.part.mp4".
+ doibt these are used to save tmp file prpgress, but we need tl bot emsjre theid deletiom when a downlload finisjes as well.as ensurimg thay  anh that are somewhat lld are.dleyed as well

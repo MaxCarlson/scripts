@@ -205,6 +205,24 @@ def test_format_entry_line_folder_expanded():
     assert "▼" in formatted_line
     assert "mydir/" in formatted_line
 
+def test_format_entry_line_folder_collapsed_shows_count_when_available():
+    now = datetime.now()
+    entry = lister.Entry(
+        path=Path("/fake/mydir"),
+        name="mydir",
+        is_dir=True,
+        size=0,
+        created=now,
+        modified=now,
+        accessed=now,
+        depth=0,
+        expanded=False,
+        calculated_size=2048,
+        item_count=12,
+    )
+    formatted_line = lister.format_entry_line(entry, "created", 80, show_date=True, show_time=True, scroll_offset=0)
+    assert "(12)" in formatted_line
+
 def test_lister_manager_toggle_folder(temp_dir_structure: Path):
     entries = lister.read_entries_recursive(temp_dir_structure, max_depth=5)
     manager = lister.ListerManager(entries, max_depth=5)
@@ -239,6 +257,20 @@ def test_lister_manager_expand_all_at_depth(temp_dir_structure: Path):
         if entry.is_dir and entry.depth == 0:
             assert entry.expanded
             assert entry.path in manager.expanded_folders
+
+def test_lister_manager_collapse_all(temp_dir_structure: Path):
+    entries = lister.read_entries_recursive(temp_dir_structure, max_depth=5)
+    manager = lister.ListerManager(entries, max_depth=5)
+
+    # expand a couple of folders
+    for entry in entries:
+        if entry.is_dir:
+            manager.toggle_folder(entry)
+    assert manager.expanded_folders  # expanded set populated
+
+    manager.collapse_all()
+    assert not manager.expanded_folders
+    assert all(not e.expanded for e in entries)
 
 def test_lister_manager_get_visible_entries(temp_dir_structure: Path):
     entries = lister.read_entries_recursive(temp_dir_structure, max_depth=5)
@@ -311,6 +343,32 @@ def test_entry_calculated_size():
 
     assert entry.has_calculated_size()
     assert entry.get_display_size() == 1024000
+
+def test_calculate_single_entry_size(tmp_path: Path):
+    """Ensure calculate_entry_size populates size and item count for a single folder."""
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    (folder / "one.txt").write_text("1234")
+    sub = folder / "sub"
+    sub.mkdir()
+    (sub / "two.bin").write_bytes(b"x" * 10)
+
+    entry = lister.Entry(
+        path=folder,
+        name="folder",
+        is_dir=True,
+        size=0,
+        created=datetime.now(),
+        modified=datetime.now(),
+        accessed=datetime.now(),
+        depth=0,
+    )
+    manager = lister.ListerManager([entry], max_depth=1)
+    manager.calculate_entry_size(entry)
+
+    assert entry.calculated_size == 14  # 4 + 10 bytes
+    assert entry.item_count == 3  # folder contents: file, subdir, file in subdir
+    assert not entry.size_calculating
 
 def test_format_entry_line_folder_with_calculated_size():
     """Test folder formatting with calculated size."""

@@ -1,0 +1,21 @@
+{
+  "settings": {
+    "stars_dir": "C:\\Users\\mcarls\\Repos\\scripts\\modules\\files\\downloads\\stars",
+    "ae_dir": "C:\\Users\\mcarls\\Repos\\scripts\\modules\\files\\downloads\\ae-stars",
+    "media_dir": "C:\\Users\\mcarls\\Repos\\scripts\\modules\\stars",
+    "sort_key": "ratio",
+    "ascending": false
+  },
+  "entries": [],
+  "totals": {
+    "total_unique_urls": 0,
+    "ae_url_lines": 0,
+    "ae_unique_urls": 0,
+    "stars_url_lines": 0,
+    "stars_unique_urls": 0,
+    "downloaded_mp4s": 0,
+    "downloaded_bytes": 0,
+    "downloaded_gb": 0.0,
+    "remaining": 0
+  }
+}
