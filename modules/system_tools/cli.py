@@ -22,8 +22,8 @@ import sys
 import os
 import ctypes
 
-from cross_platform.system_utils import SystemUtils
-from cross_platform.standard_ui import log_info, log_warning, log_error
+from system_tools.core.system_utils import SystemUtils
+from standard_ui import log_info, log_warning, log_error
 
 def is_admin():
     # Windows admin check uses ctypes; Linux/Mac use os.geteuid()
@@ -78,7 +78,7 @@ def main():
 
     # Detect OS and dispatch to the appropriate module
     if sys_utils.os_name == "windows":
-        from cross_platform import windows_info
+        from system_tools.system_info import windows_info
         if args.nonadmin_mode:
             admin_mode = False
         elif args.admin_mode or is_admin():
@@ -90,12 +90,12 @@ def main():
         windows_info.get_windows_info(sections, sys_utils, admin_mode)
     elif sys_utils.os_name == "linux":
         if sys_utils.is_termux():
-            from cross_platform import termux_info
+            from system_tools.system_info import termux_info
             admin_mode = False  # Termux typically runs without admin privileges
             log_info("Gathering Termux system information...")
             termux_info.get_termux_info(sections, sys_utils, admin_mode)
         else:
-            from cross_platform import linux_info
+            from system_tools.system_info import linux_info
             if args.nonadmin_mode:
                 admin_mode = False
             elif args.admin_mode or is_admin():
@@ -106,7 +106,7 @@ def main():
             log_info("Gathering Linux system information...")
             linux_info.get_linux_info(sections, sys_utils, admin_mode)
     elif sys_utils.is_mac():
-        from cross_platform import mac_info
+        from system_tools.system_info import mac_info
         admin_mode = args.admin_mode or is_admin()  # Admin less critical for macOS system_profiler
         log_info("Gathering macOS system information...")
         mac_info.get_mac_info(sections, sys_utils, admin_mode)

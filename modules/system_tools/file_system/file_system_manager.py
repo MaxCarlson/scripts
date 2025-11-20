@@ -1,6 +1,6 @@
 import os
-from .system_utils import SystemUtils
-from .debug_utils import write_debug
+from ..core.system_utils import SystemUtils
+from ..core.debug_utils import write_debug
 
 class FileSystemManager(SystemUtils):
     """

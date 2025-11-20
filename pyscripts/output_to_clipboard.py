@@ -86,16 +86,20 @@ def build_shell_wrapped_command(user_command: str, shell_choice: str | None = No
 
     # POSIX shells
     if shell in {"zsh"}:
-        wrapped = f'zsh -i -c {shlex.quote(user_command)}'
-        meta["Alias/Function Support"] = "interactive"
+        # Explicitly source .zshrc to ensure aliases/functions are loaded
+        # Using setopt to enable alias expansion
+        bootstrap = 'setopt aliases; [ -f ~/.zshrc ] && . ~/.zshrc; '
+        wrapped = f'zsh -c {shlex.quote(bootstrap + user_command)}'
+        meta["Alias/Function Support"] = "explicit .zshrc sourcing"
         return wrapped, meta
 
     if shell in {"bash"}:
         # Non-interactive bash doesn't expand aliases unless expand_aliases is set.
-        # Source ~/.bashrc quietly to pick up user aliases/functions.
-        bootstrap = 'shopt -s expand_aliases; [ -f ~/.bashrc ] && source ~/.bashrc; '
-        wrapped = f'bash -lc {shlex.quote(bootstrap + user_command)}'
-        meta["Alias/Function Support"] = "expand_aliases + rc"
+        # Source ~/.bashrc to pick up user aliases/functions.
+        # Also source .bash_aliases if it exists (commonly used for alias definitions)
+        bootstrap = 'shopt -s expand_aliases; [ -f ~/.bashrc ] && . ~/.bashrc; [ -f ~/.bash_aliases ] && . ~/.bash_aliases; '
+        wrapped = f'bash -c {shlex.quote(bootstrap + user_command)}'
+        meta["Alias/Function Support"] = "expand_aliases + rc + aliases"
         return wrapped, meta
 
     if shell in {"fish"}:
@@ -322,6 +326,10 @@ def run_command_and_copy_main(
         # Execute
         # ----------------------------
         result = subprocess.run(wrapped_command, shell=True, capture_output=True, text=True, check=False)
+
+        # Display stderr to the user if present (so they can see errors in real-time)
+        if result.stderr:
+            console_stderr.print(f"[yellow]stderr output:[/]\n{result.stderr.rstrip()}")
 
         combined_output = (result.stdout or "") + (result.stderr or "")
         output_to_copy = combined_output.strip()
