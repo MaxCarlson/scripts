@@ -465,9 +465,8 @@ def format_entry_line(entry: Entry, sort_field: str, width: int, show_date: bool
             size_text = "[...]"  # Spinner/progress indicator
         elif entry.has_calculated_size():
             size_text = human_size(entry.get_display_size())
-            # Add abbreviated item count for expanded folders
-            if entry.expanded and entry.item_count is not None:
-                # Abbreviate counts to save space
+            # Add abbreviated item count for any folder with known totals
+            if entry.item_count is not None:
                 if entry.item_count < 1000:
                     count_str = f"{entry.item_count}"
                 elif entry.item_count < 1000000:
@@ -603,6 +602,8 @@ class ListerManager:
         self.hidden_entries = set()  # Set of hidden entry paths
         self.filter_stack = FilterStack()  # Filter pipeline
         self.filter_panel_focused = False  # Track which panel has focus
+        # Cache for size calculations to avoid duplicate work across sessions
+        self._size_lock = threading.Lock()
 
     def get_visible_entries(self, sort_func: Optional[Callable[[Entry], object]] = None, descending: bool = True, dirs_first: bool = True) -> List[Entry]:
         """Get the list of currently visible entries in hierarchical order.
@@ -658,6 +659,29 @@ class ListerManager:
             visible = self.filter_stack.apply(visible)
 
         return visible
+
+    def collapse_all(self) -> None:
+        """Collapse all expanded folders and clear expansion state."""
+        self.expanded_folders.clear()
+        for entry in self.all_entries:
+            entry.expanded = False
+
+    def calculate_entry_size(self, entry: Entry) -> None:
+        """Synchronously calculate size/item_count for a single entry (dirs only)."""
+        if not entry.is_dir:
+            return
+        with self._size_lock:
+            if entry.size_calculating:
+                return
+            entry.size_calculating = True
+        try:
+            total_size, item_count = calculate_folder_size(entry.path)
+            entry.calculated_size = total_size
+            entry.item_count = item_count
+        except Exception:
+            pass
+        finally:
+            entry.size_calculating = False
 
     def _should_hide(self, entry: Entry) -> bool:
         """Check if entry should be hidden due to collapsed parent."""
@@ -1133,6 +1157,15 @@ def run_lister(args: argparse.Namespace) -> int:
                 return True, True  # Handled, call _update_visible_items to update state.visible
             return False, False  # Not handled, let default detail view happen
 
+        # 'r' key - calculate size for selected folder only
+        elif key == ord('r'):
+            if item.is_dir and not item.size_calculating:
+                def calc_one():
+                    manager.calculate_entry_size(item)
+                threading.Thread(target=calc_one, daemon=True).start()
+                return True, False
+            return False, False
+
         # Ctrl+Enter (key code 10 with Ctrl modifier, or we use 'o' as alternative)
         # Using 'o' for "open in new window" since Ctrl+Enter is hard to detect
         elif key == ord('o'):
@@ -1178,6 +1211,16 @@ def run_lister(args: argparse.Namespace) -> int:
                 sys.stderr.write("Clipboard utilities not available\n")
             return True, False  # Handled, no refresh needed
 
+        # 'U' key - collapse all expanded folders
+        elif key == ord('U'):
+            manager.collapse_all()
+            sort_func = SORT_FUNCS[list_view.state.sort_field]
+            list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
+            # Reset scroll to top after collapsing
+            list_view.state.selected_index = 0
+            list_view.state.top_index = 0
+            return True, True
+
         # 'S' key - calculate folder sizes
         elif key == ord('S'):
             if list_view.state.calculating_sizes:
@@ -1218,6 +1261,26 @@ def run_lister(args: argparse.Namespace) -> int:
             list_view.state.calculating_sizes = True
             threading.Thread(target=calc_thread, daemon=True).start()
             return True, False  # Handled, no refresh needed (progress updates will trigger redraws)
+
+        # 'A' key - calculate sizes for currently visible directories only
+        elif key == ord('A'):
+            if list_view.state.calculating_sizes:
+                return True, False
+
+            def calc_visible():
+                folders = [e for e in list_view.state.items if e.is_dir]
+                list_view.state.calc_progress = (0, len(folders))
+                list_view.state.calc_cancel = False
+                list_view.state.calculating_sizes = True
+                for idx, folder in enumerate(folders):
+                    if list_view.state.calc_cancel:
+                        break
+                    manager.calculate_entry_size(folder)
+                    list_view.state.calc_progress = (idx + 1, len(folders))
+                list_view.state.calculating_sizes = False
+
+            threading.Thread(target=calc_visible, daemon=True).start()
+            return True, False
 
         # Handle sort key changes (c/m/a/s/n) with hierarchical sorting
         elif key in (ord('c'), ord('m'), ord('a'), ord('s'), ord('n')):
@@ -1390,8 +1453,8 @@ def run_lister(args: argparse.Namespace) -> int:
 
     # Build footer with search stats
     footer_lines = [
-        "↑↓/jk/PgUp/Dn │ f:filter x:exclude │ ↵:expand ESC:collapse ^Q:quit",
-        "Sort c/m/a/n/s │ e:all o:open F:dirs │ d:date t:time │ y:copy S:calc │ ←→",
+        "↑↓/jk/PgUp/Dn │ f:filter x:exclude │ ↵:expand ESC:collapse U:collapse-all ^Q:quit",
+        "Sort c/m/a/n/s │ e:all o:open F:dirs │ d:date t:time │ y:copy r:calc-one A:calc-visible S:calc-all │ ←→",
     ]
 
     # Add search stats line if filters were used or deep search

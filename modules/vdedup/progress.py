@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from rich.align import Align
 from rich.console import Console, Group
@@ -27,9 +27,26 @@ def _format_bytes(amount: int) -> str:
     value = float(amount)
     for unit in units:
         if value < 1024.0 or unit == units[-1]:
-            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} {unit}"
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            precision = 2 if unit in {"GiB", "TiB"} else 1
+            return f"{value:.{precision}f} {unit}"
         value /= 1024.0
-    return f"{value:.1f} PiB"
+    return f"{value:.2f} PiB"
+
+
+def _format_eta(seconds: Optional[float]) -> str:
+    """Pretty-print an ETA in h/m/s."""
+    if seconds is None or seconds == float("inf"):
+        return "--"
+    secs = max(0, int(seconds))
+    minutes, sec = divmod(secs, 60)
+    hours, minute = divmod(minutes, 60)
+    if hours > 0:
+        return f"{hours}h {minute:02d}m"
+    if minute > 0:
+        return f"{minute}m {sec:02d}s"
+    return f"{sec}s"
 
 
 def _stage_key(name: str) -> str:
@@ -110,6 +127,9 @@ class ProgressReporter:
         self.stage_status: Dict[str, str] = {}
         self.stage_display: Dict[str, str] = {}
         self.stage_order: List[str] = []
+        self.stage_plan_keys: List[str] = []
+        self.stage_records: Dict[str, Dict[str, Any]] = {}
+        self.stage_total_count = 0
 
         # Controls
         self._paused_evt = threading.Event()
@@ -143,6 +163,30 @@ class ProgressReporter:
         with self.lock:
             self.status_line = text
         self._print_if_due()
+
+    def set_stage_plan(self, names: Sequence[str]) -> None:
+        """Define the order of stages for Stage X/Y tracking."""
+        with self.lock:
+            self.stage_plan_keys = []
+            self.stage_order = []
+            self.stage_records = {}
+            self.stage_status = {}
+            self.stage_display = {}
+            for idx, name in enumerate(names):
+                key = _stage_key(name)
+                self.stage_plan_keys.append(key)
+                self.stage_order.append(name)
+                self.stage_display[key] = name
+                self.stage_status[key] = "pending"
+                self.stage_records[key] = {
+                    "display": name,
+                    "status": "pending",
+                    "index": idx,
+                    "start": None,
+                    "end": None,
+                    "duration": None,
+                }
+            self.stage_total_count = len(self.stage_plan_keys)
 
     def update_root_progress(self, *, current: Optional[Path], completed: int, total: int) -> None:
         """Track directory traversal progress."""
@@ -189,31 +233,43 @@ class ProgressReporter:
 
     def start_stage(self, name: str, total: int) -> None:
         """Begin a new stage and reset stage-local counters."""
+        now = time.time()
         with self.lock:
             prev_key = _stage_key(self.stage_name)
-            if prev_key in self.stage_status and self.stage_status[prev_key] == "running":
-                self.stage_status[prev_key] = "done"
+            prev_entry = self.stage_records.get(prev_key)
+            if prev_entry and prev_entry.get("status") == "running":
+                self._finalize_stage_entry(prev_key, status="done", now=now)
 
-            key = _stage_key(name)
-            self.stage_display[key] = name
-            if key not in self.stage_order:
-                self.stage_order.append(key)
+            entry = self._ensure_stage_entry(name)
+            entry["status"] = "running"
+            entry["start"] = now
+            entry["end"] = None
+            entry["duration"] = None
 
-            self.stage_status[key] = "running"
+            self.stage_status[_stage_key(name)] = "running"
             self.stage_name = name
             self.stage_total = max(0, int(total))
             self.stage_done = 0
-            self.stage_start_ts = time.time()
+            self.stage_start_ts = now
             self.status_line = name
         self._print_now()
 
-    def finish_stage(self, name: Optional[str] = None) -> None:
+    def finish_stage(self, name: Optional[str] = None, *, status: str = "done") -> None:
         """Mark a stage as completed."""
         with self.lock:
             stage = name or self.stage_name
             key = _stage_key(stage)
-            if key in self.stage_status:
-                self.stage_status[key] = "done"
+            self._finalize_stage_entry(key, status=status)
+        self._print_if_due()
+
+    def mark_stage_skipped(self, name: str) -> None:
+        """Explicitly mark a stage as skipped (no-op for stages not in plan)."""
+        with self.lock:
+            key = _stage_key(name)
+            entry = self._ensure_stage_entry(name)
+            if entry.get("start") is None:
+                entry["start"] = time.time()
+            self._finalize_stage_entry(key, status="skipped")
         self._print_if_due()
 
     def set_total_files(self, n: int) -> None:
@@ -355,6 +411,44 @@ class ProgressReporter:
         with self.lock:
             return list(self._log_messages[-5:])
 
+    def _ensure_stage_entry(self, display: str) -> Dict[str, Any]:
+        """Guarantee that a stage entry exists for the given display name."""
+        key = _stage_key(display)
+        entry = self.stage_records.get(key)
+        if entry is None:
+            idx = len(self.stage_plan_keys)
+            self.stage_plan_keys.append(key)
+            self.stage_order.append(display)
+            entry = {
+                "display": display,
+                "status": "pending",
+                "index": idx,
+                "start": None,
+                "end": None,
+                "duration": None,
+            }
+            self.stage_records[key] = entry
+            self.stage_status[key] = "pending"
+            self.stage_display[key] = display
+            self.stage_total_count = len(self.stage_plan_keys)
+        return entry
+
+    def _finalize_stage_entry(self, key: str, *, status: str, now: Optional[float] = None) -> None:
+        """Update bookkeeping when a stage finishes/skips."""
+        entry = self.stage_records.get(key)
+        if entry is None:
+            return
+        ts = now or time.time()
+        if entry.get("start") is None:
+            entry["start"] = ts
+        entry["end"] = ts
+        if status == "done":
+            entry["duration"] = max(0.0, ts - (entry.get("start") or ts))
+        elif entry.get("duration") is None:
+            entry["duration"] = 0.0
+        entry["status"] = status
+        self.stage_status[key] = status
+
     # ------------------------------------------------------------------ rendering
 
     def _print_if_due(self) -> None:
@@ -380,29 +474,67 @@ class ProgressReporter:
             pct = (self.stage_done / self.stage_total * 100.0) if self.stage_total > 0 else 0.0
             current_key = _stage_key(self.stage_name)
             current_metrics = dict(self.stage_metrics.get(current_key, {}))
-            logs = list(self._log_messages[-4:])
+            stage_entries: List[Dict[str, Any]] = []
+            for key in self.stage_plan_keys:
+                entry = self.stage_records.get(key)
+                if entry:
+                    stage_entries.append(entry.copy())
+            current_entry = self.stage_records.get(current_key)
+            stage_total_count = self.stage_total_count or len(stage_entries)
+            completed = sum(1 for entry in stage_entries if entry.get("status") in {"done", "skipped"})
+            if current_entry:
+                stage_position = (current_entry.get("index") or 0) + 1
+            else:
+                stage_position = completed
+            stage_position = max(0, min(stage_total_count or stage_position, stage_position))
+            stage_eta = None
+            if self.stage_total > 0 and self.stage_done > 0 and stage_elapsed > 0:
+                rate = self.stage_done / stage_elapsed
+                remaining = self.stage_total - self.stage_done
+                if rate > 0 and remaining >= 0:
+                    stage_eta = remaining / rate
+            logs = list(self._log_messages[-12:])
 
         layout = Layout()
         layout.split_column(
-            Layout(self._render_header(elapsed, stage_elapsed, pct), size=6),
+            Layout(
+                self._render_header(elapsed, stage_elapsed, pct, stage_position, stage_total_count, stage_eta),
+                size=7,
+            ),
             Layout(name="body", ratio=1),
             Layout(self._render_footer(logs), size=7),
         )
         layout["body"].split_row(
-            Layout(self._render_stage_panel(current_metrics), ratio=2),
-            Layout(self._render_stats_panel(elapsed), ratio=3),
+            Layout(self._render_stage_panel(current_metrics, stage_entries, stage_elapsed), ratio=2),
+            Layout(self._render_stats_panel(elapsed, stage_position, stage_total_count, stage_eta), ratio=3),
         )
         return layout
 
-    def _render_header(self, elapsed: float, stage_elapsed: float, pct: float) -> Panel:
+    def _render_header(
+        self,
+        elapsed: float,
+        stage_elapsed: float,
+        pct: float,
+        stage_position: int,
+        stage_total_count: int,
+        stage_eta: Optional[float],
+    ) -> Panel:
         """Pipeline headline with progress bar."""
         table = Table.grid(expand=True)
         table.add_column(ratio=3)
         table.add_column(justify="right", ratio=2)
 
         stage_text = Text(self.stage_name.upper(), style="bold cyan")
-        elapsed_text = Text(f"Elapsed: {int(elapsed)}s  Stage: {int(stage_elapsed)}s", style="bold")
-        table.add_row(stage_text, elapsed_text)
+        stage_counter = (
+            Text(f"Stage {stage_position}/{stage_total_count}", style="bold white")
+            if stage_total_count
+            else Text("Stage --", style="bold white")
+        )
+        table.add_row(stage_text, stage_counter)
+
+        timing_text = Text(f"Elapsed: {int(elapsed)}s  Stage: {int(stage_elapsed)}s", style="bold")
+        eta_text = Text(f"ETA: {_format_eta(stage_eta)}", style="bold magenta")
+        table.add_row(timing_text, eta_text)
 
         bar = self._progress_bar(pct)
         counts = Text(f"{self.stage_done:,}/{self.stage_total:,}" if self.stage_total else f"{self.stage_done:,}", style="bold")
@@ -414,21 +546,38 @@ class ProgressReporter:
 
         return Panel(table, title="Video Deduplication Pipeline", border_style="cyan")
 
-    def _render_stage_panel(self, metrics: Dict[str, Any]) -> Panel:
+    def _render_stage_panel(self, metrics: Dict[str, Any], stage_entries: List[Dict[str, Any]], stage_elapsed: float) -> Panel:
         """Render per-stage timeline and metrics."""
         timeline = Table(box=None, expand=True, padding=(0, 1))
+        timeline.add_column("#", justify="right", width=4)
         timeline.add_column("Stage", justify="left")
-        timeline.add_column("Status", justify="right")
+        timeline.add_column("Time", justify="right")
 
-        for key in self.stage_order:
-            display = self.stage_display.get(key, key.title())
-            status = self.stage_status.get(key, "pending")
-            style = {
+        if stage_entries:
+            style_map = {
                 "running": "bold yellow",
                 "done": "green",
-                "pending": "grey62",
-            }.get(status, "grey62")
-            timeline.add_row(display, Text(status.upper(), style=style))
+                "pending": "magenta",
+                "skipped": "grey62",
+            }
+            for entry in stage_entries:
+                idx = (entry.get("index") or 0) + 1
+                status = entry.get("status", "pending")
+                style = style_map.get(status, "grey62")
+                duration = entry.get("duration")
+                if status == "running":
+                    time_text = f"{int(stage_elapsed)}s"
+                elif duration is not None:
+                    time_text = f"{duration:.1f}s"
+                else:
+                    time_text = "--"
+                timeline.add_row(
+                    Text(f"{idx}.", style=style),
+                    Text(str(entry.get("display", "")).upper(), style=style),
+                    Text(time_text, style=style),
+                )
+        else:
+            timeline.add_row("", Text("No stages planned", style="dim"), "")
 
         metrics_table = Table.grid(expand=True)
         metrics_table.add_column(justify="left")
@@ -439,13 +588,17 @@ class ProgressReporter:
         else:
             metrics_table.add_row("info", Text("Collecting metrics...", style="dim"))
 
-        body = Group(
-            Align.left(timeline),
-            Panel(metrics_table, title="Stage Metrics", border_style="magenta"),
-        )
+        metrics_panel = Panel(metrics_table, title="Stage Metrics", border_style="magenta")
+        body = Group(Align.left(timeline), metrics_panel)
         return Panel(body, title="Stage Timeline", border_style="magenta")
 
-    def _render_stats_panel(self, elapsed: float) -> Panel:
+    def _render_stats_panel(
+        self,
+        elapsed: float,
+        stage_position: int,
+        stage_total_count: int,
+        stage_eta: Optional[float],
+    ) -> Panel:
         """Render global statistics."""
         table = Table.grid(expand=True)
         table.add_column(justify="left")
@@ -454,8 +607,11 @@ class ProgressReporter:
         bytes_remaining = max(0, self.total_bytes - self.bytes_seen)
         throughput = (self.bytes_seen / elapsed) if elapsed > 0 else 0.0
         dup_ratio = (self.duplicates_found / self.video_files) * 100 if self.video_files else 0.0
+        stage_progress = f"{stage_position}/{stage_total_count}" if stage_total_count else "--"
 
         summary = [
+            ("Stage Progress", stage_progress),
+            ("Stage ETA", _format_eta(stage_eta)),
             ("Total Files", f"{self.total_files:,}"),
             ("Scanned Files", f"{self.scanned_files:,}"),
             ("Video Files", f"{self.video_files:,}"),
@@ -481,9 +637,11 @@ class ProgressReporter:
         table = Table.grid(expand=True)
         table.add_column(justify="left")
         if logs:
-            for level, message, _ in logs:
+            for level, message, ts in logs:
                 style = {"ERROR": "bold red", "WARNING": "yellow", "INFO": "white", "DEBUG": "cyan"}.get(level, "white")
-                table.add_row(Text(f"[{level}] {message}", style=style))
+                timestamp = time.strftime("%H:%M:%S", time.localtime(ts))
+                line = Text(f"{timestamp} [{level}] {message}", style=style)
+                table.add_row(line)
         else:
             table.add_row(Text("No recent log entries", style="dim"))
         return Panel(table, title="Recent Activity", border_style="grey50")
