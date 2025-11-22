@@ -14,16 +14,28 @@ try:
 except Exception:
     pyperclip = None  # type: ignore
 
-from .rgcodeblock_lib.language_defs import get_language_type_from_filename
-from .rgcodeblock_lib import (
-    extract_python_block_ast,
-    extract_brace_block,
-    extract_json_block,
-    extract_yaml_block,
-    extract_xml_block,
-    extract_ruby_block,
-    extract_lua_block,
-)
+try:
+    from .rgcodeblock_lib.language_defs import get_language_type_from_filename
+    from .rgcodeblock_lib import (
+        extract_python_block_ast,
+        extract_brace_block,
+        extract_json_block,
+        extract_yaml_block,
+        extract_xml_block,
+        extract_ruby_block,
+        extract_lua_block,
+    )
+except ImportError:
+    from rgcodeblock_lib.language_defs import get_language_type_from_filename
+    from rgcodeblock_lib import (
+        extract_python_block_ast,
+        extract_brace_block,
+        extract_json_block,
+        extract_yaml_block,
+        extract_xml_block,
+        extract_ruby_block,
+        extract_lua_block,
+    )
 
 @dataclass
 class ReplacePlan:

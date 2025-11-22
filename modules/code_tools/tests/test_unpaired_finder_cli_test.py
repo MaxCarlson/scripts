@@ -1,4 +1,4 @@
-import scripts.modules.code_tools.unpaired_finder as uf
+import unpaired_finder as uf
 
 def test_cli_ok_and_errors(tmp_path, capsys):
     p = tmp_path / "ok.txt"

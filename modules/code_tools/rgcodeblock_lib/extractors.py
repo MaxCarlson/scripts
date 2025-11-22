@@ -6,6 +6,22 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+# Optional library support flags
+try:
+    import yaml
+    YAML_SUPPORT = True
+except ImportError:
+    YAML_SUPPORT = False
+
+try:
+    import lxml
+    LXML_SUPPORT = True
+except ImportError:
+    LXML_SUPPORT = False
+
+# List to collect notes about missing optional libraries
+OPTIONAL_LIBRARY_NOTES: list[str] = []
+
 @dataclass
 class Block:
     start: int  # 1-based inclusive
@@ -33,10 +49,19 @@ def extract_python_block_ast(text: str, *, name: Optional[str] = None, line: Opt
             if getattr(node, "name", None) == name and hasattr(node, "lineno") and hasattr(node, "end_lineno"):
                 return Block(node.lineno, node.end_lineno or node.lineno, name=name, kind=kind, language="python")
     if line:
+        # Find the innermost (smallest span) matching block
+        best_match = None
+        best_span = None
         for node, kind in candidates:
             if hasattr(node, "lineno") and hasattr(node, "end_lineno"):
                 if node.lineno <= line <= (node.end_lineno or node.lineno):
-                    return Block(node.lineno, node.end_lineno or node.lineno, getattr(node, "name", None), kind, "python")
+                    span = (node.end_lineno or node.lineno) - node.lineno
+                    if best_span is None or span < best_span:
+                        best_span = span
+                        best_match = (node, kind)
+        if best_match:
+            node, kind = best_match
+            return Block(node.lineno, node.end_lineno or node.lineno, getattr(node, "name", None), kind, "python")
     return None
 
 def _find_enclosing_brace_block(lines: list[str], start_line_idx: int) -> Optional[tuple[int, int]]:
@@ -84,7 +109,8 @@ def extract_json_block(text: str, *, line: Optional[int] = None) -> Optional[Blo
     lines = _lines(text)
     idx = line - 1
     flat = "\n".join(lines)
-    pos = sum(len(l)+1 for l in lines[:idx])
+    # Use position in the middle of the target line to avoid finding brackets from previous lines
+    pos = sum(len(l)+1 for l in lines[:idx]) + len(lines[idx]) // 2
     start = max(flat.rfind("{", 0, pos), flat.rfind("[", 0, pos))
     if start == -1: return None
     depth_curly = 0; depth_square = 0; end = None
@@ -148,13 +174,13 @@ def extract_xml_block(text: str, *, line: Optional[int] = None, name: Optional[s
     return Block(start_line, end_line, kind=tag, language="xml")
 
 def _extract_keyword_pair_block(text: str, *, line: Optional[int] = None, name: Optional[str] = None,
-                                start_keywords: tuple[str, ...] = ("def",), end_keyword: str = "end") -> Optional[Block]:
+                                start_keywords: tuple[str, ...] = ("def",), end_keyword: str = "end", language: str = "keyword") -> Optional[Block]:
     lines = _lines(text)
     if name:
         pat = re.compile(r"\b(" + "|".join(map(re.escape, start_keywords)) + r")\b\s+" + re.escape(name) + r"\b")
         for i, ln in enumerate(lines):
             if pat.search(ln):
-                return _count_keyword_block(lines, i, start_keywords, end_keyword)
+                return _count_keyword_block(lines, i, start_keywords, end_keyword, name=name, language=language)
         return None
     if line:
         i = line - 1
@@ -163,7 +189,7 @@ def _extract_keyword_pair_block(text: str, *, line: Optional[int] = None, name: 
             if _starts_with_any(lines[j], start_keywords):
                 start_i = j; break
         if start_i is None: return None
-        return _count_keyword_block(lines, start_i, start_keywords, end_keyword)
+        return _count_keyword_block(lines, start_i, start_keywords, end_keyword, language=language)
     return None
 
 def _starts_with_any(s: str, kws: tuple[str, ...]) -> bool:
@@ -173,22 +199,22 @@ def _starts_with_any(s: str, kws: tuple[str, ...]) -> bool:
             return True
     return False
 
-def _count_keyword_block(lines: list[str], start_i: int, start_keywords: tuple[str, ...], end_keyword: str) -> Optional[Block]:
+def _count_keyword_block(lines: list[str], start_i: int, start_keywords: tuple[str, ...], end_keyword: str, name: Optional[str] = None, language: Optional[str] = None) -> Optional[Block]:
     depth = 0
     for k in range(start_i, len(lines)):
         s = lines[k].lstrip()
         if any(s.startswith(kw + " ") or s == kw for kw in start_keywords): depth += 1
         if s.startswith(end_keyword):
             depth -= 1
-            if depth == 0: return Block(start_i + 1, k + 1)
+            if depth == 0: return Block(start_i + 1, k + 1, name=name, language=language)
     return None
 
 def extract_ruby_block(text: str, *, name: Optional[str] = None, line: Optional[int] = None) -> Optional[Block]:
     return _extract_keyword_pair_block(text, line=line, name=name,
-                                       start_keywords=("def", "class", "module", "do", "begin"),
-                                       end_keyword="end")
+                                       start_keywords=("def", "class", "module", "do", "begin", "if", "unless", "case", "while", "until", "for"),
+                                       end_keyword="end", language="ruby")
 
 def extract_lua_block(text: str, *, name: Optional[str] = None, line: Optional[int] = None) -> Optional[Block]:
     return _extract_keyword_pair_block(text, line=line, name=name,
-                                       start_keywords=("function", "do", "then"),
-                                       end_keyword="end")
+                                       start_keywords=("function", "if", "for", "while", "do"),
+                                       end_keyword="end", language="lua")

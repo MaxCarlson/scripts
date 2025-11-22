@@ -1,4 +1,4 @@
-import scripts.modules.code_tools.rgcodeblock_cli as cli
+import rgcodeblock_cli as cli
 
 def test_search_and_extract_json_and_text_outputs(tmp_path, monkeypatch):
     p = tmp_path / "a.py"
@@ -24,7 +24,7 @@ def test_search_and_extract_filters_and_passthrough_args(tmp_path, monkeypatch):
     _ = cli.search_and_extract("needle", tmp_path, include_ext=["py"], exclude_ext=["min.js"], globs=["!node_modules"], extra_args=["--hidden"], output_format="json")
     ex = captured["extra"]
     assert "-g" in ex and any(x.endswith("*.py") for x in ex)
-    assert any(x.endswith("!*min.js") for x in ex)
+    assert any(x.endswith("!*.min.js") for x in ex)
     assert any(x == "--hidden" for x in ex)
 
 def test_fallback_context_for_unknown_language(tmp_path, monkeypatch):
