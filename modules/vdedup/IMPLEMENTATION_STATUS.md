@@ -294,29 +294,66 @@ adaptive_sampling_params(7200, "balanced")
 
 ---
 
-### 3.2 Per-Frame pHash Storage
+### 3.2 Per-Frame pHash Storage ✅ COMPLETE
 
-**Current**: Returns tuple of pHashes
+**Implementation** (2025-01-22):
 
-**Proposed**: Return structured data:
+Added structured data types for frame-level temporal information:
+
+**New Data Structures** (`phash.py`):
+
+1. **`FrameHash` (frozen dataclass)**:
+   ```python
+   @dataclass(frozen=True)
+   class FrameHash:
+       timestamp: float  # Position in video (seconds)
+       index: int        # Frame index in sequence (0-based)
+       phash: int        # 64-bit pHash integer
+   ```
+
+2. **`VideoFingerprint` (frozen dataclass)**:
+   ```python
+   @dataclass(frozen=True)
+   class VideoFingerprint:
+       path: Path
+       duration: float
+       frames: Tuple[FrameHash, ...]
+
+       def __len__(self) -> int: ...
+       def get_phash_tuple(self) -> Tuple[int, ...]: ...  # Backward compat
+   ```
+
+**New Functions**:
+
+3. **`compute_video_fingerprint(path, mode, gpu)`** - Recommended for new code
+   - Returns `VideoFingerprint` with full temporal data
+   - Uses adaptive sampling internally
+   - Enables sequence-based matching
+
+4. **`_compute_frame_hashes_with_timestamps()`** - Internal helper
+   - Returns `List[FrameHash]` with temporal metadata
+   - Shared extraction logic for structured storage
+
+**Test Coverage** (`tests/video_fingerprint_test.py`):
 ```python
-@dataclass
-class FrameHash:
-    timestamp: float  # Position in video (seconds)
-    index: int        # Frame index in sequence
-    phash: int        # 64-bit pHash
-
-@dataclass
-class VideoFingerprint:
-    path: Path
-    duration: float
-    frames: List[FrameHash]
+✅ 21 tests, all passing
+✅ Data structure validation (immutability, equality)
+✅ Timestamp and index preservation
+✅ Backward compatibility via get_phash_tuple()
+✅ Mode selection and GPU pass-through
+✅ Error handling (probe failures, extraction errors)
 ```
 
+**Files Modified**:
+- `phash.py:10-570` - Added data structures and fingerprint function
+- `tests/video_fingerprint_test.py:1-281` - Comprehensive test suite
+
 **Benefits**:
-- Enables sequence matching
-- Tracks temporal position
-- Supports partial overlap detection
+- ✅ Enables sequence-based partial overlap detection (Phase 4.2)
+- ✅ Tracks temporal position for alignment
+- ✅ Supports debugging (can see which frames match)
+- ✅ Backward compatible (get_phash_tuple() for old code)
+- ✅ Immutable (frozen dataclasses prevent accidental modification)
 
 ---
 
