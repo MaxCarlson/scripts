@@ -3,7 +3,7 @@
 import sys
 import os
 import argparse
-import re 
+import re
 from pathlib import Path
 from rich.console import Console
 from rich.table import Table
@@ -17,6 +17,12 @@ except ImportError:
     console_info.print("[bold red][ERROR] The 'cross_platform.clipboard_utils' module was not found.[/]")
     console_info.print("    Please ensure it is installed and accessible in your Python environment.")
     sys.exit(1)
+
+try:
+    from clipboard_tools.buffers import format_age, save_buffer, validate_buffer_id
+except Exception:
+    # Fallback to local copy if module is unavailable (keeps backward compatibility)
+    from pyscripts.clipboard_buffers import format_age, save_buffer, validate_buffer_id  # type: ignore
 
 WHOLE_WRAP_HEADER_MARKER = "WHOLE_CLIPBOARD_CONTENT_BLOCK_V1"
 
@@ -74,6 +80,12 @@ parser.add_argument(
 parser.add_argument(
     "--no-stats", action="store_true", help="Suppress statistics output."
 )
+parser.add_argument(
+    "-b", "--buffer",
+    type=int,
+    default=0,
+    help="Target clipboard buffer slot (0-99). Default: 0."
+)
 
 
 def _generate_file_header(file_path_obj: Path, show_full_path: bool, current_dir: Path) -> str:
@@ -118,10 +130,17 @@ def copy_files_to_clipboard(
     show_full_path: bool,
     append: bool,
     override_append_wrapping: bool,
-    no_stats: bool
+    no_stats: bool,
+    buffer_id: int,
 ):
     stats_data = {} 
     exit_code = 0 
+
+    try:
+        buffer_id = validate_buffer_id(buffer_id)
+    except ValueError as buffer_err:
+        console_info.print(f"[bold red][ERROR] {buffer_err}[/]")
+        return 1
     
     file_paths = [Path(p) for p in file_paths_str]
     text_to_copy_initially = "" 
@@ -267,9 +286,12 @@ def copy_files_to_clipboard(
                 stats_data["Append Action"] = "Skipped (get_clipboard error), normal copy performed"
     
     num_lines_payload = len(final_text_for_clipboard.splitlines()) if final_text_for_clipboard else 0
+    words_in_payload = len(final_text_for_clipboard.split()) if final_text_for_clipboard else 0
     chars_in_payload = len(final_text_for_clipboard) if final_text_for_clipboard else 0
     stats_data["Lines in Clipboard Payload"] = num_lines_payload
     stats_data["Characters in Clipboard Payload"] = chars_in_payload
+    stats_data["Words in Clipboard Payload"] = words_in_payload
+    stats_data["Buffer"] = buffer_id
     
     clipboard_action_status = "Not Attempted"
     should_set_clipboard_flag = False
@@ -293,6 +315,17 @@ def copy_files_to_clipboard(
             try:
                 set_clipboard(final_text_for_clipboard)
                 clipboard_action_status = "Set Succeeded (Verification pending)"
+                try:
+                    buffer_meta = save_buffer(buffer_id, final_text_for_clipboard, set_active=True)
+                    stats_data["Buffer Persisted"] = (
+                        f"{buffer_meta.get('chars', 0)} chars / "
+                        f"{buffer_meta.get('words', 0)} words / "
+                        f"{buffer_meta.get('lines', 0)} lines"
+                    )
+                    stats_data["Buffer Last Filled (UTC)"] = buffer_meta.get("last_filled_utc", "unknown")
+                    stats_data["Time Since Copy"] = format_age(buffer_meta.get("last_filled_utc"))
+                except Exception as e_buf:
+                    stats_data["Buffer Persisted"] = f"Failed to save buffer {buffer_id}: {e_buf}"
                 try: 
                     actual_clipboard_content = get_clipboard()
                     if actual_clipboard_content == final_text_for_clipboard:
@@ -354,6 +387,14 @@ def copy_files_to_clipboard(
     stats_data.setdefault("Original Clipboard Read For Append", "N/A")
     stats_data.setdefault("Append Action", "N/A")
     stats_data.setdefault("Operation Summary", "Operation incomplete or no files processed.")
+
+    if not no_stats:
+        table = Table(title="copy_to_clipboard.py Statistics", title_style="bold magenta")
+        table.add_column("Metric", style="cyan", overflow="fold")
+        table.add_column("Value", overflow="fold")
+        for key, value in stats_data.items():
+            table.add_row(str(key), str(value))
+        console_stats.print(table)
     
     return exit_code
 
@@ -376,7 +417,8 @@ if __name__ == '__main__':
             show_full_path=args.show_full_path,
             append=args.append,
             override_append_wrapping=args.override_append_wrapping,
-            no_stats=args.no_stats
+            no_stats=args.no_stats,
+            buffer_id=args.buffer,
         )
     except SystemExit as e: 
         script_exit_code = e.code if e.code is not None else 1
