@@ -139,14 +139,20 @@ class ClipboardUtils:
             return False
 
         payload_b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
-        ps_script = f"""
-$bytes  = [Convert]::FromBase64String('{payload_b64}');
-$str    = [Text.Encoding]::UTF8.GetString($bytes);
-Set-Clipboard -Value $str
-"""
+        # Feed payload via stdin (base64) so we never hit Windows' ~8k command-line limit.
+        ps_script = (
+            "$b=[Console]::In.ReadToEnd();"
+            "$bytes=[Convert]::FromBase64String($b);"
+            "$str=[Text.Encoding]::UTF8.GetString($bytes);"
+            "Set-Clipboard -Value $str"
+        )
         encoded = base64.b64encode(ps_script.encode("utf-16le")).decode("ascii")
         try:
-            cp = self._run([pwsh, "-NoProfile", "-EncodedCommand", encoded], check=True)
+            cp = self._run(
+                [pwsh, "-NoProfile", "-EncodedCommand", encoded],
+                input_text=payload_b64,
+                check=True,
+            )
             _log("Information", "Windows Set-Clipboard via -EncodedCommand OK.")
             if cp.stdout.strip():
                 _log("Debug", cp.stdout.strip())

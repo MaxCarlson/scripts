@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clipboard_tools"
+version = "0.1.1"
+description = "Clipboard command suite with multi-buffer support and tmux/Windows bridge."
+authors = [
+    {name = "Scripts Repo"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+c2c = "clipboard_tools.entrypoints:copy_main"
+c2cd = "clipboard_tools.entrypoints:copy_default_main"
+c2cr = "clipboard_tools.entrypoints:copy_recursive_main"
+c2ca = "clipboard_tools.entrypoints:copy_append_main"
+pclip = "clipboard_tools.entrypoints:print_clipboard_main"
+rwc = "clipboard_tools.entrypoints:replace_with_clipboard_main"
+rwcp = "clipboard_tools.entrypoints:replace_with_clipboard_from_last_main"
+cld = "clipboard_tools.entrypoints:clipboard_diff_main"
+apc = "clipboard_tools.entrypoints:append_clipboard_main"
+crx = "clipboard_tools.entrypoints:clipboard_replace_main"
+cb2c = "clipboard_tools.entrypoints:copy_buffer_main"
+cb2cf = "clipboard_tools.entrypoints:copy_buffer_full_main"
+otc = "clipboard_tools.entrypoints:output_to_clipboard_main"
+otcw = "clipboard_tools.entrypoints:output_to_clipboard_wrap_main"
+otca = "clipboard_tools.entrypoints:output_to_clipboard_append_main"
+otcwa = "clipboard_tools.entrypoints:output_to_clipboard_wrap_append_main"
+tmux2winclip = "clipboard_tools.tmux_bridge:cli_main"
+tmuxcp = "clipboard_tools.tmux_bridge:cli_main"
+
+[tool.setuptools.packages.find]
+where = ["."]

@@ -154,6 +154,8 @@ def test_set_clipboard_windows_robust_success(windows_utils, monkeypatch):
 
     run_args = run_mock.call_args[0][0]
     assert run_args[:3] == ["pwsh", "-NoProfile", "-EncodedCommand"]
+    # payload should be passed via stdin (base64) to avoid cmdline limits
+    assert "d2luIHRleHQ=" == run_mock.call_args.kwargs["input_text"]
     assert "]52;c;" in buf.getvalue()
 
 def test_set_clipboard_windows_robust_failure_falls_back_to_clip(windows_utils, monkeypatch):
