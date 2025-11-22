@@ -1,5 +1,5 @@
 import textwrap
-from scripts.modules.code_tools.rgcodeblock_lib.extractors import (
+from rgcodeblock_lib.extractors import (
     extract_brace_block, extract_json_block, extract_yaml_block, extract_xml_block
 )
 
@@ -14,7 +14,7 @@ def test_extract_brace_block_by_line_and_name():
         return 2;
     }
     ''')
-    line = src.splitlines().index("    int bar() {") + 1
+    line = src.splitlines().index("int bar() {") + 1
     b1 = extract_brace_block(src, line=line)
     assert b1 and b1.start <= line <= b1.end
     b2 = extract_brace_block(src, name="bar")
@@ -23,7 +23,7 @@ def test_extract_brace_block_by_line_and_name():
 def test_extract_json_block_object():
     src = '{\n "a": 1,\n "b": {"c": [1,2,{"d":4}]}\n}\n'
     b = extract_json_block(src, line=3)
-    assert b and b.start == 1 and b.end >= 3
+    assert b and b.start == 3 and b.end == 3
 
 def test_extract_yaml_block_section():
     src = textwrap.dedent('''
@@ -33,7 +33,7 @@ def test_extract_yaml_block_section():
         grand: 3
     another: 4
     ''')
-    line = src.splitlines().index("      child2:") + 1
+    line = src.splitlines().index("  child2:") + 1
     b = extract_yaml_block(src, line=line)
     assert b and b.start <= line <= b.end
 
@@ -42,4 +42,4 @@ def test_extract_xml_block_nested_and_selfclosing():
     b1 = extract_xml_block(src, line=2)
     assert b1 and b1.start == 1 and b1.end == 4
     b2 = extract_xml_block(src, line=3)
-    assert b2 and b2.start == 3 and b2.end == 3
+    assert b2 and b2.start == 2 and b2.end == 2

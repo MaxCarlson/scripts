@@ -1,5 +1,5 @@
 import textwrap
-from scripts.modules.code_tools.rgcodeblock_lib.extractors import extract_python_block_ast
+from rgcodeblock_lib.extractors import extract_python_block_ast
 
 def test_extract_python_function_by_name_and_line():
     src = textwrap.dedent('''
@@ -15,7 +15,7 @@ def test_extract_python_function_by_name_and_line():
     ''')
     b_name = extract_python_block_ast(src, name="target")
     assert b_name and b_name.kind == "function" and b_name.language == "python"
-    line = src.splitlines().index("        return x*2") + 1
+    line = src.splitlines().index("    return x*2") + 1
     b_line = extract_python_block_ast(src, line=line)
     assert b_line and b_line.start <= line <= b_line.end
 

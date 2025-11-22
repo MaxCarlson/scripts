@@ -1,4 +1,4 @@
-from scripts.modules.code_tools.rgcodeblock_lib.language_defs import get_language_type_from_filename
+from rgcodeblock_lib.language_defs import get_language_type_from_filename
 
 def test_language_detection_known():
     assert get_language_type_from_filename("a.py")[0] == "python"
