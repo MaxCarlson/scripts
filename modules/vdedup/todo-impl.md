@@ -36,6 +36,8 @@ This document translates backlog items into trackable execution units. Each top-
 - [ ] Wire controls to `ProgressReporter` so workers respect pause and shutdown signals.
 - [ ] Display control state (e.g., “Paused”) and next steps (press key to resume).
 - [ ] Ensure stop/restart gracefully drain thread pools and update caches before exiting.
+- [ ] Allow queue/parameter changes while paused (thread counts, limits) and surface the updates instantly in the UI.
+- [ ] Add hotkeys to switch between dashboard and per-scan detail screens without restarting the pipeline.
 
 ## [ ] 6. Precision Metrics & Live Signals
 - [ ] Increase byte formatting precision for TiB+ datasets (two decimals minimum).
@@ -62,6 +64,7 @@ This document translates backlog items into trackable execution units. Each top-
 - [ ] Build a dedicated detail pane that highlights resolution, bitrate, duration, codecs, chosen keep-policy, and rationale for each group.
 - [ ] Add filters/toggles to switch between detection types (exact hash vs. subset vs. visual similarity).
 - [ ] Integrate keyboard navigation (enter/back) so the dashboard and list share the same controls.
+- [ ] Rebase the interactive list on termdash widgets so it can be reused across modules (avoid Rich-only paths).
 
 ## [ ] 10. Missing Footage Detection & Export
 - [ ] Detect cases where a subset file contains segments not present in its master using timeline fingerprints.
@@ -69,6 +72,11 @@ This document translates backlog items into trackable execution units. Each top-
 - [ ] Provide CLI/UI options to export those extra segments to files (non-destructive defaults).
 - [ ] Persist operator decisions (ignore/extract) so reports indicate which masters need manual editing.
 - [ ] Add tests covering detection of >2 minute extra footage blocks.
+
+## [ ] 11. Worker Parallelism Visibility
+- [ ] For multi-worker scans, render per-worker progress/throughput and an at-a-glance summary.
+- [ ] Show worker rows in parallel and update when pausing/stopping a single worker.
+- [ ] Keep the dashboard responsive while workers stream updates (no blocking on shared locks).
 
 ---
 

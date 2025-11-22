@@ -31,3 +31,4 @@ Progress 2025-11-20:
 - Added always-visible item counts alongside calculated sizes.
 - Added hotkeys: `r` to calculate the highlighted folder, `A` to calculate all visible folders, `U` to collapse all expansions.
 - Retained `S` for full-tree size scan; footer updated to reflect the new controls.
+- Ongoing: fold these interactions into reusable termdash list widgets so other modules can share the same key bindings/behavior.

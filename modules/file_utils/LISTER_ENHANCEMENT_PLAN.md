@@ -8,6 +8,8 @@
 
 Enhancing the file lister with deep recursive search, smart path collapse, multiple filters, file operations, and intelligent caching for efficient file finding and management.
 
+> **Portability note:** UI/interaction improvements should be implemented as reusable termdash widgets/helpers wherever possible so other modules (vdedup, ytaedl) can adopt them without duplication.
+
 ---
 
 ## Current State Analysis
