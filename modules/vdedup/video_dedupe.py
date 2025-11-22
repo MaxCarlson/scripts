@@ -7,10 +7,13 @@ This CLI drives the staged pipeline and report application.
 Examples:
 
   # Fast exact-dupe sweep (HDD-friendly)
-  video-dedupe "D:\\Videos" -q 2 -p *.mp4 -r -t 4 -o D:\\output -L
+  video-dedupe -D "D:\\Videos" -q 2 -p *.mp4 -r -t 4 -o D:\\output -L
 
   # Thorough scan including pHash + subset detection
-  video-dedupe "D:\\Videos" -q 5 -u 8 -F 9 -T 14 -t 16 -o D:\\output -L -g
+  video-dedupe -D "D:\\Videos" -q 5 -u 8 -F 9 -T 14 -t 16 -o D:\\output -L -g
+
+  # Multiple directories
+  video-dedupe -D D:\\Videos -D E:\\Archive -q 2 -r -L
 
   # Apply a previously generated report
   video-dedupe -a D:\\report.json -f -b D:\\Quarantine
@@ -505,14 +508,16 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         description="Find and remove duplicate/similar videos & files using a staged pipeline.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    # Directories (positional; 0+ so that --apply-report works without any)
+    # Directories (optional argument so it can be placed anywhere in the command)
     p.add_argument(
-        "directories",
-        nargs="*",
+        "-D", "--directory",
+        action="append",
+        dest="directories",
         help=(
-            "One or more root directories to scan. "
+            "Root directory to scan (repeatable). "
             "You can add a depth suffix per root like 'DIR::d0' (no recursion), 'DIR::d1', 'DIR::d2', or 'DIR::r' (unlimited). "
-            "Globs are supported and are expanded before scanning (e.g. '.\\stars\\*::d0')."
+            "Globs are supported and are expanded before scanning (e.g. '.\\stars\\*::d0'). "
+            "Can be specified multiple times for multiple directories."
         ),
     )
 

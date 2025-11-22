@@ -139,6 +139,7 @@ class InteractiveList:
         size_extractor: Optional[Callable[[Any], int]] = None,
         enable_color_gradient: bool = False,
         custom_action_handler: Optional[Callable[[int, Any], Tuple[bool, bool]]] = None,
+        key_handler: Optional[Callable[[int, Any, ListState], Tuple[bool, bool]]] = None,
         dirs_first: bool = True,
         name_color_getter: Optional[Callable[[Any], int]] = None,
         columns_line: Optional[str] = None,
@@ -159,6 +160,7 @@ class InteractiveList:
         self.enable_color_gradient = enable_color_gradient
         self.sort_change_handler = sort_change_handler
         self.custom_action_handler = custom_action_handler
+        self.key_handler = key_handler
         self.name_color_getter = name_color_getter
 
         if not sorters:
@@ -183,6 +185,16 @@ class InteractiveList:
         self._detail_lines: List[str] = []
         self._detail_meta: List[Tuple[int, bool]] = []
         self._detail_content_height: int = 0
+
+    def _invoke_handler(self, handler: Callable, key: int, current_item: Any) -> Tuple[bool, bool]:
+        """
+        Safely invoke a handler that may accept 2 or 3 arguments.
+        Returns (handled, should_refresh).
+        """
+        try:
+            return handler(key, current_item, self.state)
+        except TypeError:
+            return handler(key, current_item)  # Backwards-compatible two-arg form
 
     def _default_detail_formatter(self, item: Any) -> List[str]:
         """Default detail formatter shows item representation."""
@@ -403,11 +415,16 @@ class InteractiveList:
                     self._prepare_detail_view(self.state.visible[self.state.selected_index])
                     self.state.scroll_offset = 0
             elif key in (curses.KEY_ENTER, 10, 13):
-                # Check if custom handler wants to handle this key
+                # Check if custom handlers want to handle this key
                 handled = False
-                if self.custom_action_handler and self.state.visible and self.state.selected_index < len(self.state.visible):
+                if self.key_handler and self.state.visible and self.state.selected_index < len(self.state.visible):
                     current_item = self.state.visible[self.state.selected_index]
-                    handled, should_refresh = self.custom_action_handler(key, current_item)
+                    handled, should_refresh = self._invoke_handler(self.key_handler, key, current_item)
+                    if should_refresh:
+                        self._update_visible_items()
+                if not handled and self.custom_action_handler and self.state.visible and self.state.selected_index < len(self.state.visible):
+                    current_item = self.state.visible[self.state.selected_index]
+                    handled, should_refresh = self._invoke_handler(self.custom_action_handler, key, current_item)
                     if should_refresh:
                         self._update_visible_items()
 
@@ -416,14 +433,21 @@ class InteractiveList:
                     self._prepare_detail_view(self.state.visible[self.state.selected_index])
                     self.state.scroll_offset = 0
             else:
-                # Check if custom handler wants to handle this key
-                if self.custom_action_handler and self.state.visible and self.state.selected_index < len(self.state.visible):
+                # Check if custom handlers want to handle this key
+                if self.state.visible and self.state.selected_index < len(self.state.visible):
                     current_item = self.state.visible[self.state.selected_index]
-                    handled, should_refresh = self.custom_action_handler(key, current_item)
-                    if handled:
-                        if should_refresh:
-                            self._update_visible_items()
-                        continue
+                    if self.key_handler:
+                        handled, should_refresh = self._invoke_handler(self.key_handler, key, current_item)
+                        if handled:
+                            if should_refresh:
+                                self._update_visible_items()
+                            continue
+                    if self.custom_action_handler:
+                        handled, should_refresh = self._invoke_handler(self.custom_action_handler, key, current_item)
+                        if handled:
+                            if should_refresh:
+                                self._update_visible_items()
+                            continue
 
                 if self._handle_sort_key(key):
                     self._update_visible_items()
