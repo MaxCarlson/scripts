@@ -597,17 +597,29 @@ def run_pipeline(
         return {}
 
     # -------------------------------------------
-    # Q1: size buckets (cheap; no hashing needed)
+    # Q1: size buckets (optimization hint, NOT elimination)
     # -------------------------------------------
-    size_collisions: List[FileMeta] = []
+    # CRITICAL: Q1 is an optimization for exact duplicates, NOT an elimination stage
+    # Visual duplicates (different encodings/resolutions/clips) have DIFFERENT sizes
+    # ALL files must continue to Q2/Q3/Q4 for visual similarity detection
+    size_buckets_for_q2: Dict[int, List[FileMeta]] = {}  # Size-matched groups (optimization hint)
+
     if 1 in selected_stages:
-        logger.info("Starting Q1: size bucket analysis")
+        logger.info("Starting Q1: size bucket analysis (optimization, not elimination)")
         reporter.set_status("Q1 size bucketing")
         reporter.start_stage("Q1 size bucketing", total=len(by_size))
 
-        for idx, bucket in enumerate(by_size.values(), start=1):
+        # Identify size-matched groups for Q2 optimization
+        size_matched_count = 0
+        unique_size_count = 0
+
+        for idx, (size, bucket) in enumerate(by_size.items(), start=1):
             if len(bucket) > 1:
-                size_collisions.extend(bucket)
+                size_buckets_for_q2[size] = bucket
+                size_matched_count += len(bucket)
+            else:
+                unique_size_count += 1
+
             if idx % 250 == 0:
                 reporter.update_progress_periodically(idx, len(by_size) or 1)
 
@@ -615,12 +627,22 @@ def run_pipeline(
         reporter.update_stage_metrics(
             "Q1 size bucketing",
             buckets=len(by_size),
-            collisions=f"{len(size_collisions):,}",
+            size_matched=f"{size_matched_count:,}",
+            unique_sizes=f"{unique_size_count:,}",
         )
+
+        # Log findings
+        logger.info(f"Q1 completed: {size_matched_count:,} files in {len(size_buckets_for_q2):,} size-matched groups")
+        logger.info(f"Q1: {unique_size_count:,} files have unique sizes (still processed for visual similarity)")
+        reporter.add_log(f"Q1: {size_matched_count:,} files in size-matched groups (exact duplicate candidates)")
+        reporter.add_log(f"Q1: {unique_size_count:,} unique-sized files continue to visual stages")
+
         reporter.finish_stage("Q1 size bucketing")
-        logger.info(f"Q1 completed. Found {len(size_collisions)} files in size collision groups")
     else:
         reporter.set_status("Skipping Q1 (size buckets disabled)")
+
+    # ALL files continue to Q2 (nothing eliminated based on size alone!)
+    all_candidates = metas
 
     groups: GroupMap = {}
     excluded_after_q2: Set[Path] = set()
@@ -632,12 +654,18 @@ def run_pipeline(
 
     # -------------------------------------------------------
     # Q2: partial (blake3 slices) -> full sha256 on collisions
+    # Smart ordering: prioritize size-matched groups for early exact-duplicate detection
     # -------------------------------------------------------
-    if 2 in selected_stages and size_collisions:
-        logger.info(f"Starting Q2: partial hashing for {len(size_collisions)} files")
+    if 2 in selected_stages and all_candidates:
+        # Smart ordering: process size-matched files first for faster exact-duplicate detection
+        priority_files = [f for bucket in size_buckets_for_q2.values() for f in bucket]
+        remaining_files = [f for f in all_candidates if f not in priority_files]
+        q2_candidates = priority_files + remaining_files
+
+        logger.info(f"Starting Q2: partial hashing for {len(q2_candidates):,} files ({len(priority_files):,} priority, {len(remaining_files):,} remaining)")
         reporter.set_status("Q2 partial hashing")
-        reporter.start_stage("Q2 partial", total=len(size_collisions))
-        reporter.set_hash_total(len(size_collisions))
+        reporter.start_stage("Q2 partial", total=len(q2_candidates))
+        reporter.set_hash_total(len(q2_candidates))
 
         partial_map: Dict[str, List[FileMeta]] = defaultdict(list)
 
@@ -653,7 +681,7 @@ def run_pipeline(
             return m, sig
 
         # Multi-threaded partial hashing with progress tracking
-        logger.info(f"Starting partial hash computation for {len(size_collisions):,} files using {cfg.threads} threads")
+        logger.info(f"Starting partial hash computation for {len(q2_candidates):,} files using {cfg.threads} threads")
 
         # Thread-safe counter for progress
         completed = threading.Lock()
@@ -668,26 +696,26 @@ def run_pipeline(
 
                 # Log progress every 100 files
                 if current % 100 == 0:
-                    pct = (current / len(size_collisions)) * 100
-                    logger.info(f"Partial hashing: {current:,}/{len(size_collisions):,} ({pct:.1f}%) - {cfg.threads} workers")
+                    pct = (current / len(q2_candidates)) * 100
+                    logger.info(f"Partial hashing: {current:,}/{len(q2_candidates):,} ({pct:.1f}%) - {cfg.threads} workers")
 
                 # Update UI every 20 files
                 if current % 20 == 0:
-                    reporter.update_progress_periodically(current, len(size_collisions))
+                    reporter.update_progress_periodically(current, len(q2_candidates))
 
             return result
 
         # Execute with thread pool
         with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.threads) as ex:
-            for m_result, sig in ex.map(_do_partial_tracked, size_collisions):
+            for m_result, sig in ex.map(_do_partial_tracked, q2_candidates):
                 partial_map[sig].append(m_result)
 
         # Final update
-        reporter.update_progress_periodically(len(size_collisions), len(size_collisions), force_update=True)
+        reporter.update_progress_periodically(len(q2_candidates), len(q2_candidates), force_update=True)
         logger.info(f"Partial hashing complete: {len(partial_map):,} unique signatures using {cfg.threads} threads")
         reporter.update_stage_metrics(
             "Q2 partial",
-            candidates=f"{len(size_collisions):,}",
+            candidates=f"{len(q2_candidates):,}",
             unique=f"{len(partial_map):,}",
         )
         reporter.finish_stage("Q2 partial")

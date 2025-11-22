@@ -816,9 +816,31 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else Path.cwd()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Setup logging
-    log_file = None if args.no_log_file else output_dir / f"vdedup-q{args.quality}.log"
-    logger = _setup_logging(log_file, args.log_level, args.console_log_level)
+    # Create lock file to prevent concurrent runs in same output directory
+    lock_file = output_dir / ".vdedup.lock"
+    try:
+        # Try to create lock file exclusively (fails if it exists)
+        if lock_file.exists():
+            # Check if lock is stale (older than 24 hours)
+            lock_age = time.time() - lock_file.stat().st_mtime
+            if lock_age < 86400:  # 24 hours
+                print(f"video-dedupe: error: Another vdedup instance is running in {output_dir}", file=sys.stderr)
+                print(f"video-dedupe: error: Lock file: {lock_file}", file=sys.stderr)
+                print(f"video-dedupe: error: If no other instance is running, delete the lock file manually", file=sys.stderr)
+                return 3
+            else:
+                # Stale lock, remove it
+                lock_file.unlink()
+
+        # Create new lock file with current PID
+        lock_file.write_text(f"{os.getpid()}\n{time.time()}\n")
+
+        # Setup logging
+        log_file = None if args.no_log_file else output_dir / f"vdedup-q{args.quality}.log"
+        logger = _setup_logging(log_file, args.log_level, args.console_log_level)
+    except Exception as e:
+        print(f"video-dedupe: error: Failed to create lock file: {e}", file=sys.stderr)
+        return 3
 
     logger.info(f"vdedup started with args: {' '.join(sys.argv[1:])}")
     logger.info(f"Output directory: {output_dir}")
@@ -854,7 +876,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         banner = _banner_text(False, dry=args.dry_run, mode="apply", threads=args.threads, gpu=False, backup=getattr(args, 'backup', None))
         # Simplified: always disable UI to prevent freezing issues
-        reporter = ProgressReporter(enable_dash=False, refresh_rate=0.2, banner=banner, stacked_ui=None)
+        reporter = ProgressReporter(enable_dash=False, refresh_rate=0.25, banner=banner, stacked_ui=None)
         active_reporter = reporter
         reporter.start()
         try:
@@ -906,6 +928,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             raise
         finally:
             reporter.stop()
+            # Remove lock file
+            if lock_file.exists():
+                try:
+                    lock_file.unlink()
+                    logger.debug(f"Removed lock file: {lock_file}")
+                except Exception as e:
+                    logger.warning(f"Failed to remove lock file: {e}")
             logger.info("Apply report mode completed")
 
     # SCAN mode
@@ -978,7 +1007,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     else:
         logger.info("Running in console mode")
 
-    reporter = ProgressReporter(enable_dash=enable_ui, refresh_rate=0.2, banner=banner, stacked_ui=None)
+    # Use 0.25s refresh rate (4 Hz) for smooth, responsive UI that doesn't appear frozen
+    reporter = ProgressReporter(enable_dash=enable_ui, refresh_rate=0.25, banner=banner, stacked_ui=None)
     active_reporter = reporter
     logger.info("Starting ProgressReporter...")
     try:
@@ -1185,6 +1215,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             logger.debug("Closing hash cache")
             cache.close()
         reporter.stop()
+        # Remove lock file
+        if lock_file.exists():
+            try:
+                lock_file.unlink()
+                logger.debug(f"Removed lock file: {lock_file}")
+            except Exception as e:
+                logger.warning(f"Failed to remove lock file: {e}")
         logger.info("vdedup session ended")
 
 
