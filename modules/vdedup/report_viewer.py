@@ -380,8 +380,8 @@ def launch_report_viewer(report_paths: Sequence[Path]) -> None:
         header="Duplicate Groups",
         sort_keys_mapping=SORT_KEYS_MAPPING,
         footer_lines=[
-            "Enter: toggle group | i: inspect | E: expand all | C: collapse all | f/x: filter/exclude | Ctrl+Q: quit",
-            "Sort keys: 1=space 2=dups 3=method 4=path 5=size",
+            "Enter: toggle | i: detail | E: expand all | C: collapse all | f/x: filter/exclude",
+            "Sort: 1=space 2=dups 3=method 4=path 5=size | Ctrl+Q: quit",
         ],
         detail_formatter=detail_formatter,
         size_extractor=_size_extractor,
