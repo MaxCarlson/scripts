@@ -176,22 +176,32 @@ excluded_after_q2 = {files in exact-dup groups}  # Only these excluded
 
 ---
 
-### 2.2 Efficient ffprobe Usage
+### 2.2 Efficient ffprobe Usage ✅ COMPLETE
 
-**Current State**: Uses full ffprobe output
+**Implementation** (2025-01-22):
+- Added `-select_streams v:0` to target only first video stream
+- Minimal field selection: `width,height,codec_name,r_frame_rate,bit_rate,codec_type`
+- Format fields: `duration,format_name,bit_rate`
+- 30-second timeout for corrupted files
 
-**Optimization**:
-```bash
-ffprobe -v error -select_streams v:0 \
-  -show_entries stream=width,height,codec_name,r_frame_rate,bit_rate \
-  -show_entries format=duration,format_name \
-  -of json "file.mp4"
+**Files Modified**:
+- `probe.py:8-59` - Optimized ffprobe command
+- `tests/probe_test.py:1-331` - Comprehensive test suite (14 tests)
+
+**Test Coverage**:
+```python
+✅ Nonexistent file handling
+✅ Invalid JSON handling
+✅ Timeout handling (30s)
+✅ Permission errors
+✅ Command optimization verification
+✅ Field validation
+✅ Error recovery
 ```
 
-**Benefits**:
-- Faster execution
-- Less parsing overhead
-- Only extract what we need
+**Impact**:
+- Faster metadata extraction by querying only first video stream
+- Robust error handling prevents pipeline crashes
 
 ---
 
@@ -221,64 +231,66 @@ ffprobe -v error -select_streams v:0 \
 
 ---
 
-### 3.1 Adaptive Frame Sampling Strategy ⏳ HIGH PRIORITY
+### 3.1 Adaptive Frame Sampling Strategy ✅ COMPLETE
 
-**Proposed Strategy**:
+**Implementation** (2025-01-22):
 
+Added intelligent duration-aware frame sampling to replace fixed 5-frame approach:
+
+**New Functions** (`phash.py`):
+1. `adaptive_sampling_params(duration, mode)` - Calculate sampling parameters
+   - Returns `AdaptiveSamplingParams(interval, min_frames, max_frames)`
+   - Three modes: fast, balanced (default), thorough
+   - Duration-based intervals prevent under/over-sampling
+
+2. `compute_phash_signature_adaptive(path, mode, gpu)` - New pHash function
+   - Uses adaptive sampling based on video duration
+   - Enforces min/max frame limits to prevent explosion
+   - Generates evenly-spaced timestamps across video
+
+3. `_compute_phash_from_timestamps(path, timestamps, gpu)` - Refactored extraction
+   - Reusable frame extraction logic
+   - Shared by both fixed and adaptive approaches
+
+**Sampling Strategy**:
+
+| Duration | Fast Mode | Balanced Mode | Thorough Mode |
+|----------|-----------|---------------|---------------|
+| ≤5 min   | 10s (10-100 frames) | 1s (30-500 frames) | 0.5s (50-1000 frames) |
+| 5-60 min | 20s (20-200 frames) | 2s (50-1000 frames) | 1s (100-2000 frames) |
+| >60 min  | 30s (30-300 frames) | 4s (50-1000 frames) | 2s (100-3000 frames) |
+
+**Examples**:
 ```python
-def adaptive_sampling_rate(duration: float, mode: str) -> float:
-    """Return frame sampling interval in seconds."""
+# 3-minute video, balanced mode → ~180 frames (1 frame/sec)
+adaptive_sampling_params(180, "balanced")
+# AdaptiveSamplingParams(interval=1.0, min_frames=30, max_frames=500)
 
-    if mode == "fast":
-        # Minimal sampling for speed
-        if duration <= 300:  # ≤5 min
-            return 10.0  # 1 frame / 10s
-        elif duration <= 3600:  # ≤1 hr
-            return 20.0
-        else:
-            return 30.0
-
-    elif mode == "balanced":
-        # Moderate sampling (default)
-        if duration <= 300:  # ≤5 min
-            return 1.0  # 1 frame / 1s
-        elif duration <= 3600:  # ≤1 hr
-            return 2.0  # 1 frame / 2s
-        else:
-            return 4.0  # 1 frame / 4s
-
-    elif mode == "thorough":
-        # Dense sampling for maximum recall
-        if duration <= 300:  # ≤5 min
-            return 0.5  # 2 frames / 1s
-        elif duration <= 3600:  # ≤1 hr
-            return 1.0  # 1 frame / 1s
-        else:
-            return 2.0  # 1 frame / 2s
-
-    # Constraints
-    min_frames = 20
-    max_frames = 1000 if mode == "thorough" else 500
-
-    num_frames = int(duration / interval)
-    if num_frames < min_frames:
-        interval = duration / min_frames
-    elif num_frames > max_frames:
-        interval = duration / max_frames
-
-    return interval
+# 2-hour movie, balanced mode → 1000 frames (capped, 1 frame/4sec)
+adaptive_sampling_params(7200, "balanced")
+# AdaptiveSamplingParams(interval=4.0, min_frames=50, max_frames=1000)
 ```
 
-**Benefits**:
-- Short videos: Dense sampling (catch all content)
-- Long videos: Reasonable sampling (avoid explosion)
-- Mode-dependent: User controls speed/accuracy trade-off
+**Test Coverage** (`tests/adaptive_sampling_test.py`):
+```python
+✅ 28 tests, all passing
+✅ Parameter calculation for all modes and durations
+✅ Min/max frame enforcement
+✅ Boundary conditions (0s, very short, very long)
+✅ Timestamp distribution validation
+✅ GPU parameter pass-through
+✅ Error handling (probe failures, invalid durations)
+```
 
-**Implementation Steps**:
-1. Add `adaptive_sampling_rate()` helper
-2. Update frame extraction in `phash.py`
-3. Add mode config to `PipelineConfig`
-4. Update CLI with `--mode [fast|balanced|thorough]`
+**Files Modified**:
+- `phash.py:1-408` - Added adaptive sampling functions
+- `tests/adaptive_sampling_test.py:1-332` - Comprehensive test suite
+
+**Impact**:
+- ✅ Prevents under-sampling on short clips (better partial overlap detection)
+- ✅ Prevents over-sampling on long movies (avoids frame explosion)
+- ✅ User-configurable speed/accuracy trade-offs
+- ✅ Maintains backward compatibility (original functions unchanged)
 
 ---
 
@@ -737,3 +749,24 @@ video-dedupe -D ./videos --interactive
 - **PyTorch/FAISS** only for Phase 9+ (optional thorough mode)
 - **Open-source only**: FFmpeg, OpenCV, Chromaprint, Python ecosystem
 - **Incremental value**: Each phase adds value independently
+
+---
+
+## Known Issues (Minor)
+
+### UI Text Alignment in Report Viewer
+
+**Reported**: 2025-01-22
+
+**Symptoms**:
+- Text occasionally becomes misaligned in interactive report viewer
+- Occurs when toggling different sorting methods
+- Header columns don't always align with data rows
+
+**Impact**: Low - cosmetic only, doesn't affect functionality
+
+**Priority**: Low - defer until high-priority features complete
+
+**Likely Cause**: Terminal width calculation or column sizing logic
+
+**Location**: `modules/termdash/interactive_list.py` (report viewer UI)

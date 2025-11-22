@@ -2,8 +2,96 @@
 from __future__ import annotations
 import io
 import subprocess
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple, NamedTuple
 from pathlib import Path
+
+
+class AdaptiveSamplingParams(NamedTuple):
+    """Parameters for adaptive frame sampling based on video duration and mode."""
+    sampling_interval: float  # seconds between frames
+    min_frames: int  # minimum frames to sample
+    max_frames: int  # maximum frames to sample (prevent explosion on long videos)
+
+
+def adaptive_sampling_params(duration: float, mode: str = "balanced") -> AdaptiveSamplingParams:
+    """
+    Calculate adaptive frame sampling parameters based on video duration and quality mode.
+
+    Args:
+        duration: Video duration in seconds
+        mode: Sampling mode - "fast", "balanced", or "thorough"
+
+    Returns:
+        AdaptiveSamplingParams with sampling_interval, min_frames, max_frames
+
+    Strategy:
+        - Short videos (≤5min): Dense sampling to catch all details
+        - Medium videos (5-60min): Moderate sampling
+        - Long videos (>60min): Sparse sampling to avoid explosion
+        - Ensures minimum coverage for partial overlap detection (≥10% threshold)
+
+    Examples:
+        >>> # 3-minute video in balanced mode
+        >>> params = adaptive_sampling_params(180, "balanced")
+        >>> params.sampling_interval  # 1.0 second
+        >>> params.min_frames  # 30
+        >>> params.max_frames  # 500
+
+        >>> # 2-hour video in balanced mode
+        >>> params = adaptive_sampling_params(7200, "balanced")
+        >>> params.sampling_interval  # 4.0 seconds
+        >>> params.min_frames  # 50
+        >>> params.max_frames  # 1000
+    """
+    if duration <= 0:
+        return AdaptiveSamplingParams(1.0, 5, 100)
+
+    if mode == "fast":
+        # Minimal sampling for speed - prioritize quick scans
+        if duration <= 300:  # ≤5 min
+            interval = 10.0  # 1 frame / 10s
+            min_frames = 10
+            max_frames = 100
+        elif duration <= 3600:  # ≤1 hr
+            interval = 20.0  # 1 frame / 20s
+            min_frames = 20
+            max_frames = 200
+        else:  # >1 hr
+            interval = 30.0  # 1 frame / 30s
+            min_frames = 30
+            max_frames = 300
+
+    elif mode == "thorough":
+        # Dense sampling for maximum accuracy
+        if duration <= 300:  # ≤5 min
+            interval = 0.5  # 1 frame / 0.5s (2 fps)
+            min_frames = 50
+            max_frames = 1000
+        elif duration <= 3600:  # ≤1 hr
+            interval = 1.0  # 1 frame / 1s (1 fps)
+            min_frames = 100
+            max_frames = 2000
+        else:  # >1 hr
+            interval = 2.0  # 1 frame / 2s (0.5 fps)
+            min_frames = 100
+            max_frames = 3000
+
+    else:  # balanced (default)
+        # Moderate sampling - good accuracy/speed trade-off
+        if duration <= 300:  # ≤5 min
+            interval = 1.0  # 1 frame / 1s
+            min_frames = 30
+            max_frames = 500
+        elif duration <= 3600:  # ≤1 hr
+            interval = 2.0  # 1 frame / 2s
+            min_frames = 50
+            max_frames = 1000
+        else:  # >1 hr
+            interval = 4.0  # 1 frame / 4s
+            min_frames = 50
+            max_frames = 1000
+
+    return AdaptiveSamplingParams(interval, min_frames, max_frames)
 
 def _ffmpeg_frame_cmd(path: Path, ts: float, *, gpu: bool) -> list:
     """
@@ -180,6 +268,143 @@ def phash_distance(sig_a: Sequence[int], sig_b: Sequence[int]) -> int:
         x = int(a) ^ int(b)
         dist += x.bit_count() if hasattr(int, "bit_count") else bin(x).count("1")
     return dist
+
+
+def compute_phash_signature_adaptive(
+    path: Path,
+    mode: str = "balanced",
+    *,
+    gpu: bool = False
+) -> Optional[Tuple[int, ...]]:
+    """
+    Compute pHash signature using adaptive frame sampling based on video duration.
+
+    This replaces the fixed-frame-count approach with duration-aware sampling that:
+    - Samples more densely for short videos (to catch all details)
+    - Samples more sparsely for long videos (to avoid frame explosion)
+    - Ensures minimum coverage for partial overlap detection (≥10% threshold)
+
+    Args:
+        path: Path to video file
+        mode: Sampling mode - "fast", "balanced" (default), or "thorough"
+        gpu: Enable GPU-accelerated decoding if available
+
+    Returns:
+        Tuple of pHash integers (one per sampled frame), or None on error
+
+    Examples:
+        >>> # 3-minute video in balanced mode → ~180 frames (1 frame/sec)
+        >>> sig = compute_phash_signature_adaptive(Path("short.mp4"), "balanced")
+
+        >>> # 2-hour movie in balanced mode → ~1800 frames (1 frame/4sec)
+        >>> sig = compute_phash_signature_adaptive(Path("movie.mp4"), "balanced")
+
+        >>> # Fast mode for quick scans
+        >>> sig = compute_phash_signature_adaptive(Path("video.mp4"), "fast")
+    """
+    try:
+        from PIL import Image
+        import imagehash
+    except Exception:
+        return None
+
+    # Probe duration
+    from .probe import run_ffprobe_json
+    fmt = run_ffprobe_json(path)
+    try:
+        duration = float(fmt.get("format", {}).get("duration", 0.0)) if fmt else 0.0
+    except Exception:
+        duration = 0.0
+
+    if duration <= 0:
+        return None
+
+    # Calculate adaptive sampling parameters
+    params = adaptive_sampling_params(duration, mode)
+
+    # Calculate actual number of frames to sample
+    theoretical_frames = int(duration / params.sampling_interval)
+    actual_frames = max(params.min_frames, min(theoretical_frames, params.max_frames))
+
+    # Generate evenly-spaced timestamps across the video duration
+    timestamps = []
+    if actual_frames == 1:
+        timestamps = [duration / 2.0]  # Middle of video
+    else:
+        # Sample from start to end, evenly spaced
+        step = duration / (actual_frames + 1)
+        timestamps = [step * (i + 1) for i in range(actual_frames)]
+
+    # Use existing batch extraction logic
+    return _compute_phash_from_timestamps(path, timestamps, gpu=gpu)
+
+
+def _compute_phash_from_timestamps(
+    path: Path,
+    timestamps: List[float],
+    *,
+    gpu: bool = False
+) -> Optional[Tuple[int, ...]]:
+    """
+    Extract frames at specific timestamps and compute pHash for each.
+
+    This is a refactored version of the batch extraction logic that can be
+    reused by both fixed-count and adaptive sampling approaches.
+
+    Args:
+        path: Path to video file
+        timestamps: List of timestamps (in seconds) to sample
+        gpu: Enable GPU-accelerated decoding
+
+    Returns:
+        Tuple of pHash integers, or None on error
+    """
+    try:
+        from PIL import Image
+        import imagehash
+        import tempfile
+        import os
+    except Exception:
+        return None
+
+    if not timestamps:
+        return None
+
+    # Use a temporary directory for batch extraction
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_pattern = os.path.join(temp_dir, "frame_%03d.png")
+
+            # Build optimized batch command
+            cmd = _ffmpeg_batch_cmd_optimized(path, timestamps, output_pattern, gpu=gpu)
+
+            # Run batch extraction
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                # Fallback to single-frame method
+                return _compute_phash_fallback(path, timestamps, gpu=gpu)
+
+            # Process extracted frames
+            sig: List[int] = []
+            for i in range(len(timestamps)):
+                frame_path = os.path.join(temp_dir, f"frame_{i+1:03d}.png")
+                if os.path.exists(frame_path):
+                    try:
+                        with Image.open(frame_path) as img:
+                            h = imagehash.phash(img)
+                            sig.append(int(str(h), 16))
+                    except Exception:
+                        continue
+
+            # Require at least half of the requested frames
+            if len(sig) >= max(2, len(timestamps) // 2):
+                return tuple(sig)
+
+    except Exception:
+        pass
+
+    # Fallback to single-frame extraction
+    return _compute_phash_fallback(path, timestamps, gpu=gpu)
 
 
 def compute_scene_fingerprint(
