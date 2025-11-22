@@ -448,11 +448,17 @@ duplicates = index.find_matching_videos(
 
 ---
 
-### 4.2 Sequence-Based Subset Detection ⏳ MAJOR IMPROVEMENT
+### 4.2 Sequence-Based Subset Detection ✅ COMPLETE
+
+**Implementation** (2025-01-22):
+
+Added diagonal streak matching for detecting contiguous temporal overlaps between videos.
+
+**New Module** (`sequence_matcher.py`):
 
 **Treat frame pHashes as time-ordered sequences**
 
-**High-Level Algorithm**:
+**Implementation**:
 
 ```python
 def detect_partial_overlap(video_a: VideoFingerprint,
@@ -544,11 +550,82 @@ def find_longest_diagonal_run(matches: List[Tuple[int, int]]) -> DiagonalRun:
     return best_run
 ```
 
+**Actual Implementation**:
+
+1. **`OverlapMatch`** (frozen dataclass) - Detected overlap information:
+   ```python
+   OverlapMatch(
+       video_a_path, video_b_path,
+       overlap_duration, overlap_ratio,  # Duration and % of longer video
+       start_a, end_a, start_b, end_b,   # Temporal boundaries
+       matching_frames                    # Number of matching frames
+   )
+
+   Methods:
+   - is_full_duplicate(tolerance=0.95) → bool
+   - is_subset(min_ratio=0.10) → bool
+   ```
+
+2. **`DiagonalStreak`** (NamedTuple) - Frame sequence representation:
+   ```python
+   DiagonalStreak(start_a, start_b, length)
+   ```
+
+3. **`SequenceMatcher`** class - Diagonal streak matching engine:
+   ```python
+   matcher = SequenceMatcher(
+       hamming_threshold=12,   # Max bit difference for matches
+       min_streak_length=5,    # Min consecutive frames
+       gap_tolerance=2         # Allow small gaps in streaks
+   )
+
+   overlap = matcher.find_overlap(fp_a, fp_b, index)
+   ```
+
+4. **`find_all_overlaps()`** - Batch processing:
+   ```python
+   overlaps = find_all_overlaps(
+       fingerprints,           # List of VideoFingerprint objects
+       index,                  # PHashIndex
+       min_overlap_ratio=0.10, # 10% threshold
+       hamming_threshold=12,
+       min_streak_length=5
+   )
+   # Returns List[OverlapMatch] for all detected overlaps
+   ```
+
+**Strategy**:
+1. Find all matching frame pairs via pHash index (O(1) lookup)
+2. Sort matches by (frame_a_idx, frame_b_idx)
+3. Find diagonal streaks where both indices increase together
+4. Allow small gaps (gap_tolerance) for dropped frames
+5. Convert longest streak to temporal overlap with timestamps
+6. Calculate overlap ratio relative to longer video
+
+**Test Coverage** (`tests/sequence_matcher_test.py`):
+```python
+✅ 17 tests, all passing
+✅ OverlapMatch data structure and threshold methods
+✅ Diagonal streak detection (perfect, offset, with gaps)
+✅ Integration tests with real VideoFingerprint and PHashIndex
+✅ Full duplicate detection (≥95% overlap)
+✅ Partial overlap detection (first half matches)
+✅ Clip detection (short video subset of long video)
+✅ Multi-video overlap discovery
+✅ No overlap when videos are different
+```
+
+**Files Created**:
+- `sequence_matcher.py:1-341` - Complete diagonal matching implementation
+- `tests/sequence_matcher_test.py:1-409` - Comprehensive test suite
+
 **Benefits**:
-- Detects contiguous matching segments
-- Handles frame drops and slight variations
-- Provides exact overlap boundaries
-- No ML required
+- ✅ Detects contiguous matching segments (not just scattered frames)
+- ✅ Handles frame drops and slight variations (gap_tolerance)
+- ✅ Provides exact overlap boundaries (start/end timestamps)
+- ✅ Scalable via pHash index integration (O(1) lookup + O(k) filtering)
+- ✅ No ML required (pure algorithm + data structures)
+- ✅ Detects full duplicates, clips, and partial overlaps ≥10%
 
 ---
 
