@@ -11,6 +11,24 @@ from cross_platform.clipboard_utils import get_clipboard
 from rich.console import Console
 from rich.table import Table
 
+try:
+    from clipboard_tools.buffers import (
+        format_age,
+        get_active_buffer_id,
+        load_buffer,
+        record_buffer_read,
+        validate_buffer_id,
+    )
+except Exception:
+    # fallback for non-installed module use
+    from pyscripts.clipboard_buffers import (  # type: ignore
+        format_age,
+        get_active_buffer_id,
+        load_buffer,
+        record_buffer_read,
+        validate_buffer_id,
+    )
+
 # Global console instances
 console_stdout = Console()
 console_stderr = Console(stderr=True)  # Dedicated console for stderr messages
@@ -81,8 +99,20 @@ parser.add_argument(
     action="store_true",
     help="Use the last `cld` snapshot (saved clipboard & file path). If FILE is omitted, overwrites the saved file."
 )
+parser.add_argument(
+    "-b", "--buffer",
+    dest="buffer_id",
+    type=int,
+    default=None,
+    help="Use a stored clipboard buffer (0-99) instead of the live clipboard."
+)
 
-def replace_or_print_clipboard(file_path_str: str | None, no_stats: bool, from_last_cld: bool = False):
+def replace_or_print_clipboard(
+    file_path_str: str | None,
+    no_stats: bool,
+    from_last_cld: bool = False,
+    buffer_id: int | None = None,
+):
     """
     NOTE: `from_last_cld` has a default to preserve back-compat with tests that call
     replace_or_print_clipboard(file, no_stats) with two arguments.
@@ -95,6 +125,7 @@ def replace_or_print_clipboard(file_path_str: str | None, no_stats: bool, from_l
     # - When printing clipboard to stdout (no file & not from_last_cld), put stats on stderr to avoid mixing.
     printing_mode = (file_path_str is None and not from_last_cld)
     stats_console = console_stderr if printing_mode else console_stdout
+    using_buffer = buffer_id is not None
 
     try:
         target_path: Optional[Path] = Path(file_path_str).expanduser().resolve() if file_path_str else None
@@ -121,9 +152,24 @@ def replace_or_print_clipboard(file_path_str: str | None, no_stats: bool, from_l
                 stats_data["Inferred Target"] = str(target_path)
 
         else:
-            # Standard behavior: use CURRENT clipboard (print to stdout if no file is provided)
+            # Standard behavior: use CURRENT clipboard (or stored buffer when requested)
             try:
-                source_text = get_clipboard()
+                if using_buffer:
+                    snapshot = load_buffer(buffer_id)
+                    record_buffer_read(buffer_id)
+                    source_text = snapshot.text
+                    source_desc = f"Buffer {buffer_id}"
+                    stats_data["Buffer"] = buffer_id
+                    stats_data["Buffer Last Filled (UTC)"] = snapshot.meta.get("last_filled_utc", "unknown")
+                    stats_data["Time Since Copy"] = format_age(snapshot.meta.get("last_filled_utc"))
+                    stats_data["Buffer Read Count"] = snapshot.meta.get("read_count", 0) + 1
+                else:
+                    source_text = get_clipboard()
+                    active_buf = get_active_buffer_id()
+                    snapshot = load_buffer(active_buf)
+                    stats_data["Buffer"] = active_buf
+                    stats_data["Buffer Last Filled (UTC)"] = snapshot.meta.get("last_filled_utc", "unknown")
+                    stats_data["Time Since Copy"] = format_age(snapshot.meta.get("last_filled_utc"))
             except NotImplementedError:
                 stats_data["Error"] = "Clipboard functionality (get_clipboard) not implemented."
                 console_stderr.print(f"[bold red][ERROR] {stats_data['Error']} Ensure clipboard utilities are installed and accessible.[/]")
@@ -235,4 +281,4 @@ def replace_or_print_clipboard(file_path_str: str | None, no_stats: bool, from_l
 
 if __name__ == "__main__":
     args = parser.parse_args()
-    replace_or_print_clipboard(args.file, args.no_stats, args.from_last_cld)
+    replace_or_print_clipboard(args.file, args.no_stats, args.from_last_cld, args.buffer_id)

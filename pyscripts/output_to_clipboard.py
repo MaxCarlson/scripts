@@ -192,6 +192,41 @@ parser.add_argument(
 )
 
 
+def main(argv: list[str] | None = None) -> int:
+    args = parser.parse_args(argv)
+
+    command_to_run_parts = None
+    replay_n_value = args.replay_nth_command
+
+    if args.command_and_args:
+        if not (len(args.command_and_args) == 1 and args.command_and_args[0] == "--"):
+            command_to_run_parts = args.command_and_args
+            if replay_n_value is not None:
+                console_stderr.print("[INFO] Both command and --replay-history specified. Executing provided command.")
+                replay_n_value = None
+
+    if not command_to_run_parts:
+        if replay_n_value is None:
+            replay_n_value = 1
+
+    try:
+        _op_ok, _user_cancel, _has_err, func_exit_code = run_command_and_copy_main(
+            command_to_run_parts,
+            replay_n_value,
+            args.no_stats,
+            args.wrap,
+            append=args.append,
+            shell_choice=args.shell,
+        )
+        return func_exit_code
+    except ValueError:
+        return 1
+    except Exception as e_main_unexpected:
+        if not args.no_stats:
+            console_stderr.print(f"[bold red][CRITICAL SCRIPT ERROR] Unhandled exception in __main__: {e_main_unexpected}[/]")
+        return 1
+
+
 def _append_to_clipboard(current: str, new: str) -> str:
     """Append new text to current clipboard with exactly one space separating."""
     if not current:
@@ -411,39 +446,4 @@ def run_command_and_copy_main(
 
 
 if __name__ == "__main__":
-    args = parser.parse_args()
-
-    command_to_run_parts = None
-    replay_n_value = args.replay_nth_command
-
-    if args.command_and_args:
-        if not (len(args.command_and_args) == 1 and args.command_and_args[0] == "--"):
-            command_to_run_parts = args.command_and_args
-            if replay_n_value is not None:
-                console_stderr.print("[INFO] Both command and --replay-history specified. Executing provided command.")
-                replay_n_value = None
-
-    if not command_to_run_parts:
-        if replay_n_value is None:
-            replay_n_value = 1
-
-    final_exit_code = 1
-    try:
-        _op_ok, _user_cancel, _has_err, func_exit_code = run_command_and_copy_main(
-            command_to_run_parts,
-            replay_n_value,
-            args.no_stats,
-            args.wrap,
-            append=args.append,
-            shell_choice=args.shell,
-        )
-        final_exit_code = func_exit_code
-
-    except ValueError:
-        final_exit_code = 1
-    except Exception as e_main_unexpected:
-        if not args.no_stats:
-            console_stderr.print(f"[bold red][CRITICAL SCRIPT ERROR] Unhandled exception in __main__: {e_main_unexpected}[/]")
-        final_exit_code = 1
-
-    sys.exit(final_exit_code)
+    sys.exit(main())

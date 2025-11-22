@@ -10,27 +10,22 @@ alias : copyrsync.sh : cpr : "Copies files using rsync with progress.":
 # --- Functions ---
 func : apply_git_diffs.py : agd : "Applies git diffs to files or projects. Accepts standard git diff format." :
 
-func : append_clipboard.py : apc : "Appends the current clipboard contents to the end of the target file." :
-
-func : clipboard_replace.py : crx : "Replaces a Python function or class in a file with the clipboard content." :
-
-func : copy_to_clipboard.py : c2cd : "Copies file(s) to clipboard with default settings (no code blocks)." :
-func : copy_to_clipboard.py : c2c : "Copies file(s) to clipboard, wrapping content in code blocks with filenames." : -w
-func : copy_to_clipboard.py : c2cr : "Copies file(s) to clipboard recursively." : -r
-func : copy_to_clipboard.py : c2ca : "Copies file(s) to clipboard, wrapping content and appending to existing clipboard." : -w -a
-
-func : replace_with_clipboard.py : rwc : "Replaces the contents of a file with the contents of the clipboard." :
-func : replace_with_clipboard.py : rwcp : "Replaces the contents of the last file for which cld (clipboard_diff) was run on with the contents of the clipboard as it existed during the last cld run" : -f
-
-func : output_to_clipboard.py : otc : "Runs a command and copies its output to the clipboard." :
-func : output_to_clipboard.py : otcw : "Runs a command and copies its output to the clipboard, wrapped in a code block." : -w
-func : output_to_clipboard.py : otca : "Runs a command and copies its output to the clipboard, wrapped in a code block." : -a
-func : output_to_clipboard.py : otcwa : "Runs a command and copies its output to the clipboard, wrapped in a code block." : -w -a
-func : pytest output_to_clipboard.py : otcwp : "Runs a command and copies its output to the clipboard, wrapped in a code block." : -w 
-
-func : print_clipboard.py : pclip : "Prints the current clipboard contents to the terminal." :
-
-func : clipboard_diff.py : cld : "Diffs the clipboard contents with a file." :
-
-func : copy_buffer_to_clipboard.py : cb2c : "Copies the terminal scrollback buffer to the clipboard." :
-func : copy_buffer_to_clipboard.py : cb2cf : "Copies the entire terminal scrollback buffer to the clipboard." : -f
+## Clipboard tooling moved to modules/clipboard_tools entrypoints (c2c, pclip, rwc, etc.).
+## Keeping old definitions commented to avoid shadowing the new console scripts in PATH.
+# func : append_clipboard.py : apc : "Appends the current clipboard contents to the end of the target file." :
+# func : clipboard_replace.py : crx : "Replaces a Python function or class in a file with the clipboard content." :
+# func : copy_to_clipboard.py : c2cd : "Copies file(s) to clipboard with default settings (no code blocks)." :
+# func : copy_to_clipboard.py : c2c : "Copies file(s) to clipboard, wrapping content in code blocks with filenames." : -w
+# func : copy_to_clipboard.py : c2cr : "Copies file(s) to clipboard recursively." : -r
+# func : copy_to_clipboard.py : c2ca : "Copies file(s) to clipboard, wrapping content and appending to existing clipboard." : -w -a
+# func : replace_with_clipboard.py : rwc : "Replaces the contents of a file with the contents of the clipboard." :
+# func : replace_with_clipboard.py : rwcp : "Replaces the contents of the last file for which cld (clipboard_diff) was run on with the contents of the clipboard as it existed during the last cld run" : -f
+# func : output_to_clipboard.py : otc : "Runs a command and copies its output to the clipboard." :
+# func : output_to_clipboard.py : otcw : "Runs a command and copies its output to the clipboard, wrapped in a code block." : -w
+# func : output_to_clipboard.py : otca : "Runs a command and copies its output to the clipboard, wrapped in a code block." : -a
+# func : output_to_clipboard.py : otcwa : "Runs a command and copies its output to the clipboard, wrapped in a code block." : -w -a
+# func : pytest output_to_clipboard.py : otcwp : "Runs a command and copies its output to the clipboard, wrapped in a code block." : -w 
+# func : print_clipboard.py : pclip : "Prints the current clipboard contents to the terminal." :
+# func : clipboard_diff.py : cld : "Diffs the clipboard contents with a file." :
+# func : copy_buffer_to_clipboard.py : cb2c : "Copies the terminal scrollback buffer to the clipboard." :
+# func : copy_buffer_to_clipboard.py : cb2cf : "Copies the entire terminal scrollback buffer to the clipboard." : -f
