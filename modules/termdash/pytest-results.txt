@@ -1,140 +1,165 @@
-.............................Fs....                                      [100%]
-================================== FAILURES ===================================
-________________ test_terminfo_fallback_sets_env_and_recovers _________________
 
-args = (), kwargs = {}
-
-    def fake_setupterm(*args, **kwargs):
-        calls["count"] += 1
-        # First two attempts fail; third succeeds
-        if calls["count"] < 3:
->           raise Exception("no terminfo")
-E           Exception: no terminfo
-
-modules\termdash\tests\terminfo_fallback_test.py:26: Exception
-
-During handling of the above exception, another exception occurred:
-
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002308BFC79B0>
-
-    def test_terminfo_fallback_sets_env_and_recovers(monkeypatch):
-        # Ensure stdio looks like a TTY
-        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-        monkeypatch.setattr("sys.stdout.isatty", lambda: True)
-    
-        calls = {"count": 0}
-    
-        real_setupterm = curses.setupterm
-    
-        def fake_setupterm(*args, **kwargs):
-            calls["count"] += 1
-            # First two attempts fail; third succeeds
-            if calls["count"] < 3:
-                raise Exception("no terminfo")
-            return real_setupterm(*args, **kwargs)
-    
-        monkeypatch.setattr(curses, "setupterm", fake_setupterm)
-    
-        # Pick a known-good TERM
-        monkeypatch.setenv("TERM", "xterm-256color")
-        # Clear TERMINFO_DIRS to let fallback set it
-        if "TERMINFO_DIRS" in os.environ:
-            monkeypatch.delenv("TERMINFO_DIRS", raising=False)
-    
-        # Create a minimal InteractiveList (won't run the UI in this test)
-        il = InteractiveList(items=[], sorters={"name": lambda x: x}, formatter=lambda *a, **k: "", filter_func=lambda i, p: True)
-    
-        # Call the readiness check directly; it should attempt TERMINFO_DIRS fallback and not raise
->       il._ensure_terminal_ready()
-
-modules\termdash\tests\terminfo_fallback_test.py:41: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
-
-self = <termdash.interactive_list.InteractiveList object at 0x000002308BF97110>
-
-    def _ensure_terminal_ready(self) -> None:
-        """Validate that a TTY and terminfo database are available.
-    
-        This is stricter than a mere 'curses' import: it checks that stdin/stdout
-        are TTYs and that the terminfo database can be initialized. It avoids
-        running `curses.wrapper(...)` only to crash with a cryptic error.
-        """
-        # Ensure we are attached to an interactive terminal.
-        if not (sys.stdin.isatty() and sys.stdout.isatty()):
-            sys.stderr.write(
-                "An interactive terminal (TTY) is required for the TUI.\n"
-                "Run this command directly in a terminal, or use a non-TUI mode (e.g., --json).\n"
-            )
-            raise SystemExit(2)
-    
-        # Attempt to initialize terminfo if supported by the platform.
-        # Some Windows curses builds might not expose setupterm; guard accordingly.
-        if hasattr(curses, "setupterm"):
-            try:
-                curses.setupterm()
-            except Exception as e:  # pragma: no cover - platform dependent
-                # Try safe fallbacks for TERM if a specific entry is missing.
-                current_term = os.environ.get("TERM", "unknown")
-                for fallback_term in ("xterm-256color", "screen-256color"):
-                    if current_term == fallback_term:
-                        continue
-                    try:
-                        os.environ["TERM"] = fallback_term
-                        curses.setupterm()
-                        sys.stderr.write(
-                            f"Warning: TERM={current_term} failed; using TERM={fallback_term} as a fallback.\n"
-                        )
-                        break
-                    except Exception:
-                        continue
-                else:
-                    # No TERM fallback worked — try to set TERMINFO_DIRS to common locations and retry.
-                    candidates = [
-                        "/usr/share/terminfo",
-                        "/lib/terminfo",
-                        "/usr/lib/terminfo",
-                        "/data/data/com.termux/files/usr/share/terminfo",
-                    ]
-                    existing = os.environ.get("TERMINFO_DIRS", "")
-                    probe_dirs = [d for d in candidates if os.path.isdir(d)]
-                    if probe_dirs:
-                        merged = ":".join([p for p in [existing] if p] + probe_dirs)
-                        os.environ["TERMINFO_DIRS"] = merged
-                        try:
-                            curses.setupterm()
-                            sys.stderr.write(
-                                f"Warning: terminfo database not found initially; set TERMINFO_DIRS={merged} and continued.\n"
-                            )
-                            return
-                        except Exception:
-                            pass
-                    # Still failing — provide actionable guidance and exit.
-                    term = current_term
-                    sys.stderr.write(
-                        "Unable to initialize terminal capabilities (terminfo).\n"
-                        f"TERM={term}. Error: {e}\n"
-                        "Install the terminfo database for your system. Examples:\n"
-                        "  - Debian/Ubuntu: sudo apt-get install ncurses-term\n"
-                        "  - Fedora:        sudo dnf install ncurses-term\n"
-                        "  - Arch:          sudo pacman -S ncurses\n"
-                        "  - Termux:        pkg install ncurses\n"
-                        "Alternatively, export TERMINFO_DIRS to the correct terminfo path.\n"
-                        "Then re-run this command, or use a non-TUI mode (e.g., --json).\n"
-                    )
->                   raise SystemExit(2)
-E                   SystemExit: 2
-
-modules\termdash\interactive_list.py:294: SystemExit
----------------------------- Captured stderr call -----------------------------
-Unable to initialize terminal capabilities (terminfo).
-TERM=xterm-256color. Error: no terminfo
-Install the terminfo database for your system. Examples:
-  - Debian/Ubuntu: sudo apt-get install ncurses-term
-  - Fedora:        sudo dnf install ncurses-term
-  - Arch:          sudo pacman -S ncurses
-  - Termux:        pkg install ncurses
-Alternatively, export TERMINFO_DIRS to the correct terminfo path.
-Then re-run this command, or use a non-TUI mode (e.g., --json).
+=================================== ERRORS ====================================
+____________________ ERROR collecting tests/align_test.py _____________________
+ImportError while importing test module 'C:\Users\mcarls\Repos\scripts\modules\termdash\tests\align_test.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\AppData\Local\Programs\Python\Python313\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+modules\termdash\tests\align_test.py:4: in <module>
+    from termdash import TermDash
+modules\termdash\__init__.py:6: in <module>
+    from .cli import main  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^
+modules\termdash\cli.py:22: in <module>
+    from . import Stat, Line, TermDash
+E   ImportError: cannot import name 'Stat' from partially initialized module 'termdash' (most likely due to a circular import) (C:\Users\mcarls\Repos\scripts\modules\termdash\__init__.py)
+_____________________ ERROR collecting tests/cli_test.py ______________________
+ImportError while importing test module 'C:\Users\mcarls\Repos\scripts\modules\termdash\tests\cli_test.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\AppData\Local\Programs\Python\Python313\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+modules\termdash\tests\cli_test.py:4: in <module>
+    from termdash.cli import build_parser, main
+modules\termdash\__init__.py:6: in <module>
+    from .cli import main  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^
+modules\termdash\cli.py:22: in <module>
+    from . import Stat, Line, TermDash
+E   ImportError: cannot import name 'Stat' from partially initialized module 'termdash' (most likely due to a circular import) (C:\Users\mcarls\Repos\scripts\modules\termdash\__init__.py)
+__________________ ERROR collecting tests/components_test.py __________________
+ImportError while importing test module 'C:\Users\mcarls\Repos\scripts\modules\termdash\tests\components_test.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\AppData\Local\Programs\Python\Python313\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+modules\termdash\tests\components_test.py:4: in <module>
+    from termdash.components import Stat, Line
+modules\termdash\__init__.py:6: in <module>
+    from .cli import main  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^
+modules\termdash\cli.py:22: in <module>
+    from . import Stat, Line, TermDash
+E   ImportError: cannot import name 'Stat' from partially initialized module 'termdash' (most likely due to a circular import) (C:\Users\mcarls\Repos\scripts\modules\termdash\__init__.py)
+__________________ ERROR collecting tests/dashboard_test.py ___________________
+ImportError while importing test module 'C:\Users\mcarls\Repos\scripts\modules\termdash\tests\dashboard_test.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\AppData\Local\Programs\Python\Python313\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+modules\termdash\tests\dashboard_test.py:7: in <module>
+    from termdash import TermDash
+modules\termdash\__init__.py:6: in <module>
+    from .cli import main  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^
+modules\termdash\cli.py:22: in <module>
+    from . import Stat, Line, TermDash
+E   ImportError: cannot import name 'Stat' from partially initialized module 'termdash' (most likely due to a circular import) (C:\Users\mcarls\Repos\scripts\modules\termdash\__init__.py)
+_______________ ERROR collecting tests/interactive_list_test.py _______________
+ImportError while importing test module 'C:\Users\mcarls\Repos\scripts\modules\termdash\tests\interactive_list_test.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\AppData\Local\Programs\Python\Python313\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+modules\termdash\tests\interactive_list_test.py:4: in <module>
+    from termdash.interactive_list import calculate_size_color, ListState
+modules\termdash\__init__.py:6: in <module>
+    from .cli import main  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^
+modules\termdash\cli.py:22: in <module>
+    from . import Stat, Line, TermDash
+E   ImportError: cannot import name 'Stat' from partially initialized module 'termdash' (most likely due to a circular import) (C:\Users\mcarls\Repos\scripts\modules\termdash\__init__.py)
+_________________ ERROR collecting tests/progress_bar_test.py _________________
+ImportError while importing test module 'C:\Users\mcarls\Repos\scripts\modules\termdash\tests\progress_bar_test.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\AppData\Local\Programs\Python\Python313\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+modules\termdash\tests\progress_bar_test.py:6: in <module>
+    from termdash.progress import ProgressBar
+modules\termdash\__init__.py:6: in <module>
+    from .cli import main  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^
+modules\termdash\cli.py:22: in <module>
+    from . import Stat, Line, TermDash
+E   ImportError: cannot import name 'Stat' from partially initialized module 'termdash' (most likely due to a circular import) (C:\Users\mcarls\Repos\scripts\modules\termdash\__init__.py)
+___________________ ERROR collecting tests/seemake_test.py ____________________
+ImportError while importing test module 'C:\Users\mcarls\Repos\scripts\modules\termdash\tests\seemake_test.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\AppData\Local\Programs\Python\Python313\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+modules\termdash\tests\seemake_test.py:6: in <module>
+    from termdash import TermDash
+modules\termdash\__init__.py:6: in <module>
+    from .cli import main  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^
+modules\termdash\cli.py:22: in <module>
+    from . import Stat, Line, TermDash
+E   ImportError: cannot import name 'Stat' from partially initialized module 'termdash' (most likely due to a circular import) (C:\Users\mcarls\Repos\scripts\modules\termdash\__init__.py)
+_________________ ERROR collecting tests/simpleboard_test.py __________________
+ImportError while importing test module 'C:\Users\mcarls\Repos\scripts\modules\termdash\tests\simpleboard_test.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\AppData\Local\Programs\Python\Python313\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+modules\termdash\tests\simpleboard_test.py:4: in <module>
+    from termdash.simpleboard import SimpleBoard
+modules\termdash\__init__.py:6: in <module>
+    from .cli import main  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^
+modules\termdash\cli.py:22: in <module>
+    from . import Stat, Line, TermDash
+E   ImportError: cannot import name 'Stat' from partially initialized module 'termdash' (most likely due to a circular import) (C:\Users\mcarls\Repos\scripts\modules\termdash\__init__.py)
+______________ ERROR collecting tests/terminfo_fallback_test.py _______________
+ImportError while importing test module 'C:\Users\mcarls\Repos\scripts\modules\termdash\tests\terminfo_fallback_test.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\AppData\Local\Programs\Python\Python313\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+D:\Pictures\Saved\tmpvids\termdash\tests\terminfo_fallback_test.py:10: in <module>
+    ???
+modules\termdash\__init__.py:6: in <module>
+    from .cli import main  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^
+modules\termdash\cli.py:22: in <module>
+    from . import Stat, Line, TermDash
+E   ImportError: cannot import name 'Stat' from partially initialized module 'termdash' (most likely due to a circular import) (C:\Users\mcarls\Repos\scripts\modules\termdash\__init__.py)
+____________________ ERROR collecting tests/utils_test.py _____________________
+ImportError while importing test module 'C:\Users\mcarls\Repos\scripts\modules\termdash\tests\utils_test.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\AppData\Local\Programs\Python\Python313\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+modules\termdash\tests\utils_test.py:5: in <module>
+    from termdash import utils as td_utils
+modules\termdash\__init__.py:6: in <module>
+    from .cli import main  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^
+modules\termdash\cli.py:22: in <module>
+    from . import Stat, Line, TermDash
+E   ImportError: cannot import name 'Stat' from partially initialized module 'termdash' (most likely due to a circular import) (C:\Users\mcarls\Repos\scripts\modules\termdash\__init__.py)
 =========================== short test summary info ===========================
-FAILED modules\termdash\tests\terminfo_fallback_test.py::test_terminfo_fallback_sets_env_and_recovers
-1 failed, 33 passed, 1 skipped in 0.21s
+ERROR modules\termdash\tests\align_test.py
+ERROR modules\termdash\tests\cli_test.py
+ERROR modules\termdash\tests\components_test.py
+ERROR modules\termdash\tests\dashboard_test.py
+ERROR modules\termdash\tests\interactive_list_test.py
+ERROR modules\termdash\tests\progress_bar_test.py
+ERROR modules\termdash\tests\seemake_test.py
+ERROR modules\termdash\tests\simpleboard_test.py
+ERROR modules\termdash\tests\terminfo_fallback_test.py
+ERROR modules\termdash\tests\utils_test.py
+!!!!!!!!!!!!!!!!!! Interrupted: 10 errors during collection !!!!!!!!!!!!!!!!!!!
+10 errors in 0.40s

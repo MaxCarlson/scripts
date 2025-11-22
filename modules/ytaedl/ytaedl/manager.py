@@ -475,7 +475,7 @@ def _render_watcher_panel(
         hotkey_lines = ["Press Y to quit, N to cancel"]
     else:
         hotkey_lines = _wrap_hotkey_lines(
-            "Keys: w=downloads, u=url stats, c=start cleaner, s=scan (dry-run), o=toggle copy/move, "
+            "Keys: d=downloads, u=url stats, c=start cleaner, s=scan (dry-run), o=toggle copy/move, "
             "k=set max-files, f=set free GiB, [=scroll log up, ]=scroll log down, q=quit",
             cols,
         )
@@ -1054,6 +1054,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return
         _launch(trigger)
 
+    def _refresh_url_scan(trigger: str) -> bool:
+        """Refresh URL scan synchronously (used by UI refresh hooks)."""
+        return _refresh_url_scan_sync(trigger)
+
     def _path_remaining(path: Path) -> Optional[int]:
         if not url_scan_state:
             return None
@@ -1062,8 +1066,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return None
         return entry.remaining
 
+    def _remaining_for_path(path: Path) -> Optional[int]:
+        """Return remaining URL count using scan data or a quick inline estimate."""
+        remaining = _path_remaining(path)
+        if remaining is not None:
+            return remaining
+        try:
+            urls = _read_urls(path)
+        except Exception:
+            return None
+        dest_dir = (download_root / path.stem).resolve()
+        mp4_count, _, _ = urlscan.mp4_inventory(dest_dir)
+        return max(len(urls) - mp4_count, 0)
+
     def _select_best(candidates: List[Path]) -> Path:
-        eligible = [c for c in candidates if not _path_remaining(c) == 0]
+        eligible = [c for c in candidates if _remaining_for_path(c) != 0]
         if not eligible:
             return random.choice(candidates)
         if args.url_random_order or not url_rankings:
@@ -1075,7 +1092,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return ordered[0]
 
     def _select_priority(candidates: List[Path]) -> Optional[Path]:
-        eligible = [c for c in candidates if not _path_remaining(c) == 0]
+        eligible = [c for c in candidates if _remaining_for_path(c) != 0]
         if not eligible:
             return None
         if args.url_random_order:
@@ -1228,7 +1245,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         # Try priority files first
         priority_avail = [
-            p for p in priority_pool if str(p.resolve()) not in active and str(p.resolve()) not in finished
+            p
+            for p in priority_pool
+            if str(p.resolve()) not in active and str(p.resolve()) not in finished and _remaining_for_path(p) != 0
         ]
         if priority_avail:
             selected = _select_priority(priority_avail)
@@ -1243,7 +1262,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             avail = [
                 p
                 for p in pool
-                if str(p.resolve()) not in active and str(p.resolve()) not in finished and _path_remaining(p) != 0
+                if str(p.resolve()) not in active and str(p.resolve()) not in finished and _remaining_for_path(p) != 0
             ]
             if not avail:
                 return False
@@ -1386,7 +1405,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         desired: List[str] = []
         for path in url_order_paths:
             key = str(path.resolve())
-            if key in finished_set or _path_remaining(path) == 0:
+            remaining = _remaining_for_path(path)
+            if key in finished_set or remaining == 0:
                 continue
             desired.append(key)
             if len(desired) >= args.threads:
@@ -1693,7 +1713,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     watcher_log_scroll = 0
                 else:
                     watcher_log_scroll = min(watcher_log_scroll, watcher_log_meta["log_max_scroll"])
-                _render_screen(lines)
             elif active_panel == "urls":
                 total_entries = len(url_scan_state.entries) if url_scan_state else 0
                 last_scan_label = (
@@ -1740,9 +1759,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 lines.append("-" * min(cols, 100))
                 auto_label = td_utils.color_text("ON", "green") if url_panel_auto_refresh else td_utils.color_text("OFF", "red")
                 lines.append(
-                    f"Auto refresh: {auto_label} | Keys: d=downloads, w=watcher, u=close, r=rescan, a=toggle auto, j/k=vert, h/l=horz, q=quit"
+                    f"Auto refresh: {auto_label} | Keys: d=downloads, w=watcher, r=rescan, a=toggle auto, j/k=vert, h/l=horz, q=quit"
                 )
-                _render_screen(lines)
                 if (
                     url_panel_auto_refresh
                     and last_url_scan
@@ -1916,11 +1934,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     lines.append("Press Y to quit, N to cancel"[:cols])
                 else:
                     lines.append(
-                        "Keys: w=watcher, u=url stats, p=pause/unpause, q=quit, v=cycle verbose, 1-9=select worker"[
+                        "Keys: w=watcher, u=url stats, d=downloads, p=pause/unpause, q=quit, v=cycle verbose, 1-9=select worker"[
                             :cols
                         ]
                     )
-                _render_screen(lines)
 
             # Keyboard handling (for both panels)
             if os.name == "nt":
@@ -1941,14 +1958,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             # Normal key handling
                             if not key:
                                 continue
-                            if key == "w":
-                                active_panel = "watcher" if active_panel != "watcher" else "downloads"
-                                continue
-                            if key == "u":
-                                active_panel = "urls" if active_panel != "urls" else "downloads"
-                                continue
                             if key == "d":
                                 active_panel = "downloads"
+                                continue
+                            if key == "w":
+                                active_panel = "watcher"
+                                continue
+                            if key == "u":
+                                active_panel = "urls"
                                 continue
                             if active_panel == "urls":
                                 if key == "a":
@@ -2151,9 +2168,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         lines.append(c[:cols])
 
             # Redraw whole frame (reset attributes first to avoid color bleed)
-            sys.stdout.write("\x1b[0m\x1b[2J\x1b[H")
-            sys.stdout.write("\n".join(lines) + "\n")
-            sys.stdout.flush()
+            _render_screen(lines)
 
             # If all workers idle and both pools empty, stop
             if all(w.proc is None for w in workers):
@@ -2186,6 +2201,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     ws.reader.join(timeout=1)
                 except Exception:
                     pass
+        if url_scan_thread and url_scan_thread.is_alive():
+            try:
+                url_scan_thread.join(timeout=2)
+            except Exception:
+                pass
         # Leave cursor below
     return 0
 

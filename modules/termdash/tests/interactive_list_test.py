@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from termdash.interactive_list import calculate_size_color, ListState
+from termdash.interactive_list import calculate_size_color, ListState, InteractiveList
 
 
 def test_calculate_size_color_same_size():
@@ -142,12 +142,39 @@ def test_matches_pattern_multi():
 
 def test_footer_fits_80_columns():
     """Test that footer lines fit in 80-column terminal."""
-    # These are the actual footer lines from lister.py
     footer_lines = [
         "↑↓/jk/PgUp/Dn │ f:filter x:exclude │ ↵:expand ESC:collapse ^Q:quit",
-        "Sort c/m/a/n/s │ e:all o:open F:dirs │ d:date t:time │ y:copy S:calc │ ←→",
+        "Sort c/m/a/n/s | e:depth | F:dirs t:time | y:copy r:one A:vis S:all | ←→",
     ]
 
     for line in footer_lines:
         # Each line should fit in 80 columns
         assert len(line) <= 80, f"Footer line too long ({len(line)} chars): {line}"
+
+
+def test_invoke_handler_supports_two_or_three_args():
+    calls = []
+
+    def handler_two(key, item):
+        calls.append(("two", key, item))
+        return True, False
+
+    def handler_three(key, item, state):
+        calls.append(("three", key, item, state.header))
+        return True, True
+
+    list_view = InteractiveList(
+        items=["a"],
+        sorters={"name": lambda x: x},
+        formatter=lambda item, field, width, date, time, scroll: str(item),
+        filter_func=lambda item, pattern: True,
+        key_handler=handler_three,
+        custom_action_handler=handler_two,
+    )
+
+    handled, refresh = list_view._invoke_handler(handler_two, 1, "a")
+    assert handled is True and refresh is False
+    handled3, refresh3 = list_view._invoke_handler(handler_three, 2, "b")
+    assert handled3 is True and refresh3 is True
+    assert calls[0] == ("two", 1, "a")
+    assert calls[1][0:3] == ("three", 2, "b")

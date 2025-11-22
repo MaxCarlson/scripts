@@ -32,3 +32,8 @@ Progress 2025-11-20:
 - Added hotkeys: `r` to calculate the highlighted folder, `A` to calculate all visible folders, `U` to collapse all expansions.
 - Retained `S` for full-tree size scan; footer updated to reflect the new controls.
 - Ongoing: fold these interactions into reusable termdash list widgets so other modules can share the same key bindings/behavior.
+
+---
+TODOs
+
+Pressing 'e' to open all folders does nothing more thdn dotate the opsn/cllsed arrow indkcatod from pointing right go pointing dosn... no files contents open and displayed. Pressing 'U' does change all arrows fdom 'open' position tl 'closed' posifion though
