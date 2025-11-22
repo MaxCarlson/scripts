@@ -7,17 +7,26 @@ from typing import Optional, Dict, Any
 
 def run_ffprobe_json(path: Path) -> Optional[Dict[str, Any]]:
     """
-    Fast container/stream metadata via ffprobe (no full decode).
-    ffprobe duration is quick and suitable for coarse grouping.  # 4
+    Optimized ffprobe metadata extraction with minimal fields for speed.
+
+    Only extracts fields actually used in the pipeline:
+    - Format: duration, format_name, bit_rate
+    - Video stream (v:0): width, height, codec_name, r_frame_rate, bit_rate
+
+    Using -select_streams v:0 targets only the first video stream for faster execution.
+    Returns None on error/timeout (30s max).
     """
     if not path or not path.exists():
         return None
 
     try:
+        # Optimized: Use -select_streams v:0 to only query first video stream (faster)
+        # Only request fields actually used in pipeline
         cmd = [
             "ffprobe", "-v", "error",
-            "-show_entries", "format=duration,bit_rate,format_name",
-            "-show_entries", "stream=index,codec_type,codec_name,width,height,bit_rate",
+            "-select_streams", "v:0",  # Only first video stream
+            "-show_entries", "stream=width,height,codec_name,r_frame_rate,bit_rate,codec_type",
+            "-show_entries", "format=duration,format_name,bit_rate",
             "-of", "json",
             str(path),
         ]

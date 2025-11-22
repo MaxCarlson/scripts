@@ -582,8 +582,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                          help="Number of frames to sample for perceptual hash comparison (default: 5)")
     advanced.add_argument("-T", "--phash-threshold", type=int, default=12,
                          help="Per-frame Hamming distance threshold for pHash matching (default: 12)")
-    advanced.add_argument("-s", "--subset-min-ratio", type=float, default=0.30,
-                         help="Minimum duration ratio (short/long) for subset detection (default: 0.30)")
+    advanced.add_argument("-s", "--subset-min-ratio", type=float, default=0.10,
+                         help="Minimum duration ratio (short/long) for subset detection - aligned with >=10%% overlap threshold (default: 0.10)")
     advanced.add_argument(
         "-A", "--include-partials",
         action="store_true",
@@ -693,7 +693,7 @@ def _validate_args(args: argparse.Namespace) -> Optional[str]:
         return "pHash frames count seems excessive (>50). Consider reducing for performance"
 
     phash_threshold = getattr(args, 'phash_threshold', 12)
-    subset_min_ratio = getattr(args, 'subset_min_ratio', 0.30)
+    subset_min_ratio = getattr(args, 'subset_min_ratio', 0.10)  # Aligned with >=10% overlap threshold
     if phash_threshold < 0:
         return "pHash threshold must be non-negative"
 
@@ -816,31 +816,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else Path.cwd()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create lock file to prevent concurrent runs in same output directory
-    lock_file = output_dir / ".vdedup.lock"
-    try:
-        # Try to create lock file exclusively (fails if it exists)
-        if lock_file.exists():
-            # Check if lock is stale (older than 24 hours)
-            lock_age = time.time() - lock_file.stat().st_mtime
-            if lock_age < 86400:  # 24 hours
-                print(f"video-dedupe: error: Another vdedup instance is running in {output_dir}", file=sys.stderr)
-                print(f"video-dedupe: error: Lock file: {lock_file}", file=sys.stderr)
-                print(f"video-dedupe: error: If no other instance is running, delete the lock file manually", file=sys.stderr)
-                return 3
-            else:
-                # Stale lock, remove it
-                lock_file.unlink()
-
-        # Create new lock file with current PID
-        lock_file.write_text(f"{os.getpid()}\n{time.time()}\n")
-
-        # Setup logging
-        log_file = None if args.no_log_file else output_dir / f"vdedup-q{args.quality}.log"
-        logger = _setup_logging(log_file, args.log_level, args.console_log_level)
-    except Exception as e:
-        print(f"video-dedupe: error: Failed to create lock file: {e}", file=sys.stderr)
-        return 3
+    # Setup logging first (needed for all modes)
+    log_file = None if args.no_log_file else output_dir / f"vdedup-q{args.quality}.log"
+    logger = _setup_logging(log_file, args.log_level, args.console_log_level)
 
     logger.info(f"vdedup started with args: {' '.join(sys.argv[1:])}")
     logger.info(f"Output directory: {output_dir}")
@@ -864,10 +842,37 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     root_logger.removeHandler(handler)
 
     # If they only want to print/analyze reports, do that and exit
+    # These modes are read-only and don't need locking
     maybe = _maybe_print_or_analyze(args)
     if maybe is not None:
         logger.info("Print/analyze mode completed")
         return maybe
+
+    # Create lock file to prevent concurrent runs in same output directory
+    # Only needed for SCAN and APPLY modes that modify state
+    lock_file = output_dir / ".vdedup.lock"
+    try:
+        # Try to create lock file exclusively (fails if it exists)
+        if lock_file.exists():
+            # Check if lock is stale (older than 24 hours)
+            lock_age = time.time() - lock_file.stat().st_mtime
+            if lock_age < 86400:  # 24 hours
+                print(f"video-dedupe: error: Another vdedup instance is running in {output_dir}", file=sys.stderr)
+                print(f"video-dedupe: error: Lock file: {lock_file}", file=sys.stderr)
+                print(f"video-dedupe: error: If no other instance is running, delete the lock file manually", file=sys.stderr)
+                return 3
+            else:
+                # Stale lock, remove it
+                lock_file.unlink()
+                logger.info(f"Removed stale lock file (age: {lock_age/3600:.1f} hours)")
+
+        # Create new lock file with current PID
+        lock_file.write_text(f"{os.getpid()}\n{time.time()}\n")
+        logger.info(f"Created lock file: {lock_file}")
+    except Exception as e:
+        logger.error(f"Failed to create lock file: {e}")
+        print(f"video-dedupe: error: Failed to create lock file: {e}", file=sys.stderr)
+        return 3
 
     # APPLY REPORT mode
     if args.apply_report:
@@ -988,7 +993,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         phash_frames=getattr(args, 'phash_frames', 5),
         phash_threshold=getattr(args, 'phash_threshold', 12),
         subset_detect=(args.quality == "5"),  # Enable subset detection for quality level 5
-        subset_min_ratio=getattr(args, 'subset_min_ratio', 0.30),
+        subset_min_ratio=getattr(args, 'subset_min_ratio', 0.10),  # Aligned with >=10% overlap threshold
         subset_frame_threshold=max(getattr(args, 'phash_threshold', 12), 12),
         gpu=bool(args.gpu),
         include_partials=bool(getattr(args, "include_partials", False)),

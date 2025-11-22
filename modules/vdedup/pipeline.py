@@ -64,7 +64,7 @@ class PipelineConfig:
     phash_threshold: int = 12
     # subset (sliding alignment)
     subset_detect: bool = False
-    subset_min_ratio: float = 0.30
+    subset_min_ratio: float = 0.10  # Aligned with research: ≥10% overlap threshold
     subset_frame_threshold: int = 14
     # gpu hint for pHash
     gpu: bool = False
@@ -119,7 +119,7 @@ def _build_stage_plan(selected_stages: Sequence[int]) -> List[str]:
     if 1 in selected_stages:
         plan.append("Q1 size bucketing")
     if 2 in selected_stages:
-        plan.extend(["Q2 partial", "Q2 sha256"])
+        plan.extend(["Q2 partial", "Q2 full hash"])
     if 3 in selected_stages:
         plan.append("Q3 metadata")
     if 4 in selected_stages:
@@ -244,7 +244,23 @@ def _iter_files(root: Path, patterns: Optional[Sequence[str]], max_depth: Option
         raise
 
 
+def _blake3_full_file(path: Path, block: int = 1 << 20) -> str:
+    """
+    Compute full-file hash using BLAKE3 (faster than SHA-256).
+    Falls back to SHA-256 if BLAKE3 not available.
+    """
+    if _BLAKE3_AVAILABLE:
+        h = blake3.blake3()
+    else:
+        h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(block), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def _sha256_file(path: Path, block: int = 1 << 20) -> str:
+    """Legacy SHA-256 hashing (kept for backward compatibility)."""
     h = hashlib.sha256()
     with path.open("rb") as f:
         for chunk in iter(lambda: f.read(block), b""):
@@ -727,8 +743,8 @@ def run_pipeline(
         # Escalate only partial buckets that still collide
         to_full: List[FileMeta] = [m for lst in partial_map.values() if len(lst) > 1 for m in lst]
 
-        reporter.start_stage("Q2 sha256", total=len(to_full))
-        reporter.set_status("Q2 SHA-256 verification")
+        reporter.start_stage("Q2 full hash", total=len(to_full))
+        reporter.set_status("Q2 full hash (BLAKE3/SHA-256)")
         reporter.set_hash_total(len(to_full))
 
         by_hash: Dict[str, List[FileMeta]] = defaultdict(list)
@@ -736,25 +752,32 @@ def run_pipeline(
         def _do_full(m: FileMeta) -> Tuple[FileMeta, Optional[str], bool]:
             # Avoid problematic blocking calls in thread workers
             # Skip: reporter.wait_if_paused() and reporter.should_quit() to prevent deadlocks
-            # Try cache first
-            sha = None
+            # Try cache first (check both blake3_full and legacy sha256)
+            full_hash = None
             try:
                 if cache:
-                    sha = cache.get_sha256(m.path, m.size, m.mtime)  # type: ignore[attr-defined]
+                    # Try BLAKE3 cache first
+                    full_hash = cache.get_field(m.path, m.size, m.mtime, "blake3_full")  # type: ignore[attr-defined]
+                    if not full_hash:
+                        # Fall back to SHA256 cache (backward compatibility)
+                        full_hash = cache.get_field(m.path, m.size, m.mtime, "sha256")  # type: ignore[attr-defined]
             except Exception:
-                sha = None
-            if sha:
+                full_hash = None
+            if full_hash:
                 # Safe call: simple counter increment
                 try:
                     reporter.inc_hashed(1, cache_hit=True)
                 except (RuntimeError, threading.ThreadError, AttributeError):
                     pass  # Only catch specific UI threading issues
-                return m, sha, True
+                return m, full_hash, True
             try:
-                sha = _sha256_file(m.path)
-                if sha and cache:
+                # Use BLAKE3 for new hashes (faster)
+                full_hash = _blake3_full_file(m.path)
+                if full_hash and cache:
                     try:
-                        cache.put_field(m.path, m.size, m.mtime, "sha256", sha)
+                        # Store with blake3_full field (or sha256 if BLAKE3 unavailable)
+                        field_name = "blake3_full" if _BLAKE3_AVAILABLE else "sha256"
+                        cache.put_field(m.path, m.size, m.mtime, field_name, full_hash)
                     except Exception:
                         pass
                 # Safe call: simple counter increment
@@ -762,7 +785,7 @@ def run_pipeline(
                     reporter.inc_hashed(1, cache_hit=False)
                 except (RuntimeError, threading.ThreadError, AttributeError):
                     pass  # Only catch specific UI threading issues
-                return m, sha, False
+                return m, full_hash, False
             except Exception:
                 # Safe call: simple counter increment for failed attempts
                 try:
@@ -772,8 +795,9 @@ def run_pipeline(
                 return m, None, False
 
         if to_full:
-            # Multi-threaded SHA-256 hashing with progress tracking
-            logger.info(f"Starting SHA-256 full hash computation for {len(to_full):,} files using {cfg.threads} threads")
+            # Multi-threaded full hash computation with progress tracking
+            hash_algo = "BLAKE3" if _BLAKE3_AVAILABLE else "SHA-256"
+            logger.info(f"Starting {hash_algo} full hash computation for {len(to_full):,} files using {cfg.threads} threads")
 
             # Thread-safe counter for progress
             completed = threading.Lock()
@@ -789,7 +813,7 @@ def run_pipeline(
                     # Log progress every 50 files
                     if current % 50 == 0:
                         pct = (current / len(to_full)) * 100
-                        logger.info(f"SHA-256 hashing: {current:,}/{len(to_full):,} ({pct:.1f}%) - {cfg.threads} workers")
+                        logger.info(f"{hash_algo} hashing: {current:,}/{len(to_full):,} ({pct:.1f}%) - {cfg.threads} workers")
 
                     # Update UI every 10 files
                     if current % 10 == 0:
@@ -799,13 +823,14 @@ def run_pipeline(
 
             # Execute with thread pool
             with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.threads) as ex:
-                for m_result, sha, _hit in ex.map(_do_full_tracked, to_full):
-                    if sha:
-                        by_hash[sha].append(m_result)
+                for m_result, full_hash, _hit in ex.map(_do_full_tracked, to_full):
+                    if full_hash:
+                        by_hash[full_hash].append(m_result)
 
             # Final update
         reporter.update_progress_periodically(len(to_full), len(to_full), force_update=True)
-        logger.info(f"SHA-256 complete: {len(by_hash):,} unique full hashes using {cfg.threads} threads")
+        hash_algo = "BLAKE3" if _BLAKE3_AVAILABLE else "SHA-256"
+        logger.info(f"{hash_algo} complete: {len(by_hash):,} unique full hashes using {cfg.threads} threads")
 
         # Form groups from exact hashes and mark **all members** excluded for later stages
         formed = 0
@@ -822,16 +847,16 @@ def run_pipeline(
         if duplicate_members:
             reporter.add_duplicate_files(duplicate_members)
         reporter.update_stage_metrics(
-            "Q2 sha256",
+            "Q2 full hash",
             collisions=f"{len(to_full):,}",
             exact_groups=f"{formed:,}",
         )
-        reporter.finish_stage("Q2 sha256")
+        reporter.finish_stage("Q2 full hash")
         reporter.flush()
     elif 2 in selected_stages:
-        reporter.set_status("Q2 skipped (no size collisions)")
+        reporter.set_status("Q2 skipped (no candidates)")
         reporter.mark_stage_skipped("Q2 partial")
-        reporter.mark_stage_skipped("Q2 sha256")
+        reporter.mark_stage_skipped("Q2 full hash")
     else:
         reporter.set_status("Skipping Q2 (stage disabled)")
 
