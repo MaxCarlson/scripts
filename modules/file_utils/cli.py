@@ -13,11 +13,28 @@ from cross_platform.system_utils import SystemUtils
 from cross_platform.debug_utils import set_console_verbosity, set_log_verbosity
 from . import diskspace
 from . import wsltool
+from . import path_ops
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="A collection of file utilities.")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # --- path command ---
+    path_parser = subparsers.add_parser("path", help="Inspect and modify PATH entries.")
+    path_sub = path_parser.add_subparsers(dest="path_cmd", required=True)
+
+    path_ls = path_sub.add_parser("ls", help="List PATH entries with numbering.")
+    path_ls.add_argument("--scope", choices=["user", "machine", "process"], default="user", help="Target PATH scope.")
+
+    path_add = path_sub.add_parser("add", help="Append a new entry to PATH (if not present).")
+    path_add.add_argument("value", help="Path to add.")
+    path_add.add_argument("--scope", choices=["user", "machine", "process"], default="user", help="Target PATH scope.")
+
+    path_mv = path_sub.add_parser("move", help="Move an entry to a new position (1-based).")
+    path_mv.add_argument("from_index", type=int, help="Current index of the entry (1-based).")
+    path_mv.add_argument("to_index", type=int, help="New index to move the entry to (1-based).")
+    path_mv.add_argument("--scope", choices=["user", "machine", "process"], default="user", help="Target PATH scope.")
 
     # --- ls command ---
     ls_parser = subparsers.add_parser("ls", help="Interactive file and directory lister.")
@@ -519,6 +536,35 @@ def main(argv: Sequence[str] | None = None) -> int:
             actions = wsltool.docker_desktop_fixups(sysu, dry_run=args.dry_run)
             for line in actions:
                 print(line)
+            return 0
+        return 0
+
+    elif args.command == "path":
+        scope = getattr(args, "scope", "user")
+        if args.path_cmd == "ls":
+            entries = path_ops.list_paths(scope)
+            for idx, entry in enumerate(entries, start=1):
+                print(f"{idx}: {entry}")
+            return 0
+        if args.path_cmd == "add":
+            try:
+                entries, backup = path_ops.add_path(scope, args.value)
+                print(f"[OK] Added (or already present). Backup: {backup}")
+                for idx, entry in enumerate(entries, start=1):
+                    print(f"{idx}: {entry}")
+            except Exception as e:
+                print(f"[ERROR] {e}")
+                return 1
+            return 0
+        if args.path_cmd == "move":
+            try:
+                entries, backup = path_ops.move_path(scope, args.from_index, args.to_index)
+                print(f"[OK] Moved entry {args.from_index} -> {args.to_index}. Backup: {backup}")
+                for idx, entry in enumerate(entries, start=1):
+                    print(f"{idx}: {entry}")
+            except Exception as e:
+                print(f"[ERROR] {e}")
+                return 1
             return 0
         return 0
 
