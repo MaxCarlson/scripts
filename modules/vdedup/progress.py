@@ -66,7 +66,8 @@ class ProgressReporter:
         stacked_ui: Optional[bool] = None,  # preserved for backwards compatibility
     ):
         self.enable_dash = bool(enable_dash)
-        self.refresh_rate = max(0.2, float(refresh_rate))
+        # Clamp refresh rate between 0.1s (10 Hz) and 1.0s (1 Hz) for responsive UI
+        self.refresh_rate = max(0.1, min(1.0, float(refresh_rate)))
         self.banner = banner
         self._stacked_ui = stacked_ui
 
@@ -148,7 +149,9 @@ class ProgressReporter:
     def start(self) -> None:
         """Start dashboard rendering if enabled."""
         if self.enable_dash and not self._ui_initialized:
-            refresh_per_second = max(1, int(round(1 / self.refresh_rate)))
+            # Use at least 4 refreshes per second for smooth, responsive UI
+            # This ensures updates feel live and don't appear frozen
+            refresh_per_second = max(4, int(round(1 / self.refresh_rate)))
             self._live = Live(
                 self._render_layout(),
                 console=self.console,

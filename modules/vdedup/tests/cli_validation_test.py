@@ -208,6 +208,46 @@ def test_enhanced_help_messages():
     # The enhanced help should be visible in the argument parser
 
 
+def test_relative_paths():
+    """Test that relative paths are accepted and validated correctly."""
+    import os
+
+    # Test current directory (.)
+    args = parse_args(["-D", ".", "-q", "2"])
+    error = _validate_args(args)
+    assert error is None  # Current directory should always exist
+
+    # Test relative path to existing directory
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create a subdirectory
+        subdir = Path(temp_dir) / "subdir"
+        subdir.mkdir()
+
+        # Change to temp_dir and test relative path
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+
+            # Test relative path to subdirectory
+            args = parse_args(["-D", "./subdir", "-q", "2"])
+            error = _validate_args(args)
+            assert error is None
+
+            # Test relative path with just directory name
+            args = parse_args(["-D", "subdir", "-q", "2"])
+            error = _validate_args(args)
+            assert error is None
+
+        finally:
+            os.chdir(old_cwd)
+
+    # Test nonexistent relative path
+    args = parse_args(["-D", "./nonexistent_folder_12345", "-q", "2"])
+    error = _validate_args(args)
+    assert error is not None
+    assert "not found" in error.lower()
+
+
 if __name__ == "__main__":
     test_valid_args()
     test_invalid_pipeline()
@@ -223,4 +263,5 @@ if __name__ == "__main__":
     test_file_as_directory()
     test_output_directory_creation()
     test_enhanced_help_messages()
+    test_relative_paths()
     print("All CLI validation tests passed!")
