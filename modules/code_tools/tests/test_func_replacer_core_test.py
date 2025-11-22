@@ -1,6 +1,6 @@
 import io
 import textwrap
-import scripts.modules.code_tools.func_replacer as fr
+import func_replacer as fr
 
 def test_replacement_python_name_and_indent_and_backup(tmp_path):
     target = tmp_path / "m.py"
@@ -21,7 +21,7 @@ def test_replacement_python_name_and_indent_and_backup(tmp_path):
     out = target.read_text()
     assert "# changed" in out
     assert (tmp_path / "m.py.bak").exists()
-    assert out.splitlines()[3].startswith("def target")
+    assert out.splitlines()[4].startswith("def target")
 
 def test_replacement_by_line_no_backup_and_prompt_abort(tmp_path, monkeypatch):
     target = tmp_path / "x.c"
