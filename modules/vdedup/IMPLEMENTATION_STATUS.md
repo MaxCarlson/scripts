@@ -384,48 +384,67 @@ Added structured data types for frame-level temporal information:
 
 ---
 
-### 4.1 Indexing pHashes (Non-Deep, Non-FAISS) ⏳ NEEDED
+### 4.1 Indexing pHashes (Non-Deep, Non-FAISS) ✅ COMPLETE
 
-**Problem**: O(N²) pairwise frame comparisons don't scale
+**Implementation** (2025-01-22):
 
-**Solution: Hash Bucket Index**
+Added bucket-based indexing for fast pHash near-neighbor search without O(N²) comparisons.
 
+**New Module** (`phash_index.py`):
+
+1. **`FrameReference`** (NamedTuple) - Reference to a specific frame:
+   ```python
+   FrameReference(video_path, frame_index, timestamp, phash)
+   ```
+
+2. **`PHashIndex`** class - Bucket-based index using segment keys
+
+**Key Methods**:
 ```python
-class PHashIndex:
-    def __init__(self):
-        # Map: bucket_key → list[(video_id, frame_idx, phash, timestamp)]
-        self.buckets: Dict[int, List[Tuple]] = defaultdict(list)
+index = PHashIndex(num_segments=4)
 
-    def add_frame(self, video_id: str, frame: FrameHash):
-        """Add frame to multiple buckets for LSH-style lookup."""
-        # Derive 4 bucket keys from 64-bit pHash (16-bit segments)
-        for i in range(4):
-            bucket_key = (frame.phash >> (i * 16)) & 0xFFFF
-            self.buckets[bucket_key].append((video_id, frame.index, frame.phash, frame.timestamp))
+# Add frames
+index.add(path, frame_idx, timestamp, phash)
+index.add_fingerprint(video_fingerprint)
 
-    def find_similar(self, phash: int, threshold: int = 12) -> List[Tuple]:
-        """Find frames with Hamming distance ≤ threshold."""
-        candidates = set()
+# Query similar frames
+matches = index.query(phash, hamming_threshold=12, exclude_video=path)
 
-        # Look up all buckets this frame belongs to
-        for i in range(4):
-            bucket_key = (phash >> (i * 16)) & 0xFFFF
-            candidates.update(self.buckets.get(bucket_key, []))
-
-        # Filter by Hamming distance
-        results = []
-        for vid_id, idx, candidate_phash, ts in candidates:
-            dist = hamming_distance(phash, candidate_phash)
-            if dist <= threshold:
-                results.append((vid_id, idx, dist, ts))
-
-        return results
+# Find duplicate videos
+duplicates = index.find_matching_videos(
+    fingerprint,
+    hamming_threshold=12,
+    min_matching_frames=5
+)  # Returns [(video_path, match_count), ...] sorted by count
 ```
 
-**Benefits**:
-- Near O(1) lookup vs O(N) linear scan
-- Scales to millions of frames
-- No ML dependencies
+**Strategy**:
+- Split 64-bit pHash into 4 × 16-bit segments
+- Index each frame in 4 buckets (one per segment)
+- Query collects from all matching buckets + deduplicates + filters by Hamming distance
+- Track unique (query_frame_idx, match_frame_idx) pairs to avoid double-counting
+
+**Test Coverage** (`tests/phash_index_test.py`):
+```python
+✅ 30 tests, all passing
+✅ Index creation and configuration (num_segments validation)
+✅ Frame addition and statistics tracking
+✅ Segment extraction and bucketing
+✅ Query with deduplication and filtering
+✅ Video-level duplicate detection
+✅ Hamming distance calculation
+✅ Statistics and edge cases
+```
+
+**Files Created**:
+- `phash_index.py:1-269` - Complete indexing implementation
+- `tests/phash_index_test.py:1-431` - Comprehensive test suite
+
+**Performance Impact**:
+- ✅ O(1) bucket lookup + O(k) candidate filtering (was O(N²))
+- ✅ Scales to millions of frames
+- ✅ No ML dependencies (pure Python + buckets)
+- ✅ Foundation for sequence-based matching (Phase 4.2)
 
 ---
 
