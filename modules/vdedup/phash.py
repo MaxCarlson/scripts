@@ -4,6 +4,50 @@ import io
 import subprocess
 from typing import List, Optional, Sequence, Tuple, NamedTuple
 from pathlib import Path
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class FrameHash:
+    """
+    Perceptual hash for a single video frame with temporal information.
+
+    Attributes:
+        timestamp: Position in video (seconds from start)
+        index: Frame index in the sampled sequence (0-based)
+        phash: 64-bit perceptual hash as integer
+    """
+    timestamp: float
+    index: int
+    phash: int
+
+
+@dataclass(frozen=True)
+class VideoFingerprint:
+    """
+    Complete perceptual fingerprint for a video with frame-level detail.
+
+    This structured format enables:
+    - Sequence-based partial overlap detection (diagonal streak matching)
+    - Temporal alignment for subset detection
+    - Better debugging (can see which frames match)
+
+    Attributes:
+        path: Path to video file
+        duration: Total video duration in seconds
+        frames: Ordered list of frame hashes with timestamps
+    """
+    path: Path
+    duration: float
+    frames: Tuple[FrameHash, ...]
+
+    def __len__(self) -> int:
+        """Number of sampled frames."""
+        return len(self.frames)
+
+    def get_phash_tuple(self) -> Tuple[int, ...]:
+        """Extract just the pHash integers for backward compatibility."""
+        return tuple(f.phash for f in self.frames)
 
 
 class AdaptiveSamplingParams(NamedTuple):
@@ -337,6 +381,193 @@ def compute_phash_signature_adaptive(
 
     # Use existing batch extraction logic
     return _compute_phash_from_timestamps(path, timestamps, gpu=gpu)
+
+
+def compute_video_fingerprint(
+    path: Path,
+    mode: str = "balanced",
+    *,
+    gpu: bool = False
+) -> Optional[VideoFingerprint]:
+    """
+    Compute complete video fingerprint with per-frame timestamps.
+
+    This is the recommended function for new code as it returns structured data
+    that enables sequence-based matching and temporal alignment.
+
+    Args:
+        path: Path to video file
+        mode: Sampling mode - "fast", "balanced" (default), or "thorough"
+        gpu: Enable GPU-accelerated decoding if available
+
+    Returns:
+        VideoFingerprint with frame hashes and timestamps, or None on error
+
+    Example:
+        >>> fingerprint = compute_video_fingerprint(Path("movie.mp4"))
+        >>> print(f"Sampled {len(fingerprint)} frames over {fingerprint.duration}s")
+        >>> for frame in fingerprint.frames[:5]:
+        ...     print(f"  Frame {frame.index} at {frame.timestamp:.2f}s: {frame.phash:016x}")
+    """
+    try:
+        from PIL import Image
+        import imagehash
+    except Exception:
+        return None
+
+    # Probe duration
+    from .probe import run_ffprobe_json
+    fmt = run_ffprobe_json(path)
+    try:
+        duration = float(fmt.get("format", {}).get("duration", 0.0)) if fmt else 0.0
+    except Exception:
+        duration = 0.0
+
+    if duration <= 0:
+        return None
+
+    # Calculate adaptive sampling parameters
+    params = adaptive_sampling_params(duration, mode)
+
+    # Calculate actual number of frames to sample
+    theoretical_frames = int(duration / params.sampling_interval)
+    actual_frames = max(params.min_frames, min(theoretical_frames, params.max_frames))
+
+    # Generate evenly-spaced timestamps across the video duration
+    timestamps = []
+    if actual_frames == 1:
+        timestamps = [duration / 2.0]  # Middle of video
+    else:
+        # Sample from start to end, evenly spaced
+        step = duration / (actual_frames + 1)
+        timestamps = [step * (i + 1) for i in range(actual_frames)]
+
+    # Extract frames and compute pHashes with timestamp information
+    frame_hashes = _compute_frame_hashes_with_timestamps(path, timestamps, gpu=gpu)
+
+    if not frame_hashes:
+        return None
+
+    return VideoFingerprint(
+        path=path,
+        duration=duration,
+        frames=tuple(frame_hashes)
+    )
+
+
+def _compute_frame_hashes_with_timestamps(
+    path: Path,
+    timestamps: List[float],
+    *,
+    gpu: bool = False
+) -> Optional[List[FrameHash]]:
+    """
+    Extract frames at specific timestamps and compute pHash for each with metadata.
+
+    This variant returns structured FrameHash objects instead of raw integers.
+
+    Args:
+        path: Path to video file
+        timestamps: List of timestamps (in seconds) to sample
+        gpu: Enable GPU-accelerated decoding
+
+    Returns:
+        List of FrameHash objects with timestamp/index/phash, or None on error
+    """
+    try:
+        from PIL import Image
+        import imagehash
+        import tempfile
+        import os
+    except Exception:
+        return None
+
+    if not timestamps:
+        return None
+
+    # Use a temporary directory for batch extraction
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_pattern = os.path.join(temp_dir, "frame_%03d.png")
+
+            # Build optimized batch command
+            cmd = _ffmpeg_batch_cmd_optimized(path, timestamps, output_pattern, gpu=gpu)
+
+            # Run batch extraction
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                # Fallback to single-frame method
+                return _compute_frame_hashes_fallback(path, timestamps, gpu=gpu)
+
+            # Process extracted frames with metadata
+            frame_hashes: List[FrameHash] = []
+            for i in range(len(timestamps)):
+                frame_path = os.path.join(temp_dir, f"frame_{i+1:03d}.png")
+                if os.path.exists(frame_path):
+                    try:
+                        with Image.open(frame_path) as img:
+                            h = imagehash.phash(img)
+                            phash_int = int(str(h), 16)
+                            frame_hashes.append(FrameHash(
+                                timestamp=timestamps[i],
+                                index=i,
+                                phash=phash_int
+                            ))
+                    except Exception:
+                        continue
+
+            # Require at least half of the requested frames
+            if len(frame_hashes) >= max(2, len(timestamps) // 2):
+                return frame_hashes
+
+    except Exception:
+        pass
+
+    # Fallback to single-frame extraction
+    return _compute_frame_hashes_fallback(path, timestamps, gpu=gpu)
+
+
+def _compute_frame_hashes_fallback(
+    path: Path,
+    timestamps: List[float],
+    *,
+    gpu: bool = False
+) -> Optional[List[FrameHash]]:
+    """
+    Fallback to single-frame extraction if batch method fails.
+
+    Returns structured FrameHash objects with timestamps.
+    """
+    try:
+        from PIL import Image
+        import imagehash
+    except Exception:
+        return None
+
+    frame_hashes: List[FrameHash] = []
+    for idx, ts in enumerate(timestamps):
+        # Try GPU then CPU
+        for attempt in (0, 1):
+            try:
+                cmd = _ffmpeg_frame_cmd(path, ts, gpu=(gpu and attempt == 0))
+                raw = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
+                img = Image.open(io.BytesIO(raw))
+                img.load()
+                h = imagehash.phash(img)
+                phash_int = int(str(h), 16)
+                frame_hashes.append(FrameHash(
+                    timestamp=ts,
+                    index=idx,
+                    phash=phash_int
+                ))
+                break
+            except Exception:
+                # fallback once; if that fails, skip this frame
+                continue
+
+    if len(frame_hashes) < max(2, len(timestamps) // 2):
+        return None
+    return frame_hashes
 
 
 def _compute_phash_from_timestamps(
