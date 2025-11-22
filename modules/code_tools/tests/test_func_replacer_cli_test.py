@@ -1,4 +1,4 @@
-import scripts.modules.code_tools.func_replacer as fr
+import func_replacer as fr
 
 def test_cli_with_source_file_and_no_backup(tmp_path, capsys):
     target = tmp_path / "t.py"

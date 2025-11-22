@@ -10,16 +10,28 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
-from .rgcodeblock_lib.language_defs import LANGUAGE_DEFINITIONS, get_language_type_from_filename
-from .rgcodeblock_lib import (
-    extract_python_block_ast,
-    extract_brace_block,
-    extract_json_block,
-    extract_yaml_block,
-    extract_xml_block,
-    extract_ruby_block,
-    extract_lua_block,
-)
+try:
+    from .rgcodeblock_lib.language_defs import LANGUAGE_DEFINITIONS, get_language_type_from_filename
+    from .rgcodeblock_lib import (
+        extract_python_block_ast,
+        extract_brace_block,
+        extract_json_block,
+        extract_yaml_block,
+        extract_xml_block,
+        extract_ruby_block,
+        extract_lua_block,
+    )
+except ImportError:
+    from rgcodeblock_lib.language_defs import LANGUAGE_DEFINITIONS, get_language_type_from_filename
+    from rgcodeblock_lib import (
+        extract_python_block_ast,
+        extract_brace_block,
+        extract_json_block,
+        extract_yaml_block,
+        extract_xml_block,
+        extract_ruby_block,
+        extract_lua_block,
+    )
 
 RESET = "\x1b[0m"; BOLD = "\x1b[1m"; RED = "\x1b[31m"
 
@@ -144,14 +156,14 @@ def search_and_extract(pattern: str, root: str | Path,
 
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="ripgrep-powered code block extractor (rgcodeblock)")
-    ap.add_argument("pattern")
-    ap.add_argument("path", nargs="?", default=".")
+    ap.add_argument("pattern", nargs="?", help="Search pattern for ripgrep")
+    ap.add_argument("path", nargs="?", default=".", help="Path to search (default: current directory)")
     ap.add_argument("-f", "--format", choices=["text", "json"], default="text")
     ap.add_argument("-i", "--include_ext", action="append")
     ap.add_argument("-e", "--exclude_ext", action="append")
     ap.add_argument("-g", "--glob", action="append")
     ap.add_argument("-a", "--rg_arg", action="append")
-    ap.add_argument("-L", "--list_languages", action="store_true")
+    ap.add_argument("-L", "--list_languages", action="store_true", help="List supported languages and exit")
     args = ap.parse_args(argv)
 
     if args.list_languages:
@@ -159,6 +171,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             exts = ", ".join(meta.get("extensions", []))
             print(f"{lang}: {exts}")
         return 0
+
+    if not args.pattern:
+        ap.error("pattern is required when not using --list_languages")
+        return 2
 
     try:
         result = search_and_extract(args.pattern, args.path, include_ext=args.include_ext, exclude_ext=args.exclude_ext,

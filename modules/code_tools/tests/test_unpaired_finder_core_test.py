@@ -1,9 +1,9 @@
-from scripts.modules.code_tools.unpaired_finder import scan_text_for_unpaired
+from unpaired_finder import scan_text_for_unpaired
 
 def test_unpaired_and_mismatch_and_open_lines():
-    text = "(
+    text = """(
 [  ]{
-}"
+}"""
     issues, opens = scan_text_for_unpaired(text)
     assert any(i.kind == 'unpaired_open' for i in issues)
     assert 1 in opens

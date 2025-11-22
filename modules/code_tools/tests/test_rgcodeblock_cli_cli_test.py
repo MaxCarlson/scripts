@@ -1,4 +1,4 @@
-import scripts.modules.code_tools.rgcodeblock_cli as cli
+import rgcodeblock_cli as cli
 
 def test_cli_list_languages(capsys):
     rc = cli.main(["-L"])
