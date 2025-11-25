@@ -89,7 +89,39 @@ def main():
     if os.name == "nt":
         # Windows: delegate to safe PATH manager and DO NOT touch the registry here.
         log_print("INFO", "Windows OS detected. Delegating to safe PATH manager (no direct registry writes).", verbose)
-        _safe_add_with_manager(bin_path_to_add, verbose)
+
+        # Paths we want available everywhere (in order of importance)
+        paths_to_add = []
+        paths_to_add.append(bin_path_to_add)
+
+        # Repo venv Scripts (for editable installs/console proxies)
+        repo_root = bin_path_to_add.parent
+        venv_scripts = (repo_root / ".venv" / "Scripts").resolve()
+        paths_to_add.append(venv_scripts)
+
+        # pipx shim locations (common defaults)
+        pipx_default = Path(os.environ.get("USERPROFILE", "")) / ".local" / "bin"
+        pipx_alt = Path(os.environ.get("APPDATA", "")) / "Python"  # pip --user default base
+        paths_to_add.append(pipx_default)
+        if pipx_alt.exists():
+            # Add all Scripts subfolders under APPDATA/Python/Python* (covers pipx when installed via pip --user)
+            for scripts_dir in pipx_alt.glob("Python*/Scripts"):
+                paths_to_add.append(scripts_dir)
+
+        # Deduplicate while preserving order
+        seen = set()
+        ordered_unique = []
+        for p in paths_to_add:
+            if not p:
+                continue
+            ps = str(p)
+            if ps.lower() in seen:
+                continue
+            seen.add(ps.lower())
+            ordered_unique.append(p)
+
+        for p in ordered_unique:
+            _safe_add_with_manager(p, verbose)
         return
 
     # POSIX-like path update (unchanged, Zsh-focused)
