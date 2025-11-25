@@ -55,6 +55,19 @@ if (-not (Test-Path $VenvPython)) {
     }
 }
 
+# Ensure pipx is installed (user scope) and on PATH for global CLIs
+if (-not (Get-Command pipx -ErrorAction SilentlyContinue)) {
+    $systemPy = Get-Command "C:\Users\mcarls\AppData\Local\Programs\Python\Python312\python.exe" -ErrorAction SilentlyContinue
+    if (-not $systemPy) { $systemPy = Get-Command py -ErrorAction SilentlyContinue }
+    if (-not $systemPy) { $systemPy = Get-Command python -ErrorAction SilentlyContinue }
+    if ($systemPy) {
+        Write-Host "[BOOTSTRAP] Installing pipx (user) via $($systemPy.Source)..." -ForegroundColor Yellow
+        & $systemPy.Source -m pip install --user pipx
+    } else {
+        Write-Warning "[BOOTSTRAP] Could not find a system Python to install pipx."
+    }
+}
+
 # 2) Ensure pip is available in venv
 Write-Host "[BOOTSTRAP] Ensuring pip is available in venv..." -ForegroundColor Cyan
 & $VenvPython -m ensurepip --upgrade 2>$null

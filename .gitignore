@@ -201,3 +201,4 @@ downloads_dlpn/
 *.claude/
 claude-*.txt
 *.ignore
+modules/file_utils/path_backups/
