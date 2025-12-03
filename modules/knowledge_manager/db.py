@@ -60,6 +60,92 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
 
         conn.commit()
 
+    # Migration 2: Add tags table
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tags'")
+    if not cursor.fetchone():
+        cursor.execute("""
+        CREATE TABLE tags (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            color TEXT,
+            created_at TEXT NOT NULL
+        )
+        """)
+        conn.commit()
+
+    # Migration 3: Add project_tags junction table
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='project_tags'")
+    if not cursor.fetchone():
+        cursor.execute("""
+        CREATE TABLE project_tags (
+            project_id TEXT NOT NULL,
+            tag_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (project_id, tag_id),
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+        )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_project_tags_project_id ON project_tags(project_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_project_tags_tag_id ON project_tags(tag_id)")
+        conn.commit()
+
+    # Migration 4: Add task_tags junction table
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='task_tags'")
+    if not cursor.fetchone():
+        cursor.execute("""
+        CREATE TABLE task_tags (
+            task_id TEXT NOT NULL,
+            tag_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (task_id, tag_id),
+            FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+            FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+        )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_task_tags_task_id ON task_tags(task_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_task_tags_tag_id ON task_tags(tag_id)")
+        conn.commit()
+
+    # Migration 5: Add notes table
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='notes'")
+    if not cursor.fetchone():
+        cursor.execute("""
+        CREATE TABLE notes (
+            id TEXT PRIMARY KEY,
+            content TEXT NOT NULL,
+            project_id TEXT,
+            task_id TEXT,
+            created_at TEXT NOT NULL,
+            modified_at TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_notes_project_id ON notes(project_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_notes_task_id ON notes(task_id)")
+        conn.commit()
+
+    # Migration 6: Add attachments table
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='attachments'")
+    if not cursor.fetchone():
+        cursor.execute("""
+        CREATE TABLE attachments (
+            id TEXT PRIMARY KEY,
+            file_path TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            mime_type TEXT,
+            project_id TEXT,
+            task_id TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_attachments_project_id ON attachments(project_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_attachments_task_id ON attachments(task_id)")
+        conn.commit()
+
 def init_db(db_path: Path) -> None:
     """
     Initializes the database by creating the 'projects', 'tasks', and 'task_links' tables
