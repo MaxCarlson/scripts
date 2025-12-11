@@ -226,6 +226,68 @@ class HistoryUtils(SystemUtils):
              write_debug(f"Extracted paths: {extracted_paths}", channel="Verbose")
         return extracted_paths
 
+    def _extract_commands_from_history_lines(self, lines: list[str]) -> list[str]:
+        """Extracts unique commands from a list of history command lines."""
+        extracted_commands = []
+        seen_commands = set()
+
+        for line_content in reversed(lines):
+            line_content = line_content.strip()
+            if not line_content:
+                continue
+
+            # Remove zsh-specific timestamp formatting
+            if self.shell_type == "zsh" and line_content.startswith(": ") and ";" in line_content:
+                try:
+                    line_content = line_content.split(";", 1)[1].strip()
+                except IndexError:
+                    write_debug(f"Skipping malformed zsh history line: {line_content[:50]}...", channel="Verbose")
+                    continue
+
+            # Skip empty commands after processing
+            if not line_content:
+                continue
+
+            # Only add unique commands
+            if line_content not in seen_commands:
+                extracted_commands.append(line_content)
+                seen_commands.add(line_content)
+
+        write_debug(f"Extracted {len(extracted_commands)} unique commands from {len(lines)} history lines.", channel="Debug")
+        return extracted_commands
+
+    def get_nth_recent_command(self, n: int) -> str | None:
+        """Get the Nth most recent unique command from shell history."""
+        if not isinstance(n, int) or n <= 0:
+            write_debug("N must be a positive integer.", channel="Error")
+            return None
+
+        history_file_path = self._get_history_file_path()
+        if not history_file_path:
+            write_debug("No history file path found, cannot retrieve commands.", channel="Error")
+            return None
+
+        try:
+            with open(history_file_path, "r", errors="ignore", encoding='utf-8') as f:
+                lines = f.readlines()
+        except Exception as e:
+            write_debug(f"Error reading history file {history_file_path}: {e}", channel="Error")
+            return None
+
+        if not lines:
+            write_debug(f"History file {history_file_path} is empty or unreadable.", channel="Warning")
+            return None
+
+        all_commands = self._extract_commands_from_history_lines(lines)
+
+        if 0 < n <= len(all_commands):
+            command_to_return = all_commands[n-1]
+            write_debug(f"Returning {n}th recent command: {command_to_return}", channel="Information")
+            return command_to_return
+        else:
+            write_debug(f"Could not find {n}th recent command. Requested N={n}, Found {len(all_commands)} unique commands.", channel="Warning")
+            return None
+
     def get_nth_recent_path(self, n: int) -> str | None:
         if not isinstance(n, int) or n <= 0:
             write_debug("N must be a positive integer.", channel="Error")
@@ -241,14 +303,14 @@ class HistoryUtils(SystemUtils):
                 lines = f.readlines()
         except Exception as e:
             write_debug(f"Error reading history file {history_file_path}: {e}", channel="Error")
-            return None 
-        
+            return None
+
         if not lines:
             write_debug(f"History file {history_file_path} is empty or unreadable.", channel="Warning")
             return None
 
         all_paths = self._extract_paths_from_history_lines(lines)
-        
+
         if 0 < n <= len(all_paths):
             path_to_return = all_paths[n-1]
             write_debug(f"Returning {n}th recent path: {path_to_return}", channel="Information")
