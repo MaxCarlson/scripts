@@ -69,6 +69,14 @@ The goal is to create a robust, fault-tolerant “Transfer Manager” that abstr
 
 ---
 
+### v0.2 Enhancements
+
+- **Auto method selection** now inspects available binaries and target OS before dispatching workers. Local-only transfers fall back to the new `native` worker, which uses robocopy (Windows) or Python copy routines with full progress telemetry.
+- **TermDash dashboard** replaces the ad-hoc console view when `dlmanager manager --ui-mode termdash` is used. Every job receives a color-coded status, byte-based progress bar, speed, and ETA in real time.
+- **Structured worker output**: `rsync`, `rclone`, `scp`, and `native` emit normalized keys (`bytes_done`, `bytes_total`, `bytes_per_s`, `files_done`, `current_file`, `eta_seconds`) so the UI and logs stay consistent.
+- **Safety/verbosity toggles**: `dlmanager add` now exposes `--verbosity/-B` plus `--confirm/-y` for destructive actions (`--delete-source`). Destructive paths are blocked unless the operator opts in or runs a dry run.
+- **Test coverage**: `pytest modules/dlmanager/tests -q` exercises the new heuristics, worker parsers, and native copy pipeline. On Windows, set `TMP`/`TEMP` to a writable folder (e.g., `set TMP=C:\path\.tmp`) before running pytest to avoid permission issues in `%LOCALAPPDATA%`.
+
 ## CLI Behavior
 
 ### Usage

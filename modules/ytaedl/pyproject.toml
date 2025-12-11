@@ -25,7 +25,8 @@ ytaedl-download = "ytaedl.downloader:main"
 packages = ["ytaedl"]
 
 [tool.pytest.ini_options]
-addopts = "-ra"
+addopts = "-ra --basetemp=.pytest_tmp"
 testpaths = ["tests"]
 python_files = ["*_test.py", "test_*.py"]
+tmp_path_retention_policy = "none"
 
