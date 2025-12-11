@@ -37,9 +37,11 @@ from .utils import (
     guess_local_platform,
     which_or_none,
     now_iso,
+    is_remote_spec,
 )
 
 APP_NAME = "dlmanager"
+VERBOSITY_CHOICES = ("quiet", "info", "stats", "trace")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,6 +59,20 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_POLL_INTERVAL,
         help=f"Job-queue poll interval seconds (default {DEFAULT_POLL_INTERVAL}).",
+    )
+    mgr.add_argument(
+        "-u",
+        "--ui-mode",
+        choices=["auto", "plain", "termdash"],
+        default="auto",
+        help="UI renderer to use. 'auto' prefers termdash when import succeeds.",
+    )
+    mgr.add_argument(
+        "-B",
+        "--verbosity",
+        choices=VERBOSITY_CHOICES,
+        default="stats",
+        help="Console verbosity for the manager dashboard.",
     )
 
     # Add a new transfer job
@@ -78,7 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument(
         "-m",
         "--method",
-        choices=["auto", "rsync", "rclone", "scp"],
+        choices=["auto", "rsync", "rclone", "scp", "native"],
         default="auto",
         help="Transfer method to use. 'auto' will try best-to-worst.",
     )
@@ -115,14 +131,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Destination OS for path normalization and rsync/scp flags.",
     )
     add.add_argument(
+        "-B",
+        "--verbosity",
+        choices=VERBOSITY_CHOICES,
+        default="stats",
+        help="Per-job verbosity. 'trace' streams full worker output.",
+    )
+    add.add_argument(
         "-v", "--verbose",
         action="store_true",
-        help="Verbose manager logs for this job.",
+        help="Enable verbose manager logs (same as --verbosity trace).",
     )
     add.add_argument(
         "-q", "--quiet",
         action="store_true",
         help="Reduce console noise.",
+    )
+    add.add_argument(
+        "-y",
+        "--confirm",
+        action="store_true",
+        help="Required acknowledgement for destructive requests such as --delete-source.",
     )
 
     # Show environment / diagnostics
@@ -135,7 +164,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def cmd_manager(args: argparse.Namespace) -> int:
     ensure_runtime_dirs()
-    m = Manager(poll_interval=args.poll_interval)
+    m = Manager(
+        poll_interval=args.poll_interval,
+        ui_mode=args.ui_mode,
+        verbosity=args.verbosity,
+    )
     # Foreground run with a simple TUI-ish printer
     try:
         m.run_forever()
@@ -146,6 +179,9 @@ def cmd_manager(args: argparse.Namespace) -> int:
 
 def generate_job(args: argparse.Namespace) -> dict:
     # Normalize/prepare a job descriptor
+    verbosity = args.verbosity
+    if args.verbose:
+        verbosity = "trace"
     job = {
         "id": str(uuid.uuid4()),
         "created_at": now_iso(),
@@ -161,6 +197,7 @@ def generate_job(args: argparse.Namespace) -> dict:
         "tags": args.tags,
         "verbose": bool(args.verbose),
         "quiet": bool(args.quiet),
+        "verbosity": verbosity,
         "submitter_platform": guess_local_platform(),
         "status": "queued",
     }
@@ -178,6 +215,11 @@ def write_job_to_queue(job: dict, queue_dir: Path) -> Path:
 def cmd_add(args: argparse.Namespace) -> int:
     ensure_runtime_dirs()
     from .manager import QUEUE_DIR, PID_FILE
+
+    validation_error = _validate_add_args(args)
+    if validation_error:
+        print(f"[ERROR] {validation_error}")
+        return 2
 
     job = generate_job(args)
     job_path = write_job_to_queue(job, QUEUE_DIR)
@@ -198,11 +240,19 @@ def cmd_add(args: argparse.Namespace) -> int:
 def cmd_doctor(args: argparse.Namespace) -> int:
     print("== dlmanager doctor ==")
     print(f"- Platform guess: {guess_local_platform()}")
-    for tool in ("rsync", "rclone", "scp", "ssh"):
+    for tool in ("rsync", "rclone", "robocopy", "scp", "ssh"):
         path = which_or_none(tool)
         print(f"- which {tool}: {path or 'NOT FOUND'}")
     print(f"- Runtime dir: {ensure_runtime_dirs()}")
     return 0
+
+
+def _validate_add_args(args: argparse.Namespace) -> str | None:
+    if args.delete_source and not args.confirm and not args.dry_run:
+        return "--delete-source requires --confirm/-y or use --dry-run."
+    if args.method == "native" and is_remote_spec(args.dst):
+        return "native method only supports local filesystem destinations. Supply a local --dst or use rsync/scp."
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:

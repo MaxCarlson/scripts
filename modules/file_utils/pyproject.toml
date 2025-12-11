@@ -25,3 +25,8 @@ email = "carlsonamax@gmail.com"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["file_utils*"]
+
+[tool.pytest.ini_options]
+addopts = "-v --basetemp=.pytest_tmp"
+testpaths = ["tests"]
+tmp_path_retention_policy = "none"

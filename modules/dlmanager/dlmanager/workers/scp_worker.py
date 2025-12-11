@@ -69,10 +69,13 @@ def run_and_stream(cmd: list[str], delete_source: bool, src: str) -> int:
         s = line.strip()
         # Emit minimal updates
         if s:
-            emit(note=s)
+            payload = {"note": s, "method": "scp"}
+            if "Entering directory" in s or "Starting" in s:
+                payload["current_file"] = s.split()[-1]
+            emit(**payload)
     ret = proc.wait()
     if ret != 0:
-        emit(status="failed", returncode=ret)
+        emit(status="failed", method="scp", returncode=ret)
         return ret
     if delete_source:
         try:
@@ -82,10 +85,10 @@ def run_and_stream(cmd: list[str], delete_source: bool, src: str) -> int:
                 p.rmdir()
             else:
                 p.unlink()
-            emit(note="delete_source: removed local source")
+            emit(note="delete_source: removed local source", method="scp")
         except Exception as e:
-            emit(note=f"delete_source: failed: {e}")
-    emit(status="completed")
+            emit(note=f"delete_source: failed: {e}", method="scp")
+    emit(status="completed", method="scp")
     return 0
 
 

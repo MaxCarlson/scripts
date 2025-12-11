@@ -94,7 +94,7 @@ def run_and_stream(cmd: list[str], job_id: str) -> int:
         status="running",
         transfer_id=job_id,
         method="rsync",
-        command=" ".join(shlex.quote(c) for c in cmd)
+        command=" ".join(shlex.quote(c) for c in cmd),
     )
 
     # Start rsync process
@@ -115,7 +115,8 @@ def run_and_stream(cmd: list[str], job_id: str) -> int:
         emit(
             event="finish",
             status="completed" if ret == 0 else "failed",
-            returncode=ret
+            returncode=ret,
+            method="rsync",
         )
         return ret
 
@@ -137,15 +138,15 @@ def run_and_stream(cmd: list[str], job_id: str) -> int:
             event_type = evt.get("event")
 
             if event_type == "progress":
-                # Emit progress with all available stats
                 emit(
                     event="progress",
+                    status="running",
                     transfer_id=job_id,
                     method="rsync",
                     percent=evt.get("percent"),
                     bytes_dl=evt.get("downloaded"),
                     total_bytes=evt.get("total"),
-                    bytes_per_s=evt.get("speed_bps"),
+                    speed_bps=evt.get("speed_bps"),
                     eta_s=evt.get("eta_s"),
                     files_done=evt.get("files_done"),
                     files_total=evt.get("files_total"),
@@ -175,7 +176,7 @@ def run_and_stream(cmd: list[str], job_id: str) -> int:
             event="error",
             transfer_id=job_id,
             method="rsync",
-            error=str(e)
+            error=str(e),
         )
         try:
             proc.kill()
@@ -192,7 +193,7 @@ def run_and_stream(cmd: list[str], job_id: str) -> int:
         transfer_id=job_id,
         method="rsync",
         status="completed" if ret == 0 else "failed",
-        returncode=ret
+        returncode=ret,
     )
 
     return ret

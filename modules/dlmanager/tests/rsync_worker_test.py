@@ -205,9 +205,9 @@ def test_run_and_stream_success(mock_iter_events, mock_popen):
 
     # Mock parsed events from procparsers
     mock_events = [
-        {"event": "progress", "percent": 50.0, "downloaded": 5000000, "speed_bps": 1000000},
+        {"event": "progress", "percent": 50.0, "downloaded": 5000000, "total": 10000000, "speed_bps": 1000000},
         {"event": "file", "path": "/test/file.txt"},
-        {"event": "progress", "percent": 100.0, "downloaded": 10000000, "speed_bps": 1000000},
+        {"event": "progress", "percent": 100.0, "downloaded": 10000000, "total": 10000000, "speed_bps": 1000000},
     ]
     mock_iter_events.return_value = iter(mock_events)
 
@@ -224,15 +224,16 @@ def test_run_and_stream_success(mock_iter_events, mock_popen):
     # Verify return code
     assert ret == 0
 
-    # Verify emit was called with expected events
     emit_calls = [call[1] for call in mock_emit.call_args_list]
-
-    # Should have start, progress events, and finish
     events = [call.get('event') for call in emit_calls]
     assert "start" in events
     assert "progress" in events
     assert "file" in events
     assert "finish" in events
+    progress_events = [c for c in emit_calls if c.get("event") == "progress"]
+    assert progress_events[0]["bytes_dl"] == 5_000_000
+    assert progress_events[0]["total_bytes"] == 10_000_000
+    assert progress_events[0]["status"] == "running"
 
 
 @patch('dlmanager.workers.rsync_worker.subprocess.Popen')

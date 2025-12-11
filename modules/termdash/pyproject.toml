@@ -40,6 +40,7 @@ packages = ["termdash"]
 termdash = "."
 
 [tool.pytest.ini_options]
-addopts = "-q"
+addopts = "-q --basetemp=.pytest_tmp"
 testpaths = ["tests"]
 pythonpath = ["."]
+tmp_path_retention_policy = "none"

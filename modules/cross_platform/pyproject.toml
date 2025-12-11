@@ -30,3 +30,8 @@ Repository = "https://github.com/yourusername/cross_platform"
 
 [tool.setuptools.packages.find]
 where = ["."]
+
+[tool.pytest.ini_options]
+addopts = "-v --basetemp=.pytest_tmp"
+testpaths = ["tests"]
+tmp_path_retention_policy = "none"
