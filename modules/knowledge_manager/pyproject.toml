@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "knowledge_manager"
-version = "0.5.0"
+version = "0.5.1"
 description = "A Python CLI application for managing personal knowledge, projects, tasks, and LLM assets."
 readme = "README.md" # You'll want to create this file later
 requires-python = ">=3.8" # Specify your minimum Python version
@@ -56,6 +56,9 @@ testpaths = [
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+addopts = "--basetemp=tests/.pytest_tmp"
+tmp_path_retention_policy = "none"
+asyncio_mode = "auto"
 # Add other pytest configurations here if needed, e.g., markers, plugins.
 # addopts = "--cov=knowledge_manager --cov-report=term-missing" # Example for coverage
 
