@@ -202,3 +202,5 @@ downloads_dlpn/
 claude-*.txt
 *.ignore
 modules/file_utils/path_backups/
+.pytest_tmp/
+logs/

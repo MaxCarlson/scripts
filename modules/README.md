@@ -149,3 +149,27 @@ To include non-Python files (e.g., `README.md` or configuration files) in your p
     ```
 - Follow [PEP 8](https://peps.python.org/pep-0008/) for consistent code style.
 - For private distributions, consider hosting your own PyPI server or using a private repository like [TestPyPI](https://test.pypi.org/).
+
+---
+
+## Cross-Platform Copier/Move Handler (dlmanager v0.2.0)
+
+Our `dlmanager` module now ships a fully cross-platform copy/move orchestrator that automatically selects the best available transfer method (rsync → rclone → scp → native Python/robocopy) for Windows 11, WSL2, and Termux. Highlights:
+
+- **TermDash dashboard**: `dlmanager manager --ui-mode termdash` starts a live, colorized progress board with per-job bars, ETA, and throughput. `--ui-mode plain` falls back to a simple table when curses isn’t available.
+- **Smart heuristics**: `dlmanager add` inspects your target platform and available binaries to pick the most resilient worker. New `native` worker streams detailed stats for local copies/moves and respects `--dry-run/-n`, `--replace/-r`, and `--delete-source/-x`.
+- **Verbosity controls**: `--verbosity quiet|info|stats|trace` tunes both the manager console and worker chatter; `--confirm/-y` guards destructive operations as required by project safety guidelines.
+- **Structured workers**: `rsync`, `rclone`, `scp`, and the new native worker emit normalized progress telemetry (bytes, files, speed, ETA) that feeds both the TUI and log subscribers.
+- **Tests**: `pytest modules/dlmanager/tests -q` now covers the auto-selection logic, size parsers, rsync/ native worker behavior, and helpers (temp dirs can be redirected with `set TMP=C:\path\to\.tmp` on Windows when needed).
+
+Usage example:
+
+```bash
+# Launch manager with the new dashboard
+dlmanager manager --ui-mode termdash
+
+# Queue a copy that auto-selects the best method with rich stats
+dlmanager add -s ~/Downloads -d mcarls@w11box -p /mnt/data/backups -m auto -B stats
+```
+
+See `modules/dlmanager/guide.md` for architecture notes, worker diagrams, and troubleshooting tips.

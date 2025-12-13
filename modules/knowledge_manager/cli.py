@@ -9,6 +9,7 @@ Merged + Extended:
 - Adds:
   * -c/--create-local-project <name>  → write <slug>.kmproj in CWD (ensures project exists)
   * -o/--open <path.kmproj>           → open TUI focused on that project (best-effort)
+  * tui                               → launch the interactive Textual UI directly
   * print [project-or-link] [-a|-t|-i|-d ...]  → print indented task tree
       - 'project' is now optional; if omitted we auto-pick the first *.kmproj in CWD.
   * -p/--print <project-or-link>      → alias for `print`
@@ -333,18 +334,49 @@ def handle_create_local_project(args: argparse.Namespace) -> int:
     except (ValueError, FileExistsError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
-    link_path = Path(args.open).expanduser().resolve()
-    link = load_link_file(link_path)
 
+
+def _launch_tui_app(
+    project_identifier: Optional[str],
+    base_data_dir: Optional[Path],
+    log_file: Optional[Path],
+    extra_args: Optional[List[str]] = None,
+) -> int:
     env = os.environ.copy()
-    env["KM_OPEN_PROJECT_ID"] = str(link.project_id)
-    if link.base_data_dir:
-        env["KM_BASE_DATA_DIR"] = str(link.base_data_dir)
+    cmd = [sys.executable, "-m", "knowledge_manager.tui.app"]
 
-    tui_mod = "knowledge_manager.tui.app"
-    cmd = [sys.executable, "-m", tui_mod, "--project", str(link.project_id)]
+    if base_data_dir:
+        env["KM_BASE_DATA_DIR"] = str(base_data_dir)
+        cmd.extend(["-G", str(base_data_dir)])
+    if project_identifier:
+        env["KM_OPEN_PROJECT_ID"] = str(project_identifier)
+        cmd.extend(["--project", str(project_identifier)])
+    if log_file:
+        cmd.extend(["--log-file", str(log_file)])
+    if extra_args:
+        cmd.extend(extra_args)
+
+    return subprocess.call(cmd, env=env)
+
+
+def handle_open_link(args: argparse.Namespace) -> int:
+    link_path = Path(args.open).expanduser().resolve()
+    if not link_path.exists():
+        print(f"Link file not found: {link_path}", file=sys.stderr)
+        return 1
+
     try:
-        rc = subprocess.call(cmd, env=env)
+        link = load_link_file(link_path)
+    except Exception as exc:
+        print(f"Failed to read link file '{link_path}': {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        rc = _launch_tui_app(
+            project_identifier=str(link.project_id),
+            base_data_dir=link.base_data_dir,
+            log_file=getattr(args, "log_file", None),
+        )
         if rc != 0:
             print("TUI exited with non-zero code. Falling back to printing project info:\n")
             proj = project_ops.find_project(str(link.project_id), base_data_dir=link.base_data_dir)
@@ -354,7 +386,7 @@ def handle_create_local_project(args: argparse.Namespace) -> int:
                 print("Project not found in DB.")
         return rc
     except Exception as ex:
-        print(f"Could not start TUI ({tui_mod}): {ex}")
+        print(f"Could not start TUI (knowledge_manager.tui.app): {ex}", file=sys.stderr)
         return 1
 
 
@@ -413,6 +445,41 @@ def handle_print(args: argparse.Namespace) -> int:
         log.info(f"{len(tasks)} tasks remaining after filtering.")
 
     print(_print_task_tree(tasks), end="")
+    return 0
+
+
+def handle_tui(args: argparse.Namespace) -> int:
+    base_dir = args.data_dir
+    project_identifier = args.project
+    textual_args = list(getattr(args, "textual_args", []) or [])
+
+    if args.link_file:
+        link_path = Path(args.link_file).expanduser().resolve()
+        if not link_path.exists():
+            print(f"Link file not found: {link_path}", file=sys.stderr)
+            return 1
+        try:
+            link = load_link_file(link_path)
+        except Exception as exc:
+            print(f"Failed to read link file '{link_path}': {exc}", file=sys.stderr)
+            return 1
+        project_identifier = str(link.project_id)
+        base_dir = link.base_data_dir or base_dir
+
+    try:
+        rc = _launch_tui_app(
+            project_identifier=project_identifier,
+            base_data_dir=base_dir,
+            log_file=getattr(args, "log_file", None),
+            extra_args=textual_args,
+        )
+    except Exception as exc:
+        print(f"Could not start TUI: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if rc != 0:
+        print(f"TUI exited with code {rc}", file=sys.stderr)
+        sys.exit(rc)
     return 0
 
 
@@ -519,6 +586,16 @@ def create_parser() -> argparse.ArgumentParser:
     task_update_parser.add_argument("-p", "--project-id", dest="project_id", type=str, default=None, help="Move to new project (ID or name)") # For assigning/moving
     task_update_parser.add_argument("-c", "--clear-project", dest="clear_project", action="store_true", help="Disassociate from any project")
     task_update_parser.set_defaults(func=handle_task_update)
+
+    tui_parser = subparsers.add_parser("tui", help="Launch the Knowledge Manager Textual UI.")
+    tui_parser.add_argument("-p", "--project", dest="project", type=str, help="Project name or UUID to focus on.")
+    tui_parser.add_argument("-L", "--link-file", dest="link_file", type=Path, help=f"Path to a {LINK_EXT} file to open.")
+    tui_parser.add_argument(
+        "textual_args",
+        nargs=argparse.REMAINDER,
+        help="Arguments after '--' are passed through to the TUI/Textual app.",
+    )
+    tui_parser.set_defaults(func=handle_tui)
 
     # New subcommand: print  (project arg optional)
     sp_print = subparsers.add_parser("print", help="Print a project's task hierarchy.")
