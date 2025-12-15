@@ -1,0 +1,22 @@
+❯ l3
+Size Git Name
+   -  -N  ./
+   -  -I ├──  __pycache__/
+ 164  -I │   └──  __init__.cpython-312.pyc
+   -  -N ├──  lmstui/
+  56  -N │   ├──  __init__.py
+7.5k  -N │   ├──  api.py
+8.9k  -N │   ├──  cli.py
+1.4k  -N │   ├──  config.py
+1.7k  -N │   ├──  formatting.py
+3.3k  -N │   ├──  http_client.py
+1.1k  -N │   ├──  logs.py
+  85  -N │   ├──  main.py
+2.5k  -N │   ├──  repl.py
+ 969  -N │   └──  sse.py
+   -  -N └──  tests/
+ 600  -N     └──  sse_test.py
+  ~cdsm/lmstui on   main *4 ?7
+❯ │ Lines Copied         │ 5
+ │
+
