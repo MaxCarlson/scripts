@@ -154,3 +154,82 @@ def test_include_partials_flag_allows_artifacts(tmp_path: Path, reporter: Progre
 
     assert reporter.discovery_files == 1
     assert reporter.discovery_artifacts == 0
+
+
+def test_subset_stage_handles_multiple_partials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reporter: ProgressReporter) -> None:
+    root = tmp_path / "subsets"
+    base = root / "master.mp4"
+    part_a = root / "segment_a.mp4"
+    part_b = root / "segment_b.mp4"
+    for path in (base, part_a, part_b):
+        _touch(path, b"x" * 64)
+
+    long_sig = tuple(range(20))
+    part_a_sig = tuple(range(0, 10))
+    part_b_sig = tuple(range(10, 20))
+
+    def fake_scene(path: Path, **_: object) -> Tuple[int, ...]:
+        return ()
+
+    def fake_phash(path: Path, **_: object) -> Tuple[int, ...]:
+        if path.name == "master.mp4":
+            return long_sig
+        if path.name == "segment_a.mp4":
+            return part_a_sig
+        if path.name == "segment_b.mp4":
+            return part_b_sig
+        return tuple()
+
+    def fake_phash_distance(*_: object, **__: object) -> int:
+        return 128  # Force subset path, never exact dup
+
+    class StubVideoMeta:
+        def __init__(self, path, size, mtime, **kwargs):
+            self.path = Path(path)
+            self.size = size
+            self.mtime = mtime
+            default_duration = 40.0 if self.path.name == "master.mp4" else 10.0
+            self.duration = kwargs.get("duration", default_duration)
+            self.width = kwargs.get("width")
+            self.height = kwargs.get("height")
+            self.container = kwargs.get("container")
+            self.vcodec = kwargs.get("vcodec")
+            self.acodec = kwargs.get("acodec")
+            self.overall_bitrate = kwargs.get("overall_bitrate")
+            self.video_bitrate = kwargs.get("video_bitrate")
+            self.phash_signature = kwargs.get("phash_signature")
+
+        @property
+        def resolution_area(self) -> int:
+            if self.width and self.height:
+                return self.width * self.height
+            return 0
+
+    monkeypatch.setattr("vdedup.pipeline.VideoMeta", StubVideoMeta)
+
+    monkeypatch.setattr("vdedup.phash.compute_scene_fingerprint", fake_scene)
+    monkeypatch.setattr("vdedup.phash.compute_phash_signature", fake_phash)
+    monkeypatch.setattr("vdedup.phash.phash_distance", fake_phash_distance)
+
+    cfg = PipelineConfig(
+        threads=1,
+        subset_detect=True,
+        subset_min_ratio=0.2,
+        subset_frame_threshold=5,
+        phash_frames=5,
+        phash_threshold=12,
+    )
+    groups = run_pipeline(
+        root=root,
+        patterns=["*.mp4"],
+        max_depth=None,
+        selected_stages=[4],
+        cfg=cfg,
+        cache=None,
+        reporter=reporter,
+    )
+
+    subset_groups = {k: v for k, v in groups.items() if k.startswith("subset:")}
+    assert len(subset_groups) == 2
+    for members in subset_groups.values():
+        assert str(members[0].path).endswith("master.mp4")
