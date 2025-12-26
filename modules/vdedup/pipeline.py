@@ -395,6 +395,19 @@ def _avg_signature_distance(sig_a: Sequence[int], sig_b: Sequence[int]) -> float
     return total / count
 
 
+def _subset_master_loser(a: VideoMeta, b: VideoMeta) -> Tuple[VideoMeta, VideoMeta]:
+    """
+    Order a pair so that the preferred "master" (longer, higher quality) is first.
+    This ensures downstream grouping consistently surfaces the highest-quality asset.
+    """
+    def _key(vm: VideoMeta) -> Tuple[float, int, int, int]:
+        duration = vm.duration if vm.duration is not None else -1.0
+        bitrate = vm.video_bitrate or 0
+        return (duration, vm.resolution_area, bitrate, vm.size)
+
+    return (a, b) if _key(a) >= _key(b) else (b, a)
+
+
 # -------------------------------------------------------------------------------------------------
 # Main pipeline
 # -------------------------------------------------------------------------------------------------
@@ -1138,9 +1151,10 @@ def run_pipeline(
                                     all_pairs.append((v1, v2, res_factor))
 
                 # Process all potential subset pairs
-                processed_paths = set()
+                subset_consumed: Set[Path] = set()
                 for short, long, res_factor in all_pairs:
-                    if short.path in processed_paths or long.path in processed_paths:
+                    short_norm = _normalized_path(short.path)
+                    if short_norm in subset_consumed:
                         continue
 
                     if not short.duration or not long.duration:
@@ -1155,11 +1169,10 @@ def run_pipeline(
                     # Use enhanced alignable distance with resolution awareness
                     best = _alignable_distance(short.phash_signature, long.phash_signature, cfg.subset_frame_threshold)
                     if best is not None:
-                        groups[f"subset:{gid}"] = [short, long]
-                        processed_paths.add(short.path)
-                        processed_paths.add(long.path)
+                        master, loser = _subset_master_loser(short, long)
+                        groups[f"subset:{gid}"] = [master, loser]
+                        subset_consumed.add(short_norm)
                         excluded_after_q4.add(_normalized_path(short.path))
-                        excluded_after_q4.add(_normalized_path(long.path))
                         gid += 1
                         formed_subset += 1
                         duplicate_members += 1
@@ -1225,18 +1238,19 @@ def run_pipeline(
             duplicate_members = 0
             subset_pairs = 0
             gid = 0
-            processed: Set[Path] = set()
+            consumed: Set[Path] = set()
+            subset_consumed: Set[Path] = set()
             per_scene_thresh = max(8, int(cfg.subset_frame_threshold * 1.2))
 
             for i in range(len(entries)):
                 vm_a, sig_a = entries[i]
                 path_a = _normalized_path(vm_a.path)
-                if path_a in processed or not sig_a:
+                if path_a in consumed or not sig_a:
                     continue
                 for j in range(i + 1, len(entries)):
                     vm_b, sig_b = entries[j]
                     path_b = _normalized_path(vm_b.path)
-                    if path_b in processed or not sig_b:
+                    if path_b in consumed or not sig_b:
                         continue
                     if abs(len(sig_a) - len(sig_b)) > 6:
                         continue
@@ -1251,7 +1265,7 @@ def run_pipeline(
                         avg_dist = _avg_signature_distance(sig_a, sig_b)
                         if avg_dist <= per_scene_thresh:
                             groups[f"scene:{gid}"] = [vm_a, vm_b]
-                            processed.update({path_a, path_b})
+                            consumed.update({path_a, path_b})
                             excluded_after_q5.update({path_a, path_b})
                             formed_scene += 1
                             duplicate_members += 1
@@ -1261,18 +1275,25 @@ def run_pipeline(
                         ratio = min(len_a, len_b) / max_len if max_len else 0.0
                         if ratio < max(cfg.subset_min_ratio, 0.2):
                             continue
-                        short_sig = sig_a if len_a <= len_b else sig_b
-                        long_sig = sig_b if short_sig is sig_a else sig_a
+                        short_vm = vm_a if len_a <= len_b else vm_b
+                        long_vm = vm_b if short_vm is vm_a else vm_a
+                        short_norm = _normalized_path(short_vm.path)
+                        if short_norm in subset_consumed:
+                            continue
+                        short_sig = sig_a if short_vm is vm_a else sig_b
+                        long_sig = sig_b if short_vm is vm_a else sig_a
                         best = _alignable_distance(short_sig, long_sig, per_scene_thresh)
                         if best is not None:
-                            groups[f"scene-sub:{gid}"] = [vm_a, vm_b]
-                            processed.update({path_a, path_b})
-                            excluded_after_q5.update({path_a, path_b})
+                            master, loser = _subset_master_loser(short_vm, long_vm)
+                            groups[f"scene-sub:{gid}"] = [master, loser]
+                            consumed.add(short_norm)
+                            subset_consumed.add(short_norm)
+                            excluded_after_q5.add(short_norm)
                             formed_scene += 1
                             subset_pairs += 1
                             duplicate_members += 1
                             gid += 1
-                            break
+                            continue
 
             if formed_scene:
                 reporter.inc_group("scene", formed_scene)
@@ -1343,6 +1364,7 @@ def run_pipeline(
             duplicate_members = 0
             comparisons = 0
             processed_audio: Set[Path] = set()
+            subset_audio_consumed: Set[Path] = set()
             audio_dup_thresh = 12
             audio_subset_thresh = max(14, int(cfg.subset_frame_threshold * 1.5))
             gid = 0
@@ -1379,18 +1401,25 @@ def run_pipeline(
                         ratio = min(len_a, len_b) / max_len if max_len else 0.0
                         if ratio < max(cfg.subset_min_ratio, 0.25):
                             continue
-                        short_sig = sig_a if len_a <= len_b else sig_b
-                        long_sig = sig_b if short_sig is sig_a else sig_a
+                        short_vm = vm_a if len_a <= len_b else vm_b
+                        long_vm = vm_b if short_vm is vm_a else vm_a
+                        short_norm = _normalized_path(short_vm.path)
+                        if short_norm in subset_audio_consumed:
+                            continue
+                        short_sig = sig_a if short_vm is vm_a else sig_b
+                        long_sig = sig_b if short_vm is vm_a else sig_a
                         best = _alignable_distance(short_sig, long_sig, audio_subset_thresh)
                         if best is not None:
-                            groups[f"audio-sub:{gid}"] = [vm_a, vm_b]
-                            processed_audio.update({path_a, path_b})
-                            excluded_after_q6.update({path_a, path_b})
+                            master, loser = _subset_master_loser(short_vm, long_vm)
+                            groups[f"audio-sub:{gid}"] = [master, loser]
+                            processed_audio.add(short_norm)
+                            subset_audio_consumed.add(short_norm)
+                            excluded_after_q6.add(short_norm)
                             formed_audio += 1
                             duplicate_members += 1
                             audio_subset_pairs += 1
                             gid += 1
-                            break
+                            continue
 
             if formed_audio:
                 reporter.inc_group("audio", formed_audio)
@@ -1462,6 +1491,7 @@ def run_pipeline(
             duplicate_members = 0
             comparisons = 0
             processed_timeline: Set[Path] = set()
+            timeline_subset_consumed: Set[Path] = set()
             gid = 0
             timeline_dup_thresh = max(10, int(cfg.phash_threshold))
             timeline_subset_thresh = max(12, int(cfg.subset_frame_threshold * 1.1))
@@ -1496,18 +1526,25 @@ def run_pipeline(
                         ratio = min(len_a, len_b) / max_len if max_len else 0.0
                         if ratio < max(cfg.subset_min_ratio, 0.3):
                             continue
-                        short_sig = sig_a if len_a <= len_b else sig_b
-                        long_sig = sig_b if short_sig is sig_a else sig_a
+                        short_vm = vm_a if len_a <= len_b else vm_b
+                        long_vm = vm_b if short_vm is vm_a else vm_a
+                        short_norm = _normalized_path(short_vm.path)
+                        if short_norm in timeline_subset_consumed:
+                            continue
+                        short_sig = sig_a if short_vm is vm_a else sig_b
+                        long_sig = sig_b if short_vm is vm_a else sig_a
                         best = _alignable_distance(short_sig, long_sig, timeline_subset_thresh)
                         if best is not None:
-                            groups[f"timeline-sub:{gid}"] = [vm_a, vm_b]
-                            processed_timeline.update({path_a, path_b})
-                            excluded_after_q7.update({path_a, path_b})
+                            master, loser = _subset_master_loser(short_vm, long_vm)
+                            groups[f"timeline-sub:{gid}"] = [master, loser]
+                            processed_timeline.add(short_norm)
+                            timeline_subset_consumed.add(short_norm)
+                            excluded_after_q7.add(short_norm)
                             formed_timeline += 1
                             timeline_subset_pairs += 1
                             duplicate_members += 1
                             gid += 1
-                            break
+                            continue
 
             if formed_timeline:
                 reporter.inc_group("timeline", formed_timeline)

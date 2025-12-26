@@ -31,6 +31,7 @@ import argparse
 import glob
 import logging
 import os
+import re
 import shutil
 import signal
 import sys
@@ -63,6 +64,84 @@ from vdedup.report import (
 from vdedup.report_viewer import launch_report_viewer
 
 # -------- helpers --------
+
+def _default_thread_count() -> int:
+    """
+    Return an auto-tuned default thread count (cores minus four) with a floor of one.
+    This keeps a few logical CPUs free for the OS / GPU drivers on heavily threaded hosts.
+    """
+    max_threads = os.cpu_count() or 8
+    return max(1, max_threads - 4)
+
+
+def _infer_quality_level(value: Optional[str]) -> int:
+    """
+    Convert the CLI quality string into an approximate numeric level.
+    Accepts presets like '5' as well as explicit pipelines like '1-6'.
+    """
+    if not value:
+        return 2
+    digits = [int(m) for m in re.findall(r"\d+", value)]
+    if digits:
+        return max(digits)
+    return 2
+
+
+def _quality_default_config(quality: Optional[str]) -> Dict[str, Any]:
+    """
+    Build adaptive defaults for the advanced detection knobs based on the requested quality.
+    Higher quality levels sample more frames, tighten thresholds, and widen duration tolerances
+    per the guidance captured in DETAILED_RESEARCH.md (10% overlap and thorough-mode sampling).
+    """
+    level = _infer_quality_level(quality)
+    defaults: Dict[str, Any] = {
+        "duration_tolerance": 2.0,
+        "phash_frames": 5,
+        "phash_threshold": 12,
+        "subset_min_ratio": 0.10,
+        "include_partials": False,
+    }
+    if level >= 4:
+        defaults.update({
+            "duration_tolerance": 3.0,
+            "phash_frames": 12,
+            "phash_threshold": 11,
+            "subset_min_ratio": 0.12,
+        })
+    if level >= 5:
+        defaults.update({
+            "duration_tolerance": 4.0,
+            "phash_frames": 16,
+            "phash_threshold": 10,
+            "subset_min_ratio": 0.09,
+        })
+    if level >= 6:
+        defaults.update({
+            "duration_tolerance": 5.0,
+            "phash_frames": 20,
+            "phash_threshold": 9,
+            "subset_min_ratio": 0.08,
+            "include_partials": True,
+        })
+    if level >= 7:
+        defaults.update({
+            "duration_tolerance": 6.0,
+            "phash_frames": 24,
+            "phash_threshold": 9,
+            "subset_min_ratio": 0.07,
+        })
+    return defaults
+
+
+def _apply_quality_defaults(args: argparse.Namespace) -> None:
+    """Fill in adaptive defaults for CLI arguments after parsing."""
+    defaults = _quality_default_config(getattr(args, "quality", None))
+    for field, value in defaults.items():
+        current = getattr(args, field, None)
+        if current is None:
+            setattr(args, field, value)
+    if getattr(args, "threads", None) is None:
+        args.threads = _default_thread_count()
 
 def _normalize_patterns(patts: Optional[List[str]]) -> Optional[List[str]]:
     if not patts:
@@ -541,8 +620,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                    help="Directory for all outputs (cache, reports, logs). If not specified, writes to current directory.")
 
     # Performance
-    p.add_argument("-t", "--threads", type=int, default=8,
-                   help="Worker threads (default: 8)")
+    threads_default = _default_thread_count()
+    p.add_argument(
+        "-t",
+        "--threads",
+        type=int,
+        default=threads_default,
+        help=f"Worker threads (default: cores-4 -> {threads_default})",
+    )
     p.add_argument("-g", "--gpu", action="store_true",
                    help="Use GPU acceleration for pHash extraction (requires compatible GPU)")
 
@@ -576,21 +661,44 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
     # Advanced options (moved to subgroup)
     advanced = p.add_argument_group('advanced options', 'Fine-tune detection parameters')
-    advanced.add_argument("-u", "--duration-tolerance", type=float, default=2.0,
-                         help="Duration tolerance in seconds for metadata grouping (default: 2.0)")
-    advanced.add_argument("-F", "--phash-frames", type=int, default=5,
-                         help="Number of frames to sample for perceptual hash comparison (default: 5)")
-    advanced.add_argument("-T", "--phash-threshold", type=int, default=12,
-                         help="Per-frame Hamming distance threshold for pHash matching (default: 12)")
-    advanced.add_argument("-s", "--subset-min-ratio", type=float, default=0.10,
-                         help="Minimum duration ratio (short/long) for subset detection - aligned with >=10%% overlap threshold (default: 0.10)")
+    advanced.add_argument(
+        "-u",
+        "--duration-tolerance",
+        type=float,
+        default=None,
+        help="Duration tolerance in seconds for metadata grouping (auto-tuned per quality level; base default 2s).",
+    )
+    advanced.add_argument(
+        "-F",
+        "--phash-frames",
+        type=int,
+        default=None,
+        help="Number of frames to sample for perceptual hash comparison (quality-aware auto default).",
+    )
+    advanced.add_argument(
+        "-T",
+        "--phash-threshold",
+        type=int,
+        default=None,
+        help="Per-frame Hamming distance threshold for pHash matching (auto-tightened for thorough modes).",
+    )
+    advanced.add_argument(
+        "-s",
+        "--subset-min-ratio",
+        type=float,
+        default=None,
+        help="Minimum duration ratio (short/long) for subset detection – quality-aware, aligned with the ≥10% research target.",
+    )
     advanced.add_argument(
         "-A", "--include-partials",
         action="store_true",
-        help="Include partial/incomplete downloads (.part, .partial, .tmp, .crdownload) during scan (default: skip them)",
+        default=None,
+        help="Include partial/incomplete downloads (.part, .partial, .tmp, .crdownload) during scan (defaults follow mode; base is skip).",
     )
 
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    _apply_quality_defaults(args)
+    return args
 
 
 def _maybe_print_or_analyze(args: argparse.Namespace) -> Optional[int]:
@@ -984,6 +1092,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     logger.info(f"Cache file: {cache_path}")
     logger.info(f"Report file: {report_path}")
 
+    quality_level = _infer_quality_level(args.quality)
+    subset_detect_enabled = quality_level >= 5
+
     cfg = PipelineConfig(
         threads=max(1, int(args.threads)),
         duration_tolerance=getattr(args, 'duration_tolerance', 2.0),
@@ -992,7 +1103,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         same_container=False,
         phash_frames=getattr(args, 'phash_frames', 5),
         phash_threshold=getattr(args, 'phash_threshold', 12),
-        subset_detect=(args.quality == "5"),  # Enable subset detection for quality level 5
+        subset_detect=subset_detect_enabled,
         subset_min_ratio=getattr(args, 'subset_min_ratio', 0.10),  # Aligned with >=10% overlap threshold
         subset_frame_threshold=max(getattr(args, 'phash_threshold', 12), 12),
         gpu=bool(args.gpu),
