@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=65.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai_orchestrator"
+version = "0.1.0"
+description = "AI orchestration layer for managing CLIs, models, and knowledge database"
+authors = [{name = "Your Name"}]
+requires-python = ">=3.10"
+dependencies = [
+    "rich>=13.0.0",
+    "typer>=0.12.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[project.scripts]
+aio = "ai_orchestrator.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ai_orchestrator*"]
