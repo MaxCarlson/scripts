@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import logging
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -14,6 +16,9 @@ from termdash.interactive_list import (
 )
 
 from .report_models import DuplicateGroup, FileStats, load_report_groups
+from cross_platform.system_utils import SystemUtils
+
+LOGGER = logging.getLogger(__name__)
 
 ANSI_RESET = "\033[0m"
 ANSI_KEEP = "\033[92m"   # Bright green
@@ -120,6 +125,52 @@ def _describe_file(stats: FileStats) -> List[str]:
     if stats.overall_bitrate is not None:
         lines.append(f"Overall bitrate : {stats.overall_bitrate:,} bps")
     return lines
+
+
+def _candidate_open_commands(path: Path, sys_utils: SystemUtils) -> List[List[str]]:
+    target = str(path)
+    if sys_utils.is_darwin():
+        return [["open", target], ["xdg-open", target]]
+    if sys_utils.is_termux():
+        return [["termux-open", target], ["xdg-open", target]]
+    if sys_utils.is_wsl2():
+        return [["wslview", target], ["xdg-open", target]]
+    # Linux/BSD fallback
+    return [["xdg-open", target]]
+
+
+def _open_media(path: Path) -> bool:
+    """
+    Launch the given path in the platform's default handler (video player, file explorer).
+    Returns True on success, False if no opener succeeded.
+    """
+    resolved = Path(path).expanduser().resolve()
+    if not resolved.exists():
+        LOGGER.warning("Cannot open %s (file missing)", resolved)
+        return False
+
+    sys_utils = SystemUtils()
+
+    if sys_utils.is_windows():
+        try:
+            os.startfile(str(resolved))  # type: ignore[attr-defined]
+            return True
+        except Exception as exc:  # pragma: no cover - OS specific
+            LOGGER.error("Failed to open %s via ShellExecute: %s", resolved, exc)
+            return False
+
+    for cmd in _candidate_open_commands(resolved, sys_utils):
+        try:
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except FileNotFoundError:
+            continue
+        except Exception as exc:
+            LOGGER.error("Failed to open %s via %s: %s", resolved, cmd[0], exc)
+            return False
+
+    LOGGER.error("No opener available for %s", resolved)
+    return False
 
 
 def _build_detail_view_for_group(group: DuplicateGroup) -> DetailViewData:
@@ -380,7 +431,7 @@ def launch_report_viewer(report_paths: Sequence[Path]) -> None:
         header="Duplicate Groups",
         sort_keys_mapping=SORT_KEYS_MAPPING,
         footer_lines=[
-            "Enter: toggle | i: detail | E: expand all | C: collapse all | f/x: filter/exclude",
+            "Enter: toggle | i: detail | E: expand all | C: collapse all | f/x: filter/exclude | o: open file",
             "Sort: 1=space 2=dups 3=method 4=path 5=size | Ctrl+Q: quit",
         ],
         detail_formatter=detail_formatter,
@@ -416,6 +467,9 @@ def launch_report_viewer(report_paths: Sequence[Path]) -> None:
             if list_view.state.detail_view:
                 list_view._exit_detail_view()
             _refresh_items(list_view, manager, reset_selection=True)
+        elif key in (ord("O"), ord("o")):
+            handled = True
+            _open_media(row.path)
         return handled, handled
 
     list_view.custom_action_handler = handler
