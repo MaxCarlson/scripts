@@ -1,0 +1,83 @@
+LOAD DATABASE
+    -- Source: SQLite database
+    -- Update this path to match your SQLite database location
+    -- FROM sqlite:///home/user/.local/share/knowledge_manager_data/knowledge_manager.db
+    FROM sqlite:///mnt/c/Users/mcarls/.local/share/knowledge_manager_data/knowledge_manager.db
+
+    -- Target: PostgreSQL database (running in Docker)
+    INTO postgresql://km_user:km_secure_pass_change_me@localhost:5432/knowledge_manager
+
+WITH
+    include drop,                -- Drop existing tables before recreating
+    create tables,               -- Create tables from SQLite schema
+    create indexes,              -- Create indexes
+    reset sequences,             -- Reset auto-increment sequences
+    downcase identifiers,        -- Convert to lowercase (PostgreSQL convention)
+    batch rows = 1000,           -- Process in batches of 1000 rows
+    batch concurrency = 4        -- Use 4 concurrent workers
+
+-- Type casting rules
+CAST
+    -- Convert SQLite TEXT UUIDs to PostgreSQL UUID type
+    type text to uuid using uuid-string-to-uuid,
+
+    -- Convert SQLite TEXT timestamps to PostgreSQL TIMESTAMPTZ
+    type text to timestamptz using sqlite-timestamp-to-timestamp,
+
+    -- Convert SQLite INTEGER booleans (0/1) to PostgreSQL BOOLEAN
+    type integer to boolean drop typemod using integer-to-boolean
+        when (= "is_origin" column-name),
+
+    -- Convert SQLite TEXT dates to PostgreSQL DATE
+    type text to date using sqlite-date-to-date
+        when (= "due_date" column-name),
+
+    -- Enum conversions for status fields
+    type text to project_status drop typemod
+        when (and (= "status" column-name) (= "projects" table-name)),
+
+    type text to task_status drop typemod
+        when (and (= "status" column-name) (= "tasks" table-name))
+
+-- Exclude SQLite internal tables
+EXCLUDING TABLE NAMES MATCHING
+    'sqlite_sequence',           -- SQLite auto-increment metadata
+    'sqlite_stat1',              -- SQLite statistics
+    'sqlite_stat2',
+    'sqlite_stat3',
+    'sqlite_stat4'
+
+-- Post-migration actions
+AFTER LOAD DO
+    -- Analyze tables for query optimization
+    $$ ANALYZE; $$,
+
+    -- Verify row counts
+    $$ SELECT 'projects' as table_name, COUNT(*) FROM projects
+       UNION ALL SELECT 'tasks', COUNT(*) FROM tasks
+       UNION ALL SELECT 'task_links', COUNT(*) FROM task_links
+       UNION ALL SELECT 'tags', COUNT(*) FROM tags
+       UNION ALL SELECT 'project_tags', COUNT(*) FROM project_tags
+       UNION ALL SELECT 'task_tags', COUNT(*) FROM task_tags
+       UNION ALL SELECT 'notes', COUNT(*) FROM notes
+       UNION ALL SELECT 'attachments', COUNT(*) FROM attachments;
+    $$;
+
+-- Custom transformation functions (if needed)
+-- BEFORE LOAD DO
+--     $$ CREATE OR REPLACE FUNCTION uuid_string_to_uuid(text) RETURNS uuid AS $
+--        BEGIN RETURN $1::uuid; END;
+--        $ LANGUAGE plpgsql IMMUTABLE;
+--     $$,
+--     $$ CREATE OR REPLACE FUNCTION sqlite_timestamp_to_timestamp(text) RETURNS timestamptz AS $
+--        BEGIN RETURN $1::timestamptz; END;
+--        $ LANGUAGE plpgsql IMMUTABLE;
+--     $$,
+--     $$ CREATE OR REPLACE FUNCTION sqlite_date_to_date(text) RETURNS date AS $
+--        BEGIN RETURN $1::date; END;
+--        $ LANGUAGE plpgsql IMMUTABLE;
+--     $$,
+--     $$ CREATE OR REPLACE FUNCTION integer_to_boolean(integer) RETURNS boolean AS $
+--        BEGIN RETURN $1 = 1; END;
+--        $ LANGUAGE plpgsql IMMUTABLE;
+--     $$;
