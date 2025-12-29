@@ -164,7 +164,30 @@ def collect_exclusions(paths: List[Path]) -> set[Path]:
 # -------------
 # Report writer
 # -------------
-def write_report(path: Path, winners: Dict[str, Tuple[Meta, List[Meta]]]):
+def _meta_from_meta(meta: Meta, *, overlap_hint: Optional[float] = None) -> Dict[str, Any]:
+    data = {"size": getattr(meta, "size", 0)}
+    if isinstance(meta, VideoMeta):
+        if meta.duration is not None:
+            data["duration"] = meta.duration
+        if meta.width is not None:
+            data["width"] = meta.width
+        if meta.height is not None:
+            data["height"] = meta.height
+        if meta.overall_bitrate is not None:
+            data["overall_bitrate"] = meta.overall_bitrate
+        if meta.video_bitrate is not None:
+            data["video_bitrate"] = meta.video_bitrate
+    if overlap_hint is not None:
+        data["overlap_hint"] = overlap_hint
+    return data
+
+
+def write_report(
+    path: Path,
+    winners: Dict[str, Tuple[Meta, List[Meta]]],
+    *,
+    metadata: Optional[Dict[str, Dict[str, Any]]] = None,
+):
     out = {}
     total_size = 0
     losers_total = 0
@@ -173,11 +196,29 @@ def write_report(path: Path, winners: Dict[str, Tuple[Meta, List[Meta]]]):
     for gid, (keep, losers) in winners.items():
         keep_path = str(keep.path)
         loser_paths = [str(m.path) for m in losers]
+        group_meta = (metadata or {}).get(gid, {})
+        hints = group_meta.get("overlap_hints") if isinstance(group_meta, dict) else None
+        hints = hints if isinstance(hints, dict) else {}
+        keep_hint = hints.get(keep_path) if isinstance(hints.get(keep_path), (int, float)) else None
+        loser_meta_payload: Dict[str, Dict[str, Any]] = {}
+        for m in losers:
+            loser_hint_val = hints.get(str(m.path))
+            if not isinstance(loser_hint_val, (int, float)):
+                loser_hint_val = None
+            loser_meta_payload[str(m.path)] = _meta_from_meta(m, overlap_hint=loser_hint_val)
+        evidence_payload: Dict[str, Any] = {}
+        if isinstance(group_meta, dict):
+            evidence_payload = dict(group_meta)
+        fallback_evidence = getattr(keep, "evidence", {})
+        if not evidence_payload and isinstance(fallback_evidence, dict):
+            evidence_payload = fallback_evidence
         out[gid] = {
             "keep": keep_path,
             "losers": loser_paths,
             "method": getattr(keep, "method", "unknown"),
-            "evidence": getattr(keep, "evidence", {}),
+            "evidence": evidence_payload,
+            "keep_meta": _meta_from_meta(keep, overlap_hint=keep_hint if isinstance(keep_hint, (int, float)) else None),
+            "loser_meta": loser_meta_payload,
         }
         losers_total += len(losers)
         for m in losers:

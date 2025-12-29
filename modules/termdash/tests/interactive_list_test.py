@@ -178,3 +178,44 @@ def test_invoke_handler_supports_two_or_three_args():
     assert handled3 is True and refresh3 is True
     assert calls[0] == ("two", 1, "a")
     assert calls[1][0:3] == ("three", 2, "b")
+
+
+def test_multiselect_enforces_limit():
+    captured = []
+
+    def on_selection_change(items):
+        captured.append([*items])
+
+    list_view = InteractiveList(
+        items=["a", "b", "c"],
+        sorters={"name": lambda x: x},
+        formatter=lambda item, field, width, date, time, scroll: str(item),
+        filter_func=lambda item, pattern: True,
+        multi_select=True,
+        multi_select_limit=2,
+        item_key_func=lambda item: item,
+        selection_change_handler=on_selection_change,
+    )
+    list_view._update_visible_items(reset_selection=True)
+    list_view._toggle_selection("a")
+    list_view._toggle_selection("b")
+    list_view._toggle_selection("c")  # should drop "a"
+    selected = list_view.get_selected_items()
+    assert selected == ["b", "c"]
+    assert captured[-1] == ["b", "c"]
+
+
+def test_apply_selection_replaces_choices():
+    list_view = InteractiveList(
+        items=["x", "y"],
+        sorters={"name": lambda x: x},
+        formatter=lambda item, field, width, date, time, scroll: str(item),
+        filter_func=lambda item, pattern: True,
+        multi_select=True,
+        item_key_func=lambda item: item,
+    )
+    list_view._update_visible_items(reset_selection=True)
+    list_view.apply_selection(["x"], notify=False)
+    assert list_view.get_selected_items() == ["x"]
+    list_view.apply_selection(["y"], notify=False)
+    assert list_view.get_selected_items() == ["y"]

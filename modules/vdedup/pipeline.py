@@ -32,7 +32,7 @@ import threading
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple, Union, Set
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple, Union, Set
 
 # Optional dependency (fast partial hashing)
 try:
@@ -173,29 +173,25 @@ def _looks_like_artifact(path: Path) -> bool:
     return False
 
 
-def _iter_files(root: Path, patterns: Optional[Sequence[str]], max_depth: Optional[int]) -> Iterator[Path]:
-    """Yield files under root matching any of the provided glob patterns. Case-insensitive on Windows."""
+def _iter_files(
+    root: Path,
+    patterns: Optional[Sequence[str]],
+    max_depth: Optional[int],
+    exclude_patterns: Optional[Sequence[str]] = None,
+) -> Iterator[Path]:
+    """Yield files under root matching include globs while honoring optional exclusions."""
     import logging
     logger = logging.getLogger(__name__)
 
     root = Path(root).resolve()
     logger.info(f"_iter_files: Starting enumeration of {root}")
-    logger.info(f"_iter_files: patterns={patterns}, max_depth={max_depth}")
+    logger.info(f"_iter_files: patterns={patterns}, excludes={exclude_patterns}, max_depth={max_depth}")
 
     patterns = list(patterns or [])
+    excludes = list(exclude_patterns or [])
     if not patterns:
-        logger.info("_iter_files: No patterns specified, yielding all files")
-        # all files
-        for dp, dn, fn in os.walk(root):
-            if max_depth is not None:
-                rel = Path(dp).resolve().relative_to(root)
-                depth = 0 if str(rel) == "." else len(rel.parts)
-                if depth > max_depth:
-                    dn[:] = []
-                    continue
-            for name in fn:
-                yield Path(dp) / name
-        return
+        logger.info("_iter_files: No patterns specified, defaulting to wildcard")
+        patterns = ["*"]
 
     # Patterns are normalized by CLI; still accept "mp4" or ".mp4" or "*.mp4"
     norm: List[str] = []
@@ -208,6 +204,17 @@ def _iter_files(root: Path, patterns: Optional[Sequence[str]], max_depth: Option
         norm.append(s)
 
     logger.info(f"_iter_files: Normalized patterns: {norm}")
+
+    exclude_norm: List[str] = []
+    for pat in excludes:
+        s = (pat or "").strip()
+        if not s:
+            continue
+        if not any(ch in s for ch in "*?["):
+            s = f"*.{s.lstrip('.')}"
+        exclude_norm.append(s)
+    if exclude_norm:
+        logger.info(f"_iter_files: Normalized excludes: {exclude_norm}")
 
     # On Windows, match case-insensitively by lowering names
     ci = sys.platform.startswith("win")
@@ -232,6 +239,8 @@ def _iter_files(root: Path, patterns: Optional[Sequence[str]], max_depth: Option
 
             for name in fn:
                 to_match = name.lower() if ci else name
+                if exclude_norm and any(Path(to_match).match(p.lower() if ci else p) for p in exclude_norm):
+                    continue
                 if any(Path(to_match).match(p.lower() if ci else p) for p in norm):
                     file_count += 1
                     if file_count <= 10:  # Log first 10 matches
@@ -297,7 +306,55 @@ def _blake3_partial_hex(path: Path, head: int = 1 << 20, tail: int = 1 << 20, mi
     return h.hexdigest()
 
 
-def _alignable_distance(a_sig, b_sig, per_frame_thresh: int) -> Optional[float]:
+@dataclass
+class AlignmentResult:
+    distance: float
+    base_offset: int
+    start_offset: int
+    step: int
+    shorter_len: int
+    longer_len: int
+
+
+def _alignment_start_seconds(match: AlignmentResult, duration: Optional[float]) -> Optional[float]:
+    if duration is None or duration <= 0:
+        return None
+    denom = max(match.longer_len - 1, 1)
+    start_index = match.start_offset + match.base_offset
+    ratio = min(1.0, max(0.0, start_index / denom))
+    return ratio * duration
+
+
+def _record_subset_metadata(
+    groups: GroupResults,
+    group_id: str,
+    detector: str,
+    short_vm: VideoMeta,
+    long_vm: VideoMeta,
+    match: AlignmentResult,
+) -> None:
+    overlap_seconds = _alignment_start_seconds(match, long_vm.duration)
+    overlap_ratio = 0.0
+    if short_vm.duration and long_vm.duration:
+        overlap_ratio = max(0.0, min(1.0, (short_vm.duration or 0.0) / float(long_vm.duration)))
+    hints: Dict[str, Optional[float]] = {
+        str(long_vm.path): overlap_seconds,
+        str(short_vm.path): 0.0,
+    }
+    groups.metadata[group_id] = {
+        "detector": detector,
+        "shorter": str(short_vm.path),
+        "longer": str(long_vm.path),
+        "overlap_seconds": overlap_seconds,
+        "overlap_ratio": overlap_ratio,
+        "phash_distance": match.distance,
+        "phash_offset_frames": match.start_offset + match.base_offset,
+        "phash_step": match.step,
+        "overlap_hints": hints,
+    }
+
+
+def _alignable_distance(a_sig, b_sig, per_frame_thresh: int) -> Optional[AlignmentResult]:
     """
     Enhanced sliding alignment (subset) average Hamming distance with adaptive thresholds.
     Supports cross-resolution matching by normalizing threshold based on content complexity.
@@ -311,8 +368,10 @@ def _alignable_distance(a_sig, b_sig, per_frame_thresh: int) -> Optional[float]:
     if len(A) < 2:  # Need at least 2 frames for meaningful comparison
         return None
 
-    best_distance = None
+    best_distance: Optional[float] = None
     best_offset = -1
+    best_step = 1
+    best_start_offset = 0
 
     # Calculate content complexity for adaptive thresholding
     def _estimate_complexity(sig):
@@ -359,8 +418,19 @@ def _alignable_distance(a_sig, b_sig, per_frame_thresh: int) -> Optional[float]:
                 if best_distance is None or avg_distance < best_distance:
                     best_distance = avg_distance
                     best_offset = base_offset
+                    best_step = step
+                    best_start_offset = start_offset
 
-    return best_distance if (best_distance is not None and best_distance <= adaptive_threshold) else None
+    if best_distance is None or best_distance > adaptive_threshold:
+        return None
+    return AlignmentResult(
+        distance=best_distance,
+        base_offset=best_offset,
+        start_offset=best_start_offset,
+        step=best_step,
+        shorter_len=len(A),
+        longer_len=len(B),
+    )
 
 
 def _normalized_path(path: Path) -> Path:
@@ -416,18 +486,29 @@ Meta = Union[FileMeta, VideoMeta]
 GroupMap = Dict[str, List[Meta]]
 
 
+class GroupResults(dict):
+    """
+    Dict-like container for pipeline groups that carries detector metadata for each entry.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.metadata: Dict[str, Dict[str, Any]] = {}
+
+
 def run_pipeline(
     root: Optional[Path] = None,
     *,
     roots: Optional[Sequence[Path]] = None,
     patterns: Optional[Sequence[str]],
+    exclude_patterns: Optional[Sequence[str]] = None,
     max_depth: Optional[int],
     selected_stages: Sequence[int],
     cfg: PipelineConfig,
     cache: Optional[HashCache] = None,
     reporter: Optional[ProgressReporter] = None,
     skip_paths: Optional[Set[Path]] = None,
-) -> GroupMap:
+) -> GroupResults:
     """
     Execute the selected stages and return a mapping of {group_id: [members]}.
     Progressive exclusion is applied:
@@ -503,7 +584,7 @@ def run_pipeline(
         logger.info(f"Starting _iter_files() generator for: {scan_root}")
 
         try:
-            for file_idx, path in enumerate(_iter_files(scan_root, patterns, max_depth)):
+            for file_idx, path in enumerate(_iter_files(scan_root, patterns, max_depth, exclude_patterns)):
                 resolved = path.expanduser().resolve()
                 if skip_norm and resolved in skip_norm:
                     skipped_during_enum += 1
@@ -673,7 +754,7 @@ def run_pipeline(
     # ALL files continue to Q2 (nothing eliminated based on size alone!)
     all_candidates = metas
 
-    groups: GroupMap = {}
+    groups: GroupResults = GroupResults()
     excluded_after_q2: Set[Path] = set()
     excluded_after_q3: Set[Path] = set()
     excluded_after_q4: Set[Path] = set()
@@ -1167,10 +1248,12 @@ def run_pipeline(
                         continue
 
                     # Use enhanced alignable distance with resolution awareness
-                    best = _alignable_distance(short.phash_signature, long.phash_signature, cfg.subset_frame_threshold)
-                    if best is not None:
+                    match = _alignable_distance(short.phash_signature, long.phash_signature, cfg.subset_frame_threshold)
+                    if match is not None:
                         master, loser = _subset_master_loser(short, long)
-                        groups[f"subset:{gid}"] = [master, loser]
+                        group_id = f"subset:{gid}"
+                        groups[group_id] = [master, loser]
+                        _record_subset_metadata(groups, group_id, "subset-phash", short, long, match)
                         subset_consumed.add(short_norm)
                         excluded_after_q4.add(_normalized_path(short.path))
                         gid += 1
@@ -1282,10 +1365,12 @@ def run_pipeline(
                             continue
                         short_sig = sig_a if short_vm is vm_a else sig_b
                         long_sig = sig_b if short_vm is vm_a else sig_a
-                        best = _alignable_distance(short_sig, long_sig, per_scene_thresh)
-                        if best is not None:
+                        match = _alignable_distance(short_sig, long_sig, per_scene_thresh)
+                        if match is not None:
                             master, loser = _subset_master_loser(short_vm, long_vm)
-                            groups[f"scene-sub:{gid}"] = [master, loser]
+                            group_id = f"scene-sub:{gid}"
+                            groups[group_id] = [master, loser]
+                            _record_subset_metadata(groups, group_id, "subset-scene", short_vm, long_vm, match)
                             consumed.add(short_norm)
                             subset_consumed.add(short_norm)
                             excluded_after_q5.add(short_norm)
@@ -1408,10 +1493,12 @@ def run_pipeline(
                             continue
                         short_sig = sig_a if short_vm is vm_a else sig_b
                         long_sig = sig_b if short_vm is vm_a else sig_a
-                        best = _alignable_distance(short_sig, long_sig, audio_subset_thresh)
-                        if best is not None:
+                        match = _alignable_distance(short_sig, long_sig, audio_subset_thresh)
+                        if match is not None:
                             master, loser = _subset_master_loser(short_vm, long_vm)
-                            groups[f"audio-sub:{gid}"] = [master, loser]
+                            group_id = f"audio-sub:{gid}"
+                            groups[group_id] = [master, loser]
+                            _record_subset_metadata(groups, group_id, "subset-audio", short_vm, long_vm, match)
                             processed_audio.add(short_norm)
                             subset_audio_consumed.add(short_norm)
                             excluded_after_q6.add(short_norm)
@@ -1533,10 +1620,12 @@ def run_pipeline(
                             continue
                         short_sig = sig_a if short_vm is vm_a else sig_b
                         long_sig = sig_b if short_vm is vm_a else sig_a
-                        best = _alignable_distance(short_sig, long_sig, timeline_subset_thresh)
-                        if best is not None:
+                        match = _alignable_distance(short_sig, long_sig, timeline_subset_thresh)
+                        if match is not None:
                             master, loser = _subset_master_loser(short_vm, long_vm)
-                            groups[f"timeline-sub:{gid}"] = [master, loser]
+                            group_id = f"timeline-sub:{gid}"
+                            groups[group_id] = [master, loser]
+                            _record_subset_metadata(groups, group_id, "subset-timeline", short_vm, long_vm, match)
                             processed_timeline.add(short_norm)
                             timeline_subset_consumed.add(short_norm)
                             excluded_after_q7.add(short_norm)

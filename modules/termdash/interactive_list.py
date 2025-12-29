@@ -4,6 +4,7 @@ import curses
 import os
 import shutil
 import sys
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from typing import Any, Callable, Dict, List, Sequence, Optional, Tuple
@@ -88,6 +89,9 @@ class ListState:
     calc_cancel: bool = False
     # Quit confirmation state
     confirm_quit: bool = False
+    # Multi-select
+    multi_select_enabled: bool = False
+    multi_selected_keys: "OrderedDict[str, None]" = field(default_factory=OrderedDict)
 
 def calculate_size_color(size: int, min_size: int, max_size: int) -> int:
     """
@@ -144,6 +148,10 @@ class InteractiveList:
         name_color_getter: Optional[Callable[[Any], int]] = None,
         columns_line: Optional[str] = None,
         sort_change_handler: Optional[Callable[[str, bool], None]] = None,
+        multi_select: bool = False,
+        multi_select_limit: Optional[int] = None,
+        item_key_func: Optional[Callable[[Any], str]] = None,
+        selection_change_handler: Optional[Callable[[List[Any]], None]] = None,
     ):
         # Keep the import-availability check here so construction fails fast on
         # platforms that truly lack curses. More detailed terminal checks are
@@ -162,6 +170,9 @@ class InteractiveList:
         self.custom_action_handler = custom_action_handler
         self.key_handler = key_handler
         self.name_color_getter = name_color_getter
+        self._multi_select_limit = multi_select_limit
+        self._item_key_func = item_key_func
+        self.selection_change_handler = selection_change_handler
 
         if not sorters:
             raise ValueError("At least one sorter must be provided.")
@@ -176,6 +187,7 @@ class InteractiveList:
             sort_field=default_sort_field,
             descending=initial_order == "desc",
             dirs_first=dirs_first,
+            multi_select_enabled=multi_select,
         )
         self.state.columns_line = columns_line
         self._detail_lines: List[str] = []
@@ -185,6 +197,7 @@ class InteractiveList:
         self._detail_lines: List[str] = []
         self._detail_meta: List[Tuple[int, bool]] = []
         self._detail_content_height: int = 0
+        self._key_to_item: Dict[str, Any] = {}
 
     def _invoke_handler(self, handler: Callable, key: int, current_item: Any) -> Tuple[bool, bool]:
         """
@@ -306,6 +319,61 @@ class InteractiveList:
                     )
                     raise SystemExit(2)
 
+    def _item_key(self, item: Any) -> str:
+        if self._item_key_func:
+            try:
+                return str(self._item_key_func(item))
+            except Exception:
+                pass
+        if hasattr(item, "row_id"):
+            return str(getattr(item, "row_id"))
+        return str(id(item))
+
+    def _is_selected(self, item: Any) -> bool:
+        if not self.state.multi_select_enabled:
+            return False
+        key = self._item_key(item)
+        return key in self.state.multi_selected_keys
+
+    def _refresh_selection_mapping(self) -> None:
+        self._key_to_item = {}
+        for item in self.state.items:
+            self._key_to_item[self._item_key(item)] = item
+
+    def get_selected_items(self) -> List[Any]:
+        return [self._key_to_item[key] for key in self.state.multi_selected_keys if key in self._key_to_item]
+
+    def clear_selected_items(self) -> None:
+        if not self.state.multi_selected_keys:
+            return
+        self.state.multi_selected_keys.clear()
+        if self.selection_change_handler:
+            self.selection_change_handler([])
+
+    def apply_selection(self, items: Sequence[Any], notify: bool = True) -> None:
+        if not self.state.multi_select_enabled:
+            return
+        self.state.multi_selected_keys.clear()
+        for item in items:
+            self.state.multi_selected_keys[self._item_key(item)] = None
+        if notify and self.selection_change_handler:
+            self.selection_change_handler(self.get_selected_items())
+
+    def _toggle_selection(self, item: Any) -> None:
+        if not self.state.multi_select_enabled:
+            return
+        key = self._item_key(item)
+        if key in self.state.multi_selected_keys:
+            self.state.multi_selected_keys.pop(key, None)
+        else:
+            if self._multi_select_limit is not None and len(self.state.multi_selected_keys) >= self._multi_select_limit:
+                # drop the oldest selection
+                oldest_key = next(iter(self.state.multi_selected_keys))
+                self.state.multi_selected_keys.pop(oldest_key, None)
+            self.state.multi_selected_keys[key] = None
+        if self.selection_change_handler:
+            self.selection_change_handler(self.get_selected_items())
+
     def _tui_main(self, stdscr) -> None:
         try:
             curses.curs_set(0)
@@ -414,6 +482,10 @@ class InteractiveList:
                 if self.state.visible and self.state.selected_index < len(self.state.visible):
                     self._prepare_detail_view(self.state.visible[self.state.selected_index])
                     self.state.scroll_offset = 0
+            elif key == ord(" "):
+                if self.state.multi_select_enabled and self.state.visible and self.state.selected_index < len(self.state.visible):
+                    current_item = self.state.visible[self.state.selected_index]
+                    self._toggle_selection(current_item)
             elif key in (curses.KEY_ENTER, 10, 13):
                 # Check if custom handlers want to handle this key
                 handled = False
@@ -556,20 +628,13 @@ class InteractiveList:
                 item for item in self.state.visible if not self._matches_pattern(item, self.state.exclusion_pattern)
             ]
 
-        # Check if items have hierarchical structure (parent_path attribute)
-        # If so, preserve order (items are pre-sorted hierarchically)
         has_hierarchy = bool(self.state.visible and hasattr(self.state.visible[0], 'parent_path'))
-
-        if not has_hierarchy:
-            # Sort (only for flat lists)
+        if not has_hierarchy and self.state.visible:
             sort_func = self.state.sorters[self.state.sort_field]
-            if self.state.dirs_first and hasattr(self.state.visible[0] if self.state.visible else None, 'is_dir'):
-                # Directories first, then by sort field
-                # Primary sort: is_dir (True before False = not is_dir False before True)
-                # Secondary sort: the chosen sort field
+            if self.state.dirs_first and hasattr(self.state.visible[0], 'is_dir'):
                 self.state.visible.sort(
                     key=lambda x: (not x.is_dir, sort_func(x)),
-                    reverse=self.state.descending
+                    reverse=self.state.descending,
                 )
             else:
                 self.state.visible.sort(key=sort_func, reverse=self.state.descending)
@@ -577,11 +642,23 @@ class InteractiveList:
         if not self.state.visible:
             self.state.selected_index = 0
             self.state.top_index = 0
+            self._refresh_selection_mapping()
+            if self.state.multi_select_enabled and self.state.multi_selected_keys and self.selection_change_handler:
+                self.state.multi_selected_keys.clear()
+                self.selection_change_handler([])
             return
 
         if reset_selection or self.state.selected_index >= len(self.state.visible):
             self.state.selected_index = 0
             self.state.top_index = 0
+
+        self._refresh_selection_mapping()
+        if self.state.multi_select_enabled:
+            stale = [key for key in self.state.multi_selected_keys if key not in self._key_to_item]
+            for key in stale:
+                self.state.multi_selected_keys.pop(key, None)
+            if stale and self.selection_change_handler:
+                self.selection_change_handler(self.get_selected_items())
 
     def _get_size_color_pair(self, item: Any, min_size: int, max_size: int) -> int:
         """Get the appropriate color pair for an item based on its size."""
@@ -709,6 +786,11 @@ class InteractiveList:
                     break
 
                 item = self.state.visible[entry_idx]
+                selected_flag = self._is_selected(item)
+                try:
+                    setattr(item, "selected", selected_flag)
+                except Exception:
+                    pass
 
                 # Pass scroll_offset for all rows to support horizontal panning
                 # Use max_x - 1 to ensure line doesn't exceed terminal width

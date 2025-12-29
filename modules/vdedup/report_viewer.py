@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import os
 import logging
+import shutil
 import subprocess
+import shlex
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -15,7 +18,12 @@ from termdash.interactive_list import (
     render_items_to_text,
 )
 
-from .report_models import DuplicateGroup, FileStats, load_report_groups
+from .report_models import (
+    DuplicateGroup,
+    FileStats,
+    load_report_documents,
+    load_report_groups,
+)
 from cross_platform.system_utils import SystemUtils
 
 LOGGER = logging.getLogger(__name__)
@@ -124,6 +132,8 @@ def _describe_file(stats: FileStats) -> List[str]:
         lines.append(f"Video bitrate : {stats.video_bitrate:,} bps")
     if stats.overall_bitrate is not None:
         lines.append(f"Overall bitrate : {stats.overall_bitrate:,} bps")
+    if stats.overlap_hint is not None:
+        lines.append(f"Overlap hint : {stats.overlap_hint:.2f}s")
     return lines
 
 
@@ -139,7 +149,15 @@ def _candidate_open_commands(path: Path, sys_utils: SystemUtils) -> List[List[st
     return [["xdg-open", target]]
 
 
-def _open_media(path: Path) -> bool:
+MPV_GEOMETRIES = {
+    0: "50%x50%+0+0",
+    1: "50%x50%+50%+0",
+    2: "50%x50%+0+50%",
+    3: "50%x50%+50%+50%",
+}
+
+
+def _open_media(path: Path, *, start: Optional[float] = None, slot: Optional[int] = None, label: Optional[str] = None) -> bool:
     """
     Launch the given path in the platform's default handler (video player, file explorer).
     Returns True on success, False if no opener succeeded.
@@ -150,6 +168,38 @@ def _open_media(path: Path) -> bool:
         return False
 
     sys_utils = SystemUtils()
+
+    viewer_template = os.environ.get("VDEDUP_VIEWER_CMD")
+    if viewer_template:
+        mapping = {
+            "path": str(resolved),
+            "start": f"{max(start or 0.0, 0.0):.2f}",
+            "slot": str(slot or 0),
+            "label": label or resolved.name,
+        }
+        try:
+            cmd = shlex.split(viewer_template.format(**mapping))
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception as exc:
+            LOGGER.error("Custom viewer command failed (%s): %s", viewer_template, exc)
+
+    if shutil.which("mpv"):
+        args = ["mpv", "--keep-open=yes"]
+        if slot is not None:
+            geometry = MPV_GEOMETRIES.get(slot, MPV_GEOMETRIES[slot % 4])
+            args.append(f"--geometry={geometry}")
+            args.append("--autofit=50%x50%")
+        if start is not None and start > 0:
+            args.append(f"--start={max(start, 0.0):.2f}")
+        if label:
+            args.append(f"--title={label}")
+        args.append(str(resolved))
+        try:
+            subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception as exc:
+            LOGGER.error("mpv launch failed for %s: %s", resolved, exc)
 
     if sys_utils.is_windows():
         try:
@@ -226,6 +276,8 @@ class DuplicateListRow:
     keep_size: int
     expanded: bool = False
     display_name: str = ""
+    row_id: str = ""
+    selected: bool = False
 
     def is_loser(self) -> bool:
         return not self.is_keep
@@ -235,6 +287,7 @@ class DuplicateListManager:
     def __init__(self, groups: Iterable[DuplicateGroup]):
         self._groups = list(groups)
         self._expanded: set[str] = set()
+        self._group_map: Dict[str, DuplicateGroup] = {g.group_id: g for g in self._groups}
 
     @staticmethod
     def _display_name_for(path: Path, suffix: str) -> str:
@@ -285,6 +338,7 @@ class DuplicateListManager:
                 keep_size=keep.size,
                 expanded=self.is_expanded(group.group_id),
                 display_name=self._display_name_for(keep.path, suffix_map.get(keep.path, "")),
+                row_id=f"{group.group_id}|{keep.path}",
             )
             rows.append(keep_row)
 
@@ -304,6 +358,7 @@ class DuplicateListManager:
                             parent_path=group.group_id,
                             keep_size=keep.size,
                             display_name=self._display_name_for(loser.path, suffix_map.get(loser.path, "")),
+                            row_id=f"{group.group_id}|{loser.path}",
                         )
                     )
         return rows
@@ -314,6 +369,7 @@ class DuplicateListManager:
 
     def reorder(self, key_func: Callable[[DuplicateGroup], object], descending: bool) -> None:
         self._groups.sort(key=key_func, reverse=descending)
+        self._group_map = {g.group_id: g for g in self._groups}
 
     def get_group(self, group_id: str) -> Optional[DuplicateGroup]:
         for group in self._groups:
@@ -321,13 +377,50 @@ class DuplicateListManager:
                 return group
         return None
 
+    def promote_to_master(self, group_id: str, new_master_path: Path) -> bool:
+        group = self._group_map.get(group_id)
+        if not group:
+            return False
+        target = None
+        target_index = -1
+        for idx, loser in enumerate(group.losers):
+            if loser.path == new_master_path:
+                target = loser
+                target_index = idx
+                break
+        if target is None:
+            return False
+        # swap
+        old_master = group.keep
+        group.keep = target
+        group.losers[target_index] = old_master
+        payload = group.raw_payload or {}
+        payload["keep"] = str(group.keep.path)
+        payload["losers"] = [str(fs.path) for fs in group.losers]
+        keep_meta = payload.get("keep_meta") or payload.get("keep_stats")
+        if isinstance(keep_meta, dict):
+            keep_meta.update(group.keep.to_meta())
+        loser_meta = {}
+        for fs in group.losers:
+            loser_meta[str(fs.path)] = fs.to_meta()
+        payload["loser_meta"] = loser_meta
+        if group.source_report:
+            # ensure JSON data stays updated
+            doc = group.source_report
+            doc_data_groups = doc.data.setdefault("groups", {})
+            doc_data_groups[group_id] = payload
+            doc.save()
+        return True
+
 
 def _formatter(row: DuplicateListRow, sort_field: str, width: int, *_args) -> str:
     name_width, dup_w, reclaim_w, size_w, delta_w = _compute_layout(width)
     indent = "  " * row.depth
     role = "K" if row.is_keep else "L"
     display = row.display_name or row.path.name
-    name_cell = f"{indent}{role} {display}".rstrip()
+    base_name = f"{indent}{role} {display}".rstrip()
+    prefix = "[×]" if getattr(row, "selected", False) else "[ ]"
+    name_cell = f"{prefix} {base_name}".rstrip()
     if len(name_cell) > name_width:
         if name_width > 3:
             name_cell = name_cell[: name_width - 3] + "..."
@@ -402,9 +495,10 @@ def _refresh_items(list_view: InteractiveList, manager: DuplicateListManager, re
 
 
 def launch_report_viewer(report_paths: Sequence[Path]) -> None:
+    documents = load_report_documents([Path(p) for p in report_paths])
     groups: List[DuplicateGroup] = []
-    for rp in report_paths:
-        groups.extend(load_report_groups(rp))
+    for doc in documents:
+        groups.extend(doc.groups)
     manager = DuplicateListManager(groups)
     if manager.groups:
         manager.reorder(GROUP_SORTERS["space"], True)
@@ -431,14 +525,17 @@ def launch_report_viewer(report_paths: Sequence[Path]) -> None:
         header="Duplicate Groups",
         sort_keys_mapping=SORT_KEYS_MAPPING,
         footer_lines=[
-            "Enter: toggle | i: detail | E: expand all | C: collapse all | f/x: filter/exclude | o: open file",
-            "Sort: 1=space 2=dups 3=method 4=path 5=size | Ctrl+Q: quit",
+            "Enter: toggle | space: select (multi) | i: detail | o: open | O: preview selected | M: promote keep",
+            "E/C: expand/collapse all | f/x: filter/exclude | Sort: 1=space 2=dups 3=method 4=path 5=size | Ctrl+Q: quit",
         ],
         detail_formatter=detail_formatter,
         size_extractor=_size_extractor,
         name_color_getter=_name_color,
         dirs_first=False,
         columns_line=header_line,
+        multi_select=True,
+        multi_select_limit=4,
+        item_key_func=lambda row: row.row_id or f"{row.group_id}|{row.path}",
     )
 
     def handler(key: int, row: DuplicateListRow) -> Tuple[bool, bool]:
@@ -467,9 +564,26 @@ def launch_report_viewer(report_paths: Sequence[Path]) -> None:
             if list_view.state.detail_view:
                 list_view._exit_detail_view()
             _refresh_items(list_view, manager, reset_selection=True)
-        elif key in (ord("O"), ord("o")):
+        elif key == ord("o"):
             handled = True
-            _open_media(row.path)
+            label = "[MASTER]" if row.is_keep else "[LOSER]"
+            _open_media(row.path, label=label)
+        elif key == ord("O"):
+            handled = True
+            selected_rows = list_view.get_selected_items()
+            if not selected_rows:
+                selected_rows = [row]
+            _launch_multi_preview(selected_rows, manager)
+        elif key == ord("M"):
+            handled = True
+            if row.is_keep:
+                LOGGER.info("Already the master copy: %s", row.path)
+            else:
+                if manager.promote_to_master(row.group_id, row.path):
+                    list_view.clear_selected_items()
+                    _refresh_items(list_view, manager, reset_selection=False)
+                else:
+                    LOGGER.error("Failed to promote %s to master", row.path)
         return handled, handled
 
     list_view.custom_action_handler = handler
@@ -560,3 +674,81 @@ def load_groups_from_reports(paths: Sequence[Path]) -> List[DuplicateGroup]:
     for rp in paths:
         groups.extend(load_report_groups(Path(rp)))
     return groups
+def _probe_duration(path: Path) -> Optional[float]:
+    try:
+        cmd = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            return float(result.stdout.strip())
+    except Exception:
+        pass
+    return None
+def _launch_multi_preview(rows: List[DuplicateListRow], manager: DuplicateListManager) -> None:
+    if not rows:
+        return
+    if len(rows) > 4:
+        LOGGER.warning("Multi-preview limited to four videos; showing the first four selections.")
+    primary_group = rows[0].group_id
+    if any(row.group_id != primary_group for row in rows):
+        LOGGER.warning("Multi-preview limited to a single group; showing %s", primary_group)
+    same_group = [row for row in rows if row.group_id == primary_group]
+    group = manager.get_group(primary_group)
+    if not group:
+        return
+    keep_row = next((row for row in same_group if row.is_keep), None)
+    if not keep_row:
+        keep_row = DuplicateListRow(
+            group_id=group.group_id,
+            method=group.method,
+            path=group.keep.path,
+            depth=0,
+            is_keep=True,
+            size=group.keep.size,
+            size_delta=0,
+            duplicate_count=group.duplicate_count,
+            reclaimable_bytes=group.reclaimable_bytes,
+            parent_path=None,
+            keep_size=group.keep.size,
+            display_name=manager._display_name_for(group.keep.path, ""),
+            row_id=f"{group.group_id}|{group.keep.path}",
+        )
+    stats_map: Dict[Path, FileStats] = {group.keep.path: group.keep}
+    for loser in group.losers:
+        stats_map[loser.path] = loser
+    unique_rows: "OrderedDict[Path, DuplicateListRow]" = OrderedDict()
+    unique_rows[keep_row.path] = keep_row
+    for row in same_group:
+        unique_rows.setdefault(row.path, row)
+    ordered_rows = list(unique_rows.values())[:4]
+    durations: Dict[Path, Optional[float]] = {}
+    for row in ordered_rows:
+        stats = stats_map.get(row.path)
+        if stats and stats.duration is not None:
+            durations[row.path] = stats.duration
+        else:
+            durations[row.path] = _probe_duration(row.path)
+    target_durations = [d for d in durations.values() if d]
+    target = min(target_durations) if target_durations else None
+    for slot, row in enumerate(ordered_rows):
+        stats = stats_map.get(row.path)
+        start_hint = stats.overlap_hint if stats else None
+        start: Optional[float] = start_hint if isinstance(start_hint, (int, float)) else None
+        if start is None:
+            duration = durations.get(row.path)
+            if duration is None:
+                duration = target
+            if duration and target:
+                start = max(0.0, (duration - target) / 2)
+            else:
+                start = 0.0
+        label = f"{'[MASTER]' if row.is_keep else '[LOSER]'} {row.path.name}"
+        _open_media(row.path, start=start, slot=slot, label=label)
