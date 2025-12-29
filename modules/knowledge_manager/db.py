@@ -28,9 +28,26 @@ def use_postgresql() -> bool:
 def _get_placeholder() -> str:
     """
     Get the appropriate parameter placeholder for the current database.
-    Returns '?' for SQLite, '%s' for PostgreSQL.
+    Returns '%s' for both SQLite and PostgreSQL (now PostgreSQL-only).
     """
-    return "%s" if use_postgresql() else "?"
+    return "%s"
+
+
+def _to_uuid(value) -> uuid.UUID:
+    """Convert database value to UUID (handles both str and UUID types)"""
+    return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+
+
+def _to_datetime(value) -> datetime:
+    """Convert database value to datetime (handles both str and datetime types)"""
+    return datetime.fromisoformat(value) if isinstance(value, str) else value
+
+
+def _to_date(value) -> Optional[date]:
+    """Convert database value to date (handles both str and date types)"""
+    if value is None:
+        return None
+    return date.fromisoformat(value) if isinstance(value, str) else value
 
 
 def get_db_connection(db_path: Optional[Path] = None) -> Union[sqlite3.Connection, 'psycopg2.extensions.connection']:
@@ -318,7 +335,7 @@ def add_project(conn: sqlite3.Connection, project: Project) -> Project:
     project.modified_at = datetime.now(timezone.utc)
     sql = """
     INSERT INTO projects (id, name, status, created_at, modified_at, description_md_path)
-    VALUES (?, ?, ?, ?, ?, ?)
+    VALUES (%s, %s, %s, %s, %s, %s)
     """
     cursor = conn.cursor()
     try:
@@ -333,27 +350,27 @@ def add_project(conn: sqlite3.Connection, project: Project) -> Project:
     return project
 
 def get_project_by_id(conn: sqlite3.Connection, project_id: uuid.UUID) -> Optional[Project]:
-    sql = "SELECT id, name, status, created_at, modified_at, description_md_path FROM projects WHERE id = ?"
+    sql = "SELECT id, name, status, created_at, modified_at, description_md_path FROM projects WHERE id = %s"
     cursor = conn.cursor()
     cursor.execute(sql, (str(project_id),))
     row = cursor.fetchone()
     if row:
         return Project(
-            id=uuid.UUID(row[0]), name=row[1], status=ProjectStatus(row[2]),
-            created_at=datetime.fromisoformat(row[3]), modified_at=datetime.fromisoformat(row[4]),
+            id=_to_uuid(row[0]), name=row[1], status=ProjectStatus(row[2]),
+            created_at=_to_datetime(row[3]), modified_at=_to_datetime(row[4]),
             description_md_path=Path(row[5]) if row[5] else None
         )
     return None
 
 def get_project_by_name(conn: sqlite3.Connection, name: str) -> Optional[Project]:
-    sql = "SELECT id, name, status, created_at, modified_at, description_md_path FROM projects WHERE name = ?"
+    sql = "SELECT id, name, status, created_at, modified_at, description_md_path FROM projects WHERE name = %s"
     cursor = conn.cursor()
     cursor.execute(sql, (name,))
     row = cursor.fetchone()
     if row:
         return Project(
-            id=uuid.UUID(row[0]), name=row[1], status=ProjectStatus(row[2]),
-            created_at=datetime.fromisoformat(row[3]), modified_at=datetime.fromisoformat(row[4]),
+            id=_to_uuid(row[0]), name=row[1], status=ProjectStatus(row[2]),
+            created_at=_to_datetime(row[3]), modified_at=_to_datetime(row[4]),
             description_md_path=Path(row[5]) if row[5] else None
         )
     return None
@@ -384,8 +401,8 @@ def list_projects(conn: Union[sqlite3.Connection, 'psycopg2.extensions.connectio
 def update_project(conn: sqlite3.Connection, project: Project) -> Optional[Project]:
     project.modified_at = datetime.now(timezone.utc)
     sql = """
-    UPDATE projects SET name = ?, status = ?, modified_at = ?, description_md_path = ?
-    WHERE id = ?
+    UPDATE projects SET name = %s, status = %s, modified_at = %s, description_md_path = %s
+    WHERE id = %s
     """
     cursor = conn.cursor()
     try:
@@ -400,7 +417,7 @@ def update_project(conn: sqlite3.Connection, project: Project) -> Optional[Proje
     return project if cursor.rowcount > 0 else None
 
 def delete_project(conn: sqlite3.Connection, project_id: uuid.UUID) -> bool:
-    sql = "DELETE FROM projects WHERE id = ?"
+    sql = "DELETE FROM projects WHERE id = %s"
     cursor = conn.cursor()
     try:
         cursor.execute(sql, (str(project_id),))
@@ -417,7 +434,7 @@ def add_task(conn: sqlite3.Connection, task: Task) -> Task:
     INSERT INTO tasks (id, title, status, project_id, parent_task_id, 
                        created_at, modified_at, completed_at, 
                        priority, due_date, details_md_path)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
     cursor = conn.cursor()
     try:
@@ -441,21 +458,21 @@ def get_task_by_id(conn: sqlite3.Connection, task_id: uuid.UUID) -> Optional[Tas
     SELECT id, title, status, project_id, parent_task_id, 
            created_at, modified_at, completed_at, 
            priority, due_date, details_md_path 
-    FROM tasks WHERE id = ?
+    FROM tasks WHERE id = %s
     """
     cursor = conn.cursor()
     cursor.execute(sql, (str(task_id),))
     row = cursor.fetchone()
     if row:
         return Task(
-            id=uuid.UUID(row[0]), title=row[1], status=TaskStatus(row[2]),
-            project_id=uuid.UUID(row[3]) if row[3] else None,
-            parent_task_id=uuid.UUID(row[4]) if row[4] else None,
-            created_at=datetime.fromisoformat(row[5]),
-            modified_at=datetime.fromisoformat(row[6]),
-            completed_at=datetime.fromisoformat(row[7]) if row[7] else None,
+            id=_to_uuid(row[0]), title=row[1], status=TaskStatus(row[2]),
+            project_id=_to_uuid(row[3]) if row[3] else None,
+            parent_task_id=_to_uuid(row[4]) if row[4] else None,
+            created_at=_to_datetime(row[5]),
+            modified_at=_to_datetime(row[6]),
+            completed_at=_to_datetime(row[7]) if row[7] else None,
             priority=row[8],
-            due_date=date.fromisoformat(row[9]) if row[9] else None,
+            due_date=_to_date(row[9]) if row[9] else None,
             details_md_path=Path(row[10]) if row[10] else None
         )
     return None
@@ -475,18 +492,18 @@ def get_tasks_by_title_prefix(
         "created_at, modified_at, completed_at, "
         "priority, due_date, details_md_path",
         "FROM tasks",
-        "WHERE lower(title) LIKE lower(?)"
+        "WHERE lower(title) LIKE lower(%s)"
     ]
     params = [title_prefix + '%']
 
     if project_id:
-        sql_parts.append("AND project_id = ?")
+        sql_parts.append("AND project_id = %s")
         params.append(str(project_id))
     
     sql_parts.append("ORDER BY created_at DESC") 
 
     if limit is not None and limit > 0:
-        sql_parts.append("LIMIT ?")
+        sql_parts.append("LIMIT %s")
         params.append(limit)
 
     sql = " ".join(sql_parts)
@@ -496,14 +513,14 @@ def get_tasks_by_title_prefix(
 
     return [
         Task(
-            id=uuid.UUID(row[0]), title=row[1], status=TaskStatus(row[2]),
-            project_id=uuid.UUID(row[3]) if row[3] else None,
-            parent_task_id=uuid.UUID(row[4]) if row[4] else None,
-            created_at=datetime.fromisoformat(row[5]),
-            modified_at=datetime.fromisoformat(row[6]),
-            completed_at=datetime.fromisoformat(row[7]) if row[7] else None,
+            id=_to_uuid(row[0]), title=row[1], status=TaskStatus(row[2]),
+            project_id=_to_uuid(row[3]) if row[3] else None,
+            parent_task_id=_to_uuid(row[4]) if row[4] else None,
+            created_at=_to_datetime(row[5]),
+            modified_at=_to_datetime(row[6]),
+            completed_at=_to_datetime(row[7]) if row[7] else None,
             priority=row[8],
-            due_date=date.fromisoformat(row[9]) if row[9] else None,
+            due_date=_to_date(row[9]) if row[9] else None,
             details_md_path=Path(row[10]) if row[10] else None
         ) for row in rows
     ]
@@ -524,7 +541,7 @@ def list_tasks(conn: sqlite3.Connection,
         task_ids_set = set()
 
         # 1. Get tasks with project_id set (legacy)
-        legacy_sql = "SELECT id FROM tasks WHERE project_id = ?"
+        legacy_sql = "SELECT id FROM tasks WHERE project_id = %s"
         cursor = conn.cursor()
         cursor.execute(legacy_sql, (str(project_id),))
         for row in cursor.fetchall():
@@ -539,7 +556,7 @@ def list_tasks(conn: sqlite3.Connection,
         if not task_ids_set:
             return []
 
-        placeholders = ','.join('?' for _ in task_ids_set)
+        placeholders = ','.join('%s' for _ in task_ids_set)
         base_sql = f"""
         SELECT id, title, status, project_id, parent_task_id,
                created_at, modified_at, completed_at,
@@ -561,12 +578,12 @@ def list_tasks(conn: sqlite3.Connection,
     conditions = []
 
     if status_filter:
-        placeholders = ','.join('?' for _ in status_filter)
+        placeholders = ','.join('%s' for _ in status_filter)
         conditions.append(f"status IN ({placeholders})")
         params.extend(s.value for s in status_filter)
 
     if parent_task_id is not None:
-        conditions.append("parent_task_id = ?")
+        conditions.append("parent_task_id = %s")
         params.append(str(parent_task_id))
     elif not include_subtasks_of_any_parent:
         conditions.append("parent_task_id IS NULL")
@@ -591,14 +608,14 @@ def list_tasks(conn: sqlite3.Connection,
     rows = cursor.fetchall()
     return [
         Task(
-            id=uuid.UUID(row[0]), title=row[1], status=TaskStatus(row[2]),
-            project_id=uuid.UUID(row[3]) if row[3] else None,
-            parent_task_id=uuid.UUID(row[4]) if row[4] else None,
-            created_at=datetime.fromisoformat(row[5]),
-            modified_at=datetime.fromisoformat(row[6]),
-            completed_at=datetime.fromisoformat(row[7]) if row[7] else None,
+            id=_to_uuid(row[0]), title=row[1], status=TaskStatus(row[2]),
+            project_id=_to_uuid(row[3]) if row[3] else None,
+            parent_task_id=_to_uuid(row[4]) if row[4] else None,
+            created_at=_to_datetime(row[5]),
+            modified_at=_to_datetime(row[6]),
+            completed_at=_to_datetime(row[7]) if row[7] else None,
             priority=row[8],
-            due_date=date.fromisoformat(row[9]) if row[9] else None,
+            due_date=_to_date(row[9]) if row[9] else None,
             details_md_path=Path(row[10]) if row[10] else None
         ) for row in rows
     ]
@@ -612,10 +629,10 @@ def update_task(conn: sqlite3.Connection, task: Task) -> Optional[Task]:
 
     sql = """
     UPDATE tasks
-    SET title = ?, status = ?, project_id = ?, parent_task_id = ?,
-        modified_at = ?, completed_at = ?, priority = ?, 
-        due_date = ?, details_md_path = ?
-    WHERE id = ?
+    SET title = %s, status = %s, project_id = %s, parent_task_id = %s,
+        modified_at = %s, completed_at = %s, priority = %s, 
+        due_date = %s, details_md_path = %s
+    WHERE id = %s
     """
     cursor = conn.cursor()
     try:
@@ -636,7 +653,7 @@ def update_task(conn: sqlite3.Connection, task: Task) -> Optional[Task]:
     return task if cursor.rowcount > 0 else None
 
 def delete_task(conn: sqlite3.Connection, task_id: uuid.UUID) -> bool:
-    sql = "DELETE FROM tasks WHERE id = ?"
+    sql = "DELETE FROM tasks WHERE id = %s"
     cursor = conn.cursor()
     try:
         cursor.execute(sql, (str(task_id),))
@@ -660,7 +677,7 @@ def add_task_link(
     now = datetime.now(timezone.utc).isoformat()
     sql = """
     INSERT OR REPLACE INTO task_links (task_id, project_id, is_origin, created_at, modified_at)
-    VALUES (?, ?, ?, ?, ?)
+    VALUES (%s, %s, %s, %s, %s)
     """
     cursor = conn.cursor()
     try:
@@ -675,22 +692,22 @@ def get_task_links(conn: sqlite3.Connection, task_id: uuid.UUID) -> List[Tuple[u
     Get all project links for a task.
     Returns list of (project_id, is_origin) tuples.
     """
-    sql = "SELECT project_id, is_origin FROM task_links WHERE task_id = ?"
+    sql = "SELECT project_id, is_origin FROM task_links WHERE task_id = %s"
     cursor = conn.cursor()
     cursor.execute(sql, (str(task_id),))
     rows = cursor.fetchall()
-    return [(uuid.UUID(row[0]), bool(row[1])) for row in rows]
+    return [(_to_uuid(row[0]), bool(row[1])) for row in rows]
 
 def get_linked_tasks(conn: sqlite3.Connection, project_id: uuid.UUID) -> List[uuid.UUID]:
     """
     Get all tasks linked to a project (via task_links table).
     Returns list of task IDs.
     """
-    sql = "SELECT task_id FROM task_links WHERE project_id = ?"
+    sql = "SELECT task_id FROM task_links WHERE project_id = %s"
     cursor = conn.cursor()
     cursor.execute(sql, (str(project_id),))
     rows = cursor.fetchall()
-    return [uuid.UUID(row[0]) for row in rows]
+    return [_to_uuid(row[0]) for row in rows]
 
 def delete_task_link(
     conn: sqlite3.Connection,
@@ -701,7 +718,7 @@ def delete_task_link(
     Remove a link between a task and a project.
     Returns True if link was deleted, False if it didn't exist.
     """
-    sql = "DELETE FROM task_links WHERE task_id = ? AND project_id = ?"
+    sql = "DELETE FROM task_links WHERE task_id = %s AND project_id = %s"
     cursor = conn.cursor()
     try:
         cursor.execute(sql, (str(task_id), str(project_id)))
@@ -715,17 +732,17 @@ def get_task_origin_project(conn: sqlite3.Connection, task_id: uuid.UUID) -> Opt
     Get the origin project for a task (where is_origin = TRUE).
     Returns project_id or None if no origin found.
     """
-    sql = "SELECT project_id FROM task_links WHERE task_id = ? AND is_origin = 1"
+    sql = "SELECT project_id FROM task_links WHERE task_id = %s AND is_origin = 1"
     cursor = conn.cursor()
     cursor.execute(sql, (str(task_id),))
     row = cursor.fetchone()
-    return uuid.UUID(row[0]) if row else None
+    return _to_uuid(row[0]) if row else None
 
 def is_task_origin(conn: sqlite3.Connection, task_id: uuid.UUID, project_id: uuid.UUID) -> bool:
     """
     Check if a task originated in a specific project.
     """
-    sql = "SELECT is_origin FROM task_links WHERE task_id = ? AND project_id = ?"
+    sql = "SELECT is_origin FROM task_links WHERE task_id = %s AND project_id = %s"
     cursor = conn.cursor()
     cursor.execute(sql, (str(task_id), str(project_id)))
     row = cursor.fetchone()
