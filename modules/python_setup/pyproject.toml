@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "python_setup"
-version = "0.1.0"
+version = "0.2.0"
 description = "Bootstrap and best-practices Python env setup across Ubuntu/WSL2, Termux, and Windows 11 (pwsh7)."
 readme = "README.md"
 requires-python = ">=3.8"
@@ -15,4 +15,3 @@ dependencies = [
 [project.scripts]
 python-setup = "python_setup.cli:main"
 setup-venv-activation = "python_setup.venv_activation:main"
-

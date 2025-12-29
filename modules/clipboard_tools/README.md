@@ -10,3 +10,8 @@ Clipboard command suite with multi-buffer storage, stats, and tmux → Windows c
 - `tmux2winclip` / `tmuxcp` – send tmux buffer to remote Windows clipboard via SSH + PowerShell
 
 Buffers persist under `CLIPBOARD_STATE_DIR` (else platform defaults) and track chars/lines/words, timestamps, and read counts.
+
+## tmux2winclip behavior
+- When run **inside WSL2 or Windows**, it first tries local `pwsh.exe`/`powershell.exe`, then falls back to `clip.exe`.
+- On other hosts it uses `CLIPBOARD_WIN_SSH` (or `--target`) to reach your Windows desktop over SSH and call `pwsh Set-Clipboard`.
+- Every run also emits an OSC52 sequence so terminals that support it get the text immediately as well.
