@@ -7,10 +7,14 @@ Rich-powered status dashboard that surfaces pipeline health in real time.
 
 from __future__ import annotations
 
+import os
+import select
+import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Deque, Dict, List, Optional, Sequence, Tuple
 
 from rich.align import Align
 from rich.console import Console, Group
@@ -52,6 +56,51 @@ def _format_eta(seconds: Optional[float]) -> str:
 def _stage_key(name: str) -> str:
     """Stable key for stage lookups."""
     return name.strip().lower().replace(" ", "_")
+
+
+class _KeyReader:
+    """Cross-platform, non-blocking key reader."""
+
+    def __init__(self) -> None:
+        if not sys.stdin.isatty():
+            raise RuntimeError("stdin is not attached to a TTY")
+        self._win = os.name == "nt"
+        self._closed = False
+        if self._win:
+            import msvcrt  # type: ignore # noqa: F401
+        else:
+            import termios  # type: ignore
+            import tty  # type: ignore
+
+            self._termios = termios  # type: ignore[attr-defined]
+            self._tty = tty  # type: ignore[attr-defined]
+            self._fd = sys.stdin.fileno()
+            self._old_settings = self._termios.tcgetattr(self._fd)
+            self._tty.setcbreak(self._fd)
+
+    def close(self) -> None:
+        if self._win or self._closed:
+            return
+        self._termios.tcsetattr(self._fd, self._termios.TCSADRAIN, self._old_settings)
+        self._closed = True
+
+    def read_key(self, timeout: float = 0.1) -> Optional[str]:
+        if self._win:
+            import msvcrt  # type: ignore
+
+            end = time.time() + timeout
+            while time.time() < end:
+                if msvcrt.kbhit():  # type: ignore[attr-defined]
+                    ch = msvcrt.getwch()  # type: ignore[attr-defined]
+                    return ch
+                time.sleep(0.01)
+            return None
+        else:
+            ready, _, _ = select.select([sys.stdin], [], [], timeout)
+            if ready:
+                ch = sys.stdin.read(1)
+                return ch
+            return None
 
 
 class ProgressReporter:
@@ -137,6 +186,12 @@ class ProgressReporter:
         self._paused_evt.set()
         self._quit_evt = threading.Event()
         self._stop_evt = threading.Event()
+        self._control_messages: Deque[str] = deque(maxlen=4)
+        self._controls_enabled = False
+        self._control_thread: Optional[threading.Thread] = None
+        self._control_stop = threading.Event()
+        self._key_reader: Optional[_KeyReader] = None
+        self._stage_ceiling = 0
 
         # Last print time for throttling
         self._last_print = 0.0
@@ -160,6 +215,7 @@ class ProgressReporter:
             )
             self._live.start()
             self._ui_initialized = True
+            self._start_control_listener()
 
     def set_status(self, text: str) -> None:
         """Update status line."""
@@ -175,21 +231,48 @@ class ProgressReporter:
             self.stage_records = {}
             self.stage_status = {}
             self.stage_display = {}
-            for idx, name in enumerate(names):
-                key = _stage_key(name)
-                self.stage_plan_keys.append(key)
-                self.stage_order.append(name)
-                self.stage_display[key] = name
-                self.stage_status[key] = "pending"
-                self.stage_records[key] = {
-                    "display": name,
-                    "status": "pending",
-                    "index": idx,
-                    "start": None,
-                    "end": None,
-                    "duration": None,
-                }
+            for name in names:
+                self._add_stage_entry_unlocked(name)
             self.stage_total_count = len(self.stage_plan_keys)
+
+    def set_stage_ceiling(self, stage: int) -> None:
+        """Record the highest quality level selected at startup."""
+        with self.lock:
+            self._stage_ceiling = max(self._stage_ceiling, int(stage))
+
+    def consume_stage_extensions(self, current_max: int) -> List[int]:
+        """Return any newly requested quality levels beyond current_max."""
+        with self.lock:
+            target = self._stage_ceiling
+        additions: List[int] = []
+        next_stage = max(0, int(current_max))
+        while next_stage < target:
+            next_stage += 1
+            additions.append(next_stage)
+        return additions
+
+    def append_stage_entries(self, displays: Sequence[str]) -> None:
+        """Append new stage entries to the timeline."""
+        if not displays:
+            return
+        with self.lock:
+            for display in displays:
+                self._add_stage_entry_unlocked(display)
+
+    def request_stage_extension(self) -> bool:
+        """Increase the requested quality depth by one level."""
+        with self.lock:
+            if self._stage_ceiling >= 7:
+                target = None
+            else:
+                self._stage_ceiling += 1
+                target = self._stage_ceiling
+        if target is None:
+            self._record_control_event("Already at maximum quality (Q7)")
+            return False
+        self._record_control_event(f"Extending scan to Q{target}")
+        self.add_log(f"Runtime stage extension requested: Q{target}", "INFO")
+        return True
 
     def update_root_progress(self, *, current: Optional[Path], completed: int, total: int) -> None:
         """Track directory traversal progress."""
@@ -391,6 +474,17 @@ class ProgressReporter:
     def stop(self) -> None:
         """Stop rendering and print final summary."""
         self._stop_evt.set()
+        self._control_stop.set()
+        if self._key_reader:
+            try:
+                self._key_reader.close()
+            except Exception:
+                pass
+            self._key_reader = None
+        if self._control_thread:
+            self._control_thread.join(timeout=0.5)
+            self._control_thread = None
+        self._controls_enabled = False
         if self.enable_dash and self._live:
             self._live.stop()
             self._live = None
@@ -413,6 +507,29 @@ class ProgressReporter:
         """Return recent log entries."""
         with self.lock:
             return list(self._log_messages[-5:])
+
+    def _record_control_event(self, message: str) -> None:
+        with self.lock:
+            self._control_messages.append(message)
+
+    def _add_stage_entry_unlocked(self, display: str) -> None:
+        key = _stage_key(display)
+        if key in self.stage_records:
+            return
+        entry = {
+            "display": display,
+            "status": "pending",
+            "index": len(self.stage_plan_keys),
+            "start": None,
+            "end": None,
+            "duration": None,
+        }
+        self.stage_plan_keys.append(key)
+        self.stage_order.append(display)
+        self.stage_display[key] = display
+        self.stage_status[key] = "pending"
+        self.stage_records[key] = entry
+        self.stage_total_count = len(self.stage_plan_keys)
 
     def _ensure_stage_entry(self, display: str) -> Dict[str, Any]:
         """Guarantee that a stage entry exists for the given display name."""
@@ -469,6 +586,69 @@ class ProgressReporter:
         self._last_print = time.time()
         self._live.update(self._render_layout(), refresh=True)
 
+    def _start_control_listener(self) -> None:
+        """Begin listening for runtime hotkeys if possible."""
+        if self._control_thread or not self.enable_dash:
+            return
+        try:
+            self._key_reader = _KeyReader()
+        except Exception:
+            self._controls_enabled = False
+            self._record_control_event("Controls unavailable (no interactive terminal)")
+            return
+        self._controls_enabled = True
+        self._control_stop = threading.Event()
+        self._control_thread = threading.Thread(target=self._control_loop, daemon=True)
+        self._control_thread.start()
+        self._record_control_event("Controls: P=Pause, +=Extend, S=Stop, Q=Abort")
+
+    def _control_loop(self) -> None:
+        """Background loop that processes hotkeys."""
+        reader = self._key_reader
+        if reader is None:
+            return
+        while not self._control_stop.is_set():
+            try:
+                key = reader.read_key(0.1)
+            except Exception:
+                break
+            if not key:
+                continue
+            self._handle_control_key(key)
+
+    def _handle_control_key(self, raw_key: str) -> None:
+        """Map key presses to control actions."""
+        key = raw_key.lower()
+        if key == "p":
+            self._toggle_pause()
+            return
+        if key == "s":
+            self._quit_evt.set()
+            self._record_control_event("Stop requested (S)")
+            self.add_log("Stop requested via dashboard controls", "WARNING")
+            return
+        if key == "q":
+            self._quit_evt.set()
+            self._stop_evt.set()
+            self._record_control_event("Abort requested (Q)")
+            self.add_log("Abort requested via dashboard controls", "ERROR")
+            return
+        if key == "+":
+            self.request_stage_extension()
+            return
+
+    def _toggle_pause(self) -> None:
+        """Pause or resume worker activity."""
+        if self._paused_evt.is_set():
+            self._paused_evt.clear()
+            self._record_control_event("Paused (P)")
+            self.add_log("Pipeline paused via dashboard controls", "WARNING")
+        else:
+            self._paused_evt.set()
+            self._record_control_event("Resumed (P)")
+            self.add_log("Pipeline resumed via dashboard controls", "INFO")
+        self._print_if_due()
+
     def _render_layout(self) -> Layout:
         """Build the main dashboard layout."""
         with self.lock:
@@ -505,6 +685,7 @@ class ProgressReporter:
                 size=7,
             ),
             Layout(name="body", ratio=1),
+            Layout(self._render_controls_panel(), size=4),
             Layout(self._render_footer(logs), size=7),
         )
         layout["body"].split_row(
@@ -543,7 +724,12 @@ class ProgressReporter:
         counts = Text(f"{self.stage_done:,}/{self.stage_total:,}" if self.stage_total else f"{self.stage_done:,}", style="bold")
         table.add_row(bar, counts)
 
-        status = Text(self.status_line, style="italic magenta")
+        status = Text()
+        if not self._paused_evt.is_set():
+            status.append("PAUSED ", style="bold yellow")
+        if self._quit_evt.is_set():
+            status.append("STOPPING ", style="bold red")
+        status.append(self.status_line, style="italic magenta")
         banner = Text(self.banner, style="dim") if self.banner else Text("")
         table.add_row(status, banner)
 
@@ -644,10 +830,30 @@ class ProgressReporter:
                 style = {"ERROR": "bold red", "WARNING": "yellow", "INFO": "white", "DEBUG": "cyan"}.get(level, "white")
                 timestamp = time.strftime("%H:%M:%S", time.localtime(ts))
                 line = Text(f"{timestamp} [{level}] {message}", style=style)
-                table.add_row(line)
+            table.add_row(line)
         else:
             table.add_row(Text("No recent log entries", style="dim"))
         return Panel(table, title="Recent Activity", border_style="grey50")
+
+    def _render_controls_panel(self) -> Panel:
+        """Render control hotkeys and the last action."""
+        table = Table.grid(expand=True)
+        table.add_column(ratio=1)
+        help_line = "Hotkeys: P=Pause/Resume | +=Extend depth | S=Stop | Q=Abort"
+        table.add_row(Text(help_line, style="bold white"))
+        paused = "yes" if not self._paused_evt.is_set() else "no"
+        depth = f"Q{self._stage_ceiling}" if self._stage_ceiling else "--"
+        state_bits = [f"Paused: {paused}", f"Target depth: {depth}"]
+        if not self._controls_enabled and self.enable_dash:
+            state_bits.append("Controls unavailable (non-interactive terminal)")
+        table.add_row(Text(" | ".join(state_bits), style="cyan"))
+        if self._control_messages:
+            message = self._control_messages[-1]
+            table.add_row(Text(message, style="magenta"))
+        else:
+            table.add_row(Text("Use the hotkeys above to steer the scan.", style="dim"))
+        border = "yellow" if self._controls_enabled else "grey42"
+        return Panel(table, title="Controls", border_style=border)
 
     def _progress_bar(self, pct: float) -> Text:
         """Return a colorized progress bar string."""
@@ -655,5 +861,10 @@ class ProgressReporter:
         width = 42
         filled = int(round((pct_clamped / 100.0) * width))
         remaining = width - filled
-        bar = f"[green]{'█' * filled}[/green][grey30]{'░' * remaining}[/grey30]"
-        return Text(f"{bar} {pct_clamped:5.1f}%", justify="left")
+        bar = Text(justify="left")
+        if filled:
+            bar.append("█" * filled, style="green")
+        if remaining:
+            bar.append("░" * remaining, style="grey30")
+        bar.append(f" {pct_clamped:5.1f}%")
+        return bar

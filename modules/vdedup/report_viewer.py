@@ -1,14 +1,18 @@
 from __future__ import annotations
 
-import os
+import curses
+import io
 import logging
+import os
+import shlex
 import shutil
 import subprocess
-import shlex
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+
+from PIL import Image
 
 from termdash.interactive_list import (
     DETAIL_FOOTER_DEFAULT,
@@ -223,6 +227,53 @@ def _open_media(path: Path, *, start: Optional[float] = None, slot: Optional[int
     return False
 
 
+def _build_provenance_entry(group: DuplicateGroup) -> Optional[DetailEntry]:
+    evidence = group.evidence() if hasattr(group, "evidence") else {}
+    if not evidence:
+        return None
+
+    body: List[str] = []
+    detector = evidence.get("detector")
+    if detector:
+        body.append(f"Detector : {detector}")
+
+    overlap_ratio = evidence.get("overlap_ratio")
+    if isinstance(overlap_ratio, (int, float)):
+        body.append(f"Overlap ratio : {overlap_ratio * 100:.1f}%")
+
+    overlap_seconds = evidence.get("overlap_seconds")
+    if isinstance(overlap_seconds, (int, float)):
+        body.append(f"Overlap starts @ {overlap_seconds:.2f}s")
+
+    phash_distance = evidence.get("phash_distance")
+    if isinstance(phash_distance, (int, float)):
+        body.append(f"pHash distance : {phash_distance:.2f}")
+
+    phash_step = evidence.get("phash_step")
+    if isinstance(phash_step, int):
+        body.append(f"Stride : {phash_step} frame{'s' if phash_step != 1 else ''}")
+
+    phash_offset = evidence.get("phash_offset_frames")
+    if isinstance(phash_offset, int):
+        body.append(f"Frame offset : {phash_offset}")
+
+    hints = evidence.get("overlap_hints")
+    if isinstance(hints, dict):
+        for hint_path, ts in sorted(hints.items()):
+            if isinstance(ts, (int, float)):
+                body.append(f"Hint {Path(hint_path).name}: {ts:.2f}s")
+
+    if not body:
+        body = ["No detector metadata captured"]
+
+    return DetailEntry(
+        summary="Overlap provenance",
+        body=body,
+        focusable=False,
+        expanded=True,
+    )
+
+
 def _build_detail_view_for_group(group: DuplicateGroup) -> DetailViewData:
     suffix_map = _unique_suffixes([group.keep.path] + [loser.path for loser in group.losers])
 
@@ -257,6 +308,10 @@ def _build_detail_view_for_group(group: DuplicateGroup) -> DetailViewData:
             )
         )
 
+    provenance_entry = _build_provenance_entry(group)
+    if provenance_entry:
+        entries.insert(1, provenance_entry)
+
     title = f"Group {group.group_id} ({group.method})"
     return DetailViewData(title=title, entries=entries, footer=DETAIL_FOOTER_DEFAULT)
 
@@ -278,6 +333,7 @@ class DuplicateListRow:
     display_name: str = ""
     row_id: str = ""
     selected: bool = False
+    overlap_hint: Optional[float] = None
 
     def is_loser(self) -> bool:
         return not self.is_keep
@@ -288,6 +344,7 @@ class DuplicateListManager:
         self._groups = list(groups)
         self._expanded: set[str] = set()
         self._group_map: Dict[str, DuplicateGroup] = {g.group_id: g for g in self._groups}
+        self._selected_ids: set[str] = set()
 
     @staticmethod
     def _display_name_for(path: Path, suffix: str) -> str:
@@ -339,6 +396,8 @@ class DuplicateListManager:
                 expanded=self.is_expanded(group.group_id),
                 display_name=self._display_name_for(keep.path, suffix_map.get(keep.path, "")),
                 row_id=f"{group.group_id}|{keep.path}",
+                overlap_hint=keep.overlap_hint,
+                selected=self.is_selected(f"{group.group_id}|{keep.path}"),
             )
             rows.append(keep_row)
 
@@ -359,6 +418,8 @@ class DuplicateListManager:
                             keep_size=keep.size,
                             display_name=self._display_name_for(loser.path, suffix_map.get(loser.path, "")),
                             row_id=f"{group.group_id}|{loser.path}",
+                            overlap_hint=loser.overlap_hint,
+                            selected=self.is_selected(f"{group.group_id}|{loser.path}"),
                         )
                     )
         return rows
@@ -372,10 +433,17 @@ class DuplicateListManager:
         self._group_map = {g.group_id: g for g in self._groups}
 
     def get_group(self, group_id: str) -> Optional[DuplicateGroup]:
-        for group in self._groups:
-            if group.group_id == group_id:
-                return group
-        return None
+        return self._group_map.get(group_id)
+
+    def set_selected(self, row_ids: Iterable[str]) -> None:
+        self._selected_ids = {rid for rid in row_ids if rid}
+
+    def is_selected(self, row_id: Optional[str]) -> bool:
+        return bool(row_id) and row_id in self._selected_ids
+
+    def apply_selection_markers(self, rows: Iterable[DuplicateListRow]) -> None:
+        for row in rows:
+            row.selected = self.is_selected(getattr(row, "row_id", None))
 
     def promote_to_master(self, group_id: str, new_master_path: Path) -> bool:
         group = self._group_map.get(group_id)
@@ -491,6 +559,7 @@ SORT_KEYS_MAPPING: Dict[int, str] = {
 
 def _refresh_items(list_view: InteractiveList, manager: DuplicateListManager, reset_selection: bool = False) -> None:
     list_view.state.items = manager.visible_rows()
+    manager.apply_selection_markers(list_view.state.items)
     list_view._update_visible_items(reset_selection=reset_selection)
 
 
@@ -525,7 +594,7 @@ def launch_report_viewer(report_paths: Sequence[Path]) -> None:
         header="Duplicate Groups",
         sort_keys_mapping=SORT_KEYS_MAPPING,
         footer_lines=[
-            "Enter: toggle | space: select (multi) | i: detail | o: open | O: preview selected | M: promote keep",
+            "Enter: toggle | space: select (multi) | i: detail | o: open | O: preview grid | V: inline preview | M: promote keep",
             "E/C: expand/collapse all | f/x: filter/exclude | Sort: 1=space 2=dups 3=method 4=path 5=size | Ctrl+Q: quit",
         ],
         detail_formatter=detail_formatter,
@@ -537,6 +606,12 @@ def launch_report_viewer(report_paths: Sequence[Path]) -> None:
         multi_select_limit=4,
         item_key_func=lambda row: row.row_id or f"{row.group_id}|{row.path}",
     )
+
+    def handle_selection_change(selected_rows: List[DuplicateListRow]) -> None:
+        manager.set_selected(row.row_id for row in selected_rows if row.row_id)
+        manager.apply_selection_markers(list_view.state.items)
+
+    list_view.selection_change_handler = handle_selection_change
 
     def handler(key: int, row: DuplicateListRow) -> Tuple[bool, bool]:
         handled = False
@@ -574,6 +649,12 @@ def launch_report_viewer(report_paths: Sequence[Path]) -> None:
             if not selected_rows:
                 selected_rows = [row]
             _launch_multi_preview(selected_rows, manager)
+        elif key == ord("V"):
+            handled = True
+            selected_rows = list_view.get_selected_items()
+            if not selected_rows:
+                selected_rows = [row]
+            _start_inline_preview(list_view, manager, selected_rows)
         elif key == ord("M"):
             handled = True
             if row.is_keep:
@@ -692,6 +773,51 @@ def _probe_duration(path: Path) -> Optional[float]:
     except Exception:
         pass
     return None
+
+
+ASCII_CHARS = " .:-=+*#%@"
+
+
+def _frame_to_ascii(image: Image.Image, width: int = 44, height: int = 16) -> List[str]:
+    try:
+        gray = image.convert("L").resize((width, height))
+    except Exception:
+        return ["<unable to render preview>"]
+    pixels = list(gray.getdata())
+    lines: List[str] = []
+    ramp = ASCII_CHARS
+    ramp_len = len(ramp)
+    for y in range(height):
+        line_pixels = pixels[y * width : (y + 1) * width]
+        line = "".join(ramp[min(ramp_len - 1, int(px / 255 * (ramp_len - 1)))] for px in line_pixels)
+        lines.append(line)
+    return lines
+
+
+def _extract_ascii_frame(path: Path, timestamp: float, width: int = 44, height: int = 16) -> List[str]:
+    try:
+        cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            f"{max(timestamp, 0.0):.2f}",
+            "-i",
+            str(path),
+            "-frames:v",
+            "1",
+            "-f",
+            "image2pipe",
+            "pipe:1",
+        ]
+        raw = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=10)
+        img = Image.open(io.BytesIO(raw))
+        img.load()
+        return _frame_to_ascii(img, width=width, height=height)
+    except Exception as exc:
+        LOGGER.debug("ASCII preview failed for %s at %.2fs: %s", path, timestamp, exc)
+        return [f"<preview error: {exc}>"]
 def _launch_multi_preview(rows: List[DuplicateListRow], manager: DuplicateListManager) -> None:
     if not rows:
         return
@@ -752,3 +878,153 @@ def _launch_multi_preview(rows: List[DuplicateListRow], manager: DuplicateListMa
                 start = 0.0
         label = f"{'[MASTER]' if row.is_keep else '[LOSER]'} {row.path.name}"
         _open_media(row.path, start=start, slot=slot, label=label)
+
+
+def _start_inline_preview(list_view: InteractiveList, manager: DuplicateListManager, rows: List[DuplicateListRow]) -> None:
+    if not rows:
+        return
+    primary_group = rows[0].group_id
+    group = manager.get_group(primary_group)
+    if not group:
+        return
+    filtered: List[DuplicateListRow] = []
+    seen: set[Path] = set()
+    for row in rows:
+        if row.group_id != primary_group:
+            continue
+        if row.path in seen:
+            continue
+        filtered.append(row)
+        seen.add(row.path)
+        if len(filtered) == 4:
+            break
+    if not any(r.is_keep for r in filtered):
+        keep_row = next((r for r in manager.visible_rows() if r.group_id == primary_group and r.is_keep), None)
+        if keep_row:
+            filtered.insert(0, keep_row)
+    if not filtered:
+        return
+    session = InlinePreviewSession(group, filtered, list_view)
+    list_view.show_custom_detail(session.build_detail_view(), key_handler=session.handle_key, teardown=session.close)
+
+
+class InlinePreviewSession:
+    """Renders inline ASCII previews inside the InteractiveList detail pane."""
+
+    def __init__(self, group: DuplicateGroup, rows: List[DuplicateListRow], list_view: InteractiveList):
+        self._group = group
+        self._rows = rows[:4]
+        self._list_view = list_view
+        self._stats: Dict[Path, FileStats] = {group.keep.path: group.keep, **{loser.path: loser for loser in group.losers}}
+        self._timestamps: Dict[Path, float] = {row.path: self._initial_timestamp(row) for row in self._rows}
+        self._cache: Dict[Tuple[Path, float], List[str]] = {}
+        self._scrub_step = 5.0
+
+    def _initial_timestamp(self, row: DuplicateListRow) -> float:
+        stats = self._stats.get(row.path)
+        if stats and stats.overlap_hint is not None:
+            return max(0.0, stats.overlap_hint)
+        if stats and stats.duration:
+            return max(0.0, min(stats.duration * 0.1, max(stats.duration - 0.1, 0.0)))
+        return 0.0
+
+    def _current_row(self) -> Optional[DuplicateListRow]:
+        if not self._rows:
+            return None
+        selection = getattr(self._list_view.state, "detail_selection", 0)
+        selection = max(0, min(selection, len(self._rows) - 1))
+        return self._rows[selection]
+
+    def _duration_for(self, row: DuplicateListRow) -> Optional[float]:
+        stats = self._stats.get(row.path)
+        return stats.duration if stats else None
+
+    def _frame_for(self, row: DuplicateListRow) -> List[str]:
+        ts = self._timestamps.get(row.path, 0.0)
+        stats = self._stats.get(row.path)
+        duration = stats.duration if stats else None
+        if duration is not None:
+            ts = max(0.0, min(ts, max(duration - 0.1, 0.0)))
+        else:
+            ts = max(0.0, ts)
+        self._timestamps[row.path] = ts
+        key = (row.path, round(ts, 2))
+        if key in self._cache:
+            return self._cache[key]
+        ascii_frame = _extract_ascii_frame(row.path, ts)
+        self._cache[key] = ascii_frame
+        return ascii_frame
+
+    def _format_summary(self, row: DuplicateListRow) -> str:
+        ts = self._timestamps.get(row.path, 0.0)
+        duration = self._duration_for(row)
+        duration_txt = f"/{duration:.1f}s" if duration else ""
+        role = "MASTER" if row.is_keep else "LOSER"
+        return f"[{role}] {row.path.name}  {ts:.1f}s{duration_txt}"
+
+    def build_detail_view(self) -> DetailViewData:
+        entries: List[DetailEntry] = []
+        for row in self._rows:
+            entries.append(
+                DetailEntry(
+                    summary=self._format_summary(row),
+                    body=self._frame_for(row),
+                    focusable=True,
+                    expanded=True,
+                )
+            )
+        footer = "Preview: ←/→ ±5s  ,/. ±1s  a/A scrub all  Esc: close"
+        title = f"Inline Preview (group {self._group.group_id})"
+        return DetailViewData(title=title, entries=entries, footer=footer)
+
+    def _scrub_row(self, row: DuplicateListRow, delta: float) -> bool:
+        if not row:
+            return False
+        new_ts = self._timestamps.get(row.path, 0.0) + delta
+        stats = self._stats.get(row.path)
+        if stats and stats.duration is not None:
+            new_ts = max(0.0, min(new_ts, max(stats.duration - 0.1, 0.0)))
+        else:
+            new_ts = max(0.0, new_ts)
+        self._timestamps[row.path] = new_ts
+        self._cache = {key: frame for key, frame in self._cache.items() if key[0] != row.path}
+        return True
+
+    def _scrub_all(self, delta: float) -> bool:
+        changed = False
+        for row in self._rows:
+            changed |= self._scrub_row(row, delta)
+        return changed
+
+    def _refresh(self) -> None:
+        self._list_view.refresh_custom_detail(self.build_detail_view())
+
+    def handle_key(self, key: int) -> bool:
+        if key in (curses.KEY_LEFT, ord("h")):
+            if self._scrub_row(self._current_row(), -self._scrub_step):
+                self._refresh()
+                return True
+        if key in (curses.KEY_RIGHT, ord("l")):
+            if self._scrub_row(self._current_row(), self._scrub_step):
+                self._refresh()
+                return True
+        if key == ord(","):
+            if self._scrub_row(self._current_row(), -1.0):
+                self._refresh()
+                return True
+        if key == ord("."):
+            if self._scrub_row(self._current_row(), 1.0):
+                self._refresh()
+                return True
+        if key == ord("a"):
+            if self._scrub_all(-self._scrub_step):
+                self._refresh()
+                return True
+        if key == ord("A"):
+            if self._scrub_all(self._scrub_step):
+                self._refresh()
+                return True
+        return False
+
+    def close(self) -> None:
+        self._cache.clear()
