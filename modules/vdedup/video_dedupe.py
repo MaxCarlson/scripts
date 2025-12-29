@@ -602,6 +602,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
     # Core scan options
     p.add_argument("-p", "--pattern", action="append", default=["*.mp4"], help="Glob to include (repeatable), e.g. -p *.mp4 -p *.mkv (default: *.mp4)")
+    p.add_argument("-X", "--exclude-pattern", action="append", help="Glob to exclude (repeatable), e.g. -X *temp*.mp4 to skip partial exports")
     p.add_argument("-r", "--recursive", action="store_true", help="Recurse into subdirectories (unlimited) for roots without a ::dN or ::r suffix. Default: no recursion (depth 0)")
 
     # Quality levels and pipeline selection
@@ -1079,7 +1080,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 2
 
     patterns = _normalize_patterns(args.pattern)
+    exclude_patterns = _normalize_patterns(getattr(args, "exclude_pattern", None))
     logger.info(f"File patterns: {patterns or 'all files'}")
+    logger.info(f"Exclude globs: {exclude_patterns or 'none'}")
 
     # Convert quality level to pipeline stages
     pipeline_str = _quality_to_pipeline(args.quality)
@@ -1182,9 +1185,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         logger.info(f"Finite depth roots: {len(finite_expanded_roots)}")
 
         groups_all: Dict[str, Tuple[Any, List[Any]]] = {}
+        group_metadata: Dict[str, Dict[str, Any]] = {}
 
         def _merge_groups(dst: Dict[str, Tuple[Any, List[Any]]], src: Dict[str, Tuple[Any, List[Any]]]):
             # Avoid accidental key collisions by rewriting ids if necessary
+            src_meta = getattr(src, "metadata", {}) if hasattr(src, "metadata") else {}
             for k, v in src.items():
                 nk = k
                 i = 1
@@ -1192,6 +1197,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     nk = f"{k}#{i}"
                     i += 1
                 dst[nk] = v
+                if isinstance(src_meta, dict) and k in src_meta:
+                    group_metadata[nk] = dict(src_meta[k])
 
         # Run unlimited batch (if any)
         if unlimited_roots:
@@ -1202,6 +1209,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 g_unlim = run_pipeline(
                     roots=unlimited_roots,
                     patterns=patterns,
+                    exclude_patterns=exclude_patterns,
                     max_depth=None,
                     selected_stages=stages,
                     cfg=cfg,
@@ -1229,6 +1237,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 g_unlim = run_pipeline(
                     root=root,
                     patterns=patterns,
+                    exclude_patterns=exclude_patterns,
                     max_depth=None,
                     selected_stages=stages,
                     cfg=cfg,
@@ -1248,6 +1257,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 g_fin = run_pipeline(
                     roots=finite_expanded_roots,
                     patterns=patterns,
+                    exclude_patterns=exclude_patterns,
                     max_depth=0,
                     selected_stages=stages,
                     cfg=cfg,
@@ -1279,6 +1289,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 g_fin = run_pipeline(
                     root=root,
                     patterns=patterns,
+                    exclude_patterns=exclude_patterns,
                     max_depth=0,
                     selected_stages=stages,
                     cfg=cfg,
@@ -1298,7 +1309,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         logger.info(f"Writing report with {len(winners)} groups to: {report_path}")
         reporter.set_status("Writing report to disk")
-        write_report(report_path, winners)
+        write_report(report_path, winners, metadata=group_metadata)
         print(f"Wrote report to: {report_path}")
 
         losers = [loser for (_keep, losers) in winners.values() for loser in losers]

@@ -65,6 +65,14 @@ This document translates backlog items into trackable execution units. Each top-
 - [ ] Add filters/toggles to switch between detection types (exact hash vs. subset vs. visual similarity).
 - [ ] Integrate keyboard navigation (enter/back) so the dashboard and list share the same controls.
 - [ ] Rebase the interactive list on termdash widgets so it can be reused across modules (avoid Rich-only paths).
+- [ ] **In-flight: Multi-video verification workflow**
+  - [ ] Allow selecting multiple losers (up to 4) plus the master from the interactive list and launch a synchronized inspection workspace.
+  - [ ] For Windows use `os.startfile`, for Linux/macOS/Termux prefer `xdg-open`/`open`/`termux-open`, but fall back to spawning configurable viewers (VLC/mpv) so we can tile videos in a 2×2 grid.
+  - [ ] Inject overlap metadata (subset detection offsets, scene indices) into the report so viewers can seek close to the shared segment automatically when launched.
+  - [ ] Add an on-screen indicator (color band or badge) showing which playing window corresponds to the current master.
+  - [ ] Provide a command/key inside the report viewer to promote/demote losers, updating the keep policy and persisting the change back to the report.
+  - [ ] Record these actions in the report so subsequent applies honor the revised master and so collaborative reviewers have provenance.
+  - [ ] Stretch goal: embedded preview/scrubber control directly in the TUI using termdash panes so simple comparisons do not require launching external players.
 
 ## [ ] 10. Missing Footage Detection & Export
 - [ ] Detect cases where a subset file contains segments not present in its master using timeline fingerprints.
