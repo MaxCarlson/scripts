@@ -1,94 +1,117 @@
 # Briefing for New Claude Code Session
 
-**Date**: 2025-12-28
-**Location**: WSL Ubuntu, `~/src/scripts/modules/knowledge_manager/`
-**Task**: PostgreSQL migration and agent orchestrator setup
+**Date**: 2025-12-29
+**Location**: WSL Ubuntu, `~/scripts/` and `~/projects/ai-orchestrator/`
+**Status**: PostgreSQL migration COMPLETE ✅ - Ready for orchestrator development
 
 ---
 
 ## Current Situation
 
-We're building a **multi-agent orchestrator** that uses:
-- **knowledge_manager** (existing TUI for projects/tasks) + SQLite DB
-- **ai_orchestrator** (new module for CLI/model management)
-- **PostgreSQL** (migration target for cross-device access + real-time updates)
-- **Local LLMs** (RTX 5090 with Qwen models via llama.cpp)
+**PostgreSQL Migration: COMPLETE** 🎉
+- All data migrated: 25 projects, 236 tasks, 76 task links
+- kmtui verified working with PostgreSQL in Docker
+- Both repos (scripts, ai-orchestrator) committed and pushed
+
+**What's Working**:
+- PostgreSQL 16 running in Docker (container: km-postgres)
+- kmtui displaying all projects/tasks from PostgreSQL
+- LISTEN/NOTIFY triggers configured for real-time updates
+- Shared Docker volume (docker_postgres_data) between repos
 
 ---
 
-## What's Been Done ✅
+## Repository Structure
 
-1. **Docker Setup Complete**:
-   - `docker/docker-compose.yml` - PostgreSQL 16 container
-   - `docker/init-scripts/01_init_schema.sql` - Full schema with LISTEN/NOTIFY
-   - `docker/migrate.load` - pgloader script for SQLite → PostgreSQL
-   - `docker/README.md` - Complete setup guide
-   - `docker/.env.example` - Configuration template
+### ~/scripts/ (knowledge_manager module)
+- Python TUI and CLI tools
+- PostgreSQL adapter (db_postgres.py)
+- Shell function: `kmtui` (configured for PostgreSQL)
+- Docker setup for local development/testing
 
-2. **Documentation**:
-   - `POSTGRESQL_MIGRATION_STATUS.md` - Detailed progress tracking
-   - Research specs in `research-output/Claude-V4-multi-agent-orchestration.md`
-
-3. **Commits**:
-   - Committed all Docker infrastructure (Git Bash)
-   - Ready to pull in WSL
+### ~/projects/ai-orchestrator/ (NEW)
+- Multi-agent orchestrator system
+- Shares PostgreSQL database with scripts repo
+- FastAPI orchestrator service (TODO: implement)
+- CLI integrations (TODO: implement)
+- LLM router for RTX 5090 (TODO: implement)
 
 ---
 
-## What You Need to Do ⏳
+## What's Been Completed ✅
 
-### Immediate Tasks (Phase 3 - pgloader Migration)
+### Phase 1-5: PostgreSQL Migration (COMPLETE)
+1. ✅ Database schema analysis and documentation
+2. ✅ Docker Compose setup with PostgreSQL 16
+3. ✅ pgloader migration (SQLite → PostgreSQL)
+4. ✅ Python adapter updates (PostgreSQL-only, removed SQLite)
+5. ✅ Testing and verification (CRUD operations working)
+6. ✅ Shell function fixes (kmtui using correct Python venv)
+7. ✅ Docker volume configuration (shared data between repos)
 
-1. **Pull latest code**:
-   ```bash
-   cd ~/src/scripts
-   git pull
-   cd modules/knowledge_manager/docker
-   ```
+### Key Fixes Applied
+- **SQL placeholders**: All 58 instances of `?` replaced with `%s`
+- **Type conversions**: Added _to_uuid(), _to_datetime(), _to_date() helpers
+- **kmtui shell function**: Uses ~/scripts/.venv/bin/python with PostgreSQL env vars
+- **Docker volume**: External volume (docker_postgres_data) shared between repos
+- **PGDATA**: Configured to match existing data directory structure
 
-2. **Create .env file**:
-   ```bash
-   cp .env.example .env
-   nano .env  # Change POSTGRES_PASSWORD!
-   ```
+---
 
-3. **Start PostgreSQL container**:
-   ```bash
-   docker compose up -d
-   docker compose logs -f postgres  # Verify it started
-   ```
+## What's Next ⏳
 
-4. **Install pgloader**:
-   ```bash
-   sudo apt-get update
-   sudo apt-get install -y pgloader postgresql-client
-   ```
+### Immediate Tasks (Orchestrator Development)
 
-5. **Run migration**:
-   ```bash
-   # Edit migrate.load to verify source DB path (should be /mnt/c/Users/mcarls/...)
-   pgloader migrate.load
-   ```
+**Priority 1: Task Queue System**
+- [ ] Design filesystem-based task queue structure
+- [ ] Implement task submission from kmtui
+- [ ] Create task status tracking (queued, in-progress, completed)
+- [ ] Add task assignment to AI CLIs
 
-6. **Verify migration**:
-   ```bash
-   docker compose exec postgres psql -U km_user -d knowledge_manager -c "
-     SELECT 'projects' as table, COUNT(*) FROM projects
-     UNION ALL SELECT 'tasks', COUNT(*) FROM tasks
-     UNION ALL SELECT 'task_links', COUNT(*) FROM task_links;"
-   ```
+**Priority 2: CLI Integrations**
+- [ ] Create wrapper scripts for Claude Code CLI
+- [ ] Create wrapper scripts for OpenAI Codex CLI
+- [ ] Create wrapper scripts for Gemini CLI
+- [ ] Implement task result capture and storage
 
-7. **Update status**:
-   ```bash
-   # Mark Phase 3 complete in POSTGRESQL_MIGRATION_STATUS.md
-   ```
+**Priority 3: Orchestrator Service**
+- [ ] Implement FastAPI endpoints in docker/orchestrator/main.py
+- [ ] Add LISTEN/NOTIFY subscription (already scaffolded)
+- [ ] Create task polling and assignment logic
+- [ ] Add health checks and monitoring
 
-### After Migration (Phase 4 - DB Adapter Updates)
+**Priority 4: LLM Router (RTX 5090)**
+- [ ] Design LLM routing strategy
+- [ ] Integrate with llama.cpp server
+- [ ] Implement model hot-swapping
+- [ ] Add queue management for local models
 
-See `POSTGRESQL_MIGRATION_STATUS.md` Phase 4 for:
-- Adding asyncpg support to `knowledge_manager/db.py`
-- Creating dual SQLite/PostgreSQL support
-- Environment variable configuration
+---
+
+## Quick Reference
+
+### Start PostgreSQL
+```bash
+cd ~/projects/ai-orchestrator
+docker compose up -d postgres
+docker compose logs -f postgres  # Monitor logs
+```
+
+### Test kmtui
+```bash
+kmtui  # Should show all 25 projects from PostgreSQL
+```
+
+### Direct PostgreSQL Access
+```bash
+docker compose exec postgres psql -U km_user -d knowledge_manager
+```
+
+### Check Container Status
+```bash
+docker ps  # Should see km-postgres running
+docker volume ls | grep postgres  # Should see docker_postgres_data
+```
 
 ---
 
@@ -96,44 +119,62 @@ See `POSTGRESQL_MIGRATION_STATUS.md` Phase 4 for:
 
 | File | Purpose |
 |------|---------|
-| `POSTGRESQL_MIGRATION_STATUS.md` | **Main progress tracker** - read this first! |
-| `docker/README.md` | Setup instructions, troubleshooting |
-| `docker/migrate.load` | Migration script (edit if needed) |
-| `research-output/Claude-V4-multi-agent-orchestration.md` | Full architecture spec (800 lines) |
-| `TODOS.md` | Feature roadmap for knowledge_manager |
-| `IMPLEMENTATION_STATUS.md` | Current TUI feature status |
+| `POSTGRESQL_MIGRATION_STATUS.md` | Complete migration documentation |
+| `~/projects/ai-orchestrator/docker-compose.yml` | Multi-service orchestration config |
+| `~/projects/ai-orchestrator/docker/orchestrator/main.py` | Orchestrator service (needs implementation) |
+| `~/scripts/modules/knowledge_manager/db.py` | PostgreSQL CRUD operations |
+| `~/dotfiles/zsh_configs/knowledge_manager.zsh` | kmtui shell function |
 
 ---
 
-## Important Context
+## Environment Configuration
 
-### Database Schema (8 tables):
-- `projects` - Top-level organization
-- `tasks` - Hierarchical tasks (can have parent_task_id)
-- `task_links` - **Cross-project bidirectional linking** (new feature!)
-- `tags`, `project_tags`, `task_tags` - Tagging system
-- `notes` - Attached to projects/tasks
-- `attachments` - File metadata
+### PostgreSQL Connection (Both Repos)
+```bash
+KM_DB_TYPE=postgresql
+KM_POSTGRES_HOST=localhost
+KM_POSTGRES_PORT=5432
+KM_POSTGRES_DB=knowledge_manager
+KM_POSTGRES_USER=km_user
+KM_POSTGRES_PASSWORD=<from .env file>
+```
 
-### Key Features to Preserve:
-- ✅ Cross-project task linking with `@project-name` syntax
-- ✅ Hierarchical task structure (parent/subtasks)
-- ✅ Foreign key CASCADE relationships
-- ✅ ISO8601 timestamps and UUID primary keys
-
-### Available Tools:
-- **Claude Code** CLI (`claude` command) - installed
-- **OpenAI Codex** CLI (`codex` command) - installed
-- **Gemini CLI** (`gemini` command) - installed
-- **LM Studio** running Qwen models on RTX 5090
+### Docker Services
+- **postgres**: localhost:5432 (PostgreSQL 16)
+- **orchestrator**: localhost:8000 (FastAPI - TODO)
+- **pgadmin**: localhost:5050 (optional, profile: admin)
 
 ---
 
-## Questions/Issues?
+## Architecture Overview
 
-1. **Check status doc first**: `POSTGRESQL_MIGRATION_STATUS.md` → "Known Issues & Blockers"
-2. **Docker issues**: See `docker/README.md` → "Troubleshooting"
-3. **Migration fails**: Check pgloader logs at `~/.local/share/pgloader/pgloader.log`
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Multi-Agent System                        │
+├─────────────────────────────────────────────────────────────┤
+│                                                               │
+│  ┌──────────────┐      ┌──────────────┐      ┌──────────┐  │
+│  │   kmtui      │      │  ai_orch     │      │   CLIs   │  │
+│  │  (Textual)   │──────│  (FastAPI)   │──────│ claude   │  │
+│  │              │      │              │      │ codex    │  │
+│  └──────────────┘      └──────────────┘      │ gemini   │  │
+│         │                     │               └──────────┘  │
+│         │                     │                     │        │
+│         └─────────────────────┴─────────────────────┘        │
+│                              │                               │
+│                    ┌─────────▼─────────┐                     │
+│                    │   PostgreSQL 16   │                     │
+│                    │  (Docker Volume)  │                     │
+│                    │  LISTEN/NOTIFY    │                     │
+│                    └───────────────────┘                     │
+│                                                               │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │              LLM Router (RTX 5090)                    │  │
+│  │  llama.cpp server → Qwen models (hot-swappable)      │  │
+│  └──────────────────────────────────────────────────────┘  │
+│                                                               │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -141,43 +182,60 @@ See `POSTGRESQL_MIGRATION_STATUS.md` Phase 4 for:
 
 When you complete work:
 
-1. ✅ Update checkboxes in `POSTGRESQL_MIGRATION_STATUS.md`
-2. ✅ Update "Last Updated" timestamp and "Last Editor" at top
-3. ✅ Move phase status from 🚧 → ✅ when complete
-4. ✅ Commit changes with descriptive message
-5. ✅ Update this briefing if needed for next session
+1. ✅ Test changes thoroughly (kmtui, psql queries, etc.)
+2. ✅ Update relevant documentation files
+3. ✅ Commit changes with descriptive messages
+4. ✅ Push to GitHub (both repos if needed)
+5. ✅ Update this briefing for next session
 
 ---
 
-## Long-Term Goal
+## Questions/Issues?
 
-Build a **minimal viable agent orchestrator** that:
-- Assigns tasks from knowledge_manager to AI CLIs
-- Uses PostgreSQL for cross-device access
-- Tracks agent work in real-time (LISTEN/NOTIFY)
-- Manages local LLMs on RTX 5090 (orchestrator + hot-swapped workers)
-
-**Next major phases after PostgreSQL**:
-- Phase 4: Update Python code for PostgreSQL support
-- Phase 5: Test TUI with PostgreSQL backend
-- Phase 6: Build task queue system
-- Phase 7: CLI tool integration layer
-- Phase 8: Local LLM routing with llama.cpp
+1. **PostgreSQL issues**: Check `POSTGRESQL_MIGRATION_STATUS.md` → "Resolved Issues"
+2. **Docker issues**: `docker compose logs <service-name>`
+3. **kmtui not working**: Check `~/dotfiles/zsh_configs/knowledge_manager.zsh`
+4. **Connection refused**: Verify PostgreSQL container is running
 
 ---
 
-## Quick Start Command
+## Long-Term Goals
+
+**Phase 6-8: Orchestrator Development**
+- Build task queue system (filesystem or PostgreSQL-based)
+- Integrate AI CLIs (claude, codex, gemini)
+- Implement LLM router for local RTX 5090 models
+- Add real-time updates via LISTEN/NOTIFY subscriptions
+- Create monitoring and health check dashboard
+
+**Future Enhancements**:
+- Vector database for semantic search
+- Multi-device synchronization
+- Agent performance tracking
+- Cost optimization for API calls
+- Fallback strategies for model unavailability
+
+---
+
+## Quick Start for Next Session
 
 ```bash
-cd ~/src/scripts/modules/knowledge_manager
-git pull
-cat POSTGRESQL_MIGRATION_STATUS.md  # Read the full status
-cd docker
-cp .env.example .env && nano .env
-docker compose up -d
+# Verify PostgreSQL is running
+cd ~/projects/ai-orchestrator
+docker compose ps
+
+# If not running, start it
+docker compose up -d postgres
+
+# Test kmtui
+kmtui
+
+# Start orchestrator development
+cd ~/projects/ai-orchestrator/docker/orchestrator
+# Edit main.py to implement task polling and assignment
 ```
 
-**Good luck!** 🚀
+**Ready to build the orchestrator!** 🚀
 
 ---
 
