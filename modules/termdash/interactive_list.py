@@ -198,6 +198,8 @@ class InteractiveList:
         self._detail_meta: List[Tuple[int, bool]] = []
         self._detail_content_height: int = 0
         self._key_to_item: Dict[str, Any] = {}
+        self._detail_custom_handler: Optional[Callable[[int], bool]] = None
+        self._detail_custom_teardown: Optional[Callable[[], None]] = None
 
     def _invoke_handler(self, handler: Callable, key: int, current_item: Any) -> Tuple[bool, bool]:
         """
@@ -983,29 +985,42 @@ class InteractiveList:
             return False
 
         if self.state.detail_entries:
+            handled = False
             if key in (curses.KEY_UP, ord("k")):
                 self._detail_move_selection(-1)
+                handled = True
             elif key in (curses.KEY_DOWN, ord("j")):
                 self._detail_move_selection(1)
+                handled = True
             elif key == curses.KEY_PPAGE:
                 self._detail_page(-1)
+                handled = True
             elif key == curses.KEY_NPAGE:
                 self._detail_page(1)
+                handled = True
             elif key in (ord("g"),):
                 self._detail_jump(start=True)
+                handled = True
             elif key in (ord("G"),):
                 self._detail_jump(start=False)
+                handled = True
             elif key == ord("e"):
                 self._detail_set_expanded(True)
+                handled = True
             elif key == ord("c"):
                 self._detail_set_expanded(False)
+                handled = True
             elif key in (curses.KEY_ENTER, 10, 13):
                 self._detail_toggle_selected()
+                handled = True
             elif key in (27, ord("q")):
                 self._exit_detail_view()
-            else:
-                return False
-            return True
+                handled = True
+            if handled:
+                return True
+            if self._detail_custom_handler and self._detail_custom_handler(key):
+                return True
+            return False
 
         # Fallback handling when detail formatter returns simple text
         total_lines = len(self._detail_lines)
@@ -1043,7 +1058,17 @@ class InteractiveList:
         """Initialise detail view state for the selected item."""
         raw = self.detail_formatter(item) if self.detail_formatter else []
         data, fallback = self._normalize_detail_payload(raw)
+        self._detail_custom_handler = None
+        self._detail_custom_teardown = None
+        self._activate_detail_view(data, fallback, item=item)
 
+    def _activate_detail_view(
+        self,
+        data: DetailViewData,
+        fallback: Optional[List[str]],
+        *,
+        item: Any = None,
+    ) -> None:
         self.state.detail_view = True
         self.state.detail_item = item
         self.state.detail_title = data.title
@@ -1054,11 +1079,33 @@ class InteractiveList:
 
         if self.state.detail_entries:
             self._detail_rebuild_lines()
-            self._detail_ensure_visible()
+            self._detail_ensure_visible(force=True)
         else:
             self._detail_lines = list(fallback or [])
             self._detail_meta = []
             self._detail_focusable = []
+
+    def show_custom_detail(
+        self,
+        data: DetailViewData,
+        *,
+        key_handler: Optional[Callable[[int], bool]] = None,
+        teardown: Optional[Callable[[], None]] = None,
+    ) -> None:
+        self._detail_custom_handler = key_handler
+        self._detail_custom_teardown = teardown
+        self._activate_detail_view(data, fallback=None, item=None)
+
+    def refresh_custom_detail(self, data: DetailViewData) -> None:
+        if not self.state.detail_view:
+            return
+        self.state.detail_title = data.title
+        self.state.detail_footer = data.footer or DETAIL_FOOTER_DEFAULT
+        self.state.detail_entries = list(data.entries)
+        if self.state.detail_selection >= len(self.state.detail_entries):
+            self.state.detail_selection = max(0, len(self.state.detail_entries) - 1)
+        self._detail_rebuild_lines()
+        self._detail_ensure_visible(force=True)
 
     def _detail_rebuild_lines(self) -> None:
         """Recompute flattened detail lines for rendering."""
@@ -1155,6 +1202,13 @@ class InteractiveList:
             self.state.detail_scroll = max_scroll
 
     def _exit_detail_view(self) -> None:
+        if self._detail_custom_teardown:
+            try:
+                self._detail_custom_teardown()
+            except Exception:
+                pass
+        self._detail_custom_handler = None
+        self._detail_custom_teardown = None
         self.state.detail_view = False
         self.state.detail_item = None
         self.state.detail_entries = []

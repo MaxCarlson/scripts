@@ -26,6 +26,15 @@ class _StubSystem:
         return self._wsl
 
 
+class _StubListView:
+    def __init__(self):
+        self.state = types.SimpleNamespace(detail_selection=0)
+        self.refresh_log = []
+
+    def refresh_custom_detail(self, data):
+        self.refresh_log.append(data)
+
+
 def test_open_media_windows_uses_shell(monkeypatch, tmp_path):
     clip = tmp_path / "clip.mp4"
     clip.write_text("x")
@@ -191,3 +200,107 @@ def test_launch_multi_preview_prefers_overlap_hint(monkeypatch, tmp_path):
     report_viewer._launch_multi_preview(rows, manager)
     assert starts[0] == 15.0  # master honored overlap hint
     assert starts[1] == 0.0   # loser starts at overlap origin
+
+
+def test_detail_view_includes_overlap_provenance(tmp_path):
+    keep = report_viewer.FileStats(path=tmp_path / "keep.mp4", size=100, duration=60.0)
+    dup = report_viewer.FileStats(path=tmp_path / "dup.mp4", size=50, duration=30.0)
+    evidence = {
+        "detector": "subset-phash",
+        "overlap_ratio": 0.5,
+        "overlap_seconds": 12.5,
+        "phash_distance": 3.2,
+        "phash_step": 2,
+        "phash_offset_frames": 4,
+        "overlap_hints": {
+            str(keep.path): 12.5,
+            str(dup.path): 0.0,
+        },
+    }
+    group = report_viewer.DuplicateGroup(
+        group_id="g-meta",
+        method="subset",
+        keep=keep,
+        losers=[dup],
+        raw_payload={"evidence": evidence},
+    )
+    detail = report_viewer._build_detail_view_for_group(group)
+    assert detail.entries[1].summary == "Overlap provenance"
+    body_text = "\n".join(detail.entries[1].body)
+    assert "subset-phash" in body_text
+    assert "50.0%" in body_text
+    assert "dup.mp4" in body_text
+
+
+def test_selection_markers_follow_manager(tmp_path):
+    keep = report_viewer.FileStats(path=tmp_path / "m.mp4", size=10)
+    dup = report_viewer.FileStats(path=tmp_path / "n.mp4", size=5)
+    manager = report_viewer.DuplicateListManager(
+        [
+            report_viewer.DuplicateGroup(group_id="gsel", method="hash", keep=keep, losers=[dup]),
+        ]
+    )
+    manager.expand_all()
+    rows = manager.visible_rows()
+    assert all(not row.selected for row in rows)
+    manager.set_selected([rows[0].row_id, rows[1].row_id])
+    manager.apply_selection_markers(rows)
+    assert all(row.selected for row in rows[:2])
+
+
+def test_inline_preview_respects_overlap_hint_and_scrub(monkeypatch, tmp_path):
+    keep = report_viewer.FileStats(path=tmp_path / "keep.mp4", size=10, duration=40.0, overlap_hint=18.0)
+    dup = report_viewer.FileStats(path=tmp_path / "dup.mp4", size=9, duration=20.0, overlap_hint=0.0)
+    group = report_viewer.DuplicateGroup(group_id="gprev", method="subset", keep=keep, losers=[dup])
+    rows = [
+        report_viewer.DuplicateListRow(
+            group_id="gprev",
+            method="subset",
+            path=keep.path,
+            depth=0,
+            is_keep=True,
+            size=keep.size,
+            size_delta=0,
+            duplicate_count=1,
+            reclaimable_bytes=9,
+            parent_path=None,
+            keep_size=keep.size,
+            display_name="keep",
+            row_id="gprev|keep",
+            overlap_hint=keep.overlap_hint,
+        ),
+        report_viewer.DuplicateListRow(
+            group_id="gprev",
+            method="subset",
+            path=dup.path,
+            depth=1,
+            is_keep=False,
+            size=dup.size,
+            size_delta=dup.size - keep.size,
+            duplicate_count=1,
+            reclaimable_bytes=9,
+            parent_path="gprev",
+            keep_size=keep.size,
+            display_name="dup",
+            row_id="gprev|dup",
+            overlap_hint=dup.overlap_hint,
+        ),
+    ]
+    stub_list = _StubListView()
+    monkeypatch.setattr(
+        report_viewer,
+        "_extract_ascii_frame",
+        lambda path, timestamp, **kwargs: [f"{Path(path).name}@{timestamp:.1f}"],
+    )
+    session = report_viewer.InlinePreviewSession(group, rows, stub_list)
+    assert session._timestamps[rows[0].path] == 18.0
+    detail = session.build_detail_view()
+    assert detail.title.startswith("Inline Preview")
+    stub_list.state.detail_selection = 1
+    before = session._timestamps[rows[1].path]
+    assert session.handle_key(ord(".")) is True
+    assert session._timestamps[rows[1].path] == before + 1.0
+    assert stub_list.refresh_log, "Scrub should refresh detail view"
+    top_before = session._timestamps[rows[0].path]
+    assert session.handle_key(ord("A")) is True
+    assert session._timestamps[rows[0].path] == top_before + session._scrub_step

@@ -55,6 +55,11 @@ class DuplicateGroup:
     def reclaimable_bytes(self) -> int:
         return self.total_duplicate_size
 
+    def evidence(self) -> Dict[str, Any]:
+        payload = self.raw_payload or {}
+        evidence = payload.get("evidence")
+        return evidence if isinstance(evidence, dict) else {}
+
 
 def _safe_stat(path: Path) -> int:
     try:
