@@ -198,8 +198,9 @@ CREATE INDEX idx_attachments_task_id ON attachments(task_id);
 - [x] Create `docker-compose.yml` for PostgreSQL
 - [x] Create initialization SQL script
 - [x] Create `.env` file for credentials
-- [ ] Test Docker container startup (NEXT: do in WSL)
-- [ ] Configure WSL2 port forwarding (for LAN access)
+- [x] Test Docker container startup in WSL
+- [x] Configure Docker volume for data persistence
+- [ ] Configure WSL2 port forwarding (for LAN access - optional)
 
 ### Files to Create
 
@@ -358,7 +359,10 @@ KM_POSTGRES_PASSWORD=secure_password
 - [x] UUIDs preserved correctly
 - [x] Timestamps preserved correctly
 - [x] CRUD operations tested and working
-- [ ] TUI works with PostgreSQL backend (TODO: manual test)
+- [x] Shell function (kmtui) updated to use correct Python venv
+- [x] Shell function (kmtui) configured with PostgreSQL env vars
+- [x] Docker volume configured to use migrated data
+- [ ] TUI manual test after shell reload (PENDING: user action required)
 - [ ] CLI works with PostgreSQL backend (TODO: manual test)
 
 ### Test Results
@@ -396,6 +400,42 @@ AND project_id NOT IN (SELECT id FROM projects);
 SELECT indexname, indexdef FROM pg_indexes
 WHERE tablename IN ('projects', 'tasks', 'task_links');
 ```
+
+### Issues Encountered and Fixed
+
+#### Issue 1: kmtui ModuleNotFoundError
+**Problem**: `ModuleNotFoundError: No module named 'textual'`
+**Root Cause**: Shell function using system Python instead of scripts venv
+**Fix**: Updated `~/dotfiles/zsh_configs/knowledge_manager.zsh`:
+```bash
+kmtui() {
+    local venv_python="$HOME/scripts/.venv/bin/python"
+    # ... PostgreSQL env vars ...
+    "$venv_python" -m knowledge_manager.tui.app
+}
+```
+
+#### Issue 2: Empty TUI (No Projects/Tasks Displayed)
+**Problem**: TUI showed empty, no data visible
+**Root Cause**: ai-orchestrator created new PostgreSQL database with empty volumes
+**Fix**: Updated `~/projects/ai-orchestrator/docker-compose.yml` to use external volume:
+```yaml
+volumes:
+  postgres_data:
+    external: true
+    name: docker_postgres_data  # Use existing volume from scripts repo
+```
+
+#### Issue 3: PostgreSQL Container Unhealthy
+**Problem**: `initdb: error: directory "/var/lib/postgresql/data" exists but is not empty`
+**Root Cause**: Existing data in pgdata/ subdirectory
+**Fix**: Added PGDATA environment variable:
+```yaml
+environment:
+  PGDATA: /var/lib/postgresql/data/pgdata
+```
+
+**Verification**: All data now accessible (25 projects, 236 tasks confirmed via psql)
 
 ---
 
@@ -442,52 +482,133 @@ CREATE TRIGGER projects_notify
 
 ---
 
+## ai-orchestrator Repository Setup ✅
+
+**Status**: COMPLETE
+**Created**: 2025-12-29
+**Location**: `~/projects/ai-orchestrator`
+
+### Purpose
+
+Dedicated multi-agent orchestrator system for managing:
+- PostgreSQL database (shared with knowledge_manager)
+- Task dispatcher and coordinator
+- CLI integrations (claude, codex, gemini)
+- LLM router for RTX 5090 models
+- Vector database (future)
+
+### Repository Structure
+
+```
+ai-orchestrator/
+├── docker-compose.yml           # Multi-service orchestration
+├── .env                         # Environment configuration
+├── docker/
+│   ├── orchestrator/           # FastAPI orchestrator service
+│   │   ├── Dockerfile
+│   │   ├── main.py            # LISTEN/NOTIFY handler
+│   │   └── requirements.txt
+│   └── postgres/              # PostgreSQL init scripts
+│       └── init-scripts/
+│           └── 01_init_schema.sql
+├── cli_integrations/          # CLI wrappers (TODO)
+├── llm_router/               # LLM management (TODO)
+├── shared/                   # Shared utilities (TODO)
+└── vector_db/               # Vector database (TODO)
+```
+
+### Docker Configuration
+
+**Key Features**:
+- Uses external PostgreSQL volume from scripts repo (docker_postgres_data)
+- Orchestrator service with task polling and LISTEN/NOTIFY subscription
+- FastAPI REST API for task management
+- Shared task_queue volume for CLI integration
+- Health checks for dependency management
+
+**Services**:
+1. **postgres**: PostgreSQL 16 with LISTEN/NOTIFY triggers
+2. **orchestrator**: FastAPI task dispatcher (TODO: implement)
+3. **pgadmin**: Database management UI (optional, profile: admin)
+
+### Integration with knowledge_manager
+
+- **Shared Database**: Both repos use same PostgreSQL instance
+- **Shared Volume**: docker_postgres_data contains all migrated data
+- **LISTEN/NOTIFY**: Real-time updates across all clients
+- **Environment**: Same KM_POSTGRES_* env vars for connection
+
+---
+
 ## Known Issues & Blockers
 
 ### Current Blockers
 
-None currently - ready to proceed with Phase 2.
+None - all phases complete. Awaiting user testing of kmtui.
 
-### Potential Issues
+### Resolved Issues
 
-1. **WSL2 Networking**: May need to configure `.wslconfig` for mirrored networking
-2. **Port Conflicts**: Ensure port 5432 not already in use
-3. **File Permissions**: Docker volume permissions on WSL2
-4. **UUID Format**: Ensure UUIDs convert correctly (TEXT → UUID type)
+1. ✅ **kmtui ModuleNotFoundError**: Fixed by updating shell function to use ~/scripts/.venv/bin/python
+2. ✅ **Empty TUI**: Fixed by configuring Docker to use external volume (docker_postgres_data)
+3. ✅ **PostgreSQL Container Unhealthy**: Fixed by adding PGDATA environment variable
+4. ✅ **SQL Placeholder Incompatibility**: Fixed by replacing all `?` with `%s` (PostgreSQL-only)
+5. ✅ **Type Conversion Errors**: Fixed by adding _to_uuid(), _to_datetime(), _to_date() helpers
+6. ✅ **task_links Trigger Error**: Fixed by creating specialized trigger for composite primary key
 
-### Mitigation Strategies
+### Potential Future Issues
 
-1. Use `.wslconfig` with `networkingMode=mirrored` (Windows 11 22H2+)
-2. Check port with `netstat -an | grep 5432` before starting
-3. Use Docker named volumes instead of bind mounts
-4. Test UUID conversion with small dataset first
+1. **WSL2 Networking**: May need to configure `.wslconfig` for LAN access (optional)
+2. **Port Conflicts**: If moving to different machine, check port 5432 availability
+3. **Performance**: May need query optimization as data grows beyond 1000+ projects
 
 ---
 
 ## Next Steps (Immediate Actions)
 
-**For current session**:
-1. Create Docker Compose configuration
-2. Create PostgreSQL initialization SQL
-3. Create setup documentation
-4. Test Docker container startup
-5. Update this status file with progress
+**User Action Required**:
+1. Reload shell configuration: `source ~/.zshrc`
+2. Test kmtui command: `kmtui`
+3. Verify all 25 projects are displayed in TUI
+4. Test adding a new project (press 'a' in TUI)
+5. Report any errors encountered
 
-**For next session**:
-1. Install pgloader
-2. Run migration
-3. Verify data integrity
-4. Update db.py for PostgreSQL support
-5. Test TUI with PostgreSQL
+**For next session** (if TUI works):
+1. Continue orchestrator development (~/projects/ai-orchestrator)
+2. Implement CLI integrations (claude, codex, gemini wrappers)
+3. Set up LLM router for RTX 5090 models
+4. Implement task queue filesystem
+5. Add LISTEN/NOTIFY subscription to TUI (optional enhancement)
 
 ---
 
 ## References
 
-- **Research Doc**: `research-output/Claude-V4-multi-agent-orchestration.md`
-- **Current DB Schema**: `knowledge_manager/db.py`
+### Documentation
+- **Research Doc**: `~/scripts/research-output/Claude-V4-multi-agent-orchestration.md`
+- **Migration Status**: `~/scripts/modules/knowledge_manager/POSTGRESQL_MIGRATION_STATUS.md` (this file)
+- **Briefing Doc**: `~/scripts/modules/knowledge_manager/BRIEFING_FOR_NEXT_SESSION.md`
+
+### Code Repositories
+- **Scripts Repo**: `~/scripts/` (knowledge_manager module)
+- **Orchestrator Repo**: `~/projects/ai-orchestrator/` (multi-agent system)
+
+### Database Files
 - **Original SQLite DB**: `C:\Users\mcarls\.local\share\knowledge_manager_data\knowledge_manager.db`
-- **Docker Setup Guide**: (to be created)
+- **SQLite Backup**: `~/scripts/modules/knowledge_manager/docker/knowledge_manager.db`
+- **PostgreSQL Volume**: `docker_postgres_data` (Docker named volume)
+
+### Configuration Files
+- **scripts repo**:
+  - `~/scripts/modules/knowledge_manager/docker/docker-compose.yml`
+  - `~/scripts/modules/knowledge_manager/docker/.env`
+  - `~/scripts/modules/knowledge_manager/db.py` (PostgreSQL-only)
+  - `~/scripts/modules/knowledge_manager/db_postgres.py` (connection adapter)
+- **ai-orchestrator repo**:
+  - `~/projects/ai-orchestrator/docker-compose.yml`
+  - `~/projects/ai-orchestrator/.env`
+  - `~/projects/ai-orchestrator/docker/orchestrator/main.py`
+- **dotfiles**:
+  - `~/dotfiles/zsh_configs/knowledge_manager.zsh` (kmtui shell function)
 
 ---
 
