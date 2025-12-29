@@ -20,6 +20,7 @@ authors = [
 # Example: dependencies = ["requests", "pydantic>2.0"]
 dependencies = [
     "textual>=0.47.0",  # For TUI
+    "psycopg2-binary>=2.9.9",  # For PostgreSQL support
     # "fastapi", # For future API
     # "uvicorn[standard]", # For future API
 ]

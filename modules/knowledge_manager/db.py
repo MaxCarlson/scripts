@@ -1,32 +1,112 @@
 # File: knowledge_manager/db.py
+import os
 import sqlite3
 import uuid
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Union
 from datetime import datetime, timezone, date
+
+try:
+    import psycopg2
+    import psycopg2.extras
+    POSTGRES_AVAILABLE = True
+except ImportError:
+    POSTGRES_AVAILABLE = False
 
 from .models import Project, ProjectStatus, Task, TaskStatus
 
 DEFAULT_DB_FILE_NAME = "knowledge_manager.db"
 
-def get_db_connection(db_path: Path) -> sqlite3.Connection:
+
+def use_postgresql() -> bool:
     """
-    Establishes a database connection to the SQLite database specified by db_path.
-    Enables foreign key constraint enforcement for the connection.
-    Runs migrations if needed.
+    Check if PostgreSQL should be used based on environment variables.
     """
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA foreign_keys = ON;")
-    _run_migrations(conn)
+    return os.getenv("KM_DB_TYPE", "sqlite").lower() == "postgresql"
+
+
+def _get_placeholder() -> str:
+    """
+    Get the appropriate parameter placeholder for the current database.
+    Returns '?' for SQLite, '%s' for PostgreSQL.
+    """
+    return "%s" if use_postgresql() else "?"
+
+
+def get_db_connection(db_path: Optional[Path] = None) -> Union[sqlite3.Connection, 'psycopg2.extensions.connection']:
+    """
+    Establishes a database connection based on KM_DB_TYPE environment variable.
+
+    For SQLite (default):
+        - Uses db_path parameter
+        - Enables foreign key constraints
+        - Runs migrations
+
+    For PostgreSQL (when KM_DB_TYPE=postgresql):
+        - Uses environment variables for connection:
+          KM_POSTGRES_HOST, KM_POSTGRES_PORT, KM_POSTGRES_DB,
+          KM_POSTGRES_USER, KM_POSTGRES_PASSWORD
+        - Ignores db_path parameter
+    """
+    if use_postgresql():
+        if not POSTGRES_AVAILABLE:
+            raise ImportError(
+                "psycopg2 is required for PostgreSQL support. "
+                "Install with: pip install psycopg2-binary"
+            )
+        return _get_postgres_connection()
+    else:
+        # SQLite mode (original behavior)
+        if db_path is None:
+            db_path = get_default_db_path()
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA foreign_keys = ON;")
+        _run_migrations(conn)
+        return conn
+
+
+def _get_postgres_connection() -> 'psycopg2.extensions.connection':
+    """
+    Establishes a PostgreSQL connection using environment variables.
+    """
+    host = os.getenv("KM_POSTGRES_HOST", "localhost")
+    port = int(os.getenv("KM_POSTGRES_PORT", "5432"))
+    database = os.getenv("KM_POSTGRES_DB", "knowledge_manager")
+    user = os.getenv("KM_POSTGRES_USER", "km_user")
+    password = os.getenv("KM_POSTGRES_PASSWORD")
+
+    if not password:
+        raise ValueError(
+            "KM_POSTGRES_PASSWORD environment variable must be set when using PostgreSQL"
+        )
+
+    conn = psycopg2.connect(
+        host=host,
+        port=port,
+        database=database,
+        user=user,
+        password=password
+    )
+
+    # Disable autocommit for transaction control (like SQLite)
+    conn.autocommit = False
+
     return conn
 
 
-def _run_migrations(conn: sqlite3.Connection) -> None:
+def _run_migrations(conn: Union[sqlite3.Connection, 'psycopg2.extensions.connection']) -> None:
     """
     Run database migrations to upgrade schema.
     Safe to call multiple times - migrations are idempotent.
     Ensures base tables exist before adding new ones.
+
+    NOTE: For PostgreSQL, migrations are skipped as the schema is managed
+    by Docker init scripts (01_init_schema.sql).
     """
+    # Skip migrations for PostgreSQL - schema managed by init scripts
+    if use_postgresql():
+        return
+
     cursor = conn.cursor()
 
     # Ensure base tables exist (projects and tasks)
@@ -146,11 +226,20 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_attachments_task_id ON attachments(task_id)")
         conn.commit()
 
-def init_db(db_path: Path) -> None:
+def init_db(db_path: Optional[Path] = None) -> None:
     """
     Initializes the database by creating the 'projects', 'tasks', and 'task_links' tables
     if they do not already exist.
+
+    For PostgreSQL: Schema initialization is handled by Docker init scripts,
+    so this function does nothing.
+
+    For SQLite: Creates tables if they don't exist.
     """
+    # Skip for PostgreSQL - schema managed by Docker init scripts
+    if use_postgresql():
+        return
+
     conn = None
     try:
         conn = get_db_connection(db_path)
@@ -269,12 +358,13 @@ def get_project_by_name(conn: sqlite3.Connection, name: str) -> Optional[Project
         )
     return None
 
-def list_projects(conn: sqlite3.Connection, status: Optional[ProjectStatus] = None) -> List[Project]:
+def list_projects(conn: Union[sqlite3.Connection, 'psycopg2.extensions.connection'], status: Optional[ProjectStatus] = None) -> List[Project]:
+    ph = _get_placeholder()
     base_sql = "SELECT id, name, status, created_at, modified_at, description_md_path FROM projects"
     params = []
     conditions = []
     if status:
-        conditions.append("status = ?")
+        conditions.append(f"status = {ph}")
         params.append(status.value)
     if conditions:
         base_sql += " WHERE " + " AND ".join(conditions)
@@ -284,8 +374,9 @@ def list_projects(conn: sqlite3.Connection, status: Optional[ProjectStatus] = No
     rows = cursor.fetchall()
     return [
         Project(
-            id=uuid.UUID(row[0]), name=row[1], status=ProjectStatus(row[2]),
-            created_at=datetime.fromisoformat(row[3]), modified_at=datetime.fromisoformat(row[4]),
+            id=uuid.UUID(str(row[0])), name=row[1], status=ProjectStatus(row[2]),
+            created_at=datetime.fromisoformat(str(row[3])) if isinstance(row[3], str) else row[3],
+            modified_at=datetime.fromisoformat(str(row[4])) if isinstance(row[4], str) else row[4],
             description_md_path=Path(row[5]) if row[5] else None
         ) for row in rows
     ]
