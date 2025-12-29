@@ -19,6 +19,7 @@ from textual.widgets import (
 
 from ... import task_ops, utils, links
 from ...models import Project, Task, TaskStatus
+from ...task_queue import TaskQueue, TaskPriority
 from ..widgets.lists import TaskList, TaskListItem
 from ..widgets.dialogs import InputDialog, LinkSelectionDialog
 from ..widgets.footer import CustomFooter
@@ -43,6 +44,7 @@ class TasksScreen(Screen):
         Binding("f", "cycle_filter", "Filter", show=True),
         Binding("m", "reparent_task", "Move", show=True),
         Binding("v", "toggle_view", "Toggle View", show=True),
+        Binding("ctrl+a", "assign_to_ai", "Assign to AI", show=True),
         Binding("ctrl+enter", "follow_link", "Follow Link", show=False),
         Binding("ctrl+e", "edit_task_details", "Edit Details", show=False),
         Binding("ctrl+x", "delete_selected_task", "Delete", show=True),
@@ -234,6 +236,58 @@ class TasksScreen(Screen):
                     self.notify(f"Error: {e}", title="Error", severity="error")
         
         await self.app.push_screen(InputDialog(prompt_text=f"Type 'delete' to confirm deleting '{task_to_delete.title}':"), confirm_cb)
+
+    async def action_assign_to_ai(self) -> None:
+        """Assign the selected task to the AI task queue (Ctrl+A)."""
+        selected_task = self.app.selected_task
+        if not selected_task:
+            self.notify(message="No task selected to assign.", title="Assign to AI", severity="warning")
+            return
+
+        if not self.current_project:
+            self.notify(message="No project context.", title="Assign to AI", severity="error")
+            return
+
+        try:
+            # Initialize task queue
+            queue = TaskQueue()
+
+            # Get task details for context
+            task_details = ""
+            if selected_task.details_md_path:
+                details_path = Path(selected_task.details_md_path)
+                if details_path.exists():
+                    task_details = details_path.read_text()
+
+            # Create comprehensive description
+            description = f"{selected_task.title}\n\n{task_details}".strip()
+
+            # Submit to queue
+            queue_task_id = queue.create_task(
+                project_id=str(self.current_project.id),
+                task_title=selected_task.title,
+                description=description,
+                task_id=str(selected_task.id),
+                priority=TaskPriority.NORMAL,
+                cli_preference="claude",
+                context={
+                    "project_name": self.current_project.name,
+                    "related_files": [],
+                    "dependencies": [],
+                    "tags": []
+                }
+            )
+
+            self.notify(
+                message=f"Task '{selected_task.title}' submitted to AI queue (ID: {queue_task_id[:8]}...)",
+                title="✅ Assigned to AI",
+                severity="information"
+            )
+            log.info(f"Task {selected_task.id} assigned to AI queue as {queue_task_id}")
+
+        except Exception as e:
+            self.notify(message=f"Failed to assign task: {e}", title="Error", severity="error")
+            log.error(f"Error assigning task to AI: {e}", exc_info=True)
 
     async def action_edit_task_title(self) -> None:
         """Edit the selected task's title via dialog."""

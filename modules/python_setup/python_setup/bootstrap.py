@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -147,8 +148,37 @@ def ensure_micromamba(su: SystemUtils) -> tuple[bool, str]:
         return False, "skip micromamba on Termux"
     if which("micromamba") or which("mamba") or which("conda"):
         return False, "conda/mamba already present"
-    # Provide guidance, optionally attempt installer if available
-    return False, "micromamba not found; install via https://mamba.readthedocs.io/en/latest/ or package manager"
+    try:
+        if su.is_windows():
+            result = run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    "Invoke-Expression ((Invoke-WebRequest -Uri https://micro.mamba.pm/install.ps1 -UseBasicParsing).Content)",
+                ],
+                check=False,
+            )
+            if result.returncode == 0 and which("micromamba"):
+                return True, "installed micromamba via PowerShell bootstrapper"
+            return False, "micromamba PowerShell installer ran; verify PATH or rerun manually"
+        if su.is_linux() or su.is_darwin() or su.is_wsl2():
+            bash_bin = shutil.which("bash") or "/bin/bash"
+            if not os.path.exists(bash_bin):
+                return False, "bash shell not found; install micromamba manually"
+            install_cmd = (
+                "set -euo pipefail; "
+                f"curl -L micro.mamba.pm/install.sh | {shlex.quote(bash_bin)}"
+            )
+            result = run([bash_bin, "-lc", install_cmd], check=False)
+            if result.returncode == 0 and which("micromamba"):
+                return True, "installed micromamba via linux installer script"
+            return False, "micromamba installer script ran; open a new shell or install manually"
+        return False, "micromamba automation unsupported on this platform"
+    except Exception as exc:
+        return False, f"micromamba install attempt failed: {exc}"
 
 
 def best_practices_text() -> str:
@@ -192,4 +222,3 @@ def bootstrap(verbose: bool = False) -> None:
     # No hard failure if tools couldn’t be auto-installed; guidance is enough
     if verbose:
         print("[python_setup] bootstrap complete.")
-
