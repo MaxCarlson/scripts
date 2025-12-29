@@ -114,22 +114,26 @@ def parse_pipeline(spec: Optional[str]) -> List[int]:
     return r or [1, 2, 3, 4]
 
 
+_BASE_STAGE_NAMES = ["discovering files", "scanning files"]
+_STAGE_DISPLAY_MAP = {
+    1: ["Q1 size bucketing"],
+    2: ["Q2 partial", "Q2 full hash"],
+    3: ["Q3 metadata"],
+    4: ["Q4 pHash"],
+    5: ["Q5 scene"],
+    6: ["Q6 audio"],
+    7: ["Q7 timeline"],
+}
+
+
+def _stage_display_names(stage: int) -> List[str]:
+    return list(_STAGE_DISPLAY_MAP.get(stage, []))
+
+
 def _build_stage_plan(selected_stages: Sequence[int]) -> List[str]:
-    plan: List[str] = ["discovering files", "scanning files"]
-    if 1 in selected_stages:
-        plan.append("Q1 size bucketing")
-    if 2 in selected_stages:
-        plan.extend(["Q2 partial", "Q2 full hash"])
-    if 3 in selected_stages:
-        plan.append("Q3 metadata")
-    if 4 in selected_stages:
-        plan.append("Q4 pHash")
-    if 5 in selected_stages:
-        plan.append("Q5 scene")
-    if 6 in selected_stages:
-        plan.append("Q6 audio")
-    if 7 in selected_stages:
-        plan.append("Q7 timeline")
+    plan: List[str] = list(_BASE_STAGE_NAMES)
+    for stage in sorted(set(selected_stages)):
+        plan.extend(_stage_display_names(stage))
     return plan
 
 
@@ -525,6 +529,8 @@ def run_pipeline(
     logger.info("=== run_pipeline() ENTRY ===")
     logger.info(f"Received {len(roots) if roots else 0} roots, max_depth={max_depth}, stages={selected_stages}")
 
+    selected_stages = set(int(stage) for stage in selected_stages)
+
     scan_roots: List[Path] = []
     if root is not None:
         scan_roots.append(Path(root))
@@ -538,7 +544,23 @@ def run_pipeline(
     skip_norm: Set[Path] = {p.expanduser().resolve() for p in skip_paths} if skip_paths else set()
     logger.info(f"Exclusions: {len(skip_norm)} paths")
 
-    reporter.set_stage_plan(_build_stage_plan(selected_stages))
+    reporter.set_stage_plan(_build_stage_plan(sorted(selected_stages)))
+    max_stage_selected = max(selected_stages) if selected_stages else 0
+    reporter.set_stage_ceiling(max_stage_selected)
+
+    def _sync_runtime_stages() -> None:
+        nonlocal max_stage_selected
+        additions = reporter.consume_stage_extensions(max_stage_selected)
+        for stage in additions:
+            if stage < 1 or stage > 7:
+                continue
+            if stage not in selected_stages:
+                selected_stages.add(stage)
+                logger.info("Runtime request: enabling Q%s stage", stage)
+            max_stage_selected = max(max_stage_selected, stage)
+            reporter.append_stage_entries(_stage_display_names(stage))
+
+    _sync_runtime_stages()
 
     logger.info("Calling reporter.set_status()...")
     try:
@@ -714,6 +736,7 @@ def run_pipeline(
     # ALL files must continue to Q2/Q3/Q4 for visual similarity detection
     size_buckets_for_q2: Dict[int, List[FileMeta]] = {}  # Size-matched groups (optimization hint)
 
+    _sync_runtime_stages()
     if 1 in selected_stages:
         logger.info("Starting Q1: size bucket analysis (optimization, not elimination)")
         reporter.set_status("Q1 size bucketing")
@@ -766,6 +789,7 @@ def run_pipeline(
     # Q2: partial (blake3 slices) -> full sha256 on collisions
     # Smart ordering: prioritize size-matched groups for early exact-duplicate detection
     # -------------------------------------------------------
+    _sync_runtime_stages()
     if 2 in selected_stages and all_candidates:
         # Smart ordering: process size-matched files first for faster exact-duplicate detection
         priority_files = [f for bucket in size_buckets_for_q2.values() for f in bucket]
@@ -962,6 +986,7 @@ def run_pipeline(
     # ---------------------------------------------
     # Q3: ffprobe metadata (duration/format/codec...)
     # ---------------------------------------------
+    _sync_runtime_stages()
     if 3 in selected_stages:
         # Keep only videos not excluded by Q2
         vids_in: List[VideoMeta] = [
@@ -1120,6 +1145,7 @@ def run_pipeline(
     # ----------------------------------------------------------
     # Q4: pHash grouping & optional subset detection (expensive)
     # ----------------------------------------------------------
+    _sync_runtime_stages()
     if 4 in selected_stages and video_for_q4:
         # Exclude videos already grouped by Q3
         pending_for_q4 = [v for v in video_for_q4 if _normalized_path(v.path) not in excluded_after_q3]
@@ -1280,6 +1306,7 @@ def run_pipeline(
     # ----------------------------------------------------------
     # Q5: Scene-aware fingerprinting (advanced visual matching)
     # ----------------------------------------------------------
+    _sync_runtime_stages()
     if 5 in selected_stages and video_for_q4:
         pending_for_q5 = [
             v
@@ -1407,6 +1434,7 @@ def run_pipeline(
     # ----------------------------------------------------------
     # Q6: Audio fingerprinting and analysis (experimental)
     # ----------------------------------------------------------
+    _sync_runtime_stages()
     if 6 in selected_stages and video_for_q4:
         pending_for_q6 = [
             v
@@ -1535,6 +1563,7 @@ def run_pipeline(
     # ----------------------------------------------------------
     # Q7: Advanced content analysis (experimental)
     # ----------------------------------------------------------
+    _sync_runtime_stages()
     if 7 in selected_stages and video_for_q4:
         pending_for_q7 = [
             v

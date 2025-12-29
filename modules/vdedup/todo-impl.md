@@ -32,10 +32,10 @@ This document translates backlog items into trackable execution units. Each top-
 - [x] Ensure the widget refreshes at ≥5 FPS so log entries appear smoothly.
 
 ## [ ] 5. Runtime Controls
-- [ ] Create a non-blocking input listener that captures pause/resume/stop/restart/quit commands.
-- [ ] Wire controls to `ProgressReporter` so workers respect pause and shutdown signals.
-- [ ] Display control state (e.g., “Paused”) and next steps (press key to resume).
-- [ ] Ensure stop/restart gracefully drain thread pools and update caches before exiting.
+- [x] Create a non-blocking input listener that captures pause/resume/stop/extend/quit commands.
+- [x] Wire controls to `ProgressReporter` so workers respect pause and shutdown signals.
+- [x] Display control state (e.g., “Paused”) and next steps (press key to resume).
+- [x] Ensure stop requests gracefully drain thread pools and update caches before exiting.
 - [ ] Allow queue/parameter changes while paused (thread counts, limits) and surface the updates instantly in the UI.
 - [ ] Add hotkeys to switch between dashboard and per-scan detail screens without restarting the pipeline.
 
@@ -66,13 +66,16 @@ This document translates backlog items into trackable execution units. Each top-
 - [ ] Integrate keyboard navigation (enter/back) so the dashboard and list share the same controls.
 - [ ] Rebase the interactive list on termdash widgets so it can be reused across modules (avoid Rich-only paths).
 - [ ] **In-flight: Multi-video verification workflow**
-  - [ ] Allow selecting multiple losers (up to 4) plus the master from the interactive list and launch a synchronized inspection workspace.
-  - [ ] For Windows use `os.startfile`, for Linux/macOS/Termux prefer `xdg-open`/`open`/`termux-open`, but fall back to spawning configurable viewers (VLC/mpv) so we can tile videos in a 2×2 grid.
-  - [ ] Inject overlap metadata (subset detection offsets, scene indices) into the report so viewers can seek close to the shared segment automatically when launched.
-  - [ ] Add an on-screen indicator (color band or badge) showing which playing window corresponds to the current master.
-  - [ ] Provide a command/key inside the report viewer to promote/demote losers, updating the keep policy and persisting the change back to the report.
-  - [ ] Record these actions in the report so subsequent applies honor the revised master and so collaborative reviewers have provenance.
-  - [ ] Stretch goal: embedded preview/scrubber control directly in the TUI using termdash panes so simple comparisons do not require launching external players.
+  - [x] Allow selecting multiple losers (up to 4) plus the master from the interactive list and launch a synchronized inspection workspace.
+  - [x] For Windows use `os.startfile`, for Linux/macOS/Termux prefer `xdg-open`/`open`/`termux-open`, but fall back to spawning configurable viewers (VLC/mpv) so we can tile videos in a 2×2 grid.
+  - [x] Inject overlap metadata (subset detection offsets, scene indices) into the report so viewers can seek close to the shared segment automatically when launched.
+  - [x] Add an on-screen indicator (color band or badge) showing which playing window corresponds to the current master.
+  - [x] Provide a command/key inside the report viewer to promote/demote losers, updating the keep policy and persisting the change back to the report.
+  - [x] Record these actions in the report so subsequent applies honor the revised master and so collaborative reviewers have provenance.
+  - [x] Surface overlap provenance inline within the detail pane (detector, ratio, hint timestamp) so the operator can trust the auto-seek before launching players.
+  - [x] Stretch goal: embedded preview/scrubber control directly in the TUI using termdash panes so simple comparisons do not require launching external players.
+    - [ ] Cache ASCII renderings per timestamp so rapid scrubs do not repeatedly invoke ffmpeg for the same frame.
+    - [ ] Add a toggle to link/unlink scrub heads so reviewers can sweep all previews in sync or focus on a single clip without leaving the overlay.
 
 ## [ ] 10. Missing Footage Detection & Export
 - [ ] Detect cases where a subset file contains segments not present in its master using timeline fingerprints.
