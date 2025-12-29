@@ -16,7 +16,7 @@ def test_alignable_distance_basic():
     # Should find alignment with short sig embedded in long sig
     result = _alignable_distance(sig_short, sig_long, 10)
     assert result is not None
-    assert result < 5  # Should be very low distance for identical frames
+    assert result.distance < 5  # Should be very low distance for identical frames
 
 
 def test_alignable_distance_frame_rate_handling():
@@ -29,7 +29,7 @@ def test_alignable_distance_frame_rate_handling():
     # Should find alignment using step=2 strategy
     result = _alignable_distance(sig_short, sig_long, 10)
     assert result is not None
-    assert result < 5  # Should be very low distance for matching frames
+    assert result.distance < 5  # Should be very low distance for matching frames
 
 
 def test_alignable_distance_intro_outro():
@@ -42,7 +42,7 @@ def test_alignable_distance_intro_outro():
     # Should find alignment with offset
     result = _alignable_distance(sig_short, sig_long, 10)
     assert result is not None
-    assert result < 5  # Should be very low distance for matching frames
+    assert result.distance < 5  # Should be very low distance for matching frames
 
 
 def test_alignable_distance_complexity_adaptation():
@@ -99,7 +99,7 @@ def test_grouping_module_consistency():
     assert result_pipeline is not None
     assert result_grouping is not None
     # Results should be similar (within reasonable tolerance)
-    assert abs(result_pipeline - result_grouping) < 2.0
+    assert abs(result_pipeline.distance - result_grouping) < 2.0
 
 
 def test_empty_signatures():

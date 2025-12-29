@@ -233,3 +233,11 @@ def test_subset_stage_handles_multiple_partials(tmp_path: Path, monkeypatch: pyt
     assert len(subset_groups) == 2
     for members in subset_groups.values():
         assert str(members[0].path).endswith("master.mp4")
+    assert hasattr(groups, "metadata")
+    for gid in subset_groups:
+        meta = groups.metadata.get(gid)
+        assert meta is not None
+        assert meta.get("detector")
+        hints = meta.get("overlap_hints")
+        assert isinstance(hints, dict)
+        assert str(base) in hints
