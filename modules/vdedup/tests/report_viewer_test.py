@@ -137,3 +137,57 @@ def test_promote_to_master_updates_report(tmp_path):
     saved = json.loads(report_file.read_text())
     assert saved["groups"]["g1"]["keep"] == str(dup)
     assert saved["groups"]["g1"]["losers"][0] == str(keep)
+
+
+def test_launch_multi_preview_prefers_overlap_hint(monkeypatch, tmp_path):
+    keep = tmp_path / "keep.mp4"
+    dup = tmp_path / "dup.mp4"
+    keep.write_text("A")
+    dup.write_text("B")
+    group = report_viewer.DuplicateGroup(
+        group_id="g2",
+        method="subset",
+        keep=report_viewer.FileStats(path=keep, size=10, duration=40.0, overlap_hint=15.0),
+        losers=[report_viewer.FileStats(path=dup, size=5, duration=10.0, overlap_hint=0.0)],
+    )
+    manager = report_viewer.DuplicateListManager([group])
+    starts = []
+
+    def fake_open(path, **kwargs):
+        starts.append(kwargs.get("start"))
+        return True
+
+    monkeypatch.setattr(report_viewer, "_open_media", fake_open)
+    rows = [
+        report_viewer.DuplicateListRow(
+            group_id="g2",
+            method="subset",
+            path=dup,
+            depth=1,
+            is_keep=False,
+            size=5,
+            size_delta=0,
+            duplicate_count=1,
+            reclaimable_bytes=5,
+            parent_path="g2",
+            keep_size=10,
+            row_id="g2|dup",
+        ),
+        report_viewer.DuplicateListRow(
+            group_id="g2",
+            method="subset",
+            path=keep,
+            depth=0,
+            is_keep=True,
+            size=10,
+            size_delta=0,
+            duplicate_count=1,
+            reclaimable_bytes=5,
+            parent_path=None,
+            keep_size=10,
+            row_id="g2|keep",
+        ),
+    ]
+    report_viewer._launch_multi_preview(rows, manager)
+    assert starts[0] == 15.0  # master honored overlap hint
+    assert starts[1] == 0.0   # loser starts at overlap origin
