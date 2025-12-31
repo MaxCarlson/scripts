@@ -22,3 +22,16 @@ def _configure_temp_environment() -> None:
 
 
 _configure_temp_environment()
+
+
+def pytest_configure(config) -> None:  # pragma: no cover - exercised implicitly
+    """
+    Force pytest to place tmp_path/tmp_path_factory assets inside the repository.
+    Some CI sandboxes block access to %LOCALAPPDATA%, so we override basetemp early.
+    """
+    base = _PYTEST_TMP_ROOT / "basetemp"
+    base.mkdir(parents=True, exist_ok=True)
+    config.option.basetemp = str(base)
+    # Ensure pytest rebuilds the factory with the new basetemp.
+    if hasattr(config, "_tmp_path_factory"):
+        delattr(config, "_tmp_path_factory")

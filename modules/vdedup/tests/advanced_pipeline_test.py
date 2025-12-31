@@ -5,7 +5,8 @@ from typing import Dict, Tuple
 
 import pytest
 
-from vdedup.pipeline import PipelineConfig, run_pipeline
+from vdedup.models import VideoMeta
+from vdedup.pipeline import PipelineConfig, _score_metadata_cluster, run_pipeline
 from vdedup.progress import ProgressReporter
 
 
@@ -241,3 +242,52 @@ def test_subset_stage_handles_multiple_partials(tmp_path: Path, monkeypatch: pyt
         hints = meta.get("overlap_hints")
         assert isinstance(hints, dict)
         assert str(base) in hints
+
+
+def test_score_metadata_cluster_filters_low_confidence(tmp_path: Path, reporter: ProgressReporter) -> None:
+    base = tmp_path / "meta_cluster"
+    base.mkdir(parents=True, exist_ok=True)
+    master = VideoMeta(
+        path=base / "master.mp4",
+        size=900_000_000,
+        mtime=0.0,
+        duration=200.0,
+        width=1920,
+        height=1080,
+        container="mp4",
+        vcodec="h264",
+        overall_bitrate=9_000_000,
+        video_bitrate=7_200_000,
+    )
+    close = VideoMeta(
+        path=base / "close.mp4",
+        size=880_000_000,
+        mtime=0.0,
+        duration=199.5,
+        width=1920,
+        height=1080,
+        container="mp4",
+        vcodec="h264",
+        overall_bitrate=8_900_000,
+        video_bitrate=7_100_000,
+    )
+    far = VideoMeta(
+        path=base / "different.mp4",
+        size=150_000_000,
+        mtime=0.0,
+        duration=45.0,
+        width=854,
+        height=480,
+        container="mkv",
+        vcodec="vp9",
+        overall_bitrate=2_000_000,
+        video_bitrate=1_500_000,
+    )
+
+    cfg = PipelineConfig(metadata_score_floor=0.6, same_res=True, same_codec=True, same_container=True)
+    filtered, meta = _score_metadata_cluster([master, close, far], tolerance=2.0, cfg=cfg, reporter=reporter)
+    assert len(filtered) == 2
+    assert far not in filtered
+    assert meta["detector"] == "metadata"
+    assert str(master.path) in meta["scores"]
+    assert str(close.path) in meta["scores"]

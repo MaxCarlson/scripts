@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import curses
 import io
+import json
 import logging
 import os
 import shlex
@@ -38,11 +39,13 @@ ANSI_LOSE = "\033[91m"   # Bright red
 ANSI_METHOD = "\033[96m"  # Cyan
 ANSI_STATS = "\033[95m"   # Magenta
 
-NAME_MIN_WIDTH = 30
+NAME_MIN_WIDTH = 24
+NAME_MAX_WIDTH = 72
 DUP_WIDTH = 4
 RECLAIM_WIDTH = 12
 SIZE_WIDTH = 12
 DELTA_WIDTH = 8
+SCORE_WIDTH = 7
 COLUMN_SPACING = 1
 
 
@@ -69,20 +72,27 @@ def _term_width(default: int = 120) -> int:
         return default
 
 
-def _compute_layout(width: int) -> Tuple[int, int, int, int, int]:
+def _compute_layout(width: int) -> Tuple[int, int, int, int, int, int]:
     meta_width = (
         DUP_WIDTH
         + RECLAIM_WIDTH
         + SIZE_WIDTH
         + DELTA_WIDTH
-        + COLUMN_SPACING * 4
+        + SCORE_WIDTH
+        + COLUMN_SPACING * 5
     )
-    name_width = max(NAME_MIN_WIDTH, width - meta_width)
-    return name_width, DUP_WIDTH, RECLAIM_WIDTH, SIZE_WIDTH, DELTA_WIDTH
+    available = width - meta_width
+    if available < NAME_MIN_WIDTH:
+        name_width = max(10, available)
+    else:
+        name_width = min(max(available, NAME_MIN_WIDTH), NAME_MAX_WIDTH)
+    if name_width <= 0:
+        name_width = NAME_MIN_WIDTH
+    return name_width, DUP_WIDTH, RECLAIM_WIDTH, SIZE_WIDTH, DELTA_WIDTH, SCORE_WIDTH
 
 
 def _column_header(width: int) -> str:
-    name_width, dup_w, reclaim_w, size_w, delta_w = _compute_layout(width)
+    name_width, dup_w, reclaim_w, size_w, delta_w, score_w = _compute_layout(width)
     return (
         f"{'NAME':<{name_width}}"
         f"{'':<{COLUMN_SPACING}}"
@@ -93,6 +103,8 @@ def _column_header(width: int) -> str:
         f"{'SIZE':>{size_w}}"
         f"{'':<{COLUMN_SPACING}}"
         f"{'DELTA':>{delta_w}}"
+        f"{'':<{COLUMN_SPACING}}"
+        f"{'SCORE':>{score_w}}"
     )
 
 
@@ -153,15 +165,203 @@ def _candidate_open_commands(path: Path, sys_utils: SystemUtils) -> List[List[st
     return [["xdg-open", target]]
 
 
+_GRID_CELL_WIDTH = 960
+_GRID_CELL_HEIGHT = 540
+_GRID_OFFSETS = {
+    0: (0, 0),
+    1: (_GRID_CELL_WIDTH, 0),
+    2: (0, _GRID_CELL_HEIGHT),
+    3: (_GRID_CELL_WIDTH, _GRID_CELL_HEIGHT),
+}
 MPV_GEOMETRIES = {
-    0: "50%x50%+0+0",
-    1: "50%x50%+50%+0",
-    2: "50%x50%+0+50%",
-    3: "50%x50%+50%+50%",
+    idx: f"{_GRID_CELL_WIDTH}x{_GRID_CELL_HEIGHT}+{pos[0]}+{pos[1]}"
+    for idx, pos in _GRID_OFFSETS.items()
 }
 
 
-def _open_media(path: Path, *, start: Optional[float] = None, slot: Optional[int] = None, label: Optional[str] = None) -> bool:
+def _vlc_geometry_args(slot: Optional[int]) -> List[str]:
+    if slot is None:
+        return []
+    pos = _GRID_OFFSETS.get(slot % 4, (0, 0))
+    return [
+        f"--video-x={pos[0]}",
+        f"--video-y={pos[1]}",
+        f"--width={_GRID_CELL_WIDTH}",
+        f"--height={_GRID_CELL_HEIGHT}",
+    ]
+
+
+def _config_file_path(sys_utils: Optional[SystemUtils] = None) -> Path:
+    sys_utils = sys_utils or SystemUtils()
+    if sys_utils.is_windows():
+        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+    elif sys_utils.is_darwin():
+        base = Path.home() / "Library" / "Preferences"
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return base / "vdedup" / "preferences.json"
+
+
+def _load_preferences() -> Dict[str, Any]:
+    cfg_path = _config_file_path()
+    if not cfg_path.exists():
+        return {}
+    try:
+        return json.loads(cfg_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_preferences(prefs: Dict[str, Any]) -> None:
+    cfg_path = _config_file_path()
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(json.dumps(prefs, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _remember_player(kind: str, path: str) -> None:
+    prefs = _load_preferences()
+    prefs["preferred_player"] = {"kind": kind, "path": path}
+    try:
+        _save_preferences(prefs)
+    except Exception:
+        LOGGER.debug("Failed to persist preferred player", exc_info=True)
+
+
+def _preferred_player_order() -> List[str]:
+    prefs = _load_preferences()
+    entry = prefs.get("preferred_player")
+    order: List[str] = []
+    if isinstance(entry, dict):
+        kind = entry.get("kind")
+        if isinstance(kind, str):
+            order.append(kind.lower())
+    order.extend(["mpv", "vlc"])
+    deduped: List[str] = []
+    for item in order:
+        if item and item not in deduped:
+            deduped.append(item)
+    return deduped
+
+
+def _player_candidates(kind: str, sys_utils: Optional[SystemUtils] = None) -> List[Path]:
+    """Return OS-specific fallback locations for mpv/vlc binaries."""
+    sys_utils = sys_utils or SystemUtils()
+    candidates: List[Path] = []
+    env_key = f"VDEDUP_{kind.upper()}_PATH"
+    env_path = os.environ.get(env_key)
+    if env_path:
+        candidates.append(Path(env_path))
+    if sys_utils.is_windows():
+        prefixes = [
+            Path(os.environ.get("ProgramFiles", "")),
+            Path(os.environ.get("ProgramFiles(x86)", "")),
+            Path(os.environ.get("LOCALAPPDATA", "")),
+        ]
+        if kind == "vlc":
+            for prefix in prefixes:
+                if prefix:
+                    candidates.append(prefix / "VideoLAN" / "VLC" / "vlc.exe")
+        if kind == "mpv":
+            for prefix in prefixes:
+                if prefix:
+                    candidates.append(prefix / "mpv" / "mpv.exe")
+            candidates.append(Path.home() / "scoop" / "apps" / "mpv" / "current" / "mpv.exe")
+    else:
+        # POSIX defaults beyond PATH lookups
+        candidates.extend(
+            [
+                Path.home() / "bin" / kind,
+                Path("/usr/local/bin") / kind,
+                Path("/opt/homebrew/bin") / kind,
+            ]
+        )
+    return [path for path in candidates if path]
+
+
+def _resolve_player_binary(kind: str) -> Optional[str]:
+    """Locate a player binary by kind ('mpv' or 'vlc')."""
+    prefs = _load_preferences()
+    entry = prefs.get("preferred_player")
+    if isinstance(entry, dict) and entry.get("kind") == kind:
+        cached = entry.get("path")
+        if cached and Path(cached).exists():
+            return cached
+
+    env_specific = os.environ.get(f"VDEDUP_{kind.upper()}_PATH")
+    if env_specific and Path(env_specific).exists():
+        return env_specific
+
+    direct = shutil.which(kind)
+    if direct:
+        return direct
+
+    for candidate in _player_candidates(kind):
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+def _resolve_grid_player() -> Optional[Tuple[str, str]]:
+    for kind in _preferred_player_order():
+        if kind not in {"mpv", "vlc"}:
+            continue
+        exe = _resolve_player_binary(kind)
+        if exe:
+            return kind, exe
+    return None
+
+
+def _launch_player(
+    kind: str,
+    exe: str,
+    path: Path,
+    *,
+    start: Optional[float],
+    slot: Optional[int],
+    label: Optional[str],
+) -> bool:
+    if kind == "mpv":
+        args = [exe, "--keep-open=yes"]
+        if slot is not None:
+            geometry = MPV_GEOMETRIES.get(slot, MPV_GEOMETRIES[slot % 4])
+            args.append(f"--geometry={geometry}")
+            args.append("--autofit=50%x50%")
+        if start is not None and start > 0:
+            args.append(f"--start={max(start, 0.0):.2f}")
+        if label:
+            args.append(f"--title={label}")
+        args.append(str(path))
+        try:
+            subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception as exc:
+            LOGGER.error("mpv launch failed for %s: %s", path, exc)
+            return False
+    if kind == "vlc":
+        args = [exe, "--play-and-exit", "--no-video-title-show"]
+        if start is not None and start > 0:
+            args.append(f"--start-time={max(start, 0.0):.2f}")
+        if label:
+            args.append(f"--meta-title={label}")
+        args.extend(_vlc_geometry_args(slot))
+        args.append(str(path))
+        try:
+            subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception as exc:
+            LOGGER.error("VLC launch failed for %s: %s", path, exc)
+            return False
+    return False
+
+
+def _open_media(
+    path: Path,
+    *,
+    start: Optional[float] = None,
+    slot: Optional[int] = None,
+    label: Optional[str] = None,
+    player_hint: Optional[Tuple[str, str]] = None,
+) -> bool:
     """
     Launch the given path in the platform's default handler (video player, file explorer).
     Returns True on success, False if no opener succeeded.
@@ -188,22 +388,19 @@ def _open_media(path: Path, *, start: Optional[float] = None, slot: Optional[int
         except Exception as exc:
             LOGGER.error("Custom viewer command failed (%s): %s", viewer_template, exc)
 
-    if shutil.which("mpv"):
-        args = ["mpv", "--keep-open=yes"]
-        if slot is not None:
-            geometry = MPV_GEOMETRIES.get(slot, MPV_GEOMETRIES[slot % 4])
-            args.append(f"--geometry={geometry}")
-            args.append("--autofit=50%x50%")
-        if start is not None and start > 0:
-            args.append(f"--start={max(start, 0.0):.2f}")
-        if label:
-            args.append(f"--title={label}")
-        args.append(str(resolved))
-        try:
-            subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if player_hint:
+        hint_kind, hint_path = player_hint
+        if _launch_player(hint_kind, hint_path, resolved, start=start, slot=slot, label=label):
+            _remember_player(hint_kind, hint_path)
             return True
-        except Exception as exc:
-            LOGGER.error("mpv launch failed for %s: %s", resolved, exc)
+
+    for kind in _preferred_player_order():
+        exe = _resolve_player_binary(kind)
+        if not exe:
+            continue
+        if _launch_player(kind, exe, resolved, start=start, slot=slot, label=label):
+            _remember_player(kind, exe)
+            return True
 
     if sys_utils.is_windows():
         try:
@@ -274,8 +471,32 @@ def _build_provenance_entry(group: DuplicateGroup) -> Optional[DetailEntry]:
     )
 
 
-def _build_detail_view_for_group(group: DuplicateGroup) -> DetailViewData:
+def _build_detail_view_for_group(group: DuplicateGroup, scores: Optional[Dict[str, Any]] = None) -> DetailViewData:
     suffix_map = _unique_suffixes([group.keep.path] + [loser.path for loser in group.losers])
+    evidence = group.evidence() if hasattr(group, "evidence") else {}
+    score_map = scores or (evidence.get("scores") if isinstance(evidence, dict) else {}) or {}
+
+    def _score_lines(path: Path) -> List[str]:
+        payload = score_map.get(str(path))
+        lines: List[str] = []
+        if isinstance(payload, dict):
+            final = payload.get("final")
+            if isinstance(final, (int, float)):
+                lines.append(f"Score : {final:.2f}")
+            positives = payload.get("positives") or {}
+            if positives:
+                lines.append("  Positives:")
+                for key, value in sorted(positives.items(), key=lambda kv: kv[1], reverse=True):
+                    lines.append(f"    + {key}: {value:.2f}")
+            negatives = payload.get("negatives") or {}
+            if negatives:
+                lines.append("  Penalties:")
+                for key, value in sorted(negatives.items(), key=lambda kv: kv[1], reverse=True):
+                    lines.append(f"    - {key}: {value:.2f}")
+            rationale = payload.get("rationale")
+            if rationale:
+                lines.append(f"  Notes : {rationale}")
+        return lines
 
     entries: List[DetailEntry] = []
     summary_body = [
@@ -294,11 +515,13 @@ def _build_detail_view_for_group(group: DuplicateGroup) -> DetailViewData:
             expanded=True,
         )
     )
+    entries[-1].body.extend(_score_lines(group.keep.path))
 
     for loser in group.losers:
         display = DuplicateListManager._display_name_for(loser.path, suffix_map.get(loser.path, ""))
         body = _describe_file(loser)
         body.append(f"Delta vs keep : {_fmt_signed_bytes(loser.size - group.keep.size)}")
+        body.extend(_score_lines(loser.path))
         entries.append(
             DetailEntry(
                 summary=f"L {display}",
@@ -334,6 +557,8 @@ class DuplicateListRow:
     row_id: str = ""
     selected: bool = False
     overlap_hint: Optional[float] = None
+    score: Optional[float] = None
+    score_payload: Optional[Dict[str, Any]] = None
 
     def is_loser(self) -> bool:
         return not self.is_keep
@@ -345,6 +570,13 @@ class DuplicateListManager:
         self._expanded: set[str] = set()
         self._group_map: Dict[str, DuplicateGroup] = {g.group_id: g for g in self._groups}
         self._selected_ids: set[str] = set()
+        self._group_scores: Dict[str, Dict[str, Any]] = {}
+        for group in self._groups:
+            evidence = group.evidence() if hasattr(group, "evidence") else {}
+            if isinstance(evidence, dict):
+                scores_payload = evidence.get("scores")
+                if isinstance(scores_payload, dict):
+                    self._group_scores[group.group_id] = scores_payload
 
     @staticmethod
     def _display_name_for(path: Path, suffix: str) -> str:
@@ -381,6 +613,7 @@ class DuplicateListManager:
             # Determine minimal suffixes per path for display
             paths = [keep.path] + [loser.path for loser in group.losers]
             suffix_map = _unique_suffixes(paths)
+            keep_score, keep_payload = self._score_entry(group.group_id, keep.path)
             keep_row = DuplicateListRow(
                 group_id=group.group_id,
                 method=group.method,
@@ -397,12 +630,15 @@ class DuplicateListManager:
                 display_name=self._display_name_for(keep.path, suffix_map.get(keep.path, "")),
                 row_id=f"{group.group_id}|{keep.path}",
                 overlap_hint=keep.overlap_hint,
+                score=keep_score,
+                score_payload=keep_payload,
                 selected=self.is_selected(f"{group.group_id}|{keep.path}"),
             )
             rows.append(keep_row)
 
             if self.is_expanded(group.group_id):
                 for loser in group.losers:
+                    loser_score, loser_payload = self._score_entry(group.group_id, loser.path)
                     rows.append(
                         DuplicateListRow(
                             group_id=group.group_id,
@@ -419,6 +655,8 @@ class DuplicateListManager:
                             display_name=self._display_name_for(loser.path, suffix_map.get(loser.path, "")),
                             row_id=f"{group.group_id}|{loser.path}",
                             overlap_hint=loser.overlap_hint,
+                            score=loser_score,
+                            score_payload=loser_payload,
                             selected=self.is_selected(f"{group.group_id}|{loser.path}"),
                         )
                     )
@@ -434,6 +672,9 @@ class DuplicateListManager:
 
     def get_group(self, group_id: str) -> Optional[DuplicateGroup]:
         return self._group_map.get(group_id)
+
+    def score_map_for(self, group_id: str) -> Dict[str, Any]:
+        return self._group_scores.get(group_id, {})
 
     def set_selected(self, row_ids: Iterable[str]) -> None:
         self._selected_ids = {rid for rid in row_ids if rid}
@@ -480,9 +721,20 @@ class DuplicateListManager:
             doc.save()
         return True
 
+    def _score_entry(self, group_id: str, path: Path) -> Tuple[Optional[float], Optional[Dict[str, Any]]]:
+        score_map = self._group_scores.get(group_id, {})
+        entry = score_map.get(str(path))
+        if isinstance(entry, dict):
+            final = entry.get("final")
+            try:
+                return (float(final), entry)
+            except (TypeError, ValueError):
+                return (None, entry)
+        return (None, None)
+
 
 def _formatter(row: DuplicateListRow, sort_field: str, width: int, *_args) -> str:
-    name_width, dup_w, reclaim_w, size_w, delta_w = _compute_layout(width)
+    name_width, dup_w, reclaim_w, size_w, delta_w, score_w = _compute_layout(width)
     indent = "  " * row.depth
     role = "K" if row.is_keep else "L"
     display = row.display_name or row.path.name
@@ -502,6 +754,8 @@ def _formatter(row: DuplicateListRow, sort_field: str, width: int, *_args) -> st
     size_cell = f"{_fmt_bytes(row.size):>{size_w}}"
     delta_cell = " " * delta_w if row.is_keep else f"{_fmt_signed_bytes(row.size_delta):>{delta_w}}"
 
+    score_cell = f"{row.score:.2f}".rjust(score_w) if row.score is not None else " " * score_w
+
     return (
         f"{name_cell}"
         f"{'':<{COLUMN_SPACING}}"
@@ -512,6 +766,8 @@ def _formatter(row: DuplicateListRow, sort_field: str, width: int, *_args) -> st
         f"{size_cell}"
         f"{'':<{COLUMN_SPACING}}"
         f"{delta_cell}"
+        f"{'':<{COLUMN_SPACING}}"
+        f"{score_cell}"
     )
 
 
@@ -582,7 +838,7 @@ def launch_report_viewer(report_paths: Sequence[Path]) -> None:
                 ],
                 footer=DETAIL_FOOTER_DEFAULT,
             )
-        return _build_detail_view_for_group(group)
+        return _build_detail_view_for_group(group, manager.score_map_for(row.group_id))
 
     header_line = _column_header(_term_width())
     list_view = InteractiveList(
@@ -864,6 +1120,9 @@ def _launch_multi_preview(rows: List[DuplicateListRow], manager: DuplicateListMa
             durations[row.path] = _probe_duration(row.path)
     target_durations = [d for d in durations.values() if d]
     target = min(target_durations) if target_durations else None
+    grid_player = _resolve_grid_player()
+    if not grid_player:
+        LOGGER.warning("mpv/vlc not found on PATH or default locations; multi-preview will use the system opener without tiling.")
     for slot, row in enumerate(ordered_rows):
         stats = stats_map.get(row.path)
         start_hint = stats.overlap_hint if stats else None
@@ -877,7 +1136,11 @@ def _launch_multi_preview(rows: List[DuplicateListRow], manager: DuplicateListMa
             else:
                 start = 0.0
         label = f"{'[MASTER]' if row.is_keep else '[LOSER]'} {row.path.name}"
-        _open_media(row.path, start=start, slot=slot, label=label)
+        launched = False
+        if grid_player:
+            launched = _open_media(row.path, start=start, slot=slot, label=label, player_hint=grid_player)
+        if not launched:
+            _open_media(row.path, start=start, slot=slot, label=label)
 
 
 def _start_inline_preview(list_view: InteractiveList, manager: DuplicateListManager, rows: List[DuplicateListRow]) -> None:

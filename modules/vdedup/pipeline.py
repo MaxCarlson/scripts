@@ -43,8 +43,11 @@ except Exception:
 
 # Local modules (absolute imports so CLI works installed or from source)
 from vdedup.models import FileMeta, VideoMeta
-from vdedup.progress import ProgressReporter
 from vdedup.cache import HashCache
+from vdedup.progress import ProgressReporter
+from vdedup.scoring import score_metadata_candidate, score_subset_candidate
+import random
+import time
 
 
 # -------------------------------------------------------------------------------------------------
@@ -70,6 +73,10 @@ class PipelineConfig:
     gpu: bool = False
     # artifact handling
     include_partials: bool = False
+    # sampling
+    sample_ratio: Optional[float] = None
+    sample_seed: Optional[int] = None
+    metadata_score_floor: float = 0.55
 
 
 def parse_pipeline(spec: Optional[str]) -> List[int]:
@@ -336,6 +343,7 @@ def _record_subset_metadata(
     short_vm: VideoMeta,
     long_vm: VideoMeta,
     match: AlignmentResult,
+    reporter: Optional[ProgressReporter] = None,
 ) -> None:
     overlap_seconds = _alignment_start_seconds(match, long_vm.duration)
     overlap_ratio = 0.0
@@ -345,17 +353,51 @@ def _record_subset_metadata(
         str(long_vm.path): overlap_seconds,
         str(short_vm.path): 0.0,
     }
-    groups.metadata[group_id] = {
-        "detector": detector,
-        "shorter": str(short_vm.path),
-        "longer": str(long_vm.path),
-        "overlap_seconds": overlap_seconds,
-        "overlap_ratio": overlap_ratio,
-        "phash_distance": match.distance,
-        "phash_offset_frames": match.start_offset + match.base_offset,
-        "phash_step": match.step,
-        "overlap_hints": hints,
+    meta = groups.metadata.get(group_id, {})
+    scores_payload = dict(meta.get("scores") or {})
+    score_card = score_subset_candidate(
+        subset=short_vm,
+        superset=long_vm,
+        match=match,
+        detector=detector,
+    )
+    scores_payload[str(short_vm.path)] = score_card.to_payload()
+    existing_master = scores_payload.get(str(long_vm.path))
+    prev_best = 0.0
+    if isinstance(existing_master, dict):
+        try:
+            prev_best = float(existing_master.get("final") or 0.0)
+        except (TypeError, ValueError):
+            prev_best = 0.0
+    master_best = max(prev_best, score_card.final)
+    scores_payload[str(long_vm.path)] = {
+        "final": round(master_best, 4),
+        "positives": {"subset:max": round(master_best, 4)},
+        "negatives": {},
+        "rationale": f"Best subset confidence {master_best:.2f}",
     }
+
+    meta.update(
+        {
+            "detector": detector,
+            "shorter": str(short_vm.path),
+            "longer": str(long_vm.path),
+            "overlap_seconds": overlap_seconds,
+            "overlap_ratio": overlap_ratio,
+            "phash_distance": match.distance,
+            "phash_offset_frames": match.start_offset + match.base_offset,
+            "phash_step": match.step,
+            "overlap_hints": hints,
+            "scores": scores_payload,
+        }
+    )
+    groups.metadata[group_id] = meta
+    if reporter:
+        reporter.add_score_sample(
+            score_card.final,
+            detector=detector,
+            penalties=list(score_card.negatives.keys()),
+        )
 
 
 def _alignable_distance(a_sig, b_sig, per_frame_thresh: int) -> Optional[AlignmentResult]:
@@ -480,6 +522,104 @@ def _subset_master_loser(a: VideoMeta, b: VideoMeta) -> Tuple[VideoMeta, VideoMe
         return (duration, vm.resolution_area, bitrate, vm.size)
 
     return (a, b) if _key(a) >= _key(b) else (b, a)
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _metadata_quality_key(vm: VideoMeta) -> Tuple[float, int, int, int]:
+    duration = vm.duration if vm.duration is not None else 0.0
+    bitrate = vm.video_bitrate or vm.overall_bitrate or 0
+    return (
+        duration,
+        vm.resolution_area,
+        bitrate,
+        vm.size,
+    )
+
+
+def _score_metadata_cluster(
+    members: Sequence[VideoMeta],
+    *,
+    tolerance: float,
+    cfg: PipelineConfig,
+    reporter: Optional[ProgressReporter],
+) -> Tuple[List[VideoMeta], Dict[str, Any]]:
+    """
+    Given a cluster of metadata-similar videos, filter out low-confidence members
+    and emit score payloads for the UI/report.
+    """
+    if len(members) < 2:
+        return ([], {})
+
+    primary = max(members, key=_metadata_quality_key)
+    accepted: List[VideoMeta] = [primary]
+    scores_payload: Dict[str, Any] = {}
+    best_score = 0.0
+    raw_floor = getattr(cfg, "metadata_score_floor", 0.55)
+    floor = max(0.0, min(1.0, float(raw_floor)))
+
+    for candidate in members:
+        if candidate is primary:
+            continue
+        card = score_metadata_candidate(
+            reference=primary,
+            candidate=candidate,
+            tolerance=tolerance,
+            prefer_same_resolution=cfg.same_res,
+            prefer_same_codec=cfg.same_codec,
+            prefer_same_container=cfg.same_container,
+        )
+        scores_payload[str(candidate.path)] = card.to_payload()
+        if card.final >= floor:
+            accepted.append(candidate)
+            best_score = max(best_score, card.final)
+            if reporter:
+                reporter.add_score_sample(
+                    card.final,
+                    detector="metadata",
+                    penalties=list(card.negatives.keys()),
+                )
+        else:
+            if reporter:
+                reporter.add_log(
+                    f"Q3: filtered {candidate.path.name} (metadata score {card.final:.2f} < {floor:.2f})",
+                    level="DEBUG",
+                    source="metadata",
+                )
+
+    if len(accepted) <= 1:
+        return ([], {})
+
+    best_score = max(best_score, floor)
+    scores_payload[str(primary.path)] = {
+        "final": round(best_score, 4),
+        "positives": {"metadata:max": round(best_score, 4)},
+        "negatives": {},
+        "rationale": f"Best metadata confidence {best_score:.2f}",
+    }
+    metadata_payload = {
+        "detector": "metadata",
+        "scores": scores_payload,
+        "tolerance": tolerance,
+        "metadata_score_floor": floor,
+    }
+    return accepted, metadata_payload
 
 
 # -------------------------------------------------------------------------------------------------
@@ -649,6 +789,36 @@ def run_pipeline(
             logger.error(f"Root progress update failed: {e}")
             raise
 
+    total_discovered = len(files)
+    sample_ratio = getattr(cfg, "sample_ratio", None)
+    if sample_ratio is not None:
+        sample_ratio = max(0.0, min(1.0, float(sample_ratio)))
+    if sample_ratio and 0 < sample_ratio < 1 and total_discovered > 1:
+        sample_seed = cfg.sample_seed if cfg.sample_seed is not None else time.time()
+        rng = random.Random(sample_seed)
+        sample_count = max(1, int(round(total_discovered * sample_ratio)))
+        sample_count = min(sample_count, total_discovered)
+        if sample_count < total_discovered:
+            files = rng.sample(files, sample_count)
+            discovery_bytes = 0
+            for sampled in files:
+                try:
+                    discovery_bytes += sampled.stat().st_size
+                except Exception:
+                    continue
+            reporter.add_log(
+                f"Sampling {sample_count:,}/{total_discovered:,} files ({sample_ratio * 100:.1f}%) for quick validation",
+                "INFO",
+                source="sampling",
+            )
+            logger.info(
+                "Sampling enabled: keeping %d of %d files (ratio=%.4f, seed=%s)",
+                sample_count,
+                total_discovered,
+                sample_ratio,
+                cfg.sample_seed if cfg.sample_seed is not None else "auto",
+            )
+
     reporter.update_discovery(
         len(files),
         skipped=skipped_during_enum,
@@ -767,8 +937,14 @@ def run_pipeline(
         # Log findings
         logger.info(f"Q1 completed: {size_matched_count:,} files in {len(size_buckets_for_q2):,} size-matched groups")
         logger.info(f"Q1: {unique_size_count:,} files have unique sizes (still processed for visual similarity)")
-        reporter.add_log(f"Q1: {size_matched_count:,} files in size-matched groups (exact duplicate candidates)")
-        reporter.add_log(f"Q1: {unique_size_count:,} unique-sized files continue to visual stages")
+        reporter.add_log(
+            f"Q1: {size_matched_count:,} files in size-matched groups (exact duplicate candidates)",
+            source="Q1",
+        )
+        reporter.add_log(
+            f"Q1: {unique_size_count:,} unique-sized files continue to visual stages",
+            source="Q1",
+        )
 
         reporter.finish_stage("Q1 size bucketing")
     else:
@@ -1015,21 +1191,38 @@ def run_pipeline(
                     fmt = _probe_mod.run_ffprobe_json(path)  # type: ignore[attr-defined]
                     if not fmt:
                         return None
-                    try:
-                        duration = float(fmt.get("format", {}).get("duration", 0.0))
-                    except Exception:
-                        duration = None
+                    format_block = fmt.get("format", {}) or {}
+                    duration = _safe_float(format_block.get("duration"))
+                    container = None
+                    if isinstance(format_block.get("format_name"), str):
+                        container = str(format_block.get("format_name")).split(",")[0]
+                    overall_bitrate = _safe_int(format_block.get("bit_rate"))
                     width = height = None
+                    vcodec = None
+                    video_bitrate = None
                     try:
                         for s in fmt.get("streams", []):
                             if s.get("codec_type") == "video":
                                 width = int(s.get("width") or 0) or None
                                 height = int(s.get("height") or 0) or None
+                                vcodec = s.get("codec_name")
+                                video_bitrate = _safe_int(s.get("bit_rate"))
                                 break
                     except Exception:
                         pass
                     st = path.stat()
-                    return VideoMeta(path=path, size=st.st_size, mtime=st.st_mtime, duration=duration, width=width, height=height)
+                    return VideoMeta(
+                        path=path,
+                        size=st.st_size,
+                        mtime=st.st_mtime,
+                        duration=duration,
+                        width=width,
+                        height=height,
+                        container=container,
+                        vcodec=vcodec,
+                        overall_bitrate=overall_bitrate,
+                        video_bitrate=video_bitrate,
+                    )
                 return None
 
             def _probe_one(vm: VideoMeta) -> Optional[VideoMeta]:
@@ -1104,13 +1297,22 @@ def run_pipeline(
             duplicate_members = 0
             gid = 0
             for comp in comps.values():
-                if len(comp) > 1:
-                    groups[f"meta:{gid}"] = comp
-                    for vm in comp:
+                filtered, meta_payload = _score_metadata_cluster(
+                    comp,
+                    tolerance=tol,
+                    cfg=cfg,
+                    reporter=reporter,
+                )
+                if filtered:
+                    group_id = f"meta:{gid}"
+                    groups[group_id] = filtered
+                    if meta_payload:
+                        groups.metadata[group_id] = meta_payload
+                    for vm in filtered:
                         excluded_after_q3.add(_normalized_path(vm.path))
                     gid += 1
                     formed += 1
-                    duplicate_members += len(comp) - 1
+                    duplicate_members += len(filtered) - 1
             if formed:
                 reporter.inc_group("meta", formed)
             if duplicate_members:
@@ -1279,7 +1481,7 @@ def run_pipeline(
                         master, loser = _subset_master_loser(short, long)
                         group_id = f"subset:{gid}"
                         groups[group_id] = [master, loser]
-                        _record_subset_metadata(groups, group_id, "subset-phash", short, long, match)
+                        _record_subset_metadata(groups, group_id, "subset-phash", short, long, match, reporter=reporter)
                         subset_consumed.add(short_norm)
                         excluded_after_q4.add(_normalized_path(short.path))
                         gid += 1
@@ -1397,7 +1599,7 @@ def run_pipeline(
                             master, loser = _subset_master_loser(short_vm, long_vm)
                             group_id = f"scene-sub:{gid}"
                             groups[group_id] = [master, loser]
-                            _record_subset_metadata(groups, group_id, "subset-scene", short_vm, long_vm, match)
+                            _record_subset_metadata(groups, group_id, "subset-scene", short_vm, long_vm, match, reporter=reporter)
                             consumed.add(short_norm)
                             subset_consumed.add(short_norm)
                             excluded_after_q5.add(short_norm)
@@ -1526,7 +1728,7 @@ def run_pipeline(
                             master, loser = _subset_master_loser(short_vm, long_vm)
                             group_id = f"audio-sub:{gid}"
                             groups[group_id] = [master, loser]
-                            _record_subset_metadata(groups, group_id, "subset-audio", short_vm, long_vm, match)
+                            _record_subset_metadata(groups, group_id, "subset-audio", short_vm, long_vm, match, reporter=reporter)
                             processed_audio.add(short_norm)
                             subset_audio_consumed.add(short_norm)
                             excluded_after_q6.add(short_norm)
@@ -1654,7 +1856,7 @@ def run_pipeline(
                             master, loser = _subset_master_loser(short_vm, long_vm)
                             group_id = f"timeline-sub:{gid}"
                             groups[group_id] = [master, loser]
-                            _record_subset_metadata(groups, group_id, "subset-timeline", short_vm, long_vm, match)
+                            _record_subset_metadata(groups, group_id, "subset-timeline", short_vm, long_vm, match, reporter=reporter)
                             processed_timeline.add(short_norm)
                             timeline_subset_consumed.add(short_norm)
                             excluded_after_q7.add(short_norm)

@@ -92,6 +92,16 @@ class _KeyReader:
             while time.time() < end:
                 if msvcrt.kbhit():  # type: ignore[attr-defined]
                     ch = msvcrt.getwch()  # type: ignore[attr-defined]
+                    if ch in ("\x00", "\xe0"):
+                        if msvcrt.kbhit():  # type: ignore[attr-defined]
+                            code = msvcrt.getwch()  # type: ignore[attr-defined]
+                        else:
+                            code = msvcrt.getwch()  # type: ignore[attr-defined]
+                        if code.upper() == "I":
+                            return "PAGE_UP"
+                        if code.upper() == "Q":
+                            return "PAGE_DOWN"
+                        continue
                     return ch
                 time.sleep(0.01)
             return None
@@ -99,6 +109,20 @@ class _KeyReader:
             ready, _, _ = select.select([sys.stdin], [], [], timeout)
             if ready:
                 ch = sys.stdin.read(1)
+                if ch == "\x1b":
+                    seq = ch
+                    while True:
+                        ready_more, _, _ = select.select([sys.stdin], [], [], 0.01)
+                        if not ready_more:
+                            break
+                        seq += sys.stdin.read(1)
+                        if seq.endswith("~") or len(seq) >= 5:
+                            break
+                    if seq in ("\x1b[5~", "\x1b[5^"):
+                        return "PAGE_UP"
+                    if seq in ("\x1b[6~", "\x1b[6^"):
+                        return "PAGE_DOWN"
+                    return ch
                 return ch
             return None
 
@@ -129,6 +153,12 @@ class ProgressReporter:
         self._ui_initialized = False
         self._live: Optional[Live] = None
         self.console = Console(highlight=False, soft_wrap=False)
+        self._heartbeat_thread: Optional[threading.Thread] = None
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat_interval = 0.25
+        self._stage_activity_ts = self.start_ts
+        self._stage_stall_logged: Optional[str] = None
+        self._stage_stall_threshold = 90.0  # seconds
 
         # Counters
         self.total_files = 0
@@ -197,7 +227,28 @@ class ProgressReporter:
         self._last_print = 0.0
 
         # In-memory log buffer
-        self._log_messages: List[Tuple[str, str, float]] = []
+        self._log_messages: List[Tuple[str, str, float, str]] = []
+        self._log_scroll = 0
+        self._log_level = 2  # 1=errors, 2=warnings+info, 3=debug
+        self._log_page_size = 6
+        self._log_filters = {
+            1: {"ERROR"},
+            2: {"ERROR", "WARNING", "INFO"},
+            3: {"ERROR", "WARNING", "INFO", "DEBUG"},
+        }
+
+        # Scoring / detector telemetry
+        self.score_histogram: Dict[str, int] = {
+            "0-0.25": 0,
+            "0.25-0.5": 0,
+            "0.5-0.75": 0,
+            "0.75-1.0": 0,
+        }
+        self.detector_counts: Dict[str, int] = {}
+        self.score_samples = 0
+        self.score_sum = 0.0
+        self.low_confidence = 0
+        self.penalty_counts: Dict[str, int] = {}
 
     # ------------------------------------------------------------------ public API
 
@@ -216,6 +267,7 @@ class ProgressReporter:
             self._live.start()
             self._ui_initialized = True
             self._start_control_listener()
+            self._start_heartbeat()
 
     def set_status(self, text: str) -> None:
         """Update status line."""
@@ -271,7 +323,7 @@ class ProgressReporter:
             self._record_control_event("Already at maximum quality (Q7)")
             return False
         self._record_control_event(f"Extending scan to Q{target}")
-        self.add_log(f"Runtime stage extension requested: Q{target}", "INFO")
+        self.add_log(f"Runtime stage extension requested: Q{target}", "INFO", source="controls")
         return True
 
     def update_root_progress(self, *, current: Optional[Path], completed: int, total: int) -> None:
@@ -338,6 +390,7 @@ class ProgressReporter:
             self.stage_done = 0
             self.stage_start_ts = now
             self.status_line = name
+            self._note_stage_activity_locked()
         self._print_now()
 
     def finish_stage(self, name: Optional[str] = None, *, status: str = "done") -> None:
@@ -385,7 +438,10 @@ class ProgressReporter:
             if is_video:
                 self.video_files += inc
                 self.video_bytes_processed += int(bytes_added)
+            before = self.stage_done
             self.stage_done += inc
+            if self.stage_done != before:
+                self._note_stage_activity_locked()
         self._print_if_due()
 
     def set_hash_total(self, n: int) -> None:
@@ -401,7 +457,10 @@ class ProgressReporter:
             self.hash_done += inc
             if cache_hit:
                 self.cache_hits += inc
+            before = self.stage_done
             self.stage_done += inc
+            if self.stage_done != before:
+                self._note_stage_activity_locked()
         self._print_if_due()
 
     def inc_group(self, mode: str, n: int = 1) -> None:
@@ -451,9 +510,12 @@ class ProgressReporter:
     def update_progress_periodically(self, current_step: int, total_steps: int, force_update: bool = False) -> None:
         """Update progress counters and refresh UI if needed."""
         with self.lock:
+            previous = self.stage_done
             self.stage_done = max(0, int(current_step))
             if total_steps > 0:
                 self.stage_total = max(self.stage_total, int(total_steps))
+            if self.stage_done != previous:
+                self._note_stage_activity_locked()
         if force_update:
             self._print_now()
         else:
@@ -475,6 +537,7 @@ class ProgressReporter:
         """Stop rendering and print final summary."""
         self._stop_evt.set()
         self._control_stop.set()
+        self._stop_heartbeat()
         if self._key_reader:
             try:
                 self._key_reader.close()
@@ -494,16 +557,45 @@ class ProgressReporter:
             )
             self.console.print(final)
 
-    def add_log(self, message: str, level: str = "INFO") -> None:
+    def add_log(self, message: str, level: str = "INFO", *, source: str = "pipeline") -> None:
         """Record a diagnostic log entry for the UI."""
-        entry = (level.upper(), str(message), time.time())
+        entry = (level.upper(), str(message), time.time(), source.upper())
         with self.lock:
             self._log_messages.append(entry)
             if len(self._log_messages) > 200:
                 self._log_messages.pop(0)
+                self._log_scroll = max(0, self._log_scroll - 1)
         self._print_if_due()
 
-    def recent_logs(self) -> List[Tuple[str, str, float]]:
+    def add_score_sample(
+        self,
+        score: float,
+        *,
+        detector: Optional[str] = None,
+        penalties: Optional[Sequence[str]] = None,
+    ) -> None:
+        """Record a scoring event for histogram + detector summaries."""
+        try:
+            s = max(0.0, min(1.0, float(score)))
+        except (TypeError, ValueError):
+            return
+        with self.lock:
+            self.score_samples += 1
+            self.score_sum += s
+            bucket = self._score_bucket(s)
+            self.score_histogram[bucket] = self.score_histogram.get(bucket, 0) + 1
+            if detector:
+                self.detector_counts[detector] = self.detector_counts.get(detector, 0) + 1
+            if s < 0.5:
+                self.low_confidence += 1
+            if penalties:
+                for key in penalties:
+                    if not key:
+                        continue
+                    self.penalty_counts[key] = self.penalty_counts.get(key, 0) + 1
+        self._print_if_due()
+
+    def recent_logs(self) -> List[Tuple[str, str, float, str]]:
         """Return recent log entries."""
         with self.lock:
             return list(self._log_messages[-5:])
@@ -511,6 +603,12 @@ class ProgressReporter:
     def _record_control_event(self, message: str) -> None:
         with self.lock:
             self._control_messages.append(message)
+            if len(self._control_messages) > 5:
+                self._control_messages.popleft()
+
+    def _note_stage_activity_locked(self) -> None:
+        self._stage_activity_ts = time.time()
+        self._stage_stall_logged = None
 
     def _add_stage_entry_unlocked(self, display: str) -> None:
         key = _stage_key(display)
@@ -600,7 +698,48 @@ class ProgressReporter:
         self._control_stop = threading.Event()
         self._control_thread = threading.Thread(target=self._control_loop, daemon=True)
         self._control_thread.start()
-        self._record_control_event("Controls: P=Pause, +=Extend, S=Stop, Q=Abort")
+        self._record_control_event("Controls: P=Pause, +=Extend, S=Stop, Q=Abort, 1/2/3=Log filter, PgUp/PgDn=Scroll")
+
+    def _start_heartbeat(self) -> None:
+        if self._heartbeat_thread or not self.enable_dash:
+            return
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+        self._heartbeat_thread.start()
+
+    def _stop_heartbeat(self) -> None:
+        if not self._heartbeat_thread:
+            return
+        self._heartbeat_stop.set()
+        self._heartbeat_thread.join(timeout=0.5)
+        self._heartbeat_thread = None
+
+    def _heartbeat_loop(self) -> None:
+        while not self._heartbeat_stop.wait(self._heartbeat_interval):
+            if not self._ui_initialized:
+                continue
+            self._check_stage_stall()
+            self._print_now()
+
+    def _check_stage_stall(self) -> None:
+        now = time.time()
+        trigger_warning = False
+        idle_seconds = 0.0
+        stage_name = ""
+        with self.lock:
+            idle_seconds = now - self._stage_activity_ts
+            stage_name = self.stage_name
+            if idle_seconds >= self._stage_stall_threshold and self._stage_stall_logged != stage_name:
+                self._stage_stall_logged = stage_name
+                trigger_warning = True
+            elif idle_seconds < self._stage_stall_threshold and self._stage_stall_logged:
+                self._stage_stall_logged = None
+        if trigger_warning:
+            self.add_log(
+                f"{stage_name} idle for {int(idle_seconds)}s without progress (workers may be blocked)",
+                "WARNING",
+                source="watchdog",
+            )
 
     def _control_loop(self) -> None:
         """Background loop that processes hotkeys."""
@@ -618,6 +757,12 @@ class ProgressReporter:
 
     def _handle_control_key(self, raw_key: str) -> None:
         """Map key presses to control actions."""
+        if raw_key == "PAGE_UP":
+            self._scroll_logs(1)
+            return
+        if raw_key == "PAGE_DOWN":
+            self._scroll_logs(-1)
+            return
         key = raw_key.lower()
         if key == "p":
             self._toggle_pause()
@@ -625,16 +770,19 @@ class ProgressReporter:
         if key == "s":
             self._quit_evt.set()
             self._record_control_event("Stop requested (S)")
-            self.add_log("Stop requested via dashboard controls", "WARNING")
+            self.add_log("Stop requested via dashboard controls", "WARNING", source="controls")
             return
         if key == "q":
             self._quit_evt.set()
             self._stop_evt.set()
             self._record_control_event("Abort requested (Q)")
-            self.add_log("Abort requested via dashboard controls", "ERROR")
+            self.add_log("Abort requested via dashboard controls", "ERROR", source="controls")
             return
         if key == "+":
             self.request_stage_extension()
+            return
+        if key in {"1", "2", "3"}:
+            self._set_log_level(int(key))
             return
 
     def _toggle_pause(self) -> None:
@@ -642,11 +790,11 @@ class ProgressReporter:
         if self._paused_evt.is_set():
             self._paused_evt.clear()
             self._record_control_event("Paused (P)")
-            self.add_log("Pipeline paused via dashboard controls", "WARNING")
+            self.add_log("Pipeline paused via dashboard controls", "WARNING", source="controls")
         else:
             self._paused_evt.set()
             self._record_control_event("Resumed (P)")
-            self.add_log("Pipeline resumed via dashboard controls", "INFO")
+            self.add_log("Pipeline resumed via dashboard controls", "INFO", source="controls")
         self._print_if_due()
 
     def _render_layout(self) -> Layout:
@@ -676,7 +824,21 @@ class ProgressReporter:
                 remaining = self.stage_total - self.stage_done
                 if rate > 0 and remaining >= 0:
                     stage_eta = remaining / rate
-            logs = list(self._log_messages[-12:])
+            page_size = self._log_page_size
+            allowed_levels = self._log_filters.get(self._log_level, {"ERROR", "WARNING", "INFO", "DEBUG"})
+            filtered_logs = [entry for entry in self._log_messages if entry[0] in allowed_levels]
+            max_scroll = max(0, len(filtered_logs) - page_size)
+            if self._log_scroll > max_scroll:
+                self._log_scroll = max_scroll
+            start = max(0, len(filtered_logs) - page_size - self._log_scroll)
+            end = max(0, len(filtered_logs) - self._log_scroll)
+            logs = filtered_logs[start:end]
+            score_hist_snapshot = dict(self.score_histogram)
+            score_samples = self.score_samples
+            score_sum = self.score_sum
+            low_confidence = self.low_confidence
+            detector_counts = dict(self.detector_counts)
+            penalty_counts = dict(self.penalty_counts)
 
         layout = Layout()
         layout.split_column(
@@ -685,12 +847,34 @@ class ProgressReporter:
                 size=7,
             ),
             Layout(name="body", ratio=1),
-            Layout(self._render_controls_panel(), size=4),
-            Layout(self._render_footer(logs), size=7),
+            Layout(
+                self._render_command_deck(
+                    logs,
+                    throughput=(self.bytes_seen / elapsed) if elapsed > 0 else 0.0,
+                    score_hist=score_hist_snapshot,
+                    detector_counts=detector_counts,
+                    penalty_counts=penalty_counts,
+                ),
+                size=10,
+            ),
         )
         layout["body"].split_row(
             Layout(self._render_stage_panel(current_metrics, stage_entries, stage_elapsed), ratio=2),
-            Layout(self._render_stats_panel(elapsed, stage_position, stage_total_count, stage_eta), ratio=3),
+            Layout(
+                self._render_stats_panel(
+                    elapsed,
+                    stage_position,
+                    stage_total_count,
+                    stage_eta,
+                    score_hist_snapshot,
+                    score_samples,
+                    score_sum,
+                    low_confidence,
+                    detector_counts,
+                    penalty_counts,
+                ),
+                ratio=3,
+            ),
         )
         return layout
 
@@ -787,6 +971,12 @@ class ProgressReporter:
         stage_position: int,
         stage_total_count: int,
         stage_eta: Optional[float],
+        score_hist: Dict[str, int],
+        score_samples: int,
+        score_sum: float,
+        low_confidence: int,
+        detector_counts: Dict[str, int],
+        penalty_counts: Dict[str, int],
     ) -> Panel:
         """Render global statistics."""
         table = Table.grid(expand=True)
@@ -797,6 +987,16 @@ class ProgressReporter:
         throughput = (self.bytes_seen / elapsed) if elapsed > 0 else 0.0
         dup_ratio = (self.duplicates_found / self.video_files) * 100 if self.video_files else 0.0
         stage_progress = f"{stage_position}/{stage_total_count}" if stage_total_count else "--"
+        score_avg = (score_sum / score_samples) if score_samples else 0.0
+        bucket_text = " ".join(f"{label}:{score_hist.get(label, 0)}" for label in score_hist.keys())
+        detector_text = " ".join(
+            f"{name}:{detector_counts[name]}"
+            for name in sorted(detector_counts, key=lambda k: detector_counts[k], reverse=True)[:3]
+        )
+        penalty_text = " ".join(
+            f"{name}:{penalty_counts[name]}"
+            for name in sorted(penalty_counts, key=lambda k: penalty_counts[k], reverse=True)[:2]
+        )
 
         summary = [
             ("Stage Progress", stage_progress),
@@ -814,6 +1014,11 @@ class ProgressReporter:
             ("Group Counts",
              f"H:{self.groups_hash} M:{self.groups_meta} P:{self.groups_phash} "
              f"S:{self.groups_subset} C:{self.groups_scene} A:{self.groups_audio} T:{self.groups_timeline}"),
+            ("Score Avg", f"{score_avg:.2f} ({score_samples})"),
+            ("Score Buckets", bucket_text or "--"),
+            ("Low Confidence (<0.5)", f"{low_confidence}"),
+            ("Detectors", detector_text or "--"),
+            ("Penalties", penalty_text or "--"),
         ]
 
         for label, value in summary:
@@ -821,42 +1026,85 @@ class ProgressReporter:
 
         return Panel(table, title="Pipeline Stats", border_style="blue")
 
-    def _render_footer(self, logs: List[Tuple[str, str, float]]) -> Panel:
-        """Show recent log lines."""
+    def _render_command_deck(
+        self,
+        logs: List[Tuple[str, str, float, str]],
+        *,
+        throughput: float,
+        score_hist: Dict[str, int],
+        detector_counts: Dict[str, int],
+        penalty_counts: Dict[str, int],
+    ) -> Panel:
+        """Render the hotkey ribbon plus log feed & telemetry cards."""
         table = Table.grid(expand=True)
-        table.add_column(justify="left")
-        if logs:
-            for level, message, ts in logs:
-                style = {"ERROR": "bold red", "WARNING": "yellow", "INFO": "white", "DEBUG": "cyan"}.get(level, "white")
-                timestamp = time.strftime("%H:%M:%S", time.localtime(ts))
-                line = Text(f"{timestamp} [{level}] {message}", style=style)
-            table.add_row(line)
-        else:
-            table.add_row(Text("No recent log entries", style="dim"))
-        return Panel(table, title="Recent Activity", border_style="grey50")
-
-    def _render_controls_panel(self) -> Panel:
-        """Render control hotkeys and the last action."""
-        table = Table.grid(expand=True)
-        table.add_column(ratio=1)
-        help_line = "Hotkeys: [P] Pause/Resume | [+] Extend depth | [S] Stop after stage | [Q] Abort now | Ctrl+C: exit UI"
-        table.add_row(Text(help_line, style="bold white"))
-        paused = "yes" if not self._paused_evt.is_set() else "no"
-        depth = f"Q{self._stage_ceiling}" if self._stage_ceiling else "--"
-        state_bits = [
-            f"Paused: {paused}",
-            f"Target depth: {depth} (press + to add)",
+        table.add_column(ratio=3)
+        table.add_column(ratio=2)
+        hotkeys = Text(
+            "Hotkeys: P=Pause | +=Extend | S=Stop | Q=Abort | 1/2/3=Log level | PgUp/PgDn=scroll | Ctrl+C=exit UI",
+            style="bold white",
+        )
+        filter_label = {1: "Errors", 2: "Stages+Warn", 3: "Full debug"}.get(self._log_level, "Custom")
+        status_bits = [
+            f"Paused={'YES' if not self._paused_evt.is_set() else 'NO'}",
+            f"Target={'Q'+str(self._stage_ceiling) if self._stage_ceiling else '--'}",
+            f"Log={filter_label}",
         ]
-        if not self._controls_enabled and self.enable_dash:
-            state_bits.append("Controls unavailable (non-interactive terminal)")
-        table.add_row(Text(" | ".join(state_bits), style="cyan"))
-        if self._control_messages:
-            message = self._control_messages[-1]
-            table.add_row(Text(message, style="magenta"))
-        else:
-            table.add_row(Text("Use the hotkeys above to steer the scan.", style="dim"))
-        border = "yellow" if self._controls_enabled else "grey42"
-        return Panel(table, title="Controls", border_style=border)
+        if self._log_scroll:
+            status_bits.append(f"Scroll={self._log_scroll}")
+        table.add_row(hotkeys, Text(" | ".join(status_bits), style="cyan"))
+
+        log_panel = Panel(self._render_log_lines(logs), title="Command Log", border_style="grey50")
+        meta_panel = self._render_log_meta(throughput, score_hist, detector_counts, penalty_counts)
+        table.add_row(log_panel, meta_panel)
+
+        hint = self._control_messages[-1] if self._control_messages else "Use these hotkeys to steer the scan in real time."
+        table.add_row(Text(hint, style="magenta"), Text("", style="dim"))
+        return Panel(table, title="Command & Log Deck", border_style="grey39")
+
+    def _render_log_lines(self, logs: List[Tuple[str, str, float, str]]) -> Table:
+        grid = Table.grid(expand=True)
+        grid.add_column(justify="left")
+        if not logs:
+            grid.add_row(Text("No log entries (press 3 for verbose).", style="dim"))
+            return grid
+        for level, message, ts, source in logs:
+            style = {"ERROR": "bold red", "WARNING": "yellow", "INFO": "white", "DEBUG": "cyan"}.get(level, "white")
+            stamp = self._format_log_timestamp(ts - self.start_ts)
+            grid.add_row(Text(f"{stamp} {level:<7} {source:<10} \"{message}\"", style=style))
+        return grid
+
+    def _render_log_meta(
+        self,
+        throughput: float,
+        score_hist: Dict[str, int],
+        detector_counts: Dict[str, int],
+        penalty_counts: Dict[str, int],
+    ) -> Panel:
+        runtime_lines = [
+            f"Throughput : {_format_bytes(int(throughput))}/s",
+            f"Cache hits : {self.cache_hits:,}",
+            f"Low confidence : {self.low_confidence:,}",
+            f"Dup groups : {self.dup_groups_total:,}",
+        ]
+        score_lines = [f"{bucket:>9}: {score_hist.get(bucket, 0):>4}" for bucket in score_hist.keys()]
+        detector_lines = (
+            [f"{name:<10}{count:>4}" for name, count in sorted(detector_counts.items(), key=lambda kv: kv[1], reverse=True)[:3]]
+            if detector_counts
+            else ["--"]
+        )
+        penalty_lines = (
+            [f"{name:<10}{count:>4}" for name, count in sorted(penalty_counts.items(), key=lambda kv: kv[1], reverse=True)[:3]]
+            if penalty_counts
+            else ["--"]
+        )
+        runtime_panel = Panel(Text("\n".join(runtime_lines)), title="Runtime", border_style="blue")
+        score_panel = Panel(Text("\n".join(score_lines)), title="Score Buckets", border_style="green")
+        detector_panel = Panel(
+            Text("Signals:\n" + "\n".join(detector_lines) + "\nPenalties:\n" + "\n".join(penalty_lines)),
+            title="Signals / Penalties",
+            border_style="magenta",
+        )
+        return Panel(Group(runtime_panel, score_panel, detector_panel), border_style="grey42")
 
     def _progress_bar(self, pct: float) -> Text:
         """Return a colorized progress bar string."""
@@ -871,3 +1119,44 @@ class ProgressReporter:
             bar.append("░" * remaining, style="grey30")
         bar.append(f" {pct_clamped:5.1f}%")
         return bar
+
+    def _score_bucket(self, value: float) -> str:
+        if value < 0.25:
+            return "0-0.25"
+        if value < 0.5:
+            return "0.25-0.5"
+        if value < 0.75:
+            return "0.5-0.75"
+        return "0.75-1.0"
+
+    def _set_log_level(self, level: int) -> None:
+        if level not in self._log_filters:
+            return
+        with self.lock:
+            if self._log_level == level:
+                return
+            self._log_level = level
+            self._log_scroll = 0
+        label = {1: "errors only", 2: "stage + warnings", 3: "full detail"}.get(level, "custom")
+        self._record_control_event(f"Log filter set to {label}")
+        self._print_if_due()
+
+    def _scroll_logs(self, direction: int) -> None:
+        with self.lock:
+            allowed = self._log_filters.get(self._log_level, {"ERROR", "WARNING", "INFO", "DEBUG"})
+            filtered = [entry for entry in self._log_messages if entry[0] in allowed]
+            max_scroll = max(0, len(filtered) - self._log_page_size)
+            if max_scroll <= 0:
+                self._log_scroll = 0
+                return
+            self._log_scroll = max(0, min(max_scroll, self._log_scroll + direction * self._log_page_size))
+        self._print_if_due()
+
+    def _format_log_timestamp(self, elapsed: float) -> str:
+        if elapsed < 0:
+            elapsed = 0.0
+        total_seconds = int(elapsed)
+        frames = int((elapsed - total_seconds) * 100)
+        minutes, seconds = divmod(total_seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        return f"[{hours:02d}:{minutes:02d}:{seconds:02d}:{frames:02d}]"

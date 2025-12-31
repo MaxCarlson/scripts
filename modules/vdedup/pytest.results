@@ -1,422 +1,73 @@
+Profile script execution started.
+ProfileLoaded flag is being set.
+ModuleLoader Initializing...
+
+Module Load Summary:
+
+  Modules Successfully Loaded:
+   - AutoExportModule: 0 fn, 0 alias - 19.95 ms
+   - CDModule: 20 fn, 1 alias - 270.91 ms
+   - Cheatsh: 1 fn, 0 alias - 39.44 ms
+   - ClipboardModule: 5 fn, 5 alias - 19.01 ms
+   - EnvironmentVariables: 3 fn, 3 alias - 18.1 ms
+   - FormattingModule: 5 fn, 0 alias - 19.29 ms
+   - GeminiCLI: 5 fn, 4 alias - 18.69 ms
+   - GitCommandsModule: 67 fn, 2 alias - 48.51 ms
+   - GitHubExplorer: 1 fn, 0 alias - 19.36 ms
+   - HelperFunctions: 5 fn, 5 alias - 19.94 ms
+   - JobsModule: 5 fn, 0 alias - 38.68 ms
+   - ListAliases: 28 fn, 0 alias - 217.65 ms
+   - MiscFunctions: 6 fn, 5 alias - 21.17 ms
+   - NativeGlob: 0 fn, 0 alias - 18.33 ms
+   - PathManager: 7 fn, 0 alias - 21.01 ms
+   - PSProfiler: 14 fn, 0 alias - 20.45 ms
+   - SearchAliases: 30 fn, 0 alias - 22.51 ms
+   - SystemUtils: 3 fn, 0 alias - 20.88 ms
+   - TmuxModule: 10 fn, 0 alias - 125.97 ms
+   - UpdateModule: 1 fn, 1 alias - 21.5 ms
+   - UserDefinedModule: 3 fn, 0 alias - 19.93 ms
+
+  Modules Failed to Load:
+   - Atuin
+   - PowerShellHumanizer
+   - PSReadLine
+
+ModuleLoader Summary took 2308.074 ms
+Finished loading PROFILE (Total Time: 2374.0749 ms)
 ============================= test session starts =============================
 platform win32 -- Python 3.12.10, pytest-9.0.1, pluggy-1.6.0
+cachedir: .pytest_tmp\.pytest_cache
 rootdir: C:\Users\mcarls\src\scripts\modules\vdedup
 configfile: pyproject.toml
 plugins: libtmux-0.47.0, asyncio-1.3.0, cov-7.0.0, mock-3.15.1
 asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 184 items
-
-modules\vdedup\tests\adaptive_sampling_test.py ......................... [ 13%]
-...                                                                      [ 15%]
-modules\vdedup\tests\advanced_pipeline_test.py EEEEEE                    [ 18%]
-modules\vdedup\tests\cache_enhanced_test.py ...                          [ 20%]
-modules\vdedup\tests\cache_test.py .                                     [ 20%]
-modules\vdedup\tests\cli_validation_test.py ...............              [ 28%]
-modules\vdedup\tests\error_handling_test.py ..............               [ 36%]
-modules\vdedup\tests\hashers_test.py EE                                  [ 37%]
-modules\vdedup\tests\integration_test.py ......                          [ 40%]
-modules\vdedup\tests\keep_policy_test.py .                               [ 41%]
-modules\vdedup\tests\phash_index_test.py ..............................  [ 57%]
-modules\vdedup\tests\pipeline_parse_test.py .                            [ 58%]
-modules\vdedup\tests\pipeline_test.py E                                  [ 58%]
-modules\vdedup\tests\probe_test.py ..............                        [ 66%]
-modules\vdedup\tests\report_analysis_test.py E                           [ 66%]
-modules\vdedup\tests\report_metadata_test.py E                           [ 67%]
-modules\vdedup\tests\report_print_test.py E                              [ 67%]
-modules\vdedup\tests\report_viewer_test.py EEEEEEEEE                     [ 72%]
-modules\vdedup\tests\sequence_matcher_test.py .................          [ 82%]
-modules\vdedup\tests\subset_detection_test.py ........                   [ 86%]
-modules\vdedup\tests\video_dedupe_test.py ....                           [ 88%]
-modules\vdedup\tests\video_fingerprint_test.py .....................     [100%]
-
-=================================== ERRORS ====================================
-____________ ERROR at setup of test_scene_stage_groups_duplicates _____________
-
-fixturedef = <FixtureDef argname='tmp_path' scope='function' baseid=''>
-request = <SubRequest 'tmp_path' for <Function test_scene_stage_groups_duplicates>>
-
-    @pytest.hookimpl(wrapper=True)
-    def pytest_fixture_setup(fixturedef: FixtureDef, request) -> object | None:
-        asyncio_mode = _get_asyncio_mode(request.config)
-        if not _is_asyncio_fixture_function(fixturedef.func):
-            if asyncio_mode == Mode.STRICT:
-                # Ignore async fixtures without explicit asyncio mark in strict mode
-                # This applies to pytest_trio fixtures, for example
->               return (yield)
-                        ^^^^^
-E               PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
-
-.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: PermissionError
-____________ ERROR at setup of test_audio_stage_groups_duplicates _____________
-
-fixturedef = <FixtureDef argname='tmp_path' scope='function' baseid=''>
-request = <SubRequest 'tmp_path' for <Function test_audio_stage_groups_duplicates>>
-
-    @pytest.hookimpl(wrapper=True)
-    def pytest_fixture_setup(fixturedef: FixtureDef, request) -> object | None:
-        asyncio_mode = _get_asyncio_mode(request.config)
-        if not _is_asyncio_fixture_function(fixturedef.func):
-            if asyncio_mode == Mode.STRICT:
-                # Ignore async fixtures without explicit asyncio mark in strict mode
-                # This applies to pytest_trio fixtures, for example
->               return (yield)
-                        ^^^^^
-E               PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
-
-.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: PermissionError
-____________ ERROR at setup of test_timeline_stage_detects_subset _____________
-
-fixturedef = <FixtureDef argname='tmp_path' scope='function' baseid=''>
-request = <SubRequest 'tmp_path' for <Function test_timeline_stage_detects_subset>>
-
-    @pytest.hookimpl(wrapper=True)
-    def pytest_fixture_setup(fixturedef: FixtureDef, request) -> object | None:
-        asyncio_mode = _get_asyncio_mode(request.config)
-        if not _is_asyncio_fixture_function(fixturedef.func):
-            if asyncio_mode == Mode.STRICT:
-                # Ignore async fixtures without explicit asyncio mark in strict mode
-                # This applies to pytest_trio fixtures, for example
->               return (yield)
-                        ^^^^^
-E               PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
-
-.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: PermissionError
-___________ ERROR at setup of test_partial_files_skipped_by_default ___________
-
-fixturedef = <FixtureDef argname='tmp_path' scope='function' baseid=''>
-request = <SubRequest 'tmp_path' for <Function test_partial_files_skipped_by_default>>
-
-    @pytest.hookimpl(wrapper=True)
-    def pytest_fixture_setup(fixturedef: FixtureDef, request) -> object | None:
-        asyncio_mode = _get_asyncio_mode(request.config)
-        if not _is_asyncio_fixture_function(fixturedef.func):
-            if asyncio_mode == Mode.STRICT:
-                # Ignore async fixtures without explicit asyncio mark in strict mode
-                # This applies to pytest_trio fixtures, for example
->               return (yield)
-                        ^^^^^
-E               PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
-
-.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: PermissionError
-________ ERROR at setup of test_include_partials_flag_allows_artifacts ________
-
-fixturedef = <FixtureDef argname='tmp_path' scope='function' baseid=''>
-request = <SubRequest 'tmp_path' for <Function test_include_partials_flag_allows_artifacts>>
-
-    @pytest.hookimpl(wrapper=True)
-    def pytest_fixture_setup(fixturedef: FixtureDef, request) -> object | None:
-        asyncio_mode = _get_asyncio_mode(request.config)
-        if not _is_asyncio_fixture_function(fixturedef.func):
-            if asyncio_mode == Mode.STRICT:
-                # Ignore async fixtures without explicit asyncio mark in strict mode
-                # This applies to pytest_trio fixtures, for example
->               return (yield)
-                        ^^^^^
-E               PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
-
-.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: PermissionError
-________ ERROR at setup of test_subset_stage_handles_multiple_partials ________
-
-fixturedef = <FixtureDef argname='tmp_path' scope='function' baseid=''>
-request = <SubRequest 'tmp_path' for <Function test_subset_stage_handles_multiple_partials>>
-
-    @pytest.hookimpl(wrapper=True)
-    def pytest_fixture_setup(fixturedef: FixtureDef, request) -> object | None:
-        asyncio_mode = _get_asyncio_mode(request.config)
-        if not _is_asyncio_fixture_function(fixturedef.func):
-            if asyncio_mode == Mode.STRICT:
-                # Ignore async fixtures without explicit asyncio mark in strict mode
-                # This applies to pytest_trio fixtures, for example
->               return (yield)
-                        ^^^^^
-E               PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
-
-.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: PermissionError
-________________ ERROR at setup of test_partial_hash_head_tail ________________
-
-fixturedef = <FixtureDef argname='tmp_path' scope='function' baseid=''>
-request = <SubRequest 'tmp_path' for <Function test_partial_hash_head_tail>>
-
-    @pytest.hookimpl(wrapper=True)
-    def pytest_fixture_setup(fixturedef: FixtureDef, request) -> object | None:
-        asyncio_mode = _get_asyncio_mode(request.config)
-        if not _is_asyncio_fixture_function(fixturedef.func):
-            if asyncio_mode == Mode.STRICT:
-                # Ignore async fixtures without explicit asyncio mark in strict mode
-                # This applies to pytest_trio fixtures, for example
->               return (yield)
-                        ^^^^^
-E               PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
-
-.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: PermissionError
-__________________ ERROR at setup of test_sha256_block_size ___________________
-
-fixturedef = <FixtureDef argname='tmp_path' scope='function' baseid=''>
-request = <SubRequest 'tmp_path' for <Function test_sha256_block_size>>
-
-    @pytest.hookimpl(wrapper=True)
-    def pytest_fixture_setup(fixturedef: FixtureDef, request) -> object | None:
-        asyncio_mode = _get_asyncio_mode(request.config)
-        if not _is_asyncio_fixture_function(fixturedef.func):
-            if asyncio_mode == Mode.STRICT:
-                # Ignore async fixtures without explicit asyncio mark in strict mode
-                # This applies to pytest_trio fixtures, for example
->               return (yield)
-                        ^^^^^
-E               PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
-
-.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: PermissionError
-_________ ERROR at setup of test_run_pipeline_supports_multiple_roots _________
-
-fixturedef = <FixtureDef argname='tmp_path' scope='function' baseid=''>
-request = <SubRequest 'tmp_path' for <Function test_run_pipeline_supports_multiple_roots>>
-
-    @pytest.hookimpl(wrapper=True)
-    def pytest_fixture_setup(fixturedef: FixtureDef, request) -> object | None:
-        asyncio_mode = _get_asyncio_mode(request.config)
-        if not _is_asyncio_fixture_function(fixturedef.func):
-            if asyncio_mode == Mode.STRICT:
-                # Ignore async fixtures without explicit asyncio mark in strict mode
-                # This applies to pytest_trio fixtures, for example
->               return (yield)
-                        ^^^^^
-E               PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
-
-.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: PermissionError
-______________ ERROR at setup of test_analysis_mode_monkeypatch _______________
-
-fixturedef = <FixtureDef argname='tmp_path' scope='function' baseid=''>
-request = <SubRequest 'tmp_path' for <Function test_analysis_mode_monkeypatch>>
-
-    @pytest.hookimpl(wrapper=True)
-    def pytest_fixture_setup(fixturedef: FixtureDef, request) -> object | None:
-        asyncio_mode = _get_asyncio_mode(request.config)
-        if not _is_asyncio_fixture_function(fixturedef.func):
-            if asyncio_mode == Mode.STRICT:
-                # Ignore async fixtures without explicit asyncio mark in strict mode
-                # This applies to pytest_trio fixtures, for example
->               return (yield)
-                        ^^^^^
-E               PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
-
-.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: PermissionError
-________ ERROR at setup of test_write_report_persists_overlap_metadata ________
-
-fixturedef = <FixtureDef argname='tmp_path' scope='function' baseid=''>
-request = <SubRequest 'tmp_path' for <Function test_write_report_persists_overlap_metadata>>
-
-    @pytest.hookimpl(wrapper=True)
-    def pytest_fixture_setup(fixturedef: FixtureDef, request) -> object | None:
-        asyncio_mode = _get_asyncio_mode(request.config)
-        if not _is_asyncio_fixture_function(fixturedef.func):
-            if asyncio_mode == Mode.STRICT:
-                # Ignore async fixtures without explicit asyncio mark in strict mode
-                # This applies to pytest_trio fixtures, for example
->               return (yield)
-                        ^^^^^
-E               PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
-
-.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: PermissionError
-________________ ERROR at setup of test_pretty_and_exclusions _________________
-
-fixturedef = <FixtureDef argname='tmp_path' scope='function' baseid=''>
-request = <SubRequest 'tmp_path' for <Function test_pretty_and_exclusions>>
-
-    @pytest.hookimpl(wrapper=True)
-    def pytest_fixture_setup(fixturedef: FixtureDef, request) -> object | None:
-        asyncio_mode = _get_asyncio_mode(request.config)
-        if not _is_asyncio_fixture_function(fixturedef.func):
-            if asyncio_mode == Mode.STRICT:
-                # Ignore async fixtures without explicit asyncio mark in strict mode
-                # This applies to pytest_trio fixtures, for example
->               return (yield)
-                        ^^^^^
-E               PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
-
-.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: PermissionError
-____________ ERROR at setup of test_open_media_windows_uses_shell _____________
-
-fixturedef = <FixtureDef argname='tmp_path' scope='function' baseid=''>
-request = <SubRequest 'tmp_path' for <Function test_open_media_windows_uses_shell>>
-
-    @pytest.hookimpl(wrapper=True)
-    def pytest_fixture_setup(fixturedef: FixtureDef, request) -> object | None:
-        asyncio_mode = _get_asyncio_mode(request.config)
-        if not _is_asyncio_fixture_function(fixturedef.func):
-            if asyncio_mode == Mode.STRICT:
-                # Ignore async fixtures without explicit asyncio mark in strict mode
-                # This applies to pytest_trio fixtures, for example
->               return (yield)
-                        ^^^^^
-E               PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
-
-.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: PermissionError
-_____________ ERROR at setup of test_open_media_linux_prefers_xdg _____________
-
-fixturedef = <FixtureDef argname='tmp_path' scope='function' baseid=''>
-request = <SubRequest 'tmp_path' for <Function test_open_media_linux_prefers_xdg>>
-
-    @pytest.hookimpl(wrapper=True)
-    def pytest_fixture_setup(fixturedef: FixtureDef, request) -> object | None:
-        asyncio_mode = _get_asyncio_mode(request.config)
-        if not _is_asyncio_fixture_function(fixturedef.func):
-            if asyncio_mode == Mode.STRICT:
-                # Ignore async fixtures without explicit asyncio mark in strict mode
-                # This applies to pytest_trio fixtures, for example
->               return (yield)
-                        ^^^^^
-E               PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
-
-.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: PermissionError
-_____________ ERROR at setup of test_open_media_termux_falls_back _____________
-
-fixturedef = <FixtureDef argname='tmp_path' scope='function' baseid=''>
-request = <SubRequest 'tmp_path' for <Function test_open_media_termux_falls_back>>
-
-    @pytest.hookimpl(wrapper=True)
-    def pytest_fixture_setup(fixturedef: FixtureDef, request) -> object | None:
-        asyncio_mode = _get_asyncio_mode(request.config)
-        if not _is_asyncio_fixture_function(fixturedef.func):
-            if asyncio_mode == Mode.STRICT:
-                # Ignore async fixtures without explicit asyncio mark in strict mode
-                # This applies to pytest_trio fixtures, for example
->               return (yield)
-                        ^^^^^
-E               PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
-
-.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: PermissionError
-___________ ERROR at setup of test_launch_multi_preview_adds_master ___________
-
-fixturedef = <FixtureDef argname='tmp_path' scope='function' baseid=''>
-request = <SubRequest 'tmp_path' for <Function test_launch_multi_preview_adds_master>>
-
-    @pytest.hookimpl(wrapper=True)
-    def pytest_fixture_setup(fixturedef: FixtureDef, request) -> object | None:
-        asyncio_mode = _get_asyncio_mode(request.config)
-        if not _is_asyncio_fixture_function(fixturedef.func):
-            if asyncio_mode == Mode.STRICT:
-                # Ignore async fixtures without explicit asyncio mark in strict mode
-                # This applies to pytest_trio fixtures, for example
->               return (yield)
-                        ^^^^^
-E               PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
-
-.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: PermissionError
-___________ ERROR at setup of test_promote_to_master_updates_report ___________
-
-fixturedef = <FixtureDef argname='tmp_path' scope='function' baseid=''>
-request = <SubRequest 'tmp_path' for <Function test_promote_to_master_updates_report>>
-
-    @pytest.hookimpl(wrapper=True)
-    def pytest_fixture_setup(fixturedef: FixtureDef, request) -> object | None:
-        asyncio_mode = _get_asyncio_mode(request.config)
-        if not _is_asyncio_fixture_function(fixturedef.func):
-            if asyncio_mode == Mode.STRICT:
-                # Ignore async fixtures without explicit asyncio mark in strict mode
-                # This applies to pytest_trio fixtures, for example
->               return (yield)
-                        ^^^^^
-E               PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
-
-.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: PermissionError
-______ ERROR at setup of test_launch_multi_preview_prefers_overlap_hint _______
-
-fixturedef = <FixtureDef argname='tmp_path' scope='function' baseid=''>
-request = <SubRequest 'tmp_path' for <Function test_launch_multi_preview_prefers_overlap_hint>>
-
-    @pytest.hookimpl(wrapper=True)
-    def pytest_fixture_setup(fixturedef: FixtureDef, request) -> object | None:
-        asyncio_mode = _get_asyncio_mode(request.config)
-        if not _is_asyncio_fixture_function(fixturedef.func):
-            if asyncio_mode == Mode.STRICT:
-                # Ignore async fixtures without explicit asyncio mark in strict mode
-                # This applies to pytest_trio fixtures, for example
->               return (yield)
-                        ^^^^^
-E               PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
-
-.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: PermissionError
-_______ ERROR at setup of test_detail_view_includes_overlap_provenance ________
-
-fixturedef = <FixtureDef argname='tmp_path' scope='function' baseid=''>
-request = <SubRequest 'tmp_path' for <Function test_detail_view_includes_overlap_provenance>>
-
-    @pytest.hookimpl(wrapper=True)
-    def pytest_fixture_setup(fixturedef: FixtureDef, request) -> object | None:
-        asyncio_mode = _get_asyncio_mode(request.config)
-        if not _is_asyncio_fixture_function(fixturedef.func):
-            if asyncio_mode == Mode.STRICT:
-                # Ignore async fixtures without explicit asyncio mark in strict mode
-                # This applies to pytest_trio fixtures, for example
->               return (yield)
-                        ^^^^^
-E               PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
-
-.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: PermissionError
-___________ ERROR at setup of test_selection_markers_follow_manager ___________
-
-fixturedef = <FixtureDef argname='tmp_path' scope='function' baseid=''>
-request = <SubRequest 'tmp_path' for <Function test_selection_markers_follow_manager>>
-
-    @pytest.hookimpl(wrapper=True)
-    def pytest_fixture_setup(fixturedef: FixtureDef, request) -> object | None:
-        asyncio_mode = _get_asyncio_mode(request.config)
-        if not _is_asyncio_fixture_function(fixturedef.func):
-            if asyncio_mode == Mode.STRICT:
-                # Ignore async fixtures without explicit asyncio mark in strict mode
-                # This applies to pytest_trio fixtures, for example
->               return (yield)
-                        ^^^^^
-E               PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
-
-.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: PermissionError
-____ ERROR at setup of test_inline_preview_respects_overlap_hint_and_scrub ____
-
-fixturedef = <FixtureDef argname='tmp_path' scope='function' baseid=''>
-request = <SubRequest 'tmp_path' for <Function test_inline_preview_respects_overlap_hint_and_scrub>>
-
-    @pytest.hookimpl(wrapper=True)
-    def pytest_fixture_setup(fixturedef: FixtureDef, request) -> object | None:
-        asyncio_mode = _get_asyncio_mode(request.config)
-        if not _is_asyncio_fixture_function(fixturedef.func):
-            if asyncio_mode == Mode.STRICT:
-                # Ignore async fixtures without explicit asyncio mark in strict mode
-                # This applies to pytest_trio fixtures, for example
->               return (yield)
-                        ^^^^^
-E               PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\AppData\\Local\\Temp\\pytest-of-mcarls'
-
-.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: PermissionError
-============================== warnings summary ===============================
-.venv\Lib\site-packages\_pytest\cacheprovider.py:475
-  C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\_pytest\cacheprovider.py:475: PytestCacheWarning: could not create cache path C:\Users\mcarls\src\scripts\modules\vdedup\.pytest_cache\v\cache\nodeids: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\src\\scripts\\modules\\vdedup\\.pytest_cache\\v\\cache'
-    config.cache.set("cache/nodeids", sorted(self.cached_nodeids))
-
-.venv\Lib\site-packages\_pytest\cacheprovider.py:429
-  C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\_pytest\cacheprovider.py:429: PytestCacheWarning: could not create cache path C:\Users\mcarls\src\scripts\modules\vdedup\.pytest_cache\v\cache\lastfailed: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\src\\scripts\\modules\\vdedup\\.pytest_cache\\v\\cache'
-    config.cache.set("cache/lastfailed", self.lastfailed)
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-=========================== short test summary info ===========================
-ERROR modules\vdedup\tests\advanced_pipeline_test.py::test_scene_stage_groups_duplicates
-ERROR modules\vdedup\tests\advanced_pipeline_test.py::test_audio_stage_groups_duplicates
-ERROR modules\vdedup\tests\advanced_pipeline_test.py::test_timeline_stage_detects_subset
-ERROR modules\vdedup\tests\advanced_pipeline_test.py::test_partial_files_skipped_by_default
-ERROR modules\vdedup\tests\advanced_pipeline_test.py::test_include_partials_flag_allows_artifacts
-ERROR modules\vdedup\tests\advanced_pipeline_test.py::test_subset_stage_handles_multiple_partials
-ERROR modules\vdedup\tests\hashers_test.py::test_partial_hash_head_tail - Per...
-ERROR modules\vdedup\tests\hashers_test.py::test_sha256_block_size - Permissi...
-ERROR modules\vdedup\tests\pipeline_test.py::test_run_pipeline_supports_multiple_roots
-ERROR modules\vdedup\tests\report_analysis_test.py::test_analysis_mode_monkeypatch
-ERROR modules\vdedup\tests\report_metadata_test.py::test_write_report_persists_overlap_metadata
-ERROR modules\vdedup\tests\report_print_test.py::test_pretty_and_exclusions
-ERROR modules\vdedup\tests\report_viewer_test.py::test_open_media_windows_uses_shell
-ERROR modules\vdedup\tests\report_viewer_test.py::test_open_media_linux_prefers_xdg
-ERROR modules\vdedup\tests\report_viewer_test.py::test_open_media_termux_falls_back
-ERROR modules\vdedup\tests\report_viewer_test.py::test_launch_multi_preview_adds_master
-ERROR modules\vdedup\tests\report_viewer_test.py::test_promote_to_master_updates_report
-ERROR modules\vdedup\tests\report_viewer_test.py::test_launch_multi_preview_prefers_overlap_hint
-ERROR modules\vdedup\tests\report_viewer_test.py::test_detail_view_includes_overlap_provenance
-ERROR modules\vdedup\tests\report_viewer_test.py::test_selection_markers_follow_manager
-ERROR modules\vdedup\tests\report_viewer_test.py::test_inline_preview_respects_overlap_hint_and_scrub
-================= 163 passed, 2 warnings, 21 errors in 1.62s ==================
+collected 203 items
+
+tests\adaptive_sampling_test.py ............................             [ 13%]
+tests\advanced_pipeline_test.py .......                                  [ 17%]
+tests\cache_enhanced_test.py ...                                         [ 18%]
+tests\cache_test.py .                                                    [ 19%]
+tests\cli_validation_test.py ...............                             [ 26%]
+tests\error_handling_test.py ..............                              [ 33%]
+tests\hashers_test.py ..                                                 [ 34%]
+tests\integration_test.py ......                                         [ 37%]
+tests\keep_policy_test.py .                                              [ 37%]
+tests\lock_test.py ..                                                    [ 38%]
+tests\phash_index_test.py ..............................                 [ 53%]
+tests\pipeline_parse_test.py .                                           [ 54%]
+tests\pipeline_test.py ...                                               [ 55%]
+tests\probe_test.py ..............                                       [ 62%]
+tests\progress_test.py .....                                             [ 65%]
+tests\real_media_test.py s                                               [ 65%]
+tests\report_analysis_test.py .                                          [ 66%]
+tests\report_metadata_test.py .                                          [ 66%]
+tests\report_print_test.py .                                             [ 66%]
+tests\report_viewer_test.py ............                                 [ 72%]
+tests\scoring_test.py ....                                               [ 74%]
+tests\sequence_matcher_test.py .................                         [ 83%]
+tests\subset_detection_test.py ........                                  [ 87%]
+tests\tmpdir_test.py .                                                   [ 87%]
+tests\video_dedupe_test.py ....                                          [ 89%]
+tests\video_fingerprint_test.py .....................                    [100%]
+
+======================= 202 passed, 1 skipped in 1.60s ========================
