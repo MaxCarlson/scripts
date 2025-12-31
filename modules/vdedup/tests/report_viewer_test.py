@@ -99,7 +99,13 @@ def test_launch_multi_preview_adds_master(monkeypatch, tmp_path):
     opened = []
 
     def fake_open(path, **kwargs):
-        opened.append(str(path))
+        opened.append(
+            {
+                "path": str(path),
+                "label": kwargs.get("label"),
+                "slot": kwargs.get("slot"),
+            }
+        )
         return True
 
     monkeypatch.setattr(report_viewer, "_open_media", fake_open)
@@ -118,8 +124,12 @@ def test_launch_multi_preview_adds_master(monkeypatch, tmp_path):
         row_id="g1|dup",
     )
     report_viewer._launch_multi_preview([row], manager)
-    assert str(keep) in opened
-    assert str(dup) in opened
+    assert any(entry["path"] == str(keep) for entry in opened)
+    assert any(entry["path"] == str(dup) for entry in opened)
+    master_entry = next(entry for entry in opened if entry["path"] == str(keep))
+    assert "[MASTER]" in (master_entry["label"] or "")
+    loser_entry = next(entry for entry in opened if entry["path"] == str(dup))
+    assert "[LOSER]" in (loser_entry["label"] or "")
 
 
 def test_promote_to_master_updates_report(tmp_path):
@@ -296,6 +306,7 @@ def test_inline_preview_respects_overlap_hint_and_scrub(monkeypatch, tmp_path):
     assert session._timestamps[rows[0].path] == 18.0
     detail = session.build_detail_view()
     assert detail.title.startswith("Inline Preview")
+    assert "link=OFF" in detail.footer
     stub_list.state.detail_selection = 1
     before = session._timestamps[rows[1].path]
     assert session.handle_key(ord(".")) is True
@@ -304,3 +315,13 @@ def test_inline_preview_respects_overlap_hint_and_scrub(monkeypatch, tmp_path):
     top_before = session._timestamps[rows[0].path]
     assert session.handle_key(ord("A")) is True
     assert session._timestamps[rows[0].path] == top_before + session._scrub_step
+    assert session.handle_key(ord("L")) is True
+    assert session._link_all is True
+    link_detail = stub_list.refresh_log[-1]
+    assert "link=ON" in link_detail.footer
+    stub_list.state.detail_selection = 1
+    keep_before = session._timestamps[rows[0].path]
+    dup_before = session._timestamps[rows[1].path]
+    assert session.handle_key(ord(",")) is True
+    assert session._timestamps[rows[0].path] == keep_before - 1.0
+    assert session._timestamps[rows[1].path] == dup_before - 1.0

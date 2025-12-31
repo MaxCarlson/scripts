@@ -839,11 +839,14 @@ class ProgressReporter:
         """Render control hotkeys and the last action."""
         table = Table.grid(expand=True)
         table.add_column(ratio=1)
-        help_line = "Hotkeys: P=Pause/Resume | +=Extend depth | S=Stop | Q=Abort"
+        help_line = "Hotkeys: [P] Pause/Resume | [+] Extend depth | [S] Stop after stage | [Q] Abort now | Ctrl+C: exit UI"
         table.add_row(Text(help_line, style="bold white"))
         paused = "yes" if not self._paused_evt.is_set() else "no"
         depth = f"Q{self._stage_ceiling}" if self._stage_ceiling else "--"
-        state_bits = [f"Paused: {paused}", f"Target depth: {depth}"]
+        state_bits = [
+            f"Paused: {paused}",
+            f"Target depth: {depth} (press + to add)",
+        ]
         if not self._controls_enabled and self.enable_dash:
             state_bits.append("Controls unavailable (non-interactive terminal)")
         table.add_row(Text(" | ".join(state_bits), style="cyan"))

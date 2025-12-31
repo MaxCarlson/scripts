@@ -73,9 +73,12 @@ This document translates backlog items into trackable execution units. Each top-
   - [x] Provide a command/key inside the report viewer to promote/demote losers, updating the keep policy and persisting the change back to the report.
   - [x] Record these actions in the report so subsequent applies honor the revised master and so collaborative reviewers have provenance.
   - [x] Surface overlap provenance inline within the detail pane (detector, ratio, hint timestamp) so the operator can trust the auto-seek before launching players.
+  - [x] Inline preview overlay stays inside the interactive list so reviewers never leave the TUI; footer documents Left/Right, ,/., L (link), a/A (scrub all), and Esc.
+  - [x] Multi-select highlights up to four files with [MASTER]/[LOSER] badges and launches mpv in a 2x2 grid beginning at the overlap timestamp.
   - [x] Stretch goal: embedded preview/scrubber control directly in the TUI using termdash panes so simple comparisons do not require launching external players.
-    - [ ] Cache ASCII renderings per timestamp so rapid scrubs do not repeatedly invoke ffmpeg for the same frame.
-    - [ ] Add a toggle to link/unlink scrub heads so reviewers can sweep all previews in sync or focus on a single clip without leaving the overlay.
+    - [x] Cache ASCII renderings per timestamp so rapid scrubs do not repeatedly invoke ffmpeg for the same frame.
+    - [x] Add a toggle to link/unlink scrub heads so reviewers can sweep all previews in sync or focus on a single clip without leaving the overlay.
+  - [ ] Explore richer inline playback (actual video tiles via ffplay/mpv pipes) so GPU hosts can scrub synchronized clips without ASCII mode.
 
 ## [ ] 10. Missing Footage Detection & Export
 - [ ] Detect cases where a subset file contains segments not present in its master using timeline fingerprints.
