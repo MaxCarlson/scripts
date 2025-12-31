@@ -834,6 +834,17 @@ def make_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Ignore metrics and assign URL files randomly",
     )
+    # Web viewer (TermDash mirror) options
+    p.add_argument(
+        "-W", "--web-view",
+        action="store_true",
+        help="Mirror the TUI to the web viewer (requires orchestrator_web_viewer)",
+    )
+    p.add_argument(
+        "-Y", "--web-id",
+        default="ytaedl",
+        help="Dashboard ID to register with the web viewer (default: ytaedl)",
+    )
     return p
 
 
@@ -846,6 +857,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = make_parser().parse_args(argv_list)
     t0 = time.time()
     deadline = (t0 + args.exit_at_time) if (args.exit_at_time and args.exit_at_time > 0) else None
+
+    # Optional TermDash web mirror
+    td_dash = None
+    td_lines_built = False
+    td_available = False
+    if args.web_view:
+        try:
+            from termdash import TermDash, Stat, Line  # type: ignore
+            td_available = True
+            # Attempt to register with web viewer if available
+            try:
+                from orchestrator_web_viewer.api.termdash import register_dashboard  # type: ignore
+                td_dash = TermDash(align_columns=True, enable_separators=True)
+                register_dashboard(args.web_id, td_dash)
+            except Exception:
+                # Fallback: still create dashboard locally for export polling
+                td_dash = TermDash(align_columns=True, enable_separators=True)
+        except Exception:
+            td_available = False
+            td_dash = None
     stars_dir = Path(args.stars_dir).expanduser().resolve()
     aebn_dir = Path(args.aebn_dir).expanduser().resolve()
     download_root = Path(args.download_root).expanduser().resolve()
@@ -1686,6 +1717,89 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             agg_bytes = total_completed_bytes + inprog_bytes
             avg_mib_s = (agg_bytes / max(1.0, (time.time() - t0))) / (1024 * 1024)
             avg_speed_bps = avg_mib_s * (1024 * 1024)
+
+            # Update web mirror
+            if td_available and td_dash:
+                try:
+                    if not td_lines_built:
+                        # Build header and totals lines
+                        from termdash import Stat, Line  # type: ignore
+                        header = Line("header", stats=[Stat("title", "DL Manager", prefix="")], style="header")
+                        td_dash.add_line("header", header, at_top=True)
+                        td_dash.add_separator()
+                        totals = Line("totals", stats=[
+                            Stat("speed", f"{total_speed_mib:.2f}", prefix="Speed: ", unit=" MiB/s"),
+                            Stat("avg", f"{avg_mib_s:.2f}", prefix="Avg: ", unit=" MiB/s"),
+                            Stat("downloaded", f"{(agg_bytes/1048576):.1f}", prefix="Downloaded: ", unit=" MiB"),
+                            Stat("started", total_started_urls, prefix="Started: "),
+                            Stat("processed", total_processed_urls, prefix="Processed: "),
+                            Stat("completed", total_completed_urls, prefix="Completed: "),
+                        ])
+                        td_dash.add_line("totals", totals)
+                        td_dash.add_separator()
+                        # Build per-worker lines
+                        for ws in workers:
+                            line = Line(f"worker_{ws.slot}", stats=[
+                                Stat("slot", f"[{ws.slot:02d}]", prefix=""),
+                                Stat("name", ws.urlfile.name if ws.urlfile else "idle", prefix=""),
+                                Stat("url", f"URL {ws.url_index or 0}/{ws.url_count or 0}", prefix=""),
+                                Stat("elapsed", "00:00:00", prefix="Elapsed: "),
+                                Stat("pct", "?%", prefix="Pct: "),
+                                Stat("speed", "?/s", prefix="Speed: "),
+                                Stat("eta", "?", prefix="ETA: "),
+                                Stat("sizes", "", prefix=""),
+                            ])
+                            td_dash.add_line(f"worker_{ws.slot}", line)
+                        td_lines_built = True
+                    else:
+                        # Update totals
+                        td_dash.update_stat("totals", "speed", f"{total_speed_mib:.2f}")
+                        td_dash.update_stat("totals", "avg", f"{avg_mib_s:.2f}")
+                        td_dash.update_stat("totals", "downloaded", f"{(agg_bytes/1048576):.1f}")
+                        td_dash.update_stat("totals", "started", total_started_urls)
+                        td_dash.update_stat("totals", "processed", total_processed_urls)
+                        td_dash.update_stat("totals", "completed", total_completed_urls)
+                        # Update workers
+                        now = time.time()
+                        for ws in workers:
+                            name = ws.urlfile.name if (ws.urlfile) else "idle"
+                            url_idx = f"URL {ws.url_index or 0}/{ws.url_count or 0}"
+                            elapsed = _hms(now - ws.assign_t0) if ws.urlfile else "00:00:00"
+                            pct = f"{ws.percent:.2f}%" if isinstance(ws.percent, (int, float)) else "?%"
+                            if ws.is_paused:
+                                sp = "PAUSED"
+                            else:
+                                sp = (
+                                    f"{(float(ws.speed_bps)/(1024*1024)):.2f}MiB/s"
+                                    if isinstance(ws.speed_bps, (int, float)) and ws.speed_bps is not None
+                                    else "?/s"
+                                )
+                            if isinstance(ws.eta_s, (int, float)) and ws.eta_s is not None:
+                                if (
+                                    isinstance(ws.percent, (int, float))
+                                    and ws.percent is not None
+                                    and ws.percent >= 99.5
+                                    and float(ws.eta_s) <= 0
+                                ):
+                                    eta_txt = "?"
+                                else:
+                                    eta_txt = _hms(float(ws.eta_s))
+                            else:
+                                eta_txt = "?"
+                            sizes = (
+                                f"{_human_short_bytes(ws.downloaded_bytes)}/{_human_short_bytes(ws.total_bytes)}"
+                                if (isinstance(ws.downloaded_bytes, int) and isinstance(ws.total_bytes, int) and ws.total_bytes)
+                                else ""
+                            )
+                            td_dash.update_stat(f"worker_{ws.slot}", "name", name)
+                            td_dash.update_stat(f"worker_{ws.slot}", "url", url_idx)
+                            td_dash.update_stat(f"worker_{ws.slot}", "elapsed", elapsed)
+                            td_dash.update_stat(f"worker_{ws.slot}", "pct", pct)
+                            td_dash.update_stat(f"worker_{ws.slot}", "speed", sp)
+                            td_dash.update_stat(f"worker_{ws.slot}", "eta", eta_txt)
+                            td_dash.update_stat(f"worker_{ws.slot}", "sizes", sizes)
+                except Exception:
+                    pass
 
             if active_panel == "watcher":
                 layout_meta: Dict[str, int] = {}
