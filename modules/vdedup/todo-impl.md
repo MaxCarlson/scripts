@@ -57,6 +57,7 @@ This document translates backlog items into trackable execution units. Each top-
 - [ ] Write developer docs for extending `termdash` components.
 - [ ] Keep `the_journal_of_an_llm.md` current with design rationales and research links.
 - [ ] Record algorithm choices (accepted/rejected) for future contributors.
+- [ ] Consolidate scattered markdowns (FEATURE_PLAN, DETAILED_RESEARCH, IMPLEMENTATION_STATUS, etc.) into a concise trio: `README.md`, `PLAN.md`, and `PROGRESS.md`.
 
 ## [ ] 9. Duplicate Detail Explorer & Interactive List
 - [ ] Create an interactive list component that surfaces master videos sorted by their duplicate/subset counts (leaders only by default).
@@ -91,6 +92,15 @@ This document translates backlog items into trackable execution units. Each top-
 - [ ] For multi-worker scans, render per-worker progress/throughput and an at-a-glance summary.
 - [ ] Show worker rows in parallel and update when pausing/stopping a single worker.
 - [ ] Keep the dashboard responsive while workers stream updates (no blocking on shared locks).
+
+## [ ] 12. Runtime Telemetry & Log Deck
+- [x] Replace the sparse “Recent Activity” panel with a Command & Log Deck:
+  - Hotkey ribbon always visible (Pause/Resume, extend depth, stop, abort, inline preview keys, mpv grid preview).
+  - Scrollable log feed using `[HH:MM:SS:FF] LEVEL SOURCE "message"` format with PageUp/PageDown navigation.
+  - Verbosity tiers (Errors, Warnings+Stages, Full debug) toggled via numeric hotkeys (1/2/3).
+- [ ] Mirror pipeline telemetry into structured events (stage transitions, detector stats, cache hit rate, scoring histograms).
+- [x] Show live metadata cards beside the log feed (score bucket counts, detector split, rejection reasons, data throughput).
+- [ ] **Resource allocation reminder:** keep 50‑75% of ongoing work focused on algorithm/statistical improvements (scoring, detectors, heuristics) and no more than ~25% on UI/log/visual polish.
 
 ---
 

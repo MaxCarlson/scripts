@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Optional
 
 import types
 
@@ -43,9 +44,12 @@ def test_open_media_windows_uses_shell(monkeypatch, tmp_path):
     def fake_startfile(path):
         invoked["path"] = path
 
+    monkeypatch.setenv("APPDATA", str(tmp_path))
     monkeypatch.setattr(report_viewer.os, "startfile", fake_startfile, raising=False)
     monkeypatch.setattr(report_viewer.shutil, "which", lambda _: None)
     monkeypatch.setattr(report_viewer, "SystemUtils", lambda: _StubSystem(win=True))
+    monkeypatch.setattr(report_viewer, "_resolve_grid_player", lambda: None)
+    monkeypatch.setattr(report_viewer, "_resolve_player_binary", lambda kind: None)
     assert report_viewer._open_media(clip)
     assert invoked["path"] == str(Path(clip).resolve())
 
@@ -59,9 +63,12 @@ def test_open_media_linux_prefers_xdg(monkeypatch, tmp_path):
         invoked.append(cmd)
         return types.SimpleNamespace()
 
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setattr(report_viewer, "SystemUtils", lambda: _StubSystem())
     monkeypatch.setattr(report_viewer.shutil, "which", lambda _: None)
     monkeypatch.setattr(report_viewer.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(report_viewer, "_resolve_grid_player", lambda: None)
+    monkeypatch.setattr(report_viewer, "_resolve_player_binary", lambda kind: None)
     assert report_viewer._open_media(clip)
     assert invoked[0][0] == "xdg-open"
 
@@ -77,11 +84,40 @@ def test_open_media_termux_falls_back(monkeypatch, tmp_path):
             raise FileNotFoundError("missing")
         return types.SimpleNamespace()
 
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setattr(report_viewer, "SystemUtils", lambda: _StubSystem(termux=True))
     monkeypatch.setattr(report_viewer.shutil, "which", lambda _: None)
     monkeypatch.setattr(report_viewer.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(report_viewer, "_resolve_grid_player", lambda: None)
+    monkeypatch.setattr(report_viewer, "_resolve_player_binary", lambda kind: None)
     assert report_viewer._open_media(clip)
     assert attempts == ["termux-open", "xdg-open"]
+
+
+def test_open_media_prefers_vlc_when_available(monkeypatch, tmp_path):
+    clip = tmp_path / "clip4.mp4"
+    clip.write_text("data")
+    launched = {}
+
+    def fake_which(cmd: str) -> Optional[str]:
+        if cmd == "mpv":
+            return None
+        if cmd.lower().startswith("vlc"):
+            return "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe"
+        return None
+
+    class _Proc:
+        def __init__(self, args, **_kwargs):
+            launched["args"] = args
+
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setattr(report_viewer, "SystemUtils", lambda: _StubSystem(win=True))
+    monkeypatch.setattr(report_viewer.shutil, "which", fake_which)
+    monkeypatch.setattr(report_viewer.subprocess, "Popen", lambda args, **kwargs: _Proc(args, **kwargs))
+    monkeypatch.setattr(report_viewer, "_resolve_grid_player", lambda: None)
+    assert report_viewer._open_media(clip, start=5.0, slot=1, label="[TEST]")
+    assert launched["args"][0].lower().endswith("vlc.exe")
+    assert any("--start-time=5.00" in arg for arg in launched["args"])
 
 
 def test_launch_multi_preview_adds_master(monkeypatch, tmp_path):
@@ -109,6 +145,7 @@ def test_launch_multi_preview_adds_master(monkeypatch, tmp_path):
         return True
 
     monkeypatch.setattr(report_viewer, "_open_media", fake_open)
+    monkeypatch.setattr(report_viewer, "_resolve_grid_player", lambda: None)
     row = report_viewer.DuplicateListRow(
         group_id="g1",
         method="subset",
@@ -130,6 +167,44 @@ def test_launch_multi_preview_adds_master(monkeypatch, tmp_path):
     assert "[MASTER]" in (master_entry["label"] or "")
     loser_entry = next(entry for entry in opened if entry["path"] == str(dup))
     assert "[LOSER]" in (loser_entry["label"] or "")
+
+
+def test_launch_multi_preview_uses_grid_player(monkeypatch, tmp_path):
+    keep = tmp_path / "keep.mp4"
+    dup = tmp_path / "dup.mp4"
+    keep.write_text("k")
+    dup.write_text("d")
+    group = report_viewer.DuplicateGroup(
+        group_id="g-grid",
+        method="subset",
+        keep=report_viewer.FileStats(path=keep, size=10, duration=40.0),
+        losers=[report_viewer.FileStats(path=dup, size=5, duration=10.0)],
+    )
+    manager = report_viewer.DuplicateListManager([group])
+    hints = []
+
+    def fake_open(path, **kwargs):
+        hints.append(kwargs.get("player_hint"))
+        return True
+
+    monkeypatch.setattr(report_viewer, "_open_media", fake_open)
+    monkeypatch.setattr(report_viewer, "_resolve_grid_player", lambda: ("mpv", "C:/mpv.exe"))
+    row = report_viewer.DuplicateListRow(
+        group_id="g-grid",
+        method="subset",
+        path=dup,
+        depth=1,
+        is_keep=False,
+        size=5,
+        size_delta=0,
+        duplicate_count=1,
+        reclaimable_bytes=5,
+        parent_path="g-grid",
+        keep_size=10,
+        row_id="g-grid|dup",
+    )
+    report_viewer._launch_multi_preview([row], manager)
+    assert hints and all(hint == ("mpv", "C:/mpv.exe") for hint in hints if hint)
 
 
 def test_promote_to_master_updates_report(tmp_path):
@@ -177,6 +252,7 @@ def test_launch_multi_preview_prefers_overlap_hint(monkeypatch, tmp_path):
         return True
 
     monkeypatch.setattr(report_viewer, "_open_media", fake_open)
+    monkeypatch.setattr(report_viewer, "_resolve_grid_player", lambda: None)
     rows = [
         report_viewer.DuplicateListRow(
             group_id="g2",
@@ -234,12 +310,47 @@ def test_detail_view_includes_overlap_provenance(tmp_path):
         losers=[dup],
         raw_payload={"evidence": evidence},
     )
-    detail = report_viewer._build_detail_view_for_group(group)
+    detail = report_viewer._build_detail_view_for_group(group, scores=None)
     assert detail.entries[1].summary == "Overlap provenance"
     body_text = "\n".join(detail.entries[1].body)
     assert "subset-phash" in body_text
     assert "50.0%" in body_text
     assert "dup.mp4" in body_text
+
+
+def test_rows_include_scores_and_detail(tmp_path):
+    keep = report_viewer.FileStats(path=tmp_path / "keep.mp4", size=50, duration=100.0)
+    dup = report_viewer.FileStats(path=tmp_path / "dup.mp4", size=40, duration=20.0)
+    scores = {
+        str(keep.path): {
+            "final": 0.9,
+            "positives": {"metadata:max": 0.9},
+            "negatives": {},
+            "rationale": "aggregate",
+        },
+        str(dup.path): {
+            "final": 0.83,
+            "positives": {"visual": 0.9, "temporal": 0.8},
+            "negatives": {},
+            "rationale": "visual:0.90",
+        }
+    }
+    group = report_viewer.DuplicateGroup(
+        group_id="g-score",
+        method="subset",
+        keep=keep,
+        losers=[dup],
+        raw_payload={"evidence": {"scores": scores}},
+    )
+    manager = report_viewer.DuplicateListManager([group])
+    manager.expand_all()
+    rows = manager.visible_rows()
+    assert rows[0].score and abs(rows[0].score - 0.9) < 1e-6
+    assert rows[1].score and abs(rows[1].score - 0.83) < 1e-6
+    detail = report_viewer._build_detail_view_for_group(group, scores=scores)
+    body = "\n".join(detail.entries[3].body)
+    assert "Score" in body
+    assert "0.83" in body
 
 
 def test_selection_markers_follow_manager(tmp_path):

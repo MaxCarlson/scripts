@@ -66,6 +66,41 @@ from vdedup.report_viewer import launch_report_viewer
 _LOCK_STALE_SECONDS = 24 * 3600
 
 
+def _lock_owner_pid(lock_file: Path) -> Optional[int]:
+    try:
+        content = lock_file.read_text().splitlines()
+        if content:
+            pid = int(content[0])
+            return pid if pid > 0 else None
+    except Exception:
+        return None
+    return None
+
+
+def _pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)  # type: ignore[attr-defined]
+            if handle:
+                ctypes.windll.kernel32.CloseHandle(handle)  # type: ignore[attr-defined]
+                return True
+            return False
+        else:
+            os.kill(pid, 0)
+            return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
 def _acquire_output_lock(lock_file: Path, *, resume: bool, logger: logging.Logger) -> bool:
     """
     Try to create the output lock file. Returns True on success, False if another
@@ -73,6 +108,15 @@ def _acquire_output_lock(lock_file: Path, *, resume: bool, logger: logging.Logge
     """
     if lock_file.exists():
         lock_age = time.time() - lock_file.stat().st_mtime
+        owner_pid = _lock_owner_pid(lock_file)
+        if owner_pid and not _pid_is_running(owner_pid):
+            logger.warning("Removing lock held by inactive PID %s: %s", owner_pid, lock_file)
+            try:
+                lock_file.unlink()
+            except Exception as exc:
+                logger.error("Failed removing stale PID lock: %s", exc)
+                return False
+            lock_age = 0
         if resume:
             logger.info("Resuming run; removing existing lock at %s", lock_file)
             try:
@@ -673,6 +717,20 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     )
     p.add_argument("-g", "--gpu", action="store_true",
                    help="Use GPU acceleration for pHash extraction (requires compatible GPU)")
+    p.add_argument(
+        "-m",
+        "--sample-percent",
+        type=float,
+        default=None,
+        help="Randomly sample this percentage (0-100] of discovered files for faster smoke tests.",
+    )
+    p.add_argument(
+        "-E",
+        "--sample-seed",
+        type=int,
+        default=None,
+        help="Seed used with --sample-percent (default: random).",
+    )
 
     # UI
     p.add_argument("-L", "--live", action="store_true", help="Show live progress UI")
@@ -828,6 +886,10 @@ def _validate_args(args: argparse.Namespace) -> Optional[str]:
     if args.threads > 64:  # Reasonable upper limit
         return "Thread count seems excessive (>64). Consider reducing for better performance"
 
+    if getattr(args, "sample_percent", None) is not None:
+        if args.sample_percent <= 0 or args.sample_percent > 100:
+            return "--sample-percent must be between 0 and 100"
+
     # Validate tolerance values
     duration_tolerance = getattr(args, 'duration_tolerance', 2.0)
     if duration_tolerance < 0:
@@ -943,7 +1005,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if active_reporter:
             try:
                 active_reporter._quit_evt.set()
-                active_reporter.add_log("User requested shutdown (Ctrl+C)", "WARNING")
+                active_reporter.add_log("User requested shutdown (Ctrl+C)", "WARNING", source="signals")
                 active_reporter.stop()
             except Exception as e:
                 print(f"Error during cleanup: {e}", file=sys.stderr)
@@ -1116,6 +1178,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     quality_level = _infer_quality_level(args.quality)
     subset_detect_enabled = quality_level >= 5
 
+    sample_ratio = None
+    if getattr(args, "sample_percent", None) is not None:
+        sample_ratio = float(args.sample_percent) / 100.0
+
     cfg = PipelineConfig(
         threads=max(1, int(args.threads)),
         duration_tolerance=getattr(args, 'duration_tolerance', 2.0),
@@ -1129,6 +1195,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         subset_frame_threshold=max(getattr(args, 'phash_threshold', 12), 12),
         gpu=bool(args.gpu),
         include_partials=bool(getattr(args, "include_partials", False)),
+        sample_ratio=sample_ratio,
+        sample_seed=getattr(args, "sample_seed", None),
     )
 
     logger.info(f"Pipeline configuration: threads={cfg.threads}, GPU={cfg.gpu}, subset_detect={cfg.subset_detect}")
