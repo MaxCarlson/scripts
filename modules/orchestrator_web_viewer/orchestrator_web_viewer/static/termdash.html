@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TermDash Web Viewer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Courier New', monospace;
+            background: #0d1117;
+            color: #c9d1d9;
+            padding: 20px;
+            line-height: 1.5;
+        }
+
+        header {
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #30363d;
+        }
+
+        h1 {
+            color: #58a6ff;
+            font-size: 24px;
+            margin-bottom: 10px;
+        }
+
+        #dashboard-list {
+            margin-bottom: 30px;
+            padding: 15px;
+            background: #161b22;
+            border-radius: 6px;
+            border: 1px solid #30363d;
+        }
+
+        #dashboard-list h2 {
+            color: #8b949e;
+            font-size: 14px;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+        }
+
+        .dashboard-item {
+            padding: 10px;
+            margin: 5px 0;
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .dashboard-item:hover {
+            background: #161b22;
+            border-color: #58a6ff;
+        }
+
+        .dashboard-item.active {
+            background: #1f6feb;
+            border-color: #58a6ff;
+            color: #ffffff;
+        }
+
+        #dashboard-view {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 15px;
+            min-height: 400px;
+        }
+
+        .dashboard-line {
+            padding: 4px 0;
+            white-space: pre;
+            font-size: 14px;
+        }
+
+        .dashboard-separator {
+            color: #30363d;
+            padding: 2px 0;
+        }
+
+        .stat-value {
+            color: #58a6ff;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-connected {
+            background: #3fb950;
+            animation: pulse 2s infinite;
+        }
+
+        .status-disconnected {
+            background: #f85149;
+        }
+
+        .status-connecting {
+            background: #d29922;
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .connection-status {
+            color: #8b949e;
+            font-size: 12px;
+            margin-left: 10px;
+        }
+
+        .error-message {
+            background: #1f1416;
+            border: 1px solid #f85149;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 20px 0;
+            color: #ffa198;
+        }
+
+        .no-data {
+            color: #8b949e;
+            text-align: center;
+            padding: 40px;
+        }
+
+        #refresh-rate {
+            float: right;
+            font-size: 12px;
+            color: #8b949e;
+        }
+
+        button {
+            background: #238636;
+            color: #ffffff;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-left: 10px;
+        }
+
+        button:hover {
+            background: #2ea043;
+        }
+
+        button:disabled {
+            background: #30363d;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>
+            <span class="status-indicator" id="status-indicator"></span>
+            TermDash Web Viewer
+            <span class="connection-status" id="connection-status">Disconnected</span>
+        </h1>
+        <div id="refresh-rate">Update rate: <span id="update-ms">--</span>ms</div>
+    </header>
+
+    <div id="dashboard-list">
+        <h2>Available Dashboards</h2>
+        <div id="dashboard-items">
+            <div class="no-data">Loading dashboards...</div>
+        </div>
+        <button id="refresh-btn" onclick="loadDashboards()">Refresh List</button>
+    </div>
+
+    <div id="dashboard-view">
+        <div class="no-data">Select a dashboard to view</div>
+    </div>
+
+    <script>
+        let ws = null;
+        let currentDashboardId = null;
+        let lastUpdate = Date.now();
+        let updateTimes = [];
+
+        function setStatus(status) {
+            const indicator = document.getElementById('status-indicator');
+            const statusText = document.getElementById('connection-status');
+            
+            indicator.className = 'status-indicator status-' + status;
+            
+            if (status === 'connected') {
+                statusText.textContent = 'Connected';
+            } else if (status === 'connecting') {
+                statusText.textContent = 'Connecting...';
+            } else {
+                statusText.textContent = 'Disconnected';
+            }
+        }
+
+        async function loadDashboards() {
+            try {
+                const response = await fetch('/api/termdash/dashboards');
+                const data = await response.json();
+                
+                const container = document.getElementById('dashboard-items');
+                
+                if (data.dashboards.length === 0) {
+                    container.innerHTML = '<div class="no-data">No dashboards available</div>';
+                    return;
+                }
+                
+                container.innerHTML = '';
+                data.dashboards.forEach(dashboard => {
+                    const item = document.createElement('div');
+                    item.className = 'dashboard-item';
+                    item.textContent = dashboard.id;
+                    item.onclick = () => connectToDashboard(dashboard.id);
+                    
+                    if (dashboard.id === currentDashboardId) {
+                        item.classList.add('active');
+                    }
+                    
+                    container.appendChild(item);
+                });
+            } catch (error) {
+                console.error('Failed to load dashboards:', error);
+                document.getElementById('dashboard-items').innerHTML = 
+                    '<div class="error-message">Failed to load dashboards: ' + error.message + '</div>';
+            }
+        }
+
+        function connectToDashboard(dashboardId) {
+            if (ws) {
+                ws.close();
+            }
+            
+            currentDashboardId = dashboardId;
+            setStatus('connecting');
+            
+            // Update active state
+            document.querySelectorAll('.dashboard-item').forEach(item => {
+                item.classList.toggle('active', item.textContent === dashboardId);
+            });
+            
+            // Use wss:// for HTTPS, ws:// for HTTP
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/api/termdash/dashboards/${dashboardId}/stream`;
+            
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = () => {
+                setStatus('connected');
+                console.log('Connected to dashboard:', dashboardId);
+            };
+            
+            ws.onmessage = (event) => {
+                const message = JSON.parse(event.data);
+                
+                if (message.type === 'state' || message.type === 'update') {
+                    renderDashboard(message.data);
+                    updateRefreshRate();
+                }
+            };
+            
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                setStatus('disconnected');
+            };
+            
+            ws.onclose = () => {
+                setStatus('disconnected');
+                console.log('Disconnected from dashboard');
+            };
+        }
+
+        function renderDashboard(state) {
+            const view = document.getElementById('dashboard-view');
+            view.innerHTML = '';
+            
+            if (!state || !state.lines || state.lines.length === 0) {
+                view.innerHTML = '<div class="no-data">No data available</div>';
+                return;
+            }
+            
+            state.lines.forEach(line => {
+                const lineDiv = document.createElement('div');
+                
+                if (line.type === 'separator') {
+                    lineDiv.className = 'dashboard-line dashboard-separator';
+                    const pattern = line.pattern || '-';
+                    lineDiv.textContent = pattern.repeat(80);
+                } else if (line.type === 'stats') {
+                    lineDiv.className = 'dashboard-line';
+                    
+                    // Render stats with column separator
+                    const parts = line.stats.map(stat => stat.rendered).join(' | ');
+                    lineDiv.textContent = parts;
+                }
+                
+                view.appendChild(lineDiv);
+            });
+        }
+
+        function updateRefreshRate() {
+            const now = Date.now();
+            const delta = now - lastUpdate;
+            lastUpdate = now;
+            
+            updateTimes.push(delta);
+            if (updateTimes.length > 10) {
+                updateTimes.shift();
+            }
+            
+            const avg = Math.round(updateTimes.reduce((a, b) => a + b, 0) / updateTimes.length);
+            document.getElementById('update-ms').textContent = avg;
+        }
+
+        // Initial load
+        loadDashboards();
+        
+        // Refresh dashboard list every 5 seconds
+        setInterval(loadDashboards, 5000);
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (ws) {
+                ws.close();
+            }
+        });
+    </script>
+</body>
+</html>
