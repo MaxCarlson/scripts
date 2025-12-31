@@ -43,6 +43,7 @@ def test_export_dashboard_with_stats():
     assert stat1["name"] == "count"
     assert stat1["value"] == 42
     assert stat1["prefix"] == "Count: "
+    assert "raw" in stat1 and isinstance(stat1["raw"], str)
     
     # Check second stat
     stat2 = line_data["stats"][1]
@@ -116,6 +117,8 @@ def test_export_config():
     
     assert config["align_columns"] == False
     assert config["column_sep"] == ":"
+    assert config["min_col_pad"] == 2
+    assert config["max_col_width"] is None
     assert config["enable_separators"] == True
     assert config["has_status_line"] == False
 

@@ -463,6 +463,14 @@ class TermDash:
         self._render_thread.start()
         if self.logger:
             self.log("Dashboard started.", level='info')
+        # Auto-attach to web viewer if enabled
+        try:
+            if os.getenv("TERMDASH_WEB_ATTACH"):
+                dash_id = os.getenv("TERMDASH_WEB_ID", "termdash")
+                from orchestrator_web_viewer.api.termdash import register_dashboard  # type: ignore
+                register_dashboard(dash_id, self)
+        except Exception:
+            pass
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
