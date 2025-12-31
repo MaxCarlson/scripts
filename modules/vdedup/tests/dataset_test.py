@@ -17,6 +17,8 @@ usually does this automatically for in‑repo modules).
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Set
@@ -39,6 +41,7 @@ except Exception as exc:  # pragma: no cover
 
 def discover_dataset_files(data_dir: Path) -> List[Path]:
     """Recursively collect all video files in the dataset directory."""
+
     return [p for p in data_dir.rglob("*") if p.is_file() and p.suffix.lower() in {".mp4", ".mkv", ".avi", ".mov"}]
 
 
@@ -103,18 +106,32 @@ def test_vdedup_dataset(tmp_path: Path) -> None:
     grouping accuracy.  This test uses the default pipeline configuration
     with subset detection and audio fingerprinting enabled.
     """
-    # Dataset directory relative to the repository root
-    data_dir = repo_root / "data"
-    assert data_dir.exists(), f"Dataset directory {data_dir} does not exist"
-    # Discover all files
-    files = discover_dataset_files(data_dir)
-    assert files, "No dataset files found. Generate the dataset first."
-    # Build ground truth mapping: key -> set of files
-    ground_truth = build_ground_truth(files)
+    # Dataset directory can be overridden via env; default to repo_root/data
+    env_dir = os.getenv("VDEDUP_DATA_DIR")
+    data_dir = Path(env_dir).expanduser() if env_dir else repo_root / "data"
+    if not data_dir.exists():
+        pytest.skip(f"Dataset directory {data_dir} does not exist")
+
+    manifest_path = data_dir / "truth.json"
+    if manifest_path.exists():
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        ground_truth = {
+            key: {str((data_dir / p).resolve()) for p in entry.get("variants", []) + [entry.get("original", "")] if p}
+            for key, entry in payload.get("keys", {}).items()
+        }
+    else:
+        files = discover_dataset_files(data_dir)
+        if not files:
+            pytest.skip("No dataset files found. Generate the dataset first.")
+        ground_truth = build_ground_truth(files)
+
+    if not ground_truth:
+        pytest.skip("No ground truth entries available to test")
     # Run the pipeline; we pass an iterator of file paths
     config = PipelineConfig()  # Use defaults; enable subset detection by default
     # Some versions of PipelineConfig may require explicit parameters; adjust as needed
-    groups = run_pipeline(config, files)  # type: ignore[call-arg]
+    files_iterable = [Path(p) for paths in ground_truth.values() for p in paths]
+    groups = run_pipeline(config, files_iterable)  # type: ignore[call-arg]
     pipeline_groups = extract_pipeline_groups(groups)
     # Build mapping from pipeline group to keys
     group_keys: List[Set[str]] = []

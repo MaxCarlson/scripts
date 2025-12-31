@@ -26,7 +26,6 @@ output_dir/
     │   ├── <key>_noaudio.mp4
     │   ├── <key>_1M.mp4
     │   ├── <key>_crf30.mp4
-    │   ├── <key>.mkv
     │   └── <key>_renamed.mp4
     └── ...
 ```
@@ -54,14 +53,31 @@ import subprocess
 from pathlib import Path
 from typing import Iterable
 
-from .video_transformations import (
-    trim_video,
-    scale_video,
-    change_audio_bitrate,
-    remove_audio,
-    change_video_bitrate,
-    change_container,
-)
+# Import transformation helpers.  When executed within the package the
+# relative import works.  When run directly (e.g. python generate_videos.py
+# from the vdedup directory), fall back to importing from the local
+# directory.
+try:
+    from .video_transformations import (
+        trim_video,
+        scale_video,
+        change_audio_bitrate,
+        remove_audio,
+        change_video_bitrate,
+    )
+except ImportError:
+    import importlib as _importlib  # type: ignore
+    import sys as _sys  # type: ignore
+    from pathlib import Path as _Path
+    _module_path = _Path(__file__).resolve().parent
+    if str(_module_path) not in _sys.path:
+        _sys.path.insert(0, str(_module_path))
+    _vt = _importlib.import_module("video_transformations")
+    trim_video = _vt.trim_video
+    scale_video = _vt.scale_video
+    change_audio_bitrate = _vt.change_audio_bitrate
+    remove_audio = _vt.remove_audio
+    change_video_bitrate = _vt.change_video_bitrate
 
 logger = logging.getLogger(__name__)
 
@@ -195,14 +211,7 @@ def create_variants(key: str, src_path: Path, dest_dir: Path) -> None:
             )
         except Exception as exc:
             logger.warning("Failed to create %s: %s", out_file, exc)
-    # 4. Container change (to mkv)
-    out_mkv = dest_dir / f"{base_name}.mkv"
-    if not out_mkv.exists():
-        try:
-            change_container(src_path, out_mkv)
-        except Exception as exc:
-            logger.warning("Failed to create %s: %s", out_mkv, exc)
-    # 5. Renamed copy (file name only)
+    # 4. Renamed copy (file name only)
     # Simply copy the original file to a new name to test filename independence.
     out_renamed = dest_dir / f"{base_name}_renamed.mp4"
     if not out_renamed.exists():

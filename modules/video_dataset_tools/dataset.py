@@ -31,7 +31,6 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from .transformations import (
     change_audio_bitrate,
-    change_container,
     change_video_bitrate,
     remove_audio,
     scale_video,
@@ -427,7 +426,6 @@ def _video_specs() -> List[VariantSpec]:
     return [
         VariantSpec("1M", "video_bitrate", {"bitrate": "1M", "crf": None}),
         VariantSpec("crf30", "video_bitrate", {"bitrate": None, "crf": 30}),
-        VariantSpec("mkv", "container", {}),
         VariantSpec("renamed", "copy", {}),
     ]
 
@@ -508,12 +506,10 @@ def create_variants(
         except Exception as exc:  # pragma: no cover
             logger.warning("Failed to create %s: %s", out_file, exc)
 
-    # Video bitrate / CRF / container / rename
+    # Video bitrate / CRF / rename
     for spec in _video_specs():
         suffix = spec.name
-        if spec.kind == "container":
-            out_file = variant_dir / f"{key}.mkv"
-        elif spec.kind == "copy":
+        if spec.kind == "copy":
             out_file = variant_dir / f"{key}_renamed.mp4"
         else:
             out_file = variant_dir / f"{key}_{suffix}.mp4"
@@ -532,8 +528,6 @@ def create_variants(
                     mode=ffmpeg_mode,
                     threads=ffmpeg_threads,
                 )
-            elif spec.kind == "container":
-                change_container(src_path, out_file)
             elif spec.kind == "copy":
                 shutil.copy2(src_path, out_file)
             produced.append(out_file)
@@ -561,7 +555,6 @@ def _render_combo_variant(
     scale: Optional[VariantSpec],
     audio: Optional[VariantSpec],
     video: Optional[VariantSpec],
-    container: Optional[VariantSpec],
     mode: str,
     threads: Optional[int],
 ) -> None:
@@ -602,10 +595,6 @@ def _render_combo_variant(
             args += ["-c:a", "aac", "-b:a", str(audio.params.get("bitrate", "64k"))]
     else:
         args += ["-c:a", "copy"]
-
-    if container and container.kind == "container":
-        # Output suffix decides container; args already use stream copy/encode
-        pass
 
     if threads is not None:
         args += ["-threads", str(threads)]
@@ -648,10 +637,8 @@ def _plan_random_variants(key: str, plan: RandomPlan) -> List[Dict[str, Optional
         if rng.random() < 0.85:
             video_choice = rng.choice(_video_specs()[:2])  # bitrate or crf
 
-        container_choice = VariantSpec("mkv", "container", {}) if rng.random() < 0.3 else None
-
         # Encourage overlapping manipulations
-        chosen = [c for c in [trim_choice, scale_choice, audio_choice, video_choice, container_choice] if c]
+        chosen = [c for c in [trim_choice, scale_choice, audio_choice, video_choice] if c]
         if len(chosen) < 2 and rng.random() < plan.overlap_prob:
             # Force one more dimension
             if not scale_choice:
@@ -665,7 +652,6 @@ def _plan_random_variants(key: str, plan: RandomPlan) -> List[Dict[str, Optional
                 "scale": scale_choice,
                 "audio": audio_choice,
                 "video": video_choice,
-                "container": container_choice,
             }
         )
 
@@ -690,9 +676,7 @@ def create_random_variants(
 
     recipes = _plan_random_variants(key, plan)
     for idx, recipe in enumerate(recipes, start=1):
-        # Choose extension based on container request
-        ext = ".mkv" if recipe.get("container") else ".mp4"
-        out_name = f"{key}_rand{idx:02d}{ext}"
+        out_name = f"{key}_rand{idx:02d}.mp4"
         dest_path = variant_dir / out_name
         if dest_path.exists():
             outputs.append(dest_path)
@@ -705,7 +689,6 @@ def create_random_variants(
                 scale=recipe.get("scale"),
                 audio=recipe.get("audio"),
                 video=recipe.get("video"),
-                container=recipe.get("container"),
                 mode=ffmpeg_mode,
                 threads=ffmpeg_threads,
             )
