@@ -63,6 +63,46 @@ from vdedup.report import (
 )
 from vdedup.report_viewer import launch_report_viewer
 
+_LOCK_STALE_SECONDS = 24 * 3600
+
+
+def _acquire_output_lock(lock_file: Path, *, resume: bool, logger: logging.Logger) -> bool:
+    """
+    Try to create the output lock file. Returns True on success, False if another
+    run appears active and resume flag was not supplied.
+    """
+    if lock_file.exists():
+        lock_age = time.time() - lock_file.stat().st_mtime
+        if resume:
+            logger.info("Resuming run; removing existing lock at %s", lock_file)
+            try:
+                lock_file.unlink()
+            except Exception as exc:
+                logger.error("Failed removing existing lock: %s", exc)
+                return False
+        elif lock_age >= _LOCK_STALE_SECONDS:
+            logger.warning("Removing stale lock file (age %.1fh): %s", lock_age / 3600, lock_file)
+            try:
+                lock_file.unlink()
+            except Exception as exc:
+                logger.error("Failed removing stale lock: %s", exc)
+                return False
+        else:
+            return False
+
+    lock_file.write_text(f"{os.getpid()}\n{time.time()}\n")
+    logger.info(f"Created lock file: {lock_file}")
+    return True
+
+
+def _release_output_lock(lock_file: Path, logger: logging.Logger) -> None:
+    if lock_file.exists():
+        try:
+            lock_file.unlink()
+            logger.debug(f"Removed lock file: {lock_file}")
+        except Exception as exc:
+            logger.warning(f"Failed to remove lock file: {exc}")
+
 # -------- helpers --------
 
 def _default_thread_count() -> int:
@@ -619,6 +659,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     # Output folder (replaces individual -C, -R, -S, -N arguments)
     p.add_argument("-o", "--output-dir", type=str,
                    help="Directory for all outputs (cache, reports, logs). If not specified, writes to current directory.")
+    p.add_argument("-K", "--resume-output", action="store_true",
+                   help="Reuse an existing output directory by removing its .vdedup.lock (for resuming interrupted runs).")
 
     # Performance
     threads_default = _default_thread_count()
@@ -906,9 +948,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             except Exception as e:
                 print(f"Error during cleanup: {e}", file=sys.stderr)
 
-        # Exit cleanly
-        sys.exit(130)  # Standard exit code for SIGINT
-
     signal.signal(signal.SIGINT, signal_handler)
     if hasattr(signal, 'SIGTERM'):
         signal.signal(signal.SIGTERM, signal_handler)
@@ -960,27 +999,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # Create lock file to prevent concurrent runs in same output directory
     # Only needed for SCAN and APPLY modes that modify state
     lock_file = output_dir / ".vdedup.lock"
-    try:
-        # Try to create lock file exclusively (fails if it exists)
-        if lock_file.exists():
-            # Check if lock is stale (older than 24 hours)
-            lock_age = time.time() - lock_file.stat().st_mtime
-            if lock_age < 86400:  # 24 hours
-                print(f"video-dedupe: error: Another vdedup instance is running in {output_dir}", file=sys.stderr)
-                print(f"video-dedupe: error: Lock file: {lock_file}", file=sys.stderr)
-                print(f"video-dedupe: error: If no other instance is running, delete the lock file manually", file=sys.stderr)
-                return 3
-            else:
-                # Stale lock, remove it
-                lock_file.unlink()
-                logger.info(f"Removed stale lock file (age: {lock_age/3600:.1f} hours)")
-
-        # Create new lock file with current PID
-        lock_file.write_text(f"{os.getpid()}\n{time.time()}\n")
-        logger.info(f"Created lock file: {lock_file}")
-    except Exception as e:
-        logger.error(f"Failed to create lock file: {e}")
-        print(f"video-dedupe: error: Failed to create lock file: {e}", file=sys.stderr)
+    if not _acquire_output_lock(lock_file, resume=bool(args.resume_output), logger=logger):
+        print(f"video-dedupe: error: Another vdedup instance is running in {output_dir}", file=sys.stderr)
+        print(f"video-dedupe: error: Lock file: {lock_file}", file=sys.stderr)
+        print("video-dedupe: error: Use --resume-output (or delete the lock) to continue a previous run.", file=sys.stderr)
         return 3
 
     # APPLY REPORT mode
@@ -1036,19 +1058,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             result_msg = f"Report applied: removed/moved={count}; size={size/1_048_576:.2f} MiB"
             logger.info(result_msg)
             print(result_msg)
-            return 0
+            if quit_requested:
+                print("Apply interrupted early; some operations may have been skipped.")
+            return 130 if quit_requested else 0
         except Exception as e:
             logger.error(f"Error applying report: {e}")
             raise
         finally:
             reporter.stop()
-            # Remove lock file
-            if lock_file.exists():
-                try:
-                    lock_file.unlink()
-                    logger.debug(f"Removed lock file: {lock_file}")
-                except Exception as e:
-                    logger.warning(f"Failed to remove lock file: {e}")
+            _release_output_lock(lock_file, logger)
             logger.info("Apply report mode completed")
 
     # SCAN mode
@@ -1311,6 +1329,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         reporter.set_status("Writing report to disk")
         write_report(report_path, winners, metadata=group_metadata)
         print(f"Wrote report to: {report_path}")
+        if quit_requested:
+            print("Scan interrupted early; partial findings saved to the report above.")
 
         losers = [loser for (_keep, losers) in winners.values() for loser in losers]
         bytes_total = sum(int(getattr(l, "size", 0)) for l in losers)
@@ -1332,8 +1352,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             paths = [Path(p).expanduser().resolve() for p in args.analyze_report]
             print(render_analysis_for_reports(paths, verbosity=1, show_progress=True))
 
-        logger.info("Scan mode completed successfully")
-        return 0
+        if quit_requested:
+            logger.warning("Scan ended early due to interrupt.")
+        else:
+            logger.info("Scan mode completed successfully")
+        return 130 if quit_requested else 0
     except Exception as e:
         logger.error(f"Pipeline execution failed: {e}")
         raise
@@ -1342,13 +1365,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             logger.debug("Closing hash cache")
             cache.close()
         reporter.stop()
-        # Remove lock file
-        if lock_file.exists():
-            try:
-                lock_file.unlink()
-                logger.debug(f"Removed lock file: {lock_file}")
-            except Exception as e:
-                logger.warning(f"Failed to remove lock file: {e}")
+        _release_output_lock(lock_file, logger)
         logger.info("vdedup session ended")
 
 

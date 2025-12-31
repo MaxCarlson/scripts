@@ -919,6 +919,7 @@ class InlinePreviewSession:
         self._timestamps: Dict[Path, float] = {row.path: self._initial_timestamp(row) for row in self._rows}
         self._cache: Dict[Tuple[Path, float], List[str]] = {}
         self._scrub_step = 5.0
+        self._link_all = False
 
     def _initial_timestamp(self, row: DuplicateListRow) -> float:
         stats = self._stats.get(row.path)
@@ -973,7 +974,10 @@ class InlinePreviewSession:
                     expanded=True,
                 )
             )
-        footer = "Preview: ←/→ ±5s  ,/. ±1s  a/A scrub all  Esc: close"
+        footer = (
+            f"Preview: Left/Right ±{self._scrub_step:.0f}s  ,/. ±1s  "
+            f"L link={'ON' if self._link_all else 'OFF'}  a/A all ±{self._scrub_step:.0f}s  Esc: close"
+        )
         title = f"Inline Preview (group {self._group.group_id})"
         return DetailViewData(title=title, entries=entries, footer=footer)
 
@@ -996,24 +1000,33 @@ class InlinePreviewSession:
             changed |= self._scrub_row(row, delta)
         return changed
 
+    def _scrub_target(self, delta: float) -> bool:
+        if self._link_all:
+            return self._scrub_all(delta)
+        return self._scrub_row(self._current_row(), delta)
+
     def _refresh(self) -> None:
         self._list_view.refresh_custom_detail(self.build_detail_view())
 
     def handle_key(self, key: int) -> bool:
+        if key == ord("L"):
+            self._link_all = not self._link_all
+            self._refresh()
+            return True
         if key in (curses.KEY_LEFT, ord("h")):
-            if self._scrub_row(self._current_row(), -self._scrub_step):
+            if self._scrub_target(-self._scrub_step):
                 self._refresh()
                 return True
         if key in (curses.KEY_RIGHT, ord("l")):
-            if self._scrub_row(self._current_row(), self._scrub_step):
+            if self._scrub_target(self._scrub_step):
                 self._refresh()
                 return True
         if key == ord(","):
-            if self._scrub_row(self._current_row(), -1.0):
+            if self._scrub_target(-1.0):
                 self._refresh()
                 return True
         if key == ord("."):
-            if self._scrub_row(self._current_row(), 1.0):
+            if self._scrub_target(1.0):
                 self._refresh()
                 return True
         if key == ord("a"):
