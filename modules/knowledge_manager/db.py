@@ -676,15 +676,19 @@ def add_task_link(
     """
     now = datetime.now(timezone.utc).isoformat()
     sql = """
-    INSERT OR REPLACE INTO task_links (task_id, project_id, is_origin, created_at, modified_at)
+    INSERT INTO task_links (task_id, project_id, is_origin, created_at, modified_at)
     VALUES (%s, %s, %s, %s, %s)
+    ON CONFLICT (task_id, project_id)
+    DO UPDATE SET
+        is_origin = EXCLUDED.is_origin,
+        modified_at = EXCLUDED.modified_at
     """
     cursor = conn.cursor()
     try:
-        cursor.execute(sql, (str(task_id), str(project_id), 1 if is_origin else 0, now, now))
+        cursor.execute(sql, (str(task_id), str(project_id), bool(is_origin), now, now))
         conn.commit()
         return cursor.rowcount > 0
-    except sqlite3.Error as e:
+    except Exception as e:
         raise
 
 def get_task_links(conn: sqlite3.Connection, task_id: uuid.UUID) -> List[Tuple[uuid.UUID, bool]]:

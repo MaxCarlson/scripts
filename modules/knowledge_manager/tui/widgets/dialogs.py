@@ -1,11 +1,17 @@
 # File: knowledge_manager/tui/widgets/dialogs.py
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, ListView, ListItem
 
 class InputDialog(ModalScreen):
     """A modal dialog for text input with @mention autocomplete."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=True, priority=True),
+        Binding("enter", "submit", "Submit", show=True, priority=False),  # Lower priority so input gets it first
+    ]
 
     DEFAULT_CSS = """
     #suggestion_label {
@@ -42,6 +48,14 @@ class InputDialog(ModalScreen):
                 self.project_names = [p.name for p in projects]
             except Exception:
                 self.project_names = []
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle Enter key pressed in input field."""
+        # If autocomplete is active with suggestions, don't submit yet
+        if self.enable_autocomplete and self.current_suggestions:
+            return
+        # Otherwise, submit the dialog
+        self.dismiss(event.value)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Update suggestions as user types."""
@@ -130,8 +144,23 @@ class InputDialog(ModalScreen):
         else:
             self.dismiss(None)
 
+    async def action_cancel(self) -> None:
+        """Cancel dialog (Esc key)."""
+        self.dismiss(None)
+
+    async def action_submit(self) -> None:
+        """Submit dialog (Enter key from outside input)."""
+        # Only submit if not in autocomplete mode or no suggestions showing
+        if not self.enable_autocomplete or not self.current_suggestions:
+            self.dismiss(self.query_one(Input).value)
+
 class LinkSelectionDialog(ModalScreen):
     """A modal dialog to select a link to follow."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=True, priority=True),
+        Binding("enter", "select", "Select", show=True),
+    ]
 
     def __init__(self, links: list, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -151,6 +180,18 @@ class LinkSelectionDialog(ModalScreen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
             self.dismiss(None)
+
+    async def action_cancel(self) -> None:
+        """Cancel dialog (Esc key)."""
+        self.dismiss(None)
+
+    async def action_select(self) -> None:
+        """Select highlighted link (Enter key)."""
+        # Get the currently highlighted item from the ListView
+        list_view = self.query_one(ListView)
+        if list_view.highlighted_child:
+            link = str(list_view.highlighted_child.children[0].renderable)
+            self.dismiss(link)
 
 
 class ProjectAutocompleteDialog(ModalScreen):
