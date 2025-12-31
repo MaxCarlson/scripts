@@ -1,0 +1,41 @@
+"""Video dataset toolkit: download originals, create variants, and write truth manifests."""
+
+from .dataset import (
+    TrimSpec,
+    VariantSpec,
+    RandomPlan,
+    build_truth_manifest,
+    create_variants,
+    create_random_variants,
+    download_video,
+    ensure_ffmpeg,
+    ensure_yt_dlp,
+    generate_dataset,
+    prepare_keys_from_urls,
+    write_mapping_files,
+    load_id_map,
+    load_keys,
+    main,
+    parse_args,
+    write_truth_manifest,
+)
+
+__all__ = [
+    "TrimSpec",
+    "VariantSpec",
+    "RandomPlan",
+    "build_truth_manifest",
+    "create_variants",
+    "create_random_variants",
+    "download_video",
+    "ensure_ffmpeg",
+    "ensure_yt_dlp",
+    "generate_dataset",
+    "prepare_keys_from_urls",
+    "write_mapping_files",
+    "load_id_map",
+    "load_keys",
+    "main",
+    "parse_args",
+    "write_truth_manifest",
+]
