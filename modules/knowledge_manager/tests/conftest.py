@@ -49,3 +49,25 @@ def _configure_temp_environment() -> None:
         yield
     finally:
         monkey.undo()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _configure_test_database() -> None:
+    """
+    Configure test database to prevent pollution of production database.
+
+    Sets KM_POSTGRES_DB to knowledge_manager_test so tests don't create
+    TEST_ artifacts in the production database.
+    """
+    monkey = pytest.MonkeyPatch()
+
+    # Use separate test database
+    monkey.setenv("KM_POSTGRES_DB", "knowledge_manager_test")
+
+    # Also set a marker so tests can detect they're in test mode
+    monkey.setenv("KM_TEST_MODE", "1")
+
+    try:
+        yield
+    finally:
+        monkey.undo()
