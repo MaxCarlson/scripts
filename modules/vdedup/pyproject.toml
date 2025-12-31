@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vdedup"
-version = "0.9.2"
+version = "0.10.1"
 description = "Video & file deduplication toolkit with staged pipeline (size → partial+BLAKE3 → SHA-256 → metadata → pHash/subset), resumable cache, and responsive TUI."
 readme = { text = "See repository for usage. Requires ffmpeg/ffprobe on PATH.", content-type = "text/plain" }
 requires-python = ">=3.9"
