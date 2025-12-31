@@ -9,6 +9,7 @@ from .progress import ProgressBar  # noqa: F401
 from .interactive_list import InteractiveList  # noqa: F401
 from .simpleboard import SimpleBoard  # noqa: F401
 from .seemake import SeemakePrinter  # noqa: F401
+from .export import export_dashboard_state, export_dashboard_json, stream_dashboard_updates  # noqa: F401
 
 __all__ = [
     "Stat",
@@ -18,4 +19,7 @@ __all__ = [
     "InteractiveList",
     "SimpleBoard",
     "SeemakePrinter",
+    "export_dashboard_state",
+    "export_dashboard_json",
+    "stream_dashboard_updates",
 ]

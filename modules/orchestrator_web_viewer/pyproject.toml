@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orchestrator-web-viewer"
+version = "0.2.0"
+description = "Web-based viewer for AI Orchestrator and Knowledge Manager"
+authors = [{name = "Your Name"}]
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "websockets>=12.0",
+    "asyncpg>=0.29.0",
+    "psycopg2-binary>=2.9.9",
+    "python-multipart>=0.0.6",
+    "jinja2>=3.1.2",
+    "watchfiles>=0.21.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "httpx>=0.25.0",
+]
+termdash = [
+    "termdash>=0.2.0",
+]
+
+[project.scripts]
+koweb = "orchestrator_web_viewer.main:cli"
+km-web = "orchestrator_web_viewer.main:cli"
+
+[tool.setuptools.packages.find]
+include = ["orchestrator_web_viewer*"]
+
+[tool.setuptools.package-data]
+orchestrator_web_viewer = ["static/**/*"]
