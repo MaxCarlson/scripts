@@ -49,6 +49,14 @@ class InputDialog(ModalScreen):
             except Exception:
                 self.project_names = []
 
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle Enter key pressed in input field."""
+        # If autocomplete is active with suggestions, don't submit yet
+        if self.enable_autocomplete and self.current_suggestions:
+            return
+        # Otherwise, submit the dialog
+        self.dismiss(event.value)
+
     def on_input_changed(self, event: Input.Changed) -> None:
         """Update suggestions as user types."""
         if not self.enable_autocomplete:

@@ -31,11 +31,16 @@ def cleanup_test_projects(dry_run: bool = True) -> None:
     conn = db.get_db_connection()
     cursor = conn.cursor()
 
-    # Find TEST_ projects
+    # Find test projects (various patterns)
     cursor.execute("""
         SELECT id, name, status, created_at
         FROM projects
         WHERE name LIKE 'TEST_%'
+           OR name LIKE 'Test %'
+           OR name LIKE 'test %'
+           OR name LIKE 'Project %'
+           OR name = 'Test'
+           OR name = 'test'
         ORDER BY name
     """)
 
