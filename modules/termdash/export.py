@@ -55,6 +55,7 @@ def export_dashboard_state(dashboard: TermDash) -> Dict[str, Any]:
                         "unit": stat.unit,
                         "format_string": stat.format_string,
                         "rendered": _strip_ansi(stat.render()),
+                        "raw": stat.render(),
                     }
                     line_data["stats"].append(stat_data)
             
@@ -66,6 +67,8 @@ def export_dashboard_state(dashboard: TermDash) -> Dict[str, Any]:
             "config": {
                 "align_columns": dashboard.align_columns,
                 "column_sep": dashboard.column_sep,
+                "min_col_pad": dashboard.min_col_pad,
+                "max_col_width": dashboard.max_col_width,
                 "enable_separators": dashboard.enable_separators,
                 "has_status_line": dashboard.has_status_line,
             },

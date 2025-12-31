@@ -192,6 +192,7 @@
         let currentDashboardId = null;
         let lastUpdate = Date.now();
         let updateTimes = [];
+        const statHistory = {};
 
         function setStatus(status) {
             const indicator = document.getElementById('status-indicator');
@@ -293,6 +294,22 @@
                 return;
             }
             
+            const cfg = state.config || {};
+            const sep = cfg.column_sep || '|';
+            const pad = ' '.repeat(Math.max(0, cfg.min_col_pad || 2));
+            const joiner = pad + sep + pad;
+            
+            // Compute global column widths
+            const widths = [];
+            state.lines.forEach(line => {
+                if (line.type !== 'stats' || !line.stats) return;
+                line.stats.forEach((stat, idx) => {
+                    const plain = (stat.rendered || '').trim();
+                    widths[idx] = Math.max(widths[idx] || 0, plain.length);
+                });
+            });
+            
+            // Render lines
             state.lines.forEach(line => {
                 const lineDiv = document.createElement('div');
                 
@@ -303,13 +320,38 @@
                 } else if (line.type === 'stats') {
                     lineDiv.className = 'dashboard-line';
                     
-                    // Render stats with column separator
-                    const parts = line.stats.map(stat => stat.rendered).join(' | ');
-                    lineDiv.textContent = parts;
+                    const parts = [];
+                    line.stats.forEach((stat, idx) => {
+                        let text = (stat.rendered || '').trim();
+                        const w = widths[idx] || text.length;
+                        // Append sparkline for numeric values
+                        const v = parseFloat(stat.value);
+                        if (!isNaN(v)) {
+                            const key = line.name + ':' + stat.name;
+                            statHistory[key] = statHistory[key] || [];
+                            statHistory[key].push(v);
+                            if (statHistory[key].length > 20) statHistory[key].shift();
+                            text += ' ' + sparkline(statHistory[key]);
+                        }
+                        parts.push(text.padEnd(w));
+                    });
+                    lineDiv.textContent = parts.join(joiner);
                 }
                 
                 view.appendChild(lineDiv);
             });
+        }
+        
+        function sparkline(values) {
+            if (!values || values.length === 0) return '';
+            const blocks = ['▁','▂','▃','▄','▅','▆','▇','█'];
+            const min = Math.min(...values);
+            const max = Math.max(...values);
+            const span = max - min || 1;
+            return values.map(v => {
+                const idx = Math.max(0, Math.min(blocks.length - 1, Math.floor(((v - min) / span) * (blocks.length - 1))));
+                return blocks[idx];
+            }).join('');
         }
 
         function updateRefreshRate() {

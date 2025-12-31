@@ -26,7 +26,7 @@ dev = [
     "httpx>=0.25.0",
 ]
 termdash = [
-    "termdash>=0.2.0",
+    "termdash>=0.3.0",
 ]
 
 [project.scripts]

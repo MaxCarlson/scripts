@@ -107,6 +107,15 @@ export WEB_AUTH_PASSWORD=your_secure_password
 - `WS /api/termdash/dashboards/:id/stream` - Stream dashboard updates
 - `GET /termdash` - TermDash web viewer UI
 
+Auto-attach from any TermDash process:
+
+```bash
+export TERMDASH_WEB_ATTACH=1
+export TERMDASH_WEB_ID=my_dashboard   # optional, defaults to 'termdash'
+python your_script_using_termdash.py
+# Then open http://localhost:3000/termdash
+```
+
 ### Results
 
 - `GET /api/results/:task_id` - Task results

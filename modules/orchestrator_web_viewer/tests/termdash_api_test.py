@@ -66,6 +66,8 @@ def test_get_dashboard_state(client, mock_dashboard):
     data = response.json()
     assert "lines" in data
     assert "config" in data
+    assert "min_col_pad" in data["config"]
+    assert "column_sep" in data["config"]
     assert len(data["lines"]) == 1
     assert data["lines"][0]["name"] == "test_line"
 
