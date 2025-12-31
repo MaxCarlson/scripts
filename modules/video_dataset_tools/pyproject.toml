@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vdt"
+version = "0.3.2"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Your Name" }]
+license = "MIT"
+keywords = ["video", "dataset", "yt-dlp", "ffmpeg", "dedupe"]
+dependencies = ["yt-dlp>=2023.12.30"]
+
+[project.scripts]
+vdt = "video_dataset_tools.dataset:main"
+video-dataset-tools = "video_dataset_tools.dataset:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["video_dataset_tools", "video_dataset_tools.*", "vdt"]
+exclude = ["tests*", "*.egg-info"]
