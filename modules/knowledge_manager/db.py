@@ -685,7 +685,7 @@ def add_task_link(
     """
     cursor = conn.cursor()
     try:
-        cursor.execute(sql, (str(task_id), str(project_id), 1 if is_origin else 0, now, now))
+        cursor.execute(sql, (str(task_id), str(project_id), bool(is_origin), now, now))
         conn.commit()
         return cursor.rowcount > 0
     except Exception as e:
