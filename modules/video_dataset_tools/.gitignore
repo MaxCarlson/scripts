@@ -1,0 +1,15 @@
+# Ignore generated media and temp test outputs
+*.mp4
+*.mkv
+*.m4a
+*.avi
+*.mov
+*.webm
+*.ts
+*.flv
+*.m4v
+
+# Local datasets and fixtures
+/testing/
+/tests/_tmp/
+/.pytest_tmp/
