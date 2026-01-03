@@ -108,33 +108,67 @@ def parse_status_summary(porcelain_status: str) -> StatusSummary:
     return StatusSummary(raw=porcelain_status, staged=staged, unstaged=unstaged, untracked=untracked)
 
 
-def build_commit_message_from_items(entries: Sequence[StatusItem]) -> str:
+def build_commit_message_from_items(entries: Sequence[StatusItem], stats: dict[str, tuple[int, int]] | None = None) -> str:
     """Generate a commit message summarizing staged files by type."""
     if not entries:
         return "Update repository"
-    groups: dict[str, list[str]] = {"Modified": [], "Added": [], "Deleted": [], "Updated": []}
+    stats = stats or {}
+    groups: dict[str, list[StatusItem]] = {"Modified": [], "Added": [], "Deleted": [], "Updated": []}
     label_map = {"M": "Modified", "A": "Added", "D": "Deleted"}
     for item in entries:
         code = item.staged_code.strip()
         label = label_map.get(code, "Updated")
-        groups[label].append(item.path)
-    parts: list[str] = []
+        groups[label].append(item)
+    sections: list[str] = []
     for label in ("Modified", "Added", "Deleted", "Updated"):
-        if groups[label]:
-            parts.append(f"{label}: {', '.join(groups[label])}")
-    return "; ".join(parts) if parts else "Update repository"
+        if not groups[label]:
+            continue
+        lines = [label]
+        for item in groups[label]:
+            additions, deletions = stats.get(item.path, (0, 0))
+            lines.append(f"  {_color_diff(deletions, additions)}\t{item.path}")
+        sections.append("\n".join(lines))
+    return "\n\n".join(sections) if sections else "Update repository"
 
 
-def build_default_commit_message(porcelain_status: str) -> str:
+def _color_diff(deletions: int, additions: int) -> str:
+    """Format colored diff counts."""
+    red = f"\x1b[31m-{deletions}\x1b[0m"
+    green = f"\x1b[32m+{additions}\x1b[0m"
+    return f"{red} {green}"
+
+
+def build_default_commit_message(porcelain_status: str, stats: dict[str, tuple[int, int]] | None = None) -> str:
     """Create a generic commit message derived from staged changes."""
     summary = parse_status_summary(porcelain_status)
-    return build_commit_message_from_items(summary.staged)
+    return build_commit_message_from_items(summary.staged, stats)
 
 
 def get_status_summary(runner: GitRunner) -> StatusSummary:
     """Fetch and parse the porcelain status from git."""
     status_text = runner.run(["status", "--porcelain"], capture_output=True).stdout
     return parse_status_summary(status_text)
+
+
+def get_staged_numstat(runner: GitRunner) -> dict[str, tuple[int, int]]:
+    """Return additions/deletions for staged files."""
+    result: dict[str, tuple[int, int]] = {}
+    output = runner.run(["diff", "--cached", "--numstat"], capture_output=True).stdout
+    for line in output.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        additions_raw, deletions_raw, path = parts[0], parts[1], parts[2]
+        try:
+            additions = int(additions_raw) if additions_raw.isdigit() else 0
+        except ValueError:
+            additions = 0
+        try:
+            deletions = int(deletions_raw) if deletions_raw.isdigit() else 0
+        except ValueError:
+            deletions = 0
+        result[path.strip()] = (additions, deletions)
+    return result
 
 
 def show_log_graph(runner: GitRunner, limit: int) -> None:
@@ -185,12 +219,11 @@ def run_smart_commit(
         LOG.info("Commit aborted by user.")
         return
 
-    default_message = commit_message or build_commit_message_from_items(summary.staged)
-    message = default_message
-    if not commit_message and not assume_yes:
-        manual = input(f"Enter commit message [{default_message}]: ").strip()
-        if manual:
-            message = manual
+    stats = get_staged_numstat(runner)
+    if commit_message:
+        message = commit_message
+    else:
+        message = collect_commit_message(summary.staged, assume_yes, stats)
 
     runner.run(["commit", "-m", message])
 
@@ -238,21 +271,31 @@ def ask_commit_action(has_unstaged: bool, assume_yes: bool) -> str:
     options = "[y]es/[n]o"
     if has_unstaged:
         options += "/[s]plit"
-    prompt = f"Commit staged changes before pushing? ({options}): "
+    prompt = f"Commit staged changes before pushing? ({options} or enter commit message): "
     while True:
-        reply = input(prompt).strip().lower()
-        if reply in {"y", "yes"}:
+        raw = input(prompt).strip()
+        lowered = raw.lower()
+        if lowered in {"y", "yes"}:
             return "yes"
-        if reply in {"n", "no"}:
+        if lowered in {"n", "no"}:
             return "no"
-        if has_unstaged and reply in {"s", "split"}:
+        if has_unstaged and lowered in {"s", "split"}:
             return "split"
-        print("Please answer with y, n, or s.")
+        if raw:
+            if (raw.startswith('"') and raw.endswith('"')) or (raw.startswith("'") and raw.endswith("'")):
+                if len(raw) > 1:
+                    return raw[1:-1]
+            return raw
+        print("Please answer with y, n, s, or provide a commit message.")
 
 
-def collect_commit_message(entries: Sequence[StatusItem], assume_yes: bool) -> str:
+def collect_commit_message(
+    entries: Sequence[StatusItem],
+    assume_yes: bool,
+    stats: dict[str, tuple[int, int]] | None = None,
+) -> str:
     """Return a commit message, optionally allowing manual edits."""
-    default_message = build_commit_message_from_items(entries)
+    default_message = build_commit_message_from_items(entries, stats)
     if assume_yes:
         return default_message
     manual = input(f"Enter commit message [{default_message}]: ").strip()
@@ -293,8 +336,15 @@ def run_sync_flow(runner: GitRunner, assume_yes: bool) -> None:
 
     if summary.staged:
         action = ask_commit_action(has_unstaged=summary.has_unstaged, assume_yes=assume_yes)
-        if action in {"yes", "split"}:
-            message = collect_commit_message(summary.staged, assume_yes)
+        if action != "no":
+            custom_message = None
+            if action not in {"yes", "split"}:
+                custom_message = action
+            stats = get_staged_numstat(runner)
+            if custom_message:
+                message = custom_message
+            else:
+                message = collect_commit_message(summary.staged, assume_yes, stats)
             runner.run(["commit", "-m", message])
             summary = get_status_summary(runner)
             split_requested = action == "split"
@@ -326,7 +376,8 @@ def run_sync_flow(runner: GitRunner, assume_yes: bool) -> None:
                     else "Commit freshly staged changes before pushing"
                 )
                 if ask_yes_no(commit_prompt, assume_yes):
-                    message = collect_commit_message(summary.staged, assume_yes)
+                    stats = get_staged_numstat(runner)
+                    message = collect_commit_message(summary.staged, assume_yes, stats)
                     runner.run(["commit", "-m", message])
                     summary = get_status_summary(runner)
                 else:

@@ -54,6 +54,8 @@ The command stages files, shows the user `git status`, asks if the commit should
 - Show `git status`, pull, and detect staged vs. unstaged files.
 - Offer `[y]es/[n]o/[s]plit` for staged commits. Split commits the staged set first, then loops through the unstaged changes.
 - If unstaged or untracked files remain, the prompt accepts `y` (add tracked), `A` (add all), `n` (skip), or any `git add` patterns (e.g., `"modules/* pyscripts/*"`). With `-y/--yes`, the flow defaults to `A`. After staging, GitPulse immediately runs `git status` so the staged snapshot is visible, then offers to commit the updated set before pushing.
+- Default commit messages are multi-line summaries that group Modified/Added/Deleted files, insert a blank line between categories, and prefix each filename with red/green `-N/+N` diff counts pulled from `git diff --cached --numstat` so you can scan impact quickly.
+- When the commit prompt appears, you can respond with `y`, `n`, `s`, or type a quoted commit message (e.g., `"Fix configs"`) to use it immediately without another prompt.
 - Automatically generate commit messages grouped by modified/added/deleted filenames while still allowing manual overrides when `-y/--yes` is not supplied.
 
 This keeps multiple clones synchronized with minimal keystrokes while still supporting deliberate split commits when staged and unstaged work need to be separated.
