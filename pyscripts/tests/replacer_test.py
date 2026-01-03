@@ -70,10 +70,22 @@ def test_run_search_mode_prints_summary(monkeypatch, reset_console):
     assert "Matches:" in output
 
 
-def test_replacement_runner_dry_run_shows_diff(tmp_path, reset_console):
+def test_replacement_runner_dry_run_shows_diff(tmp_path, reset_console, monkeypatch):
     target = tmp_path / "sample.txt"
     target.write_text("foo value\nsome foo here\n", encoding="utf-8")
     args = make_args(path=[str(tmp_path)], verbose=True)
+
+    class DummyRunner:
+        def __init__(self, _args):
+            pass
+
+        def stream_colored_output(self):
+            return 0
+
+        def files_with_matches(self):
+            return ([target], 0)
+
+    monkeypatch.setattr(replacer, "RipgrepRunner", lambda args: DummyRunner(args))
 
     status = run_replacement_mode(args)
     assert status == 0
@@ -84,10 +96,23 @@ def test_replacement_runner_dry_run_shows_diff(tmp_path, reset_console):
     assert target.read_text(encoding="utf-8").startswith("foo value")
 
 
-def test_replacement_runner_write_updates_files(tmp_path, reset_console):
+def test_replacement_runner_write_updates_files(tmp_path, reset_console, monkeypatch):
     target = tmp_path / "data.txt"
     target.write_text("alpha foo beta", encoding="utf-8")
     args = make_args(path=[str(tmp_path)], write=True)
+
+    class DummyRunner:
+        def __init__(self, _args):
+            pass
+
+        def stream_colored_output(self):
+            return 0
+
+        def files_with_matches(self):
+            return ([target], 0)
+
+    monkeypatch.setattr(replacer, "RipgrepRunner", lambda args: DummyRunner(args))
+
     status = run_replacement_mode(args)
     assert status == 0
     assert target.read_text(encoding="utf-8") == "alpha bar beta"

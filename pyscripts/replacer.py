@@ -69,9 +69,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-p",
         "--path",
-        nargs="+",
-        default=["."],
-        help="Files/directories/globs to search (defaults to current directory).",
+        action="append",
+        help="File/directory/glob to search. Repeat for multiple roots (defaults to current directory).",
     )
     parser.add_argument(
         "-w",
@@ -222,6 +221,28 @@ class RipgrepRunner:
             console.print(result.stderr, style="warning")
         return result.returncode
 
+    def files_with_matches(self) -> Tuple[List[Path], int]:
+        """Return a list of files that contain matches using ripgrep."""
+        cmd = self._base_cmd()
+        cmd.append("--files-with-matches")
+        cmd.append("--null")
+        cmd.append(self.args.pattern)
+        cmd.extend(self.search_paths or ["."])
+
+        try:
+            result = self.runner(cmd)
+        except FileNotFoundError:
+            console.print("Error: ripgrep executable not found. Install rg or provide --rg-bin.", style="danger")
+            return [], 2
+
+        files: List[Path] = []
+        for raw in result.stdout.split("\0"):
+            if raw:
+                files.append(Path(raw).resolve())
+        if result.stderr:
+            console.print(result.stderr, style="warning")
+        return files, result.returncode
+
     def gather_summary(self) -> Tuple[SearchSummary, int]:
         """Run rg --json so we can provide totals that match the preview."""
         cmd = self._base_cmd()
@@ -315,13 +336,14 @@ class ReplacementStats:
 class ReplacementRunner:
     """Implements the dry-run diff previews and eventual writes."""
 
-    def __init__(self, args: argparse.Namespace):
+    def __init__(self, args: argparse.Namespace, candidate_files: Optional[Sequence[Path]] = None):
         if args.replacement is None:
             raise ValueError("ReplacementRunner requires a replacement value.")
         self.args = args
         self.exclusions = list(args.exclude or []) + DEFAULT_EXCLUSIONS
         self.pattern = args.pattern
         self.replacement = args.replacement
+        self.candidate_files = [Path(p) for p in candidate_files] if candidate_files else None
         flags = re.IGNORECASE if args.ignore_case else 0
         if args.regex:
             self.compiled = re.compile(self.pattern, flags)
@@ -339,6 +361,15 @@ class ReplacementRunner:
 
     def iter_target_files(self) -> Iterable[Path]:
         """Yield every candidate file that matches the user's path filters."""
+        if self.candidate_files is not None:
+            yielded = set()
+            for file_path in self.candidate_files:
+                resolved = file_path.resolve()
+                if resolved not in yielded:
+                    yielded.add(resolved)
+                    yield resolved
+            return
+
         yielded = set()
         glob_options = self.args.path or ["."]
         for raw in glob_options:
@@ -542,10 +573,18 @@ def run_search_mode(args: argparse.Namespace) -> int:
 
 def run_replacement_mode(args: argparse.Namespace) -> int:
     """Handle diff previews and optional writes."""
-    runner = ReplacementRunner(args)
+    rg_runner = RipgrepRunner(args)
+    display_code = rg_runner.stream_colored_output()
+    files, file_code = rg_runner.files_with_matches()
+    if display_code > 1:
+        return display_code
+    if file_code > 1:
+        return file_code
+
+    runner = ReplacementRunner(args, candidate_files=files)
     stats = runner.run()
     print_summary(stats, dry_run=not args.write, mode="replace")
-    return 0
+    return 0 if file_code <= 1 else file_code
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
