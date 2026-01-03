@@ -23,6 +23,7 @@ from .privileges_manager import PrivilegesManager
 from .history_utils import HistoryUtils # New Import
 
 from .tmux_utils import TmuxManager
+from .path_utils import expand_path, to_posix_path, to_native_path
 
 # Debugging and logging utilities
 from . import debug_utils
@@ -45,4 +46,7 @@ __all__ = [
     "create_link",
     "LinkType",
     "LinkResult",
+    "expand_path",
+    "to_posix_path",
+    "to_native_path",
 ]

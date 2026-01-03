@@ -186,7 +186,32 @@ def test_progress_tracker_updates_board():
     tracker.on_error()
 
     updated_stats = {item[1] for item in board.updated}
-    assert {"keys", "downloaded", "variants", "errors", "rate", "elapsed"}.issubset(updated_stats)
+    expected = {"keys", "downloaded", "variants", "errors", "ops", "elapsed", "cpu", "active"}
+    assert expected.issubset(updated_stats)
+
+
+def test_progress_tracker_worker_counters():
+    tracker = ProgressTracker(total_keys=2, workers=2, board=None)
+    tracker.update_worker_stats(1, det_inc=2, rand_inc=1, ops_inc=3)
+    tracker.update_worker_stats(1, err_inc=1)
+    tracker.on_error(worker_id=1)
+
+    stats = tracker.worker_stats[1]
+    assert stats["det"] == 2
+    assert stats["rand"] == 1
+    assert stats["ops"] == 3
+    assert stats["err"] == 2
+
+
+def test_progress_tracker_rotates_visible_masters():
+    master_keys = [f"k{i}" for i in range(1, 8)]
+    tracker = ProgressTracker(total_keys=len(master_keys), workers=2, board=None, master_keys=master_keys, visible_master_keys=master_keys[:3])
+    assert tracker.visible_master_keys == master_keys[:3]
+
+    # Force visibility of a hidden master; should rotate into visible list
+    tracker._ensure_visible("k5")
+    assert "k5" in tracker.visible_master_keys
+    assert len(tracker.visible_master_keys) == 3
 
 
 def test_generate_dataset_uses_stubs(monkeypatch, tmp_path):

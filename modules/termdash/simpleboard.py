@@ -46,6 +46,9 @@ class SimpleBoard:
     def read_stat(self, line: str, stat: str):
         return self.td.read_stat(line, stat)
 
+    def log(self, message: str, level: str = "info") -> None:
+        self.td.log(message, level=level)
+
     # Lifecycle helpers
     def start(self):
         self.td.start()

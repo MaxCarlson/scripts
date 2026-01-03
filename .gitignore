@@ -204,5 +204,9 @@ claude-*.txt
 modules/file_utils/path_backups/
 .pytest_tmp/
 logs/
-*.mkv
-*.mp4
+
+# Video File Stuff
+*.part*
+*.mkv*
+*.m4a*
+*.mp4*

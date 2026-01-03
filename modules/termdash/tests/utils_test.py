@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tempfile
+import shutil
 
 from termdash import utils as td_utils
 
@@ -26,11 +28,15 @@ def test_format_bytes_binary():
     assert td_utils.format_bytes_binary(1024 ** 2) == "1.00 MiB"
 
 
-def test_get_disk_stats(tmp_path):
-    nested = tmp_path / "child"
-    nested.mkdir()
-    stats = td_utils.get_disk_stats(nested)
-    assert stats.path == nested.resolve()
-    assert stats.total_bytes >= stats.free_bytes > 0
-    stats_2 = td_utils.get_disk_stats(tmp_path)
-    assert td_utils.same_disk(stats, stats_2)
+def test_get_disk_stats():
+    base = Path(tempfile.mkdtemp(prefix="td-disk-", dir=Path(__file__).parent))
+    try:
+        nested = base / "child"
+        nested.mkdir()
+        stats = td_utils.get_disk_stats(nested)
+        assert stats.path == nested.resolve()
+        assert stats.total_bytes >= stats.free_bytes > 0
+        stats_2 = td_utils.get_disk_stats(base)
+        assert td_utils.same_disk(stats, stats_2)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)

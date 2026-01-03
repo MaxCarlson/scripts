@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import sys
 import time
+from threading import Event, Lock, Thread
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,16 @@ from .transformations import (
     scale_video,
     trim_video,
 )
+
+_AUDIO_ONLY_SUFFIXES = {".m4a", ".aac", ".mp3", ".wav", ".flac"}
+
+
+def _is_audio_only(path: Path) -> bool:
+    suffixes = [s.lower() for s in path.suffixes]
+    base_suffix = path.suffix.lower()
+    if base_suffix in _AUDIO_ONLY_SUFFIXES:
+        return True
+    return any(s in _AUDIO_ONLY_SUFFIXES for s in suffixes)
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +82,16 @@ class RandomPlan:
 class ProgressTracker:
     """Thread-safe counters for live UI and logging."""
 
-    def __init__(self, total_keys: int = 0, board: object | None = None, workers: int = 1) -> None:
+    def __init__(
+        self,
+        total_keys: int,
+        *,
+        board: object | None = None,
+        workers: int = 1,
+        master_keys: Sequence[str] | None = None,
+        visible_master_keys: Sequence[str] | None = None,
+        hidden_masters: int = 0,
+    ) -> None:
         self.total_keys = total_keys
         self.started = 0
         self.downloaded = 0
@@ -79,32 +99,101 @@ class ProgressTracker:
         self.rand_variants = 0
         self.errors = 0
         self._lock = Lock()
+        self._ticker_stop = Event()
+        self._ticker: Thread | None = None
         self._start_ts = time.time()
+        self._cpu_start = time.process_time()
         self.board = board
         self.workers = max(1, workers)
+        self.master_keys = list(master_keys) if master_keys else []
+        self.visible_master_keys = list(visible_master_keys) if visible_master_keys is not None else list(self.master_keys)
+        self.hidden_masters = max(0, int(hidden_masters))
+        self._visible_capacity = len(self.visible_master_keys)
+        self._next_visible_slot = 0
         self.worker_state: Dict[int, Tuple[str, str]] = {i: ("idle", "-") for i in range(1, self.workers + 1)}
+        self.worker_to_key: Dict[int, str] = {}
+        self.worker_stats: Dict[int, Dict[str, int]] = {
+            i: {"det": 0, "rand": 0, "ops": 0, "err": 0} for i in range(1, self.workers + 1)
+        }
+        self.master_stats: Dict[str, Dict[str, float]] = {}
+        self._master_lines: Dict[str, str] = {}
         if self.board:
             self._init_board()
+            self._start_ticker()
 
     def _init_board(self) -> None:
         Stat = _lazy_stat_import()
-
         self.board.add_row(
             "progress",
-            Stat("keys", f"0/{self.total_keys}", format_string="{}", no_expand=True, display_width=14),
+            Stat("keys", f"0/{self.total_keys}", format_string="{}", no_expand=True, display_width=12),
             Stat("downloaded", 0, prefix="dl=", format_string="{}", no_expand=True, display_width=8),
-            Stat("variants", (0, 0), prefix="var=", format_string="{}+{}", no_expand=True, display_width=10),
+            Stat("variants", (0, 0), prefix="var=", format_string="{}+{}", no_expand=True, display_width=12),
             Stat("errors", 0, prefix="err=", format_string="{}", color=self._warn_color, no_expand=True, display_width=6),
-            Stat("rate", 0.0, prefix="rate=", format_string="{:.2f}/s", no_expand=True, display_width=12),
+            Stat("ops", 0.0, prefix="ops/s=", format_string="{:.2f}", no_expand=True, display_width=12),
+            Stat("active", 0, prefix="act=", format_string="{}", no_expand=True, display_width=8),
             Stat("elapsed", 0.0, prefix="t=", format_string="{:.1f}s", no_expand=True, display_width=10),
+            Stat("cpu", 0.0, prefix="cpu=", format_string="{:.1f}s", no_expand=True, display_width=10),
+        )
+
+        if self.master_keys:
+            self.board.add_row(
+                "master-header",
+                Stat("h1", "Masters", no_expand=True, display_width=9, color="1;37"),
+                Stat("h3", "stage", no_expand=True, display_width=28, color="1;37"),
+                Stat("h4", "det", no_expand=True, display_width=8, color="1;37"),
+                Stat("h5", "rand", no_expand=True, display_width=8, color="1;37"),
+                Stat("h6", "ops", no_expand=True, display_width=10, color="1;37"),
+                Stat("h7", "avg", no_expand=True, display_width=8, color="1;37"),
+            )
+            self.board.add_row(
+                "master-summary",
+                Stat("id", "SUM", no_expand=True, display_width=5, color="1;33"),
+                Stat("stage", "-", prefix="", format_string="{}", no_expand=True, display_width=28),
+                Stat("det", 0, prefix="det=", format_string="{}", no_expand=True, display_width=8),
+                Stat("rand", 0, prefix="rand=", format_string="{}", no_expand=True, display_width=8),
+                Stat("manip", 0, prefix="ops=", format_string="{}", no_expand=True, display_width=10),
+                Stat("avg", 0.0, prefix="avg=", format_string="{:.1f}", no_expand=True, display_width=8),
+            )
+
+        stage_color = self._stage_color
+
+        for key in self.master_keys:
+            self.master_stats.setdefault(key, {"det": 0, "rand": 0, "manip": 0, "variants": 0, "stage": "pending"})
+
+        for idx, key in enumerate(self.visible_master_keys, start=1):
+            line_name = f"master-{idx:02d}"
+            self._master_lines[key] = line_name
+            self.board.add_row(
+                line_name,
+                Stat("id", f"M{idx:02d}", no_expand=True, display_width=5, color="1;35"),
+                Stat("stage", "pending", format_string="{}", color=stage_color, no_expand=True, display_width=28),
+                Stat("det", 0, prefix="d=", format_string="{}", no_expand=True, display_width=8),
+                Stat("rand", 0, prefix="r=", format_string="{}", no_expand=True, display_width=8),
+                Stat("manip", 0, prefix="ops=", format_string="{}", no_expand=True, display_width=10),
+                Stat("avg", 0.0, prefix="avg=", format_string="{:.1f}", no_expand=True, display_width=8),
+            )
+
+        self.board.add_row(
+            "worker-header",
+            Stat("h1", "Workers", no_expand=True, display_width=9, color="1;37"),
+            Stat("h2", "master", no_expand=True, display_width=12, color="1;37"),
+            Stat("h3", "stage", no_expand=True, display_width=32, color="1;37"),
+            Stat("h4", "det", no_expand=True, display_width=6, color="1;37"),
+            Stat("h5", "rand", no_expand=True, display_width=6, color="1;37"),
+            Stat("h6", "ops", no_expand=True, display_width=8, color="1;37"),
+            Stat("h7", "err", no_expand=True, display_width=6, color="1;37"),
         )
 
         for wid in range(1, self.workers + 1):
             self.board.add_row(
                 f"worker-{wid:02d}",
                 Stat("id", f"W{wid:02d}", no_expand=True, display_width=5, color="1;36"),
-                Stat("key", "-", prefix="key=", format_string="{}", no_expand=True, display_width=22),
-                Stat("stage", "idle", prefix="stage=", format_string="{}", no_expand=True, display_width=14),
+                Stat("key", "-", format_string="{}", no_expand=True, display_width=12),
+                Stat("stage", "idle", format_string="{}", color=stage_color, no_expand=True, display_width=32),
+                Stat("det", 0, prefix="d=", format_string="{}", no_expand=True, display_width=6),
+                Stat("rand", 0, prefix="r=", format_string="{}", no_expand=True, display_width=6),
+                Stat("ops", 0, prefix="ops=", format_string="{}", no_expand=True, display_width=8),
+                Stat("err", 0, prefix="e=", format_string="{}", color=self._warn_color, no_expand=True, display_width=6),
             )
 
     @staticmethod
@@ -113,6 +202,46 @@ class ProgressTracker:
             return "1;31" if int(value) > 0 else ""
         except Exception:
             return ""
+
+    @staticmethod
+    def _stage_color(value: object) -> str:
+        stage = str(value or "").lower()
+        if "error" in stage:
+            return "1;31"  # red
+        if "skip" in stage:
+            return "1;33"  # yellow
+        if "done" in stage or "complete" in stage:
+            return "1;32"  # green
+        if "download" in stage or "det" in stage or "rand" in stage or "start" in stage:
+            return "1;36"  # cyan
+        if "idle" in stage:
+            return "2;37"  # dim gray
+        return ""
+
+    def set_master_stage(self, key: str, stage: str) -> None:
+        with self._lock:
+            if key in self.master_stats:
+                self.master_stats[key]["stage"] = stage
+        self._refresh_master(key)
+
+    def update_master_progress(
+        self,
+        key: str,
+        *,
+        det_inc: int = 0,
+        rand_inc: int = 0,
+        manip_inc: int = 0,
+        variant_inc: int = 0,
+    ) -> None:
+        with self._lock:
+            stats = self.master_stats.get(key)
+            if not stats:
+                return
+            stats["det"] += det_inc
+            stats["rand"] += rand_inc
+            stats["manip"] += manip_inc
+            stats["variants"] += variant_inc
+        self._refresh_master(key)
 
     def set_total(self, total_keys: int) -> None:
         with self._lock:
@@ -135,35 +264,152 @@ class ProgressTracker:
             self.rand_variants += rand_count
         self._refresh()
 
-    def on_error(self) -> None:
+    def on_error(self, worker_id: int | None = None) -> None:
         with self._lock:
             self.errors += 1
+            if worker_id is not None:
+                self._update_worker_stats(worker_id, err_inc=1)
         self._refresh()
 
     def set_worker_stage(self, worker_id: int, key: str, stage: str) -> None:
         with self._lock:
             self.worker_state[worker_id] = (stage, key)
+            self.worker_to_key[worker_id] = key
         self._refresh_worker(worker_id)
+        if key:
+            self.set_master_stage(key, stage)
+
+    def update_worker_stats(self, worker_id: int, *, det_inc: int = 0, rand_inc: int = 0, ops_inc: int = 0, err_inc: int = 0) -> None:
+        with self._lock:
+            self._update_worker_stats(worker_id, det_inc=det_inc, rand_inc=rand_inc, ops_inc=ops_inc, err_inc=err_inc)
+        self._refresh_worker(worker_id)
+
+    def _update_worker_stats(self, worker_id: int, *, det_inc: int = 0, rand_inc: int = 0, ops_inc: int = 0, err_inc: int = 0) -> None:
+        stats = self.worker_stats.setdefault(worker_id, {"det": 0, "rand": 0, "ops": 0, "err": 0})
+        stats["det"] += det_inc
+        stats["rand"] += rand_inc
+        stats["ops"] += ops_inc
+        stats["err"] += err_inc
 
     def _refresh(self) -> None:
         if not self.board:
             return
         elapsed = max(0.001, time.time() - self._start_ts)
+        cpu_elapsed = max(0.001, time.process_time() - self._cpu_start)
         rate = (self.det_variants + self.rand_variants) / elapsed
         self.board.update("progress", "keys", f"{self.started}/{self.total_keys or '?'}")
         self.board.update("progress", "downloaded", self.downloaded)
         self.board.update("progress", "variants", (self.det_variants, self.rand_variants))
         self.board.update("progress", "errors", self.errors)
-        self.board.update("progress", "rate", rate)
+        self.board.update("progress", "ops", rate)
+        active = sum(1 for _wid, (stg, _k) in self.worker_state.items() if stg and stg != "idle")
+        self.board.update("progress", "active", active)
         self.board.update("progress", "elapsed", elapsed)
+        self.board.update("progress", "cpu", cpu_elapsed)
+        self._refresh_summary()
+
+    def _refresh_master(self, key: str) -> None:
+        if not self.board:
+            return
+        self._ensure_visible(key)
+        line = self._master_lines.get(key)
+        stats = self.master_stats.get(key)
+        if not line or not stats:
+            return
+        avg = 0.0
+        if stats.get("variants"):
+            avg = float(stats.get("manip", 0)) / max(1.0, float(stats.get("variants", 0)))
+        self.board.update(line, "stage", stats.get("stage", "-"))
+        self.board.update(line, "det", int(stats.get("det", 0)))
+        self.board.update(line, "rand", int(stats.get("rand", 0)))
+        self.board.update(line, "manip", int(stats.get("manip", 0)))
+        self.board.update(line, "avg", avg)
+        self._refresh_summary()
+
+    def _refresh_summary(self) -> None:
+        if not self.board or not self.master_keys:
+            return
+        total_det = sum(int(v.get("det", 0)) for v in self.master_stats.values())
+        total_rand = sum(int(v.get("rand", 0)) for v in self.master_stats.values())
+        total_manip = sum(int(v.get("manip", 0)) for v in self.master_stats.values())
+        total_variants = sum(int(v.get("variants", 0)) for v in self.master_stats.values())
+        done = sum(1 for v in self.master_stats.values() if v.get("stage") == "done")
+        avg = (float(total_manip) / float(total_variants)) if total_variants else 0.0
+        hidden_txt = f" hidden={self.hidden_masters}" if self.hidden_masters else ""
+        self.board.update("master-summary", "stage", f"done={done}/{self.total_keys or '?'}{hidden_txt}")
+        self.board.update("master-summary", "det", total_det)
+        self.board.update("master-summary", "rand", total_rand)
+        self.board.update("master-summary", "manip", total_manip)
+        self.board.update("master-summary", "avg", avg)
+
+    def _short_label(self, key: str) -> str:
+        if not key:
+            return "-"
+        try:
+            idx = self.master_keys.index(key)
+            return f"M{idx+1:02d}"
+        except Exception:
+            return key[:12]
 
     def _refresh_worker(self, worker_id: int) -> None:
         if not self.board:
             return
         stage, key = self.worker_state.get(worker_id, ("idle", "-"))
         line = f"worker-{worker_id:02d}"
-        self.board.update(line, "key", key)
+        self.board.update(line, "key", self._short_label(key))
         self.board.update(line, "stage", stage)
+        stats = self.worker_stats.get(worker_id, {})
+        self.board.update(line, "det", int(stats.get("det", 0)))
+        self.board.update(line, "rand", int(stats.get("rand", 0)))
+        self.board.update(line, "ops", int(stats.get("ops", 0)))
+        self.board.update(line, "err", int(stats.get("err", 0)))
+
+    def _ensure_visible(self, key: str) -> None:
+        if not self._visible_capacity:
+            return
+        if key in self.visible_master_keys:
+            return
+        # Replace the next slot in round-robin to surface recent masters.
+        slot = self._next_visible_slot % self._visible_capacity
+        self._next_visible_slot += 1
+
+        if self.visible_master_keys:
+            displaced = self.visible_master_keys[slot]
+            self._master_lines.pop(displaced, None)
+            self.visible_master_keys[slot] = key
+        else:
+            self.visible_master_keys.append(key)
+
+        line_name = f"master-{slot+1:02d}"
+        self._master_lines[key] = line_name
+
+        if self.board:
+            Stat = _lazy_stat_import()
+            stage_color = self._stage_color
+            self.board.update(line_name, "id", f"M{slot+1:02d}")
+            self.board.update(line_name, "stage", "pending")
+            self.board.update(line_name, "det", 0)
+            self.board.update(line_name, "rand", 0)
+            self.board.update(line_name, "manip", 0)
+            self.board.update(line_name, "avg", 0.0)
+            # Reset formatting in case of reused line
+            self.board.update(line_name, "stage", self.master_stats.get(key, {}).get("stage", "pending"))
+
+    def _start_ticker(self) -> None:
+        if self._ticker is not None:
+            return
+
+        def _loop() -> None:
+            while not self._ticker_stop.wait(0.2):
+                self._refresh()
+
+        self._ticker = Thread(target=_loop, name="progress-ticker", daemon=True)
+        self._ticker.start()
+
+    def stop(self) -> None:
+        self._ticker_stop.set()
+        if self._ticker and self._ticker.is_alive():
+            self._ticker.join(timeout=1)
 
 
 def _lazy_stat_import():
@@ -193,29 +439,198 @@ def _lazy_simpleboard_import():
     return SimpleBoard
 
 
+def _lazy_rotating_text_import():
+    try:
+        from termdash.rotating_text import RotatingText
+        return RotatingText
+    except Exception:
+        pass
+    root = Path(__file__).resolve().parents[2]
+    if str(root) not in sys.path:
+        sys.path.append(str(root))
+    from modules.termdash.rotating_text import RotatingText
+    return RotatingText
+
+
+def _load_intro_paragraphs(path: Optional[Path] = None) -> List[str]:
+    """Return a list of intro paragraphs separated by blank lines."""
+
+    if path is None:
+        path = Path(__file__).resolve().parents[2] / "docs" / "discovery_intro.txt"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return []
+
+    paragraphs: List[str] = []
+    buffer: List[str] = []
+    for line in text.splitlines():
+        stripped = line.rstrip()
+        if not stripped:
+            if buffer:
+                paragraphs.append(" ".join(buffer))
+                buffer = []
+            continue
+        buffer.append(stripped)
+    if buffer:
+        paragraphs.append(" ".join(buffer))
+    return paragraphs
+
+
 @contextmanager
-def _board_runner(board: object):
+def _board_runner(board: object, tracker: ProgressTracker | None = None):
     try:
         board.start()
         yield board
     finally:
+        if tracker:
+            tracker.stop()
         try:
             board.stop()
         except Exception:
             pass
 
 
-def _maybe_start_ui(total_keys: int, workers: int) -> tuple[ProgressTracker | None, object]:
+def _maybe_start_ui(total_keys: int, workers: int, master_keys: Sequence[str] | None = None) -> tuple[ProgressTracker | None, object]:
     try:
         SimpleBoard = _lazy_simpleboard_import()
     except Exception as exc:  # pragma: no cover - optional dep
         logger.warning("UI disabled; termdash unavailable (%s)", exc)
         return None, nullcontext()
 
-    extra_rows = max(6, workers + 2)
-    board = SimpleBoard(title="Video Dataset Generator", refresh_rate=0.2, reserve_extra_rows=extra_rows)
-    tracker = ProgressTracker(total_keys, board=board, workers=workers)
-    return tracker, _board_runner(board)
+    master_keys = list(master_keys or [])
+    master_count = len(master_keys)
+
+    # Terminal height drives how many master rows we render; keep ~80% for board.
+    try:
+        _cols, term_lines = os.get_terminal_size()
+    except OSError:
+        term_lines = 40
+    visible_workers = max(1, min(workers, total_keys or workers))
+
+    base_rows = 1  # progress
+    if master_count:
+        base_rows += 2  # master header + summary
+    base_rows += 1  # worker header
+    base_rows += visible_workers
+
+    target_board_rows = max(10, int(term_lines * 0.8))
+    master_budget = max(0, target_board_rows - base_rows)
+    min_visible = min(master_count, max(5, master_budget)) if master_count else 0
+    visible_master_keys = master_keys[:min_visible] if min_visible else []
+    hidden_masters = max(0, master_count - len(visible_master_keys))
+
+    # Ensure log region always has space and UI rows are stable.
+    board_rows = base_rows + len(visible_master_keys)
+    log_start = min(term_lines, max(board_rows + 1, target_board_rows))
+    log_end = term_lines
+
+    board = SimpleBoard(
+        title=None,
+        refresh_rate=0.2,
+        reserve_extra_rows=0,
+        clear_screen=True,
+        log_region_start_row=log_start,
+        log_region_end_row=log_end,
+    )
+    tracker = ProgressTracker(
+        total_keys,
+        board=board,
+        workers=visible_workers,
+        master_keys=master_keys,
+        visible_master_keys=visible_master_keys,
+        hidden_masters=hidden_masters,
+    )
+    if hidden_masters:
+        try:
+            board.log(f"UI: showing {len(visible_master_keys)} masters, hiding {hidden_masters} (taller terminal shows more)")
+        except Exception:
+            pass
+    return tracker, _board_runner(board, tracker)
+
+
+def _start_discovery_ui(
+    total: int,
+    *,
+    intro_path: Optional[Path] = None,
+    min_interval_s: float = 6.0,
+    max_interval_s: float = 25.0,
+    words_per_second: float = 2.0,
+) -> tuple[Optional[object], object, Optional[callable]]:
+    try:
+        SimpleBoard = _lazy_simpleboard_import()
+        Stat = _lazy_stat_import()
+        RotatingText = _lazy_rotating_text_import()
+    except Exception:
+        return None, nullcontext(), None
+
+    paragraphs = _load_intro_paragraphs(intro_path)
+
+    board = SimpleBoard(
+        title="vdt discovery",
+        refresh_rate=0.2,
+        clear_screen=True,
+        reserve_extra_rows=2,
+    )
+    board.add_row(
+        "intro-title",
+        Stat("title", "Video Dataset Discovery", no_expand=True, display_width=34, color="1;36"),
+        Stat("sep", "|", no_expand=True, display_width=2, color="2;37"),
+        Stat("tag", "guided startup", no_expand=True, display_width=18, color="1;33"),
+    )
+    board.add_row(
+        "intro-body",
+        Stat("body", paragraphs[0] if paragraphs else "Preparing discovery...", no_expand=False, display_width=120),
+    )
+    board.add_row(
+        "intro-sep",
+        Stat("sep", "-" * 80, no_expand=False, display_width=120, color="2;37"),
+    )
+    board.add_row(
+        "discover",
+        Stat("found", 0, prefix="found=", format_string="{}", no_expand=True, display_width=12),
+        Stat("attempts", 0, prefix="attempts=", format_string="{}", no_expand=True, display_width=14),
+        Stat("remaining", total, prefix="remain=", format_string="{}", no_expand=True, display_width=14),
+        Stat("last", "-", prefix="q=", format_string="{}", no_expand=True, display_width=24),
+    )
+
+    def hook(found: int, attempts: int, last_query: str) -> None:
+        try:
+            board.update("discover", "found", found)
+            board.update("discover", "attempts", attempts)
+            board.update("discover", "remaining", max(0, total - found))
+            board.update("discover", "last", last_query)
+        except Exception:
+            pass
+
+    rotator = None
+    if paragraphs:
+        rotator = RotatingText(
+            board,
+            "intro-body",
+            "body",
+            paragraphs,
+            min_interval_s=min_interval_s,
+            max_interval_s=max_interval_s,
+            words_per_second=words_per_second,
+        )
+
+    @contextmanager
+    def runner():
+        try:
+            board.start()
+            if rotator:
+                rotator.start()
+            yield board
+        finally:
+            if rotator:
+                rotator.stop()
+            try:
+                board.stop()
+            except Exception:
+                pass
+
+    return board, runner(), hook
 
 
 def ensure_yt_dlp() -> None:
@@ -277,6 +692,7 @@ def discover_random_urls(
     *,
     seed: Optional[int] = None,
     per_query: int = 12,
+    progress_hook: Optional[callable] = None,
 ) -> List[str]:
     """Use yt-dlp search to discover random YouTube URLs deterministically.
 
@@ -344,15 +760,23 @@ def discover_random_urls(
         return found
 
     attempts = 0
-    while len(urls) < count and attempts < max_attempts:
-        attempts += 1
-        query = rng.choice(query_pool)
-        for url in _fetch_for_query(query):
-            if url not in seen:
-                seen.add(url)
-                urls.append(url)
-                if len(urls) >= count:
-                    break
+    try:
+        while len(urls) < count and attempts < max_attempts:
+            attempts += 1
+            query = rng.choice(query_pool)
+            for url in _fetch_for_query(query):
+                if url not in seen:
+                    seen.add(url)
+                    urls.append(url)
+                    if len(urls) >= count:
+                        break
+            if progress_hook:
+                try:
+                    progress_hook(len(urls), attempts, query)
+                except Exception:
+                    pass
+    except KeyboardInterrupt:
+        raise SystemExit("Cancelled during auto-URL discovery")
 
     if len(urls) < count:
         raise RuntimeError(f"Only discovered {len(urls)} URLs (wanted {count}); try adjusting per-query or connectivity")
@@ -439,15 +863,29 @@ def create_variants(
     ffmpeg_mode: str = "cpu",
     ffmpeg_threads: Optional[int] = None,
     flat_variants: bool = False,
+    tracker: "ProgressTracker" | None = None,
+    worker_id: Optional[int] = None,
+    stats: Optional[Dict[str, int]] = None,
 ) -> List[Path]:
     """
     Create deterministic baseline variants for `src_path`.
     If flat_variants is True, all variants are placed directly under dest_dir.
     """
 
+    if _is_audio_only(src_path):
+        logger.warning("Audio-only source for %s; skipping deterministic variants", key)
+        if tracker and worker_id is not None:
+            tracker.set_worker_stage(worker_id, key, "skip (audio-only)")
+        return []
+
     variant_dir = dest_dir if flat_variants else dest_dir / key
     variant_dir.mkdir(parents=True, exist_ok=True)
     produced: List[Path] = []
+    det_ops = 0
+
+    def _stage(label: str) -> None:
+        if tracker and worker_id is not None:
+            tracker.set_worker_stage(worker_id, key, label)
 
     # Trims
     for spec in _trim_specs(extra_trims or []):
@@ -456,8 +894,12 @@ def create_variants(
         out_file = variant_dir / f"{key}_{spec.name}.mp4"
         if out_file.exists():
             produced.append(out_file)
+            det_ops += 1
+            if tracker:
+                tracker.update_master_progress(key, det_inc=1, manip_inc=1, variant_inc=1)
             continue
         try:
+            _stage(f"det trim {spec.name}")
             trim_video(
                 src_path,
                 out_file,
@@ -467,6 +909,9 @@ def create_variants(
                 threads=ffmpeg_threads,
             )
             produced.append(out_file)
+            det_ops += 1
+            if tracker:
+                tracker.update_master_progress(key, det_inc=1, manip_inc=1, variant_inc=1)
         except Exception as exc:  # pragma: no cover
             logger.warning("Failed to create %s: %s", out_file, exc)
 
@@ -475,8 +920,12 @@ def create_variants(
         out_file = variant_dir / f"{key}_{spec.name}.mp4"
         if out_file.exists():
             produced.append(out_file)
+            det_ops += 1
+            if tracker:
+                tracker.update_master_progress(key, det_inc=1, manip_inc=1, variant_inc=1)
             continue
         try:
+            _stage(f"det scale {spec.name}")
             scale_video(
                 src_path,
                 out_file,
@@ -487,6 +936,9 @@ def create_variants(
                 threads=ffmpeg_threads,
             )
             produced.append(out_file)
+            det_ops += 1
+            if tracker:
+                tracker.update_master_progress(key, det_inc=1, manip_inc=1, variant_inc=1)
         except Exception as exc:  # pragma: no cover
             logger.warning("Failed to create %s: %s", out_file, exc)
 
@@ -496,13 +948,20 @@ def create_variants(
         out_file = variant_dir / f"{key}_{suffix}.mp4"
         if out_file.exists():
             produced.append(out_file)
+            det_ops += 1
+            if tracker:
+                tracker.update_master_progress(key, det_inc=1, manip_inc=1, variant_inc=1)
             continue
         try:
+            _stage(f"det audio {suffix}")
             if spec.kind == "audio_bitrate":
                 change_audio_bitrate(src_path, out_file, bitrate=str(spec.params["bitrate"]))
             elif spec.kind == "remove_audio":
                 remove_audio(src_path, out_file)
             produced.append(out_file)
+            det_ops += 1
+            if tracker:
+                tracker.update_master_progress(key, det_inc=1, manip_inc=1, variant_inc=1)
         except Exception as exc:  # pragma: no cover
             logger.warning("Failed to create %s: %s", out_file, exc)
 
@@ -516,9 +975,13 @@ def create_variants(
 
         if out_file.exists():
             produced.append(out_file)
+            det_ops += 1
+            if tracker:
+                tracker.update_master_progress(key, det_inc=1, manip_inc=1, variant_inc=1)
             continue
 
         try:
+            _stage(f"det video {suffix}")
             if spec.kind == "video_bitrate":
                 change_video_bitrate(
                     src_path,
@@ -531,8 +994,16 @@ def create_variants(
             elif spec.kind == "copy":
                 shutil.copy2(src_path, out_file)
             produced.append(out_file)
+            det_ops += 1
+            if tracker:
+                tracker.update_master_progress(key, det_inc=1, manip_inc=1, variant_inc=1)
         except Exception as exc:  # pragma: no cover
             logger.warning("Failed to create %s: %s", out_file, exc)
+
+    if stats is not None:
+        stats["det_count"] = len(produced)
+        stats["det_ops"] = det_ops
+    _stage("det done")
 
     return produced
 
@@ -573,6 +1044,10 @@ def _render_combo_variant(
     if scale:
         w = scale.params.get("width", -1)
         h = scale.params.get("height", -1)
+        if w is None:
+            w = -1
+        if h is None:
+            h = -1
         filters.append(f"scale={w}:{h}")
     if filters:
         args += ["-vf", ",".join(filters)]
@@ -667,12 +1142,26 @@ def create_random_variants(
     ffmpeg_mode: str = "cpu",
     ffmpeg_threads: Optional[int] = None,
     flat_variants: bool = False,
+    tracker: "ProgressTracker" | None = None,
+    worker_id: Optional[int] = None,
+    stats: Optional[Dict[str, int]] = None,
 ) -> List[Path]:
     """Create randomized overlapping variants for a key."""
+
+    if _is_audio_only(src_path):
+        logger.warning("Audio-only source for %s; skipping randomized variants", key)
+        if tracker and worker_id is not None:
+            tracker.set_worker_stage(worker_id, key, "skip rand (audio-only)")
+        return []
 
     variant_dir = dest_dir if flat_variants else dest_dir / key
     variant_dir.mkdir(parents=True, exist_ok=True)
     outputs: List[Path] = []
+    total_ops = 0
+
+    def _stage(label: str) -> None:
+        if tracker and worker_id is not None:
+            tracker.set_worker_stage(worker_id, key, label)
 
     recipes = _plan_random_variants(key, plan)
     for idx, recipe in enumerate(recipes, start=1):
@@ -680,8 +1169,19 @@ def create_random_variants(
         dest_path = variant_dir / out_name
         if dest_path.exists():
             outputs.append(dest_path)
+            total_ops += sum(1 for part in ("trim", "scale", "audio", "video") if recipe.get(part)) or 1
+            if tracker:
+                tracker.update_master_progress(
+                    key,
+                    rand_inc=1,
+                    manip_inc=sum(1 for part in ("trim", "scale", "audio", "video") if recipe.get(part)) or 1,
+                    variant_inc=1,
+                )
             continue
         try:
+            desc_parts = [name for name in ("trim", "scale", "audio", "video") if recipe.get(name)]
+            desc = "+".join(desc_parts) if desc_parts else "copy"
+            _stage(f"rand{idx:02d} {desc}")
             _render_combo_variant(
                 src_path,
                 dest_path,
@@ -693,8 +1193,17 @@ def create_random_variants(
                 threads=ffmpeg_threads,
             )
             outputs.append(dest_path)
+            ops_this = sum(1 for part in ("trim", "scale", "audio", "video") if recipe.get(part)) or 1
+            total_ops += ops_this
+            if tracker:
+                tracker.update_master_progress(key, rand_inc=1, manip_inc=ops_this, variant_inc=1)
         except Exception as exc:  # pragma: no cover
             logger.warning("Failed to create randomized variant %s: %s", dest_path, exc)
+
+    if stats is not None:
+        stats["rand_count"] = len(outputs)
+        stats["rand_ops"] = total_ops
+    _stage("rand done")
 
     return outputs
 
@@ -817,13 +1326,24 @@ def generate_dataset(
     originals_dir.mkdir(parents=True, exist_ok=True)
     variants_dir.mkdir(parents=True, exist_ok=True)
 
+    stop_event = Event()
+
     def _process_key(item: Tuple[int, str]) -> None:
+        if stop_event.is_set():
+            return
         worker_id, key = item
 
         def set_stage(stage: str) -> None:
             if progress and hasattr(progress, "set_worker_stage"):
                 try:
                     progress.set_worker_stage(worker_id, key, stage)
+                except Exception:
+                    pass
+
+        def set_master(stage: str) -> None:
+            if progress and hasattr(progress, "set_master_stage"):
+                try:
+                    progress.set_master_stage(key, stage)
                 except Exception:
                     pass
 
@@ -848,12 +1368,24 @@ def generate_dataset(
                     set_stage("downloaded")
         except Exception as exc:  # pragma: no cover
             logger.error("Failed to obtain video for %s: %s", key, exc)
+            src_path = None
+            try:
+                if skip_download:
+                    src_path = next((p for p in originals_dir.glob(f"{key}.*") if p.stat().st_size > 0), None)
+                else:
+                    src_path = download_video(youtube_id, originals_dir, key)
+            except Exception:
+                src_path = None
+            if not src_path:
+                logger.error("No original found for %s", key)
+                return
             if progress:
-                progress.on_error()
-                set_stage("error-download")
-            return
+                progress.on_download()
+                set_stage("downloaded")
 
         try:
+            det_stats: Dict[str, int] = {}
+            rand_stats: Dict[str, int] = {}
             det = create_variants(
                 key,
                 src_path,
@@ -862,6 +1394,9 @@ def generate_dataset(
                 ffmpeg_mode=ffmpeg_mode,
                 ffmpeg_threads=ffmpeg_threads,
                 flat_variants=flat_variants,
+                tracker=progress,
+                worker_id=worker_id,
+                stats=det_stats,
             )
             if random_plan:
                 rand = create_random_variants(
@@ -872,17 +1407,32 @@ def generate_dataset(
                     ffmpeg_mode=ffmpeg_mode,
                     ffmpeg_threads=ffmpeg_threads,
                     flat_variants=flat_variants,
+                    tracker=progress,
+                    worker_id=worker_id,
+                    stats=rand_stats,
                 )
             else:
                 rand = []
             if progress:
                 progress.on_variants(len(det), len(rand))
                 set_stage("done")
+                set_master("done")
+                if hasattr(progress, "update_worker_stats"):
+                    progress.update_worker_stats(
+                        worker_id,
+                        det_inc=int(det_stats.get("det_count", 0)),
+                        rand_inc=int(rand_stats.get("rand_count", 0)),
+                        ops_inc=int(det_stats.get("det_ops", 0)) + int(rand_stats.get("rand_ops", 0)),
+                    )
         except Exception as exc:  # pragma: no cover
             logger.error("Failed to create variants for %s: %s", key, exc)
             if progress:
-                progress.on_error()
+                try:
+                    progress.on_error(worker_id)
+                except TypeError:
+                    progress.on_error()
                 set_stage("error-variants")
+                set_master("error")
             return
 
     worker_limit = max(1, workers)
@@ -892,6 +1442,7 @@ def generate_dataset(
         logger.info("Memory cap %.1f GB applied; workers limited to %d", max_mem_gb, worker_limit)
 
     keys_list = list(keys)
+    worker_limit = min(worker_limit, len(keys_list) or 1)
     if progress:
         progress.set_total(len(keys_list))
     work_items = []
@@ -899,13 +1450,25 @@ def generate_dataset(
         wid = ((idx - 1) % worker_limit) + 1
         work_items.append((wid, key))
 
-    if worker_limit == 1 or len(keys_list) <= 1:
-        for item in work_items:
-            _process_key(item)
-    else:
-        logger.info("Processing with %d worker threads (mode=%s)", worker_limit, ffmpeg_mode)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=worker_limit) as executor:
-            list(executor.map(_process_key, work_items))
+    try:
+        if worker_limit == 1 or len(keys_list) <= 1:
+            for item in work_items:
+                if stop_event.is_set():
+                    break
+                _process_key(item)
+        else:
+            logger.info("Processing with %d worker threads (mode=%s)", worker_limit, ffmpeg_mode)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=worker_limit) as executor:
+                future = executor.map(_process_key, work_items)
+                try:
+                    list(future)
+                except KeyboardInterrupt:
+                    stop_event.set()
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    raise
+    except KeyboardInterrupt:
+        stop_event.set()
+        logger.warning("Cancellation requested; stopping pending work")
 
     manifest = build_truth_manifest(output_dir)
     if write_manifest:
@@ -1042,7 +1605,38 @@ def main(argv: Optional[List[str]] = None) -> None:
     id_map: Dict[str, str]
 
     if args.auto_urls > 0:
-        auto_urls = discover_random_urls(args.auto_urls, seed=args.seed)
+        logger.info("Discovering %d URLs (seed=%s)...", args.auto_urls, args.seed)
+
+        discovery_board = None
+        discovery_cm = nullcontext()
+        discovery_hook = None
+        if args.ui:
+            try:
+                discovery_board, discovery_cm, discovery_hook = _start_discovery_ui(args.auto_urls)
+            except Exception as exc:  # pragma: no cover - optional UI path
+                logger.warning("Discovery UI unavailable; continuing headless (%s)", exc)
+                discovery_board = None
+                discovery_cm = nullcontext()
+                discovery_hook = None
+        if discovery_board is None:
+            discovery_cm = nullcontext()
+            discovery_hook = None
+
+        def _run_discovery(progress_hook: Optional[callable]) -> List[str]:
+            return discover_random_urls(args.auto_urls, seed=args.seed, progress_hook=progress_hook)
+
+        try:
+            with discovery_cm:
+                auto_urls = _run_discovery(discovery_hook)
+        except KeyboardInterrupt:
+            logger.warning("Cancelled during URL discovery")
+            return
+        except Exception as exc:
+            if discovery_board is not None:
+                logger.warning("Discovery UI failed; retrying headless (%s)", exc)
+                auto_urls = _run_discovery(None)
+            else:
+                raise
         keys, id_map = prepare_keys_from_urls(
             auto_urls,
             num_masters=len(auto_urls),
@@ -1090,7 +1684,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     tracker: ProgressTracker | None = None
     board_cm = nullcontext()
     if args.ui:
-        tracker, board_cm = _maybe_start_ui(len(keys), args.workers)
+        tracker, board_cm = _maybe_start_ui(len(keys), args.workers, keys)
 
     with board_cm:
         manifest = generate_dataset(
@@ -1118,4 +1712,10 @@ def main(argv: Optional[List[str]] = None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        logger.warning("Cancelled by user")
+        sys.exit(130)

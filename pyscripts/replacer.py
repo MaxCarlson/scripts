@@ -1,279 +1,564 @@
 #!/usr/bin/env python3
-"""
-A script to find and replace text in files, with a dry-run mode that
-mimics ripgrep's output.
-"""
+"""Find-and-replace helper with ripgrep integration and safe dry-run previews."""
+
+from __future__ import annotations
 
 import argparse
+import glob
+import json
 import os
 import re
+import subprocess
 import sys
-import glob
+from bisect import bisect_right
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
-# The 'rich' library is used for beautiful, colored output.
+from rich.console import Console
+from rich.table import Table
+from rich.text import Text
+from rich.theme import Theme
+
+MODULES_DIR = Path(__file__).resolve().parents[1] / "modules"
+if MODULES_DIR.exists():
+    sys.path.insert(0, str(MODULES_DIR))
+
 try:
-    from rich.console import Console
-    from rich.theme import Theme
-    from rich.table import Table
-    from rich.text import Text
-except ImportError:
-    print("Error: The 'rich' library is required. Please install it with 'pip install rich'")
-    sys.exit(1)
+    from cross_platform.path_utils import (
+        expand_path as cp_expand_path,
+        to_posix_path as cp_to_posix_path,
+        to_native_path as cp_to_native_path,
+    )
+    HAVE_CROSS_PLATFORM = True
+except ImportError:  # pragma: no cover - fallback path when module missing
+    HAVE_CROSS_PLATFORM = False
 
-# A custom theme to control the output colors, similar to ripgrep.
-custom_theme = Theme({
-    "info": "dim cyan",
-    "warning": "magenta",
-    "danger": "bold red",
-    "path": "bold green",
-    "line_num": "cyan",
-    "match": "bold yellow on red",
-    "summary_header": "bold blue",
-})
 
-console = Console(theme=custom_theme)
+THEME = Theme(
+    {
+        "info": "cyan",
+        "warning": "yellow",
+        "danger": "bold red",
+        "path": "bold green",
+        "line_num": "bold blue",
+        "old": "bold red",
+        "new": "bold green",
+        "summary": "bold blue",
+    }
+)
+console = Console(theme=THEME)
 
-class Replacer:
+DEFAULT_EXCLUSIONS = [".git", ".svn", ".hg", "__pycache__"]
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Configure the CLI parser."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Search for a pattern (default) or preview/apply replacements with diff output.\n"
+            "The pattern is treated as a literal unless --regex is supplied."
+        )
+    )
+    parser.add_argument("pattern", help="Pattern to search for.")
+    parser.add_argument(
+        "replacement",
+        nargs="?",
+        help="Replacement text. When omitted, the tool simply streams ripgrep output.",
+    )
+    parser.add_argument(
+        "-p",
+        "--path",
+        nargs="+",
+        default=["."],
+        help="Files/directories/globs to search (defaults to current directory).",
+    )
+    parser.add_argument(
+        "-w",
+        "--write",
+        action="store_true",
+        help="Write the replacements to disk. Dry-run preview is the default.",
+    )
+    parser.add_argument(
+        "-i",
+        "--ignore-case",
+        action="store_true",
+        help="Perform a case-insensitive search.",
+    )
+    parser.add_argument(
+        "-x",
+        "--exclude",
+        nargs="+",
+        help="Files/directories/globs to exclude in addition to the defaults.",
+    )
+    parser.add_argument(
+        "--regex",
+        action="store_true",
+        help="Treat the pattern as a regular expression (default is literal text).",
+    )
+    parser.add_argument(
+        "--rg-bin",
+        default="rg",
+        help="Path to the ripgrep executable (defaults to 'rg').",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Show per-file replacement counts during previews.",
+    )
+    return parser
+
+
+# ---------------------------------------------------------------------------
+# Ripgrep helpers
+# ---------------------------------------------------------------------------
+
+
+def looks_like_glob(path_value: str) -> bool:
+    """Return True when the argument contains glob characters."""
+    return any(ch in path_value for ch in ("*", "?", "[", "]"))
+
+
+def expand_path(value: str) -> str:
+    """Expand environment variables with the shared helpers when possible."""
+    if HAVE_CROSS_PLATFORM:
+        return cp_expand_path(value)
+    return os.path.expanduser(os.path.expandvars(value))
+
+
+def to_posix(value: str) -> str:
+    if HAVE_CROSS_PLATFORM:
+        return cp_to_posix_path(value)
+    return expand_path(value).replace("\\", "/")
+
+
+def to_native(value: str) -> str:
+    if HAVE_CROSS_PLATFORM:
+        return cp_to_native_path(value)
+    expanded = expand_path(value)
+    if os.name == "nt":
+        return expanded.replace("/", "\\")
+    return expanded.replace("\\", "/")
+
+
+def normalize_for_rg(value: str) -> str:
     """
-    Handles the logic for finding, validating, and replacing text across files.
+    Convert a user-supplied path so ripgrep can understand it on any platform.
+
+    On Windows this turns backslashes into forward slashes, which matches how
+    ripgrep formats paths in the sample output from the user.
     """
-    def __init__(self, args):
+    candidate = to_posix(value)
+    if looks_like_glob(candidate):
+        return candidate
+    try:
+        resolved = Path(to_native(value)).resolve()
+        return resolved.as_posix()
+    except OSError:
+        return candidate
+
+
+def normalize_for_fs(value: str) -> str:
+    """Normalize input paths for Python's file-system APIs."""
+    expanded = to_native(value)
+    return expanded or value
+
+
+def run_subprocess(cmd: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    """Wrapper to simplify mocking during tests."""
+    return subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+
+@dataclass
+class SearchSummary:
+    """Accumulates statistics produced by ripgrep."""
+
+    files: set = field(default_factory=set)
+    lines: set = field(default_factory=set)
+    matches: int = 0
+
+    def register(self, file_path: str, line_number: int, count: int) -> None:
+        self.files.add(file_path)
+        self.lines.add((file_path, line_number))
+        self.matches += count
+
+
+class RipgrepRunner:
+    """Runs ripgrep in the background to gather search stats and colored output."""
+
+    def __init__(self, args: argparse.Namespace, runner: Callable[[Sequence[str]], subprocess.CompletedProcess[str]] = run_subprocess):
+        self.args = args
+        self.runner = runner
+        self.search_paths = [normalize_for_rg(p) for p in (args.path or ["."])]
+        self.exclusions = list(args.exclude or []) + DEFAULT_EXCLUSIONS
+
+    def _base_cmd(self) -> List[str]:
+        cmd = [self.args.rg_bin, "--line-number", "--column"]
+        if self.args.ignore_case:
+            cmd.append("--ignore-case")
+        if not self.args.regex:
+            cmd.append("--fixed-strings")
+        for pattern in self.exclusions:
+            cmd.extend(["--glob", f"!{pattern}"])
+        return cmd
+
+    def stream_colored_output(self) -> int:
+        """Run rg to produce the familiar colored output."""
+        cmd = self._base_cmd()
+        cmd.append("--color=always")
+        cmd.append("--heading")
+        cmd.append(self.args.pattern)
+        cmd.extend(self.search_paths or ["."])
+        try:
+            result = self.runner(cmd)
+        except FileNotFoundError:
+            console.print("Error: ripgrep executable not found. Install rg or provide --rg-bin.", style="danger")
+            return 2
+
+        if result.stdout:
+            console.print(result.stdout, end="")
+        if result.stderr:
+            console.print(result.stderr, style="warning")
+        return result.returncode
+
+    def gather_summary(self) -> Tuple[SearchSummary, int]:
+        """Run rg --json so we can provide totals that match the preview."""
+        cmd = self._base_cmd()
+        cmd.append("--json")
+        cmd.append("--color=never")
+        cmd.append(self.args.pattern)
+        cmd.extend(self.search_paths or ["."])
+        try:
+            result = self.runner(cmd)
+        except FileNotFoundError:
+            console.print("Error: ripgrep executable not found. Install rg or provide --rg-bin.", style="danger")
+            return SearchSummary(), 2
+
+        summary = SearchSummary()
+        for line in result.stdout.splitlines():
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if payload.get("type") != "match":
+                continue
+            data = payload["data"]
+            path = data["path"]["text"]
+            line_number = data["line_number"]
+            summary.register(path, line_number, len(data.get("submatches", [])))
+        if result.stderr:
+            console.print(result.stderr, style="warning")
+        return summary, result.returncode
+
+
+# ---------------------------------------------------------------------------
+# Replacement mechanics
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class LineMatch:
+    """Stores a single match relative to a specific line."""
+
+    start: int
+    end: int
+    replacement: str
+    original: str
+
+
+class LineIndex:
+    """Maps absolute offsets to line numbers and makes display formatting easy."""
+
+    def __init__(self, content: str):
+        self.lines: List[str] = []
+        self.starts: List[int] = []
+        offset = 0
+        for raw in content.splitlines(keepends=True):
+            self.lines.append(raw.rstrip("\n").rstrip("\r"))
+            self.starts.append(offset)
+            offset += len(raw)
+        if content and content[-1] not in ("\n", "\r"):
+            # splitlines keeps the last line even without a newline, so nothing extra is required.
+            pass
+
+    def line_at(self, index: int) -> Tuple[int, str, int]:
+        """
+        Return (line_number, line_text, line_start_offset) for the provided absolute index.
+        Line numbers are 1-based to match editors and ripgrep output.
+        """
+        if not self.starts:
+            raise ValueError("File is empty.")
+        position = bisect_right(self.starts, index) - 1
+        line_no = position + 1
+        line_text = self.lines[position]
+        line_start = self.starts[position]
+        return line_no, line_text, line_start
+
+
+@dataclass
+class ReplacementStats:
+    """Tracks cumulative replacement data for the final summary."""
+
+    files: int = 0
+    lines: int = 0
+    replacements: int = 0
+
+    def update(self, file_lines: int, replacements: int) -> None:
+        self.files += 1
+        self.lines += file_lines
+        self.replacements += replacements
+
+
+class ReplacementRunner:
+    """Implements the dry-run diff previews and eventual writes."""
+
+    def __init__(self, args: argparse.Namespace):
+        if args.replacement is None:
+            raise ValueError("ReplacementRunner requires a replacement value.")
+        self.args = args
+        self.exclusions = list(args.exclude or []) + DEFAULT_EXCLUSIONS
         self.pattern = args.pattern
         self.replacement = args.replacement
-        self.paths = args.path
-        self.is_dry_run = not args.write
-        self.is_verbose = args.verbose
-        self.ignore_case = args.ignore_case
-        self.exclusions = args.exclude if args.exclude else []
+        flags = re.IGNORECASE if args.ignore_case else 0
+        if args.regex:
+            self.compiled = re.compile(self.pattern, flags)
+            self.replacement_func = self._regex_replacement
+        else:
+            escaped = re.escape(self.pattern)
+            self.compiled = re.compile(escaped, flags)
+            self.replacement_func = self._literal_replacement
 
-        # Exclude common version control and cache directories by default.
-        self.default_exclusions = ['.git', '.svn', '.hg', '__pycache__']
-        self.user_exclusions = list(self.exclusions) # Keep a copy for the summary
-        self.exclusions.extend(self.default_exclusions)
+    def _literal_replacement(self, match: re.Match) -> str:
+        return self.replacement
 
-        self.stats = {
-            "files_scanned": 0,
-            "files_matched": 0,
-            "total_replacements": 0,
-        }
-        
-        self.compiled_pattern = self._compile_pattern()
-        self.expanded_exclusions = self._expand_globs(self.exclusions)
+    def _regex_replacement(self, match: re.Match) -> str:
+        return match.expand(self.replacement)
 
-    def _compile_pattern(self):
-        """Compiles the user's regex pattern with optional flags."""
-        try:
-            flags = re.IGNORECASE if self.ignore_case else 0
-            return re.compile(self.pattern, flags)
-        except re.error as e:
-            console.print(f"Error: Invalid regular expression: '{self.pattern}'", style="danger")
-            console.print(f"Details: {e}", style="danger")
-            sys.exit(1)
+    def iter_target_files(self) -> Iterable[Path]:
+        """Yield every candidate file that matches the user's path filters."""
+        yielded = set()
+        glob_options = self.args.path or ["."]
+        for raw in glob_options:
+            expanded = normalize_for_fs(raw)
+            if looks_like_glob(raw):
+                matches = [Path(match) for match in glob.glob(expanded, recursive=True)]
+            else:
+                matches = [Path(expanded)]
+            if not matches:
+                console.print(f"Warning: Path does not exist: {raw}", style="warning")
+                continue
 
-    def _expand_globs(self, glob_patterns):
-        """Expands a list of glob patterns into a set of absolute paths for matching."""
-        expanded_paths = set()
-        if not glob_patterns:
-            return expanded_paths
-        for pattern in glob_patterns:
-            try:
-                # Use recursive=True to handle '**' for nested directories.
-                matches = glob.glob(pattern, recursive=True)
-                for match in matches:
-                    expanded_paths.add(Path(match).resolve())
-            except Exception as e:
-                console.print(f"Warning: Could not expand glob pattern '{pattern}': {e}", style="warning")
-        return expanded_paths
+            for entry in matches:
+                if not entry.exists():
+                    console.print(f"Warning: Path does not exist: {entry}", style="warning")
+                    continue
+                if self._is_excluded(entry):
+                    continue
+                if entry.is_file():
+                    resolved = entry.resolve()
+                    if resolved not in yielded:
+                        yielded.add(resolved)
+                        yield resolved
+                    continue
 
-    def _is_excluded(self, path_obj):
-        """Checks if a file or directory path should be excluded from the search."""
-        resolved_path = path_obj.resolve()
-        
-        # Check if the path itself or any of its parent directories match an exclusion pattern.
-        if resolved_path in self.expanded_exclusions:
-            return True
-        for parent in resolved_path.parents:
-            if parent in self.expanded_exclusions:
+                for root, dirs, files in os.walk(entry):
+                    root_path = Path(root)
+                    dirs[:] = [d for d in dirs if not self._is_excluded(root_path / d)]
+                    for name in files:
+                        file_path = root_path / name
+                        if self._is_excluded(file_path):
+                            continue
+                        resolved = file_path.resolve()
+                        if resolved in yielded:
+                            continue
+                        yielded.add(resolved)
+                        yield resolved
+
+    def _is_excluded(self, path_obj: Path) -> bool:
+        """Return True for excluded directories or files."""
+        for part in path_obj.parts:
+            if part in DEFAULT_EXCLUSIONS:
                 return True
-                
-        # Also check parts of the path for default directory names like '.git'.
-        for part in resolved_path.parts:
-            if part in self.default_exclusions:
+        for pattern in self.exclusions:
+            if path_obj.match(pattern):
                 return True
-
         return False
 
-    def _gather_files(self):
-        """Walks the target paths and yields files that are not excluded."""
-        for path_str in self.paths:
-            for item_path in glob.glob(path_str, recursive=True):
-                path_obj = Path(item_path)
+    def run(self) -> ReplacementStats:
+        """Execute the replacement workflow."""
+        mode = "Dry run" if not self.args.write else "Applying changes"
+        console.print(f"--- {mode} ---", style="info")
+        stats = ReplacementStats()
 
-                if not path_obj.exists():
-                    console.print(f"Warning: Path does not exist: {path_obj}", style="warning")
-                    continue
+        for file_path in self.iter_target_files():
+            result = self._process_file(file_path)
+            if not result:
+                continue
 
-                if self._is_excluded(path_obj):
-                    continue
+            stats.update(result["line_count"], result["match_count"])
+            self._display_file_result(file_path, result)
 
-                if path_obj.is_dir():
-                    for root, dirs, files in os.walk(path_obj, topdown=True):
-                        root_path = Path(root)
-                        # Filter out excluded directories in-place to prevent os.walk from traversing them.
-                        dirs[:] = [d for d in dirs if not self._is_excluded(root_path / d)]
-                        for file in files:
-                            file_path = root_path / file
-                            if not self._is_excluded(file_path):
-                                self.stats["files_scanned"] += 1
-                                yield file_path
-                elif path_obj.is_file():
-                    self.stats["files_scanned"] += 1
-                    yield path_obj
-    
-    def run(self):
-        """The main execution method that coordinates the find-and-replace operation."""
-        if self.is_dry_run:
-            console.print("--- Starting Dry Run (no files will be changed) ---", style="info")
-        else:
-            console.print("--- Starting Replacement (files WILL be changed) ---", style="warning")
-        
-        for file_path in self._gather_files():
-            self._process_file(file_path)
-            
-        self._print_summary()
+            if self.args.write:
+                file_path.write_text(result["new_content"], encoding="utf-8")
 
-    def _process_file(self, file_path):
-        """Reads a single file and performs the find/replace operation."""
+        return stats
+
+    def _process_file(self, file_path: Path) -> Optional[Dict]:
+        """Run replacements for a single file and return data for display."""
         try:
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-        except (IOError, OSError) as e:
-            console.print(f"Warning: Could not read file {file_path}: {e}", style="warning")
-            return
+            content = file_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            console.print(f"Warning: Could not read {file_path}: {exc}", style="warning")
+            return None
 
-        matches = list(self.compiled_pattern.finditer(content))
+        matches = list(self.compiled.finditer(content))
         if not matches:
-            return
+            return None
 
-        self.stats["files_matched"] += 1
-        num_replacements_in_file = len(matches)
-        self.stats["total_replacements"] += num_replacements_in_file
-
-        if self.is_dry_run:
-            relative_path = os.path.relpath(file_path)
-            verbose_info = f" ({num_replacements_in_file} replacements)" if self.is_verbose else ""
-            console.print(f"\n{relative_path}{verbose_info}", style="path")
-
-            lines = content.splitlines()
-            lines_with_matches = {}
-            for match in matches:
-                line_num = content.count('\n', 0, match.start()) + 1
-                if line_num not in lines_with_matches:
-                    lines_with_matches[line_num] = []
-                lines_with_matches[line_num].append(match)
-
-            for line_num, line_matches in sorted(lines_with_matches.items()):
-                if line_num > len(lines): continue
-                
-                line_content = lines[line_num - 1]
-                display_text = Text()
-                display_text.append(f"{line_num}:", style="line_num")
-                display_text.append(" ")
-                
-                current_pos_in_line = 0
-                line_start_pos_in_content = content.rfind('\n', 0, line_matches[0].start()) + 1
-
-                for match in sorted(line_matches, key=lambda m: m.start()):
-                    match_start_in_line = match.start() - line_start_pos_in_content
-                    match_end_in_line = match.end() - line_start_pos_in_content
-                    
-                    display_text.append(line_content[current_pos_in_line:match_start_in_line])
-                    display_text.append(line_content[match_start_in_line:match_end_in_line], style="match")
-                    current_pos_in_line = match_end_in_line
-
-                display_text.append(line_content[current_pos_in_line:])
-                console.print(display_text)
-        else:
-            new_content = self.compiled_pattern.sub(self.replacement, content)
+        replacer_lines = LineIndex(content)
+        line_matches: Dict[int, List[LineMatch]] = {}
+        for match in matches:
             try:
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(new_content)
-            except (IOError, OSError) as e:
-                console.print(f"Error: Could not write to file {file_path}: {e}", style="danger")
-    
-    def _print_summary(self):
-        """Prints the final summary of the operation in a clean table."""
-        console.print("\n--- Summary ---", style="summary_header")
+                line_no, _, line_start = replacer_lines.line_at(match.start())
+            except ValueError:
+                continue
+            start = match.start() - line_start
+            end = match.end() - line_start
+            replacement_text = self.replacement_func(match)
+            info = LineMatch(start, end, replacement_text, match.group(0))
+            line_matches.setdefault(line_no, []).append(info)
 
-        table = Table(show_header=False, box=None)
-        table.add_column(style="info")
-        table.add_column()
-        
-        op_type = "found" if self.is_dry_run else "made"
-        file_change_type = "Files to be changed" if self.is_dry_run else "Files changed"
+        new_content = self._build_new_content(content, matches)
+        return {
+            "match_count": len(matches),
+            "line_count": len(line_matches),
+            "line_matches": line_matches,
+            "lines": replacer_lines,
+            "new_content": new_content,
+        }
 
-        table.add_row("Total replacements:", f"[bold white]{self.stats['total_replacements']}[/bold white] {op_type}")
-        table.add_row(f"{file_change_type}:", f"[bold white]{self.stats['files_matched']}[/bold white]")
-        table.add_row("Files scanned:", f"[bold white]{self.stats['files_scanned']}[/bold white]")
+    def _build_new_content(self, content: str, matches: List[re.Match]) -> str:
+        """Return the updated file contents after applying all replacements."""
+        pieces: List[str] = []
+        last = 0
+        for match in matches:
+            pieces.append(content[last: match.start()])
+            pieces.append(self.replacement_func(match))
+            last = match.end()
+        pieces.append(content[last:])
+        return "".join(pieces)
 
-        console.print(table)
-        
-        if self.user_exclusions:
-            console.print("\nUser-defined exclusion patterns:", style="summary_header")
-            for pattern in self.user_exclusions:
-                console.print(f"- {pattern}", style="info")
-        
-        if not self.is_dry_run and self.stats["total_replacements"] > 0:
-            console.print("\n✅ All changes have been written to disk.", style="bold green")
-        elif self.is_dry_run and self.stats["total_replacements"] > 0:
-            console.print("\nTo apply these changes, re-run the command with the -w or --write flag.", style="warning")
+    def _display_file_result(self, file_path: Path, result: Dict) -> None:
+        """Render the per-file diff style output."""
+        console.print(f"\n{file_path.as_posix()}", style="path")
+        if self.args.verbose:
+            console.print(
+                f"  {result['match_count']} replacements across {result['line_count']} line(s)",
+                style="info",
+            )
 
-def main():
-    """Parses command-line arguments and runs the replacer."""
-    parser = argparse.ArgumentParser(
-        description="A script to find and replace text in files, using regex and honoring ignores.",
-        epilog="By default, runs in a dry-run mode. Use -w or --write to apply changes.",
-        formatter_class=argparse.RawTextHelpFormatter
-    )
-    
-    parser.add_argument("pattern", help="The search pattern (regular expression).")
-    parser.add_argument("replacement", help="The replacement string.")
-    
-    parser.add_argument(
-        "-p", "--path", 
-        nargs='+', 
-        default=['.'],
-        help="One or more files or directories to search in.\nSupports globs (e.g., 'src/**/*.py'). Defaults to the current directory."
-    )
-    parser.add_argument(
-        "-w", "--write",
-        action="store_true",
-        help="Write changes to disk. Without this flag, the script runs in dry-run mode."
-    )
-    parser.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        help="In dry-run mode, show the number of replacements to be made next to each filename."
-    )
-    parser.add_argument(
-        "-i", "--ignore-case",
-        action="store_true",
-        help="Perform a case-insensitive search."
-    )
-    parser.add_argument(
-        "-x", "--exclude",
-        nargs='+',
-        help="One or more files, directories, or glob patterns to exclude from the search."
-    )
+        for line_no in sorted(result["line_matches"].keys()):
+            line_text = result["lines"].lines[line_no - 1]
+            matches = sorted(result["line_matches"][line_no], key=lambda m: m.start)
+            old_line = self._highlight_old_line(line_no, line_text, matches)
+            new_line = self._highlight_new_line(line_no, line_text, matches)
+            console.print(old_line)
+            console.print(new_line)
 
-    if len(sys.argv) == 1:
-        parser.print_help(sys.stderr)
-        sys.exit(1)
+    def _highlight_old_line(self, line_no: int, text_value: str, matches: List[LineMatch]) -> Text:
+        """Return a Text object showing the original line with red highlights."""
+        prefix = Text(f"- {line_no}: ", style="line_num")
+        line_text = Text(text_value)
+        for match in reversed(matches):
+            line_text.stylize("old", match.start, match.end)
+        line_text.stylize("old", 0, len(line_text))
+        return prefix + line_text
 
-    args = parser.parse_args()
-    replacer = Replacer(args)
-    replacer.run()
+    def _highlight_new_line(self, line_no: int, text_value: str, matches: List[LineMatch]) -> Text:
+        """Return a Text object showing the replaced line with green highlights."""
+        new_text_parts: List[str] = []
+        cursor = 0
+        highlight_ranges: List[Tuple[int, int]] = []
+        new_length = 0
+        for match in matches:
+            new_text_parts.append(text_value[cursor: match.start])
+            new_length += len(text_value[cursor: match.start])
+            replacement = match.replacement
+            start = new_length
+            new_text_parts.append(replacement)
+            new_length += len(replacement)
+            highlight_ranges.append((start, new_length))
+            cursor = match.end
+        new_text_parts.append(text_value[cursor:])
+        new_line_text = "".join(new_text_parts)
+
+        prefix = Text(f"+ {line_no}: ", style="line_num")
+        line_text = Text(new_line_text)
+        for start, end in reversed(highlight_ranges):
+            line_text.stylize("new", start, end)
+        line_text.stylize("new", 0, len(line_text))
+        return prefix + line_text
+
+
+# ---------------------------------------------------------------------------
+# Shared summary helpers
+# ---------------------------------------------------------------------------
+
+
+def print_summary(stats: ReplacementStats, dry_run: bool, mode: str) -> None:
+    """Print a concise summary similar to ripgrep's statistics."""
+    header = "Search Summary" if mode == "search" else "Replacement Summary"
+    console.print(f"\n--- {header} ---", style="summary")
+    table = Table(show_header=False, box=None)
+    table.add_row("Files:", str(stats.files))
+    table.add_row("Lines:", str(stats.lines))
+    label = "Matches" if mode == "search" else "Replacements"
+    table.add_row(f"{label}:", str(stats.replacements))
+    console.print(table)
+
+    if mode == "replace":
+        if stats.replacements and dry_run:
+            console.print("Dry run only. Re-run with --write to apply these changes.", style="warning")
+        elif stats.replacements and not dry_run:
+            console.print("Changes written to disk.", style="info")
+
+
+def run_search_mode(args: argparse.Namespace) -> int:
+    """Handle the ripgrep-only workflow."""
+    runner = RipgrepRunner(args)
+    display_code = runner.stream_colored_output()
+    summary, summary_code = runner.gather_summary()
+    stats = ReplacementStats(
+        files=len(summary.files),
+        lines=len(summary.lines),
+        replacements=summary.matches,
+    )
+    print_summary(stats, dry_run=True, mode="search")
+    return max(display_code, summary_code)
+
+
+def run_replacement_mode(args: argparse.Namespace) -> int:
+    """Handle diff previews and optional writes."""
+    runner = ReplacementRunner(args)
+    stats = runner.run()
+    print_summary(stats, dry_run=not args.write, mode="replace")
+    return 0
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.replacement is None and args.write:
+        console.print("Error: --write requires both a pattern and a replacement.", style="danger")
+        return 2
+
+    if args.replacement is None:
+        return run_search_mode(args)
+    return run_replacement_mode(args)
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
