@@ -42,6 +42,8 @@ def make_args(**overrides):
         regex=False,
         rg_bin="rg",
         verbose=False,
+        path_separator=None,
+        no_path_normalize=False,
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -83,7 +85,7 @@ def test_replacement_runner_dry_run_shows_diff(tmp_path, reset_console, monkeypa
             return 0
 
         def files_with_matches(self):
-            return ([target], 0)
+            return ([str(target)], 0)
 
     monkeypatch.setattr(replacer, "RipgrepRunner", lambda args: DummyRunner(args))
 
@@ -109,7 +111,7 @@ def test_replacement_runner_write_updates_files(tmp_path, reset_console, monkeyp
             return 0
 
         def files_with_matches(self):
-            return ([target], 0)
+            return ([str(target)], 0)
 
     monkeypatch.setattr(replacer, "RipgrepRunner", lambda args: DummyRunner(args))
 
@@ -158,3 +160,21 @@ def test_posix_specific_path_conversion(tmp_path):
     path_value = str(tmp_path / "folder\\file.txt")
     normalized = replacer.normalize_for_fs(path_value)
     assert "\\" not in normalized
+
+
+def test_normalize_for_rg_without_normalization():
+    path_value = r".\src\folder"
+    assert replacer.normalize_for_rg(path_value, normalize=False) == path_value
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only display expectation")
+def test_display_path_preserves_rg_output(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "src").mkdir()
+    file_path = tmp_path / "src" / "file.txt"
+    file_path.write_text("foo", encoding="utf-8")
+
+    args = make_args(path=["."], replacement="bar")
+    runner = ReplacementRunner(args, candidate_files=["src\\file.txt"])
+    display = runner._format_display_path(file_path.resolve())
+    assert display == "src\\file.txt"

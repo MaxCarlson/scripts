@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import subprocess
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
@@ -258,6 +259,31 @@ def collect_commit_message(entries: Sequence[StatusItem], assume_yes: bool) -> s
     return manual or default_message
 
 
+def prompt_stage_action(context: str, assume_yes: bool) -> tuple[str, list[str] | None]:
+    """Prompt the user for how unstaged changes should be added."""
+    if assume_yes:
+        return "all", None
+    prompt = (
+        f"{context} (y=add tracked, n=skip, A=add all, or enter git add patterns): "
+    )
+    reply = input(prompt).strip()
+    if not reply:
+        return "skip", None
+    lowered = reply.lower()
+    if lowered in {"y", "yes"}:
+        return "tracked", None
+    if lowered in {"n", "no"}:
+        return "skip", None
+    if lowered in {"a", "all"}:
+        return "all", None
+    try:
+        patterns = shlex.split(reply)
+    except ValueError:
+        LOG.error("Unable to parse patterns; skipping staging.")
+        return "skip", None
+    return ("patterns", patterns) if patterns else ("skip", None)
+
+
 def run_sync_flow(runner: GitRunner, assume_yes: bool) -> None:
     """Show status, pull, optionally commit staged/unstaged changes, and push."""
     runner.run(["status"])
@@ -281,8 +307,17 @@ def run_sync_flow(runner: GitRunner, assume_yes: bool) -> None:
             if split_requested
             else "Run 'git add' on unstaged changes before pushing"
         )
-        if ask_yes_no(stage_prompt, assume_yes):
-            runner.run(["add", "--all"])
+        action, patterns = prompt_stage_action(stage_prompt, assume_yes)
+        if action != "skip":
+            if action == "tracked":
+                runner.run(["add", "--update"])
+            elif action == "all":
+                runner.run(["add", "--all"])
+            elif action == "patterns" and patterns:
+                runner.run(["add", "--", *patterns])
+            else:
+                LOG.info("No staging action executed.")
+            runner.run(["status"])
             summary = get_status_summary(runner)
             if summary.staged:
                 commit_prompt = (

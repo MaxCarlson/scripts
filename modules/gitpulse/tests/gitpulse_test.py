@@ -101,6 +101,7 @@ def test_run_sync_flow_split_commits(monkeypatch: pytest.MonkeyPatch) -> None:
         ("commit", "-m", "Modified: README.md"),
         ("status", "--porcelain"),
         ("add", "--all"),
+        ("status",),
         ("status", "--porcelain"),
         ("commit", "-m", "Modified: config.yaml"),
         ("status", "--porcelain"),
@@ -123,6 +124,7 @@ def test_run_sync_flow_stages_and_commits_unstaged() -> None:
         ("pull",),
         ("status", "--porcelain"),
         ("add", "--all"),
+        ("status",),
         ("status", "--porcelain"),
         ("commit", "-m", "Modified: config.yaml; Added: new.txt"),
         ("status", "--porcelain"),
@@ -133,11 +135,37 @@ def test_run_sync_flow_stages_and_commits_unstaged() -> None:
 def test_run_sync_flow_can_skip_staging(monkeypatch: pytest.MonkeyPatch) -> None:
     responses = {("status", "--porcelain"): " M config.yaml\n"}
     runner = DummyRunner(responses=responses)
-    monkeypatch.setattr("gitpulse.cli.ask_yes_no", lambda prompt, assume_yes: False)
+    monkeypatch.setattr("gitpulse.cli.prompt_stage_action", lambda context, assume_yes: ("skip", None))
     run_sync_flow(runner, assume_yes=False)
     assert runner.commands == [
         ("status",),
         ("pull",),
+        ("status", "--porcelain"),
+        ("push",),
+    ]
+
+
+def test_run_sync_flow_custom_patterns(monkeypatch: pytest.MonkeyPatch) -> None:
+    responses = {
+        ("status", "--porcelain"): [
+            " M config.yaml\n?? docs/new.txt\n",
+            "M  config.yaml\n?? docs/new.txt\n",
+            "?? docs/new.txt\n",
+        ]
+    }
+    runner = DummyRunner(responses=responses)
+    monkeypatch.setattr("gitpulse.cli.prompt_stage_action", lambda context, assume_yes: ("patterns", ["config.yaml"]))
+    monkeypatch.setattr("gitpulse.cli.ask_yes_no", lambda prompt, assume_yes: True)
+    monkeypatch.setattr("gitpulse.cli.collect_commit_message", lambda entries, assume_yes: "Modified: config.yaml")
+    run_sync_flow(runner, assume_yes=False)
+    assert runner.commands == [
+        ("status",),
+        ("pull",),
+        ("status", "--porcelain"),
+        ("add", "--", "config.yaml"),
+        ("status",),
+        ("status", "--porcelain"),
+        ("commit", "-m", "Modified: config.yaml"),
         ("status", "--porcelain"),
         ("push",),
     ]

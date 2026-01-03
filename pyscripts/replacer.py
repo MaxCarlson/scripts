@@ -101,6 +101,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to the ripgrep executable (defaults to 'rg').",
     )
     parser.add_argument(
+        "--path-separator",
+        help="Override ripgrep's path separator for output (defaults to '\\\\' on Windows).",
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -124,7 +128,7 @@ def looks_like_glob(path_value: str) -> bool:
     return any(ch in path_value for ch in ("*", "?", "[", "]"))
 
 
-def expand_path(value: str, *, normalize: bool) -> str:
+def expand_path(value: str, *, normalize: bool = True) -> str:
     """Expand environment variables with the shared helpers when possible."""
     if not normalize:
         return os.path.expanduser(os.path.expandvars(value))
@@ -133,7 +137,7 @@ def expand_path(value: str, *, normalize: bool) -> str:
     return os.path.expanduser(os.path.expandvars(value))
 
 
-def to_posix(value: str, *, normalize: bool) -> str:
+def to_posix(value: str, *, normalize: bool = True) -> str:
     if not normalize:
         return value
     if HAVE_CROSS_PLATFORM:
@@ -141,7 +145,7 @@ def to_posix(value: str, *, normalize: bool) -> str:
     return expand_path(value, normalize=normalize).replace("\\", "/")
 
 
-def to_native(value: str, *, normalize: bool) -> str:
+def to_native(value: str, *, normalize: bool = True) -> str:
     if not normalize:
         return os.path.expanduser(os.path.expandvars(value))
     if HAVE_CROSS_PLATFORM:
@@ -152,24 +156,28 @@ def to_native(value: str, *, normalize: bool) -> str:
     return expanded.replace("\\", "/")
 
 
-def normalize_for_rg(value: str, *, normalize: bool) -> str:
+def normalize_for_rg(value: str, *, normalize: bool = True) -> str:
     """
     Convert a user-supplied path so ripgrep can understand it on any platform.
 
-    On Windows this turns backslashes into forward slashes, which matches how
-    ripgrep formats paths in the sample output from the user.
+    When normalization is disabled, the original value is returned after simple
+    environment expansion. Otherwise, we favor forward slashes for glob
+    compatibility while keeping relative paths intact.
     """
-    candidate = to_posix(value, normalize=normalize)
+    candidate = expand_path(value, normalize=normalize) or value
+    if not normalize:
+        return candidate
+
     if looks_like_glob(candidate):
-        return candidate
+        return candidate.replace("\\", "/")
+
     try:
-        resolved = Path(to_native(value, normalize=normalize)).resolve()
-        return resolved.as_posix()
+        return Path(candidate).as_posix()
     except OSError:
-        return candidate
+        return candidate.replace("\\", "/")
 
 
-def normalize_for_fs(value: str, *, normalize: bool) -> str:
+def normalize_for_fs(value: str, *, normalize: bool = True) -> str:
     """Normalize input paths for Python's file-system APIs."""
     expanded = to_native(value, normalize=normalize)
     return expanded or value
@@ -203,6 +211,9 @@ class RipgrepRunner:
         self.normalize_paths = not args.no_path_normalize
         self.search_paths = [normalize_for_rg(p, normalize=self.normalize_paths) for p in (args.path or ["."])]
         self.exclusions = list(args.exclude or []) + DEFAULT_EXCLUSIONS
+        self.path_separator = args.path_separator
+        if self.path_separator is None and os.name == "nt" and self.normalize_paths:
+            self.path_separator = "\\"
 
     def _base_cmd(self) -> List[str]:
         cmd = [self.args.rg_bin, "--line-number", "--column"]
@@ -210,6 +221,8 @@ class RipgrepRunner:
             cmd.append("--ignore-case")
         if not self.args.regex:
             cmd.append("--fixed-strings")
+        if self.path_separator:
+            cmd.extend(["--path-separator", self.path_separator])
         for pattern in self.exclusions:
             cmd.extend(["--glob", f"!{pattern}"])
         return cmd
@@ -218,6 +231,7 @@ class RipgrepRunner:
         """Run rg to produce the familiar colored output, streaming live output."""
         cmd = self._base_cmd()
         cmd.append("--color=always")
+        cmd.append("--heading")
         cmd.append(self.args.pattern)
         cmd.extend(self.search_paths or ["."])
         try:
@@ -253,7 +267,7 @@ class RipgrepRunner:
 
         return returncode
 
-    def files_with_matches(self) -> Tuple[List[Path], int]:
+    def files_with_matches(self) -> Tuple[List[str], int]:
         """Return a list of files that contain matches using ripgrep."""
         cmd = self._base_cmd()
         cmd.append("--files-with-matches")
@@ -267,10 +281,10 @@ class RipgrepRunner:
             console.print("Error: ripgrep executable not found. Install rg or provide --rg-bin.", style="danger")
             return [], 2
 
-        files: List[Path] = []
+        files: List[str] = []
         for raw in result.stdout.split("\0"):
             if raw:
-                files.append(Path(raw))
+                files.append(raw)
         if result.stderr:
             console.print(result.stderr, style="warning")
         return files, result.returncode
@@ -376,10 +390,24 @@ class ReplacementRunner:
         self.exclusions = list(args.exclude or []) + DEFAULT_EXCLUSIONS
         self.pattern = args.pattern
         self.replacement = args.replacement
+        self.display_map: Dict[Path, str] = {}
         if candidate_files is None:
             self.candidate_files: Optional[List[Path]] = None
         else:
-            self.candidate_files = [Path(p) for p in candidate_files]
+            collected: List[Path] = []
+            seen: set[Path] = set()
+            for candidate in candidate_files:
+                path_obj = Path(candidate)
+                try:
+                    resolved = path_obj.resolve()
+                except OSError:
+                    continue
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+                collected.append(resolved)
+                self.display_map[resolved] = str(candidate)
+            self.candidate_files = collected
         flags = re.IGNORECASE if args.ignore_case else 0
         if args.regex:
             self.compiled = re.compile(self.pattern, flags)
@@ -399,8 +427,7 @@ class ReplacementRunner:
         """Yield every candidate file that matches the user's path filters."""
         if self.candidate_files is not None:
             yielded = set()
-            for file_path in self.candidate_files:
-                resolved = file_path.resolve()
+            for resolved in self.candidate_files:
                 if resolved not in yielded:
                     yielded.add(resolved)
                     yield resolved
@@ -520,7 +547,8 @@ class ReplacementRunner:
 
     def _display_file_result(self, file_path: Path, result: Dict) -> None:
         """Render the per-file diff style output."""
-        console.print(f"\n{file_path.as_posix()}", style="path")
+        display_path = self._format_display_path(file_path)
+        console.print(f"\n{display_path}", style="path")
         if self.args.verbose:
             console.print(
                 f"  {result['match_count']} replacements across {result['line_count']} line(s)",
@@ -543,6 +571,16 @@ class ReplacementRunner:
             line_text.stylize("old", match.start, match.end)
         line_text.stylize("old", 0, len(line_text))
         return prefix + line_text
+
+    def _format_display_path(self, file_path: Path) -> str:
+        """Prefer ripgrep's original path separator when available."""
+        stored = self.display_map.get(file_path)
+        if stored:
+            return stored
+        rel = os.path.relpath(file_path, Path.cwd())
+        if self.normalize_paths and os.name == "nt":
+            rel = rel.replace("/", "\\")
+        return rel
 
     def _highlight_new_line(self, line_no: int, text_value: str, matches: List[LineMatch]) -> Text:
         """Return a Text object showing the replaced line with green highlights."""
@@ -616,6 +654,12 @@ def run_replacement_mode(args: argparse.Namespace) -> int:
         return display_code
     if file_code > 1:
         return file_code
+
+    if not files:
+        console.print("--- Dry run ---" if not args.write else "--- Applying changes ---", style="info")
+        stats = ReplacementStats()
+        print_summary(stats, dry_run=not args.write, mode="replace")
+        return 0 if file_code <= 1 else file_code
 
     runner = ReplacementRunner(args, candidate_files=files)
     stats = runner.run()
