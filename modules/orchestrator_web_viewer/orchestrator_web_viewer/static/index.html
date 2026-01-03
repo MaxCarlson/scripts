@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Orchestrator & Knowledge Manager</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <h1>🤖 AI Orchestrator</h1>
+        <nav class="nav">
+            <button class="nav-btn active" data-view="dashboard">Dashboard</button>
+            <button class="nav-btn" data-view="orchestrator">Orchestrator</button>
+            <button class="nav-btn" data-view="tasks">Knowledge Manager</button>
+        </nav>
+        <div class="status-indicator">
+            <span class="status-dot"></span>
+            <span id="connection-status">Connecting...</span>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <!-- Dashboard View -->
+        <div id="dashboard-view" class="view active">
+            <h2>Dashboard</h2>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <h3>Active Workers</h3>
+                    <div class="stat-value" id="stat-workers">0</div>
+                </div>
+                <div class="stat-card">
+                    <h3>Queued Tasks</h3>
+                    <div class="stat-value" id="stat-queued">0</div>
+                </div>
+                <div class="stat-card">
+                    <h3>Completed Today</h3>
+                    <div class="stat-value" id="stat-completed">0</div>
+                </div>
+                <div class="stat-card">
+                    <h3>Failed</h3>
+                    <div class="stat-value" id="stat-failed">0</div>
+                </div>
+            </div>
+
+            <div class="activity-section">
+                <h3>Recent Activity</h3>
+                <div id="activity-feed" class="activity-feed">
+                    <div class="activity-item">Loading...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Orchestrator View -->
+        <div id="orchestrator-view" class="view">
+            <h2>Orchestrator Monitor</h2>
+
+            <div class="section">
+                <h3>Active Workers</h3>
+                <div id="workers-grid" class="workers-grid">
+                    <div class="empty-state">No active workers</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h3>Task Queue</h3>
+                <div class="task-queue-grid">
+                    <div class="queue-column">
+                        <h4>Queued (<span id="queue-queued-count">0</span>)</h4>
+                        <div id="queue-queued" class="queue-list"></div>
+                    </div>
+                    <div class="queue-column">
+                        <h4>In Progress (<span id="queue-progress-count">0</span>)</h4>
+                        <div id="queue-progress" class="queue-list"></div>
+                    </div>
+                    <div class="queue-column">
+                        <h4>Completed (<span id="queue-completed-count">0</span>)</h4>
+                        <div id="queue-completed" class="queue-list"></div>
+                    </div>
+                    <div class="queue-column">
+                        <h4>Failed (<span id="queue-failed-count">0</span>)</h4>
+                        <div id="queue-failed" class="queue-list"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h3>Live Logs</h3>
+                <div class="logs-controls">
+                    <label>
+                        <input type="checkbox" id="auto-scroll" checked>
+                        Auto-scroll
+                    </label>
+                    <button onclick="clearLogs()">Clear</button>
+                </div>
+                <div id="live-logs" class="logs-container"></div>
+            </div>
+        </div>
+
+        <!-- Tasks View -->
+        <div id="tasks-view" class="view">
+            <h2>Knowledge Manager</h2>
+
+            <div class="tasks-layout">
+                <aside class="projects-sidebar">
+                    <h3>Projects</h3>
+                    <div id="projects-list" class="projects-list">
+                        <div class="loading">Loading projects...</div>
+                    </div>
+                </aside>
+
+                <div class="tasks-main">
+                    <div class="tasks-toolbar">
+                        <input type="search" id="task-search" placeholder="Search tasks...">
+                        <select id="status-filter">
+                            <option value="">All Statuses</option>
+                            <option value="todo">Todo</option>
+                            <option value="in_progress">In Progress</option>
+                            <option value="done">Done</option>
+                        </select>
+                    </div>
+
+                    <div id="tasks-grid" class="tasks-grid">
+                        <div class="loading">Loading tasks...</div>
+                    </div>
+                </div>
+
+                <aside class="task-detail-panel" id="task-detail-panel">
+                    <div class="empty-state">Select a task to view details</div>
+                </aside>
+            </div>
+        </div>
+    </main>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
