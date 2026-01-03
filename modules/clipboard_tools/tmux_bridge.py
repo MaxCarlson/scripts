@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """
-tmux -> Windows clipboard bridge.
+tmux clipboard bridge with environment auto-detection.
 
-Reads the current tmux buffer, base64-encodes it, and ships it to a Windows
-clipboard. When running on WSL/Windows it calls local PowerShell/clip.exe;
-otherwise it uses SSH to reach a Windows host and drive Set-Clipboard.
-Also emits OSC52 locally for convenience.
+Reads the current tmux buffer and fan-outs the data to every clipboard path
+we can reach:
+  • Local environment clipboard via cross_platform.clipboard_utils (Termux,
+    Windows/PowerShell, WSL → Windows, Linux, macOS, etc.)
+  • OSC52 escape sequence so upstream terminals (Termux, macOS Terminal, etc.)
+    capture the data over SSH/tmux sessions.
+  • Optional remote Windows bridge via SSH + PowerShell (`--target` or
+    CLIPBOARD_WIN_SSH).
+
+The CLI is exposed as `tmuxcp` (with `tmux2winclip` kept as a legacy alias).
 """
 
 from __future__ import annotations
@@ -13,10 +19,14 @@ from __future__ import annotations
 import argparse
 import base64
 import os
-import shutil
 import subprocess
 import sys
 from typing import Optional, Sequence
+
+try:
+    from cross_platform.clipboard_utils import set_clipboard as _set_clipboard
+except Exception:  # pragma: no cover - optional dependency
+    _set_clipboard = None  # type: ignore[assignment]
 
 
 def _osc52_emit(text: str) -> None:
@@ -46,32 +56,6 @@ def _powershell_set_clip_script() -> str:
         "$str=[Text.Encoding]::UTF8.GetString($bytes);"
         "Set-Clipboard -Value $str"
     )
-
-
-def _is_windows_host() -> bool:
-    return os.name == "nt"
-
-
-def _is_wsl_host() -> bool:
-    if os.environ.get("WSL_DISTRO_NAME"):
-        return True
-    try:
-        with open("/proc/sys/kernel/osrelease", "r", encoding="utf-8") as fh:
-            return "microsoft" in fh.read().lower()
-    except OSError:
-        return False
-
-
-def _resolve_windows_command(candidates: Sequence[str]) -> Optional[str]:
-    for candidate in candidates:
-        if os.path.sep in candidate:
-            if os.path.exists(candidate):
-                return candidate
-            continue
-        resolved = shutil.which(candidate)
-        if resolved:
-            return resolved
-    return None
 
 
 def _run_pwsh_command(command: Sequence[str], payload_b64: str, verbose: bool) -> int:
@@ -104,80 +88,84 @@ def _run_pwsh_command(command: Sequence[str], payload_b64: str, verbose: bool) -
     return 0
 
 
-def _copy_via_clip_exe(clip_cmd: str, text: str, verbose: bool) -> int:
-    try:
-        proc = subprocess.run(
-            [clip_cmd],
-            input=text,
-            text=True,
-            capture_output=not verbose,
+def _read_tmux_buffer() -> str:
+    return subprocess.check_output(["tmux", "show-buffer", "-p"], text=True)
+
+
+def _copy_to_local_clipboard(text: str, *, dry_run: bool) -> bool:
+    if dry_run:
+        print("[DRY-RUN] Skipping local clipboard write (tmux buffer captured).")
+        return True
+
+    if _set_clipboard is None:
+        _osc52_emit(text)
+        print(
+            "[WARNING] cross_platform.clipboard_utils is not installed; emitted OSC52 only.",
+            file=sys.stderr,
         )
-    except Exception as exc:
-        print(f"[ERROR] clip.exe invocation failed: {exc}", file=sys.stderr)
-        return 1
+        return False
 
-    if proc.returncode != 0:
-        if not verbose:
-            if proc.stdout:
-                print(proc.stdout, file=sys.stderr)
-            if proc.stderr:
-                print(proc.stderr, file=sys.stderr)
-        print(f"[ERROR] clip.exe failed (rc={proc.returncode})", file=sys.stderr)
-        return proc.returncode
-
-    if verbose:
-        if proc.stdout:
-            sys.stderr.write(proc.stdout)
-        if proc.stderr:
-            sys.stderr.write(proc.stderr)
-    print("[SUCCESS] tmux buffer sent via clip.exe.")
-    return 0
-
-
-def tmux_to_windows_clipboard(target: Optional[str], *, verbose: bool = False) -> int:
     try:
-        tmux_buf = subprocess.check_output(["tmux", "show-buffer", "-p"], text=True)
-    except Exception as e:
-        print(f"[ERROR] Unable to read tmux buffer: {e}", file=sys.stderr)
-        return 1
+        _set_clipboard(text)
+        return True
+    except Exception as exc:  # pragma: no cover - extremely platform specific
+        print(f"[ERROR] Local clipboard update failed: {exc}", file=sys.stderr)
+        _osc52_emit(text)
+        return False
 
-    _osc52_emit(tmux_buf)
 
-    payload_b64 = base64.b64encode(tmux_buf.encode("utf-8")).decode("ascii")
+def _send_to_remote_windows_clipboard(text: str, target: str, verbose: bool, dry_run: bool) -> int:
+    if dry_run:
+        print(f"[DRY-RUN] Skipping remote clipboard push to {target}.")
+        return 0
+
+    payload_b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
     ps_script = _powershell_set_clip_script()
     encoded = base64.b64encode(ps_script.encode("utf-16le")).decode("ascii")
+    ssh_cmd = ["ssh", target, "pwsh", "-NoProfile", "-EncodedCommand", encoded]
+    return _run_pwsh_command(ssh_cmd, payload_b64, verbose)
 
-    if target:
-        ssh_cmd = ["ssh", target, "pwsh", "-NoProfile", "-EncodedCommand", encoded]
-        return _run_pwsh_command(ssh_cmd, payload_b64, verbose)
 
-    if _is_windows_host() or _is_wsl_host():
-        pwsh_path = _resolve_windows_command(
-            [
-                "pwsh.exe",
-                "powershell.exe",
-                "/mnt/c/Program Files/PowerShell/7/pwsh.exe",
-                "/mnt/c/Program Files/PowerShell/7-preview/pwsh.exe",
-                "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
-            ]
-        )
-        if pwsh_path:
-            local_cmd = [pwsh_path, "-NoProfile", "-EncodedCommand", encoded]
-            return _run_pwsh_command(local_cmd, payload_b64, verbose)
+def tmux_to_windows_clipboard(
+    target: Optional[str],
+    *,
+    verbose: bool = False,
+    dry_run: bool = False,
+    skip_remote: bool = False,
+) -> int:
+    """
+    Legacy public function kept for backwards compatibility. The new behavior
+    mirrors tmuxcp: always attempt a local clipboard update (Termux/Windows/WSL)
+    and optionally mirror the buffer to a remote Windows host over SSH.
+    """
 
-        clip_path = _resolve_windows_command(
-            [
-                "clip.exe",
-                "/mnt/c/Windows/System32/clip.exe",
-                r"C:\Windows\System32\clip.exe",
-            ]
-        )
-        if clip_path:
-            return _copy_via_clip_exe(clip_path, tmux_buf, verbose)
+    try:
+        tmux_buf = _read_tmux_buffer()
+    except Exception as exc:
+        print(f"[ERROR] Unable to read tmux buffer: {exc}", file=sys.stderr)
+        return 1
+
+    local_ok = _copy_to_local_clipboard(tmux_buf, dry_run=dry_run)
+    if local_ok:
+        print("[SUCCESS] tmux buffer copied to local clipboard.")
+
+    remote_rc: Optional[int] = None
+    if target and not skip_remote:
+        remote_rc = _send_to_remote_windows_clipboard(tmux_buf, target, verbose, dry_run)
+        if remote_rc == 0:
+            print(f"[SUCCESS] Remote Windows clipboard updated via {target}.")
+        else:
+            print(
+                f"[ERROR] Remote Windows clipboard update failed (rc={remote_rc}).",
+                file=sys.stderr,
+            )
+
+    # Successful if at least one path worked
+    if local_ok or (remote_rc == 0):
+        return 0
 
     print(
-        "[ERROR] Windows clipboard target is required. "
-        "Set CLIPBOARD_WIN_SSH, pass --target, or run inside WSL/Windows with clip.exe available.",
+        "[ERROR] tmux buffer was not copied to any clipboard target.",
         file=sys.stderr,
     )
     return 1
@@ -185,22 +173,41 @@ def tmux_to_windows_clipboard(target: Optional[str], *, verbose: bool = False) -
 
 def cli_main():
     parser = argparse.ArgumentParser(
-        description="Send current tmux buffer to a remote Windows clipboard via SSH + PowerShell.",
+        description=(
+            "Copy the current tmux buffer to every detected clipboard (Termux, Windows, macOS, Linux, OSC52) "
+            "and optionally mirror it to a remote Windows host over SSH."
+        ),
     )
     parser.add_argument(
         "-t",
         "--target",
         default=os.environ.get("CLIPBOARD_WIN_SSH"),
-        help="SSH target for Windows host (user@host). Defaults to CLIPBOARD_WIN_SSH.",
+        help="Optional SSH target for a remote Windows host (user@host). Defaults to CLIPBOARD_WIN_SSH.",
+    )
+    parser.add_argument(
+        "-l",
+        "--local-only",
+        action="store_true",
+        help="Skip remote SSH clipboard updates even if --target / CLIPBOARD_WIN_SSH is provided.",
+    )
+    parser.add_argument(
+        "-n",
+        "--dry-run",
+        action="store_true",
+        help="Show detected actions without writing to any clipboard.",
     )
     parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
-        help="Show SSH command output.",
+        help="Show SSH command output for remote clipboard pushes.",
     )
     args = parser.parse_args()
-    if not args.target:
-        print("[ERROR] Windows SSH target is required (set CLIPBOARD_WIN_SSH or pass -t).", file=sys.stderr)
-        sys.exit(1)
-    sys.exit(tmux_to_windows_clipboard(args.target, verbose=args.verbose))
+    sys.exit(
+        tmux_to_windows_clipboard(
+            args.target,
+            verbose=args.verbose,
+            dry_run=args.dry_run,
+            skip_remote=args.local_only,
+        )
+    )

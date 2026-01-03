@@ -65,24 +65,37 @@ koweb --port 3000 --auth-user admin --auth-password mypassword --postgres-host l
 ### Environment Variables
 
 ```bash
-# PostgreSQL connection
-export POSTGRES_HOST=localhost
-export POSTGRES_PORT=5432
-export POSTGRES_USER=km_user
-export POSTGRES_PASSWORD=your_password
-export POSTGRES_DB=knowledge_manager
+# PostgreSQL connection (KO_WEB_POSTGRES_*)
+export KO_WEB_POSTGRES_HOST=localhost
+export KO_WEB_POSTGRES_PORT=5432
+export KO_WEB_POSTGRES_USER=km_user
+export KO_WEB_POSTGRES_PASSWORD=fjhpbQXkrfbBjDBmShWzNdA0
+export KO_WEB_POSTGRES_DB=knowledge_manager
 
 # Task queue path
-export TASK_QUEUE_PATH=~/projects/ai-orchestrator/task_queue
+export KO_WEB_TASK_QUEUE_PATH=~/projects/ai-orchestrator/task_queue
+
+# Web server config
+export KO_WEB_HOST=0.0.0.0
+export KO_WEB_PORT=3001
 
 # Authentication (optional - enables HTTP Basic Auth)
-export WEB_AUTH_USER=admin
-export WEB_AUTH_PASSWORD=your_secure_password
+export KO_WEB_AUTH_USER=admin
+export KO_WEB_AUTH_PASSWORD=your_secure_password
+```
+
+**Backward Compatibility**: Old env vars (`POSTGRES_*`, `WEB_AUTH_*`) still work but `KO_WEB_*` takes precedence.
+
+**Quick Setup**:
+```bash
+# Minimal required setup
+export KO_WEB_POSTGRES_PASSWORD=fjhpbQXkrfbBjDBmShWzNdA0
+koweb -v -p 3001
 ```
 
 **Note**: Authentication is disabled by default. Enable it by:
-- Setting `WEB_AUTH_USER` and `WEB_AUTH_PASSWORD` environment variables, OR
-- Using `--auth-user` and `--auth-password` CLI arguments
+- Setting `KO_WEB_AUTH_USER` and `KO_WEB_AUTH_PASSWORD` environment variables, OR
+- Using `-u/--auth-user` and `-w/--auth-password` CLI arguments
 
 ## API Endpoints
 

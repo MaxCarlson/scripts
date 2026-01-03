@@ -32,19 +32,26 @@ logger = logging.getLogger(__name__)
 # Configuration from environment
 class Config:
     """Application configuration"""
-    POSTGRES_HOST: str = os.getenv("POSTGRES_HOST", "localhost")
-    POSTGRES_PORT: int = int(os.getenv("POSTGRES_PORT", "5432"))
-    POSTGRES_USER: str = os.getenv("POSTGRES_USER", "km_user")
-    POSTGRES_PASSWORD: str = os.getenv("POSTGRES_PASSWORD", "")
-    POSTGRES_DB: str = os.getenv("POSTGRES_DB", "knowledge_manager")
-    TASK_QUEUE_PATH: str = os.getenv("TASK_QUEUE_PATH",
-                                      os.path.expanduser("~/projects/ai-orchestrator/task_queue"))
-    HOST: str = "0.0.0.0"
-    PORT: int = 3000
-    # Authentication
+    # PostgreSQL config (KO_WEB_POSTGRES_* preferred, falls back to POSTGRES_*)
+    POSTGRES_HOST: str = os.getenv("KO_WEB_POSTGRES_HOST", os.getenv("POSTGRES_HOST", "localhost"))
+    POSTGRES_PORT: int = int(os.getenv("KO_WEB_POSTGRES_PORT", os.getenv("POSTGRES_PORT", "5432")))
+    POSTGRES_USER: str = os.getenv("KO_WEB_POSTGRES_USER", os.getenv("POSTGRES_USER", "km_user"))
+    POSTGRES_PASSWORD: str = os.getenv("KO_WEB_POSTGRES_PASSWORD", os.getenv("POSTGRES_PASSWORD", ""))
+    POSTGRES_DB: str = os.getenv("KO_WEB_POSTGRES_DB", os.getenv("POSTGRES_DB", "knowledge_manager"))
+
+    # Task queue path (KO_WEB_TASK_QUEUE_PATH preferred, falls back to TASK_QUEUE_PATH)
+    TASK_QUEUE_PATH: str = os.getenv("KO_WEB_TASK_QUEUE_PATH", os.getenv("TASK_QUEUE_PATH",
+                                      os.path.expanduser("~/projects/ai-orchestrator/task_queue")))
+
+    # Web server config (KO_WEB_HOST, KO_WEB_PORT, KO_WEB_QUIET)
+    HOST: str = os.getenv("KO_WEB_HOST", "0.0.0.0")
+    PORT: int = int(os.getenv("KO_WEB_PORT", "3000"))
+    QUIET: bool = os.getenv("KO_WEB_QUIET", "").lower() in ("1", "true", "yes")
+
+    # Authentication (KO_WEB_AUTH_* preferred, falls back to WEB_AUTH_*)
     AUTH_ENABLED: bool = False
-    AUTH_USERNAME: str = os.getenv("WEB_AUTH_USER", "admin")
-    AUTH_PASSWORD: str = os.getenv("WEB_AUTH_PASSWORD", "")
+    AUTH_USERNAME: str = os.getenv("KO_WEB_AUTH_USER", os.getenv("WEB_AUTH_USER", "admin"))
+    AUTH_PASSWORD: str = os.getenv("KO_WEB_AUTH_PASSWORD", os.getenv("WEB_AUTH_PASSWORD", ""))
 
 
 config = Config()
@@ -275,6 +282,8 @@ async def startup_event():
         logger.info(f"Authentication: ENABLED (user: {config.AUTH_USERNAME})")
     else:
         logger.info("Authentication: DISABLED (open access)")
+    if config.QUIET:
+        logger.info("Access Logging: DISABLED (quiet mode)")
     logger.info("=" * 60)
 
     # TODO: Start background tasks
@@ -297,14 +306,14 @@ def cli():
     )
     parser.add_argument(
         "-H", "--host",
-        default="0.0.0.0",
-        help="Host to bind to (default: 0.0.0.0 for LAN access)"
+        default=None,
+        help="Host to bind to (default: from KO_WEB_HOST env or 0.0.0.0)"
     )
     parser.add_argument(
         "-p", "--port",
         type=int,
-        default=3000,
-        help="Port to listen on (default: 3000)"
+        default=None,
+        help="Port to listen on (default: from KO_WEB_PORT env or 3000)"
     )
     parser.add_argument(
         "-g", "--postgres-host",
@@ -323,7 +332,7 @@ def cli():
         help="PostgreSQL database (default: from POSTGRES_DB env or knowledge_manager)"
     )
     parser.add_argument(
-        "-q", "--task-queue",
+        "-t", "--task-queue",
         default=None,
         help="Task queue path (default: from TASK_QUEUE_PATH env)"
     )
@@ -336,6 +345,11 @@ def cli():
         "-v", "--verbose",
         action="store_true",
         help="Enable verbose logging"
+    )
+    parser.add_argument(
+        "-q", "--quiet",
+        action="store_true",
+        help="Suppress HTTP access logs (reduce console spam)"
     )
     parser.add_argument(
         "-u", "--auth-user",
@@ -360,24 +374,33 @@ def cli():
         import subprocess
         import sys
         try:
+            # Find uvicorn processes running koweb (excludes the stop command itself)
             result = subprocess.run(
-                ["pkill", "-f", "koweb"],
+                ["pgrep", "-f", "uvicorn.*orchestrator_web_viewer"],
                 capture_output=True,
                 text=True
             )
-            if result.returncode == 0 or result.returncode == 1:
-                print("✓ Stopped all running koweb servers")
+            if result.returncode == 0 and result.stdout.strip():
+                pids = result.stdout.strip().split('\n')
+                killed = 0
+                for pid in pids:
+                    if pid:
+                        subprocess.run(["kill", pid])
+                        killed += 1
+                print(f"✓ Stopped {killed} koweb server(s)")
                 sys.exit(0)
             else:
-                print(f"✗ Failed to stop servers: {result.stderr}")
-                sys.exit(1)
+                print("✓ No running koweb servers found")
+                sys.exit(0)
         except Exception as e:
             print(f"✗ Error stopping servers: {e}")
             sys.exit(1)
 
-    # Update config from CLI args
-    config.HOST = args.host
-    config.PORT = args.port
+    # Update config from CLI args (only if provided)
+    if args.host:
+        config.HOST = args.host
+    if args.port:
+        config.PORT = args.port
     if args.postgres_host:
         config.POSTGRES_HOST = args.postgres_host
     if args.postgres_port:
@@ -399,13 +422,27 @@ def cli():
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
+    # Determine quiet mode (CLI arg overrides env var)
+    quiet_mode = args.quiet or config.QUIET
+
+    # Configure uvicorn logging
+    log_config = None
+    if quiet_mode:
+        # Disable access logging to reduce console spam
+        import copy
+        log_config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
+        log_config["loggers"]["uvicorn.access"]["handlers"] = []
+        log_config["loggers"]["uvicorn.access"]["propagate"] = False
+
     # Run server
     uvicorn.run(
         "orchestrator_web_viewer.main:app",
         host=config.HOST,
         port=config.PORT,
         reload=args.reload,
-        log_level="info" if not args.verbose else "debug"
+        log_level="info" if not args.verbose else "debug",
+        log_config=log_config,
+        access_log=not quiet_mode  # Disable access log in quiet mode
     )
 
 

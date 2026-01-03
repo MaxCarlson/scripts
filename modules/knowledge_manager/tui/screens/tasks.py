@@ -262,6 +262,9 @@ class TasksScreen(Screen):
             # Create comprehensive description
             description = f"{selected_task.title}\n\n{task_details}".strip()
 
+            # Determine working directory (default to scripts repo)
+            working_dir = os.path.expanduser("~/scripts")
+
             # Submit to queue
             queue_task_id = queue.create_task(
                 project_id=str(self.current_project.id),
@@ -270,6 +273,7 @@ class TasksScreen(Screen):
                 task_id=str(selected_task.id),
                 priority=TaskPriority.NORMAL,
                 cli_preference="claude",
+                working_dir=working_dir,
                 context={
                     "project_name": self.current_project.name,
                     "related_files": [],

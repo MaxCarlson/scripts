@@ -105,6 +105,7 @@ class TaskQueue:
         task_id: Optional[str] = None,
         priority: int = TaskPriority.NORMAL,
         cli_preference: str = "claude",
+        working_dir: Optional[str] = None,
         context: Optional[Dict[str, Any]] = None,
         constraints: Optional[Dict[str, Any]] = None
     ) -> str:
@@ -118,6 +119,7 @@ class TaskQueue:
             task_id: Optional task UUID (generated if not provided)
             priority: Task priority (1-5, default 3)
             cli_preference: Preferred CLI tool (default "claude")
+            working_dir: Working directory for task execution (default: ~/scripts)
             context: Additional context (project_name, related_files, etc.)
             constraints: Task constraints (max_duration, timeout_action, etc.)
 
@@ -130,7 +132,8 @@ class TaskQueue:
             ...     project_id="550e8400-e29b-41d4-a716-446655440000",
             ...     task_title="Implement user authentication",
             ...     description="Add JWT-based authentication to the API",
-            ...     priority=TaskPriority.HIGH
+            ...     priority=TaskPriority.HIGH,
+            ...     working_dir="/home/user/projects/myapp"
             ... )
         """
         task_id = task_id or str(uuid.uuid4())
@@ -142,6 +145,7 @@ class TaskQueue:
             "description": description,
             "priority": priority,
             "cli_preference": cli_preference,
+            "working_dir": working_dir or "",
             "created_at": datetime.utcnow().isoformat() + "Z",
             "created_by": "kmtui",
             "status": TaskStatus.QUEUED.value,

@@ -27,6 +27,10 @@ function initializeNavigation() {
 }
 
 function switchView(view) {
+    if (currentView !== view) {
+        console.log(`[USER ACTION] Switched to view: ${view}`);
+    }
+
     // Update nav buttons
     document.querySelectorAll('.nav-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.view === view);
@@ -197,6 +201,7 @@ function updateQueueColumn(status, tasks) {
 }
 
 async function viewTaskLogs(taskId) {
+    console.log(`[USER ACTION] Viewing task logs: ${taskId}`);
     try {
         const logs = await fetch(`/api/orchestrator/logs/${taskId}`).then(r => r.json());
         const logsContainer = document.getElementById('live-logs');
@@ -238,7 +243,8 @@ function addLogLine(logData) {
 // Tasks View
 async function loadTasks() {
     await loadProjects();
-    await loadTasksList();
+    // Preserve selected project filter when refreshing
+    await loadTasksList(selectedProject);
 }
 
 async function loadProjects() {
@@ -294,12 +300,14 @@ async function loadTasksList(projectId = null) {
 }
 
 function selectProject(projectId) {
+    console.log(`[USER ACTION] Selected project: ${projectId}`);
     selectedProject = projectId;
     loadProjects();
     loadTasksList(projectId);
 }
 
 async function selectTask(taskId) {
+    console.log(`[USER ACTION] Selected task: ${taskId}`);
     selectedTask = taskId;
 
     try {
@@ -323,6 +331,7 @@ async function selectTask(taskId) {
 }
 
 async function assignTaskToAI(taskId) {
+    console.log(`[USER ACTION] Assigning task to AI: ${taskId}`);
     try {
         await fetch(`/api/tasks/${taskId}/assign`, { method: 'POST' });
         alert('Task assigned to AI queue');

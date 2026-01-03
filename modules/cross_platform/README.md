@@ -59,3 +59,66 @@ This module relies on standard Python libraries (`platform`, `subprocess`, `os`,
 *   `git` (for `debug_utils` to determine log file prefixes based on repository name)
 
 Ensure that the necessary external tools are installed and available in your system's PATH for the respective functionalities to work correctly.
+## Related Modules
+
+The `cross_platform` module serves as a foundation for other specialized modules in the scripts repository:
+
+### networks Module
+
+The [`networks`](../networks/README.md) module builds on `cross_platform` to provide advanced networking utilities with automatic platform detection and configuration:
+
+- **WSL2 Port Forwarding**: Automatically configures Windows → WSL2 port forwarding
+- **Firewall Management**: Manages firewall rules on Windows, Linux (ufw/firewalld)
+- **LAN Accessibility**: Makes applications accessible on local networks
+- **Network Information**: Cross-platform IP detection and network details
+
+**Example using cross_platform for OS detection:**
+```python
+from networks import ensure_port_accessible, get_lan_ip
+
+# Automatically detects WSL2/Windows/Linux and configures accordingly
+success, msg = ensure_port_accessible(3000, name='webapp')
+
+# Get LAN IP (uses cross_platform's OS detection)
+ip = get_lan_ip()
+print(f"Access at: http://{ip}:3000")
+```
+
+The `networks` module uses `cross_platform.SystemUtils` for:
+- Detecting WSL2 environment (`is_wsl2()`)
+- Detecting Windows (`is_windows()`)
+- Detecting Linux (`is_linux()`)
+- Detecting Android/Termux (`is_android()`)
+
+This allows the networks module to route to the appropriate platform-specific implementation without reimplementing OS detection logic.
+
+### Other Modules
+
+Other modules in the scripts repository that build on `cross_platform`:
+
+- **standard_ui**: Terminal UI components using cross-platform clipboard and system utilities
+- **python_setup**: Python environment setup using cross-platform process and service management
+- **scripts_setup**: Setup utilities leveraging cross-platform file system operations
+
+## Installation
+
+```bash
+cd ~/scripts
+pip install -e modules/cross_platform/
+```
+
+## Testing
+
+The module includes comprehensive tests covering all platforms:
+
+```bash
+cd ~/scripts/modules/cross_platform
+pytest tests/ -v
+```
+
+**Test coverage:** 98 tests across all utility classes and platforms.
+
+## See Also
+
+- [networks module](../networks/README.md) - Network utilities with WSL2 support
+- [standard_ui module](../standard_ui/README.md) - Terminal UI components
