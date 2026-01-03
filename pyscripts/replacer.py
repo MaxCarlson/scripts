@@ -106,6 +106,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Show per-file replacement counts during previews.",
     )
+    parser.add_argument(
+        "--no-path-normalize",
+        action="store_true",
+        help="Do not auto-convert Windows/Linux path separators or env vars.",
+    )
     return parser
 
 
@@ -119,48 +124,54 @@ def looks_like_glob(path_value: str) -> bool:
     return any(ch in path_value for ch in ("*", "?", "[", "]"))
 
 
-def expand_path(value: str) -> str:
+def expand_path(value: str, *, normalize: bool) -> str:
     """Expand environment variables with the shared helpers when possible."""
+    if not normalize:
+        return os.path.expanduser(os.path.expandvars(value))
     if HAVE_CROSS_PLATFORM:
         return cp_expand_path(value)
     return os.path.expanduser(os.path.expandvars(value))
 
 
-def to_posix(value: str) -> str:
+def to_posix(value: str, *, normalize: bool) -> str:
+    if not normalize:
+        return value
     if HAVE_CROSS_PLATFORM:
         return cp_to_posix_path(value)
-    return expand_path(value).replace("\\", "/")
+    return expand_path(value, normalize=normalize).replace("\\", "/")
 
 
-def to_native(value: str) -> str:
+def to_native(value: str, *, normalize: bool) -> str:
+    if not normalize:
+        return os.path.expanduser(os.path.expandvars(value))
     if HAVE_CROSS_PLATFORM:
         return cp_to_native_path(value)
-    expanded = expand_path(value)
+    expanded = expand_path(value, normalize=normalize)
     if os.name == "nt":
         return expanded.replace("/", "\\")
     return expanded.replace("\\", "/")
 
 
-def normalize_for_rg(value: str) -> str:
+def normalize_for_rg(value: str, *, normalize: bool) -> str:
     """
     Convert a user-supplied path so ripgrep can understand it on any platform.
 
     On Windows this turns backslashes into forward slashes, which matches how
     ripgrep formats paths in the sample output from the user.
     """
-    candidate = to_posix(value)
+    candidate = to_posix(value, normalize=normalize)
     if looks_like_glob(candidate):
         return candidate
     try:
-        resolved = Path(to_native(value)).resolve()
+        resolved = Path(to_native(value, normalize=normalize)).resolve()
         return resolved.as_posix()
     except OSError:
         return candidate
 
 
-def normalize_for_fs(value: str) -> str:
+def normalize_for_fs(value: str, *, normalize: bool) -> str:
     """Normalize input paths for Python's file-system APIs."""
-    expanded = to_native(value)
+    expanded = to_native(value, normalize=normalize)
     return expanded or value
 
 
@@ -189,7 +200,8 @@ class RipgrepRunner:
     def __init__(self, args: argparse.Namespace, runner: Callable[[Sequence[str]], subprocess.CompletedProcess[str]] = run_subprocess):
         self.args = args
         self.runner = runner
-        self.search_paths = [normalize_for_rg(p) for p in (args.path or ["."])]
+        self.normalize_paths = not args.no_path_normalize
+        self.search_paths = [normalize_for_rg(p, normalize=self.normalize_paths) for p in (args.path or ["."])]
         self.exclusions = list(args.exclude or []) + DEFAULT_EXCLUSIONS
 
     def _base_cmd(self) -> List[str]:
@@ -203,23 +215,43 @@ class RipgrepRunner:
         return cmd
 
     def stream_colored_output(self) -> int:
-        """Run rg to produce the familiar colored output."""
+        """Run rg to produce the familiar colored output, streaming live output."""
         cmd = self._base_cmd()
         cmd.append("--color=always")
-        cmd.append("--heading")
         cmd.append(self.args.pattern)
         cmd.extend(self.search_paths or ["."])
         try:
-            result = self.runner(cmd)
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
         except FileNotFoundError:
             console.print("Error: ripgrep executable not found. Install rg or provide --rg-bin.", style="danger")
             return 2
 
-        if result.stdout:
-            console.print(result.stdout, end="")
-        if result.stderr:
-            console.print(result.stderr, style="warning")
-        return result.returncode
+        try:
+            if proc.stdout:
+                for line in proc.stdout:
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+        finally:
+            if proc.stdout:
+                proc.stdout.close()
+
+        stderr_text = ""
+        if proc.stderr:
+            stderr_text = proc.stderr.read()
+            proc.stderr.close()
+
+        returncode = proc.wait()
+
+        if stderr_text:
+            console.print(stderr_text, style="warning")
+
+        return returncode
 
     def files_with_matches(self) -> Tuple[List[Path], int]:
         """Return a list of files that contain matches using ripgrep."""
@@ -238,7 +270,7 @@ class RipgrepRunner:
         files: List[Path] = []
         for raw in result.stdout.split("\0"):
             if raw:
-                files.append(Path(raw).resolve())
+                files.append(Path(raw))
         if result.stderr:
             console.print(result.stderr, style="warning")
         return files, result.returncode
@@ -340,10 +372,14 @@ class ReplacementRunner:
         if args.replacement is None:
             raise ValueError("ReplacementRunner requires a replacement value.")
         self.args = args
+        self.normalize_paths = not args.no_path_normalize
         self.exclusions = list(args.exclude or []) + DEFAULT_EXCLUSIONS
         self.pattern = args.pattern
         self.replacement = args.replacement
-        self.candidate_files = [Path(p) for p in candidate_files] if candidate_files else None
+        if candidate_files is None:
+            self.candidate_files: Optional[List[Path]] = None
+        else:
+            self.candidate_files = [Path(p) for p in candidate_files]
         flags = re.IGNORECASE if args.ignore_case else 0
         if args.regex:
             self.compiled = re.compile(self.pattern, flags)
@@ -373,7 +409,7 @@ class ReplacementRunner:
         yielded = set()
         glob_options = self.args.path or ["."]
         for raw in glob_options:
-            expanded = normalize_for_fs(raw)
+            expanded = normalize_for_fs(raw, normalize=self.normalize_paths)
             if looks_like_glob(raw):
                 matches = [Path(match) for match in glob.glob(expanded, recursive=True)]
             else:

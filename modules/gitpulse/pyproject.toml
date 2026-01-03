@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gitpulse"
-version = "0.1.0"
+version = "0.3.0"
 description = "Curated git command shortcuts with an interactive smart commit workflow."
 readme = "README.md"
 requires-python = ">=3.10"

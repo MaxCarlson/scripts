@@ -52,23 +52,88 @@ def ask_yes_no(prompt: str, assume_yes: bool) -> bool:
     return reply in {"y", "yes"}
 
 
+@dataclass(frozen=True)
+class StatusItem:
+    """Represents a single porcelain status entry."""
+
+    staged_code: str
+    work_code: str
+    path: str
+    raw: str
+
+
+@dataclass
+class StatusSummary:
+    """Collection of staged and unstaged entries."""
+
+    raw: str
+    staged: list[StatusItem]
+    unstaged: list[StatusItem]
+    untracked: list[StatusItem]
+
+    @property
+    def has_staged(self) -> bool:
+        return bool(self.staged)
+
+    @property
+    def has_unstaged(self) -> bool:
+        return bool(self.unstaged)
+
+
+def parse_status_summary(porcelain_status: str) -> StatusSummary:
+    """Parse porcelain status output into staged/unstaged groups."""
+    staged: list[StatusItem] = []
+    unstaged: list[StatusItem] = []
+    untracked: list[StatusItem] = []
+    for line in porcelain_status.splitlines():
+        if not line.strip():
+            continue
+        if line.startswith("??"):
+            path = line[3:].strip()
+            item = StatusItem(staged_code="?", work_code="?", path=path, raw=line)
+            untracked.append(item)
+            unstaged.append(item)
+            continue
+        if len(line) < 4:
+            continue
+        stage_code = line[0]
+        work_code = line[1]
+        path = line[3:].strip()
+        item = StatusItem(staged_code=stage_code, work_code=work_code, path=path, raw=line)
+        if stage_code != " ":
+            staged.append(item)
+        if work_code != " ":
+            unstaged.append(item)
+    return StatusSummary(raw=porcelain_status, staged=staged, unstaged=unstaged, untracked=untracked)
+
+
+def build_commit_message_from_items(entries: Sequence[StatusItem]) -> str:
+    """Generate a commit message summarizing staged files by type."""
+    if not entries:
+        return "Update repository"
+    groups: dict[str, list[str]] = {"Modified": [], "Added": [], "Deleted": [], "Updated": []}
+    label_map = {"M": "Modified", "A": "Added", "D": "Deleted"}
+    for item in entries:
+        code = item.staged_code.strip()
+        label = label_map.get(code, "Updated")
+        groups[label].append(item.path)
+    parts: list[str] = []
+    for label in ("Modified", "Added", "Deleted", "Updated"):
+        if groups[label]:
+            parts.append(f"{label}: {', '.join(groups[label])}")
+    return "; ".join(parts) if parts else "Update repository"
+
+
 def build_default_commit_message(porcelain_status: str) -> str:
     """Create a generic commit message derived from staged changes."""
-    lines = [line for line in porcelain_status.splitlines() if line.strip()]
-    if not lines:
-        return "Update repository"
-    file_count = len(lines)
-    modifiers = {line[:2].strip() for line in lines}
-    descriptor_parts = []
-    if any(token.startswith("M") for token in modifiers):
-        descriptor_parts.append("modify")
-    if any(token.startswith("A") for token in modifiers):
-        descriptor_parts.append("add")
-    if any(token.startswith("D") for token in modifiers):
-        descriptor_parts.append("remove")
-    descriptor = "/".join(descriptor_parts) if descriptor_parts else "update"
-    plural = "file" if file_count == 1 else "files"
-    return f"{descriptor.title()} {file_count} {plural}"
+    summary = parse_status_summary(porcelain_status)
+    return build_commit_message_from_items(summary.staged)
+
+
+def get_status_summary(runner: GitRunner) -> StatusSummary:
+    """Fetch and parse the porcelain status from git."""
+    status_text = runner.run(["status", "--porcelain"], capture_output=True).stdout
+    return parse_status_summary(status_text)
 
 
 def show_log_graph(runner: GitRunner, limit: int) -> None:
@@ -110,16 +175,16 @@ def run_smart_commit(
     else:
         runner.run(["add", "--all"])
 
-    status_short = runner.run(["status", "--porcelain"], capture_output=True).stdout
+    summary = get_status_summary(runner)
     runner.run(["status"])
-    if not status_short.strip():
+    if not summary.staged:
         raise GitPulseError("No staged changes detected; aborting commit.")
 
     if not ask_yes_no("Proceed with commit", assume_yes):
         LOG.info("Commit aborted by user.")
         return
 
-    default_message = commit_message or build_default_commit_message(status_short)
+    default_message = commit_message or build_commit_message_from_items(summary.staged)
     message = default_message
     if not commit_message and not assume_yes:
         manual = input(f"Enter commit message [{default_message}]: ").strip()
@@ -165,6 +230,78 @@ def run_clean_reset(runner: GitRunner, assume_yes: bool) -> None:
     runner.run(["clean", "-fd"])
 
 
+def ask_commit_action(has_unstaged: bool, assume_yes: bool) -> str:
+    """Prompt for committing staged changes, optionally enabling split flow."""
+    if assume_yes:
+        return "yes"
+    options = "[y]es/[n]o"
+    if has_unstaged:
+        options += "/[s]plit"
+    prompt = f"Commit staged changes before pushing? ({options}): "
+    while True:
+        reply = input(prompt).strip().lower()
+        if reply in {"y", "yes"}:
+            return "yes"
+        if reply in {"n", "no"}:
+            return "no"
+        if has_unstaged and reply in {"s", "split"}:
+            return "split"
+        print("Please answer with y, n, or s.")
+
+
+def collect_commit_message(entries: Sequence[StatusItem], assume_yes: bool) -> str:
+    """Return a commit message, optionally allowing manual edits."""
+    default_message = build_commit_message_from_items(entries)
+    if assume_yes:
+        return default_message
+    manual = input(f"Enter commit message [{default_message}]: ").strip()
+    return manual or default_message
+
+
+def run_sync_flow(runner: GitRunner, assume_yes: bool) -> None:
+    """Show status, pull, optionally commit staged/unstaged changes, and push."""
+    runner.run(["status"])
+    runner.run(["pull"])
+    summary = get_status_summary(runner)
+    split_requested = False
+
+    if summary.staged:
+        action = ask_commit_action(has_unstaged=summary.has_unstaged, assume_yes=assume_yes)
+        if action in {"yes", "split"}:
+            message = collect_commit_message(summary.staged, assume_yes)
+            runner.run(["commit", "-m", message])
+            summary = get_status_summary(runner)
+            split_requested = action == "split"
+        else:
+            LOG.info("Skipping commit while syncing staged changes.")
+
+    if summary.has_unstaged:
+        stage_prompt = (
+            "Stage remaining unstaged changes for split commit"
+            if split_requested
+            else "Run 'git add' on unstaged changes before pushing"
+        )
+        if ask_yes_no(stage_prompt, assume_yes):
+            runner.run(["add", "--all"])
+            summary = get_status_summary(runner)
+            if summary.staged:
+                commit_prompt = (
+                    "Commit newly staged changes after split"
+                    if split_requested
+                    else "Commit freshly staged changes before pushing"
+                )
+                if ask_yes_no(commit_prompt, assume_yes):
+                    message = collect_commit_message(summary.staged, assume_yes)
+                    runner.run(["commit", "-m", message])
+                    summary = get_status_summary(runner)
+                else:
+                    LOG.info("Skipped committing newly staged changes.")
+        else:
+            LOG.info("Leaving unstaged changes untouched.")
+
+    runner.run(["push"])
+
+
 @dataclass(frozen=True)
 class ComboCommand:
     """Data representation for simple git command sequences."""
@@ -172,39 +309,48 @@ class ComboCommand:
     name: str
     description: str
     steps: Sequence[Sequence[str]]
+    aliases: Sequence[str]
     confirm: bool = False
 
 
+SYNC_ALIASES = ("sy", "s")
+REBASE_ALIASES = ("ru", "u")
+CLEAN_ALIASES = ("cr", "c")
+LOG_ALIASES = ("lg", "l")
+DIFF_ALIASES = ("db", "d")
+COMMIT_ALIASES = ("sc", "m")
+
+
 COMBO_COMMANDS: dict[str, ComboCommand] = {
-    "sync": ComboCommand(
-        name="sync",
-        description="Run 'git pull' followed by 'git push'.",
-        steps=[["pull"], ["push"]],
-    ),
     "status-pull": ComboCommand(
         name="status-pull",
         description="Show status, then pull remote changes.",
         steps=[["status"], ["pull"]],
+        aliases=("sp", "p"),
     ),
     "refresh": ComboCommand(
         name="refresh",
         description="Fetch all remotes with prune, then show concise status.",
         steps=[["fetch", "--all", "--prune"], ["status", "-sb"]],
+        aliases=("rf", "r"),
     ),
     "stash-sync": ComboCommand(
         name="stash-sync",
         description="Stash changes, pull with rebase, and pop the stash.",
         steps=[["stash", "push", "--include-untracked"], ["pull", "--rebase"], ["stash", "pop"]],
+        aliases=("ss", "z"),
     ),
     "tag-sync": ComboCommand(
         name="tag-sync",
         description="Fetch and prune remote tags.",
         steps=[["fetch", "--tags", "--prune"]],
+        aliases=("ts", "t"),
     ),
     "branch-report": ComboCommand(
         name="branch-report",
         description="Fetch remote metadata and show verbose branch list.",
         steps=[["fetch", "--all", "--prune"], ["branch", "-vv"]],
+        aliases=("br", "b"),
     ),
 }
 
@@ -244,12 +390,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    sync_parser = subparsers.add_parser(
+        "sync",
+        aliases=list(SYNC_ALIASES),
+        help="Sync repository: status, pull, optional staged commit, push.",
+        description="Display status, pull the remote, optionally commit staged changes, then push.",
+    )
+    sync_parser.set_defaults(func=_sync_handler)
+
     for combo in COMBO_COMMANDS.values():
-        combo_parser = subparsers.add_parser(combo.name, help=combo.description, description=combo.description)
+        combo_parser = subparsers.add_parser(
+            combo.name,
+            aliases=list(combo.aliases),
+            help=combo.description,
+            description=combo.description,
+        )
         combo_parser.set_defaults(func=_combo_handler_factory(combo.name))
 
     rebase_parser = subparsers.add_parser(
         "rebase-update",
+        aliases=list(REBASE_ALIASES),
         help="Fetch all remotes and rebase current branch onto origin.",
         description="Fetch remotes and rebase the current branch onto matching origin branch.",
     )
@@ -257,6 +417,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     clean_parser = subparsers.add_parser(
         "clean-reset",
+        aliases=list(CLEAN_ALIASES),
         help="Reset to HEAD and clean untracked files (destructive).",
         description="Hard reset to HEAD and remove untracked files.",
     )
@@ -264,6 +425,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     log_parser = subparsers.add_parser(
         "log-graph",
+        aliases=list(LOG_ALIASES),
         help="Show a decorated log graph for the repository.",
         description="Render `git log --graph --decorate --oneline --all` with an optional limit.",
     )
@@ -278,6 +440,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     diff_parser = subparsers.add_parser(
         "diff-back",
+        aliases=list(DIFF_ALIASES),
         help="Show the diff between HEAD and N commits back.",
         description="Show differences between current tree and HEAD~N.",
     )
@@ -292,6 +455,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     commit_parser = subparsers.add_parser(
         "smart-commit",
+        aliases=list(COMMIT_ALIASES),
         help="Stage, review, commit, and optionally sync changes.",
         description="Guide through staging paths, reviewing status, committing, and optionally syncing.",
     )
@@ -346,6 +510,10 @@ def _rebase_handler(args: argparse.Namespace, runner: GitRunner) -> None:
 
 def _clean_handler(args: argparse.Namespace, runner: GitRunner) -> None:
     run_clean_reset(runner, args.yes)
+
+
+def _sync_handler(args: argparse.Namespace, runner: GitRunner) -> None:
+    run_sync_flow(runner, args.yes)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
