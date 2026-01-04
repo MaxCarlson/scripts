@@ -9,6 +9,20 @@ let selectedTask = null;
 let memorySearchTerm = '';
 let projectTracking = {};
 let availableModels = [];
+let projectsCache = [];
+let selectedTaskDetails = null;
+let trackingErrorMessage = '';
+let lastTrackingErrorAt = 0;
+const TRACKING_ERROR_COOLDOWN_MS = 15000;
+const TASK_STATUSES = [
+    { value: 'todo', label: 'Todo' },
+    { value: 'in_progress', label: 'In Progress' },
+    { value: 'blocked', label: 'Blocked' },
+    { value: 'done', label: 'Done' },
+    { value: 'archived', label: 'Archived' },
+];
+const DEFAULT_ACTIVE_STATUSES = ['todo', 'in_progress', 'blocked'];
+let activeTaskStatuses = new Set(DEFAULT_ACTIVE_STATUSES);
 const logViewerSettings = {
     minLevel: 'INFO',
     includeAccess: false,
@@ -44,6 +58,10 @@ document.addEventListener('DOMContentLoaded', () => {
     setupProjectCreation();
     initializeTrackingControls();
     initializeLogViewerControls();
+    initializeTrackingForm();
+    initializeTaskDetailForm();
+    initializeTaskToolbar();
+    initializeStatusFilters();
 
     // Refresh data every 5 seconds
     setInterval(refreshCurrentView, 5000);
@@ -251,15 +269,19 @@ function initializeTrackingControls() {
     const configureBtn = document.getElementById('project-track-btn');
     const embedBtn = document.getElementById('project-embed-btn');
     const untrackBtn = document.getElementById('project-untrack-btn');
+    const deleteBtn = document.getElementById('project-delete-btn');
 
     if (configureBtn) {
-        configureBtn.addEventListener('click', configureProjectTracking);
+        configureBtn.addEventListener('click', showTrackingConfigPanel);
     }
     if (embedBtn) {
         embedBtn.addEventListener('click', startEmbeddingRun);
     }
     if (untrackBtn) {
         untrackBtn.addEventListener('click', stopProjectTracking);
+    }
+    if (deleteBtn) {
+        deleteBtn.addEventListener('click', handleProjectDelete);
     }
 }
 
@@ -323,6 +345,10 @@ async function loadModelControls() {
         if (config.current_model) {
             select.value = config.current_model;
         }
+        populateTrackingModelSelect(
+            document.getElementById('tracking-preferred-model'),
+            undefined
+        );
     } catch (error) {
         console.error('Error loading models:', error);
     }
@@ -500,6 +526,8 @@ async function loadTasks() {
 async function loadProjects() {
     try {
         const projects = await fetch('/api/projects').then(r => r.json());
+        projectsCache = projects;
+        refreshTaskProjectOptions();
         let trackingStatuses = [];
         try {
             const trackingResponse = await fetch('/api/project-tracking');
@@ -507,9 +535,10 @@ async function loadProjects() {
                 throw new Error(`status ${trackingResponse.status}`);
             }
             trackingStatuses = await trackingResponse.json();
+            clearTrackingError();
         } catch (trackingError) {
             console.warn('Failed to load tracking metadata:', trackingError);
-            logUiEvent('project_tracking_fetch_error', { message: trackingError.message });
+            handleTrackingFetchError(trackingError.message || 'unknown');
         }
         projectTracking = {};
         (trackingStatuses || []).forEach(entry => {
@@ -550,14 +579,16 @@ async function loadTasksList(projectId = null) {
         }
 
         const tasks = await fetch(url).then(r => r.json());
+        const filteredTasks = filterTasksByStatus(tasks);
         const grid = document.getElementById('tasks-grid');
 
-        if (tasks.length === 0) {
-            grid.innerHTML = '<div class="empty-state">No tasks</div>';
+        if (filteredTasks.length === 0) {
+            grid.innerHTML = '<div class="empty-state">No tasks for selected filters</div>';
+            resetTaskDetailPanel();
             return;
         }
 
-        grid.innerHTML = tasks.map(task => `
+        grid.innerHTML = filteredTasks.map(task => `
             <div class="task-card" onclick="selectTask('${task.id}')">
                 <div class="title">${task.title}</div>
                 <div class="meta">
@@ -577,6 +608,7 @@ function selectProject(projectId) {
     loadProjects();
     loadTasksList(projectId);
     renderProjectTrackingBanner();
+    hideTrackingConfigPanel();
     logUiEvent('project_select', { project_id: projectId });
 }
 
@@ -586,19 +618,7 @@ async function selectTask(taskId) {
 
     try {
         const task = await fetch(`/api/tasks/${taskId}`).then(r => r.json());
-        const panel = document.getElementById('task-detail-panel');
-
-        panel.innerHTML = `
-            <h3>${task.title}</h3>
-            <div class="meta" style="margin-bottom: 1rem;">
-                <strong>Status:</strong> ${task.status}<br>
-                <strong>Priority:</strong> ${task.priority || 'None'}<br>
-                <strong>Created:</strong> ${new Date(task.created_at).toLocaleString()}
-            </div>
-            <button onclick="assignTaskToAI('${task.id}')">
-                Assign to AI Queue
-            </button>
-        `;
+        populateTaskDetailForm(task);
     } catch (error) {
         console.error('Error loading task details:', error);
     }
@@ -614,6 +634,452 @@ async function assignTaskToAI(taskId) {
     } catch (error) {
         console.error('Error assigning task:', error);
         alert('Failed to assign task: ' + error.message);
+    }
+}
+
+function initializeTaskToolbar() {
+    const newTaskBtn = document.getElementById('new-task-btn');
+    const cancelBtn = document.getElementById('task-create-cancel');
+    const closeBtn = document.getElementById('task-create-close');
+    const form = document.getElementById('task-create-form');
+    if (newTaskBtn) {
+        newTaskBtn.addEventListener('click', () => showTaskCreatePanel({ mode: 'create' }));
+    }
+    if (cancelBtn) {
+        cancelBtn.addEventListener('click', hideTaskCreatePanel);
+    }
+    if (closeBtn) {
+        closeBtn.addEventListener('click', hideTaskCreatePanel);
+    }
+    if (form) {
+        form.addEventListener('submit', handleTaskCreateSubmit);
+    }
+}
+
+function initializeStatusFilters() {
+    const checkboxes = document.querySelectorAll('.status-filter');
+    checkboxes.forEach(cb => {
+        cb.addEventListener('change', () => {
+            const status = cb.dataset.status;
+            if (cb.checked) {
+                activeTaskStatuses.add(status);
+            } else {
+                activeTaskStatuses.delete(status);
+            }
+            if (activeTaskStatuses.size === 0) {
+                activeTaskStatuses = new Set(DEFAULT_ACTIVE_STATUSES);
+                syncStatusCheckboxes();
+            }
+            if (currentView === 'tasks') {
+                loadTasksList(selectedProject);
+            }
+        });
+    });
+    const activeBtn = document.getElementById('status-select-active');
+    const allBtn = document.getElementById('status-select-all');
+    if (activeBtn) {
+        activeBtn.addEventListener('click', () => {
+            activeTaskStatuses = new Set(DEFAULT_ACTIVE_STATUSES);
+            syncStatusCheckboxes();
+            if (currentView === 'tasks') {
+                loadTasksList(selectedProject);
+            }
+        });
+    }
+    if (allBtn) {
+        allBtn.addEventListener('click', () => {
+            activeTaskStatuses = new Set(TASK_STATUSES.map(status => status.value));
+            syncStatusCheckboxes();
+            if (currentView === 'tasks') {
+                loadTasksList(selectedProject);
+            }
+        });
+    }
+    syncStatusCheckboxes();
+}
+
+function syncStatusCheckboxes() {
+    document.querySelectorAll('.status-filter').forEach(cb => {
+        const status = cb.dataset.status;
+        cb.checked = activeTaskStatuses.has(status);
+    });
+}
+
+function initializeTaskDetailForm() {
+    const form = document.getElementById('task-detail-form');
+    const deleteBtn = document.getElementById('task-detail-delete');
+    const subtaskBtn = document.getElementById('task-detail-add-subtask');
+    const assignBtn = document.getElementById('task-detail-assign');
+
+    if (form) {
+        form.addEventListener('submit', handleTaskUpdateSubmit);
+    }
+    if (deleteBtn) {
+        deleteBtn.addEventListener('click', handleTaskDelete);
+    }
+    if (subtaskBtn) {
+        subtaskBtn.addEventListener('click', handleAddSubtask);
+    }
+    if (assignBtn) {
+        assignBtn.addEventListener('click', () => {
+            if (selectedTask) {
+                assignTaskToAI(selectedTask);
+            }
+        });
+    }
+}
+
+function showTaskCreatePanel(options = {}) {
+    const panel = document.getElementById('task-create-panel');
+    const heading = document.getElementById('task-create-title');
+    const titleInput = document.getElementById('task-create-title-input');
+    const statusSelect = document.getElementById('task-create-status');
+    const priorityInput = document.getElementById('task-create-priority');
+    const projectSelect = document.getElementById('task-create-project');
+    const parentInput = document.getElementById('task-create-parent-id');
+    const statusText = document.getElementById('task-create-status-text');
+
+    if (!panel || !titleInput || !statusSelect || !projectSelect || !priorityInput) {
+        return;
+    }
+
+    const mode = options.mode || 'create';
+    if (heading) {
+        heading.textContent = mode === 'subtask' ? 'New Subtask' : 'New Task';
+    }
+    titleInput.value = options.title || '';
+    renderStatusOptions(statusSelect, options.status || 'todo');
+    priorityInput.value = options.priority || 5;
+    populateProjectSelect(projectSelect, options.projectId || selectedProject || '');
+    parentInput.value = options.parentTaskId || '';
+    if (statusText) {
+        statusText.textContent = '';
+    }
+    panel.dataset.mode = mode;
+    panel.classList.remove('hidden');
+    titleInput.focus();
+}
+
+function hideTaskCreatePanel() {
+    const panel = document.getElementById('task-create-panel');
+    const form = document.getElementById('task-create-form');
+    const statusText = document.getElementById('task-create-status-text');
+    if (panel) {
+        panel.classList.add('hidden');
+    }
+    if (form) {
+        form.reset();
+    }
+    if (statusText) {
+        statusText.textContent = '';
+    }
+}
+
+async function handleTaskCreateSubmit(event) {
+    event.preventDefault();
+    const titleInput = document.getElementById('task-create-title-input');
+    const statusSelect = document.getElementById('task-create-status');
+    const priorityInput = document.getElementById('task-create-priority');
+    const projectSelect = document.getElementById('task-create-project');
+    const parentInput = document.getElementById('task-create-parent-id');
+    const statusText = document.getElementById('task-create-status-text');
+    if (!titleInput || !statusSelect || !priorityInput) {
+        return;
+    }
+
+    const payload = {
+        title: titleInput.value.trim(),
+        status: statusSelect.value,
+        priority: Number(priorityInput.value) || 5,
+        project_id: projectSelect && projectSelect.value ? projectSelect.value : undefined,
+        parent_task_id: parentInput && parentInput.value ? parentInput.value : undefined,
+    };
+
+    if (!payload.title) {
+        if (statusText) statusText.textContent = 'Title is required';
+        return;
+    }
+
+    logUiEvent('task_create', {
+        project_id: payload.project_id || null,
+        parent_task_id: payload.parent_task_id || null,
+    });
+
+    try {
+        const response = await fetch('/api/tasks', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const task = await response.json();
+        if (!response.ok) {
+            throw new Error(task.detail || 'Failed to create task');
+        }
+        hideTaskCreatePanel();
+        selectedProject = task.project_id || selectedProject;
+        if (selectedProject) {
+            window.localStorage.setItem('selectedProjectId', selectedProject);
+        }
+        await loadProjects();
+        await loadTasksList(selectedProject);
+        selectedTask = task.id;
+        populateTaskDetailForm(task);
+    } catch (error) {
+        console.error('Error creating task:', error);
+        if (statusText) {
+            statusText.textContent = error.message;
+        }
+    }
+}
+
+function renderStatusOptions(select, selectedValue = 'todo') {
+    if (!select) return;
+    select.innerHTML = TASK_STATUSES.map(status => `
+        <option value="${status.value}">${status.label}</option>
+    `).join('');
+    select.value = selectedValue || 'todo';
+}
+
+function populateProjectSelect(select, selectedId = '') {
+    if (!select) return;
+    const options = projectsCache.map(project => `
+        <option value="${project.id}">${project.name}</option>
+    `).join('');
+    select.innerHTML = `<option value="">Unassigned</option>${options}`;
+    select.value = selectedId || '';
+}
+
+function refreshTaskProjectOptions() {
+    populateProjectSelect(document.getElementById('task-create-project'), selectedProject || '');
+}
+
+function getProjectName(projectId) {
+    if (!projectId) {
+        return '—';
+    }
+    const project = projectsCache.find(p => p.id === projectId);
+    return project ? project.name : projectId;
+}
+
+function filterTasksByStatus(tasks = []) {
+    if (!activeTaskStatuses || activeTaskStatuses.size === 0) {
+        return tasks;
+    }
+    return tasks.filter(task => activeTaskStatuses.has(task.status));
+}
+
+function populateTaskDetailForm(task) {
+    selectedTaskDetails = task;
+    const form = document.getElementById('task-detail-form');
+    const emptyState = document.getElementById('task-empty-state');
+    const titleInput = document.getElementById('task-detail-title');
+    const statusSelect = document.getElementById('task-detail-status');
+    const priorityInput = document.getElementById('task-detail-priority');
+    const metaEl = document.getElementById('task-detail-meta');
+    const statusText = document.getElementById('task-detail-status-text');
+
+    if (!form || !titleInput || !statusSelect || !priorityInput) {
+        return;
+    }
+
+    titleInput.value = task.title || '';
+    renderStatusOptions(statusSelect, task.status || 'todo');
+    priorityInput.value = task.priority || 5;
+    if (metaEl) {
+        metaEl.innerHTML = `
+            <div><strong>Project:</strong> ${getProjectName(task.project_id)}</div>
+            <div><strong>Created:</strong> ${formatDate(task.created_at)}</div>
+            <div><strong>Updated:</strong> ${formatDate(task.modified_at)}</div>
+        `;
+    }
+    if (statusText) {
+        statusText.textContent = '';
+    }
+    form.classList.remove('hidden');
+    if (emptyState) {
+        emptyState.classList.add('hidden');
+    }
+}
+
+function resetTaskDetailPanel() {
+    selectedTask = null;
+    selectedTaskDetails = null;
+    const form = document.getElementById('task-detail-form');
+    const emptyState = document.getElementById('task-empty-state');
+    if (form) {
+        form.classList.add('hidden');
+    }
+    if (emptyState) {
+        emptyState.classList.remove('hidden');
+    }
+}
+
+async function handleTaskUpdateSubmit(event) {
+    event.preventDefault();
+    if (!selectedTask) {
+        return;
+    }
+    const titleInput = document.getElementById('task-detail-title');
+    const statusSelect = document.getElementById('task-detail-status');
+    const priorityInput = document.getElementById('task-detail-priority');
+    const statusText = document.getElementById('task-detail-status-text');
+
+    const payload = {
+        title: titleInput.value.trim(),
+        status: statusSelect.value,
+        priority: Number(priorityInput.value) || 5,
+    };
+
+    logUiEvent('task_update', { task_id: selectedTask, status: payload.status });
+
+    try {
+        const response = await fetch(`/api/tasks/${selectedTask}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const task = await response.json();
+        if (!response.ok) {
+            throw new Error(task.detail || 'Failed to update task');
+        }
+        populateTaskDetailForm(task);
+        await loadTasksList(selectedProject);
+    } catch (error) {
+        console.error('Error updating task:', error);
+        if (statusText) {
+            statusText.textContent = error.message;
+        }
+    }
+}
+
+async function handleTaskDelete() {
+    if (!selectedTask) {
+        return;
+    }
+    if (!confirm('Delete this task?')) {
+        return;
+    }
+    logUiEvent('task_delete', { task_id: selectedTask });
+    try {
+        const response = await fetch(`/api/tasks/${selectedTask}`, { method: 'DELETE' });
+        if (!response.ok) {
+            const result = await response.json().catch(() => ({}));
+            throw new Error(result.detail || 'Failed to delete task');
+        }
+        resetTaskDetailPanel();
+        await loadTasksList(selectedProject);
+    } catch (error) {
+        console.error('Error deleting task:', error);
+        alert('Failed to delete task: ' + error.message);
+    }
+}
+
+function handleAddSubtask() {
+    if (!selectedTask || !selectedTaskDetails) {
+        alert('Select a task first.');
+        return;
+    }
+    logUiEvent('task_subtask_modal_open', { task_id: selectedTask });
+    showTaskCreatePanel({
+        mode: 'subtask',
+        parentTaskId: selectedTask,
+        projectId: selectedTaskDetails.project_id || selectedProject || '',
+        priority: selectedTaskDetails.priority || 5,
+        status: 'todo',
+    });
+}
+
+function formatDate(value) {
+    if (!value) return '—';
+    try {
+        return new Date(value).toLocaleString();
+    } catch (error) {
+        return value;
+    }
+}
+
+function handleTrackingFetchError(message) {
+    const now = Date.now();
+    if (now - lastTrackingErrorAt > TRACKING_ERROR_COOLDOWN_MS) {
+        logUiEvent('project_tracking_fetch_error', { message });
+        lastTrackingErrorAt = now;
+    }
+    setTrackingError('Orchestrator unreachable. Please ensure the orchestrator service is running.');
+}
+
+function setTrackingError(message) {
+    trackingErrorMessage = message || '';
+    const errorEl = document.getElementById('project-tracking-error');
+    if (errorEl) {
+        if (trackingErrorMessage) {
+            errorEl.textContent = trackingErrorMessage;
+            errorEl.classList.remove('hidden');
+        } else {
+            errorEl.textContent = '';
+            errorEl.classList.add('hidden');
+        }
+    }
+    const configureBtn = document.getElementById('project-track-btn');
+    const embedBtn = document.getElementById('project-embed-btn');
+    const untrackBtn = document.getElementById('project-untrack-btn');
+    [configureBtn, embedBtn, untrackBtn].forEach(btn => {
+        if (btn) {
+            btn.disabled = !!trackingErrorMessage;
+        }
+    });
+    renderProjectTrackingBanner();
+}
+
+function clearTrackingError() {
+    if (!trackingErrorMessage) {
+        return;
+    }
+    trackingErrorMessage = '';
+    const errorEl = document.getElementById('project-tracking-error');
+    if (errorEl) {
+        errorEl.textContent = '';
+        errorEl.classList.add('hidden');
+    }
+    const configureBtn = document.getElementById('project-track-btn');
+    const embedBtn = document.getElementById('project-embed-btn');
+    const untrackBtn = document.getElementById('project-untrack-btn');
+    [configureBtn, embedBtn, untrackBtn].forEach(btn => {
+        if (btn) {
+            btn.disabled = false;
+        }
+    });
+    renderProjectTrackingBanner();
+}
+
+async function handleProjectDelete() {
+    if (!selectedProject) {
+        alert('Select a project first.');
+        return;
+    }
+    const project = projectsCache.find(p => p.id === selectedProject);
+    const requiredName = project ? project.name : 'this project';
+    const confirmation = prompt(`Type "${requiredName}" to confirm deletion:`);
+    if (!confirmation || confirmation.trim() !== requiredName) {
+        alert('Project name did not match. Aborting delete.');
+        return;
+    }
+    logUiEvent('project_delete', { project_id: selectedProject });
+    try {
+        const response = await fetch(`/api/projects/${selectedProject}`, { method: 'DELETE' });
+        if (!response.ok) {
+            const result = await response.json().catch(() => ({}));
+            throw new Error(result.detail || 'Failed to delete project');
+        }
+        selectedProject = null;
+        selectedTask = null;
+        window.localStorage.removeItem('selectedProjectId');
+        hideTrackingConfigPanel();
+        await loadProjects();
+        await loadTasksList(null);
+        resetTaskDetailPanel();
+    } catch (error) {
+        console.error('Error deleting project:', error);
+        alert('Failed to delete project: ' + error.message);
     }
 }
 
@@ -644,6 +1110,8 @@ function renderProjectTrackingBanner() {
     const untrackBtn = document.getElementById('project-untrack-btn');
     const embedBtn = document.getElementById('project-embed-btn');
     const configureBtn = document.getElementById('project-track-btn');
+    const deleteBtn = document.getElementById('project-delete-btn');
+    const errorEl = document.getElementById('project-tracking-error');
 
     if (!selectedProject) {
         banner.classList.add('hidden');
@@ -664,12 +1132,29 @@ function renderProjectTrackingBanner() {
             embedBtn.disabled = true;
         }
         if (configureBtn) {
-            configureBtn.disabled = false;
+            configureBtn.disabled = !!trackingErrorMessage;
+        }
+        if (deleteBtn) {
+            deleteBtn.disabled = false;
+        }
+        if (errorEl) {
+            if (trackingErrorMessage) {
+                errorEl.textContent = trackingErrorMessage;
+                errorEl.classList.remove('hidden');
+            } else {
+                errorEl.textContent = '';
+                errorEl.classList.add('hidden');
+            }
         }
         return;
     }
 
-    const repo = info.repo_path || 'Not set';
+    const paths = Array.isArray(info.repo_paths) ? info.repo_paths : [];
+    const repo = paths.length === 0
+        ? (info.repo_path || 'Not set')
+        : paths.length === 1
+            ? paths[0]
+            : `${paths[0]} (+${paths.length - 1} more)`;
     const statusLabel = info.embedding_status ? info.embedding_status.toUpperCase() : 'PENDING';
     const lastIndexed = info.embedding_last_indexed
         ? new Date(info.embedding_last_indexed).toLocaleString()
@@ -702,73 +1187,186 @@ function renderProjectTrackingBanner() {
     if (configureBtn) {
         configureBtn.disabled = false;
     }
+    if (deleteBtn) {
+        deleteBtn.disabled = false;
+    }
+    if (errorEl) {
+        if (trackingErrorMessage) {
+            errorEl.textContent = trackingErrorMessage;
+            errorEl.classList.remove('hidden');
+        } else {
+            errorEl.textContent = '';
+            errorEl.classList.add('hidden');
+        }
+    }
+
+    const disabledDueToError = !!trackingErrorMessage;
+    [configureBtn, embedBtn, untrackBtn].forEach(btn => {
+        if (btn) {
+            btn.disabled = disabledDueToError;
+        }
+    });
 }
 
-async function configureProjectTracking() {
+function initializeTrackingForm() {
+    const form = document.getElementById('tracking-config-form');
+    const gpuToggle = document.getElementById('tracking-gpu-enabled');
+    const closeBtn = document.getElementById('tracking-config-close');
+    const cancelBtn = document.getElementById('tracking-config-cancel');
+    if (form) {
+        form.addEventListener('submit', handleTrackingFormSubmit);
+    }
+    if (gpuToggle) {
+        gpuToggle.addEventListener('change', (event) => toggleGpuDeviceRow(event.target.checked));
+    }
+    if (closeBtn) {
+        closeBtn.addEventListener('click', hideTrackingConfigPanel);
+    }
+    if (cancelBtn) {
+        cancelBtn.addEventListener('click', hideTrackingConfigPanel);
+    }
+}
+
+function showTrackingConfigPanel() {
     if (!selectedProject) {
         alert('Select a project first.');
         return;
     }
+    if (trackingErrorMessage) {
+        alert('Cannot configure tracking while the orchestrator is unreachable.');
+        return;
+    }
+    const panel = document.getElementById('tracking-config-panel');
+    const titleEl = document.getElementById('tracking-config-project');
+    const repoInput = document.getElementById('tracking-repo-path');
+    const modelSelect = document.getElementById('tracking-preferred-model');
+    const gpuToggle = document.getElementById('tracking-gpu-enabled');
+    const gpuDevice = document.getElementById('tracking-gpu-device');
     const info = projectTracking[selectedProject] || {};
-    const repoPathInput = prompt('Repository path for this project:', info.repo_path || '');
-    if (repoPathInput === null) {
-        return;
-    }
-    const repoPath = repoPathInput.trim();
-    if (!repoPath) {
-        alert('Repository path is required to enable tracking.');
-        return;
-    }
-    const modelOptions = availableModels.length
-        ? availableModels.map(model => `${model.id} (${model.label})`).join('\n')
-        : 'No cached models';
-    const preferredModel = prompt(
-        `Preferred orchestrator model ID (optional):\n${modelOptions}`,
-        info.preferred_model_id || ''
-    );
-    const useGpu = confirm('Use local GPU for embeddings?');
-    let gpuDevice = info.gpu_device || '';
-    if (useGpu) {
-        const gpuInput = prompt('GPU identifier (optional):', gpuDevice || 'RTX 5090');
-        if (gpuInput !== null) {
-            gpuDevice = gpuInput.trim();
+    const project = projectsCache.find(p => p.id === selectedProject);
+
+    if (panel && repoInput && modelSelect && gpuToggle && gpuDevice) {
+        if (titleEl && project) {
+            titleEl.textContent = project.name;
         }
-    } else {
-        gpuDevice = '';
+        const repoPaths = Array.isArray(info.repo_paths) && info.repo_paths.length > 0
+            ? info.repo_paths.join('\n')
+            : (info.repo_path || '');
+        repoInput.value = repoPaths;
+        populateTrackingModelSelect(modelSelect, info.preferred_model_id || info.embedding_model_id || '');
+        gpuToggle.checked = !!info.gpu_enabled;
+        gpuDevice.value = info.gpu_device || '';
+        toggleGpuDeviceRow(gpuToggle.checked);
+        panel.classList.remove('hidden');
+        repoInput.focus();
     }
+}
+
+function hideTrackingConfigPanel() {
+    const panel = document.getElementById('tracking-config-panel');
+    const status = document.getElementById('tracking-config-status');
+    if (panel) {
+        panel.classList.add('hidden');
+    }
+    if (status) {
+        status.textContent = '';
+    }
+}
+
+function populateTrackingModelSelect(select, selectedValue = '') {
+    if (!select) return;
+    const options = availableModels.length
+        ? availableModels.map(model => `<option value="${model.id}">${model.label}</option>`).join('')
+        : '<option value="">Default (server)</option>';
+    select.innerHTML = `<option value="">Auto (server default)</option>${options}`;
+    select.value = selectedValue || '';
+}
+
+function toggleGpuDeviceRow(show) {
+    const row = document.getElementById('tracking-gpu-device-row');
+    if (row) {
+        row.classList.toggle('hidden', !show);
+    }
+}
+
+async function handleTrackingFormSubmit(event) {
+    event.preventDefault();
+    if (!selectedProject) {
+        alert('Select a project first.');
+        return;
+    }
+    if (trackingErrorMessage) {
+        alert('Cannot update tracking while the orchestrator is unreachable.');
+        return;
+    }
+
+    const repoInput = document.getElementById('tracking-repo-path');
+    const modelSelect = document.getElementById('tracking-preferred-model');
+    const gpuToggle = document.getElementById('tracking-gpu-enabled');
+    const gpuDevice = document.getElementById('tracking-gpu-device');
+    const status = document.getElementById('tracking-config-status');
+
+    if (!repoInput) {
+        return;
+    }
+
+    const repoPaths = repoInput.value
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean);
+    if (repoPaths.length === 0) {
+        status.textContent = 'At least one repository path is required.';
+        return;
+    }
+    const repoPath = repoPaths[0];
 
     const payload = {
         repo_path: repoPath,
+        repo_paths: repoPaths,
         is_tracked: true,
-        preferred_model_id: preferredModel || undefined,
-        gpu_enabled: useGpu,
-        gpu_device: gpuDevice || undefined,
+        preferred_model_id: modelSelect && modelSelect.value ? modelSelect.value : undefined,
+        gpu_enabled: gpuToggle ? gpuToggle.checked : false,
+        gpu_device: gpuDevice && gpuDevice.value ? gpuDevice.value.trim() : undefined,
     };
 
     logUiEvent('project_tracking_configure', {
         project_id: selectedProject,
         repo_path: repoPath,
-        preferred_model_id: preferredModel || null,
-        gpu_enabled: useGpu,
+        preferred_model_id: payload.preferred_model_id || null,
+        gpu_enabled: payload.gpu_enabled,
     });
 
     try {
-        await fetch(`/api/project-tracking/${selectedProject}`, {
+        const response = await fetch(`/api/project-tracking/${selectedProject}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
         });
+        if (!response.ok) {
+            const result = await response.json().catch(() => ({}));
+            throw new Error(result.detail || 'Failed to update tracking');
+        }
+        if (status) {
+            status.textContent = 'Tracking updated';
+        }
         await loadProjects();
         await refreshProjectTracking(selectedProject);
-        alert('Tracking updated');
+        hideTrackingConfigPanel();
     } catch (error) {
         console.error('Error updating tracking:', error);
-        alert('Failed to update tracking: ' + error.message);
+        if (status) {
+            status.textContent = error.message;
+        }
+        handleTrackingFetchError(error.message || 'unknown');
     }
 }
 
 async function stopProjectTracking() {
     if (!selectedProject) return;
+    if (trackingErrorMessage) {
+        alert('Cannot update tracking while the orchestrator is unreachable.');
+        return;
+    }
     if (!confirm('Stop tracking this project?')) {
         return;
     }
@@ -784,12 +1382,17 @@ async function stopProjectTracking() {
     } catch (error) {
         console.error('Error disabling tracking:', error);
         alert('Failed to stop tracking: ' + error.message);
+        handleTrackingFetchError(error.message || 'unknown');
     }
 }
 
 async function startEmbeddingRun() {
     if (!selectedProject) {
         alert('Select a project first.');
+        return;
+    }
+    if (trackingErrorMessage) {
+        alert('Cannot start embeddings while the orchestrator is unreachable.');
         return;
     }
     const info = projectTracking[selectedProject];
@@ -817,6 +1420,7 @@ async function startEmbeddingRun() {
     } catch (error) {
         console.error('Error queuing embedding run:', error);
         alert('Failed to start embedding: ' + error.message);
+        handleTrackingFetchError(error.message || 'unknown');
     }
 }
 
@@ -824,9 +1428,11 @@ async function refreshProjectTracking(projectId) {
     try {
         const info = await fetch(`/api/project-tracking/${projectId}`).then(r => r.json());
         projectTracking[projectId] = info;
+        clearTrackingError();
         renderProjectTrackingBanner();
     } catch (error) {
         console.error('Error refreshing tracking info:', error);
+        handleTrackingFetchError(error.message || 'unknown');
     }
 }
 

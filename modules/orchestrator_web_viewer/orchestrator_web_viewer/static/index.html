@@ -146,12 +146,44 @@
                 <div class="project-banner-info">
                     <div id="project-tracking-status" class="tracking-status-pill">Select a project to view tracking details</div>
                     <div id="project-tracking-details" class="tracking-details"></div>
+                    <div id="project-tracking-error" class="error-message hidden"></div>
                 </div>
                 <div class="project-banner-actions">
                     <button id="project-track-btn">Configure Tracking</button>
                     <button id="project-untrack-btn" class="secondary-btn hidden">Stop Tracking</button>
                     <button id="project-embed-btn">Start Embedding Run</button>
+                    <button id="project-delete-btn" class="danger-btn">Delete</button>
                 </div>
+            </div>
+            <div id="tracking-config-panel" class="inline-panel hidden">
+                <div class="panel-header">
+                    <h4>Tracking Configuration – <span id="tracking-config-project">Project</span></h4>
+                    <button type="button" id="tracking-config-close" class="icon-btn" aria-label="Close tracking panel">&times;</button>
+                </div>
+                <form id="tracking-config-form">
+                    <label>
+                        Repository Paths
+                        <textarea id="tracking-repo-path" rows="4" placeholder="One path per line" required></textarea>
+                        <span class="microcopy">Enter one absolute path per line.</span>
+                    </label>
+                    <label>
+                        Preferred Model
+                        <select id="tracking-preferred-model"></select>
+                    </label>
+                    <label class="checkbox-inline">
+                        <input type="checkbox" id="tracking-gpu-enabled">
+                        Use local GPU for embeddings
+                    </label>
+                    <label id="tracking-gpu-device-row" class="hidden">
+                        GPU Device Identifier
+                        <input type="text" id="tracking-gpu-device" placeholder="e.g. RTX 5090">
+                    </label>
+                    <div class="panel-actions">
+                        <button type="button" class="secondary-btn" id="tracking-config-cancel">Cancel</button>
+                        <button type="submit">Save Tracking</button>
+                    </div>
+                    <p id="tracking-config-status" class="microcopy"></p>
+                </form>
             </div>
 
             <div class="tasks-layout">
@@ -167,13 +199,50 @@
 
                 <div class="tasks-main">
                     <div class="tasks-toolbar">
-                        <input type="search" id="task-search" placeholder="Search tasks...">
-                        <select id="status-filter">
-                            <option value="">All Statuses</option>
-                            <option value="todo">Todo</option>
-                            <option value="in_progress">In Progress</option>
-                            <option value="done">Done</option>
-                        </select>
+                        <div class="task-filters">
+                            <input type="search" id="task-search" placeholder="Search tasks...">
+                            <div class="status-filter-group">
+                                <span>Status:</span>
+                                <label><input type="checkbox" class="status-filter" data-status="todo" checked> Todo</label>
+                                <label><input type="checkbox" class="status-filter" data-status="in_progress" checked> In Progress</label>
+                                <label><input type="checkbox" class="status-filter" data-status="blocked" checked> Blocked</label>
+                                <label><input type="checkbox" class="status-filter" data-status="done"> Done</label>
+                                <label><input type="checkbox" class="status-filter" data-status="archived"> Archived</label>
+                                <button type="button" id="status-select-active" class="micro-btn">Active</button>
+                                <button type="button" id="status-select-all" class="micro-btn">All</button>
+                            </div>
+                        </div>
+                        <button id="new-task-btn" class="secondary-btn">+ Task</button>
+                    </div>
+                    <div id="task-create-panel" class="inline-panel hidden">
+                        <div class="panel-header">
+                            <h4 id="task-create-title">New Task</h4>
+                            <button type="button" id="task-create-close" class="icon-btn" aria-label="Close task form">&times;</button>
+                        </div>
+                        <form id="task-create-form">
+                            <label>
+                                Title
+                                <input type="text" id="task-create-title-input" required>
+                            </label>
+                            <label>
+                                Status
+                                <select id="task-create-status"></select>
+                            </label>
+                            <label>
+                                Priority (1-10)
+                                <input type="number" id="task-create-priority" min="1" max="10" value="5">
+                            </label>
+                            <label>
+                                Project
+                                <select id="task-create-project"></select>
+                            </label>
+                            <input type="hidden" id="task-create-parent-id">
+                            <div class="panel-actions">
+                                <button type="button" class="secondary-btn" id="task-create-cancel">Cancel</button>
+                                <button type="submit">Save Task</button>
+                            </div>
+                            <p id="task-create-status-text" class="microcopy"></p>
+                        </form>
                     </div>
 
                     <div id="tasks-grid" class="tasks-grid">
@@ -182,7 +251,29 @@
                 </div>
 
                 <aside class="task-detail-panel" id="task-detail-panel">
-                    <div class="empty-state">Select a task to view details</div>
+                    <div id="task-empty-state" class="empty-state">Select a task to view details</div>
+                    <form id="task-detail-form" class="task-detail-form hidden">
+                        <label>
+                            Title
+                            <input type="text" id="task-detail-title" required>
+                        </label>
+                        <label>
+                            Status
+                            <select id="task-detail-status"></select>
+                        </label>
+                        <label>
+                            Priority (1-10)
+                            <input type="number" id="task-detail-priority" min="1" max="10" value="5">
+                        </label>
+                        <div id="task-detail-meta" class="task-detail-meta"></div>
+                        <div class="task-detail-actions">
+                            <button type="submit">Save Changes</button>
+                            <button type="button" id="task-detail-add-subtask" class="secondary-btn">+ Subtask</button>
+                            <button type="button" id="task-detail-assign" class="secondary-btn">Assign to AI</button>
+                            <button type="button" id="task-detail-delete" class="danger-btn">Delete</button>
+                        </div>
+                        <p id="task-detail-status-text" class="microcopy"></p>
+                    </form>
                 </aside>
             </div>
         </div>
