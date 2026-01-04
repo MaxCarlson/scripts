@@ -210,3 +210,4 @@ logs/
 *.mkv*
 *.m4a*
 *.mp4*
+**/node_modules/*
