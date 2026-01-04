@@ -184,6 +184,14 @@ async def get_tasks(
     conn = await get_db_connection()
     try:
         query = """
+            WITH child_priorities AS (
+                SELECT
+                    parent_task_id,
+                    MAX(priority) AS max_child_priority
+                FROM tasks
+                WHERE parent_task_id IS NOT NULL
+                GROUP BY parent_task_id
+            )
             SELECT
                 t.id,
                 t.title,
@@ -196,23 +204,23 @@ async def get_tasks(
                 t.modified_at,
                 GREATEST(
                     COALESCE(t.priority, 0),
-                    COALESCE(MAX(child.priority), 0)
+                    COALESCE(cp.max_child_priority, 0)
                 ) AS max_subtask_priority
-            FROM tasks t
-            LEFT JOIN tasks child ON child.parent_task_id = t.id
+            FROM tasks AS t
+            LEFT JOIN child_priorities AS cp ON cp.parent_task_id = t.id
             WHERE 1=1
         """
         params = []
 
         if project_id:
             params.append(project_id)
-            query += f" AND project_id = ${len(params)}"
+            query += f" AND t.project_id = ${len(params)}"
 
         if status:
             params.append(status)
-            query += f" AND status = ${len(params)}"
+            query += f" AND t.status = ${len(params)}"
 
-        query += " GROUP BY t.id ORDER BY t.created_at DESC LIMIT $%d" % (len(params) + 1)
+        query += " ORDER BY t.created_at DESC LIMIT $%d" % (len(params) + 1)
         params.append(limit)
 
         rows = await conn.fetch(query, *params)
