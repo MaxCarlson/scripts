@@ -5,6 +5,7 @@ let ws = null;
 let currentView = 'dashboard';
 const storedProjectId = window.localStorage.getItem('selectedProjectId');
 let selectedProject = storedProjectId || null;
+let activeProjectFilter = selectedProject || null;
 let selectedTask = null;
 let memorySearchTerm = '';
 let projectTracking = {};
@@ -29,6 +30,27 @@ const logViewerSettings = {
     autoRefresh: true,
 };
 const UI_EVENT_ENDPOINT = '/api/telemetry/ui-event';
+const PROJECT_SORT_DEFAULTS = {
+    activity: 'desc',
+    name: 'asc',
+    created: 'desc',
+    completion: 'desc',
+};
+let projectSort = {
+    field: 'activity',
+    direction: PROJECT_SORT_DEFAULTS.activity,
+};
+const TASK_SORT_DEFAULTS = {
+    updated: 'desc',
+    created: 'desc',
+    priority: 'desc',
+    max_priority: 'desc',
+    name: 'asc',
+};
+let taskSort = {
+    field: 'updated',
+    direction: TASK_SORT_DEFAULTS.updated,
+};
 
 function logUiEvent(eventType, details = {}) {
     const payload = {
@@ -47,6 +69,18 @@ function logUiEvent(eventType, details = {}) {
     });
 }
 
+function setActiveProject(projectId) {
+    const normalized = projectId || null;
+    selectedProject = normalized;
+    activeProjectFilter = normalized;
+    if (normalized) {
+        window.localStorage.setItem('selectedProjectId', normalized);
+    } else {
+        window.localStorage.removeItem('selectedProjectId');
+    }
+    renderProjectTrackingBanner();
+}
+
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
     initializeNavigation();
@@ -62,6 +96,8 @@ document.addEventListener('DOMContentLoaded', () => {
     initializeTaskDetailForm();
     initializeTaskToolbar();
     initializeStatusFilters();
+    initializeProjectSortControls();
+    initializeTaskSortControls();
 
     // Refresh data every 5 seconds
     setInterval(refreshCurrentView, 5000);
@@ -97,6 +133,11 @@ function switchView(view, reason = 'user') {
     currentView = view;
     logUiEvent('view_switch', { from: previousView, to: view, reason });
 
+    if (view !== 'tasks') {
+        hideTrackingConfigPanel();
+        hideTaskCreatePanel();
+    }
+
     // Load view data
     switch(view) {
         case 'dashboard':
@@ -126,9 +167,9 @@ function refreshCurrentView() {
             loadOrchestrator();
             break;
         case 'tasks':
-            if (selectedProject) {
+            if (activeProjectFilter) {
                 loadProjects()
-                    .then(() => loadTasksList(selectedProject))
+                    .then(() => loadTasksList())
                     .catch((error) => console.error('Error refreshing tasks view:', error));
             } else {
                 loadTasks();
@@ -289,6 +330,36 @@ function setupProjectCreation() {
     const newProjectBtn = document.getElementById('new-project-btn');
     if (newProjectBtn) {
         newProjectBtn.addEventListener('click', createNewProject);
+    }
+}
+
+function initializeProjectSortControls() {
+    const orderSelect = document.getElementById('projects-order');
+    const directionSelect = document.getElementById('projects-order-direction');
+    if (orderSelect) {
+        orderSelect.value = projectSort.field;
+        orderSelect.addEventListener('change', (event) => {
+            const selectedField = event.target.value;
+            projectSort.field = selectedField;
+            const defaultDirection = PROJECT_SORT_DEFAULTS[selectedField] || 'desc';
+            projectSort.direction = defaultDirection;
+            if (directionSelect) {
+                directionSelect.value = defaultDirection;
+            }
+            logUiEvent('projects_sort_change', {
+                field: projectSort.field,
+                direction: projectSort.direction,
+            });
+            loadProjects();
+        });
+    }
+    if (directionSelect) {
+        directionSelect.value = projectSort.direction;
+        directionSelect.addEventListener('change', (event) => {
+            projectSort.direction = event.target.value;
+            logUiEvent('projects_sort_direction', { direction: projectSort.direction });
+            loadProjects();
+        });
     }
 }
 
@@ -519,8 +590,159 @@ function addLogLine(logData) {
 async function loadTasks() {
     await loadProjects();
     // Preserve selected project filter when refreshing
-    await loadTasksList(selectedProject);
+    await loadTasksList();
     renderProjectTrackingBanner();
+}
+
+function setProjectsError(message = '') {
+    const errorEl = document.getElementById('projects-error');
+    if (!errorEl) {
+        return;
+    }
+    if (message) {
+        errorEl.textContent = message;
+        errorEl.classList.remove('hidden');
+    } else {
+        errorEl.textContent = '';
+        errorEl.classList.add('hidden');
+    }
+}
+
+function renderProjectsList(projects = []) {
+    const list = document.getElementById('projects-list');
+    if (!list) {
+        return;
+    }
+    if (!projects || projects.length === 0) {
+        list.innerHTML = '<div class="empty-state">No projects</div>';
+        return;
+    }
+    const orderedProjects = sortProjects(projects);
+    list.innerHTML = orderedProjects.map(project => `
+        <div class="project-item ${selectedProject === project.id ? 'active' : ''} ${projectStatusClass(project.id)}"
+             onclick="selectProject('${project.id}')">
+            ${project.name}
+        </div>
+    `).join('');
+}
+
+function sortProjects(projects = []) {
+    const directionFactor = projectSort.direction === 'asc' ? 1 : -1;
+    const ordered = [...projects];
+    ordered.sort((a, b) => {
+        const valueA = getProjectSortValue(a, projectSort.field);
+        const valueB = getProjectSortValue(b, projectSort.field);
+        let comparison = compareValues(valueA, valueB, directionFactor);
+        if (comparison !== 0) {
+            return comparison;
+        }
+        comparison = compareValues(
+            (a.name || '').toLowerCase(),
+            (b.name || '').toLowerCase(),
+            1
+        );
+        if (comparison !== 0) {
+            return comparison;
+        }
+        const createdDiff = getTimestamp(b.created_at) - getTimestamp(a.created_at);
+        if (createdDiff !== 0) {
+            return createdDiff;
+        }
+        return 0;
+    });
+    return ordered;
+}
+
+function getProjectSortValue(project, field) {
+    switch (field) {
+        case 'name':
+            return (project.name || '').toLowerCase();
+        case 'created':
+            return getTimestamp(project.created_at);
+        case 'completion':
+            return getTimestamp(project.latest_task_completed);
+        case 'activity':
+        default:
+            return getTimestamp(project.latest_task_activity || project.modified_at || project.created_at);
+    }
+}
+
+function sortTasks(tasks = []) {
+    const directionFactor = taskSort.direction === 'asc' ? 1 : -1;
+    const ordered = [...tasks];
+    ordered.sort((a, b) => {
+        const valueA = getTaskSortValue(a, taskSort.field);
+        const valueB = getTaskSortValue(b, taskSort.field);
+        let comparison = compareValues(valueA, valueB, directionFactor);
+        if (comparison !== 0) {
+            return comparison;
+        }
+        comparison = compareValues(
+            a.priority ?? 0,
+            b.priority ?? 0,
+            -1
+        );
+        if (comparison !== 0) {
+            return comparison;
+        }
+        const updatedDiff = getTimestamp(b.modified_at) - getTimestamp(a.modified_at);
+        if (updatedDiff !== 0) {
+            return updatedDiff;
+        }
+        return compareValues(
+            (a.title || '').toLowerCase(),
+            (b.title || '').toLowerCase(),
+            1
+        );
+    });
+    return ordered;
+}
+
+function getTaskSortValue(task, field) {
+    switch (field) {
+        case 'created':
+            return getTimestamp(task.created_at);
+        case 'priority':
+            return task.priority ?? 0;
+        case 'max_priority':
+            if (typeof task.max_subtask_priority === 'number') {
+                return task.max_subtask_priority;
+            }
+            return task.max_subtask_priority ?? task.priority ?? 0;
+        case 'name':
+            return (task.title || '').toLowerCase();
+        case 'updated':
+        default:
+            return getTimestamp(task.modified_at || task.created_at);
+    }
+}
+
+function compareValues(a, b, directionFactor = 1) {
+    const isString = typeof a === 'string' || typeof b === 'string';
+    if (isString) {
+        const strA = (a ?? '').toString();
+        const strB = (b ?? '').toString();
+        const comparison = strA.localeCompare(strB);
+        if (comparison === 0) {
+            return 0;
+        }
+        return comparison * directionFactor;
+    }
+    const numA = Number(a) || 0;
+    const numB = Number(b) || 0;
+    if (numA === numB) {
+        return 0;
+    }
+    return numA > numB ? directionFactor : -directionFactor;
+}
+
+function getTimestamp(value) {
+    if (!value) {
+        return 0;
+    }
+    const date = new Date(value);
+    const time = date.getTime();
+    return Number.isNaN(time) ? 0 : time;
 }
 
 async function loadProjects() {
@@ -544,34 +766,48 @@ async function loadProjects() {
         (trackingStatuses || []).forEach(entry => {
             projectTracking[entry.project_id] = entry;
         });
-        const list = document.getElementById('projects-list');
-
-        if (projects.length === 0) {
-            list.innerHTML = '<div class="empty-state">No projects</div>';
-            return;
-        }
-
-        list.innerHTML = projects.map(project => `
-            <div class="project-item ${selectedProject === project.id ? 'active' : ''} ${projectStatusClass(project.id)}"
-                 onclick="selectProject('${project.id}')">
-                ${project.name}
-            </div>
-        `).join('');
+        setProjectsError('');
+        renderProjectsList(projects);
         renderProjectTrackingBanner();
     } catch (error) {
         console.error('Error loading projects:', error);
-        document.getElementById('projects-list').innerHTML =
-            '<div class="error">Failed to load projects</div>';
+        if (projectsCache.length > 0) {
+            setProjectsError('Unable to refresh projects. Showing cached list.');
+            renderProjectsList(projectsCache);
+        } else {
+            const list = document.getElementById('projects-list');
+            if (list) {
+                list.innerHTML = '<div class="error-message">Failed to load projects</div>';
+            }
+            setProjectsError('Failed to load projects.');
+        }
     }
 }
 
-async function loadTasksList(projectId = null) {
-    const effectiveProjectId = projectId || selectedProject;
-    if (!projectId && effectiveProjectId) {
-        logUiEvent('tasks_filter_restore', { project_id: effectiveProjectId });
-    } else if (!effectiveProjectId && selectedProject) {
-        logUiEvent('tasks_filter_reset', { previously_selected: selectedProject });
+async function loadTasksList(projectId) {
+    const hasExplicitProject = typeof projectId !== 'undefined';
+    const previousFilter = activeProjectFilter;
+    let effectiveProjectId;
+    if (hasExplicitProject) {
+        effectiveProjectId = projectId;
+    } else if (previousFilter) {
+        effectiveProjectId = previousFilter;
+    } else if (selectedProject) {
+        effectiveProjectId = selectedProject;
+    } else {
+        effectiveProjectId = null;
     }
+    activeProjectFilter = effectiveProjectId || null;
+
+    const wasFiltered = !!previousFilter;
+    const isFiltered = !!activeProjectFilter;
+
+    if (!wasFiltered && isFiltered) {
+        logUiEvent('tasks_filter_restore', { project_id: activeProjectFilter });
+    } else if (wasFiltered && !isFiltered && hasExplicitProject) {
+        logUiEvent('tasks_filter_reset', { previously_selected: previousFilter });
+    }
+
     try {
         let url = '/api/tasks?limit=100';
         if (effectiveProjectId) {
@@ -580,15 +816,16 @@ async function loadTasksList(projectId = null) {
 
         const tasks = await fetch(url).then(r => r.json());
         const filteredTasks = filterTasksByStatus(tasks);
+        const orderedTasks = sortTasks(filteredTasks);
         const grid = document.getElementById('tasks-grid');
 
-        if (filteredTasks.length === 0) {
+        if (orderedTasks.length === 0) {
             grid.innerHTML = '<div class="empty-state">No tasks for selected filters</div>';
             resetTaskDetailPanel();
             return;
         }
 
-        grid.innerHTML = filteredTasks.map(task => `
+        grid.innerHTML = orderedTasks.map(task => `
             <div class="task-card" onclick="selectTask('${task.id}')">
                 <div class="title">${task.title}</div>
                 <div class="meta">
@@ -603,11 +840,9 @@ async function loadTasksList(projectId = null) {
 }
 
 function selectProject(projectId) {
-    selectedProject = projectId;
-    window.localStorage.setItem('selectedProjectId', projectId);
+    setActiveProject(projectId);
     loadProjects();
     loadTasksList(projectId);
-    renderProjectTrackingBanner();
     hideTrackingConfigPanel();
     logUiEvent('project_select', { project_id: projectId });
 }
@@ -666,12 +901,13 @@ function initializeStatusFilters() {
             } else {
                 activeTaskStatuses.delete(status);
             }
+            logUiEvent('tasks_status_toggle', { status, enabled: cb.checked });
             if (activeTaskStatuses.size === 0) {
                 activeTaskStatuses = new Set(DEFAULT_ACTIVE_STATUSES);
                 syncStatusCheckboxes();
             }
             if (currentView === 'tasks') {
-                loadTasksList(selectedProject);
+                loadTasksList();
             }
         });
     });
@@ -681,8 +917,9 @@ function initializeStatusFilters() {
         activeBtn.addEventListener('click', () => {
             activeTaskStatuses = new Set(DEFAULT_ACTIVE_STATUSES);
             syncStatusCheckboxes();
+            logUiEvent('tasks_status_presets', { preset: 'active' });
             if (currentView === 'tasks') {
-                loadTasksList(selectedProject);
+                loadTasksList();
             }
         });
     }
@@ -690,12 +927,47 @@ function initializeStatusFilters() {
         allBtn.addEventListener('click', () => {
             activeTaskStatuses = new Set(TASK_STATUSES.map(status => status.value));
             syncStatusCheckboxes();
+            logUiEvent('tasks_status_presets', { preset: 'all' });
             if (currentView === 'tasks') {
-                loadTasksList(selectedProject);
+                loadTasksList();
             }
         });
     }
     syncStatusCheckboxes();
+}
+
+function initializeTaskSortControls() {
+    const orderSelect = document.getElementById('tasks-order');
+    const directionSelect = document.getElementById('tasks-order-direction');
+    if (orderSelect) {
+        orderSelect.value = taskSort.field;
+        orderSelect.addEventListener('change', (event) => {
+            const selectedField = event.target.value;
+            taskSort.field = selectedField;
+            const defaultDirection = TASK_SORT_DEFAULTS[selectedField] || 'desc';
+            taskSort.direction = defaultDirection;
+            if (directionSelect) {
+                directionSelect.value = defaultDirection;
+            }
+            logUiEvent('tasks_sort_change', {
+                field: taskSort.field,
+                direction: taskSort.direction,
+            });
+            if (currentView === 'tasks') {
+                loadTasksList();
+            }
+        });
+    }
+    if (directionSelect) {
+        directionSelect.value = taskSort.direction;
+        directionSelect.addEventListener('change', (event) => {
+            taskSort.direction = event.target.value;
+            logUiEvent('tasks_sort_direction', { direction: taskSort.direction });
+            if (currentView === 'tasks') {
+                loadTasksList();
+            }
+        });
+    }
 }
 
 function syncStatusCheckboxes() {
@@ -816,12 +1088,11 @@ async function handleTaskCreateSubmit(event) {
             throw new Error(task.detail || 'Failed to create task');
         }
         hideTaskCreatePanel();
-        selectedProject = task.project_id || selectedProject;
-        if (selectedProject) {
-            window.localStorage.setItem('selectedProjectId', selectedProject);
+        if (task.project_id) {
+            setActiveProject(task.project_id);
         }
         await loadProjects();
-        await loadTasksList(selectedProject);
+        await loadTasksList();
         selectedTask = task.id;
         populateTaskDetailForm(task);
     } catch (error) {
@@ -842,7 +1113,10 @@ function renderStatusOptions(select, selectedValue = 'todo') {
 
 function populateProjectSelect(select, selectedId = '') {
     if (!select) return;
-    const options = projectsCache.map(project => `
+    const ordered = [...projectsCache].sort((a, b) => {
+        return (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' });
+    });
+    const options = ordered.map(project => `
         <option value="${project.id}">${project.name}</option>
     `).join('');
     select.innerHTML = `<option value="">Unassigned</option>${options}`;
@@ -943,7 +1217,7 @@ async function handleTaskUpdateSubmit(event) {
             throw new Error(task.detail || 'Failed to update task');
         }
         populateTaskDetailForm(task);
-        await loadTasksList(selectedProject);
+        await loadTasksList();
     } catch (error) {
         console.error('Error updating task:', error);
         if (statusText) {
@@ -967,7 +1241,7 @@ async function handleTaskDelete() {
             throw new Error(result.detail || 'Failed to delete task');
         }
         resetTaskDetailPanel();
-        await loadTasksList(selectedProject);
+        await loadTasksList();
     } catch (error) {
         console.error('Error deleting task:', error);
         alert('Failed to delete task: ' + error.message);
@@ -1070,9 +1344,8 @@ async function handleProjectDelete() {
             const result = await response.json().catch(() => ({}));
             throw new Error(result.detail || 'Failed to delete project');
         }
-        selectedProject = null;
+        setActiveProject(null);
         selectedTask = null;
-        window.localStorage.removeItem('selectedProjectId');
         hideTrackingConfigPanel();
         await loadProjects();
         await loadTasksList(null);
@@ -1492,12 +1765,10 @@ async function createNewProject() {
         if (!response.ok) {
             throw new Error(project.detail || 'Failed to create project');
         }
-        selectedProject = project.id;
-        window.localStorage.setItem('selectedProjectId', selectedProject);
+        setActiveProject(project.id);
         await loadProjects();
-        await loadTasksList(selectedProject);
-        await refreshProjectTracking(selectedProject);
-        renderProjectTrackingBanner();
+        await loadTasksList(project.id);
+        await refreshProjectTracking(project.id);
     } catch (error) {
         console.error('Error creating project:', error);
         alert('Failed to create project: ' + error.message);

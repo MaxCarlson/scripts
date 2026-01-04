@@ -432,6 +432,29 @@ body {
     font-size: 0.85rem;
 }
 
+.order-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.order-controls label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.order-controls select {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-primary);
+    padding: 0.35rem 0.5rem;
+}
+
 .project-item {
     padding: 0.75rem;
     cursor: pointer;
@@ -503,7 +526,7 @@ body {
     justify-content: space-between;
     gap: 1rem;
     margin-bottom: 1rem;
-    align-items: stretch;
+    align-items: flex-start;
 }
 
 .task-filters {
@@ -511,6 +534,29 @@ body {
     gap: 1rem;
     flex: 1;
     align-items: center;
+}
+
+.task-order-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    flex: 0 0 200px;
+}
+
+.task-order-group label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.task-order-group select {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-primary);
+    padding: 0.35rem 0.5rem;
 }
 
 .task-filters input,

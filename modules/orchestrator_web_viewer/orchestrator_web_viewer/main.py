@@ -421,29 +421,81 @@ def cli():
 
     # Handle --stop command
     if args.stop:
+        import os
+        import signal
         import subprocess
         import sys
+
+        def _list_koweb_pids() -> set[int]:
+            """Return PIDs for running koweb processes (excluding this one)."""
+            pids: set[int] = set()
+            current_pid = os.getpid()
+            target_port = args.port or config.PORT
+
+            # Try to capture any processes currently bound to the configured port
+            try:
+                port_result = subprocess.run(
+                    ["lsof", "-t", f"-iTCP:{target_port}", "-sTCP:LISTEN"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if port_result.returncode == 0:
+                    for line in port_result.stdout.splitlines():
+                        line = line.strip()
+                        if line:
+                            pids.add(int(line))
+            except FileNotFoundError:
+                # lsof may not be installed (Termux/Android). Fall back to process scans below.
+                pass
+
+            # Fall back to scanning for koweb commands
+            try:
+                proc_result = subprocess.run(
+                    ["pgrep", "-f", "koweb"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            except FileNotFoundError:
+                proc_result = None
+
+            if proc_result and proc_result.returncode == 0:
+                for line in proc_result.stdout.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    pid = int(line)
+                    if pid == current_pid:
+                        continue
+                    try:
+                        with open(f"/proc/{pid}/cmdline", "r", encoding="utf-8") as fh:
+                            cmdline = fh.read().replace("\x00", " ")
+                    except (FileNotFoundError, PermissionError):
+                        cmdline = ""
+                    if "--stop" in cmdline or "koweb" not in cmdline:
+                        continue
+                    pids.add(pid)
+
+            return pids
+
         try:
-            # Find uvicorn processes running koweb (excludes the stop command itself)
-            result = subprocess.run(
-                ["pgrep", "-f", "uvicorn.*orchestrator_web_viewer"],
-                capture_output=True,
-                text=True
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                pids = result.stdout.strip().split('\n')
-                killed = 0
-                for pid in pids:
-                    if pid:
-                        subprocess.run(["kill", pid])
-                        killed += 1
-                print(f"✓ Stopped {killed} koweb server(s)")
-                sys.exit(0)
-            else:
+            targets = _list_koweb_pids()
+            if not targets:
                 print("✓ No running koweb servers found")
                 sys.exit(0)
-        except Exception as e:
-            print(f"✗ Error stopping servers: {e}")
+
+            killed = 0
+            for pid in targets:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    killed += 1
+                except ProcessLookupError:
+                    continue
+            print(f"✓ Stopped {killed} koweb server(s)")
+            sys.exit(0)
+        except Exception as exc:
+            print(f"✗ Error stopping servers: {exc}")
             sys.exit(1)
 
     # Update config from CLI args (only if provided)

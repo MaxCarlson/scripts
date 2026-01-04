@@ -35,14 +35,25 @@ async def get_db_connection():
 
 @router.get("/projects")
 async def get_projects():
-    """Get all projects"""
+    """Get all projects with basic activity metadata."""
     conn = await get_db_connection()
     try:
-        rows = await conn.fetch("""
-            SELECT id, name, status, created_at, modified_at
-            FROM projects
-            ORDER BY name
-        """)
+        rows = await conn.fetch(
+            """
+            SELECT
+                p.id,
+                p.name,
+                p.status,
+                p.created_at,
+                p.modified_at,
+                MAX(t.modified_at) AS latest_task_activity,
+                MAX(CASE WHEN t.status = 'done' THEN t.modified_at END) AS latest_task_completed
+            FROM projects p
+            LEFT JOIN tasks t ON t.project_id = p.id
+            GROUP BY p.id
+            ORDER BY p.name
+            """
+        )
         return [dict(row) for row in rows]
     finally:
         await conn.close()
@@ -173,9 +184,22 @@ async def get_tasks(
     conn = await get_db_connection()
     try:
         query = """
-            SELECT id, title, status, priority, due_date, project_id,
-                   created_at, modified_at
-            FROM tasks
+            SELECT
+                t.id,
+                t.title,
+                t.status,
+                t.priority,
+                t.due_date,
+                t.project_id,
+                t.parent_task_id,
+                t.created_at,
+                t.modified_at,
+                GREATEST(
+                    COALESCE(t.priority, 0),
+                    COALESCE(MAX(child.priority), 0)
+                ) AS max_subtask_priority
+            FROM tasks t
+            LEFT JOIN tasks child ON child.parent_task_id = t.id
             WHERE 1=1
         """
         params = []
@@ -188,7 +212,8 @@ async def get_tasks(
             params.append(status)
             query += f" AND status = ${len(params)}"
 
-        query += f" ORDER BY created_at DESC LIMIT {limit}"
+        query += " GROUP BY t.id ORDER BY t.created_at DESC LIMIT $%d" % (len(params) + 1)
+        params.append(limit)
 
         rows = await conn.fetch(query, *params)
         return [dict(row) for row in rows]

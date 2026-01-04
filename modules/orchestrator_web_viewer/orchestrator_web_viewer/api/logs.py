@@ -26,7 +26,7 @@ class LogLevelUpdate(BaseModel):
 @router.get("")
 async def read_logs(
     limit: int = Query(200, ge=1, le=2000),
-    min_level: str = Query("INFO", regex="^(?i)(DEBUG|INFO|WARNING|ERROR|CRITICAL)$"),
+    min_level: str = Query("INFO", pattern="^(?i)(DEBUG|INFO|WARNING|ERROR|CRITICAL)$"),
     include_access: bool = Query(False),
 ):
     """Return recent log entries."""

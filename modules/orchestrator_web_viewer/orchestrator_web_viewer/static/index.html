@@ -192,6 +192,25 @@
                         <h3>Projects</h3>
                         <button id="new-project-btn" class="secondary-btn">+ New</button>
                     </div>
+                    <div class="order-controls">
+                        <label>
+                            Order By
+                            <select id="projects-order">
+                                <option value="activity">Recent Activity</option>
+                                <option value="name">Name</option>
+                                <option value="created">Created Date</option>
+                                <option value="completion">Recent Completion</option>
+                            </select>
+                        </label>
+                        <label>
+                            Direction
+                            <select id="projects-order-direction">
+                                <option value="desc">Descending</option>
+                                <option value="asc">Ascending</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div id="projects-error" class="error-message hidden"></div>
                     <div id="projects-list" class="projects-list">
                         <div class="loading">Loading projects...</div>
                     </div>
@@ -211,6 +230,25 @@
                                 <button type="button" id="status-select-active" class="micro-btn">Active</button>
                                 <button type="button" id="status-select-all" class="micro-btn">All</button>
                             </div>
+                        </div>
+                        <div class="task-order-group">
+                            <label>
+                                Order By
+                                <select id="tasks-order">
+                                    <option value="updated">Recent Activity</option>
+                                    <option value="created">Created Date</option>
+                                    <option value="priority">Priority</option>
+                                    <option value="max_priority">Max Subtask Priority</option>
+                                    <option value="name">Name</option>
+                                </select>
+                            </label>
+                            <label>
+                                Direction
+                                <select id="tasks-order-direction">
+                                    <option value="desc">Descending</option>
+                                    <option value="asc">Ascending</option>
+                                </select>
+                            </label>
                         </div>
                         <button id="new-task-btn" class="secondary-btn">+ Task</button>
                     </div>
