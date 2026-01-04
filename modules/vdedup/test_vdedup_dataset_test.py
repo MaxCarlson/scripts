@@ -36,7 +36,7 @@ if str(repo_root) not in sys.path:
 try:
     from modules.vdedup.pipeline import PipelineConfig, run_pipeline  # type: ignore
 except Exception as exc:  # pragma: no cover
-    pytest.skip(f"Could not import vdedup pipeline: {exc}")
+    pytest.skip(f"Could not import vdedup pipeline: {exc}", allow_module_level=True)
 
 
 def discover_dataset_files(data_dir: Path) -> List[Path]:

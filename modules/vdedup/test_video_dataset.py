@@ -5,12 +5,20 @@ Tests for the shared dataset toolkit used by vdedup.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Dict, List
 
 import pytest
 
-import modules.video_dataset_tools.dataset as vd
+# Add repo root to path so imports work correctly
+_this_file = Path(__file__).resolve()
+repo_root = _this_file.parent.parent.parent
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
+# Import via the local shim which re-exports the video_dataset_tools API
+import video_dataset as vd
 
 
 def test_load_keys(tmp_path: Path) -> None:

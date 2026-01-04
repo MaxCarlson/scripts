@@ -733,7 +733,7 @@ class DuplicateListManager:
         return (None, None)
 
 
-def _formatter(row: DuplicateListRow, sort_field: str, width: int, *_args) -> str:
+def _formatter(row: DuplicateListRow, sort_field: str, width: int, show_date: bool, show_time: bool, scroll_offset: int) -> str:
     name_width, dup_w, reclaim_w, size_w, delta_w, score_w = _compute_layout(width)
     indent = "  " * row.depth
     role = "K" if row.is_keep else "L"
@@ -756,7 +756,7 @@ def _formatter(row: DuplicateListRow, sort_field: str, width: int, *_args) -> st
 
     score_cell = f"{row.score:.2f}".rjust(score_w) if row.score is not None else " " * score_w
 
-    return (
+    line = (
         f"{name_cell}"
         f"{'':<{COLUMN_SPACING}}"
         f"{dup_cell}"
@@ -769,6 +769,14 @@ def _formatter(row: DuplicateListRow, sort_field: str, width: int, *_args) -> st
         f"{'':<{COLUMN_SPACING}}"
         f"{score_cell}"
     )
+
+    # Apply horizontal scroll offset if set
+    if scroll_offset > 0:
+        max_scroll = max(0, len(line) - width)
+        offset = min(scroll_offset, max_scroll)
+        line = line[offset:]
+
+    return line
 
 
 def _filter(row: DuplicateListRow, pattern: str) -> bool:

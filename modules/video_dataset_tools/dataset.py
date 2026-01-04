@@ -783,10 +783,16 @@ def discover_random_urls(
     return urls[:count]
 
 
-def download_video(youtube_source: str, dest_dir: Path, key: str) -> Path:
+def download_video(youtube_source: str, dest_dir: Path, key: str, max_height: Optional[int] = None) -> Path:
     """
     Download a YouTube video with yt-dlp into dest_dir as `<key>.<ext>`.
     Existing non-empty files are reused. Returns the downloaded path.
+
+    Args:
+        youtube_source: YouTube URL or video ID
+        dest_dir: Destination directory
+        key: Output filename key
+        max_height: Optional maximum video height (e.g. 480, 360, 720)
     """
 
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -796,18 +802,25 @@ def download_video(youtube_source: str, dest_dir: Path, key: str) -> Path:
         return existing[0]
 
     output_template = str(dest_dir / f"{key}.%(ext)s")
+
+    # Build format string with optional resolution limit
+    if max_height:
+        format_str = f"bestvideo[height<={max_height}]+bestaudio/best[height<={max_height}]"
+    else:
+        format_str = "bestvideo+bestaudio/best"
+
     cmd = [
         "yt-dlp",
         "--no-playlist",
         "--merge-output-format",
         "mp4",
         "--format",
-        "bestvideo+bestaudio/best",
+        format_str,
         "-o",
         output_template,
         _normalize_source(youtube_source),
     ]
-    logger.info("Downloading video for key %s", key)
+    logger.info("Downloading video for key %s (max_height=%s)", key, max_height or "unlimited")
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace")
@@ -1314,11 +1327,15 @@ def generate_dataset(
     ffmpeg_mode: str = "cpu",
     ffmpeg_threads: Optional[int] = None,
     max_mem_gb: Optional[float] = None,
+    max_height: Optional[int] = None,
     progress: ProgressTracker | None = None,
 ) -> Dict[str, Dict[str, List[str]]]:
     """
     Download originals (unless skip_download) and create variants.
     Returns the manifest mapping for the generated dataset.
+
+    Args:
+        max_height: Optional maximum resolution height for downloads (e.g., 480, 360)
     """
 
     originals_dir = output_dir / "original"
@@ -1362,7 +1379,7 @@ def generate_dataset(
                     return
                 src_path = existing[0]
             else:
-                src_path = download_video(youtube_id, originals_dir, key)
+                src_path = download_video(youtube_id, originals_dir, key, max_height=max_height)
                 if progress:
                     progress.on_download()
                     set_stage("downloaded")
@@ -1373,7 +1390,7 @@ def generate_dataset(
                 if skip_download:
                     src_path = next((p for p in originals_dir.glob(f"{key}.*") if p.stat().st_size > 0), None)
                 else:
-                    src_path = download_video(youtube_id, originals_dir, key)
+                    src_path = download_video(youtube_id, originals_dir, key, max_height=max_height)
             except Exception:
                 src_path = None
             if not src_path:
@@ -1547,6 +1564,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("-J", "--workers", type=int, default=os.cpu_count() or 4, help="Concurrent download/variant workers")
     parser.add_argument("-T", "--ffmpeg-threads", type=int, default=None, help="Threads per ffmpeg process (None=ffmpeg default)")
     parser.add_argument("-U", "--max-mem-gb", type=float, default=None, help="Optional memory cap to limit workers")
+    parser.add_argument("-H", "--max-height", type=int, default=None, help="Maximum video resolution height for downloads (e.g., 480, 360, 720)")
     parser.add_argument("-L", "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="Logging verbosity")
     parser.add_argument("-n", "--dry-run", action="store_true", help="Plan only; do not invoke yt-dlp or ffmpeg")
     parser.add_argument("-y", "--confirm", action="store_true", help="Confirm execution when running non-dry-run")
@@ -1701,6 +1719,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             ffmpeg_mode=args.mode,
             ffmpeg_threads=args.ffmpeg_threads,
             max_mem_gb=args.max_mem_gb,
+            max_height=args.max_height,
             progress=tracker,
         )
 
