@@ -6,6 +6,9 @@ import os
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 import asyncpg
+from pydantic import BaseModel, Field
+
+from orchestrator_web_viewer.integrations.orchestrator_client import orchestrator_post
 
 router = APIRouter()
 
@@ -41,6 +44,65 @@ async def get_projects():
         return [dict(row) for row in rows]
     finally:
         await conn.close()
+
+
+class ProjectCreate(BaseModel):
+    name: str = Field(..., min_length=1)
+    status: str = Field(default="active")
+    track: bool = True
+    repo_path: Optional[str] = None
+
+
+@router.post("/projects")
+async def create_project(payload: ProjectCreate):
+    """Create a new project and optionally enable memory tracking."""
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Project name is required")
+
+    if payload.track and not payload.repo_path:
+        raise HTTPException(status_code=400, detail="Repository path required when tracking is enabled")
+
+    conn = await get_db_connection()
+    try:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO projects (name, status)
+            VALUES ($1, $2)
+            RETURNING id, name, status, created_at, modified_at
+            """,
+            name,
+            payload.status,
+        )
+    finally:
+        await conn.close()
+
+    project = dict(row)
+    project_id = str(project["id"])
+
+    if payload.track and payload.repo_path:
+        repo_path = payload.repo_path.strip()
+        if not repo_path:
+            raise HTTPException(status_code=400, detail="Repository path cannot be empty when tracking")
+        await orchestrator_post(
+            f"/projects/{project_id}/tracking",
+            {
+                "is_tracked": True,
+                "repo_path": repo_path,
+            },
+        )
+    elif payload.repo_path:
+        # Store repo path for reference but leave tracking disabled
+        await orchestrator_post(
+            f"/projects/{project_id}/tracking",
+            {
+                "is_tracked": False,
+                "repo_path": payload.repo_path.strip(),
+            },
+        )
+
+    project["id"] = project_id
+    return project
 
 
 @router.get("/projects/{project_id}")

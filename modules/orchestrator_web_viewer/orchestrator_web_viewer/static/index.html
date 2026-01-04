@@ -14,6 +14,8 @@
             <button class="nav-btn active" data-view="dashboard">Dashboard</button>
             <button class="nav-btn" data-view="orchestrator">Orchestrator</button>
             <button class="nav-btn" data-view="tasks">Knowledge Manager</button>
+            <button class="nav-btn" data-view="memory">Memory</button>
+            <button class="nav-btn" data-view="logs">Logs</button>
         </nav>
         <div class="status-indicator">
             <span class="status-dot"></span>
@@ -97,15 +99,67 @@
                 </div>
                 <div id="live-logs" class="logs-container"></div>
             </div>
+
+            <div class="section">
+                <h3>Model & Manual Tasks</h3>
+                <div class="control-grid">
+                    <div class="control-card">
+                        <h4>Active Model</h4>
+                        <select id="model-select"></select>
+                        <button id="model-save-btn">Update Model</button>
+                        <p id="model-status" class="microcopy"></p>
+                    </div>
+                    <div class="control-card">
+                        <h4>Queue Manual Task</h4>
+                        <form id="manual-task-form">
+                            <input type="text" name="project_id" placeholder="Project ID" required>
+                            <input type="text" name="title" placeholder="Task Title" required>
+                            <textarea name="description" placeholder="Task Description" rows="3" required></textarea>
+                            <div class="form-row">
+                                <select name="cli_preference">
+                                    <option value="claude">Claude</option>
+                                    <option value="codex">Codex</option>
+                                    <option value="gemini">Gemini</option>
+                                </select>
+                                <select name="priority">
+                                    <option value="1">Priority 1</option>
+                                    <option value="2">Priority 2</option>
+                                    <option value="3" selected>Priority 3</option>
+                                    <option value="4">Priority 4</option>
+                                    <option value="5">Priority 5</option>
+                                </select>
+                            </div>
+                            <input type="text" name="working_dir" placeholder="Working Directory (optional)">
+                            <button type="submit">Queue Task</button>
+                            <p id="manual-task-status" class="microcopy"></p>
+                        </form>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- Tasks View -->
         <div id="tasks-view" class="view">
             <h2>Knowledge Manager</h2>
 
+            <div id="project-tracking-banner" class="project-banner hidden">
+                <div class="project-banner-info">
+                    <div id="project-tracking-status" class="tracking-status-pill">Select a project to view tracking details</div>
+                    <div id="project-tracking-details" class="tracking-details"></div>
+                </div>
+                <div class="project-banner-actions">
+                    <button id="project-track-btn">Configure Tracking</button>
+                    <button id="project-untrack-btn" class="secondary-btn hidden">Stop Tracking</button>
+                    <button id="project-embed-btn">Start Embedding Run</button>
+                </div>
+            </div>
+
             <div class="tasks-layout">
                 <aside class="projects-sidebar">
-                    <h3>Projects</h3>
+                    <div class="projects-header">
+                        <h3>Projects</h3>
+                        <button id="new-project-btn" class="secondary-btn">+ New</button>
+                    </div>
                     <div id="projects-list" class="projects-list">
                         <div class="loading">Loading projects...</div>
                     </div>
@@ -130,6 +184,84 @@
                 <aside class="task-detail-panel" id="task-detail-panel">
                     <div class="empty-state">Select a task to view details</div>
                 </aside>
+            </div>
+        </div>
+
+        <!-- Memory View -->
+        <div id="memory-view" class="view">
+            <h2>Memory Manager</h2>
+
+            <div id="memory-stats" class="memory-stats-grid">
+                <div class="stat-card">
+                    <h3>Total Memories</h3>
+                    <div class="stat-value" id="memory-total">0</div>
+                </div>
+                <div class="stat-card">
+                    <h3>Top Category</h3>
+                    <div class="stat-value" id="memory-top-category">—</div>
+                </div>
+                <div class="stat-card">
+                    <h3>Latest Entry</h3>
+                    <div class="stat-value" id="memory-latest">—</div>
+                </div>
+            </div>
+
+            <div class="memory-toolbar">
+                <input type="search" id="memory-search" placeholder="Search memory content...">
+                <button id="memory-refresh-btn">Refresh</button>
+            </div>
+
+            <div id="memory-list" class="memory-list">
+                <div class="loading">Loading memory items...</div>
+            </div>
+        </div>
+
+        <!-- Logs View -->
+        <div id="logs-view" class="view">
+            <h2>Logs & Telemetry</h2>
+            <div class="logs-page-controls">
+                <div class="logs-filter-group">
+                    <label>
+                        Min Level
+                        <select id="logs-level-filter">
+                            <option value="DEBUG">Debug</option>
+                            <option value="INFO" selected>Info</option>
+                            <option value="WARNING">Warning</option>
+                            <option value="ERROR">Error</option>
+                            <option value="CRITICAL">Critical</option>
+                        </select>
+                    </label>
+                    <label class="checkbox-inline">
+                        <input type="checkbox" id="logs-include-access">
+                        Include Access Logs
+                    </label>
+                    <label class="checkbox-inline">
+                        <input type="checkbox" id="logs-auto-refresh" checked>
+                        Auto Refresh
+                    </label>
+                    <button id="logs-refresh-btn" class="secondary-btn">Refresh</button>
+                </div>
+                <div class="server-log-controls">
+                    <label>
+                        Logger
+                        <select id="server-log-target"></select>
+                    </label>
+                    <label>
+                        Server Level
+                        <select id="server-log-level">
+                            <option value="DEBUG">Debug</option>
+                            <option value="INFO" selected>Info</option>
+                            <option value="WARNING">Warning</option>
+                            <option value="ERROR">Error</option>
+                            <option value="CRITICAL">Critical</option>
+                        </select>
+                    </label>
+                    <button id="apply-log-level-btn">Apply Level</button>
+                    <span id="log-level-status" class="microcopy"></span>
+                </div>
+            </div>
+            <div id="logs-output" class="logs-container log-viewer">
+                <div class="empty-state">Logs will appear here.</div>
             </div>
         </div>
     </main>

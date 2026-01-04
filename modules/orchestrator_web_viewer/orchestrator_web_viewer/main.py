@@ -18,8 +18,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import orchestrator, knowledge, results, termdash
+from .api import control, knowledge, logs, memory_proxy, orchestrator, project_tracking, results, telemetry, termdash
 from .websocket import manager
+from .log_utils import install_log_buffer
 
 # Logging setup
 logging.basicConfig(
@@ -27,6 +28,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+install_log_buffer()
 
 
 # Configuration from environment
@@ -43,6 +45,12 @@ class Config:
     TASK_QUEUE_PATH: str = os.getenv("KO_WEB_TASK_QUEUE_PATH", os.getenv("TASK_QUEUE_PATH",
                                       os.path.expanduser("~/projects/ai-orchestrator/task_queue")))
 
+    # Orchestrator API
+    ORCHESTRATOR_API_BASE: str = os.getenv(
+        "KO_WEB_ORCH_URL",
+        os.getenv("ORCHESTRATOR_API_URL", "http://localhost:8000")
+    )
+
     # Web server config (KO_WEB_HOST, KO_WEB_PORT, KO_WEB_QUIET)
     HOST: str = os.getenv("KO_WEB_HOST", "0.0.0.0")
     PORT: int = int(os.getenv("KO_WEB_PORT", "3000"))
@@ -55,6 +63,7 @@ class Config:
 
 
 config = Config()
+os.environ.setdefault("KO_WEB_ORCH_URL", config.ORCHESTRATOR_API_BASE)
 
 
 def check_auth(request: Request) -> Optional[str]:
@@ -251,6 +260,36 @@ if config.AUTH_ENABLED:
         dependencies=[Depends(check_auth)]
     )
     app.include_router(
+        project_tracking.router,
+        prefix="/api/project-tracking",
+        tags=["project_tracking"],
+        dependencies=[Depends(check_auth)]
+    )
+    app.include_router(
+        telemetry.router,
+        prefix="/api/telemetry",
+        tags=["telemetry"],
+        dependencies=[Depends(check_auth)]
+    )
+    app.include_router(
+        memory_proxy.router,
+        prefix="/api/memory",
+        tags=["memory"],
+        dependencies=[Depends(check_auth)]
+    )
+    app.include_router(
+        logs.router,
+        prefix="/api/logs",
+        tags=["logs"],
+        dependencies=[Depends(check_auth)]
+    )
+    app.include_router(
+        control.router,
+        prefix="/api/control",
+        tags=["control"],
+        dependencies=[Depends(check_auth)]
+    )
+    app.include_router(
         results.router,
         prefix="/api/results",
         tags=["results"],
@@ -265,6 +304,11 @@ if config.AUTH_ENABLED:
 else:
     app.include_router(orchestrator.router, prefix="/api/orchestrator", tags=["orchestrator"])
     app.include_router(knowledge.router, prefix="/api", tags=["knowledge"])
+    app.include_router(project_tracking.router, prefix="/api/project-tracking", tags=["project_tracking"])
+    app.include_router(telemetry.router, prefix="/api/telemetry", tags=["telemetry"])
+    app.include_router(logs.router, prefix="/api/logs", tags=["logs"])
+    app.include_router(memory_proxy.router, prefix="/api/memory", tags=["memory"])
+    app.include_router(control.router, prefix="/api/control", tags=["control"])
     app.include_router(results.router, prefix="/api/results", tags=["results"])
     app.include_router(termdash.router, prefix="/api/termdash", tags=["termdash"])
 
@@ -277,6 +321,7 @@ async def startup_event():
     logger.info("Orchestrator Web Viewer Starting")
     logger.info(f"PostgreSQL: {config.POSTGRES_HOST}:{config.POSTGRES_PORT}/{config.POSTGRES_DB}")
     logger.info(f"Task Queue: {config.TASK_QUEUE_PATH}")
+    logger.info(f"Orchestrator API: {config.ORCHESTRATOR_API_BASE}")
     logger.info(f"Listening on: http://{config.HOST}:{config.PORT}")
     if config.AUTH_ENABLED:
         logger.info(f"Authentication: ENABLED (user: {config.AUTH_USERNAME})")
@@ -335,6 +380,11 @@ def cli():
         "-t", "--task-queue",
         default=None,
         help="Task queue path (default: from TASK_QUEUE_PATH env)"
+    )
+    parser.add_argument(
+        "-O", "--orchestrator-url",
+        default=None,
+        help="Base URL for AI Orchestrator API (default: KO_WEB_ORCH_URL env or http://localhost:8000)"
     )
     parser.add_argument(
         "-r", "--reload",
@@ -409,6 +459,9 @@ def cli():
         config.POSTGRES_DB = args.postgres_db
     if args.task_queue:
         config.TASK_QUEUE_PATH = args.task_queue
+    if args.orchestrator_url:
+        config.ORCHESTRATOR_API_BASE = args.orchestrator_url
+        os.environ["KO_WEB_ORCH_URL"] = config.ORCHESTRATOR_API_BASE
 
     # Enable authentication if credentials provided
     if args.auth_user and args.auth_password:
