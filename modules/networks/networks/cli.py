@@ -5,6 +5,7 @@ Networks CLI - Network utilities from the command line
 import argparse
 import json
 import sys
+from pathlib import Path
 from networks.core import (
     get_lan_ip,
     get_all_ips,
@@ -15,6 +16,11 @@ from networks.core import (
     get_wsl2_network_info,
     list_port_forwards,
     remove_port_forward,
+)
+from networks.local_web import (
+    fetch_url,
+    screenshot_url,
+    check_local_access,
 )
 
 
@@ -149,6 +155,66 @@ def cmd_port_remove(args):
     return 0 if success else 1
 
 
+# ============== Local Web Commands ==============
+# These commands access local/LAN URLs that cloud AI tools cannot reach
+
+def cmd_web_fetch(args):
+    """Fetch HTML content from a local/LAN URL"""
+    result = fetch_url(
+        args.url,
+        timeout=args.timeout,
+        include_headers=args.headers,
+        verify_ssl=not args.insecure,
+    )
+
+    if args.json:
+        print(result.to_json())
+    elif args.content_only and result.success:
+        print(result.content)
+    else:
+        print(result.to_human())
+
+    return 0 if result.success else 1
+
+
+def cmd_web_screenshot(args):
+    """Take a screenshot of a local/LAN URL"""
+    output_path = Path(args.output) if args.output else None
+
+    result = screenshot_url(
+        args.url,
+        output_path=output_path,
+        width=args.width,
+        height=args.height,
+        full_page=not args.viewport_only,
+        timeout=args.timeout,
+        include_base64=args.base64,
+    )
+
+    if args.json:
+        print(result.to_json())
+    else:
+        print(result.to_human())
+
+    return 0 if result.success else 1
+
+
+def cmd_web_check(args):
+    """Check if a local/LAN URL is accessible"""
+    accessible, message = check_local_access(args.url, timeout=args.timeout)
+
+    if args.json:
+        print(json.dumps({
+            'url': args.url,
+            'accessible': accessible,
+            'message': message,
+        }, indent=2))
+    else:
+        print(message)
+
+    return 0 if accessible else 1
+
+
 def main():
     """Main CLI entry point"""
     parser = argparse.ArgumentParser(
@@ -244,6 +310,119 @@ def main():
         help='Port number to remove'
     )
     parser_port_remove.set_defaults(func=cmd_port_remove)
+
+    # ============== Local Web Commands ==============
+    # Access local/LAN URLs that cloud AI tools cannot reach
+
+    # networks web-fetch - Fetch HTML from local URL
+    parser_web_fetch = subparsers.add_parser(
+        'web-fetch',
+        help='Fetch HTML from local/LAN URL (AI tools cannot access these)',
+        description='Fetch HTML content from URLs on your local network that cloud AI tools cannot reach.'
+    )
+    parser_web_fetch.add_argument(
+        'url',
+        help='URL to fetch (e.g., http://192.168.1.100:3000/)'
+    )
+    parser_web_fetch.add_argument(
+        '-t', '--timeout',
+        type=float,
+        default=10.0,
+        help='Request timeout in seconds (default: 10)'
+    )
+    parser_web_fetch.add_argument(
+        '-j', '--json',
+        action='store_true',
+        help='Output as JSON (LLM-optimized)'
+    )
+    parser_web_fetch.add_argument(
+        '-c', '--content-only',
+        action='store_true',
+        help='Output only the HTML content (no metadata)'
+    )
+    parser_web_fetch.add_argument(
+        '-H', '--headers',
+        action='store_true',
+        help='Include response headers in output'
+    )
+    parser_web_fetch.add_argument(
+        '-k', '--insecure',
+        action='store_true',
+        help='Skip SSL certificate verification (for self-signed certs)'
+    )
+    parser_web_fetch.set_defaults(func=cmd_web_fetch)
+
+    # networks web-screenshot - Screenshot local URL
+    parser_web_ss = subparsers.add_parser(
+        'web-screenshot',
+        help='Take screenshot of local/LAN URL (requires playwright)',
+        description='Capture a visual screenshot of a local/LAN webpage. Requires: pip install playwright && playwright install chromium'
+    )
+    parser_web_ss.add_argument(
+        'url',
+        help='URL to screenshot'
+    )
+    parser_web_ss.add_argument(
+        '-o', '--output',
+        help='Output file path (default: temp file)'
+    )
+    parser_web_ss.add_argument(
+        '-w', '--width',
+        type=int,
+        default=1280,
+        help='Viewport width (default: 1280)'
+    )
+    parser_web_ss.add_argument(
+        '-H', '--height',
+        type=int,
+        default=720,
+        help='Viewport height (default: 720)'
+    )
+    parser_web_ss.add_argument(
+        '-v', '--viewport-only',
+        action='store_true',
+        help='Only capture viewport (not full page)'
+    )
+    parser_web_ss.add_argument(
+        '-t', '--timeout',
+        type=float,
+        default=30.0,
+        help='Page load timeout in seconds (default: 30)'
+    )
+    parser_web_ss.add_argument(
+        '-b', '--base64',
+        action='store_true',
+        help='Include base64-encoded image in output (for inline LLM viewing)'
+    )
+    parser_web_ss.add_argument(
+        '-j', '--json',
+        action='store_true',
+        help='Output as JSON'
+    )
+    parser_web_ss.set_defaults(func=cmd_web_screenshot)
+
+    # networks web-check - Check if local URL is accessible
+    parser_web_check = subparsers.add_parser(
+        'web-check',
+        help='Check if local/LAN URL is accessible',
+        description='Quick connectivity check for local URLs.'
+    )
+    parser_web_check.add_argument(
+        'url',
+        help='URL to check'
+    )
+    parser_web_check.add_argument(
+        '-t', '--timeout',
+        type=float,
+        default=5.0,
+        help='Connection timeout in seconds (default: 5)'
+    )
+    parser_web_check.add_argument(
+        '-j', '--json',
+        action='store_true',
+        help='Output as JSON'
+    )
+    parser_web_check.set_defaults(func=cmd_web_check)
 
     # Parse args
     args = parser.parse_args()

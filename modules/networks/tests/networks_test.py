@@ -8,6 +8,12 @@ from networks import (
     get_network_info,
     check_port_open,
 )
+from networks.local_web import (
+    is_local_url,
+    fetch_url,
+    check_local_access,
+    FetchResult,
+)
 
 
 def test_get_lan_ip():
@@ -63,6 +69,61 @@ def test_check_port_open_google_dns():
     result = check_port_open('8.8.8.8', 53, timeout=2.0)
     # Can't assert True because network might be down
     assert isinstance(result, bool)
+
+
+# ============== Local Web Tests ==============
+
+def test_is_local_url():
+    """Test is_local_url detection"""
+    # Local URLs
+    assert is_local_url('http://localhost:3000/') is True
+    assert is_local_url('http://127.0.0.1:8080/') is True
+    assert is_local_url('http://192.168.1.1/') is True
+    assert is_local_url('http://10.0.0.1:80/') is True
+    assert is_local_url('http://mydevice.local/') is True
+    
+    # Public URLs
+    assert is_local_url('http://google.com/') is False
+    assert is_local_url('https://github.com/') is False
+
+
+def test_fetch_url_result_serialization():
+    """Test FetchResult serialization"""
+    result = FetchResult(
+        url='http://localhost/',
+        success=True,
+        status_code=200,
+        content_type='text/html',
+        content='<html></html>',
+        content_length=13,
+    )
+    
+    # JSON serialization
+    json_str = result.to_json()
+    assert 'localhost' in json_str
+    assert '200' in json_str
+    
+    # Human format
+    human_str = result.to_human()
+    assert '✓' in human_str
+    assert 'localhost' in human_str
+
+
+def test_fetch_url_error():
+    """Test fetch_url with unreachable URL"""
+    # Port 65432 is almost certainly not open
+    result = fetch_url('http://localhost:65432/', timeout=1.0)
+    assert result.success is False
+    assert result.error is not None
+    assert 'refused' in result.error.lower() or 'error' in result.error.lower()
+
+
+def test_check_local_access():
+    """Test check_local_access function"""
+    # Check an unreachable port
+    accessible, message = check_local_access('http://localhost:65432/', timeout=1.0)
+    assert accessible is False
+    assert '✗' in message
 
 
 if __name__ == '__main__':
