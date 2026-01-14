@@ -1,11 +1,11 @@
 ---
 name: local-web
-description: Access local/LAN URLs that cloud AI agents cannot reach. Fetch HTML content, take screenshots, and check connectivity for private network addresses (192.168.x.x, localhost, etc). Use when user asks about local servers, development servers, internal tools, or any URL on private/LAN networks that returns "connection refused" from agent fetch tools.
+description: Access local/LAN URLs that cloud AI agents cannot reach. Fetch HTML content, take screenshots, interact with page elements, crawl sites, and list UI elements for private network addresses (192.168.x.x, localhost, etc). Use when user asks about local servers, development servers, internal tools, or any URL on private/LAN networks that returns "connection refused" from agent fetch tools.
 metadata:
-  short-description: Fetch local/LAN URLs agents can't reach
+  short-description: Fetch and interact with local/LAN URLs
   author: mcarls
-  version: "0.2.0"
-compatibility: Python 3.8+, Linux/macOS/Windows, optional playwright for screenshots
+  version: "0.3.0"
+compatibility: Python 3.8+, Linux/macOS/Windows, optional playwright for browser automation
 ---
 
 # Local Web Access
@@ -15,8 +15,10 @@ compatibility: Python 3.8+, Linux/macOS/Windows, optional playwright for screens
 Cloud-based AI agents (Claude, Codex, etc.) cannot access private network URLs because their requests go through cloud servers. This skill runs locally on the user's machine and can access any URL their machine can reach.
 
 - Fetch HTML content from local/LAN URLs
-- Take screenshots using headless browser (optional)
-- Check URL connectivity before attempting full fetch
+- Take screenshots using headless browser (Firefox/Chromium/WebKit)
+- List interactive elements (buttons, links, inputs, forms)
+- Click buttons, type text, and observe effects
+- Crawl sites automatically with screenshots
 - LLM-optimized JSON output or human-readable output
 
 ## When to Use This Skill
@@ -27,6 +29,8 @@ Use this skill when:
 - User mentions internal tools or dashboards
 - Agent's built-in web fetch returns "connection refused" for local URLs
 - User needs screenshots of local web apps
+- User wants to interact with a local web UI (click buttons, fill forms)
+- User wants to discover what elements are on a page
 
 ## Quick Start
 
@@ -34,17 +38,23 @@ Use this skill when:
 # Install the networks module
 pip install -e /path/to/networks
 
+# For browser features (screenshots, interact, crawl, list)
+pip install playwright && playwright install firefox
+
 # Fetch HTML from local URL (JSON output for agents)
 networks web-fetch http://localhost:3000/ --json
 
-# Fetch HTML (human-readable)
-networks web-fetch http://192.168.1.100:8080/
+# List all buttons on a page
+networks web-list http://localhost:3000/ --element-type button
 
-# Check if URL is accessible
-networks web-check http://localhost:5000/
+# Take screenshot
+networks web-screenshot http://localhost:3000/ -o screenshot.png
 
-# Take screenshot (requires playwright)
-networks web-screenshot http://localhost:3000/ -o screenshot.png --json
+# Click a button and see before/after screenshots
+networks web-interact http://localhost:3000/ --action click --selector "Stats"
+
+# Crawl a site with screenshots
+networks web-crawl http://localhost:3000/ --max-pages 10 -o ./crawl_output/
 ```
 
 ## Commands
@@ -118,7 +128,7 @@ Take a visual screenshot of a webpage using headless browser.
 **Prerequisite:** Install playwright
 ```bash
 pip install playwright
-playwright install chromium
+playwright install firefox  # or chromium
 ```
 
 ```bash
@@ -132,6 +142,7 @@ Options:
 - `-v, --viewport-only` - Only capture viewport (not full page)
 - `-t, --timeout SECONDS` - Page load timeout (default: 30)
 - `-b, --base64` - Include base64 image in output for LLM viewing
+- `-B, --browser` - Browser to use: firefox, chromium, webkit (default: firefox)
 - `-j, --json` - Output as JSON
 
 Examples:
@@ -141,6 +152,92 @@ networks web-screenshot http://localhost:3000/ -o dashboard.png
 
 # Get base64 for inline LLM viewing
 networks web-screenshot http://localhost:8080/ --base64 --json
+
+# Use chromium instead of firefox
+networks web-screenshot http://localhost:3000/ -o shot.png --browser chromium
+```
+
+### web-list - List Interactive Elements
+
+Discover buttons, links, inputs, and forms on a page.
+
+```bash
+networks web-list <url> [options]
+```
+
+Options:
+- `-e, --element-type` - Type to find: button, link, input, form, all (default: all)
+- `-t, --timeout SECONDS` - Page load timeout (default: 30)
+- `-B, --browser` - Browser to use (default: firefox)
+- `-j, --json` - Output as JSON
+
+Examples:
+```bash
+# List all buttons
+networks web-list http://localhost:3000/ --element-type button
+
+# List all interactive elements as JSON
+networks web-list http://localhost:3000/ --json
+
+# Find all forms
+networks web-list http://localhost:3000/ -e form
+```
+
+### web-interact - Interact with Page Elements
+
+Click buttons, type text, hover, scroll, and observe effects with before/after screenshots.
+
+```bash
+networks web-interact <url> [options]
+```
+
+Options:
+- `-a, --action` - Action: click, type, hover, scroll, wait (default: click)
+- `-s, --selector` - CSS selector or text to find element
+- `-T, --text` - Text to type (for type action) or text content to find
+- `-w, --wait SECONDS` - Wait after action for effects (default: 1)
+- `-t, --timeout SECONDS` - Page load timeout (default: 30)
+- `-B, --browser` - Browser to use (default: firefox)
+- `-j, --json` - Output as JSON
+
+Examples:
+```bash
+# Click a button by text
+networks web-interact http://localhost:3000/ --action click --selector "Submit"
+
+# Type into an input field
+networks web-interact http://localhost:3000/ --action type --selector "#search" --text "query"
+
+# Hover over an element
+networks web-interact http://localhost:3000/ --action hover --selector ".menu-item"
+
+# Scroll the page
+networks web-interact http://localhost:3000/ --action scroll
+```
+
+### web-crawl - Crawl a Site
+
+Automatically discover pages and capture screenshots.
+
+```bash
+networks web-crawl <url> [options]
+```
+
+Options:
+- `-n, --max-pages INT` - Maximum pages to crawl (default: 20)
+- `-o, --output-dir PATH` - Directory to save screenshots
+- `--no-screenshots` - Skip screenshots (faster)
+- `-t, --timeout SECONDS` - Timeout per page (default: 30)
+- `-B, --browser` - Browser to use (default: firefox)
+- `-j, --json` - Output as JSON
+
+Examples:
+```bash
+# Crawl and screenshot up to 10 pages
+networks web-crawl http://localhost:3000/ --max-pages 10 -o ./crawl_output/
+
+# Quick crawl without screenshots
+networks web-crawl http://localhost:3000/ --no-screenshots --json
 ```
 
 ## Python API

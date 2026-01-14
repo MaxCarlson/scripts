@@ -21,6 +21,9 @@ from networks.local_web import (
     fetch_url,
     screenshot_url,
     check_local_access,
+    interact_with_page,
+    crawl_site,
+    list_elements,
 )
 
 
@@ -189,6 +192,7 @@ def cmd_web_screenshot(args):
         full_page=not args.viewport_only,
         timeout=args.timeout,
         include_base64=args.base64,
+        browser=args.browser,
     )
 
     if args.json:
@@ -213,6 +217,78 @@ def cmd_web_check(args):
         print(message)
 
     return 0 if accessible else 1
+
+
+def cmd_web_interact(args):
+    """Interact with webpage elements"""
+    result = interact_with_page(
+        args.url,
+        action=args.action,
+        selector=args.selector,
+        text=args.text,
+        wait_after=args.wait,
+        timeout=args.timeout,
+        browser=args.browser,
+    )
+
+    if args.json:
+        print(result.to_json())
+    else:
+        print(result.to_human())
+        if result.success:
+            if result.before_screenshot:
+                print(f"  Before: {result.before_screenshot}")
+            if result.after_screenshot:
+                print(f"  After: {result.after_screenshot}")
+
+    return 0 if result.success else 1
+
+
+def cmd_web_crawl(args):
+    """Crawl a website"""
+    output_dir = Path(args.output_dir) if args.output_dir else None
+    
+    result = crawl_site(
+        args.url,
+        max_pages=args.max_pages,
+        screenshot_each=not args.no_screenshots,
+        timeout=args.timeout,
+        output_dir=output_dir,
+        browser=args.browser,
+    )
+
+    if args.json:
+        print(result.to_json())
+    else:
+        print(result.to_human())
+
+    return 0 if result.success else 1
+
+
+def cmd_web_list(args):
+    """List interactive elements on a page"""
+    result = list_elements(
+        args.url,
+        element_type=args.element_type,
+        timeout=args.timeout,
+        browser=args.browser,
+    )
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        if result.get('success'):
+            print(f"Found {result['count']} {args.element_type} elements on {args.url}:")
+            for i, el in enumerate(result.get('elements', [])[:50]):
+                text = el.get('text', '').strip()[:40] or el.get('id') or el.get('name') or '(no text)'
+                selector = f"#{el['id']}" if el.get('id') else f".{el['class'].split()[0]}" if el.get('class') else el['tag']
+                print(f"  {i+1}. [{el['tag']}] {text} → {selector}")
+            if result['count'] > 50:
+                print(f"  ... and {result['count'] - 50} more")
+        else:
+            print(f"Error: {result.get('error')}")
+
+    return 0 if result.get('success') else 1
 
 
 def main():
@@ -399,6 +475,12 @@ def main():
         action='store_true',
         help='Output as JSON'
     )
+    parser_web_ss.add_argument(
+        '-B', '--browser',
+        choices=['firefox', 'chromium', 'webkit'],
+        default='firefox',
+        help='Browser to use (default: firefox)'
+    )
     parser_web_ss.set_defaults(func=cmd_web_screenshot)
 
     # networks web-check - Check if local URL is accessible
@@ -423,6 +505,134 @@ def main():
         help='Output as JSON'
     )
     parser_web_check.set_defaults(func=cmd_web_check)
+
+    # networks web-interact - Interact with page elements
+    parser_web_interact = subparsers.add_parser(
+        'web-interact',
+        help='Interact with webpage elements (click, type, hover)',
+        description='Use headless browser to interact with page elements and observe effects.'
+    )
+    parser_web_interact.add_argument(
+        'url',
+        help='URL to interact with'
+    )
+    parser_web_interact.add_argument(
+        '-a', '--action',
+        choices=['click', 'type', 'hover', 'scroll', 'wait'],
+        default='click',
+        help='Action to perform (default: click)'
+    )
+    parser_web_interact.add_argument(
+        '-s', '--selector',
+        help='CSS selector or text to find element'
+    )
+    parser_web_interact.add_argument(
+        '-T', '--text',
+        help='Text to type (for type action) or text content to find'
+    )
+    parser_web_interact.add_argument(
+        '-w', '--wait',
+        type=float,
+        default=1.0,
+        help='Seconds to wait after action (default: 1)'
+    )
+    parser_web_interact.add_argument(
+        '-t', '--timeout',
+        type=float,
+        default=30.0,
+        help='Page load timeout (default: 30)'
+    )
+    parser_web_interact.add_argument(
+        '-j', '--json',
+        action='store_true',
+        help='Output as JSON'
+    )
+    parser_web_interact.add_argument(
+        '-B', '--browser',
+        choices=['firefox', 'chromium', 'webkit'],
+        default='firefox',
+        help='Browser to use (default: firefox)'
+    )
+    parser_web_interact.set_defaults(func=cmd_web_interact)
+
+    # networks web-crawl - Crawl a site
+    parser_web_crawl = subparsers.add_parser(
+        'web-crawl',
+        help='Crawl a website, discover pages, take screenshots',
+        description='Automatically crawl a site, capturing screenshots of each page.'
+    )
+    parser_web_crawl.add_argument(
+        'url',
+        help='Starting URL'
+    )
+    parser_web_crawl.add_argument(
+        '-n', '--max-pages',
+        type=int,
+        default=20,
+        help='Maximum pages to crawl (default: 20)'
+    )
+    parser_web_crawl.add_argument(
+        '-o', '--output-dir',
+        help='Directory to save screenshots'
+    )
+    parser_web_crawl.add_argument(
+        '--no-screenshots',
+        action='store_true',
+        help='Skip screenshots (faster)'
+    )
+    parser_web_crawl.add_argument(
+        '-t', '--timeout',
+        type=float,
+        default=30.0,
+        help='Timeout per page (default: 30)'
+    )
+    parser_web_crawl.add_argument(
+        '-j', '--json',
+        action='store_true',
+        help='Output as JSON'
+    )
+    parser_web_crawl.add_argument(
+        '-B', '--browser',
+        choices=['firefox', 'chromium', 'webkit'],
+        default='firefox',
+        help='Browser to use (default: firefox)'
+    )
+    parser_web_crawl.set_defaults(func=cmd_web_crawl)
+
+    # networks web-list - List interactive elements
+    parser_web_list = subparsers.add_parser(
+        'web-list',
+        help='List interactive elements on a page',
+        description='Find buttons, links, inputs, and forms on a webpage.'
+    )
+    parser_web_list.add_argument(
+        'url',
+        help='URL to analyze'
+    )
+    parser_web_list.add_argument(
+        '-e', '--element-type',
+        choices=['button', 'link', 'input', 'form', 'all'],
+        default='all',
+        help='Type of elements to find (default: all)'
+    )
+    parser_web_list.add_argument(
+        '-t', '--timeout',
+        type=float,
+        default=30.0,
+        help='Page load timeout (default: 30)'
+    )
+    parser_web_list.add_argument(
+        '-j', '--json',
+        action='store_true',
+        help='Output as JSON'
+    )
+    parser_web_list.add_argument(
+        '-B', '--browser',
+        choices=['firefox', 'chromium', 'webkit'],
+        default='firefox',
+        help='Browser to use (default: firefox)'
+    )
+    parser_web_list.set_defaults(func=cmd_web_list)
 
     # Parse args
     args = parser.parse_args()

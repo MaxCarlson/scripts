@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "networks"
-version = "0.2.0"
-description = "Cross-platform networking utilities with WSL2 support and local web access"
+version = "0.3.0"
+description = "Cross-platform networking utilities with WSL2 support, local web access, and browser automation"
 authors = [{name = "mcarls"}]
 requires-python = ">=3.8"
 dependencies = [

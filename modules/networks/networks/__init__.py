@@ -6,6 +6,7 @@ Provides unified API for:
 - LAN accessibility (WSL2 port forwarding, firewall rules)
 - Port checking and management
 - Local web access (fetch/screenshot URLs AI tools can't reach)
+- Browser automation (interact, crawl, list elements)
 """
 from .core import (
     get_lan_ip,
@@ -23,8 +24,13 @@ from .local_web import (
     screenshot_url,
     check_local_access,
     is_local_url,
+    interact_with_page,
+    crawl_site,
+    list_elements,
     FetchResult,
     ScreenshotResult,
+    InteractionResult,
+    CrawlResult,
 )
 
 __all__ = [
@@ -45,6 +51,12 @@ __all__ = [
     'is_local_url',
     'FetchResult',
     'ScreenshotResult',
+    # Browser automation
+    'interact_with_page',
+    'crawl_site',
+    'list_elements',
+    'InteractionResult',
+    'CrawlResult',
 ]
 
-__version__ = '0.2.0'
+__version__ = '0.3.0'
