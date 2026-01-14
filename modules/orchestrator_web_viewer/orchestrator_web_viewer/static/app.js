@@ -30,6 +30,9 @@ const logViewerSettings = {
     autoRefresh: true,
 };
 const UI_EVENT_ENDPOINT = '/api/telemetry/ui-event';
+const PRIORITY_LOW = { r: 16, g: 185, b: 129 };   // #10b981
+const PRIORITY_HIGH = { r: 239, g: 68, b: 68 };    // #ef4444
+const TASK_INDENT_REM = 1.5;
 const PROJECT_SORT_DEFAULTS = {
     activity: 'desc',
     name: 'asc',
@@ -67,6 +70,96 @@ function logUiEvent(eventType, details = {}) {
     }).catch((error) => {
         console.warn('Failed to log UI event', eventType, error);
     });
+}
+
+function priorityToColor(priority = 5) {
+    const value = Math.max(1, Math.min(10, Number(priority) || 5));
+    const t = (value - 1) / 9;
+    const r = Math.round(PRIORITY_LOW.r + (PRIORITY_HIGH.r - PRIORITY_LOW.r) * t);
+    const g = Math.round(PRIORITY_LOW.g + (PRIORITY_HIGH.g - PRIORITY_LOW.g) * t);
+    const b = Math.round(PRIORITY_LOW.b + (PRIORITY_HIGH.b - PRIORITY_LOW.b) * t);
+    return `rgb(${r}, ${g}, ${b})`;
+}
+
+function buildTaskHierarchy(tasks = [], rootComparator = null) {
+    const taskMap = new Map();
+    tasks.forEach((task, order) => {
+        taskMap.set(task.id, { ...task, children: [], order });
+    });
+
+    const roots = [];
+    taskMap.forEach((node) => {
+        if (node.parent_task_id && taskMap.has(node.parent_task_id)) {
+            taskMap.get(node.parent_task_id).children.push(node);
+        } else {
+            roots.push(node);
+        }
+    });
+
+    const sortedRoots = [...roots];
+    if (typeof rootComparator === 'function') {
+        sortedRoots.sort(rootComparator);
+    } else {
+        sortedRoots.sort((a, b) => a.order - b.order);
+    }
+
+    const ordered = [];
+
+    function traverse(nodes, depth, ancestry = []) {
+        nodes.forEach((node, index) => {
+            const children = [...node.children].sort((a, b) => a.order - b.order);
+            const isLast = index === nodes.length - 1;
+            ordered.push({
+                task: node,
+                depth,
+                isLast,
+                ancestorContinuations: ancestry,
+                hasChildren: children.length > 0,
+            });
+            if (children.length) {
+                traverse(children, depth + 1, [...ancestry, !isLast]);
+            }
+        });
+    }
+
+    traverse(sortedRoots, 0, []);
+    return ordered;
+}
+
+function renderTaskCard(entry) {
+    const { task, depth, ancestorContinuations, isLast, hasChildren } = entry;
+    const priorityValue = task.priority ?? 5;
+    const priorityLabel = priorityValue ? `P${priorityValue}` : 'P?';
+    const color = priorityToColor(priorityValue);
+    const connectors = ancestorContinuations
+        .map((active, idx) => active
+            ? `<span class="connector vertical" style="--connector-depth:${idx};"></span>`
+            : '')
+        .join('');
+    const elbow = depth > 0
+        ? `<span class="connector elbow ${isLast ? 'last' : ''}" style="--connector-depth:${depth - 1};"></span>`
+        : '';
+    const connectorBlock = (depth > 0 || ancestorContinuations.some(Boolean))
+        ? `<div class="task-card-connector">${connectors}${elbow}</div>`
+        : '';
+
+    return `
+        <div class="task-card ${depth > 0 ? 'has-parent' : ''} ${hasChildren ? 'has-children' : ''} ${isLast ? 'is-last-child' : ''}"
+             onclick="selectTask('${task.id}')"
+             style="--task-depth:${depth}; --priority-color:${color};">
+            ${connectorBlock}
+            <div class="task-card-body">
+                <div class="task-title-row">
+                    <span class="title">${task.title}</span>
+                    <span class="priority-pill">${priorityLabel}</span>
+                </div>
+                <div class="meta">
+                    Status: ${task.status} |
+                    Priority: ${task.priority || 'None'}
+                </div>
+            </div>
+        </div>
+    `;
 }
 
 function setActiveProject(projectId) {
@@ -667,10 +760,9 @@ function getProjectSortValue(project, field) {
     }
 }
 
-function sortTasks(tasks = []) {
+function getTaskComparator() {
     const directionFactor = taskSort.direction === 'asc' ? 1 : -1;
-    const ordered = [...tasks];
-    ordered.sort((a, b) => {
+    return (a, b) => {
         const valueA = getTaskSortValue(a, taskSort.field);
         const valueB = getTaskSortValue(b, taskSort.field);
         let comparison = compareValues(valueA, valueB, directionFactor);
@@ -694,7 +786,13 @@ function sortTasks(tasks = []) {
             (b.title || '').toLowerCase(),
             1
         );
-    });
+    };
+}
+
+function sortTasks(tasks = []) {
+    const comparator = getTaskComparator();
+    const ordered = [...tasks];
+    ordered.sort(comparator);
     return ordered;
 }
 
@@ -816,24 +914,17 @@ async function loadTasksList(projectId) {
 
         const tasks = await fetch(url).then(r => r.json());
         const filteredTasks = filterTasksByStatus(tasks);
-        const orderedTasks = sortTasks(filteredTasks);
+        const rootComparator = getTaskComparator();
+        const hierarchy = buildTaskHierarchy(filteredTasks, rootComparator);
         const grid = document.getElementById('tasks-grid');
 
-        if (orderedTasks.length === 0) {
+        if (hierarchy.length === 0) {
             grid.innerHTML = '<div class="empty-state">No tasks for selected filters</div>';
             resetTaskDetailPanel();
             return;
         }
 
-        grid.innerHTML = orderedTasks.map(task => `
-            <div class="task-card" onclick="selectTask('${task.id}')">
-                <div class="title">${task.title}</div>
-                <div class="meta">
-                    Status: ${task.status} |
-                    Priority: ${task.priority || 'None'}
-                </div>
-            </div>
-        `).join('');
+        grid.innerHTML = hierarchy.map(renderTaskCard).join('');
     } catch (error) {
         console.error('Error loading tasks:', error);
     }

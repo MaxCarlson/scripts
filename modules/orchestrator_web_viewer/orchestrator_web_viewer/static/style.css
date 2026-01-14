@@ -17,6 +17,7 @@
     --warning: #f59e0b;
     --error: #ef4444;
     --border: #475569;
+    --task-indent: 1.6rem;
 }
 
 body {
@@ -218,27 +219,113 @@ body {
 }
 
 .task-card {
+    position: relative;
     background: var(--bg-tertiary);
-    border: 1px solid var(--border);
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    border-left: 4px solid var(--priority-color, var(--accent));
     border-radius: 6px;
-    padding: 0.75rem;
+    padding: 0.75rem 0.75rem 0.75rem calc(1rem + var(--task-depth, 0) * var(--task-indent));
     margin-bottom: 0.5rem;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: border-color 0.2s, transform 0.2s;
+    overflow: visible;
 }
 
 .task-card:hover {
-    border-color: var(--accent);
+    transform: translateX(2px);
+    border-color: var(--priority-color, var(--accent));
+}
+
+.task-card-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    position: relative;
+    z-index: 1;
+}
+
+.task-title-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
 }
 
 .task-card .title {
-    font-weight: 500;
-    margin-bottom: 0.25rem;
+    font-weight: 600;
+    color: var(--text-primary);
 }
 
 .task-card .meta {
-    font-size: 0.75rem;
+    font-size: 0.8rem;
     color: var(--text-muted);
+}
+
+.priority-pill {
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid var(--priority-color, var(--accent));
+    color: var(--priority-color, var(--accent));
+    border-radius: 999px;
+    padding: 0.1rem 0.5rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+}
+
+.task-card-connector {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: calc(var(--task-depth, 0) * var(--task-indent) + 0.5rem);
+    pointer-events: none;
+    z-index: 0;
+}
+
+.task-card-connector .connector {
+    position: absolute;
+    pointer-events: none;
+    color: var(--priority-color, var(--accent));
+}
+
+.connector.vertical {
+    width: 2px;
+    background: var(--connector-color, currentColor);
+    left: calc((var(--connector-depth) + 0.5) * var(--task-indent));
+    top: -0.5rem;
+    bottom: -0.5rem;
+    opacity: 0.35;
+}
+
+.connector.elbow {
+    --elbow-width: calc(var(--task-indent) - 0.3rem);
+    width: var(--elbow-width);
+    height: 1.2rem;
+    left: calc((var(--connector-depth) + 0.2) * var(--task-indent));
+    top: 0.9rem;
+}
+
+.connector.elbow::before,
+.connector.elbow::after {
+    content: '';
+    position: absolute;
+    background: currentColor;
+}
+
+.connector.elbow::before {
+    width: 2px;
+    top: -0.8rem;
+    bottom: 0.6rem;
+}
+
+.connector.elbow.last::before {
+    bottom: 0.2rem;
+}
+
+.connector.elbow::after {
+    height: 2px;
+    width: var(--elbow-width);
+    top: 0.3rem;
+    left: 0;
 }
 
 /* Logs */

@@ -1,12 +1,13 @@
 # Networks Module
 
-Cross-platform networking utilities with automatic WSL2 port forwarding, firewall management, and LAN accessibility.
+Cross-platform networking utilities with automatic WSL2 port forwarding, firewall management, LAN accessibility, and browser automation for AI agents.
 
 ## Table of Contents
 
 - [Features](#features)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [Local Web Access](#local-web-access)
 - [CLI Usage](#cli-usage)
 - [Python API](#python-api)
 - [Real-World Examples](#real-world-examples)
@@ -23,6 +24,8 @@ Cross-platform networking utilities with automatic WSL2 port forwarding, firewal
 - **LAN accessibility** - Make your applications accessible on the local network
 - **Network information** - Get comprehensive network details
 - **Port checking** - Verify if ports are open locally or remotely
+- **Local web access** - Fetch/screenshot LAN URLs that cloud AI can't reach
+- **Browser automation** - Click, type, scroll, crawl pages with headless Firefox/Chromium
 - **CLI tools** - Easy command-line access to all features
 
 ## Installation
@@ -72,6 +75,56 @@ print(msg)
 ip = get_lan_ip()
 print(f"\n✓ Share this URL: http://{ip}:{port}")
 ```
+
+## Local Web Access
+
+Cloud AI agents (Claude, Codex, etc.) cannot access private network URLs because their requests go through cloud servers. The local-web commands run locally and can access any URL your machine can reach.
+
+### Installation for Browser Features
+
+```bash
+# Install base module
+pip install -e modules/networks/
+
+# For browser automation (screenshots, interact, crawl, list)
+pip install playwright
+playwright install firefox  # or chromium
+```
+
+### Commands
+
+```bash
+# Fetch HTML from local URL
+networks web-fetch http://localhost:3000/ --json
+
+# Check if URL is accessible
+networks web-check http://192.168.1.100:8080/
+
+# Take a screenshot
+networks web-screenshot http://localhost:3000/ -o screenshot.png
+
+# List all buttons on a page
+networks web-list http://localhost:3000/ --element-type button
+
+# Click a button and capture before/after screenshots
+networks web-interact http://localhost:3000/ --action click --selector "Submit"
+
+# Crawl a site with screenshots
+networks web-crawl http://localhost:3000/ --max-pages 10 -o ./crawl_output/
+```
+
+### Browser Choice
+
+All browser commands support `--browser firefox|chromium|webkit` (default: firefox):
+
+```bash
+# Use Chromium instead of Firefox
+networks web-screenshot http://localhost:3000/ -o shot.png --browser chromium
+```
+
+### See Also
+
+See [SKILL.md](SKILL.md) for the full Agent Skills documentation.
 
 ## CLI Usage
 
