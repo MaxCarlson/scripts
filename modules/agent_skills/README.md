@@ -2,6 +2,8 @@
 
 Universal skill manager for AI coding assistants (Codex CLI, Claude Code, Cursor, Gemini CLI).
 
+Includes reference documentation from upstream specs to help AI agents discover and create skills.
+
 ## Installation
 
 ```bash
@@ -49,6 +51,28 @@ skills sync
 - **Claude Code**: `~/.claude/skills/`
 - **Cursor**: `~/.cursor/skills/`
 
+## What Makes a Good Skill?
+
+When scanning a codebase, look for modules that:
+
+| Criteria | Why It Matters |
+|----------|----------------|
+| Has a CLI interface | AI can invoke it directly |
+| Solves a specific problem | Focused purpose = better skill |
+| Works standalone | No complex dependencies |
+| Fills a gap | Does something AI can't do natively |
+
+### Good Candidates
+- CLI tools with `argparse`/`click` entry points
+- Wrappers around external tools (ffmpeg, yt-dlp)
+- API clients for services AI can't access
+- Local/network tools (accessing LAN URLs)
+
+### Weak Candidates
+- Pure libraries with no CLI
+- UI-only code
+- Simple utility functions
+
 ## Creating Skills
 
 Any project can become a skill by adding `SKILL.md`:
@@ -67,6 +91,48 @@ compatibility:
 # My Tool
 
 Instructions for AI assistants...
+
+## Commands
+
+\`\`\`bash
+my-tool --help
+my-tool do-something --flag value
+\`\`\`
+
+## When to Use
+
+- Use when: <scenarios>
+- Do not use when: <anti-patterns>
+```
+
+## SKILL.md vs AGENTS.md
+
+| | SKILL.md | AGENTS.md |
+|---|----------|-----------|
+| **Purpose** | Define a capability | Define agent behavior |
+| **Scope** | Per-module/tool | Per-repo or global |
+| **Loading** | On-demand | Always in context |
+
+## Reference Documentation
+
+This module includes upstream specs as git submodules:
+
+- `refs/agentskills/` - [Anthropic Agent Skills spec](https://agentskills.io)
+- `refs/openai-skills/` - [OpenAI Codex skill catalog](https://github.com/openai/skills)
+
+## Directory Structure
+
+```
+agent_skills/
+├── agent_skills/       # Python module (CLI + discovery)
+├── refs/
+│   ├── agentskills/    # Anthropic spec (submodule)
+│   └── openai-skills/  # OpenAI catalog (submodule)
+├── docs/               # Usage guides
+├── tests/              # Pytest tests
+├── AGENTS.md           # Instructions for AI agents
+├── SKILL.md            # This module as a skill
+└── README.md           # This file
 ```
 
 ## License

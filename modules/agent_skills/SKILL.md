@@ -1,6 +1,6 @@
 ---
 name: agent-skills
-description: Manage and discover skills for AI coding assistants. Register skills, sync to CLIs (Codex, Claude, Cursor).
+description: Manage and discover skills for AI coding assistants. Register skills, sync to CLIs, scan for candidates.
 metadata:
   version: 0.1.0
   author: mcarls
@@ -14,7 +14,7 @@ compatibility:
 
 # Agent Skills Manager
 
-Universal skill management for AI coding assistants.
+Universal skill management for AI coding assistants. Includes reference specs from Anthropic and OpenAI.
 
 ## Commands
 
@@ -50,12 +50,38 @@ skills info skill-name
 skills info skill-name --json
 ```
 
+## Finding Skill Candidates
+
+When scanning a codebase, look for:
+
+### Strong Candidates ✓
+- CLI tools with `argparse`, `click`, entry points
+- Wrappers around external tools (ffmpeg, yt-dlp)
+- API clients for services AI can't access
+- Local/network tools that bridge AI capability gaps
+
+### Weak Candidates ✗
+- Pure libraries with no CLI
+- UI-only code
+- Simple utility functions
+
+## Reference Documentation
+
+This module includes upstream specs:
+
+- `refs/agentskills/` - Anthropic Agent Skills specification
+- `refs/openai-skills/` - OpenAI Codex skill catalog
+
+Use these to understand the SKILL.md format and see real examples.
+
 ## Directories
 
-- Central skills: `~/.local/share/agent-skills/`
-- Codex skills: `~/.codex/skills/`
-- Claude skills: `~/.claude/skills/`
-- Cursor skills: `~/.cursor/skills/`
+| Path | Purpose |
+|------|---------|
+| `~/.local/share/agent-skills/` | Central skills registry |
+| `~/.codex/skills/` | Codex skill symlinks |
+| `~/.claude/skills/` | Claude skill symlinks |
+| `~/.cursor/skills/` | Cursor skill symlinks |
 
 ## Creating a Skill
 

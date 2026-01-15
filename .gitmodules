@@ -1,3 +1,9 @@
 [submodule "pscripts"]
         path = pscripts
         url = https://github.com/MaxCarlson/pscripts.git
+[submodule "modules/agent_skills/refs/agentskills"]
+	path = modules/agent_skills/refs/agentskills
+	url = git@github.com:agentskills/agentskills.git
+[submodule "modules/agent_skills/refs/openai-skills"]
+	path = modules/agent_skills/refs/openai-skills
+	url = git@github.com:openai/skills.git
