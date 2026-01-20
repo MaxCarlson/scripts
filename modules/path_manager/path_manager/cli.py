@@ -6,7 +6,7 @@ import argparse
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 from cross_platform.system_utils import SystemUtils
 
@@ -78,18 +78,36 @@ def _boxed_lines(lines: List[str], *, scope: str) -> List[str]:
     return framed
 
 
-def _format_path_list(segments: List[str], *, scope: str, mode: str, leading_gap: bool = False) -> None:
+def _format_path_list(
+    segments: List[str],
+    *,
+    scope: str,
+    mode: str,
+    leading_gap: bool = False,
+    invalid_set: Optional[set] = None,
+) -> None:
     if mode not in PRINT_MODES:
         mode = "default"
     if leading_gap:
         print("\n\n", end="")
     if mode == "single":
-        lines = [core.join_segments(segments)]
+        line = core.join_segments(segments)
+        if invalid_set:
+            line = f"{COLOR_REM}{line}{COLOR_RESET}"
+        lines = [line]
         for line in _boxed_lines(lines, scope=scope):
             print(line)
         return
     if mode == "lines":
-        lines = segments or ["<empty>"]
+        lines = []
+        if not segments:
+            lines = ["<empty>"]
+        else:
+            for segment in segments:
+                if invalid_set and segment in invalid_set:
+                    lines.append(f"{COLOR_REM}{segment}{COLOR_RESET}")
+                else:
+                    lines.append(segment)
         for line in _boxed_lines(lines, scope=scope):
             print(line)
         return
@@ -98,10 +116,10 @@ def _format_path_list(segments: List[str], *, scope: str, mode: str, leading_gap
     if not segments:
         lines = ["<empty>"]
     else:
-        lines = [
-            f"{color}{str(idx).rjust(width)}.{COLOR_RESET} {segment}"
-            for idx, segment in enumerate(segments, 1)
-        ]
+        lines = []
+        for idx, segment in enumerate(segments, 1):
+            entry_color = COLOR_REM if invalid_set and segment in invalid_set else ""
+            lines.append(f"{color}{str(idx).rjust(width)}.{COLOR_RESET} {entry_color}{segment}{COLOR_RESET}")
     for line in _boxed_lines(lines, scope=scope):
         print(line)
 
@@ -160,16 +178,32 @@ def cmd_list(args: argparse.Namespace) -> None:
         for idx, scope in enumerate((core.SCOPE_USER, core.SCOPE_MACHINE)):
             value = core.read_path(scope, system=system)
             segments = core.split_path_string(value, system=system)
-            _format_path_list(segments, scope=scope, mode=args.mode, leading_gap=idx > 0)
+            invalid = set(core.get_invalid_segments(segments, system=system))
+            _format_path_list(segments, scope=scope, mode=args.mode, leading_gap=idx > 0, invalid_set=invalid)
         return
     scope_value, segments = _get_segments_for_scope(args.scope, system)
     if scope_value == "Combined" and system.is_windows():
         machine = core.split_path_string(core.read_path(core.SCOPE_MACHINE, system=system), system=system)
         user = core.split_path_string(core.read_path(core.SCOPE_USER, system=system), system=system)
-        _format_path_list(machine, scope=core.SCOPE_MACHINE, mode=args.mode, leading_gap=False)
-        _format_path_list(user, scope=core.SCOPE_USER, mode=args.mode, leading_gap=True)
+        invalid_machine = set(core.get_invalid_segments(machine, system=system))
+        invalid_user = set(core.get_invalid_segments(user, system=system))
+        _format_path_list(
+            machine,
+            scope=core.SCOPE_MACHINE,
+            mode=args.mode,
+            leading_gap=False,
+            invalid_set=invalid_machine,
+        )
+        _format_path_list(
+            user,
+            scope=core.SCOPE_USER,
+            mode=args.mode,
+            leading_gap=True,
+            invalid_set=invalid_user,
+        )
         return
-    _format_path_list(segments, scope=scope_value, mode=args.mode)
+    invalid = set(core.get_invalid_segments(segments, system=system))
+    _format_path_list(segments, scope=scope_value, mode=args.mode, invalid_set=invalid)
 
 
 def cmd_backup(_args: argparse.Namespace) -> None:
@@ -215,6 +249,26 @@ def cmd_add(args: argparse.Namespace) -> None:
         raise SystemExit("Add does not support combined scope.")
     current = core.read_path(scope_value, system=system)
     paths = _coerce_paths(args.paths, system)
+    if paths:
+        current_segments = core.split_path_string(current, system=system)
+        current_index = core.build_command_index(current_segments, system=system)
+        for path_str in paths:
+            target_dir = Path(path_str)
+            execs = core.list_executables_in_dir(target_dir, system=system)
+            conflicts = []
+            for name_key, candidate_paths in execs.items():
+                existing = current_index.get(name_key)
+                if existing is None:
+                    continue
+                conflicts.append((candidate_paths[0].name, existing.paths[0]))
+            if conflicts:
+                print(f"{COLOR_WARN}{COLOR_BOLD}Warning:{COLOR_RESET} potential command conflicts in {path_str}")
+                for name, existing in conflicts:
+                    print(f"  - {name} currently resolves to {existing}")
+                print(
+                    f"{COLOR_WARN}Note:{COLOR_RESET} new PATH entries are appended; existing commands will keep precedence "
+                    "unless you promote the new entry."
+                )
     new_value = core.build_new_string(
         current,
         add=paths,
@@ -255,7 +309,7 @@ def cmd_invalid(args: argparse.Namespace) -> None:
     system = SystemUtils()
     scope_value, segments = _get_segments_for_scope(args.scope, system)
     invalid = core.get_invalid_segments(segments, system=system)
-    _format_path_list(invalid, scope=scope_value, mode=args.mode)
+    _format_path_list(invalid, scope=scope_value, mode=args.mode, invalid_set=set(invalid))
 
 
 def cmd_remove_invalid(args: argparse.Namespace) -> None:
