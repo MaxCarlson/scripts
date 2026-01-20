@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "path_manager"
+version = "0.1.4"
+description = "Cross-platform PATH manager with Windows registry support."
+authors = [
+    {name = "Scripts Repo"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+pathmgr = "path_manager.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]

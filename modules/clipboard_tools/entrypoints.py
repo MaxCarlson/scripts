@@ -40,15 +40,15 @@ def copy_main():
 
 
 def copy_default_main():
-    sys.exit(_run_copy([]))
+    sys.exit(_run_copy(sys.argv[1:]))
 
 
 def copy_recursive_main():
-    sys.exit(_run_copy(["-r"]))
+    sys.exit(_run_copy(["-r"] + sys.argv[1:]))
 
 
 def copy_append_main():
-    sys.exit(_run_copy(["-a"]))
+    sys.exit(_run_copy(["-a"] + sys.argv[1:]))
 
 
 def print_clipboard_main():
@@ -76,7 +76,7 @@ def replace_with_clipboard_main():
 def replace_with_clipboard_from_last_main():
     from pyscripts import replace_with_clipboard as rwc
 
-    args = rwc.parser.parse_args(["-F"])
+    args = rwc.parser.parse_args(["-F"] + sys.argv[1:])
     sys.exit(rwc.replace_or_print_clipboard(args.file, args.no_stats, args.from_last_cld, args.buffer_id))
 
 
@@ -101,34 +101,34 @@ def clipboard_replace_main():
 def copy_buffer_main():
     from pyscripts import copy_buffer_to_clipboard as cb2c
 
-    cb2c.main([])
+    sys.exit(cb2c.main(sys.argv[1:]))
 
 
 def copy_buffer_full_main():
     from pyscripts import copy_buffer_to_clipboard as cb2c
 
-    cb2c.main(["-f"])
+    sys.exit(cb2c.main(["-f"] + sys.argv[1:]))
 
 
 def output_to_clipboard_main():
     from pyscripts import output_to_clipboard as otc
 
-    sys.exit(otc.main([]))
+    sys.exit(otc.main(sys.argv[1:]))
 
 
 def output_to_clipboard_wrap_main():
     from pyscripts import output_to_clipboard as otc
 
-    sys.exit(otc.main(["-w"]))
+    sys.exit(otc.main(["-w"] + sys.argv[1:]))
 
 
 def output_to_clipboard_append_main():
     from pyscripts import output_to_clipboard as otc
 
-    sys.exit(otc.main(["-a"]))
+    sys.exit(otc.main(["-a"] + sys.argv[1:]))
 
 
 def output_to_clipboard_wrap_append_main():
     from pyscripts import output_to_clipboard as otc
 
-    sys.exit(otc.main(["-w", "-a"]))
+    sys.exit(otc.main(["-w", "-a"] + sys.argv[1:]))
