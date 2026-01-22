@@ -117,10 +117,11 @@ def build_shell_wrapped_command(user_command: str, shell_choice: str | None = No
     # Windows shells
     if shell in {"pwsh", "powershell"}:
         exe = "pwsh" if shell == "pwsh" else "powershell"
-        # Load profile so aliases/functions exist; avoid logo noise.
-        # Use -NoProfile if explicitly requested by user via --shell, but by default we DO load profile.
-        wrapped = f'{exe} -NoLogo -Command {_quote_ps_command(user_command)}'
-        meta["Alias/Function Support"] = "profile-loaded"
+        # Use -NoProfile to avoid profile loading overhead and side effects.
+        # Use -NoLogo to reduce noise.
+        # Wrap command in a script block {} to avoid cmd.exe escaping issues with trailing backslashes.
+        wrapped = f'{exe} -NoProfile -NoLogo -Command {{ {user_command} }}'
+        meta["Alias/Function Support"] = "none (NoProfile)"
         return wrapped, meta
 
     if shell == "cmd":

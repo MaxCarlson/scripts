@@ -485,7 +485,20 @@ def cmd_promote(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="PATH manager with backups, validation, and ordering tools.")
+    examples = (
+        "Examples:\n"
+        "  pathmgr list -s combined\n"
+        "  pathmgr list -b\n"
+        "  pathmgr add -p \"C:\\\\Program Files\\\\smartmontools\\\\bin\" -a -y\n"
+        "  pathmgr remove -p \"contains:smartmontools\" -a -y\n"
+        "  pathmgr check -t \"C:\\\\Program Files\\\\smartmontools\\\\bin\\\\smartctl.exe\"\n"
+        "  pathmgr promote -c git -p \"C:\\\\Program Files\\\\Git\\\\cmd\" -a -y\n"
+    )
+    parser = argparse.ArgumentParser(
+        description="PATH manager with backups, validation, and ordering tools.",
+        epilog=examples,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     list_cmd = sub.add_parser("list", help="List PATH entries.")

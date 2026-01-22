@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "path_manager"
-version = "0.1.5"
+version = "0.1.6"
 description = "Cross-platform PATH manager with Windows registry support."
 authors = [
     {name = "Scripts Repo"}

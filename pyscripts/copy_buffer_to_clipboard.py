@@ -131,7 +131,12 @@ def copy_buffer_to_clipboard_main(full: bool, no_stats: bool):
 
     return exit_code
 
+def main(argv: list[str] | None = None):
+    """Entry point for the copy_buffer_to_clipboard command."""
+    args = parser.parse_args(argv)
+    exit_code = copy_buffer_to_clipboard_main(args.full, args.no_stats)
+    return exit_code
+
+
 if __name__ == "__main__":
-    args = parser.parse_args()
-    final_exit_code = copy_buffer_to_clipboard_main(args.full, args.no_stats)
-    sys.exit(final_exit_code)
+    sys.exit(main())
