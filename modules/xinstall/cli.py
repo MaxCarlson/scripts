@@ -6,17 +6,19 @@ from typing import Optional, Sequence
 
 from tool_install_manager.manager import (
     apply_actions,
+    build_isin_report,
     detect_installers,
     ensure_tool_installed,
     guard_against_shadow_install,
     installer_install_commands,
+    plan_uninstall_duplicates,
     tool_status,
 )
 
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="tool-install-manager",
+        prog="tim",
         description="Cross-platform helper to detect how tools are installed (winget/pipx/uv/dpkg/brew) and safely install/upgrade without shadowing.",
     )
 
@@ -31,6 +33,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     sub = p.add_subparsers(dest="subcmd", required=True)
+
+    isin = sub.add_parser("isin", help="Abbreviated tool install report (paths + managers).")
+    isin.add_argument("toolname", help="Command name to inspect (e.g., rg).")
+    isin.add_argument("-p", "--package_name", default=None, help="Package name/id if different from command.")
+    isin.add_argument("--cleanup", action="store_true", help="Offer uninstall plan for duplicates.")
 
     installers = sub.add_parser("installers", help="Installer discovery and setup.")
     installers_sub = installers.add_subparsers(dest="installers_cmd", required=True)
@@ -100,12 +107,59 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         return 2
 
+    if args.subcmd == "isin":
+        report = build_isin_report(command_name=args.toolname, package_name=args.package_name)
+        print(f"Tool: {report.command_name}")
+        if report.primary_path:
+            print(f"Primary (PATH order): {report.primary_path}")
+        else:
+            print("Primary (PATH order): NOT FOUND")
+        if report.all_paths:
+            print("All paths:")
+            for pth in report.all_paths:
+                print(f"  - {pth}")
+        else:
+            print("All paths: (none)")
+
+        if report.candidates:
+            print("Managers:")
+            for cand in report.candidates:
+                extra = []
+                if cand.package_id:
+                    extra.append(f"id={cand.package_id}")
+                if cand.upgrade_hint:
+                    extra.append(f"upgrade={cand.upgrade_hint}")
+                if cand.uninstall_hint:
+                    extra.append(f"uninstall={cand.uninstall_hint}")
+                suffix = f" ({', '.join(extra)})" if extra else ""
+                print(f"  - {cand.manager:8s} conf={cand.confidence:.2f} :: {cand.evidence}{suffix}")
+        else:
+            print("Managers: (none detected)")
+
+        if report.recommended:
+            print(f"Recommended manager: {report.recommended.manager}")
+
+        if report.duplicate_paths or report.duplicate_managers:
+            print("Duplicates: detected (multiple paths or managers).")
+            if args.cleanup:
+                actions = plan_uninstall_duplicates(report)
+                if not actions:
+                    print("No uninstall actions available.")
+                    return 0
+                return apply_actions(actions, apply=bool(args.apply), assume_yes=bool(args.yes), verbose=bool(args.verbose))
+        return 0
+
     if args.subcmd == "tool":
         if args.tool_cmd == "status":
             st = tool_status(command_name=args.command_name, package_name=args.package_name)
             print(f"Command: {st.command_name}")
             print(f"Package: {st.package_name}")
-            print(f"Path: {st.executable_path or 'NOT FOUND'}")
+            if st.executable_paths:
+                print("Paths:")
+                for p in st.executable_paths:
+                    print(f"  - {p}")
+            else:
+                print("Paths: NOT FOUND")
             if not st.candidates:
                 print("Candidates: (none)")
                 return 0

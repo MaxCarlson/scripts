@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -9,6 +10,26 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from tool_install_manager.tracker import make_record, upsert_record
+
+try:
+    from tool_install_manager.advisor import LLMAdvisor
+except Exception:
+    LLMAdvisor = None  # type: ignore
+
+try:
+    from cross_platform.package_manager import (
+        InstallCandidate as CPInstallCandidate,
+        detect_package_managers as cp_detect_package_managers,
+        list_executable_paths as cp_list_executable_paths,
+        probe_tool_installations as cp_probe_tool_installations,
+    )
+    from cross_platform.system_utils import SystemUtils
+except Exception:
+    CPInstallCandidate = None  # type: ignore
+    SystemUtils = None  # type: ignore
+    cp_detect_package_managers = None  # type: ignore
+    cp_list_executable_paths = None  # type: ignore
+    cp_probe_tool_installations = None  # type: ignore
 
 
 @dataclass(frozen=True)
@@ -27,6 +48,7 @@ class ToolStatus:
     command_name: str
     package_name: str
     executable_path: Optional[str]
+    executable_paths: List[str]
     candidates: List[OwnershipCandidate]
     recommended: Optional[OwnershipCandidate]
 
@@ -38,12 +60,46 @@ class PlannedAction:
     shell_hint: str
 
 
+@dataclass(frozen=True)
+class IsInReport:
+    command_name: str
+    package_name: str
+    primary_path: Optional[str]
+    all_paths: List[str]
+    candidates: List[OwnershipCandidate]
+    recommended: Optional[OwnershipCandidate]
+    duplicate_paths: bool
+    duplicate_managers: bool
+
+
 def _is_windows() -> bool:
     return os.name == "nt"
 
 
 def _is_termux() -> bool:
     return "com.termux" in os.environ.get("PREFIX", "").lower() or "TERMUX" in os.environ.get("PREFIX", "").upper()
+
+
+def _is_wsl2() -> bool:
+    if SystemUtils:
+        try:
+            return SystemUtils().is_wsl2()
+        except Exception:
+            pass
+    try:
+        return "microsoft" in Path("/proc/sys/kernel/osrelease").read_text(encoding="utf-8").lower()
+    except Exception:
+        return False
+
+
+def _os_tag() -> str:
+    if _is_termux():
+        return "termux"
+    if _is_windows():
+        return "windows"
+    if _is_wsl2():
+        return "wsl2"
+    return "linux"
 
 
 def _run_cmd(argv: Sequence[str], timeout_s: float = 30.0) -> Tuple[int, str, str]:
@@ -98,6 +154,12 @@ def detect_installers() -> Dict[str, bool]:
     """
     Returns a map of installer/runtime tool availability on this machine.
     """
+    if cp_detect_package_managers:
+        try:
+            return cp_detect_package_managers()
+        except Exception:
+            pass
+
     keys = [
         "winget",
         "choco",
@@ -123,6 +185,96 @@ def detect_installers() -> Dict[str, bool]:
         "pnpm",
     ]
     return {k: (shutil.which(k) is not None) for k in keys}
+
+
+def _load_manager_policy() -> Dict[str, object]:
+    policy_path = Path(__file__).with_name("manager_policy.json")
+    if not policy_path.exists():
+        return {}
+    try:
+        return json.loads(policy_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _policy_manager_list(
+    policy: Dict[str, object],
+    os_tag: str,
+    command_name: str,
+    package_name: str,
+) -> List[str]:
+    tool_key = command_name.lower()
+    pkg_key = package_name.lower()
+    tools = policy.get("tools", {})
+    if isinstance(tools, dict):
+        for key in (tool_key, pkg_key):
+            entry = tools.get(key)
+            if isinstance(entry, dict):
+                lst = entry.get(os_tag)
+                if isinstance(lst, list):
+                    return [str(x) for x in lst]
+
+    defaults = policy.get("defaults", {})
+    if isinstance(defaults, dict):
+        lst = defaults.get(os_tag)
+        if isinstance(lst, list):
+            return [str(x) for x in lst]
+
+    return []
+
+
+def _maybe_llm_recommendation(
+    command_name: str,
+    package_name: str,
+    os_tag: str,
+    installers: Dict[str, bool],
+) -> Optional[str]:
+    if os.environ.get("TOOL_INSTALL_USE_LLM") != "1":
+        return None
+    if LLMAdvisor is None:
+        return None
+
+    template_path = os.environ.get("TOOL_INSTALL_LLM_TEMPLATES", "")
+    if template_path:
+        path = Path(template_path).expanduser()
+    else:
+        path = Path.home() / ".config" / "tool-install-manager" / "llm_templates.json"
+
+    templates: Dict[str, List[str]] = {}
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                templates = {str(k): [str(x) for x in v] for k, v in data.items() if isinstance(v, list)}
+        except Exception:
+            templates = {}
+
+    advisor = LLMAdvisor(cli_templates=templates)
+    known = [k for k, v in installers.items() if v] + ["apt", "pkg"]
+    prompt = (
+        "Select the best package manager for installing a tool.\n"
+        f"Tool command: {command_name}\n"
+        f"Package name: {package_name}\n"
+        f"OS: {os_tag}\n"
+        f"Available managers: {', '.join(sorted(set(known)))}\n"
+        "Answer with a single manager name."
+    )
+    decision = advisor.recommend_manager(prompt, known_managers=known)
+    if decision:
+        return decision.manager
+    return None
+
+
+def _convert_cp_candidate(cand: "CPInstallCandidate") -> OwnershipCandidate:
+    return OwnershipCandidate(
+        manager=cand.manager,
+        confidence=cand.confidence,
+        evidence=cand.evidence,
+        package_id=cand.package_id,
+        upgrade_hint=cand.upgrade_hint,
+        reinstall_hint=cand.reinstall_hint,
+        uninstall_hint=cand.uninstall_hint,
+    )
 
 
 def installer_install_commands(installer_name: str) -> List[PlannedAction]:
@@ -514,7 +666,16 @@ def _probe_brew_owner(exe_path: Optional[str]) -> List[OwnershipCandidate]:
 
 def tool_status(command_name: str, package_name: Optional[str] = None) -> ToolStatus:
     pkg = package_name or command_name
-    exe = _which(command_name)
+    exe_paths: List[str] = []
+    if cp_list_executable_paths:
+        try:
+            exe_paths = cp_list_executable_paths(command_name)
+        except Exception:
+            exe_paths = []
+    if not exe_paths:
+        exe = _which(command_name)
+        exe_paths = [exe] if exe else []
+    exe = exe_paths[0] if exe_paths else None
 
     cands: List[OwnershipCandidate] = []
     cands.extend(_path_heuristics(exe))
@@ -524,6 +685,13 @@ def tool_status(command_name: str, package_name: Optional[str] = None) -> ToolSt
     cands.extend(_probe_dpkg_owner(exe))
     cands.extend(_probe_pacman_owner(exe))
     cands.extend(_probe_brew_owner(exe))
+    if cp_probe_tool_installations:
+        try:
+            extra = cp_probe_tool_installations(command_name, package_names=[pkg])
+            if extra and CPInstallCandidate:
+                cands.extend([_convert_cp_candidate(c) for c in extra])
+        except Exception:
+            pass
 
     seen = set()
     unique: List[OwnershipCandidate] = []
@@ -541,6 +709,7 @@ def tool_status(command_name: str, package_name: Optional[str] = None) -> ToolSt
         command_name=command_name,
         package_name=pkg,
         executable_path=exe,
+        executable_paths=exe_paths,
         candidates=unique_sorted,
         recommended=recommended,
     )
@@ -563,8 +732,21 @@ def guard_against_shadow_install(
     assume_yes: bool,
 ) -> int:
     st = tool_status(command_name=command_name, package_name=None)
-    if not st.executable_path:
-        return 0
+    installers = detect_installers()
+    recommended_list = _recommended_manager_list(
+        command_name=command_name,
+        package_name=st.package_name,
+        installers=installers,
+    )
+    if recommended_list and install_method.lower() not in [m.lower() for m in recommended_list]:
+        msg = (
+            f"\nWARNING: '{command_name}' is usually best installed via: {', '.join(recommended_list)}\n"
+            f"You are trying to install via: {install_method}\n"
+        )
+        print(msg)
+        ok = _prompt_yes_no("Proceed anyway with this installer?", assume_yes=assume_yes)
+        if not ok:
+            return 2
 
     strong = [c for c in st.candidates if c.confidence >= 0.80]
     if not strong:
@@ -574,11 +756,12 @@ def guard_against_shadow_install(
 
     best = strong[0]
     msg = (
-        f"\nBLOCK: '{command_name}' already exists at:\n"
-        f"  {st.executable_path}\n\n"
+        f"\nBLOCK: '{command_name}' appears installed by another manager.\n"
         f"Likely managed by: {best.manager} (confidence {best.confidence:.2f})\n"
         f"Evidence: {best.evidence}\n"
     )
+    if st.executable_path:
+        msg += f"\nPath: {st.executable_path}\n"
     if best.upgrade_hint:
         msg += f"\nRecommended upgrade:\n  {best.upgrade_hint}\n"
     msg += f"\nYou are trying to install via: {install_method}\n"
@@ -607,23 +790,28 @@ def _choose_best_manager_for_install(
     package_name: str,
     installers: Dict[str, bool],
 ) -> str:
-    """
-    Conservative ranking:
-    - Termux: pkg
-    - Linux: apt-get if present, else brew if present, else pipx/uv, else cargo
-    - Windows: winget if present, else scoop/choco, else pipx/uv, else cargo
-    """
+    os_tag = _os_tag()
+    llm_mgr = _maybe_llm_recommendation(command_name, package_name, os_tag, installers)
+    if llm_mgr:
+        return llm_mgr
+
+    policy = _load_manager_policy()
+    candidates = _policy_manager_list(policy, os_tag, command_name, package_name)
+    for candidate in candidates:
+        if candidate in ("apt", "pkg"):
+            return candidate
+        if installers.get(candidate, False):
+            return candidate
+
+    # Conservative fallback ranking if policy missing.
     if _is_termux():
         return "pkg"
-
     if _is_windows():
         for candidate in ("winget", "scoop", "choco", "uv", "pipx", "cargo"):
             if installers.get(candidate, False):
                 return candidate
-        # If none exist, prefer winget on modern Windows as a first attempt.
         return "winget"
 
-    # Linux / WSL2
     if installers.get("apt-get", False) or installers.get("dpkg-query", False):
         return "apt"
     if installers.get("brew", False):
@@ -636,6 +824,27 @@ def _choose_best_manager_for_install(
         return "cargo"
 
     return "apt"
+
+
+def _recommended_manager_list(
+    command_name: str,
+    package_name: str,
+    installers: Dict[str, bool],
+) -> List[str]:
+    policy = _load_manager_policy()
+    os_tag = _os_tag()
+    preferred = _policy_manager_list(policy, os_tag, command_name, package_name)
+    if preferred:
+        return preferred
+
+    # Fallback ordering mirrors _choose_best_manager_for_install.
+    if _is_termux():
+        return ["pkg", "apt", "uv", "pipx", "cargo"]
+    if _is_windows():
+        return ["winget", "scoop", "choco", "uv", "pipx", "cargo"]
+    if installers.get("apt-get", False) or installers.get("dpkg-query", False):
+        return ["apt", "brew", "uv", "pipx", "cargo"]
+    return ["brew", "uv", "pipx", "cargo", "apt"]
 
 
 def plan_install_tool(
@@ -782,6 +991,56 @@ def powershell_quote(s: str) -> str:
     return "'" + s.replace("'", "''") + "'"
 
 
+def _primary_path(paths: List[str]) -> Optional[str]:
+    return paths[0] if paths else None
+
+
+def build_isin_report(command_name: str, package_name: Optional[str] = None) -> IsInReport:
+    pkg = package_name or command_name
+    st = tool_status(command_name=command_name, package_name=pkg)
+
+    managers = {c.manager.lower() for c in st.candidates}
+    return IsInReport(
+        command_name=command_name,
+        package_name=pkg,
+        primary_path=_primary_path(st.executable_paths),
+        all_paths=st.executable_paths,
+        candidates=st.candidates,
+        recommended=st.recommended,
+        duplicate_paths=len(st.executable_paths) > 1,
+        duplicate_managers=len(managers) > 1,
+    )
+
+
+def plan_uninstall_duplicates(
+    report: IsInReport,
+    keep_manager: Optional[str] = None,
+) -> List[PlannedAction]:
+    keep = (keep_manager or (report.recommended.manager if report.recommended else "")).lower()
+    actions: List[PlannedAction] = []
+
+    seen = set()
+    for cand in report.candidates:
+        mgr = cand.manager.lower()
+        if mgr == keep:
+            continue
+        if not cand.uninstall_hint:
+            continue
+        key = (mgr, cand.package_id or "", cand.uninstall_hint)
+        if key in seen:
+            continue
+        seen.add(key)
+        shell_hint = "powershell" if _is_windows() else "bash"
+        actions.append(
+            PlannedAction(
+                description=f"Uninstall {report.command_name} via {cand.manager}",
+                command_argv=["sh", "-c", cand.uninstall_hint] if shell_hint == "bash" else ["powershell", "-Command", cand.uninstall_hint],
+                shell_hint=shell_hint,
+            )
+        )
+    return actions
+
+
 def apply_actions(
     actions: List[PlannedAction],
     apply: bool,
@@ -838,7 +1097,37 @@ def ensure_tool_installed(
         return 0
 
     installers = detect_installers()
+    recommended_list = _recommended_manager_list(
+        command_name=command_name,
+        package_name=pkg,
+        installers=installers,
+    )
+
+    strong = [c for c in st.candidates if c.confidence >= 0.80]
+    if strong:
+        best = strong[0]
+        msg = (
+            f"\nWARNING: '{command_name}' appears installed via {best.manager}, "
+            "but it is not currently on PATH.\n"
+            f"Evidence: {best.evidence}\n"
+        )
+        if best.upgrade_hint:
+            msg += f"\nRecommended upgrade:\n  {best.upgrade_hint}\n"
+        print(msg)
+        ok = _prompt_yes_no("Install another copy anyway?", assume_yes=assume_yes)
+        if not ok:
+            return 2
+
     mgr = (preferred_manager or "").strip().lower() or _choose_best_manager_for_install(command_name, pkg, installers)
+    if preferred_manager and recommended_list and mgr not in recommended_list:
+        msg = (
+            f"\nWARNING: '{command_name}' is usually best installed via: {', '.join(recommended_list)}\n"
+            f"You requested: {mgr}\n"
+        )
+        print(msg)
+        ok = _prompt_yes_no("Proceed with this installer?", assume_yes=assume_yes)
+        if not ok:
+            return 2
 
     # If the chosen manager is missing, propose installing it first.
     if mgr in ("pipx", "uv", "brew", "scoop", "choco", "cargo", "rustup") and not installers.get(mgr, False):

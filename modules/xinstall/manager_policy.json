@@ -1,0 +1,22 @@
+{
+  "defaults": {
+    "windows": ["winget", "scoop", "choco", "uv", "pipx", "cargo"],
+    "wsl2": ["apt", "brew", "uv", "pipx", "cargo"],
+    "linux": ["apt", "brew", "uv", "pipx", "cargo"],
+    "termux": ["pkg", "apt", "uv", "pipx", "cargo"]
+  },
+  "tools": {
+    "rg": {
+      "windows": ["winget", "scoop", "choco"],
+      "wsl2": ["apt"],
+      "linux": ["apt"],
+      "termux": ["pkg"]
+    },
+    "ripgrep": {
+      "windows": ["winget", "scoop", "choco"],
+      "wsl2": ["apt"],
+      "linux": ["apt"],
+      "termux": ["pkg"]
+    }
+  }
+}
