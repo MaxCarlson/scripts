@@ -1,7 +1,4 @@
-bin/*
-
-# Prerequisites
-*.d
+bin/* # Prerequisites *.d
 
 # Compiled Object files
 *.slo
@@ -202,6 +199,7 @@ downloads_dlpn/
 claude-*.txt
 *.ignore
 modules/file_utils/path_backups/
+modules/poe2craft/**/*.json
 .pytest_tmp/
 logs/
 
@@ -211,3 +209,4 @@ logs/
 *.m4a*
 *.mp4*
 **/node_modules/*
+archived/

@@ -1,0 +1,1119 @@
+
+           Claude Code v2.1.42
+ ▐▛███▜▌   Opus 4.6 · Claude Pro
+▝▜█████▛▘  ~/scripts/modules/agent_abilities
+  ▘▘ ▝▝    Opus 4.6 is here · $50 free extra usage · /extra-usage to enable
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Plan to implement                                                            │
+│                                                                              │
+│ Agent Abilities v0.3.0 Expansion Plan                                        │
+│                                                                              │
+│ See full plan at: modules/agent_abilities/PLAN-claude-cli.md                 │
+│                                                                              │
+│ Summary                                                                      │
+│                                                                              │
+│ Expand agent_abilities from 4 resource types to 6, add GitHub Copilot sync   │
+│ target, and bring over template docs from awesome-copilot.                   │
+│                                                                              │
+│ Changes (7 steps)                                                            │
+│                                                                              │
+│ 1. resource_types.py - Add hook (folder-based, hooks.json) and collection    │
+│ (.collection.yml) types                                                      │
+│ 2. templates.py - Add generate_hook() and generate_collection() generators   │
+│ 3. manager.py - JSON/YAML parsing for new types, copilot CLI target, scan    │
+│ updates                                                                      │
+│ 4. cli.py - New create args (--events, --tags, --items)                      │
+│ 5. init.py + pyproject.toml - Exports + version bump to 0.3.0                │
+│ 6. docs/ - Copy and adapt 7 template/spec docs from awesome-copilot          │
+│ 7. tests/ - New fixtures and test cases for hooks, collections, copilot sync │
+│                                                                              │
+│ Files Modified                                                               │
+│                                                                              │
+│ - agent_abilities/resource_types.py                                          │
+│ - agent_abilities/templates.py                                               │
+│ - agent_abilities/manager.py                                                 │
+│ - agent_abilities/cli.py                                                     │
+│ - agent_abilities/__init__.py                                                │
+│ - pyproject.toml                                                             │
+│ - tests/test_manager.py                                                      │
+│ - docs/TEMPLATE_*.md (7 new files)                                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ im wondering why the first option is to impl pplan but clesr conext? if   
+  thats besg lets do that                                                   
+
+● Good question - a clear context just means I start fresh without the planning
+  conversation cluttering things up, but I still have the plan file to
+  reference. It's the best approach for a multi-file implementation like this.
+  Let's go.
+
+  Let me read the plan and existing files first.
+
+● Read 8 files (ctrl+o to expand)
+
+● Now let me check if the awesome-copilot repo exists for the docs step.
+
+● Bash(ls ~/projects/awesome-copilot/docs/ 2>/dev/null && echo "EXISTS" || echo
+      "NOT_FOUND")
+  ⎿  README.agents.md
+     README.collections.md
+     README.hooks.md
+     … +4 lines (ctrl+o to expand)
+
+● Good, the source docs exist. Let me set up task tracking and start
+  implementing.
+
+● Step 1: Add hook + collection resource types
+
+● Update(agent_abilities/resource_types.py)
+  ⎿  Added 18 lines
+       98          entry_file="SKILL.md",                                
+       99          description="Self-contained folders with instructions 
+            and bundled resources",                                      
+      100      ),                                                        
+      101 +    "hook": ResourceType(                                     
+      102 +        name="hook",                                          
+      103 +        extension=None,                                       
+      104 +        subdir="hooks",                                       
+      105 +        required_frontmatter=[],                              
+      106 +        optional_frontmatter=[],                              
+      107 +        is_folder=True,                                       
+      108 +        entry_file="hooks.json",                              
+      109 +        description="Automated workflows triggered by agent   
+          +session events (sessionStart, sessionEnd, etc.)",             
+      110 +    ),                                                        
+      111 +    "collection": ResourceType(                               
+      112 +        name="collection",                                    
+      113 +        extension=".collection.yml",                          
+      114 +        subdir="collections",                                 
+      115 +        required_frontmatter=["id", "name", "description"],   
+      116 +        optional_frontmatter=["tags", "items", "display"],    
+      117 +        description="Curated groups of related agents,        
+          +prompts, instructions, and skills",                           
+      118 +    ),                                                        
+      119  }                                                             
+      120                                                                
+      121                                                                
+
+● Now update detect_resource_type():
+
+● Update(agent_abilities/resource_types.py)
+  ⎿  Added 2 lines
+      130      if p.is_dir():                                            
+      131          if (p / "SKILL.md").exists():                         
+      132              return "skill"                                    
+      133 +        if (p / "hooks.json").exists():                       
+      134 +            return "hook"                                     
+      135          return None                                           
+      136                                                                
+      137      name = p.name                                             
+
+● Add collection detection before the return None at end:
+
+● Update(agent_abilities/resource_types.py)
+  ⎿  Added 2 lines
+      135          return None                                           
+      136                                                                
+      137      name = p.name                                             
+      138 +    if name.endswith(".collection.yml"):                      
+      139 +        return "collection"                                   
+      140      for type_key, rtype in RESOURCE_TYPES.items():            
+      141          if rtype.extension and                                
+           name.endswith(rtype.extension):                               
+      142              return type_key                                   
+
+● Step 2: Add template generators
+
+● Update(agent_abilities/templates.py)
+  ⎿  Added 128 lines
+      224      return skill_dir                                          
+      225                                                                
+      226                                                                
+      227 +def generate_hook(                                            
+      228 +    name: str,                                                
+      229 +    description: str,                                         
+      230 +    events: Optional[List[str]] = None,                       
+      231 +) -> Dict[str, Optional[str]]:                                
+      232 +    """Generate a hook folder structure with hooks.json +     
+          +shell script.                                                 
+      233 +                                                              
+      234 +    Returns a dict mapping relative paths to file contents.   
+      235 +    Paths ending with '/' are directories (content is None).  
+      236 +    """                                                       
+      237 +    if events is None:                                        
+      238 +        events = ["sessionStart"]                             
+      239 +                                                              
+      240 +    hooks_config: Dict[str, Any] = {"version": 1, "hooks":    
+          +{}}                                                           
+      241 +    for event in events:                                      
+      242 +        hooks_config["hooks"][event] = [                      
+      243 +            {                                                 
+      244 +                "type": "command",                            
+      245 +                "command": f"./{to_kebab_case(name)}.sh",     
+      246 +            }                                                 
+      247 +        ]                                                     
+      248 +                                                              
+      249 +    import json                                               
+      250 +    hooks_json = json.dumps(hooks_config, indent=2)           
+      251 +                                                              
+      252 +    slug = to_kebab_case(name)                                
+      253 +    shell_script = (                                          
+      254 +        "#!/usr/bin/env bash\n"                               
+      255 +        f"# {description}\n"                                  
+      256 +        f'# Hook: {slug}\n'                                   
+      257 +        f'# Events: {", ".join(events)}\n'                    
+      258 +        "\n"                                                  
+      259 +        'set -euo pipefail\n'                                 
+      260 +        "\n"                                                  
+      261 +        '# Add your hook logic here\n'                        
+      262 +        'echo "Hook triggered: $0"\n'                         
+      263 +    )                                                         
+      264 +                                                              
+      265 +    readme = (                                                
+      266 +        f"# {name.replace('-', ' ').title()}\n"               
+      267 +        f"\n"                                                 
+      268 +        f"{description}\n"                                    
+      269 +        f"\n"                                                 
+      270 +        f"## Events\n"                                        
+      271 +        f"\n"                                                 
+      272 +    )                                                         
+      273 +    for event in events:                                      
+      274 +        readme += f"- `{event}`\n"                            
+      275 +                                                              
+      276 +    return {                                                  
+      277 +        "hooks.json": hooks_json,                             
+      278 +        f"{slug}.sh": shell_script,                           
+      279 +        "README.md": readme,                                  
+      280 +    }                                                         
+      281 +                                                              
+      282 +                                                              
+      283 +def write_hook_folder(base_dir: Path, name: str, files:       
+          +Dict[str, Optional[str]]) -> Path:                            
+      284 +    """Write the hook folder structure to disk.               
+      285 +                                                              
+      286 +    Args:                                                     
+      287 +        base_dir: Parent directory (e.g.,                     
+          +custom_agents/hooks/)                                         
+      288 +        name: Hook name (kebab-case)                          
+      289 +        files: Dict from generate_hook()                      
+      290 +                                                              
+      291 +    Returns:                                                  
+      292 +        Path to the created hook folder.                      
+      293 +    """                                                       
+      294 +    slug = to_kebab_case(name)                                
+      295 +    hook_dir = base_dir / slug                                
+      296 +    hook_dir.mkdir(parents=True, exist_ok=True)               
+      297 +                                                              
+      298 +    for rel_path, content in files.items():                   
+      299 +        full_path = hook_dir / rel_path                       
+      300 +        if rel_path.endswith("/"):                            
+      301 +            full_path.mkdir(parents=True, exist_ok=True)      
+      302 +        else:                                                 
+      303 +            full_path.parent.mkdir(parents=True,              
+          +exist_ok=True)                                                
+      304 +            full_path.write_text(content or "")               
+      305 +                                                              
+      306 +    # Make shell scripts executable                           
+      307 +    for rel_path in files:                                    
+      308 +        if rel_path.endswith(".sh"):                          
+      309 +            (hook_dir / rel_path).chmod(0o755)                
+      310 +                                                              
+      311 +    return hook_dir                                           
+      312 +                                                              
+      313 +                                                              
+      314 +def generate_collection(                                      
+      315 +    name: str,                                                
+      316 +    description: str,                                         
+      317 +    tags: Optional[List[str]] = None,                         
+      318 +    items: Optional[List[Dict[str, str]]] = None,             
+      319 +) -> str:                                                     
+      320 +    """Generate a .collection.yml file content."""            
+      321 +    slug = to_kebab_case(name)                                
+      322 +    display_name = name.replace("-", " ").title()             
+      323 +                                                              
+      324 +    lines = [                                                 
+      325 +        f"id: {slug}",                                        
+      326 +        f"name: '{_escape_yaml(display_name)}'",              
+      327 +        f"description: '{_escape_yaml(description)}'",        
+      328 +    ]                                                         
+      329 +                                                              
+      330 +    if tags:                                                  
+      331 +        lines.append("tags:")                                 
+      332 +        for tag in tags:                                      
+      333 +            lines.append(f"  - {tag}")                        
+      334 +    else:                                                     
+      335 +        lines.append("tags: []")                              
+      336 +                                                              
+      337 +    if items:                                                 
+      338 +        lines.append("items:")                                
+      339 +        for item in items:                                    
+      340 +            lines.append(f"  - type: {item.get('type',        
+          +'agent')}")                                                   
+      341 +            lines.append(f"    path: {item.get('path', '')}") 
+      342 +    else:                                                     
+      343 +        lines.append("items:")                                
+      344 +        lines.append("  # - type: agent")                     
+      345 +        lines.append("  #   path: agents/my-agent.agent.md")  
+      346 +                                                              
+      347 +    lines.append(f"display:")                                 
+      348 +    lines.append(f"  icon: collection")                       
+      349 +    lines.append(f"  color: blue")                            
+      350 +    lines.append("")                                          
+      351 +                                                              
+      352 +    return "\n".join(lines)                                   
+      353 +                                                              
+      354 +                                                              
+      355  def _escape_yaml(s: str) -> str:                              
+      356      """Escape a string for use inside single-quoted YAML      
+           values."""                                                    
+      357      return s.replace("'", "''")                               
+
+● Need to add the missing import for Any and Dict with Any:
+
+● Update(agent_abilities/templates.py)
+  ⎿  Added 1 line, removed 1 line
+       4  following the awesome-copilot specification patterns.          
+       5  """                                                            
+       6  from pathlib import Path                                       
+       7 -from typing import Dict, List, Optional                        
+       7 +from typing import Any, Dict, List, Optional                   
+       8                                                                 
+       9  from .resource_types import to_kebab_case                      
+      10                                                                 
+
+● Step 3: Update manager.py
+
+  First, add imports for new templates and copilot to CLI_DIRS:
+
+● Update(agent_abilities/manager.py)
+  ⎿  Added 3 lines
+      18  from .resource_types import RESOURCE_TYPES, ResourceType,      
+          detect_resource_type, to_kebab_case                            
+      19  from .templates import (                                       
+      20      generate_agent,                                            
+      21 +    generate_collection,                                       
+      22 +    generate_hook,                                             
+      23      generate_instruction,                                      
+      24      generate_prompt,                                           
+      25      generate_skill,                                            
+      26 +    write_hook_folder,                                         
+      27      write_skill_folder,                                        
+      28  )                                                              
+      29                                                                 
+
+● Add copilot to CLI_DIRS:
+
+● Update(agent_abilities/manager.py)
+  ⎿  Added 1 line
+      80      "claude": Path.home() / ".claude",                         
+      81      "codex": Path.home() / ".codex",                           
+      82      "cursor": Path.home() / ".cursor",                         
+      83 +    "copilot": Path.home() / ".github" / "copilot",            
+      84  }                                                              
+      85                                                                 
+      86  # Legacy compat                                                
+
+● Now add parse_hooks_json and parse_collection_yaml functions, and update
+  parse_resource:
+
+● Update(agent_abilities/manager.py)
+  ⎿  Added 38 lines
+      132      return {"body_preview": content[:500]}                    
+      133                                                                
+      134                                                                
+      135 +def parse_hooks_json(file_path: Path) -> Optional[Dict[str,   
+          +Any]]:                                                        
+      136 +    """Parse a hooks.json file."""                            
+      137 +    if not file_path.exists():                                
+      138 +        return None                                           
+      139 +    try:                                                      
+      140 +        content =                                             
+          +json.loads(file_path.read_text(encoding="utf-8"))             
+      141 +        events = list(content.get("hooks", {}).keys())        
+      142 +        return {                                              
+      143 +            "version": content.get("version", 1),             
+      144 +            "events": events,                                 
+      145 +            "description": f"Hook with events: {',            
+          +'.join(events)}",                                             
+      146 +        }                                                     
+      147 +    except Exception as exc:                                  
+      148 +        log.warning("Failed to parse hooks.json at %s: %s",   
+          +file_path, exc)                                               
+      149 +        return None                                           
+      150 +                                                              
+      151 +                                                              
+      152 +def parse_collection_yaml(file_path: Path) ->                 
+          +Optional[Dict[str, Any]]:                                     
+      153 +    """Parse a .collection.yml file."""                       
+      154 +    if not file_path.exists():                                
+      155 +        return None                                           
+      156 +    try:                                                      
+      157 +        import yaml                                           
+      158 +        data =                                                
+          +yaml.safe_load(file_path.read_text(encoding="utf-8"))         
+      159 +        if not isinstance(data, dict):                        
+      160 +            return None                                       
+      161 +        return {                                              
+      162 +            "id": data.get("id"),                             
+      163 +            "name": data.get("name"),                         
+      164 +            "description": data.get("description"),           
+      165 +            "tags": data.get("tags", []),                     
+      166 +            "items": data.get("items", []),                   
+      167 +        }                                                     
+      168 +    except Exception as exc:                                  
+      169 +        log.warning("Failed to parse collection YAML at %s:   
+          +%s", file_path, exc)                                          
+      170 +        return None                                           
+      171 +                                                              
+      172 +                                                              
+      173  def parse_resource(path: Path, resource_type: Optional[str] = 
+            None) -> Optional[Dict[str, Any]]:                           
+      174      """Parse a resource from disk, auto-detecting type if not 
+            specified.                                                   
+      175                                                                
+
+● Now update the parse_resource dispatch to handle hooks and collections:
+
+● Update(agent_abilities/manager.py)
+  ⎿  Added 6 lines, removed 1 line
+      184      if rtype is None:                                         
+      185          return None                                           
+      186                                                                
+      187 -    if rtype.is_folder:                                       
+      187 +    if resource_type == "hook":                               
+      188          entry = path / rtype.entry_file                       
+      189 +        info = parse_hooks_json(entry)                        
+      190 +    elif resource_type == "collection":                       
+      191 +        info = parse_collection_yaml(path)                    
+      192 +    elif rtype.is_folder:                                     
+      193 +        entry = path / rtype.entry_file                       
+      194          info = parse_frontmatter(entry)                       
+      195      else:                                                     
+      196          info = parse_frontmatter(path)                        
+
+● Now update create_resource to handle hooks and collections:
+
+● Update(agent_abilities/manager.py)
+  ⎿  Added 29 lines, removed 1 line
+      296      ensure_source_dirs()                                      
+      297      type_dir = SOURCE_DIR / rtype.subdir                      
+      298                                                                
+      299 -    if rtype.is_folder:                                       
+      299 +    if resource_type == "hook":                               
+      300          dest = type_dir / slug                                
+      301          if dest.exists():                                     
+      302 +            return False, f"Hook folder already exists:       
+          +{dest}", None                                                 
+      303 +                                                              
+      304 +        hook_files = generate_hook(                           
+      305 +            name=slug,                                        
+      306 +            description=description,                          
+      307 +            events=kwargs.get("events"),                      
+      308 +        )                                                     
+      309 +        created_path = write_hook_folder(type_dir, slug,      
+          +hook_files)                                                   
+      310 +        return True, f"Created hook: {created_path}",         
+          +created_path                                                  
+      311 +                                                              
+      312 +    elif resource_type == "collection":                       
+      313 +        filename = rtype.filename_for(slug)                   
+      314 +        dest = type_dir / filename                            
+      315 +        if dest.exists():                                     
+      316 +            return False, f"Collection file already exists:   
+          +{dest}", None                                                 
+      317 +                                                              
+      318 +        content = generate_collection(                        
+      319 +            name=slug,                                        
+      320 +            description=description,                          
+      321 +            tags=kwargs.get("tags"),                          
+      322 +            items=kwargs.get("items"),                        
+      323 +        )                                                     
+      324 +        dest.write_text(content, encoding="utf-8")            
+      325 +        return True, f"Created collection: {dest}", dest      
+      326 +                                                              
+      327 +    elif rtype.is_folder:                                     
+      328 +        dest = type_dir / slug                                
+      329 +        if dest.exists():                                     
+      330              return False, f"Skill folder already exists:      
+           {dest}", None                                                 
+      331                                                                
+      332          skill_files = generate_skill(                         
+
+● Now update scan_for_resources to scan for hooks and collections:
+
+● Update(agent_abilities/manager.py)
+  ⎿  Added 15 lines, removed 2 lines
+      594      search = Path(search_path).expanduser().resolve()         
+      595      found: List[Dict[str, Any]] = []                          
+      596                                                                
+      597 -    # Scan for skills (folder-based)                          
+      597 +    # Scan for skills (folder-based with SKILL.md)            
+      598      for skill_md in search.rglob("SKILL.md"):                 
+      599          skill_dir = skill_md.parent                           
+      600          info = parse_resource(skill_dir, "skill")             
+     ...
+      604              info["is_registered"] = registered                
+      605              found.append(info)                                
+      606                                                                
+      607 -    # Scan for file-based types                               
+      607 +    # Scan for hooks (folder-based with hooks.json)           
+      608 +    for hooks_json in search.rglob("hooks.json"):             
+      609 +        hook_dir = hooks_json.parent                          
+      610 +        # Skip if this is inside a skill or other nested      
+          +structure                                                     
+      611 +        if (hook_dir / "SKILL.md").exists():                  
+      612 +            continue                                          
+      613 +        info = parse_resource(hook_dir, "hook")               
+      614 +        if info:                                              
+      615 +            slug = to_kebab_case(info.get("name",             
+          +hook_dir.name))                                               
+      616 +            registered = (CENTRAL_DIR / "hooks" /             
+          +slug).exists()                                                
+      617 +            info["is_registered"] = registered                
+      618 +            found.append(info)                                
+      619 +                                                              
+      620 +    # Scan for file-based types (agents, prompts,             
+          +instructions, collections)                                    
+      621      for type_key, rtype in RESOURCE_TYPES.items():            
+      622          if rtype.is_folder or rtype.extension is None:        
+      623              continue                                          
+
+● Step 4: Update CLI
+
+● Update(agent_abilities/cli.py)
+  ⎿  Added 15 lines
+       92          kwargs["with_refs"] = True                            
+       93      if args.with_scripts:                                     
+       94          kwargs["with_scripts"] = True                         
+       95 +    if args.events:                                           
+       96 +        kwargs["events"] = [e.strip() for e in                
+          +args.events.split(",")]                                       
+       97 +    if args.tags:                                             
+       98 +        kwargs["tags"] = [t.strip() for t in                  
+          +args.tags.split(",")]                                         
+       99 +    if args.items:                                            
+      100 +        # Parse "type:path,type:path" format                  
+      101 +        items = []                                            
+      102 +        for item_str in args.items.split(","):                
+      103 +            item_str = item_str.strip()                       
+      104 +            if ":" in item_str:                               
+      105 +                itype, ipath = item_str.split(":", 1)         
+      106 +                items.append({"type": itype.strip(), "path":  
+          +ipath.strip()})                                               
+      107 +            else:                                             
+      108 +                items.append({"type": "agent", "path":        
+          +item_str})                                                    
+      109 +        kwargs["items"] = items                               
+      110                                                                
+      111      success, msg, path = create_resource(                     
+      112          resource_type=args.type,                              
+
+● Add the new args to the create subparser:
+
+● Update(agent_abilities/cli.py)
+  ⎿  Added 3 lines
+      327      p_create.add_argument("--license", help="License type     
+           (skills)")                                                    
+      328      p_create.add_argument("--with-refs", action="store_true", 
+            help="Create references/ dir (skills)")                      
+      329      p_create.add_argument("--with-scripts",                   
+           action="store_true", help="Create scripts/ dir (skills)")     
+      330 +    p_create.add_argument("--events", help="Comma-separated   
+          +event list for hooks (sessionStart, sessionEnd, etc.)")       
+      331 +    p_create.add_argument("--tags", help="Comma-separated tag 
+          + list (collections)")                                         
+      332 +    p_create.add_argument("--items", help="Comma-separated    
+          +items as type:path (collections)")                            
+      333      p_create.add_argument("-r", "--register",                 
+           action="store_true", help="Auto-register after creating")     
+      334      p_create.set_defaults(func=cmd_create)                    
+      335                                                                
+
+● Update the parser description and sync CLI choices to include copilot:
+
+● Update(agent_abilities/cli.py)
+  ⎿  Added 1 line, removed 1 line
+      304                                                                
+      305  def main():                                                   
+      306      parser = argparse.ArgumentParser(                         
+      307 -        description="Manage resources for AI coding agents    
+          -(agents, prompts, instructions, skills)",                     
+      307 +        description="Manage resources for AI coding agents    
+          +(agents, prompts, instructions, skills, hooks, collections)", 
+      308          prog="abilities",                                     
+      309      )                                                         
+      310                                                                
+
+● Step 5: Version bump + exports
+
+● Update(agent_abilities/__init__.py)
+  ⎿  Added 5 lines, removed 1 line
+      23  from .resource_types import RESOURCE_TYPES, ResourceType,      
+          detect_resource_type, to_kebab_case                            
+      24  from .templates import (                                       
+      25      generate_agent,                                            
+      26 +    generate_collection,                                       
+      27 +    generate_hook,                                             
+      28      generate_prompt,                                           
+      29      generate_instruction,                                      
+      30      generate_skill,                                            
+      31  )                                                              
+      32                                                                 
+      33 -__version__ = "0.2.0"                                          
+      33 +__version__ = "0.3.0"                                          
+      34                                                                 
+      35  __all__ = [                                                    
+      36      # Manager                                                  
+     ...
+      53      "to_kebab_case",                                           
+      54      # Templates                                                
+      55      "generate_agent",                                          
+      56 +    "generate_collection",                                     
+      57 +    "generate_hook",                                           
+      58      "generate_prompt",                                         
+      59      "generate_instruction",                                    
+      60      "generate_skill",                                          
+
+● Update(pyproject.toml)
+  ⎿  Added 2 lines, removed 2 lines
+       4                                                                 
+       5  [project]                                                      
+       6  name = "agent-abilities"                                       
+       7 -version = "0.2.0"                                              
+       8 -description = "Universal resource manager for AI coding agents 
+         --- manages agents, prompts, instructions, and skills"          
+       7 +version = "0.3.0"                                              
+       8 +description = "Universal resource manager for AI coding agents 
+         +-- manages agents, prompts, instructions, skills, hooks, and   
+         +collections"                                                   
+       9  authors = [{name = "mcarls"}]                                  
+      10  requires-python = ">=3.8"                                      
+      11  dependencies = [                                               
+
+● Step 6: Copy and adapt template docs from awesome-copilot
+
+  Let me read the source docs and create adapted versions in parallel.
+
+● Read 6 files (ctrl+o to expand)
+
+● Bash(ls ~/projects/awesome-copilot/collections/TEMPLATE.md 2>/dev/null && echo
+       "EXISTS" || echo "NOT_FOUND")
+  ⎿  Error: Sibling tool call errored
+
+● The files are huge (they're full catalog docs with tables of resources). Let
+  me read just the format spec sections from each.
+
+● Read 4 files (ctrl+o to expand)
+
+● These files are massive catalog docs. Let me use grep to find the format spec
+  sections and then write concise template docs based on our ResourceType
+  definitions.
+
+● Searched for 1 pattern, read 2 files (ctrl+o to expand)
+
+● OK, the line counts are fine - the token issue was probably from reading all
+  at once. Let me read them individually.
+
+● Read 1 file (ctrl+o to expand)
+
+● 168 lines but 63k tokens? Must have massive tables. Let me just read the top
+  portion which should have the spec.
+
+● Read 6 files (ctrl+o to expand)
+
+● Good - I have all the spec info I need. The awesome-copilot docs are mostly
+  install tables with badges, so I'll write concise format-spec docs based on
+  what I've read. Let me create all 6 template docs now.
+
+● Write(docs/TEMPLATE_AGENTS.md)
+  ⎿  Wrote 71 lines to docs/TEMPLATE_AGENTS.md
+     # Agent File Format Specification
+
+     > Adapted from
+     [awesome-copilot](https://github.com/github/awesome-copilot) agent
+     specification.
+
+     ## File Pattern
+
+     ```
+     <name>.agent.md
+     ```
+
+     … +61 lines (ctrl+o to expand)
+
+● Write(docs/TEMPLATE_PROMPTS.md)
+  ⎿  Wrote 64 lines to docs/TEMPLATE_PROMPTS.md
+     # Prompt File Format Specification
+
+     > Adapted from
+     [awesome-copilot](https://github.com/github/awesome-copilot) prompt
+     specification.
+
+     ## File Pattern
+
+     ```
+     <name>.prompt.md
+     ```
+
+     … +54 lines (ctrl+o to expand)
+
+● Write(docs/TEMPLATE_INSTRUCTIONS.md)
+  ⎿  Wrote 68 lines to docs/TEMPLATE_INSTRUCTIONS.md
+     # Instruction File Format Specification
+
+     > Adapted from
+     [awesome-copilot](https://github.com/github/awesome-copilot)
+     instruction specification.
+
+     ## File Pattern
+
+     ```
+     <name>.instructions.md
+     ```
+
+     … +58 lines (ctrl+o to expand)
+
+● Write(docs/TEMPLATE_SKILLS.md)
+  ⎿  Wrote 65 lines to docs/TEMPLATE_SKILLS.md
+     # Skill Folder Format Specification
+
+     > Based on the [Agent Skills 
+     specification](https://agentskills.io/specification) and
+     [awesome-copilot](https://github.com/github/awesome-copilot).
+
+     ## Structure
+
+     ```
+     skills/
+       my-skill/
+         SKILL.md           # Required: Entry file with frontmatter +
+     instructions
+     … +55 lines (ctrl+o to expand)
+
+● Write(docs/TEMPLATE_HOOKS.md)
+  ⎿  Wrote 72 lines to docs/TEMPLATE_HOOKS.md
+     # Hook Folder Format Specification
+
+     > Based on the [GitHub Copilot hooks specification](https://docs.githu
+     b.com/en/copilot/how-tos/use-copilot-agents/coding-agent/use-hooks)
+     and [awesome-copilot](https://github.com/github/awesome-copilot).
+
+     ## Structure
+
+     ```
+     hooks/
+       my-hook/
+         hooks.json         # Required: Event configuration
+     … +62 lines (ctrl+o to expand)
+
+● Write(docs/TEMPLATE_COLLECTIONS.md)
+  ⎿  Wrote 74 lines to docs/TEMPLATE_COLLECTIONS.md
+     # Collection File Format Specification
+
+     > Adapted from
+     [awesome-copilot](https://github.com/github/awesome-copilot)
+     collection format.
+
+     ## File Pattern
+
+     ```
+     <name>.collection.yml
+     ```
+
+     … +64 lines (ctrl+o to expand)
+
+● Step 7: Add tests
+
+● Read 1 file (ctrl+o to expand)
+
+● Now I'll add the new test cases for hooks, collections, and copilot:
+
+● Update(tests/test_manager.py)
+  ⎿  Added 5 lines
+      12      scan_for_resources,                                        
+      13      get_resource_info,                                         
+      14      parse_frontmatter,                                         
+      15 +    parse_hooks_json,                                          
+      16 +    parse_collection_yaml,                                     
+      17      parse_resource,                                            
+      18      validate_resource,                                         
+      19      CENTRAL_DIR,                                               
+      20 +    CLI_DIRS,                                                  
+      21  )                                                              
+      22 +from agent_abilities.resource_types import                     
+         +detect_resource_type                                           
+      23 +from agent_abilities.templates import generate_hook,           
+         +generate_collection                                            
+      24                                                                 
+      25                                                                 
+      26  @pytest.fixture                                                
+
+● Now add fixtures and tests at the end of the file:
+
+● Update(tests/test_manager.py)
+  ⎿  Added 265 lines
+      316      content = (path / "SKILL.md").read_text()                 
+      317      assert "name: test-create-skill" in content               
+      318      assert "A created skill for testing" in content           
+      319 +                                                              
+      320 +                                                              
+      321 +# ── Hook Fixtures                                            
+          +─────────────────────────────────────────────────────────     
+      322 +                                                              
+      323 +                                                              
+      324 +@pytest.fixture                                               
+      325 +def temp_hook_dir():                                          
+      326 +    """Create a temporary hook directory with hooks.json +    
+          +shell script."""                                              
+      327 +    with tempfile.TemporaryDirectory() as tmpdir:             
+      328 +        hook_dir = Path(tmpdir) / "test-hook"                 
+      329 +        hook_dir.mkdir()                                      
+      330 +        import json                                           
+      331 +        hooks_config = {                                      
+      332 +            "version": 1,                                     
+      333 +            "hooks": {                                        
+      334 +                "sessionStart": [{"type": "command",          
+          +"command": "./start.sh"}],                                    
+      335 +                "sessionEnd": [{"type": "command", "command": 
+          + "./end.sh"}],                                                
+      336 +            },                                                
+      337 +        }                                                     
+      338 +        (hook_dir /                                           
+          +"hooks.json").write_text(json.dumps(hooks_config, indent=2))  
+      339 +        (hook_dir / "start.sh").write_text("#!/bin/bash\necho 
+          + 'started'\n")                                                
+      340 +        (hook_dir / "end.sh").write_text("#!/bin/bash\necho   
+          +'ended'\n")                                                   
+      341 +        (hook_dir / "README.md").write_text("# Test Hook\n\nA 
+          + test hook.\n")                                               
+      342 +        yield str(hook_dir)                                   
+      343 +                                                              
+      344 +                                                              
+      345 +@pytest.fixture                                               
+      346 +def temp_collection_file():                                   
+      347 +    """Create a temporary .collection.yml file."""            
+      348 +    with tempfile.TemporaryDirectory() as tmpdir:             
+      349 +        col_file = Path(tmpdir) / "test-tools.collection.yml" 
+      350 +        col_file.write_text(                                  
+      351 +            "id: test-tools\n"                                
+      352 +            "name: 'Test Tools'\n"                            
+      353 +            "description: 'A test collection'\n"              
+      354 +            "tags:\n"                                         
+      355 +            "  - testing\n"                                   
+      356 +            "  - tools\n"                                     
+      357 +            "items:\n"                                        
+      358 +            "  - type: agent\n"                               
+      359 +            "    path: agents/my-agent.agent.md\n"            
+      360 +        )                                                     
+      361 +        yield str(col_file)                                   
+      362 +                                                              
+      363 +                                                              
+      364 +# ── Hook Tests                                               
+          +────────────────────────────────────────────────────────────  
+      365 +                                                              
+      366 +                                                              
+      367 +def test_parse_hooks_json(temp_hook_dir):                     
+      368 +    """Test parsing a hooks.json file."""                     
+      369 +    result = parse_hooks_json(Path(temp_hook_dir) /           
+          +"hooks.json")                                                 
+      370 +                                                              
+      371 +    assert result is not None                                 
+      372 +    assert result["version"] == 1                             
+      373 +    assert "sessionStart" in result["events"]                 
+      374 +    assert "sessionEnd" in result["events"]                   
+      375 +    assert "description" in result                            
+      376 +                                                              
+      377 +                                                              
+      378 +def test_parse_hooks_json_missing():                          
+      379 +    """Test parsing nonexistent hooks.json returns None."""   
+      380 +    result =                                                  
+          +parse_hooks_json(Path("/nonexistent/hooks.json"))             
+      381 +    assert result is None                                     
+      382 +                                                              
+      383 +                                                              
+      384 +def test_detect_hook_type(temp_hook_dir):                     
+      385 +    """Test detect_resource_type identifies hook              
+          +directories."""                                               
+      386 +    result = detect_resource_type(temp_hook_dir)              
+      387 +    assert result == "hook"                                   
+      388 +                                                              
+      389 +                                                              
+      390 +def test_parse_resource_hook(temp_hook_dir):                  
+      391 +    """Test parsing a hook resource."""                       
+      392 +    result = parse_resource(Path(temp_hook_dir), "hook")      
+      393 +                                                              
+      394 +    assert result is not None                                 
+      395 +    assert result["type"] == "hook"                           
+      396 +    assert "events" in result                                 
+      397 +                                                              
+      398 +                                                              
+      399 +def test_scan_finds_hooks():                                  
+      400 +    """Test scanning finds hook directories."""               
+      401 +    with tempfile.TemporaryDirectory() as tmpdir:             
+      402 +        import json                                           
+      403 +        hook_dir = Path(tmpdir) / "my-hook"                   
+      404 +        hook_dir.mkdir()                                      
+      405 +        hooks_config = {                                      
+      406 +            "version": 1,                                     
+      407 +            "hooks": {"sessionEnd": [{"type": "command",      
+          +"command": "./run.sh"}]},                                     
+      408 +        }                                                     
+      409 +        (hook_dir /                                           
+          +"hooks.json").write_text(json.dumps(hooks_config))            
+      410 +                                                              
+      411 +        found = scan_for_resources(tmpdir)                    
+      412 +        types_found = {r["type"] for r in found}              
+      413 +        assert "hook" in types_found                          
+      414 +                                                              
+      415 +                                                              
+      416 +def test_create_hook(tmp_path, monkeypatch):                  
+      417 +    """Test creating a hook resource from template."""        
+      418 +    import agent_abilities.manager as mgr                     
+      419 +    monkeypatch.setattr(mgr, "SOURCE_DIR", tmp_path)          
+      420 +                                                              
+      421 +    success, msg, path = create_resource(                     
+      422 +        "hook", "test-hook", "Auto-commit on session end",    
+      423 +        events=["sessionEnd"],                                
+      424 +    )                                                         
+      425 +    assert success                                            
+      426 +    assert path is not None                                   
+      427 +    assert path.is_dir()                                      
+      428 +    assert (path / "hooks.json").exists()                     
+      429 +                                                              
+      430 +    import json                                               
+      431 +    config = json.loads((path / "hooks.json").read_text())    
+      432 +    assert "sessionEnd" in config["hooks"]                    
+      433 +                                                              
+      434 +                                                              
+      435 +def test_generate_hook_template():                            
+      436 +    """Test generate_hook returns correct structure."""       
+      437 +    files = generate_hook("my-hook", "A test hook",           
+          +events=["sessionStart", "sessionEnd"])                        
+      438 +                                                              
+      439 +    assert "hooks.json" in files                              
+      440 +    assert "my-hook.sh" in files                              
+      441 +    assert "README.md" in files                               
+      442 +                                                              
+      443 +    import json                                               
+      444 +    config = json.loads(files["hooks.json"])                  
+      445 +    assert config["version"] == 1                             
+      446 +    assert "sessionStart" in config["hooks"]                  
+      447 +    assert "sessionEnd" in config["hooks"]                    
+      448 +                                                              
+      449 +                                                              
+      450 +# ── Collection Tests                                         
+          +──────────────────────────────────────────────────────        
+      451 +                                                              
+      452 +                                                              
+      453 +def test_parse_collection_yaml(temp_collection_file):         
+      454 +    """Test parsing a .collection.yml file."""                
+      455 +    result =                                                  
+          +parse_collection_yaml(Path(temp_collection_file))             
+      456 +                                                              
+      457 +    assert result is not None                                 
+      458 +    assert result["id"] == "test-tools"                       
+      459 +    assert result["name"] == "Test Tools"                     
+      460 +    assert result["description"] == "A test collection"       
+      461 +    assert "testing" in result["tags"]                        
+      462 +    assert len(result["items"]) == 1                          
+      463 +                                                              
+      464 +                                                              
+      465 +def test_parse_collection_yaml_missing():                     
+      466 +    """Test parsing nonexistent collection file returns       
+          +None."""                                                      
+      467 +    result = parse_collection_yaml(Path("/nonexistent/file.co 
+          +llection.yml"))                                               
+      468 +    assert result is None                                     
+      469 +                                                              
+      470 +                                                              
+      471 +def test_detect_collection_type(temp_collection_file):        
+      472 +    """Test detect_resource_type identifies collection        
+          +files."""                                                     
+      473 +    result = detect_resource_type(temp_collection_file)       
+      474 +    assert result == "collection"                             
+      475 +                                                              
+      476 +                                                              
+      477 +def test_parse_resource_collection(temp_collection_file):     
+      478 +    """Test parsing a collection resource."""                 
+      479 +    result = parse_resource(Path(temp_collection_file),       
+          +"collection")                                                 
+      480 +                                                              
+      481 +    assert result is not None                                 
+      482 +    assert result["type"] == "collection"                     
+      483 +    assert result["name"] == "Test Tools"                     
+      484 +                                                              
+      485 +                                                              
+      486 +def test_scan_finds_collections():                            
+      487 +    """Test scanning finds .collection.yml files."""          
+      488 +    with tempfile.TemporaryDirectory() as tmpdir:             
+      489 +        col_file = Path(tmpdir) / "my-col.collection.yml"     
+      490 +        col_file.write_text(                                  
+      491 +            "id: my-col\nname: 'My Collection'\ndescription:  
+          +'Test'\ntags: []\nitems: []\n"                                
+      492 +        )                                                     
+      493 +                                                              
+      494 +        found = scan_for_resources(tmpdir)                    
+      495 +        types_found = {r["type"] for r in found}              
+      496 +        assert "collection" in types_found                    
+      497 +                                                              
+      498 +                                                              
+      499 +def test_create_collection(tmp_path, monkeypatch):            
+      500 +    """Test creating a collection resource from template."""  
+      501 +    import agent_abilities.manager as mgr                     
+      502 +    monkeypatch.setattr(mgr, "SOURCE_DIR", tmp_path)          
+      503 +                                                              
+      504 +    success, msg, path = create_resource(                     
+      505 +        "collection", "my-tools", "A curated collection",     
+      506 +        tags=["dev", "tools"],                                
+      507 +    )                                                         
+      508 +    assert success                                            
+      509 +    assert path is not None                                   
+      510 +    assert path.exists()                                      
+      511 +    assert path.name == "my-tools.collection.yml"             
+      512 +                                                              
+      513 +    content = path.read_text()                                
+      514 +    assert "id: my-tools" in content                          
+      515 +    assert "A curated collection" in content                  
+      516 +                                                              
+      517 +                                                              
+      518 +def test_generate_collection_template():                      
+      519 +    """Test generate_collection returns valid YAML            
+          +content."""                                                   
+      520 +    content = generate_collection(                            
+      521 +        "my-tools", "Test collection",                        
+      522 +        tags=["a", "b"],                                      
+      523 +        items=[{"type": "agent", "path":                      
+          +"agents/x.agent.md"}],                                        
+      524 +    )                                                         
+      525 +    assert "id: my-tools" in content                          
+      526 +    assert "Test collection" in content                       
+      527 +    assert "  - a" in content                                 
+      528 +    assert "  - b" in content                                 
+      529 +    assert "path: agents/x.agent.md" in content               
+      530 +                                                              
+      531 +                                                              
+      532 +# ── Copilot CLI Target                                       
+          +────────────────────────────────────────────────────          
+      533 +                                                              
+      534 +                                                              
+      535 +def test_copilot_in_cli_dirs():                               
+      536 +    """Test that copilot is registered as a CLI target."""    
+      537 +    assert "copilot" in CLI_DIRS                              
+      538 +    assert ".github" in str(CLI_DIRS["copilot"])              
+      539 +    assert "copilot" in str(CLI_DIRS["copilot"])              
+      540 +                                                              
+      541 +                                                              
+      542 +# ── Scan Mixed with New Types                                
+          +────────────────────────────────────────────                  
+      543 +                                                              
+      544 +                                                              
+      545 +def test_scan_all_six_types():                                
+      546 +    """Test scanning a directory with all 6 resource          
+          +types."""                                                     
+      547 +    with tempfile.TemporaryDirectory() as tmpdir:             
+      548 +        import json                                           
+      549 +        base = Path(tmpdir)                                   
+      550 +                                                              
+      551 +        # Agent                                               
+      552 +        (base / "test.agent.md").write_text(                  
+      553 +            "---\ndescription: test agent\n---\n\n# Agent\n"  
+      554 +        )                                                     
+      555 +        # Prompt                                              
+      556 +        (base / "test.prompt.md").write_text(                 
+      557 +            "---\ndescription: test prompt\n---\n\n#          
+          +Prompt\n"                                                     
+      558 +        )                                                     
+      559 +        # Instruction                                         
+      560 +        (base / "test.instructions.md").write_text(           
+      561 +            "---\ndescription: test rules\napplyTo:           
+          +'**'\n---\n\n# Rules\n"                                       
+      562 +        )                                                     
+      563 +        # Skill                                               
+      564 +        skill_dir = base / "test-skill"                       
+      565 +        skill_dir.mkdir()                                     
+      566 +        (skill_dir / "SKILL.md").write_text(                  
+      567 +            "---\nname: test-skill\ndescription: test skill   
+          +desc\n---\n\n# Skill\n"                                       
+      568 +        )                                                     
+      569 +        # Hook                                                
+      570 +        hook_dir = base / "test-hook"                         
+      571 +        hook_dir.mkdir()                                      
+      572 +        (hook_dir / "hooks.json").write_text(json.dumps({     
+      573 +            "version": 1,                                     
+      574 +            "hooks": {"sessionStart": [{"type": "command",    
+          +"command": "./run.sh"}]},                                     
+      575 +        }))                                                   
+      576 +        # Collection                                          
+      577 +        (base / "test.collection.yml").write_text(            
+      578 +            "id: test\nname: 'Test'\ndescription: 'Test       
+          +col'\ntags: []\nitems: []\n"                                  
+      579 +        )                                                     
+      580 +                                                              
+      581 +        found = scan_for_resources(tmpdir)                    
+      582 +        types_found = {r["type"] for r in found}              
+      583 +        assert types_found == {"agent", "prompt",             
+          +"instruction", "skill", "hook", "collection"}                 
+
+● Now let's run the tests to verify everything works:
+
+● Bash(cd /data/data/com.termux/files/home/scripts/modules/agent_abilities &&
+      python -m pytest tests/ -v 2>&1)
+  ⎿  ============================= test session starts ====================
+     ==========
+     platform linux -- Python 3.12.12, pytest-8.4.2, pluggy-1.6.0 -- /data/
+     … +47 lines (ctrl+o to expand)
+
+● All 35 tests pass. Let me also do a quick CLI smoke test:
+
+● Bash(python -m agent_abilities.cli types 2>&1)
+  ⎿  Available Resource Types:
+
+       agent
+     … +24 lines (ctrl+o to expand)
+
+● All 6 types showing. Let me mark the last task complete:
+
+● All done. Here's the summary:
+
+  Agent Abilities v0.3.0 - Complete
+
+  35/35 tests passing, all 7 steps implemented:
+
+  Step: 1
+  Files: resource_types.py
+  What Changed: Added hook (folder, hooks.json) and collection (.collection.yml)
+
+    types + detection
+  ────────────────────────────────────────
+  Step: 2
+  Files: templates.py
+  What Changed: Added generate_hook(), write_hook_folder(),
+  generate_collection()
+  ────────────────────────────────────────
+  Step: 3
+  Files: manager.py
+  What Changed: Added parse_hooks_json(), parse_collection_yaml(), copilot CLI
+    target, updated parse_resource() dispatch, create_resource() dispatch, and
+    scan_for_resources()
+  ────────────────────────────────────────
+  Step: 4
+  Files: cli.py
+  What Changed: Added --events, --tags, --items args to create command
+  ────────────────────────────────────────
+  Step: 5
+  Files: __init__.py + pyproject.toml
+  What Changed: Version 0.2.0 -> 0.3.0, exported new generators
+  ────────────────────────────────────────
+  Step: 6
+  Files: docs/
+  What Changed: 6 new TEMPLATE docs (agents, prompts, instructions, skills,
+    hooks, collections)
+  ────────────────────────────────────────
+  Step: 7
+  Files: tests/test_manager.py
+  What Changed: 16 new tests (hooks, collections, copilot target, all-6-types
+    scan)
+
+✻ Sautéed for 5m 15s
