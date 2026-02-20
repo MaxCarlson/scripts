@@ -248,50 +248,63 @@ class TasksScreen(Screen):
             self.notify(message="No project context.", title="Assign to AI", severity="error")
             return
 
-        try:
-            # Initialize task queue
-            queue = TaskQueue()
+        async def confirm_cb(value: str) -> None:
+            if (value or "").strip().lower() != "queue":
+                self.notify("Queue operation cancelled.", title="Assign to AI")
+                return
+            try:
+                # Initialize task queue
+                queue = TaskQueue()
 
-            # Get task details for context
-            task_details = ""
-            if selected_task.details_md_path:
-                details_path = Path(selected_task.details_md_path)
-                if details_path.exists():
-                    task_details = details_path.read_text()
+                # Get task details for context
+                task_details = ""
+                if selected_task.details_md_path:
+                    details_path = Path(selected_task.details_md_path)
+                    if details_path.exists():
+                        task_details = details_path.read_text()
 
-            # Create comprehensive description
-            description = f"{selected_task.title}\n\n{task_details}".strip()
+                # Create comprehensive description
+                description = f"{selected_task.title}\n\n{task_details}".strip()
 
-            # Determine working directory (default to scripts repo)
-            working_dir = os.path.expanduser("~/scripts")
+                # Determine working directory (default to scripts repo)
+                working_dir = os.path.expanduser("~/scripts")
 
-            # Submit to queue
-            queue_task_id = queue.create_task(
-                project_id=str(self.current_project.id),
-                task_title=selected_task.title,
-                description=description,
-                task_id=str(selected_task.id),
-                priority=TaskPriority.NORMAL,
-                cli_preference="claude",
-                working_dir=working_dir,
-                context={
-                    "project_name": self.current_project.name,
-                    "related_files": [],
-                    "dependencies": [],
-                    "tags": []
-                }
-            )
+                # Submit to queue
+                queue_task_id = queue.create_task(
+                    project_id=str(self.current_project.id),
+                    task_title=selected_task.title,
+                    description=description,
+                    task_id=str(selected_task.id),
+                    priority=TaskPriority.NORMAL,
+                    cli_preference="claude",
+                    working_dir=working_dir,
+                    context={
+                        "project_name": self.current_project.name,
+                        "related_files": [],
+                        "dependencies": [],
+                        "tags": [],
+                        "approval": {
+                            "approved": True,
+                            "approved_by": "kmtui-user",
+                        },
+                    }
+                )
 
-            self.notify(
-                message=f"Task '{selected_task.title}' submitted to AI queue (ID: {queue_task_id[:8]}...)",
-                title="✅ Assigned to AI",
-                severity="information"
-            )
-            log.info(f"Task {selected_task.id} assigned to AI queue as {queue_task_id}")
+                self.notify(
+                    message=f"Task '{selected_task.title}' submitted to AI queue (ID: {queue_task_id[:8]}...)",
+                    title="✅ Assigned to AI",
+                    severity="information"
+                )
+                log.info(f"Task {selected_task.id} assigned to AI queue as {queue_task_id}")
 
-        except Exception as e:
-            self.notify(message=f"Failed to assign task: {e}", title="Error", severity="error")
-            log.error(f"Error assigning task to AI: {e}", exc_info=True)
+            except Exception as e:
+                self.notify(message=f"Failed to assign task: {e}", title="Error", severity="error")
+                log.error(f"Error assigning task to AI: {e}", exc_info=True)
+
+        await self.app.push_screen(
+            InputDialog(prompt_text="Type 'queue' to approve sending this task to AI:"),
+            confirm_cb,
+        )
 
     async def action_edit_task_title(self) -> None:
         """Edit the selected task's title via dialog."""
