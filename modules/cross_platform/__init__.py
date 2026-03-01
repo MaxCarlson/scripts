@@ -25,9 +25,6 @@ from .history_utils import HistoryUtils # New Import
 from .tmux_utils import TmuxManager
 from .path_utils import expand_path, to_posix_path, to_native_path
 
-# Package manager inspection
-from .package_manager import detect_package_managers, list_executable_paths, probe_tool_installations
-
 # Debugging and logging utilities
 from . import debug_utils
 
@@ -52,7 +49,4 @@ __all__ = [
     "expand_path",
     "to_posix_path",
     "to_native_path",
-    "detect_package_managers",
-    "list_executable_paths",
-    "probe_tool_installations",
 ]

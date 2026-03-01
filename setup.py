@@ -668,6 +668,13 @@ def main():
                   "--scripts-dir", str(scripts_dir),
                   "--dotfiles-dir", str(dotfiles_dir))
 
+    # Discover and symlink SKILL.md-based skills to CLI directories
+    with sui_section("Agent skill symlinks (setup_skills.py)", level="major"):
+        skill_args = []
+        if args.verbose:
+            skill_args.append("--verbose")
+        run_setup(SCRIPTS_SETUP_PACKAGE_DIR / "setup_skills.py", *skill_args)
+
     # Setup automatic venv activation
     with sui_section("Virtual environment auto-activation setup", level="major"):
         try:
