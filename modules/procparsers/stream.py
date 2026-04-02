@@ -107,6 +107,15 @@ def iter_parsed_events(
             if evt:
                 yield evt
                 last_event_time = time.monotonic()
+            else:
+                # Unrecognized line (e.g. yt-dlp info-fetch output): the queue never
+                # goes empty so the timeout branch above never fires.  Emit a heartbeat
+                # here if we haven't yielded anything in the expected interval so that
+                # callers (stall detection, deadline checks) still get to run.
+                now = time.monotonic()
+                if now - last_event_time >= heartbeat_secs:
+                    yield {"event": "heartbeat", "tool": tool, "last_line": last_line_text}
+                    last_event_time = now
     finally:
         stop.set()
         t.join(timeout=1)

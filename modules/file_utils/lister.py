@@ -60,10 +60,16 @@ class Entry:
         """Check if folder size has been calculated."""
         return self.calculated_size is not None
 
+def _safe_timestamp(dt) -> float:
+    try:
+        return dt.timestamp()
+    except (OSError, OverflowError, ValueError):
+        return 0.0
+
 SORT_FUNCS: Dict[str, Callable[[Entry], object]] = {
-    "created": lambda entry: entry.created.timestamp(),
-    "modified": lambda entry: entry.modified.timestamp(),
-    "accessed": lambda entry: entry.accessed.timestamp(),
+    "created": lambda entry: _safe_timestamp(entry.created),
+    "modified": lambda entry: _safe_timestamp(entry.modified),
+    "accessed": lambda entry: _safe_timestamp(entry.accessed),
     "size": lambda entry: entry.get_display_size(),  # Use calculated size if available
     "name": lambda entry: entry.name.lower(),
 }

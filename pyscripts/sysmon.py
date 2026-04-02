@@ -34,9 +34,19 @@ if os.name == "nt":
         def __enter__(self): return self
         def __exit__(self, et, ex, tb): return False
         def read(self) -> Optional[str]:
-            if msvcrt.kbhit():
-                return msvcrt.getwch()
-            return None
+            if not msvcrt.kbhit():
+                return None
+            ch = msvcrt.getwch()
+            if ch in ('\x00', '\xe0'):
+                # Extended key: next byte is the scancode
+                if msvcrt.kbhit():
+                    ch2 = msvcrt.getwch()
+                    if ch2 == 'K': return 'LEFT'
+                    if ch2 == 'M': return 'RIGHT'
+                    if ch2 == 'H': return 'UP'
+                    if ch2 == 'P': return 'DOWN'
+                return None
+            return ch
 else:
     import tty, termios
 
@@ -56,9 +66,21 @@ else:
         def read(self) -> Optional[str]:
             if not getattr(self, "ok", False): return None
             r, _, _ = select.select([sys.stdin], [], [], 0)
-            if r:
-                return sys.stdin.read(1)
-            return None
+            if not r: return None
+            ch = sys.stdin.read(1)
+            if ch == '\x1b':
+                # Arrow keys send ESC [ A/B/C/D
+                r2, _, _ = select.select([sys.stdin], [], [], 0.05)
+                if r2 and sys.stdin.read(1) == '[':
+                    r3, _, _ = select.select([sys.stdin], [], [], 0.05)
+                    if r3:
+                        ch3 = sys.stdin.read(1)
+                        if ch3 == 'A': return 'UP'
+                        if ch3 == 'B': return 'DOWN'
+                        if ch3 == 'C': return 'RIGHT'
+                        if ch3 == 'D': return 'LEFT'
+                return None
+            return ch
 
 # ------------------------------ Constants ------------------------------------
 CPU_SORTS  = ["cpu", "memory", "disk", "name", "random"]
@@ -71,6 +93,19 @@ GRAPH_MODES = ["off", "total"]   # tiny-terminal friendly
 # ------------------------------ Helpers --------------------------------------
 def term_width() -> int:
     return shutil.get_terminal_size((100, 24)).columns
+
+def term_height() -> int:
+    return shutil.get_terminal_size((100, 24)).lines
+
+def _visual_lines(text: str, inner_width: int) -> int:
+    """Count terminal rows the text occupies after wrapping inside a Panel."""
+    if inner_width <= 0:
+        return 1
+    total = 0
+    for para in text.split('\n'):
+        # Each paragraph takes at least 1 line; long ones wrap
+        total += max(1, -(-len(para) // inner_width))  # ceiling division
+    return total
 
 def clamp(v: float, lo: float, hi: float) -> float:
     return min(max(v, lo), hi)
@@ -209,23 +244,43 @@ class CpuState:
         self.hist_total = []
         self.graph_mode = "total"
         self.label_mode = "name"
+        self.col_offset = 0
+
+_CPU_ALL_COLS = ["PID", "Name", "CPU %", "Mem(MB)", "DΔ(MB)", "RΔ(MB)", "WΔ(MB)"]
 
 def render_cpu_table(rows: List[dict], total: int, limit: int, sort_mode: str,
                      cpu_state: CpuState) -> Panel:
     width = term_width()
-    cols = cpu_columns_for_width(width, cpu_state.label_mode)
-    name_cap = max(8, min(24, width - 46))  # trim earlier to keep numbers visible
+    inner = max(1, width - 4)  # panel inner width (borders + padding)
+    # Compute how many proc rows fit so the footer is always visible
+    graph_lines = 1 if cpu_state.graph_mode != "off" else 0
+    footer_text = "[v] view  [s] sort  [+/-] topN  ]/[ interval  g graphs  x label  [q] quit\n←/→ scroll columns"
+    cap_text = f"Showing {min(limit, 99)} of {total} procs   |   sort: {sort_mode}"
+    overhead = (2                                          # panel borders
+                + graph_lines                             # sparkline
+                + 1                                       # blank line before table
+                + 2                                       # col header + separator
+                + _visual_lines(cap_text, inner)          # status line
+                + _visual_lines(footer_text, inner))      # footer (may wrap on narrow screens)
+    display_limit = max(1, min(limit, term_height() - overhead))
+
+    # Apply horizontal scroll: skip leading columns, always keep at least "CPU %"
+    base_cols = cpu_columns_for_width(width, cpu_state.label_mode)
+    offset = min(cpu_state.col_offset, max(0, len(base_cols) - 1))
+    cols = base_cols[offset:] if offset < len(base_cols) else base_cols[-1:]
+
+    name_cap = max(8, min(24, width - 46))
 
     table = Table(box=box.SIMPLE_HEAVY, expand=True, show_header=True)
     for col in cols:
         if col == "PID":
-            table.add_column("PID", justify="right", no_wrap=True)
+            table.add_column("PID", justify="right", no_wrap=True, min_width=5)
         elif col == "Name":
             table.add_column("Name", justify="left", no_wrap=True, overflow="ellipsis", width=name_cap)
         else:
-            table.add_column(col, justify="right", no_wrap=True)
+            table.add_column(col, justify="right", no_wrap=True, min_width=6)
 
-    for r in rows[:limit]:
+    for r in rows[:display_limit]:
         vals = []
         if "PID" in cols:     vals.append(str(r["pid"]))
         if "Name" in cols:    vals.append(truncate(r["name"], name_cap))
@@ -236,9 +291,9 @@ def render_cpu_table(rows: List[dict], total: int, limit: int, sort_mode: str,
         if "WΔ(MB)" in cols:  vals.append(f"{r['w_mb_s']:.2f}")
         table.add_row(*vals)
 
-    cap = f"Showing {min(limit, len(rows))} of {total} procs   |   sort: {sort_mode}"
-    footer = Text("[v] view  [s] sort  [+/-] topN  ]/[ interval  g graphs  x label  [q] quit", style="dim")
-    items: List = [table, Text(cap, style="dim"), footer]
+    scroll_hint = f"  ◀ {offset} hidden" if offset > 0 else ""
+    display_cap = f"Showing {min(display_limit, len(rows))} of {total} procs   |   sort: {sort_mode}{scroll_hint}"
+    items: List = [table, Text(display_cap, style="dim"), Text(footer_text, style="dim")]
 
     if cpu_state.graph_mode != "off":
         total_cpu = safe_cpu_percent()
@@ -268,6 +323,7 @@ class DiskLiveState:
         self.per_disk_available = True
         self.label_mode = "name"
         self.win_drive_model_map = {}
+        self.col_offset = 0
 
 def safe_disk_io_counters_perdisk() -> Dict[str, psutil._common.sdiskio]:
     try:
@@ -365,26 +421,60 @@ def per_disk_perf_table(inst: Dict[str, Tuple[float, float, float, str]]) -> Tab
         table.add_row(label, f"{rb/(1024**2):.2f}", f"{wb/(1024**2):.2f}", f"{util:.2f}")
     return table
 
+_DISK_ALL_COLS = ["PID", "Name", "R", "W", "D"]
+
 def render_disk_view(proc_rows: List[dict], total_procs: int, top_n: int, sort_mode: str,
                      dstate: DiskLiveState) -> Panel:
     width = term_width()
+    height = term_height()
+    inner = max(1, width - 4)
+    graph_lines = 1 if dstate.graph_mode != "off" else 0
+    footer_text = "[v] view  [s] sort  [+/-] topN  ]/[ interval  g graphs  x label  [q] quit\n←/→ scroll columns"
+    cap_text = f"Showing {min(top_n, 99)} of {total_procs} procs   |   sort: {sort_mode}"
+    overhead = (2                                          # panel borders
+                + graph_lines                             # sparkline
+                + 1                                       # table title row
+                + 2                                       # col header + separator
+                + _visual_lines(cap_text, inner)
+                + _visual_lines(footer_text, inner))
+    display_limit = max(1, min(top_n, height - overhead))
+    show_perdisk = dstate.per_disk_available and (height - overhead - display_limit) >= 4
+
+    # Horizontal column scroll
+    offset = min(dstate.col_offset, len(_DISK_ALL_COLS) - 1)
+    visible_cols = _DISK_ALL_COLS[offset:]
+    if not visible_cols:
+        visible_cols = _DISK_ALL_COLS[-1:]
+
     name_cap = max(6, min(20, width - 30))
     ptable = Table(box=box.SIMPLE_HEAVY, expand=True, title="DISK — per-process I/O")
-    ptable.add_column("PID", justify="right", no_wrap=True)
-    if dstate.label_mode == "name":
+    if "PID" in visible_cols:
+        ptable.add_column("PID", justify="right", no_wrap=True, min_width=5)
+    if "Name" in visible_cols and dstate.label_mode == "name":
         ptable.add_column("Name", justify="left", no_wrap=True, overflow="ellipsis", width=name_cap)
-    ptable.add_column("R MB/s", justify="right", no_wrap=True)
-    ptable.add_column("W MB/s", justify="right", no_wrap=True)
-    ptable.add_column("D MB/s", justify="right", no_wrap=True)
+    if "R" in visible_cols:
+        ptable.add_column("R MB/s", justify="right", no_wrap=True, min_width=6)
+    if "W" in visible_cols:
+        ptable.add_column("W MB/s", justify="right", no_wrap=True, min_width=6)
+    if "D" in visible_cols:
+        ptable.add_column("D MB/s", justify="right", no_wrap=True, min_width=6)
 
-    for r in proc_rows[:top_n]:
-        row = [str(r["pid"])]
-        if dstate.label_mode == "name":
+    for r in proc_rows[:display_limit]:
+        row = []
+        if "PID" in visible_cols:
+            row.append(str(r["pid"]))
+        if "Name" in visible_cols and dstate.label_mode == "name":
             row.append(truncate(r["name"], name_cap))
-        row.extend([f"{r['r_mb_s']:.2f}", f"{r['w_mb_s']:.2f}", f"{r['d_mb_s']:.2f}"])
+        if "R" in visible_cols:
+            row.append(f"{r['r_mb_s']:.2f}")
+        if "W" in visible_cols:
+            row.append(f"{r['w_mb_s']:.2f}")
+        if "D" in visible_cols:
+            row.append(f"{r['d_mb_s']:.2f}")
         ptable.add_row(*row)
 
-    cap = f"Showing {min(top_n, len(proc_rows))} of {total_procs} procs   |   sort: {sort_mode}"
+    scroll_hint = f"  ◀ {offset} hidden" if offset > 0 else ""
+    display_cap = f"Showing {min(display_limit, len(proc_rows))} of {total_procs} procs   |   sort: {sort_mode}{scroll_hint}"
 
     inst = disk_perdisk_snapshot(dstate)
     items: List = []
@@ -394,17 +484,17 @@ def render_disk_view(proc_rows: List[dict], total_procs: int, top_n: int, sort_m
         latest = dstate.hist_total_mb_s[-1] if dstate.hist_total_mb_s else 0.0
         items.append(Text(f"Disk total MB/s: {latest:.2f}  {sl}"))
 
-    items.extend([ptable, Text(cap, style="dim")])
+    items.extend([ptable, Text(display_cap, style="dim")])
 
-    if dstate.per_disk_available and inst:
+    if show_perdisk and inst:
         items.append(per_disk_perf_table(inst))
         du = disk_usage_table()
         if du and width >= 100:
             items.append(du)
-    else:
+    elif not dstate.per_disk_available:
         items.append(Text("Per-disk stats unavailable (permissions / platform)", style="dim"))
 
-    items.append(Text("[v] view  [s] sort  [+/-] topN  ]/[ interval  g graphs  x label  [q] quit", style="dim"))
+    items.append(Text(footer_text, style="dim"))
     return Panel(Group(*items), title="DISK", border_style="green")
 
 # ------------------------------ NET view -------------------------------------
@@ -454,8 +544,11 @@ class NetState:
     per_proc_on: bool = True
     graph_mode: str = "total"
     label_mode: str = "name"
+    col_offset: int = 0
     def __post_init__(self):
         if self.hist_total_mbps is None: self.hist_total_mbps = []
+
+_NET_ALL_COLS = ["PID", "Name", "Σ"]
 
 def render_net_panel(state: NetState, top_n: int, interval_hint: float,
                      proc_rows: List[dict]) -> Panel:
@@ -478,36 +571,68 @@ def render_net_panel(state: NetState, top_n: int, interval_hint: float,
         state.hist_total_mbps = state.hist_total_mbps[-120:]
 
     width = term_width()
+    inner = max(1, width - 4)
+    graph_lines = 1 if state.graph_mode != "off" else 0
+    unit_label = 'MiB/s' if state.units == 'mib' else 'Mb/s'
+    hdr_text = f"Network Usage  (interval≈{elapsed:.2f}s, units={unit_label})"
+    totals_text = f"↓ {recv_mbps:.2f}  ↑ {sent_mbps:.2f}  Σ {total_mbps:.2f} {unit_label}   Util: {util:.1f}%"
+    cap_text = (f"{int(state.link_cap_mbps):d} Mb/s link cap (sum of up NICs)"
+                if state.link_cap_mbps > 0 else "unknown link cap (permissions / mobile)")
+    footer_text = "[v] view  [s] sort  [+/-] topN  ]/[ interval  m units  p per-proc\ng graphs  x label  ←/→ scroll columns  [q] quit"
+    overhead = (2                                            # panel borders
+                + _visual_lines(hdr_text, inner)            # header (may wrap)
+                + graph_lines                               # sparkline
+                + _visual_lines(totals_text, inner)         # totals (may wrap on narrow)
+                + _visual_lines(cap_text, inner)            # link cap line
+                + 1                                         # table blank line
+                + 2                                         # col header + separator
+                + _visual_lines(footer_text, inner))        # footer
+    display_limit = max(1, min(top_n, term_height() - overhead))
+
+    # Horizontal scroll
+    offset = min(state.col_offset, len(_NET_ALL_COLS) - 1)
+    visible_cols = _NET_ALL_COLS[offset:]
+    if not visible_cols:
+        visible_cols = _NET_ALL_COLS[-1:]
+
     name_cap = max(8, min(24, width - 26))
+    sigma_hdr = "ΣMiB/s" if state.units == "mib" else "ΣMb/s"
     table = Table(box=box.SIMPLE_HEAVY, expand=True)
-    table.add_column("PID", justify="right", no_wrap=True)
-    if state.label_mode == "name":
+    if "PID" in visible_cols:
+        table.add_column("PID", justify="right", no_wrap=True, min_width=5)
+    if "Name" in visible_cols and state.label_mode == "name":
         table.add_column("Process", justify="left", no_wrap=True, overflow="ellipsis", width=name_cap)
-    table.add_column("Σ ({}b/s)".format("Mi" if state.units == "mib" else "M"), justify="right", no_wrap=True)
+    if "Σ" in visible_cols:
+        table.add_column(sigma_hdr, justify="right", no_wrap=True, min_width=8)
 
     if state.per_proc_on and proc_rows:
-        for r in proc_rows[:top_n]:
-            row = [str(r["pid"])]
-            if state.label_mode == "name":
+        for r in proc_rows[:display_limit]:
+            row = []
+            if "PID" in visible_cols:
+                row.append(str(r["pid"]))
+            if "Name" in visible_cols and state.label_mode == "name":
                 row.append(truncate(r["name"], name_cap))
-            row.append(f"{r['d_mb_s']:8.2f}")
+            if "Σ" in visible_cols:
+                row.append(f"{r['d_mb_s']:.2f}")
             table.add_row(*row)
     else:
-        table.add_row("-", "(per-proc off)" if state.label_mode=="name" else "-", "-")
+        row = []
+        if "PID" in visible_cols: row.append("-")
+        if "Name" in visible_cols and state.label_mode == "name": row.append("(per-proc off)")
+        if "Σ" in visible_cols: row.append("-")
+        table.add_row(*row)
 
     hdr = Text.assemble(
         ("Network Usage  ", "cyan bold"),
-        (f"(interval≈{elapsed:.2f}s, units={'MiB/s' if state.units=='mib' else 'Mb/s'})", "dim"),
+        (f"(interval≈{elapsed:.2f}s, units={unit_label})", "dim"),
     )
-    totals = f"Total:  ↓ {recv_mbps:7.2f}  ↑ {sent_mbps:7.2f}  Σ {total_mbps:7.2f}    Util: {util:5.1f}%"
-    cap = (f"{int(state.link_cap_mbps):d} Mb/s link cap (sum of up NICs)"
-           if state.link_cap_mbps > 0 else "unknown link cap (permissions / mobile)")
+    scroll_hint = f"  ◀ {offset} hidden" if offset > 0 else ""
 
     items: List = [hdr]
     if state.graph_mode != "off":
         items.append(Text(sparkline(state.hist_total_mbps, width=max(20, min(80, width - 24)))))
-    items.extend([Text(totals), Text(cap, style="dim"), table,
-                  Text("[v] view  [s] sort  [+/-] topN  ]/[ interval  m units  p per-proc  g graphs  x label  [q] quit", style="dim")])
+    items.extend([Text(totals_text), Text(cap_text + scroll_hint, style="dim"), table,
+                  Text(footer_text, style="dim")])
 
     state.prev_total = curr_total
     state.prev_time = now
@@ -705,6 +830,16 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                     if v == "cpu":    cpu_state.label_mode  = "pid" if cpu_state.label_mode  == "name" else "name"
                     elif v == "net":  net_state.label_mode  = "pid" if net_state.label_mode  == "name" else "name"
                     elif v == "disk": disk_state.label_mode = "pid" if disk_state.label_mode == "name" else "name"
+                elif ch == "RIGHT":
+                    v = VIEWS[view_idx]
+                    if v == "cpu":    cpu_state.col_offset  = min(cpu_state.col_offset  + 1, len(_CPU_ALL_COLS) - 1)
+                    elif v == "net":  net_state.col_offset  = min(net_state.col_offset  + 1, len(_NET_ALL_COLS) - 1)
+                    elif v == "disk": disk_state.col_offset = min(disk_state.col_offset + 1, len(_DISK_ALL_COLS) - 1)
+                elif ch == "LEFT":
+                    v = VIEWS[view_idx]
+                    if v == "cpu":    cpu_state.col_offset  = max(0, cpu_state.col_offset  - 1)
+                    elif v == "net":  net_state.col_offset  = max(0, net_state.col_offset  - 1)
+                    elif v == "disk": disk_state.col_offset = max(0, disk_state.col_offset - 1)
                 elif low == "h":
                     help_on = not help_on
 

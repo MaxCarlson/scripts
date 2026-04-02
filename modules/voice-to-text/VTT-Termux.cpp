@@ -1,0 +1,2 @@
+- URL
+	- https://dev.to/terminaltools/how-to-build-voice-activated-tools-using-termux-voice-apis-gp0?utm_source=chatgpt.com

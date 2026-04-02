@@ -78,6 +78,7 @@ def make_parser() -> argparse.ArgumentParser:
                    help="Max NDJSON progress events printed per second (-1 for unlimited). Applies to 'progress' events.")
     p.add_argument("-a", "--archive-dir", type=str, default=None, help="Directory to store per-urlfile archive status files.")
     p.add_argument("-S", "--stall-seconds", type=int, default=60, help="If no non-heartbeat events arrive for N seconds, treat URL as stalled and move to next.")
+    p.add_argument("-C", "--complete-stall-seconds", type=int, default=300, help="If download is stuck at >=99%% for N seconds (progress events still arriving), treat as stalled.")
     p.add_argument("-E", "--exit-at-time", type=int, default=-1, help="Exit the program after N seconds (<=0 disables).")
     p.add_argument("-X", "--max-dl-speed", type=float, default=None,
                    help="Limit download speed to MiB/s (per process). Applies to yt-dlp via --limit-rate; aebndl currently not limited.")
@@ -417,6 +418,7 @@ def _run_one(
     program_deadline: float | None = None,
     max_dl_speed: Optional[float] = None,
     max_height: Optional[int] = None,
+    complete_stall_seconds: int = 300,
 ) -> tuple[int, dict]:
     """
     Returns rc (0 on success). Emits NDJSON to stdout during run.
@@ -477,6 +479,7 @@ def _run_one(
         # internal heartbeat for scheduling; also used for stall detection
         hb = 0.2 if (max_ndjson_rate is not None and max_ndjson_rate > 0) else 0.5
         last_real_event_t = time.time()
+        near_complete_since: Optional[float] = None  # time when pct first reached >=99%
         for evt in iter_parsed_events(tool, proc.stdout, raw_log_path=raw_path, heartbeat_secs=hb):
             # track 'already' to classify FINISH_DUPLICATE later for yt-dlp
             if evt.get("event") == "already":
@@ -510,6 +513,12 @@ def _run_one(
                             rc = 0
             if evt.get("event") == "progress":
                 last_progress = evt
+                pct = evt.get("percent")
+                if isinstance(pct, (int, float)) and pct >= 99.0:
+                    if near_complete_since is None:
+                        near_complete_since = time.time()
+                else:
+                    near_complete_since = None
             now = time.time()
             # Update last activity time for any non-heartbeat event
             if evt.get("event") != "heartbeat":
@@ -552,15 +561,17 @@ def _run_one(
                 rc = 124
                 _emit_json({"event": "stalled", "url_index": url_index, "url": url, "stall_seconds": stall_s})
                 break
-            # Stall detection: if no real events for S seconds, kill and mark as stalled
-            stall_s = stall_seconds
-            if stall_s and stall_s > 0 and (now - last_real_event_t) > stall_s:
+            # Near-complete stall: progress events keep arriving at >=99% but download never finishes
+            if (near_complete_since is not None
+                    and complete_stall_seconds > 0
+                    and (now - near_complete_since) > complete_stall_seconds):
                 try:
                     proc.kill()
                 except Exception:
                     pass
                 rc = 124
-                _emit_json({"event": "stalled", "url_index": url_index, "url": url, "stall_seconds": stall_s})
+                _emit_json({"event": "stalled", "url_index": url_index, "url": url,
+                            "stall_seconds": complete_stall_seconds, "reason": "near_complete_stall"})
                 break
             if timeout and (time.time() - t_url_start) > timeout:
                 proc.kill()
@@ -628,7 +639,7 @@ def _run_one(
     # retry if bad
     info = {"elapsed_s": elapsed_s, "downloaded": (last_progress or {}).get("downloaded"), "total": (last_progress or {}).get("total"), "already": bool(already_seen), "downloader": tool}
     if rc != 0 and retries > 0:
-        return _run_one(tool, urls, out_dir, canonical_out_dir, work_dir, raw_dir, url_index, proglog, timeout, retries - 1, quiet, dry_run, progress_freq_s, max_ndjson_rate, stall_seconds, program_deadline, max_dl_speed, max_height)
+        return _run_one(tool, urls, out_dir, canonical_out_dir, work_dir, raw_dir, url_index, proglog, timeout, retries - 1, quiet, dry_run, progress_freq_s, max_ndjson_rate, stall_seconds, program_deadline, max_dl_speed, max_height, complete_stall_seconds)
     return rc, info
 
 def main() -> int:
@@ -745,6 +756,7 @@ def main() -> int:
                 progress_freq_s=args.progress_log_freq,
                 max_ndjson_rate=args.max_ndjson_rate,
                 stall_seconds=args.stall_seconds,
+                complete_stall_seconds=args.complete_stall_seconds,
                 program_deadline=(time.time() + args.exit_at_time) if (args.exit_at_time and args.exit_at_time > 0) else None,
                 max_dl_speed=args.max_dl_speed,
                 max_height=_max_height_for_label(args.max_resolution),
