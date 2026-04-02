@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "system_manager"
+version = "0.1.0"
+description = "A comprehensive system management CLI leveraging cross_platform utilities."
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.8"
+
+dependencies = [
+    "cross_platform",
+    "psutil",
+    "requests",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+sys-mgr = "system_manager.cli:main"
+sm = "system_manager.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.pytest.ini_options]
+addopts = "-v --basetemp=.pytest_tmp"
+testpaths = ["tests"]
+tmp_path_retention_policy = "none"
