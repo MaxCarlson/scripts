@@ -371,27 +371,51 @@ def _build_aebndl_cmd(
         cmd += ["-r", str(max_height)]
     cmd.append(url)
     return cmd
+def _coerce_progress_number(value):
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            if any(ch in s for ch in (".", "e", "E")):
+                return float(s)
+            return int(s)
+        except Exception:
+            return None
+    return None
+
+
 def _clamp_progress(evt: dict) -> dict:
-    """Clamp progress event values to prevent >100% display."""
+    """Clamp progress event values to prevent active downloads from displaying >=100%."""
     if evt.get("event") != "progress":
         return evt
 
     clamped = evt.copy()
-    dl = evt.get("downloaded")
-    tot = evt.get("total")
-    pct = evt.get("percent")
+    dl_raw = _coerce_progress_number(evt.get("downloaded"))
+    tot_raw = _coerce_progress_number(evt.get("total"))
+    pct_raw = _coerce_progress_number(evt.get("percent"))
 
-    # If we have downloaded and total bytes, clamp downloaded
-    if isinstance(dl, int) and isinstance(tot, int) and tot > 0:
-        if dl > tot:
-            clamped["downloaded"] = tot
-        # Recalculate percentage from clamped values
+    dl = int(dl_raw) if isinstance(dl_raw, (int, float)) else None
+    tot = int(tot_raw) if isinstance(tot_raw, (int, float)) else None
+    pct = float(pct_raw) if isinstance(pct_raw, (int, float)) else None
+
+    if dl is not None:
+        clamped["downloaded"] = dl
+    if tot is not None:
+        clamped["total"] = tot
+
+    if dl is not None and tot is not None and tot > 0:
         actual_dl = min(dl, tot)
+        clamped["downloaded"] = actual_dl
+        clamped["total"] = tot
         pct_calc = (actual_dl / tot) * 100.0
-        clamped["percent"] = min(99.9, pct_calc)
-    elif isinstance(pct, (int, float)):
-        # Clamp raw percentage if provided without bytes
-        clamped["percent"] = min(99.9, max(0.0, float(pct)))
+        clamped["percent"] = min(99.9, max(0.0, pct_calc))
+    elif pct is not None:
+        clamped["percent"] = min(99.9, max(0.0, pct))
 
     return clamped
 
@@ -512,6 +536,7 @@ def _run_one(
                                 pass
                             rc = 0
             if evt.get("event") == "progress":
+                evt = _clamp_progress(evt)
                 last_progress = evt
                 pct = evt.get("percent")
                 if isinstance(pct, (int, float)) and pct >= 99.0:
@@ -593,7 +618,8 @@ def _run_one(
                     last_proglog_t = now
             # On heartbeat we do not print; but use it to time-slice emissions evenly
             if evt.get("event") == "heartbeat" and pending_progress and min_progress_interval > 0 and (now - last_emit_progress_t) >= min_progress_interval:
-                _emit_json({**pending_progress, "downloader": tool, "url_index": url_index, "url": url})
+                clamped_progress = _clamp_progress(pending_progress)
+                _emit_json({**clamped_progress, "downloader": tool, "url_index": url_index, "url": url})
                 last_emit_progress_t = now
                 pending_progress = None
         if rc is None:

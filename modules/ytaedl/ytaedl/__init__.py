@@ -6,5 +6,5 @@ Provides two CLIs:
 """
 
 __all__ = ["__version__"]
-__version__ = "0.7.0"
+__version__ = "1.5.4"
 

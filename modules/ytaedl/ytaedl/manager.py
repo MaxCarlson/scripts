@@ -256,6 +256,33 @@ def _prepare_log_window(logs: List[str], available_rows: int, scroll: int) -> tu
     return logs[start:end], max_scroll
 
 
+def _apply_pinned_viewport(
+    lines: List[str], *, rows: int, header_rows: int, footer_rows: int, scroll: int
+) -> tuple[List[str], int]:
+    if rows <= 0:
+        return [], 0
+    if len(lines) <= rows:
+        return lines[:rows], 0
+    header_rows = max(0, min(header_rows, len(lines)))
+    footer_rows = max(0, min(footer_rows, max(0, len(lines) - header_rows)))
+    header = lines[:header_rows]
+    footer = lines[-footer_rows:] if footer_rows else []
+    body = lines[header_rows : len(lines) - footer_rows if footer_rows else len(lines)]
+    available_body_rows = max(0, rows - len(header) - len(footer))
+    if available_body_rows <= 0:
+        truncated_header = header[:rows]
+        if len(truncated_header) < rows and footer:
+            needed = rows - len(truncated_header)
+            truncated_header.extend(footer[-needed:])
+        return truncated_header[:rows], 0
+    max_scroll = max(0, len(body) - available_body_rows)
+    scroll = max(0, min(scroll, max_scroll))
+    visible_body = body[scroll : scroll + available_body_rows]
+    while len(visible_body) < available_body_rows:
+        visible_body.append("")
+    return header + visible_body + footer, max_scroll
+
+
 def _ansi_visible_len(text: str) -> int:
     return len(urlscan.strip_ansi(text))
 
@@ -976,6 +1003,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     watcher_log_scroll = 0
     watcher_log_follow = True
     watcher_log_meta: Dict[str, int] = {"log_max_scroll": 0, "log_window": 0}
+    downloads_panel_scroll = 0
+    downloads_panel_max_scroll = 0
     auto_block_reason: Optional[str] = None
 
     workers: List[WorkerState] = [WorkerState(slot=i) for i in range(1, args.threads + 1)]
@@ -1132,6 +1161,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     _schedule_url_scan("startup")
 
+    def _clear_worker_progress(ws: WorkerState) -> None:
+        ws.percent = None
+        ws.speed_bps = None
+        ws.eta_s = None
+        ws.downloaded_bytes = None
+        ws.total_bytes = None
+
     def _reader(ws: WorkerState):
         f = ws.proc.stdout  # type: ignore
         try:
@@ -1157,11 +1193,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     ws.url_current = evt.get("url")
                     ws.downloader = evt.get("downloader")
                     # Reset progress state on new URL
-                    ws.percent = None
-                    ws.speed_bps = None
-                    ws.eta_s = None
-                    ws.downloaded_bytes = None
-                    ws.total_bytes = None
+                    _clear_worker_progress(ws)
                     ws.url_t0 = time.time()
                     # Clear overlay upon new activity
                     ws.overlay_msg = None
@@ -1193,17 +1225,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             # Clamp percentage even when bytes unavailable
                             if isinstance(pct, (int, float)):
                                 ws.percent = min(99.9, max(0.0, float(pct)))
-                            # Clamp downloaded bytes to total if both provided
-                            if isinstance(dl, int) and isinstance(tot, int) and tot > 0:
-                                ws.downloaded_bytes = min(dl, tot)
+                            else:
+                                ws.percent = None
+                            if isinstance(dl, int):
+                                ws.downloaded_bytes = dl
+                            else:
+                                ws.downloaded_bytes = None
+                            if isinstance(tot, int) and tot > 0:
                                 ws.total_bytes = tot
                             else:
-                                # Keep values as-is only if no total to compare against
-                                ws.downloaded_bytes = dl if isinstance(dl, int) else ws.downloaded_bytes
-                                ws.total_bytes = tot if isinstance(tot, int) else ws.total_bytes
+                                ws.total_bytes = None
                         ws.speed_bps = float(sp) if isinstance(sp, (int, float)) else ws.speed_bps
                         # eta may be 0 or negative near completion
-                        ws.eta_s = float(eta) if isinstance(eta, (int, float)) else ws.eta_s
+                        ws.eta_s = float(eta) if isinstance(eta, (int, float)) else None
                         # Any progress clears overlay
                         ws.overlay_msg = None
                         ws.overlay_since = 0.0
@@ -1241,24 +1275,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         f"URL {ws.url_index or 0} Finished Status {color}{status}{reset} {elapsed_url} {name}"
                     )
                     ws.overlay_since = time.time()
-                    # Reset progress so stale >100% values don’t linger
-                    ws.percent = None
-                    ws.speed_bps = None
-                    ws.eta_s = None
-                    ws.downloaded_bytes = None
-                    ws.total_bytes = None
+                    # Reset progress so stale values do not leak into retries or reassignment
+                    _clear_worker_progress(ws)
                 elif ev == "aborted":
                     mlog.info(f"[{ws.slot:02d}] ABORT reason={evt.get('reason')}")
                     ws.overlay_msg = f"URL {ws.url_index or 0} Finished Status \x1b[35mABORTED\x1b[0m 00:00:00 {ws.url_current or ''}"
                     ws.overlay_since = time.time()
+                    _clear_worker_progress(ws)
                 elif ev == "stalled":
                     mlog.info(f"[{ws.slot:02d}] STALLED stall_seconds={evt.get('stall_seconds')}")
                     ws.overlay_msg = f"URL {ws.url_index or 0} Finished Status \x1b[31mSTALLED\x1b[0m 00:00:00 {ws.url_current or ''}"
                     ws.overlay_since = time.time()
+                    _clear_worker_progress(ws)
                 elif ev == "deadline":
                     mlog.info(f"[{ws.slot:02d}] DEADLINE idx={ws.url_index}")
                     ws.overlay_msg = f"URL {ws.url_index or 0} Finished Status \x1b[35mDEADLINE\x1b[0m 00:00:00 {ws.url_current or ''}"
                     ws.overlay_since = time.time()
+                    _clear_worker_progress(ws)
                 if ws.reader_stop.is_set():
                     break
         except Exception as e:
@@ -1323,12 +1356,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     active.discard(str(urlfile.resolve()))
                     mlog.info(f"[{ws.slot:02d}] SKIP finished {urlfile}")
                     return _assign(ws)
-        ws.percent = ws.speed_bps = ws.eta_s = None
+        _clear_worker_progress(ws)
         ws.url_index = None
         ws.url_current = None
         ws.destination = None
+        ws.url_t0 = 0.0
         ws.assign_t0 = time.time()
         ws.rc = None
+        ws.last_already = False
+        ws.overlay_msg = None
+        ws.overlay_since = 0.0
         ws.cap_mibs = (
             float(args.max_process_dl_speed)
             if isinstance(args.max_process_dl_speed, (int, float))
@@ -1486,6 +1523,69 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # Pause/quit state
     paused = False
     quit_confirm = False
+
+    def _pause_worker_slot(ws: WorkerState) -> bool:
+        if not ws.proc or ws.proc.poll() is not None or ws.is_paused:
+            return False
+        ws.paused_speed_bps = ws.speed_bps
+        if _pause_process(ws.proc):
+            ws.is_paused = True
+            ws.speed_bps = 0.0
+            ws.overlay_msg = "PAUSED - process suspended, no downloads active"
+            ws.overlay_since = time.time()
+            mlog.info(f"[{ws.slot:02d}] PAUSED process PID {ws.proc.pid}")
+            return True
+        ws.overlay_msg = "PAUSE FAILED - could not suspend process"
+        ws.overlay_since = time.time()
+        mlog.error(f"[{ws.slot:02d}] Failed to pause process PID {ws.proc.pid}")
+        return False
+
+    def _resume_worker_slot(ws: WorkerState) -> bool:
+        if not ws.proc or ws.proc.poll() is not None or not ws.is_paused:
+            return False
+        if _resume_process(ws.proc):
+            ws.is_paused = False
+            ws.speed_bps = ws.paused_speed_bps
+            ws.paused_speed_bps = None
+            ws.overlay_msg = None
+            mlog.info(f"[{ws.slot:02d}] RESUMED process PID {ws.proc.pid}")
+            return True
+        mlog.error(f"[{ws.slot:02d}] Failed to resume process PID {ws.proc.pid}")
+        return False
+
+    def _toggle_all_workers_pause() -> None:
+        nonlocal paused
+        paused = not paused
+        if paused:
+            mlog.info("PAUSE requested - pausing all worker processes")
+            for ws in workers:
+                _pause_worker_slot(ws)
+            return
+        mlog.info("UNPAUSE requested - resuming all worker processes")
+        for ws in workers:
+            if _resume_worker_slot(ws):
+                continue
+            if not ws.proc:
+                _assign(ws)
+
+    def _toggle_selected_worker_pause() -> None:
+        nonlocal paused
+        ws = next((w for w in workers if w.slot == selected_worker_slot), None)
+        if ws is None:
+            mlog.error(f"Selected worker {selected_worker_slot} not found")
+            return
+        if not ws.proc:
+            ws.overlay_msg = "No active process for selected worker"
+            ws.overlay_since = time.time()
+            mlog.info(f"[{ws.slot:02d}] Selected worker has no active process to pause")
+            return
+        if ws.is_paused:
+            _resume_worker_slot(ws)
+        else:
+            _pause_worker_slot(ws)
+        active_workers = [w for w in workers if w.proc and w.proc.poll() is None]
+        paused = bool(active_workers) and all(w.is_paused for w in active_workers)
+
     try:
         while not stop.is_set():
             if deadline and time.time() >= deadline:
@@ -1907,6 +2007,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 if auto_block_reason:
                     lines.append(td_utils.color_text(auto_block_reason, "yellow")[:cols])
                 lines.append("-" * min(cols, 100))
+                downloads_header_rows = len(lines)
                 now = time.time()
 
                 def col(text: str, width: int) -> str:
@@ -2045,13 +2146,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
                 # Controls and optional verbose pane
                 if quit_confirm:
-                    lines.append("Press Y to quit, N to cancel"[:cols])
+                    downloads_footer_lines = ["Press Y to quit, N to cancel"[:cols]]
                 else:
-                    lines.append(
-                        "Keys: w=watcher, u=url stats, d=downloads, p=pause/unpause, q=quit, v=cycle verbose, 1-9=select worker"[
-                            :cols
-                        ]
-                    )
+                    downloads_footer_lines = [
+                        line[:cols]
+                        for line in _wrap_hotkey_lines(
+                            "Keys: w=watcher, u=url stats, d=downloads, Up/Down=scroll, P=toggle selected, p=pause/unpause all, q=quit, v=cycle verbose, 1-9=select worker",
+                            cols,
+                        )
+                    ]
+                lines.extend(downloads_footer_lines)
+                lines, downloads_panel_max_scroll = _apply_pinned_viewport(
+                    lines,
+                    rows=rows,
+                    header_rows=downloads_header_rows,
+                    footer_rows=len(downloads_footer_lines),
+                    scroll=downloads_panel_scroll,
+                )
+                downloads_panel_scroll = min(downloads_panel_scroll, downloads_panel_max_scroll)
 
             # Keyboard handling (for both panels)
             if os.name == "nt":
@@ -2060,6 +2172,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
                     while msvcrt.kbhit():
                         ch = msvcrt.getwch()
+                        if ch in ("\x00", "\xe0"):
+                            special = msvcrt.getwch()
+                            if active_panel == "downloads":
+                                if special == "H":
+                                    downloads_panel_scroll = max(0, downloads_panel_scroll - 1)
+                                elif special == "P":
+                                    downloads_panel_scroll = min(downloads_panel_scroll + 1, downloads_panel_max_scroll)
+                            continue
                         key = ch.lower() if ch else ""
                         if quit_confirm:
                             # Handle quit confirmation
@@ -2176,45 +2296,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             elif ch.isdigit() and ch != "0":
                                 verbose_slot = int(ch)
                                 selected_worker_slot = verbose_slot
+                            elif ch == "P":
+                                _toggle_selected_worker_pause()
                             elif key == "p":
-                                # Toggle pause
-                                paused = not paused
-                                if paused:
-                                    mlog.info("PAUSE requested - pausing all worker processes")
-                                    # Pause existing processes
-                                    for ws in workers:
-                                        if ws.proc and ws.proc.poll() is None and not ws.is_paused:
-                                            # Store current speed before pausing
-                                            ws.paused_speed_bps = ws.speed_bps
-                                            if _pause_process(ws.proc):
-                                                ws.is_paused = True
-                                                ws.speed_bps = 0.0  # Set speed to 0 while paused
-                                                ws.overlay_msg = "PAUSED - process suspended, no downloads active"
-                                                ws.overlay_since = time.time()
-                                                mlog.info(f"[{ws.slot:02d}] PAUSED process PID {ws.proc.pid}")
-                                            else:
-                                                ws.overlay_msg = "PAUSE FAILED - could not suspend process"
-                                                ws.overlay_since = time.time()
-                                                mlog.error(f"[{ws.slot:02d}] Failed to pause process PID {ws.proc.pid}")
-                                else:
-                                    mlog.info("UNPAUSE requested - resuming all worker processes")
-                                    # Resume paused processes and allow new assignments
-                                    for ws in workers:
-                                        if ws.proc and ws.proc.poll() is None and ws.is_paused:
-                                            if _resume_process(ws.proc):
-                                                ws.is_paused = False
-                                                # Restore previous speed (it will update from actual progress soon)
-                                                ws.speed_bps = ws.paused_speed_bps
-                                                ws.paused_speed_bps = None
-                                                ws.overlay_msg = None
-                                                mlog.info(f"[{ws.slot:02d}] RESUMED process PID {ws.proc.pid}")
-                                            else:
-                                                mlog.error(
-                                                    f"[{ws.slot:02d}] Failed to resume process PID {ws.proc.pid}"
-                                                )
-                                        elif not ws.proc:
-                                            # Assign work to idle workers
-                                            _assign(ws)
+                                _toggle_all_workers_pause()
                             elif key == "q":
                                 # Request quit confirmation
                                 quit_confirm = True
