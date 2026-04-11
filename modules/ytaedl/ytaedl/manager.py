@@ -1207,6 +1207,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 elif ev == "already":
                     # Mark that this URL was already downloaded
                     ws.last_already = True
+                elif ev == "canonical_duplicate":
+                    # Downloader found the file already exists at the canonical destination
+                    ws.last_already = True
+                    canon = evt.get("canonical_path", "?")
+                    mlog.info(f"[{ws.slot:02d}] CANONICAL_DUP dest={canon}")
                 elif ev == "progress":
                     # Clamp and normalize to avoid >100% and >total displays
                     try:
@@ -1258,38 +1263,52 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         if isinstance(ws.downloaded_bytes, int):
                             total_completed_bytes += ws.downloaded_bytes
                     # Build overlay message until next start/progress
-                    status = (
-                        "FINISHED_DL"
-                        if rc_v == 0 and not ws.last_already
-                        else ("DUPLICATE" if rc_v == 0 and ws.last_already else "BAD_URL")
-                    )
+                    if rc_v == 0 and not ws.last_already:
+                        status = "DOWNLOADED"
+                        status_colored = "\x1b[32mDOWNLOADED\x1b[0m"
+                    elif rc_v == 0 and ws.last_already:
+                        status = "DUPLICATE"
+                        status_colored = "\x1b[33mDUPLICATE\x1b[0m"
+                    else:
+                        status = "BAD_URL"
+                        status_colored = "\x1b[31mBAD_URL\x1b[0m"
                     ws.last_already = False
-                    # Colorize status
-                    color = (
-                        "\x1b[32m" if status == "FINISHED_DL" else ("\x1b[33m" if status == "DUPLICATE" else "\x1b[31m")
-                    )
-                    reset = "\x1b[0m"
                     elapsed_url = _hms(time.time() - (ws.url_t0 or ws.assign_t0))
                     name = ws.url_current or ""
+                    size_info = f" [{_human_short_bytes(ws.downloaded_bytes)}]" if ws.downloaded_bytes else ""
                     ws.overlay_msg = (
-                        f"URL {ws.url_index or 0} Finished Status {color}{status}{reset} {elapsed_url} {name}"
+                        f"\x1b[90m[{ws.slot:02d}]\x1b[0m URL {ws.url_index or 0}/{ws.url_count or 0}"
+                        f" {status_colored}{size_info} {elapsed_url}"
                     )
                     ws.overlay_since = time.time()
                     # Reset progress so stale values do not leak into retries or reassignment
                     _clear_worker_progress(ws)
                 elif ev == "aborted":
                     mlog.info(f"[{ws.slot:02d}] ABORT reason={evt.get('reason')}")
-                    ws.overlay_msg = f"URL {ws.url_index or 0} Finished Status \x1b[35mABORTED\x1b[0m 00:00:00 {ws.url_current or ''}"
+                    elapsed_url = _hms(time.time() - (ws.url_t0 or ws.assign_t0))
+                    ws.overlay_msg = (
+                        f"\x1b[90m[{ws.slot:02d}]\x1b[0m URL {ws.url_index or 0}/{ws.url_count or 0}"
+                        f" \x1b[35mABORTED\x1b[0m {elapsed_url}"
+                    )
                     ws.overlay_since = time.time()
                     _clear_worker_progress(ws)
                 elif ev == "stalled":
                     mlog.info(f"[{ws.slot:02d}] STALLED stall_seconds={evt.get('stall_seconds')}")
-                    ws.overlay_msg = f"URL {ws.url_index or 0} Finished Status \x1b[31mSTALLED\x1b[0m 00:00:00 {ws.url_current or ''}"
+                    elapsed_url = _hms(time.time() - (ws.url_t0 or ws.assign_t0))
+                    pct_info = f" @ {ws.percent:.1f}%" if isinstance(ws.percent, (int, float)) else ""
+                    ws.overlay_msg = (
+                        f"\x1b[90m[{ws.slot:02d}]\x1b[0m URL {ws.url_index or 0}/{ws.url_count or 0}"
+                        f" \x1b[31mSTALLED\x1b[0m{pct_info} {elapsed_url}"
+                    )
                     ws.overlay_since = time.time()
                     _clear_worker_progress(ws)
                 elif ev == "deadline":
                     mlog.info(f"[{ws.slot:02d}] DEADLINE idx={ws.url_index}")
-                    ws.overlay_msg = f"URL {ws.url_index or 0} Finished Status \x1b[35mDEADLINE\x1b[0m 00:00:00 {ws.url_current or ''}"
+                    elapsed_url = _hms(time.time() - (ws.url_t0 or ws.assign_t0))
+                    ws.overlay_msg = (
+                        f"\x1b[90m[{ws.slot:02d}]\x1b[0m URL {ws.url_index or 0}/{ws.url_count or 0}"
+                        f" \x1b[35mDEADLINE\x1b[0m {elapsed_url}"
+                    )
                     ws.overlay_since = time.time()
                     _clear_worker_progress(ws)
                 if ws.reader_stop.is_set():
@@ -1988,14 +2007,31 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 total_available = len([p for p in current_regular if str(p.resolve()) not in active]) + len(
                     [p for p in current_priority if str(p.resolve()) not in active]
                 )
-                pause_status = " [PAUSED]" if paused else ""
-                quit_status = " [Press Y to confirm quit]" if quit_confirm else ""
-                header = f"DL Manager{pause_status}{quit_status}  |  threads={args.threads}  active={active_workers}  pool={total_available}  time_limit={args.time_limit}"
+                # Header
+                pause_tag = td_utils.color_text(" [PAUSED]", "yellow") if paused else ""
+                quit_tag = td_utils.color_text(" [Press Y to confirm quit]", "red") if quit_confirm else ""
+                active_label = td_utils.color_text(str(active_workers), "green" if active_workers > 0 else "gray")
+                pool_label = td_utils.color_text(str(total_available), "cyan" if total_available > 0 else "gray")
+                header = (
+                    f"DL Manager{pause_tag}{quit_tag}"
+                    f"  |  threads={args.threads}"
+                    f"  active={active_label}"
+                    f"  pool={pool_label}"
+                    f"  elapsed={_hms(manager_elapsed)}"
+                )
                 lines.append(header[:cols])
+                # Totals bar
+                speed_color = "cyan" if total_speed_mib >= 1.0 else ("yellow" if total_speed_mib > 0 else "gray")
+                speed_str = td_utils.color_text(f"{total_speed_mib:.2f} MiB/s", speed_color)
+                avg_str = f"avg {avg_mib_s:.2f} MiB/s"
+                dl_str = td_utils.color_text(f"{(agg_bytes/1048576):.1f} MiB", "bright")
+                started_str = td_utils.color_text(str(total_started_urls), "bright")
+                done_str = td_utils.color_text(str(total_completed_urls), "green")
+                dup_count = total_processed_urls - total_completed_urls
+                dup_str = td_utils.color_text(str(dup_count), "yellow") if dup_count else str(dup_count)
                 lines.append(
-                    f"Totals: speed={total_speed_mib:.2f}MiB/s  avg={avg_mib_s:.2f}MiB/s  downloaded={(agg_bytes/1048576):.1f}MiB  urls: started={total_started_urls} processed={total_processed_urls} completed={total_completed_urls}"[
-                        :cols
-                    ]
+                    f"Speed: {speed_str}  {avg_str}  DL: {dl_str}"
+                    f"  URLs: {started_str} started / {done_str} done / {dup_str} dup"[:cols]
                 )
                 for storage_line in _storage_summary_lines(
                     staging_stats,

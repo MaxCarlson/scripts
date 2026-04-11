@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=67", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sysmon"
+version = "0.3.0"
+description = "Beautiful cross-platform system monitor TUI — CPU / RAM / Disk / Network / GPU."
+authors = [{ name = "Maxwell Carlson", email = "carlsonamax@gmail.com" }]
+requires-python = ">=3.9"
+dependencies = [
+    "psutil>=5.9",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+gpu = ["GPUtil"]
+
+[project.scripts]
+sysmon         = "sysmon.cli:main"
+sysmon-capture = "sysmon.capture:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sysmon*"]

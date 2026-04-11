@@ -313,6 +313,23 @@ def _format_selector_for_height(height: int) -> str:
     return f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
 
 
+def _find_stem_in_dir(stem: str, directory: Path) -> Optional[Path]:
+    """Return the first file in *directory* whose stem matches *stem* (case-insensitive).
+
+    Used to detect same-content files regardless of container extension
+    (e.g. canonical has .webm, proxy is downloading .mp4 with the same title).
+    Returns None if the directory doesn't exist or no match is found.
+    """
+    try:
+        stem_lower = stem.lower()
+        for p in directory.iterdir():
+            if p.is_file() and p.stem.lower() == stem_lower:
+                return p
+    except Exception:
+        pass
+    return None
+
+
 
 
 def _format_archive_line(status: str, elapsed_s: float, when: str, downloaded_mib: float, video_id: str, url: str) -> str:
@@ -520,21 +537,40 @@ def _run_one(
                 if raw_dest:
                     candidate = Path(raw_dest).expanduser().resolve()
                     dest_path = candidate
+                    # Resolve the canonical destination path (works in both proxy and non-proxy mode)
                     if canonical_out_dir != out_dir:
                         try:
                             rel = candidate.relative_to(out_dir)
                         except ValueError:
                             rel = Path(candidate.name)
                         canonical_candidate = (canonical_out_dir / rel).resolve()
-                        if canonical_candidate.exists():
-                            already_seen = True
+                    else:
+                        canonical_candidate = candidate
+                    # Check exact filename match, then fall back to stem match
+                    # (catches re-downloads where container extension differs, e.g. .webm vs .mp4)
+                    existing = None
+                    if canonical_candidate.exists():
+                        existing = canonical_candidate
+                    else:
+                        existing = _find_stem_in_dir(canonical_candidate.stem, canonical_candidate.parent)
+                    if existing is not None:
+                        already_seen = True
+                        _emit_json({
+                            "event": "canonical_duplicate",
+                            "canonical_path": str(existing),
+                            "proxy_path": str(candidate),
+                            "url_index": url_index,
+                            "url": url,
+                        })
+                        if canonical_out_dir != out_dir:
+                            # proxy mode: clean up the partially-written temp file after termination
                             terminate_for_canonical_duplicate = True
                             cleanup_proxy_path = candidate
-                            try:
-                                proc.terminate()
-                            except Exception:
-                                pass
-                            rc = 0
+                        try:
+                            proc.terminate()
+                        except Exception:
+                            pass
+                        rc = 0
             if evt.get("event") == "progress":
                 evt = _clamp_progress(evt)
                 last_progress = evt

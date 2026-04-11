@@ -802,6 +802,23 @@ def iter_mp4_files(directory: Path) -> Iterable[Path]:
         yield entry
 
 
+def _find_stem_in_dir(stem: str, directory: Path) -> Optional[Path]:
+    """Return the first file in *directory* whose stem matches *stem* (case-insensitive).
+
+    Allows the watcher to detect same-video files that have a different container
+    extension in the destination (e.g. destination has .webm, staging has .mp4).
+    Returns None if the directory doesn't exist or no match is found.
+    """
+    try:
+        stem_lower = stem.lower()
+        for p in directory.iterdir():
+            if p.is_file() and p.stem.lower() == stem_lower:
+                return p
+    except Exception:
+        pass
+    return None
+
+
 def ensure_directory_plan(actions: List[Action], directory: Path) -> None:
     directory_str = str(directory)
     if any(action.action == ACTION_CREATE_DIR and action.destination == directory_str for action in actions):
@@ -842,6 +859,54 @@ def determine_action(
         )
 
     if not dest_file.exists():
+        # Fall back to stem-based match: catches same video in a different container format.
+        stem_match = _find_stem_in_dir(src_file.stem, dest_dir)
+        if stem_match is not None:
+            dest_size = stem_match.stat().st_size
+            if src_size <= dest_size:
+                reason = (
+                    f"stem match '{stem_match.name}' at destination is larger/equal; "
+                    "skipping to avoid duplicate (different extension)"
+                )
+                collision_metadata = {
+                    "source_path": str(src_file),
+                    "destination_path": str(stem_match),
+                    "requested_operation": operation,
+                    "resolution": "skip",
+                    "match_type": "stem",
+                }
+                return Action(
+                    action=ACTION_SKIP,
+                    source=str(src_file),
+                    destination=str(stem_match),
+                    reason=reason,
+                    source_size=src_size,
+                    destination_size=dest_size,
+                    collision=True,
+                    metadata=collision_metadata,
+                )
+            else:
+                reason = (
+                    f"stem match '{stem_match.name}' at destination is smaller; "
+                    "replacing with larger source (different extension)"
+                )
+                collision_metadata = {
+                    "source_path": str(src_file),
+                    "destination_path": str(stem_match),
+                    "requested_operation": operation,
+                    "resolution": "replace",
+                    "match_type": "stem",
+                }
+                return Action(
+                    action=ACTION_REPLACE,
+                    source=str(src_file),
+                    destination=str(stem_match),
+                    reason=reason,
+                    source_size=src_size,
+                    destination_size=dest_size,
+                    collision=True,
+                    metadata=collision_metadata,
+                )
         reason = "no destination file; transfer needed"
         return Action(
             action=operation,

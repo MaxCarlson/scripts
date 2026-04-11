@@ -210,3 +210,4 @@ logs/
 *.mp4*
 **/node_modules/*
 archived/
+pyscripts/tmp/
