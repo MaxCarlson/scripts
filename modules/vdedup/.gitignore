@@ -2,3 +2,4 @@ tests/media_dataset/
 .\tests\media_samples\
 *.mp4
 pytest.*
+reports/

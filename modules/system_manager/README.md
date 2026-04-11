@@ -22,3 +22,41 @@ sm --help
 sys-mgr net public-ip
 sys-mgr proc top
 ```
+
+## Process Debugging
+
+Find wrapper processes by command line, path, or Windows CIM:
+
+```bash
+sm proc find -q gemini -C --cmdline
+sm proc find -q split.ps1 -C --cmdline
+sm proc find -q node -P "C:\Program Files\nodejs" --path
+sm proc find -q gemini -M --cim
+```
+
+Inspect and control process trees:
+
+```bash
+sm proc tree -p 76028
+sm proc parents -p 77828
+sm proc children -p 76028 -R --recursive
+sm proc stop-tree -p 76028 -n --dry-run
+sm proc stop-tree -p 76028 -y --confirm
+sm proc pause -q gemini -C --cmdline
+sm proc resume -q gemini -C --cmdline
+sm proc restart -p 34944 -n --dry-run
+```
+
+Sample resource usage:
+
+```bash
+sm proc stats -p 34944 -i 1 --interval 1 -S 60 --samples 60
+sm proc stats-tree -p 76028 -i 1 --interval 1 -S 60 --samples 60
+```
+
+Search command descriptions:
+
+```bash
+sm help-search -q pause
+sm help-search -q process -z --fuzzy
+```

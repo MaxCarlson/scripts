@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "system_manager"
-version = "0.1.0"
+version = "0.3.0"
 description = "A comprehensive system management CLI leveraging cross_platform utilities."
 authors = [
     {name = "Your Name", email = "your.email@example.com"}

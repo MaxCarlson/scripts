@@ -27,6 +27,16 @@ from rich.live import Live
 
 from cross_platform import SystemUtils, ClipboardUtils, NetworkUtils, ProcessManager, PrivilegesManager
 from .utils import run_powershell, get_console_width, get_console_height
+from .command_registry import search_commands
+from .process_tools import (
+    ProcessQuery,
+    act_on_processes,
+    find_processes,
+    process_parents,
+    process_tree as proc_tools_tree,
+    sample_process_stats,
+    windows_cim_process_search,
+)
 
 console = Console()
 sysu = SystemUtils()
@@ -1050,6 +1060,81 @@ class SystemManager:
         return results
 
     @staticmethod
+    def proc_find_detailed(
+        pid: Optional[int] = None,
+        query: Optional[str] = None,
+        name: Optional[str] = None,
+        cmdline: bool = False,
+        exe: bool = False,
+        path: Optional[str] = None,
+        regex: bool = False,
+        fuzzy: bool = False,
+        cim: bool = False,
+    ):
+        """Find processes with detailed matching options."""
+        if cim and query:
+            return windows_cim_process_search(query)
+        return find_processes(
+            ProcessQuery(pid=pid, query=query, name=name, cmdline=cmdline, exe=exe, path=path, regex=regex, fuzzy=fuzzy)
+        )
+
+    @staticmethod
+    def proc_parents(pid: int):
+        """Show parent process chain."""
+        return process_parents(pid)
+
+    @staticmethod
+    def proc_children(pid: int, recursive: bool = False):
+        """Show child processes."""
+        rows = proc_tools_tree(pid, include_root=False)
+        if recursive:
+            return rows
+        return [row for row in rows if row.get("depth") == 0]
+
+    @staticmethod
+    def proc_action(
+        action: str,
+        pid: Optional[int] = None,
+        query: Optional[str] = None,
+        name: Optional[str] = None,
+        cmdline: bool = False,
+        exe: bool = False,
+        path: Optional[str] = None,
+        regex: bool = False,
+        fuzzy: bool = False,
+        recursive: bool = False,
+        force: bool = False,
+        dry_run: bool = True,
+        confirm: bool = False,
+    ):
+        """Apply or preview a process action."""
+        return act_on_processes(
+            action,
+            pid=pid,
+            query=query,
+            name=name,
+            cmdline=cmdline,
+            exe=exe,
+            path=path,
+            regex=regex,
+            fuzzy=fuzzy,
+            recursive=recursive,
+            force=force,
+            dry_run=dry_run,
+            confirm=confirm,
+        )
+
+    @staticmethod
+    def proc_stats(pid: int, interval: float = 1.0, samples: int = 1, include_tree: bool = False):
+        """Sample process resource usage."""
+        return sample_process_stats(pid, interval=interval, samples=samples, include_tree=include_tree)
+
+    @staticmethod
+    def help_search(query: str, regex: bool = False, fuzzy: bool = False):
+        """Search system_manager command metadata."""
+        return search_commands(query, regex=regex, fuzzy=fuzzy)
+
+    @staticmethod
     def proc_kill(pid_or_name: str, force: bool = False):
         """Kill by PID or name."""
         target_pids = []
@@ -1287,8 +1372,32 @@ class SystemManager:
                         "name": p.name
                     })
                 except OSError: pass
-        
+
         return sorted(files, key=lambda x: x['size'], reverse=True)[:count]
+
+    @staticmethod
+    def file_grep(pattern: str, directory: str = ".", recursive: bool = False):
+        """Search text files for a literal pattern."""
+        root = Path(directory).resolve()
+        results = []
+        glob_pattern = "**/*" if recursive else "*"
+        for path in root.glob(glob_pattern):
+            if not path.is_file():
+                continue
+            try:
+                with path.open("r", encoding="utf-8") as handle:
+                    for line_number, line in enumerate(handle, start=1):
+                        if pattern in line:
+                            results.append(
+                                {
+                                    "path": str(path),
+                                    "line_number": line_number,
+                                    "line": line.rstrip("\n"),
+                                }
+                            )
+            except (OSError, UnicodeDecodeError):
+                continue
+        return results
 
     @staticmethod
     def file_size(directory: str = ".", recursive: bool = True):

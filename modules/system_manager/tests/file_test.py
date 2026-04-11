@@ -71,5 +71,5 @@ def test_file_grep(temp_files):
     mgr = SystemManager()
     results = mgr.file_grep(pattern="Large", directory=str(temp_files), recursive=True)
     assert len(results) > 0
-    # Depending on whether rg is present, the structure might differ
-    # But it should find file2.log
+    assert any(r["path"].endswith("file2.log") for r in results)
+    assert all({"path", "line", "line_number"} <= set(r) for r in results)

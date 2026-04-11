@@ -7,14 +7,39 @@ import argparse
 import sys
 import json
 import yaml
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Any
 
 from .manager import SystemManager
 from .ui import show_list
-from .utils import get_console_width
-from cross_platform import ClipboardUtils
 
 mgr = SystemManager()
+
+
+def _subparser_choices(parser: argparse.ArgumentParser):
+    """Return argparse subparser choices for a parser, if present."""
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return action.choices
+    return {}
+
+
+def _print_unique_subcommand_help(argv: List[str], category_parsers: dict) -> bool:
+    """Print help for a unique one-token nested command such as ``sm sid``."""
+    if len(argv) != 1 or argv[0].startswith("-") or argv[0] in category_parsers:
+        return False
+
+    matches = []
+    for category_parser in category_parsers.values():
+        subcommands = _subparser_choices(category_parser)
+        if argv[0] in subcommands:
+            matches.append(subcommands[argv[0]])
+
+    if len(matches) != 1:
+        return False
+
+    matches[0].print_help()
+    return True
+
 
 def output_result(data: Any, format: str = "table", title: str = "System Manager", sort_field: Optional[str] = None, copy: bool = False):
     """Handle command output formatting and optional clipboard copying."""
@@ -54,6 +79,8 @@ def output_result(data: Any, format: str = "table", title: str = "System Manager
             print(data)
 
 def main(argv: Optional[List[str]] = None):
+    argv = list(argv) if argv is not None else sys.argv[1:]
+
     # Common parser for all commands
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("-f", "--format", choices=["table", "json", "yaml", "plain"], default="table", help="Output format")
@@ -64,9 +91,11 @@ def main(argv: Optional[List[str]] = None):
 
     parser = argparse.ArgumentParser(prog="sm", description="Cross-platform System Manager CLI")
     subparsers = parser.add_subparsers(dest="category", help="Command category")
+    category_parsers = {}
 
     # ID category
     id_parser = subparsers.add_parser("id", help="Identity information")
+    category_parsers["id"] = id_parser
     id_sub = id_parser.add_subparsers(dest="cmd")
     id_sub.add_parser("whoami", parents=[common], help="Show current user and elevation status")
     id_sub.add_parser("hostname", parents=[common], help="Show hostname and FQDN")
@@ -77,6 +106,7 @@ def main(argv: Optional[List[str]] = None):
 
     # NET category
     net_parser = subparsers.add_parser("net", help="Network utilities")
+    category_parsers["net"] = net_parser
     net_sub = net_parser.add_subparsers(dest="cmd")
     net_sub.add_parser("public-ip", parents=[common], help="Show public IP address")
     net_sub.add_parser("local-ip", parents=[common], help="Show local IP addresses")
@@ -112,6 +142,7 @@ def main(argv: Optional[List[str]] = None):
 
     # PROC category
     proc_parser = subparsers.add_parser("proc", help="Process management")
+    category_parsers["proc"] = proc_parser
     proc_sub = proc_parser.add_subparsers(dest="cmd")
     top_cpu = proc_sub.add_parser("top-cpu", parents=[common], help="Show top processes by CPU")
     top_cpu.add_argument("-n", "--count", type=int, default=10, help="Number of processes")
@@ -122,12 +153,51 @@ def main(argv: Optional[List[str]] = None):
     tree = proc_sub.add_parser("tree", parents=[common], help="Show process tree")
     tree.add_argument("-p", "--pid", type=int, help="Root PID")
     
+    def add_proc_match_args(proc_cmd):
+        proc_cmd.add_argument("-p", "--pid", type=int, help="Process ID")
+        proc_cmd.add_argument("-q", "--query", help="Search query")
+        proc_cmd.add_argument("-N", "--name", help="Process name search")
+        proc_cmd.add_argument("-C", "--cmdline", action="store_true", help="Search command line")
+        proc_cmd.add_argument("-E", "--exe", action="store_true", help="Search executable path")
+        proc_cmd.add_argument("-P", "--path", help="Filter by executable path or working directory")
+        proc_cmd.add_argument("-x", "--regex", action="store_true", help="Use regular expression matching")
+        proc_cmd.add_argument("-z", "--fuzzy", action="store_true", help="Use fuzzy matching")
+
     find_p = proc_sub.add_parser("find", parents=[common], help="Find processes")
-    find_p.add_argument("pattern", help="Search pattern")
+    find_p.add_argument("pattern", nargs="?", help="Search pattern")
+    add_proc_match_args(find_p)
+    find_p.add_argument("-M", "--cim", action="store_true", help="Use Windows CIM command-line search")
     
     kill_p = proc_sub.add_parser("kill", parents=[common], help="Kill processes")
-    kill_p.add_argument("name", help="PID or Name")
+    kill_p.add_argument("name", nargs="?", help="PID or Name")
+    add_proc_match_args(kill_p)
     kill_p.add_argument("-F", "--force", action="store_true", help="Force kill")
+    kill_p.add_argument("-n", "--dry-run", action="store_true", default=True, help="Preview action without changes")
+    kill_p.add_argument("-y", "--confirm", action="store_true", help="Confirm destructive action")
+
+    parents_p = proc_sub.add_parser("parents", parents=[common], help="Show parent chain")
+    parents_p.add_argument("-p", "--pid", required=True, type=int, help="Process ID")
+
+    children_p = proc_sub.add_parser("children", parents=[common], help="Show child processes")
+    children_p.add_argument("-p", "--pid", required=True, type=int, help="Process ID")
+    children_p.add_argument("-R", "--recursive", action="store_true", help="Recurse through descendants")
+
+    for action_name in ["pause", "resume", "stop", "stop-tree", "restart", "restart-tree"]:
+        action_p = proc_sub.add_parser(action_name, parents=[common], help=f"{action_name} matched processes")
+        add_proc_match_args(action_p)
+        action_p.add_argument("-F", "--force", action="store_true", help="Use force where supported")
+        action_p.add_argument("-n", "--dry-run", action="store_true", default=False, help="Preview action without changes")
+        action_p.add_argument("-y", "--confirm", action="store_true", help="Confirm destructive action")
+
+    stats_p = proc_sub.add_parser("stats", parents=[common], help="Sample process resource usage")
+    stats_p.add_argument("-p", "--pid", required=True, type=int, help="Process ID")
+    stats_p.add_argument("-i", "--interval", type=float, default=1.0, help="Seconds between samples")
+    stats_p.add_argument("-S", "--samples", type=int, default=1, help="Number of samples")
+
+    stats_tree_p = proc_sub.add_parser("stats-tree", parents=[common], help="Sample process tree resource usage")
+    stats_tree_p.add_argument("-p", "--pid", required=True, type=int, help="Process ID")
+    stats_tree_p.add_argument("-i", "--interval", type=float, default=1.0, help="Seconds between samples")
+    stats_tree_p.add_argument("-S", "--samples", type=int, default=1, help="Number of samples")
 
     cmdl = proc_sub.add_parser("cmdline", parents=[common], help="Show process command line")
     cmdl.add_argument("pid", type=int, help="PID")
@@ -140,8 +210,16 @@ def main(argv: Optional[List[str]] = None):
 
     proc_sub.add_parser("full-list", parents=[common], help="Detailed process list")
 
+    help_search_p = subparsers.add_parser("help-search", help="Search sm command metadata")
+    help_search_p.add_argument("-q", "--query", required=True, help="Search query")
+    help_search_p.add_argument("-x", "--regex", action="store_true", help="Use regular expression matching")
+    help_search_p.add_argument("-z", "--fuzzy", action="store_true", help="Use fuzzy matching")
+    help_search_p.add_argument("-f", "--format", choices=["table", "json", "yaml", "plain"], default="table", help="Output format")
+    help_search_p.add_argument("-c", "--copy", action="store_true", help="Copy result to clipboard")
+
     # SYS category
     sys_parser = subparsers.add_parser("sys", help="System information")
+    category_parsers["sys"] = sys_parser
     sys_sub = sys_parser.add_subparsers(dest="cmd")
     sys_sub.add_parser("uptime", parents=[common], help="Show system uptime")
     sys_sub.add_parser("cpu", parents=[common], help="Show CPU information")
@@ -175,6 +253,7 @@ def main(argv: Optional[List[str]] = None):
 
     # ENV category
     env_parser = subparsers.add_parser("env", help="Environment management")
+    category_parsers["env"] = env_parser
     env_sub = env_parser.add_subparsers(dest="cmd")
     elist = env_sub.add_parser("list", parents=[common], help="List environment variables")
     elist.add_argument("-p", "--pattern", help="Filter pattern")
@@ -190,6 +269,7 @@ def main(argv: Optional[List[str]] = None):
 
     # PKG category
     pkg_parser = subparsers.add_parser("pkg", help="Package management")
+    category_parsers["pkg"] = pkg_parser
     pkg_sub = pkg_parser.add_subparsers(dest="cmd")
     plist = pkg_sub.add_parser("list", parents=[common], help="List installed packages")
     plist.add_argument("-m", "--manager", help="Specific manager (pip, winget, apt)")
@@ -201,6 +281,7 @@ def main(argv: Optional[List[str]] = None):
 
     # DISK category
     disk_parser = subparsers.add_parser("disk", help="Disk utilities")
+    category_parsers["disk"] = disk_parser
     disk_sub = disk_parser.add_subparsers(dest="cmd")
     dusage = disk_sub.add_parser("usage", parents=[common], help="Show disk usage")
     dusage.add_argument("path", nargs="?", default="/", help="Path to check")
@@ -209,6 +290,7 @@ def main(argv: Optional[List[str]] = None):
 
     # SERVICE category
     svc_parser = subparsers.add_parser("service", help="Service management")
+    category_parsers["service"] = svc_parser
     svc_sub = svc_parser.add_subparsers(dest="cmd")
     svc_sub.add_parser("list", parents=[common], help="List active services")
     sstat = svc_sub.add_parser("status", parents=[common], help="Get service status")
@@ -220,12 +302,14 @@ def main(argv: Optional[List[str]] = None):
 
     # DOCKER category
     dock_parser = subparsers.add_parser("docker", help="Docker utilities")
+    category_parsers["docker"] = dock_parser
     dock_sub = dock_parser.add_subparsers(dest="cmd")
     dock_sub.add_parser("ps", parents=[common], help="List running containers")
     dock_sub.add_parser("images", parents=[common], help="List docker images")
 
     # GIT category
     git_parser = subparsers.add_parser("git", help="Git utilities")
+    category_parsers["git"] = git_parser
     git_sub = git_parser.add_subparsers(dest="cmd")
     git_sub.add_parser("status-short", parents=[common], help="Short git status")
     git_sub.add_parser("branch-info", parents=[common], help="Current branch info")
@@ -233,6 +317,7 @@ def main(argv: Optional[List[str]] = None):
 
     # TEXT category
     text_parser = subparsers.add_parser("text", help="Text utilities")
+    category_parsers["text"] = text_parser
     text_sub = text_parser.add_subparsers(dest="cmd")
     tenc = text_sub.add_parser("base64-encode", parents=[common], help="Base64 encode")
     tenc.add_argument("text", help="Text to encode")
@@ -243,12 +328,14 @@ def main(argv: Optional[List[str]] = None):
 
     # CRYPTO category
     crypto_parser = subparsers.add_parser("crypto", help="Crypto utilities")
+    category_parsers["crypto"] = crypto_parser
     crypto_sub = crypto_parser.add_subparsers(dest="cmd")
     crand = crypto_sub.add_parser("rand", parents=[common], help="Generate random string")
     crand.add_argument("-l", "--length", type=int, default=32, help="Length")
 
     # FILE category
     file_parser = subparsers.add_parser("file", help="File utilities")
+    category_parsers["file"] = file_parser
     file_sub = file_parser.add_subparsers(dest="cmd")
     
     frecent = file_sub.add_parser("recent", parents=[common], help="Show recent files")
@@ -328,6 +415,7 @@ def main(argv: Optional[List[str]] = None):
 
     # PERM category
     perm_parser = subparsers.add_parser("perm", help="Permissions and ACL management")
+    category_parsers["perm"] = perm_parser
     perm_sub = perm_parser.add_subparsers(dest="cmd")
     
     pshow = perm_sub.add_parser("show", parents=[common], help="Show full ACL details")
@@ -380,25 +468,31 @@ def main(argv: Optional[List[str]] = None):
     pgrant = perm_sub.add_parser("grant", parents=[common], help="Grant explicit access")
     pgrant.add_argument("path", help="File or folder path")
     pgrant.add_argument("-u", "--user", required=True, help="User or group name")
-    pgrant.add_argument("-r", "--rights", choices=["read", "modify", "full"], default="read", help="Access rights")
+    pgrant.add_argument("-g", "--rights", choices=["read", "modify", "full"], default="read", help="Access rights")
     pgrant.add_argument("-R", "--recursive", action="store_true", help="Recursive")
     pgrant.add_argument("-A", "--apply", action="store_true", help="Apply changes")
     
     pnorm = perm_sub.add_parser("normalize", parents=[common], help="Standardized ACL repair/normalization")
     pnorm.add_argument("path", help="File or folder path")
     pnorm.add_argument("-u", "--user", help="Optional user to grant rights to")
-    pnorm.add_argument("-r", "--rights", choices=["read", "modify", "full"], default="read", help="Rights for optional user")
+    pnorm.add_argument("-g", "--rights", choices=["read", "modify", "full"], default="read", help="Rights for optional user")
     pnorm.add_argument("-A", "--apply", action="store_true", help="Apply changes")
+
+    if _print_unique_subcommand_help(argv, category_parsers):
+        return 0
 
     args = parser.parse_args(argv)
 
     if not args.category:
         parser.print_help()
         return 0
+    if args.category in category_parsers and getattr(args, "cmd", None) is None:
+        category_parsers[args.category].print_help()
+        return 0
 
     # Dispatch
     data = None
-    title = f"{args.category.upper()} {args.cmd}"
+    title = f"{args.category.upper()} {getattr(args, 'cmd', '')}"
     
     try:
         if args.category == "id":
@@ -429,12 +523,69 @@ def main(argv: Optional[List[str]] = None):
             if args.cmd == "top-cpu": data = mgr.process_top(args.count or 10, "cpu")
             elif args.cmd == "top-mem": data = mgr.process_top(args.count or 10, "mem")
             elif args.cmd == "tree": data = mgr.proc_tree(args.pid)
-            elif args.cmd == "find": data = mgr.proc_find(args.pattern)
-            elif args.cmd == "kill": data = mgr.proc_kill(args.name, args.force)
+            elif args.cmd == "find":
+                data = mgr.proc_find_detailed(
+                    pid=args.pid,
+                    query=args.query or args.pattern,
+                    name=args.name,
+                    cmdline=args.cmdline,
+                    exe=args.exe,
+                    path=args.path,
+                    regex=args.regex,
+                    fuzzy=args.fuzzy,
+                    cim=args.cim,
+                )
+            elif args.cmd == "parents": data = mgr.proc_parents(args.pid)
+            elif args.cmd == "children": data = mgr.proc_children(args.pid, args.recursive)
+            elif args.cmd in ["pause", "resume", "stop", "stop-tree", "restart", "restart-tree"]:
+                action = args.cmd.replace("-tree", "")
+                data = mgr.proc_action(
+                    action,
+                    pid=args.pid,
+                    query=args.query,
+                    name=args.name,
+                    cmdline=args.cmdline,
+                    exe=args.exe,
+                    path=args.path,
+                    regex=args.regex,
+                    fuzzy=args.fuzzy,
+                    recursive=args.cmd.endswith("-tree"),
+                    force=args.force,
+                    dry_run=args.dry_run,
+                    confirm=args.confirm,
+                )
+            elif args.cmd == "kill":
+                target_pid = args.pid
+                target_query = args.query
+                target_name = args.name
+                if args.name and args.name.isdigit() and not args.query and not args.pid:
+                    target_pid = int(args.name)
+                    target_name = None
+                elif args.name and not args.query and not args.name:
+                    target_query = args.name
+                data = mgr.proc_action(
+                    "kill",
+                    pid=target_pid,
+                    query=target_query,
+                    name=target_name,
+                    cmdline=args.cmdline,
+                    exe=args.exe,
+                    path=args.path,
+                    regex=args.regex,
+                    fuzzy=args.fuzzy,
+                    force=True,
+                    dry_run=args.dry_run,
+                    confirm=args.confirm,
+                )
             elif args.cmd == "cmdline": data = mgr.proc_cmdline(args.pid)
             elif args.cmd == "threads": data = mgr.proc_threads(args.pid)
             elif args.cmd == "handles": data = mgr.proc_handles(args.pid)
             elif args.cmd == "full-list": data = mgr.proc_full_list()
+            elif args.cmd == "stats": data = mgr.proc_stats(args.pid, args.interval, args.samples, include_tree=False)
+            elif args.cmd == "stats-tree": data = mgr.proc_stats(args.pid, args.interval, args.samples, include_tree=True)
+
+        elif args.category == "help-search":
+            data = mgr.help_search(args.query, args.regex, args.fuzzy)
             
         elif args.category == "sys":
             if args.cmd == "uptime": data = mgr.uptime()
@@ -519,9 +670,15 @@ def main(argv: Optional[List[str]] = None):
 
         if data is not None:
             # Apply --top filter if requested and data is a list
-            if args.top and isinstance(data, list):
+            if getattr(args, "top", None) and isinstance(data, list):
                 data = data[:args.top]
-            output_result(data, format=args.format, title=title, sort_field=args.sort, copy=args.copy)
+            output_result(
+                data,
+                format=args.format,
+                title=title,
+                sort_field=getattr(args, "sort", None),
+                copy=getattr(args, "copy", False),
+            )
             
     except Exception as e:
         print(f"[ERROR] Command execution failed: {e}")
