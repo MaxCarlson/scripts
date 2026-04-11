@@ -16,8 +16,27 @@ This document tracks all planned features for the Knowledge Manager (km) module,
   - Currently: 'e' opens the project
   - Desired: 'e' should edit the highlighted task name (if task is selected)
   - Location: `ProjectsScreen` when detail_view_mode shows tasks
+- [ ] Fix TUI top of projects text box in TUI are the characters '__global_rag__'
+    - This is obviously meant to be internal
+- [ ] Scrolling up and down in the "Projects:" UI element results in the upper half of the console flickering badly 
+    - [ ] Because the console is being constantly overwritten with warning text it makes the console flicker
+- [ ] Make mouse scroll wheel work to scroll through scroll boxes
 
 ---
+
+## TODOs
+
+### 
+- [ ] TOP-PRIORITY
+    - [ ] ALL projects need to have tasks pruned
+    - [ ] Fix. Tasks have only been added, almost never removed. 
+      - Many tasks out of date, no longer needed/desirable/applicable/etc.
+
+- [ ] Capital 'O' needs to be fixed to open all 
+    - [ ] currently it just turns the right arrows indicative of a non-open node to a down arrow (indicative of an open node/folder) 
+    - [ ] this is part of the way, but it needs to display the info about that node
+      - [ ] Additionally, we should add a `ctrl+alt+O` 
+      - [ ] Open every subnode recursively
 
 ## PRIORITY 2: Cross-Project Task Linking (Bidirectional)
 
