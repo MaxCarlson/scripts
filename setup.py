@@ -58,6 +58,28 @@ def _ensure_pip_in_venv(py_exe: Path):
 def _venv_python() -> Path:
     return VENV_DIR / ("Scripts/python.exe" if IS_WINDOWS else "bin/python")
 
+def _venv_site_packages_pyver() -> str | None:
+    """Return the pythonX.Y version string found in .venv/lib/, or None."""
+    lib_dir = VENV_DIR / "lib"
+    if not lib_dir.exists():
+        return None
+    for entry in lib_dir.iterdir():
+        if entry.is_dir() and entry.name.startswith("python"):
+            return entry.name[len("python"):]
+    return None
+
+def _create_venv():
+    """Create (or recreate) the venv from scratch."""
+    VENV_DIR.mkdir(parents=True, exist_ok=True)
+    uv = _which("uv")
+    if uv:
+        env = os.environ.copy()
+        env["UV_LINK_MODE"] = "copy"
+        subprocess.check_call([uv, "venv", "--python", sys.executable, "--seed", str(VENV_DIR)], env=env)
+    else:
+        subprocess.check_call([sys.executable, "-m", "venv", str(VENV_DIR)])
+    _ensure_pip_in_venv(_venv_python())
+
 def _bootstrap_venv_if_needed():
     # Allow skipping (for legacy/advanced scenarios)
     if os.environ.get("SKIP_VENV_BOOTSTRAP") == "1":
@@ -68,25 +90,22 @@ def _bootstrap_venv_if_needed():
     if vpy.exists() and Path(sys.executable).resolve() == vpy.resolve():
         return
 
-    # If the venv doesn't exist, create it (prefer uv if available)
-    if not vpy.exists():
-        VENV_DIR.mkdir(parents=True, exist_ok=True)
-        uv = _which("uv")
-        if uv:
-            # seed to include pip, and specify python explicitly for Termux compatibility
-            # Set UV_LINK_MODE=copy to suppress hardlink warnings on Android/Termux
-            env = os.environ.copy()
-            env["UV_LINK_MODE"] = "copy"
-            subprocess.check_call([uv, "venv", "--python", sys.executable, "--seed", str(VENV_DIR)], env=env)
-        else:
-            # Stdlib venv; try to get pip as well
-            subprocess.check_call([sys.executable, "-m", "venv", str(VENV_DIR)])
-        # ensure pip present/up-to-date
-        _ensure_pip_in_venv(_venv_python())
+    current_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
 
+    if not vpy.exists():
+        # Venv doesn't exist — create it
+        _create_venv()
     else:
-        # venv exists — but ensure pip is present (covers stale/missing pip cases)
-        _ensure_pip_in_venv(vpy)
+        # Venv exists — check for Python version mismatch (e.g. Termux upgraded 3.12→3.13)
+        sp_ver = _venv_site_packages_pyver()
+        if sp_ver and sp_ver != current_ver:
+            print(f"[BOOTSTRAP] Python version changed ({sp_ver} → {current_ver}). Recreating venv...")
+            import shutil as _shutil
+            _shutil.rmtree(str(VENV_DIR))
+            _create_venv()
+        else:
+            # venv exists and version matches — ensure pip is present
+            _ensure_pip_in_venv(vpy)
 
     # Re-exec this script under the venv python so all downstream pip installs
     # use the venv and never hit system PEP 668.
