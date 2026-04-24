@@ -879,16 +879,10 @@ def create_variants(
     tracker: "ProgressTracker" | None = None,
     worker_id: Optional[int] = None,
     stats: Optional[Dict[str, int]] = None,
-    vary_variants: Optional[Tuple[int, int]] = None,
 ) -> List[Path]:
     """
     Create deterministic baseline variants for `src_path`.
     If flat_variants is True, all variants are placed directly under dest_dir.
-
-    Args:
-        vary_variants: Optional (seed, max_count) tuple. When provided, each master
-                      gets a random number of transforms (0 to max_count) selected
-                      from all available transforms. The seed + key ensures reproducibility.
     """
 
     if _is_audio_only(src_path):
@@ -906,37 +900,9 @@ def create_variants(
         if tracker and worker_id is not None:
             tracker.set_worker_stage(worker_id, key, label)
 
-    # Determine which transforms to apply
-    if vary_variants:
-        seed, max_count = vary_variants
-        rng = random.Random(seed + hash(key))
-
-        # Build list of all available transforms
-        all_transforms = []
-        for spec in _trim_specs(extra_trims or []):
-            if spec.duration > 0:
-                all_transforms.append(("trim", spec))
-        for spec in _scale_specs():
-            all_transforms.append(("scale", spec))
-        for spec in _audio_specs():
-            all_transforms.append(("audio", spec))
-        for spec in _video_specs():
-            all_transforms.append(("video", spec))
-
-        # Randomly select 0 to max_count transforms
-        num_variants = rng.randint(0, min(max_count, len(all_transforms)))
-        selected_transforms = rng.sample(all_transforms, num_variants)
-
-        logger.info("Master %s: generating %d/%d variants", key, num_variants, len(all_transforms))
-    else:
-        selected_transforms = None
-
     # Trims
     for spec in _trim_specs(extra_trims or []):
         if spec.duration <= 0:
-            continue
-        # Skip if vary_variants is enabled and this transform wasn't selected
-        if selected_transforms is not None and ("trim", spec) not in selected_transforms:
             continue
         out_file = variant_dir / f"{key}_{spec.name}.mp4"
         if out_file.exists():
@@ -964,9 +930,6 @@ def create_variants(
 
     # Scaling
     for spec in _scale_specs():
-        # Skip if vary_variants is enabled and this transform wasn't selected
-        if selected_transforms is not None and ("scale", spec) not in selected_transforms:
-            continue
         out_file = variant_dir / f"{key}_{spec.name}.mp4"
         if out_file.exists():
             produced.append(out_file)
@@ -994,9 +957,6 @@ def create_variants(
 
     # Audio tweaks
     for spec in _audio_specs():
-        # Skip if vary_variants is enabled and this transform wasn't selected
-        if selected_transforms is not None and ("audio", spec) not in selected_transforms:
-            continue
         suffix = spec.name
         out_file = variant_dir / f"{key}_{suffix}.mp4"
         if out_file.exists():
@@ -1020,9 +980,6 @@ def create_variants(
 
     # Video bitrate / CRF / rename
     for spec in _video_specs():
-        # Skip if vary_variants is enabled and this transform wasn't selected
-        if selected_transforms is not None and ("video", spec) not in selected_transforms:
-            continue
         suffix = spec.name
         if spec.kind == "copy":
             out_file = variant_dir / f"{key}_renamed.mp4"
@@ -1371,7 +1328,6 @@ def generate_dataset(
     ffmpeg_threads: Optional[int] = None,
     max_mem_gb: Optional[float] = None,
     max_height: Optional[int] = None,
-    vary_variants: Optional[Tuple[int, int]] = None,
     progress: ProgressTracker | None = None,
 ) -> Dict[str, Dict[str, List[str]]]:
     """
@@ -1380,7 +1336,6 @@ def generate_dataset(
 
     Args:
         max_height: Optional maximum resolution height for downloads (e.g., 480, 360)
-        vary_variants: Optional (seed, max_count) tuple for variable variant generation
     """
 
     originals_dir = output_dir / "original"
@@ -1459,7 +1414,6 @@ def generate_dataset(
                 tracker=progress,
                 worker_id=worker_id,
                 stats=det_stats,
-                vary_variants=vary_variants,
             )
             if random_plan:
                 rand = create_random_variants(
@@ -1594,7 +1548,6 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="Additional trim spec (start:duration or name:start:duration). Can be repeated.",
     )
     parser.add_argument("-S", "--seed", type=int, default=None, help="Seed for randomized variants and URL shuffling")
-    parser.add_argument("-V", "--vary-max", type=int, default=None, help="Enable variable variant counts: each master gets 0-N transforms (requires --seed)")
     parser.add_argument("-R", "--min-random-variants", type=int, default=2, help="Minimum randomized variants per master")
     parser.add_argument("-X", "--max-random-variants", type=int, default=5, help="Maximum randomized variants per master")
     parser.add_argument(
@@ -1635,8 +1588,6 @@ def _require_mapping_sources(args: argparse.Namespace) -> None:
         raise SystemExit("--num-masters must be >= 1")
     if args.max_random_variants < args.min_random_variants:
         raise SystemExit("--max-random-variants must be >= --min-random-variants")
-    if args.vary_max is not None and args.seed is None:
-        raise SystemExit("--vary-max requires --seed for reproducible variant selection")
 
 
 def main(argv: Optional[List[str]] = None) -> None:
@@ -1753,12 +1704,6 @@ def main(argv: Optional[List[str]] = None) -> None:
     if args.ui:
         tracker, board_cm = _maybe_start_ui(len(keys), args.workers, keys)
 
-    # Prepare vary_variants parameter
-    vary_variants = None
-    if args.vary_max is not None:
-        vary_variants = (args.seed, args.vary_max)
-        logger.info("Variable variant mode: each master will get 0-%d transforms", args.vary_max)
-
     with board_cm:
         manifest = generate_dataset(
             keys,
@@ -1775,7 +1720,6 @@ def main(argv: Optional[List[str]] = None) -> None:
             ffmpeg_threads=args.ffmpeg_threads,
             max_mem_gb=args.max_mem_gb,
             max_height=args.max_height,
-            vary_variants=vary_variants,
             progress=tracker,
         )
 
