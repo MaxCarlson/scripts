@@ -85,6 +85,20 @@ def format_bytes_binary(num_bytes: float | int | None) -> str:
     return f"{value:.{precision}f} {units[idx]}"
 
 
+def format_bytes_decimal(num_bytes: float | int | None) -> str:
+    """Format disk/storage bytes using KB, MB, GB units at 1024 thresholds."""
+    if num_bytes is None:
+        return "0 B"
+    value = float(max(0, num_bytes))
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    idx = 0
+    while value >= 1024 and idx < len(units) - 1:
+        value /= 1024
+        idx += 1
+    precision = 0 if idx == 0 else 2
+    return f"{value:.{precision}f} {units[idx]}"
+
+
 def format_rate_bps(num_bps: float | int | None) -> str:
     """Format bytes/sec rate with binary units."""
     if not isinstance(num_bps, (int, float)) or num_bps <= 0:

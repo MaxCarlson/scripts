@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import random
@@ -29,6 +30,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
+from urllib.parse import urlparse
 
 # Import EnforcedArgumentParser with fallback
 try:
@@ -68,7 +70,16 @@ WATCHER_LOG_STATUS_COLOURS = {
 }
 GIB = 1024**3
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+SIZE_RE = re.compile(r"^\s*(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>[kmgtp]?i?b)?\s*$", re.I)
 URL_PANEL_AUTO_INTERVAL = 10.0
+URL_PANEL_SORT_CYCLE = (
+    ("ratio", False),
+    ("ratio", True),
+    ("stars", False),
+    ("remaining", False),
+    ("gb", False),
+    ("unique", False),
+)
 
 # Use TermDash for robust in-place dashboard rendering
 # We avoid TermDash here for maximal compatibility across shells; do manual frames
@@ -132,6 +143,74 @@ def _read_urls(path: Path) -> List[str]:
     return list(dict.fromkeys(out))
 
 
+def _top_domain(url: Optional[str]) -> str:
+    if not url:
+        return "-"
+    try:
+        parsed = urlparse(str(url).strip())
+    except Exception:
+        return "-"
+    host = (parsed.hostname or "").lower().strip(".")
+    if not host:
+        return "-"
+    if host.startswith("www."):
+        host = host[4:]
+    return host or "-"
+
+
+def _domains_for_urls(urls: Sequence[str]) -> set[str]:
+    return {domain for domain in (_top_domain(url) for url in urls) if domain != "-"}
+
+
+def _domains_for_urlfile(path: Path) -> set[str]:
+    try:
+        return _domains_for_urls(_read_urls(path))
+    except Exception:
+        return set()
+
+
+def _domain_diversity_score(path: Path, active_domains: set[str], candidate_domains: Dict[str, set[str]]) -> int:
+    domains = candidate_domains.get(str(path.resolve()), set())
+    if not domains:
+        return 0
+    return len(domains - active_domains)
+
+
+def _choose_domain_diverse_candidate(
+    candidates: List[Path],
+    rankings: Dict[str, int],
+    candidate_domains: Dict[str, set[str]],
+    active_domains: set[str],
+    temperature: float,
+    *,
+    rng=random,
+) -> Path:
+    if not candidates:
+        raise ValueError("No URL candidates to choose from")
+    scored = sorted(
+        candidates,
+        key=lambda p: (
+            -_domain_diversity_score(p, active_domains, candidate_domains),
+            rankings.get(str(p.resolve()), len(candidates)),
+            str(p),
+        ),
+    )
+    if temperature <= 0:
+        return scored[0]
+    weights = []
+    for idx, path in enumerate(scored):
+        score = _domain_diversity_score(path, active_domains, candidate_domains)
+        weights.append(math.exp(((score * 4.0) - idx) / max(temperature, 1e-9)))
+    total = sum(weights)
+    pick = rng.random() * total
+    cumulative = 0.0
+    for candidate, weight in zip(scored, weights):
+        cumulative += weight
+        if pick <= cumulative:
+            return candidate
+    return scored[-1]
+
+
 def _human_bytes(b: Optional[float | int]) -> str:
     if b is None:
         return "?"
@@ -144,15 +223,95 @@ def _human_bytes(b: Optional[float | int]) -> str:
     return f"{v:.2f}{units[i]}"
 
 
+def _parse_size_bytes(value: str) -> Optional[int]:
+    raw = str(value or "").strip()
+    if not raw or raw.lower() in {"0", "none", "off", "disable", "disabled", "unlimited"}:
+        return None
+    match = SIZE_RE.match(raw)
+    if not match:
+        raise argparse.ArgumentTypeError("expected a size like 1024MB, 100GB, or unlimited")
+    number = float(match.group("value"))
+    unit = (match.group("unit") or "B").lower()
+    multipliers = {
+        "b": 1,
+        "kb": 1024,
+        "kib": 1024,
+        "mb": 1024**2,
+        "mib": 1024**2,
+        "gb": 1024**3,
+        "gib": 1024**3,
+        "tb": 1024**4,
+        "tib": 1024**4,
+        "pb": 1024**5,
+        "pib": 1024**5,
+    }
+    if unit not in multipliers:
+        raise argparse.ArgumentTypeError("expected units B, KB, MB, GB, TB, KiB, MiB, GiB, or TiB")
+    bytes_value = int(number * multipliers[unit])
+    return bytes_value if bytes_value > 0 else None
+
+
+def _parse_url_pick_temperature(value: str) -> float:
+    try:
+        temperature = float(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("expected a non-negative number") from exc
+    if temperature < 0:
+        raise argparse.ArgumentTypeError("expected a non-negative number")
+    return temperature
+
+
+def _cycle_url_sort(current_key: str, current_ascending: bool) -> tuple[str, bool]:
+    current = (current_key, current_ascending)
+    try:
+        idx = URL_PANEL_SORT_CYCLE.index(current)
+    except ValueError:
+        idx = -1
+    return URL_PANEL_SORT_CYCLE[(idx + 1) % len(URL_PANEL_SORT_CYCLE)]
+
+
+def _weighted_rank_choice(
+    candidates: List[Path],
+    rankings: Dict[str, int],
+    temperature: float,
+    *,
+    rng=random,
+) -> Path:
+    ordered = sorted(
+        candidates,
+        key=lambda p: (rankings.get(str(p.resolve()), len(candidates)), str(p)),
+    )
+    if not ordered:
+        raise ValueError("No URL candidates to choose from")
+    if temperature <= 0:
+        return ordered[0]
+    weights = [math.exp(-(idx / max(temperature, 1e-9))) for idx, _ in enumerate(ordered)]
+    total = sum(weights)
+    pick = rng.random() * total
+    cumulative = 0.0
+    for candidate, weight in zip(ordered, weights):
+        cumulative += weight
+        if pick <= cumulative:
+            return candidate
+    return ordered[-1]
+
+
+def _format_download_bytes(value: Optional[int | float]) -> str:
+    return td_utils.format_bytes_binary(value)
+
+
+def _format_download_rate(value: Optional[int | float]) -> str:
+    return td_utils.format_rate_bps(value)
+
+
+def _format_disk_bytes(value: Optional[int | float]) -> str:
+    return td_utils.format_bytes_decimal(value)
+
+
 def _human_short_bytes(b: Optional[int]) -> str:
     if b is None:
         return "?"
-    v = float(b)
-    g = v / (1024 * 1024 * 1024)
-    if g >= 1.0:
-        return f"{g:.1f}G"
-    m = v / (1024 * 1024)
-    return f"{m:.1f}M"
+    return td_utils.format_bytes_binary(b).replace(" ", "")
 
 
 def _hms(elapsed_s: float) -> str:
@@ -181,6 +340,28 @@ def _watcher_trigger_label(value: Optional[int]) -> str:
         return "disabled"
     gib = float(value) / (1024**3)
     return f"{gib:.1f} GiB"
+
+
+def _controlled_quit_eta_label(workers: Sequence["WorkerState"]) -> str:
+    active = [worker for worker in workers if worker.proc and not worker.is_paused]
+    if not active:
+        return "0s"
+    if any(not isinstance(worker.eta_s, (int, float)) for worker in active):
+        return "?"
+    eta_s = max(0, int(round(max(float(worker.eta_s or 0) for worker in active))))
+    return f"{eta_s}s"
+
+
+def _controlled_quit_complete(enabled: bool, workers: Sequence["WorkerState"]) -> bool:
+    return bool(enabled) and all(worker.proc is None for worker in workers)
+
+
+def _downloads_footer_text() -> str:
+    return (
+        "Keys: w=watcher, u=url stats, d=downloads, Up/Down=select worker, "
+        "P=toggle selected, p=pause/unpause all, x=controlled quit, h=toggle status, "
+        "q=quit, v=cycle verbose, digits=select worker"
+    )
 
 
 def _watcher_keep_source_label(config: WatcherConfig) -> str:
@@ -322,7 +503,7 @@ def _ansi_slice(text: str, start: int, width: int) -> str:
 def _format_buffer_delta(delta_bytes: int) -> str:
     color = "green" if delta_bytes > 5 * GIB else "yellow" if delta_bytes >= 0 else "red"
     sign = "+" if delta_bytes >= 0 else "-"
-    human = td_utils.format_bytes_binary(abs(delta_bytes))
+    human = _format_disk_bytes(abs(delta_bytes))
     return td_utils.color_text(f"{sign}{human}", color)
 
 
@@ -365,15 +546,15 @@ def _describe_storage(
     same_volume: bool = False,
     show_disabled: bool = False,
 ) -> str:
-    free_str = td_utils.format_bytes_binary(stats.free_bytes)
-    total_str = td_utils.format_bytes_binary(stats.total_bytes)
+    free_str = _format_disk_bytes(stats.free_bytes)
+    total_str = _format_disk_bytes(stats.total_bytes)
     line = f"{label}: {free_str} free / {total_str} total ({stats.label})"
     extras: List[str] = []
     if same_volume:
         extras.append("shares staging volume")
     if threshold_bytes and threshold_bytes > 0:
         delta = stats.free_bytes - threshold_bytes
-        extras.append(f"buffer {_format_buffer_delta(delta)} @ {td_utils.format_bytes_binary(threshold_bytes)}")
+        extras.append(f"buffer {_format_buffer_delta(delta)} @ {_format_disk_bytes(threshold_bytes)}")
         if delta > 0 and download_speed_bps > 0:
             eta = delta / download_speed_bps
             extras.append(f"ETA {td_utils.format_duration_hms(eta)}")
@@ -408,6 +589,7 @@ def _render_watcher_panel(
     destination_stats: Optional[td_utils.DiskStats],
     auto_trigger_bytes: Optional[int],
     auto_block_reason: Optional[str],
+    destination_no_space: bool,
 ) -> List[str]:
     lines: List[str] = []
     header = "MP4 Folder Synchroniser"
@@ -420,6 +602,8 @@ def _render_watcher_panel(
 
     lines.append(f"Manager elapsed: {_hms(manager_elapsed)}"[:cols])
     lines.append(f"Total downloaded: {_watcher_bytes(total_downloaded_bytes)}"[:cols])
+    if destination_no_space:
+        lines.append(td_utils.color_text("NO DISK SPACE LEFT AT FINAL DESTINATION", "red")[:cols])
     lines.append("")
 
     cfg = snapshot.config if snapshot else None
@@ -433,6 +617,12 @@ def _render_watcher_panel(
         trigger_bytes = cfg.free_space_trigger_bytes or auto_trigger_bytes
         lines.append(f"Max files/run: {max_label} | Free trigger: {_watcher_trigger_label(trigger_bytes)}"[:cols])
         lines.append(f"Staged size trigger: {_watcher_trigger_label(cfg.total_size_trigger_bytes)}"[:cols])
+        reserve = (
+            _format_disk_bytes(cfg.destination_space_remaining_bytes)
+            if cfg.destination_space_remaining_bytes
+            else "disabled"
+        )
+        lines.append(f"Destination reserve: {reserve}"[:cols])
         lines.append("")
 
     storage_lines = _storage_summary_lines(
@@ -503,7 +693,8 @@ def _render_watcher_panel(
     else:
         hotkey_lines = _wrap_hotkey_lines(
             "Keys: d=downloads, u=url stats, c=start cleaner, s=scan (dry-run), o=toggle copy/move, "
-            "k=set max-files, f=set free GiB, [=scroll log up, ]=scroll log down, q=quit",
+            "k=set max-files, f=set staging free GiB, m=set destination reserve, "
+            "[=scroll log up, ]=scroll log down, q=quit",
             cols,
         )
 
@@ -654,6 +845,24 @@ class WorkerState:
     prog_log_path: Optional[Path] = None
     is_paused: bool = False
     paused_speed_bps: Optional[float] = None
+    controlled_stopped: bool = False
+
+
+class DomainDiversityAverager:
+    def __init__(self) -> None:
+        self.samples = 0
+        self.total = 0.0
+
+    def update(self, current_count: int) -> float:
+        self.samples += 1
+        self.total += max(0, int(current_count))
+        return self.average
+
+    @property
+    def average(self) -> float:
+        if self.samples <= 0:
+            return 0.0
+        return self.total / self.samples
 
 
 def _gather_from_roots(
@@ -700,6 +909,7 @@ def _start_worker(
     cap_mibs: Optional[float],
     proxy_dl_location: Optional[str] = None,
     max_resolution: Optional[str] = None,
+    stop_sentinel: Optional[Path] = None,
 ) -> subprocess.Popen:
     canonical_dir = (canonical_root / urlfile.stem).expanduser().resolve()
     canonical_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -723,6 +933,8 @@ def _start_worker(
         cmd += ["--proxy-dl-location", str(proxy_dl_location)]
     if max_resolution:
         cmd += ["--max-resolution", max_resolution]
+    if stop_sentinel:
+        cmd += ["-B", str(stop_sentinel)]
     if quiet:
         cmd.append("-q")
     # line buffered
@@ -824,11 +1036,21 @@ def make_parser() -> argparse.ArgumentParser:
         help="Automatically trigger the watcher when staging free space drops below this GiB threshold",
     )
     p.add_argument(
+        "-m",
+        "--space-remaining",
+        type=_parse_size_bytes,
+        default=None,
+        help=(
+            "Minimum final destination disk space to preserve for watcher transfers "
+            "(examples: 1024MB, 100GB, unlimited)"
+        ),
+    )
+    p.add_argument(
         "-O",
         "--url-order-key",
         choices=urlscan.SORT_CHOICES,
         default="ratio",
-        help="Metric used to prioritise URL files (ratio, remaining, name, unique, mp4, ae, stars)",
+        help="Metric used to prioritise URL files (ratio, remaining, name, unique, mp4, ae, stars, gb)",
     )
     p.add_argument(
         "-C",
@@ -860,6 +1082,13 @@ def make_parser() -> argparse.ArgumentParser:
         "--url-random-order",
         action="store_true",
         help="Ignore metrics and assign URL files randomly",
+    )
+    p.add_argument(
+        "-Q",
+        "--url-pick-temperature",
+        type=_parse_url_pick_temperature,
+        default=0.0,
+        help="Weighted-random URL assignment temperature; 0 is deterministic, higher values add randomness",
     )
     # Web viewer (TermDash mirror) options
     p.add_argument(
@@ -913,6 +1142,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y%m%d-%H%M%S")
     manager_log_path = log_dir / f"dlmanager-{ts}-{os.getpid()}.log"
+    controlled_quit_sentinel = log_dir / f"controlled-quit-{ts}-{os.getpid()}.stop"
     mlog = ManagerLogger(manager_log_path)
 
     archive_dir: Optional[Path] = Path(args.archive).expanduser().resolve() if args.archive else None
@@ -958,6 +1188,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 keep_source=keep_source,
                 total_size_trigger_bytes=mp4_trigger_total_bytes,
                 free_space_trigger_bytes=mp4_trigger_free_bytes,
+                destination_space_remaining_bytes=args.space_remaining,
             )
             watcher = MP4Watcher(config=config, enabled=True)
             if watcher.is_enabled():
@@ -969,13 +1200,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 max_label = max_files if max_files is not None else "unlimited"
                 free_label = _watcher_trigger_label(config.free_space_trigger_bytes)
                 size_label = _watcher_trigger_label(config.total_size_trigger_bytes)
+                reserve_label = (
+                    _format_disk_bytes(config.destination_space_remaining_bytes)
+                    if config.destination_space_remaining_bytes
+                    else "disabled"
+                )
                 keep_desc = "keep source" if keep_source else "delete source"
                 staging_label = str(staging_root)
                 destination_label = str(destination_root)
                 watcher.log_event(
                     "CONFIG",
-                    f"Watcher configured: staging={staging_label} -> {destination_label}, default={args.mp4_operation}, "
-                    f"{keep_desc}, max_files={max_label}, free_trigger={free_label}, size_trigger={size_label}.",
+                    f"Watcher configured: staging={staging_label} -> {destination_label}, "
+                    f"default={args.mp4_operation}, "
+                    f"{keep_desc}, max_files={max_label}, free_trigger={free_label}, size_trigger={size_label}, "
+                    f"destination_reserve={reserve_label}.",
                 )
                 watcher.log_event(
                     "STATE",
@@ -987,7 +1225,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     f"exists={staging_root.exists()}/{destination_root.exists()}"
                 )
                 watcher = MP4Watcher(config=config, enabled=False)
-    elif args.mp4_operation or args.mp4_max_files or args.mp4_trigger_total_gb or args.mp4_trigger_free_gb:
+    elif (
+        args.mp4_operation
+        or args.mp4_max_files
+        or args.mp4_trigger_total_gb
+        or args.mp4_trigger_free_gb
+        or args.space_remaining
+    ):
         mlog.info("MP4 watcher configuration ignored because --enable-mp4-watcher was not set")
 
     roots: List[Path] = [stars_dir, aebn_dir]
@@ -1030,11 +1274,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     url_scan_pending_trigger: Optional[str] = None
     url_scan_status = "idle"
     url_panel_auto_refresh = True
-    url_panel_hide_complete = True
+    url_panel_sort_key = args.url_order_key
+    url_panel_sort_ascending = args.url_order_ascending
+    url_panel_name_filter = ""
     url_panel_top = 0
     url_panel_scroll = 0
     url_panel_max_top = 0
     url_panel_max_scroll = 0
+    urlfile_domain_cache: Dict[str, set[str]] = {}
+    domain_diversity_avg = DomainDiversityAverager()
+    controlled_quit = False
+    downloads_status_visible = True
 
     # Totals tracking
     total_completed_bytes = 0
@@ -1139,17 +1389,54 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         mp4_count, _, _ = urlscan.mp4_inventory(dest_dir)
         return max(len(urls) - mp4_count, 0)
 
+    def _active_domains() -> set[str]:
+        return {
+            domain
+            for domain in (_top_domain(worker.url_current) for worker in workers if worker.proc and not worker.is_paused)
+            if domain != "-"
+        }
+
+    def _active_scheduling_domains() -> set[str]:
+        domains = set(_active_domains())
+        for worker in workers:
+            if not worker.proc or worker.is_paused or not worker.urlfile:
+                continue
+            if _top_domain(worker.url_current) != "-":
+                continue
+            domains.update(_cached_domains_for_urlfile(worker.urlfile))
+        return domains
+
+    def _cached_domains_for_urlfile(path: Path) -> set[str]:
+        key = str(path.resolve())
+        if key not in urlfile_domain_cache:
+            urlfile_domain_cache[key] = _domains_for_urlfile(path)
+        return urlfile_domain_cache[key]
+
+    def _candidate_domain_map(candidates: List[Path]) -> Dict[str, set[str]]:
+        return {str(path.resolve()): _cached_domains_for_urlfile(path) for path in candidates}
+
     def _select_best(candidates: List[Path]) -> Path:
         eligible = [c for c in candidates if _remaining_for_path(c) != 0]
         if not eligible:
             return random.choice(candidates)
-        if args.url_random_order or not url_rankings:
+        if args.url_random_order:
             return random.choice(eligible)
-        ordered = sorted(
+        if not url_rankings:
+            fallback_rankings = {str(path.resolve()): idx for idx, path in enumerate(sorted(eligible))}
+            return _choose_domain_diverse_candidate(
+                eligible,
+                fallback_rankings,
+                _candidate_domain_map(eligible),
+                _active_scheduling_domains(),
+                float(args.url_pick_temperature or 0.0),
+            )
+        return _choose_domain_diverse_candidate(
             eligible,
-            key=lambda p: (url_rankings.get(str(p.resolve()), float("inf")), str(p)),
+            url_rankings,
+            _candidate_domain_map(eligible),
+            _active_scheduling_domains(),
+            float(args.url_pick_temperature or 0.0),
         )
-        return ordered[0]
 
     def _select_priority(candidates: List[Path]) -> Optional[Path]:
         eligible = [c for c in candidates if _remaining_for_path(c) != 0]
@@ -1157,7 +1444,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return None
         if args.url_random_order:
             return random.choice(eligible)
-        return eligible[0]
+        priority_rankings = {str(path.resolve()): idx for idx, path in enumerate(eligible)}
+        return _choose_domain_diverse_candidate(
+            eligible,
+            priority_rankings,
+            _candidate_domain_map(eligible),
+            _active_scheduling_domains(),
+            float(args.url_pick_temperature or 0.0),
+        )
 
     _schedule_url_scan("startup")
 
@@ -1264,17 +1558,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             total_completed_bytes += ws.downloaded_bytes
                     # Build overlay message until next start/progress
                     if rc_v == 0 and not ws.last_already:
-                        status = "DOWNLOADED"
                         status_colored = "\x1b[32mDOWNLOADED\x1b[0m"
                     elif rc_v == 0 and ws.last_already:
-                        status = "DUPLICATE"
                         status_colored = "\x1b[33mDUPLICATE\x1b[0m"
                     else:
-                        status = "BAD_URL"
                         status_colored = "\x1b[31mBAD_URL\x1b[0m"
                     ws.last_already = False
                     elapsed_url = _hms(time.time() - (ws.url_t0 or ws.assign_t0))
-                    name = ws.url_current or ""
                     size_info = f" [{_human_short_bytes(ws.downloaded_bytes)}]" if ws.downloaded_bytes else ""
                     ws.overlay_msg = (
                         f"\x1b[90m[{ws.slot:02d}]\x1b[0m URL {ws.url_index or 0}/{ws.url_count or 0}"
@@ -1311,6 +1601,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     )
                     ws.overlay_since = time.time()
                     _clear_worker_progress(ws)
+                elif ev == "controlled_stop":
+                    mlog.info(f"[{ws.slot:02d}] CONTROLLED_STOP next_idx={evt.get('url_index')}")
+                    ws.controlled_stopped = True
+                    ws.overlay_msg = (
+                        f"\x1b[90m[{ws.slot:02d}]\x1b[0m "
+                        f"\x1b[31mCONTROLLED QUIT\x1b[0m no new URL started"
+                    )
+                    ws.overlay_since = time.time()
+                    _clear_worker_progress(ws)
                 if ws.reader_stop.is_set():
                     break
         except Exception as e:
@@ -1318,6 +1617,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     def _assign(ws: WorkerState) -> bool:
         nonlocal pool, priority_pool
+        if controlled_quit:
+            return False
         # Filter out finished from current pools on each assignment
         finished: set[str] = set()
         if finished_log.exists():
@@ -1383,6 +1684,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ws.assign_t0 = time.time()
         ws.rc = None
         ws.last_already = False
+        ws.controlled_stopped = False
         ws.overlay_msg = None
         ws.overlay_since = 0.0
         ws.cap_mibs = (
@@ -1410,6 +1712,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             ws.cap_mibs,
             args.proxy_dl_location,
             args.max_resolution,
+            controlled_quit_sentinel,
         )
         ws.reader_stop.clear()
         ws.reader = threading.Thread(target=_reader, args=(ws,), daemon=True)
@@ -1462,6 +1765,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
 
     def _can_assign_more() -> bool:
+        if controlled_quit:
+            return False
         if (
             not isinstance(args.max_total_dl_speed, (int, float))
             or not args.max_total_dl_speed
@@ -1479,6 +1784,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return (cur + est_add) <= float(args.max_total_dl_speed)
 
     def _maybe_preempt_workers() -> None:
+        if controlled_quit:
+            return
         if not args.url_preempt or not url_order_paths or args.url_random_order:
             return
         finished_set: set[str] = set()
@@ -1587,6 +1894,35 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if not ws.proc:
                 _assign(ws)
 
+    def _set_controlled_quit(enabled: bool) -> None:
+        nonlocal controlled_quit
+        if controlled_quit == enabled:
+            return
+        controlled_quit = enabled
+        if enabled:
+            try:
+                controlled_quit_sentinel.write_text("controlled quit requested\n", encoding="utf-8")
+            except Exception as exc:
+                mlog.error(f"Failed to create controlled quit sentinel: {exc}")
+            for worker in workers:
+                if worker.proc and worker.proc.poll() is None:
+                    worker.overlay_msg = "CONTROLLED QUIT - finishing current URL"
+                    worker.overlay_since = time.time()
+            mlog.info(f"CONTROLLED_QUIT enabled sentinel={controlled_quit_sentinel}")
+            return
+        try:
+            controlled_quit_sentinel.unlink(missing_ok=True)
+        except Exception as exc:
+            mlog.error(f"Failed to remove controlled quit sentinel: {exc}")
+        for worker in workers:
+            if worker.overlay_msg == "CONTROLLED QUIT - finishing current URL":
+                worker.overlay_msg = None
+        mlog.info("CONTROLLED_QUIT disabled")
+        if not paused:
+            for worker in workers:
+                if worker.proc is None and _can_assign_more():
+                    _assign(worker)
+
     def _toggle_selected_worker_pause() -> None:
         nonlocal paused
         ws = next((w for w in workers if w.slot == selected_worker_slot), None)
@@ -1604,6 +1940,67 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             _pause_worker_slot(ws)
         active_workers = [w for w in workers if w.proc and w.proc.poll() is None]
         paused = bool(active_workers) and all(w.is_paused for w in active_workers)
+
+    def _select_worker_delta(delta: int) -> None:
+        nonlocal selected_worker_slot, verbose_slot
+        if not workers:
+            return
+        slots = [w.slot for w in workers]
+        try:
+            idx = slots.index(selected_worker_slot)
+        except ValueError:
+            idx = 0
+        idx = max(0, min(len(slots) - 1, idx + delta))
+        selected_worker_slot = slots[idx]
+        verbose_slot = selected_worker_slot
+
+    def _build_verbose_lines(slot: int, mode: int, cols: int, rows: int) -> List[str]:
+        if not mode:
+            return []
+        out = ["-" * min(cols, 100)]
+        sel = next((w for w in workers if w.slot == slot), None)
+        max_lines = max(4, min(60, max(1, rows) // 3))
+        if mode == 1:
+            out.append(f"Verbose NDJSON [{slot:02d}]"[:cols])
+            if sel and sel.ndjson_buf:
+                for ln in sel.ndjson_buf[-max_lines:]:
+                    out.append(ln[:cols])
+            return out
+        if mode == 2:
+            out.append(f"Program Log [{slot:02d}]"[:cols])
+
+            def _tail_lines(p: Optional[Path], n: int) -> list[str]:
+                if not p:
+                    return ["<no log path>"]
+                try:
+                    txt = Path(p).read_text(encoding="utf-8", errors="ignore")
+                    arr = txt.splitlines()
+                    return arr[-n:]
+                except Exception as exc:
+                    return [f"<error reading {p}: {exc}>"]
+
+            def _colorize_log(s: str) -> str:
+                pairs = [
+                    ("FINISH_BAD", "\x1b[31m"),
+                    ("BAD", "\x1b[31m"),
+                    ("STALLED", "\x1b[31m"),
+                    ("DEADLINE", "\x1b[35m"),
+                    ("FORCE_EXIT", "\x1b[35m"),
+                    ("DUPLICATE", "\x1b[33m"),
+                    ("FINISH_SUCCESS", "\x1b[32m"),
+                    ("SUCCESS", "\x1b[32m"),
+                ]
+                result = s
+                for token, color in pairs:
+                    if token in result:
+                        result = result.replace(token, f"{color}{token}\x1b[0m")
+                if "\x1b[" in result and not result.endswith("\x1b[0m"):
+                    result = result + "\x1b[0m"
+                return result
+
+            for ln in _tail_lines(sel.prog_log_path if sel else None, max_lines):
+                out.append(_colorize_log(ln)[:cols])
+        return out
 
     try:
         while not stop.is_set():
@@ -1651,7 +2048,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             except Exception:
                 staging_stats = None
             try:
-                destination_stats = td_utils.get_disk_stats(stars_dir)
+                destination_stats = td_utils.get_disk_stats(download_root)
             except Exception:
                 destination_stats = None
             current_auto_trigger_bytes = (
@@ -1659,12 +2056,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 if watcher_status and watcher_status.config.free_space_trigger_bytes
                 else mp4_trigger_free_bytes
             )
+            destination_reserve_bytes = (
+                watcher_status.config.destination_space_remaining_bytes
+                if watcher_status and watcher_status.config.destination_space_remaining_bytes
+                else None
+            )
+            destination_no_space = bool(
+                (watcher_status and watcher_status.destination_no_space)
+                or (
+                    destination_stats
+                    and isinstance(destination_reserve_bytes, int)
+                    and destination_reserve_bytes > 0
+                    and destination_stats.free_bytes <= destination_reserve_bytes
+                )
+            )
             # Dynamic total throttle: proportional caps across yt-dlp workers
             now_check = time.time()
             if (
                 isinstance(args.max_total_dl_speed, (int, float))
                 and args.max_total_dl_speed
                 and args.max_total_dl_speed > 0
+                and not controlled_quit
             ):
                 cap = float(args.max_total_dl_speed)
                 total_mib = sum(
@@ -1737,6 +2149,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                         w.cap_mibs,
                                         args.proxy_dl_location,
                                         args.max_resolution,
+                                        controlled_quit_sentinel,
                                     )
                                 w.reader = threading.Thread(target=_reader, args=(w,), daemon=True)
                                 w.reader.start()
@@ -1791,6 +2204,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                         w.cap_mibs,
                                         args.proxy_dl_location,
                                         args.max_resolution,
+                                        controlled_quit_sentinel,
                                     )
                                     w.reader = threading.Thread(target=_reader, args=(w,), daemon=True)
                                     w.reader.start()
@@ -1803,17 +2217,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     if (time.time() - ws.assign_t0) > args.time_limit:
                         _requeue(ws, finished=False, reason="time_limit")
                         _refresh_url_scan("time_limit")
-                        if not paused:
+                        if not paused and not controlled_quit:
                             _assign(ws)
                         continue
                 # exit
                 rc = ws.proc.poll()
                 if rc is not None:
                     ws.rc = rc
-                    finished = rc == 0
+                    finished = rc == 0 and not ws.controlled_stopped
                     _requeue(ws, finished=finished, reason=f"exit rc={rc}")
                     # Assign a new one if available (only if not paused)
-                    if not paused:
+                    if not paused and not controlled_quit:
                         _assign(ws)
 
             # Build frame lines and redraw whole screen
@@ -1836,6 +2250,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             agg_bytes = total_completed_bytes + inprog_bytes
             avg_mib_s = (agg_bytes / max(1.0, (time.time() - t0))) / (1024 * 1024)
             avg_speed_bps = avg_mib_s * (1024 * 1024)
+            active_domain_values = sorted(_active_domains())
+            active_domain_count = len(active_domain_values)
+            avg_domain_count = domain_diversity_avg.update(active_domain_count)
+            domain_summary = ",".join(active_domain_values[:3])
+            if len(active_domain_values) > 3:
+                domain_summary += ",+"
 
             # Update web mirror
             if td_available and td_dash:
@@ -1847,9 +2267,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         td_dash.add_line("header", header, at_top=True)
                         td_dash.add_separator()
                         totals = Line("totals", stats=[
-                            Stat("speed", f"{total_speed_mib:.2f}", prefix="Speed: ", unit=" MiB/s"),
-                            Stat("avg", f"{avg_mib_s:.2f}", prefix="Avg: ", unit=" MiB/s"),
-                            Stat("downloaded", f"{(agg_bytes/1048576):.1f}", prefix="Downloaded: ", unit=" MiB"),
+                            Stat("speed", _format_download_rate(total_speed_bps), prefix="Speed: ", unit=""),
+                            Stat("avg", _format_download_rate(avg_speed_bps), prefix="Avg: ", unit=""),
+                            Stat("downloaded", _format_download_bytes(agg_bytes), prefix="Downloaded: ", unit=""),
                             Stat("started", total_started_urls, prefix="Started: "),
                             Stat("processed", total_processed_urls, prefix="Processed: "),
                             Stat("completed", total_completed_urls, prefix="Completed: "),
@@ -1872,9 +2292,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         td_lines_built = True
                     else:
                         # Update totals
-                        td_dash.update_stat("totals", "speed", f"{total_speed_mib:.2f}")
-                        td_dash.update_stat("totals", "avg", f"{avg_mib_s:.2f}")
-                        td_dash.update_stat("totals", "downloaded", f"{(agg_bytes/1048576):.1f}")
+                        td_dash.update_stat("totals", "speed", _format_download_rate(total_speed_bps))
+                        td_dash.update_stat("totals", "avg", _format_download_rate(avg_speed_bps))
+                        td_dash.update_stat("totals", "downloaded", _format_download_bytes(agg_bytes))
                         td_dash.update_stat("totals", "started", total_started_urls)
                         td_dash.update_stat("totals", "processed", total_processed_urls)
                         td_dash.update_stat("totals", "completed", total_completed_urls)
@@ -1889,7 +2309,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                 sp = "PAUSED"
                             else:
                                 sp = (
-                                    f"{(float(ws.speed_bps)/(1024*1024)):.2f}MiB/s"
+                                    _format_download_rate(ws.speed_bps).replace(" ", "")
                                     if isinstance(ws.speed_bps, (int, float)) and ws.speed_bps is not None
                                     else "?/s"
                                 )
@@ -1937,6 +2357,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     destination_stats=destination_stats,
                     auto_trigger_bytes=current_auto_trigger_bytes,
                     auto_block_reason=auto_block_reason,
+                    destination_no_space=destination_no_space,
                 )
                 watcher_log_meta = {
                     "log_max_scroll": layout_meta.get("log_max_scroll", 0),
@@ -1951,16 +2372,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 last_scan_label = (
                     time.strftime("%H:%M:%S", time.localtime(last_url_scan)) if last_url_scan else "never"
                 )
-                order_desc = f"{args.url_order_key} ({'asc' if args.url_order_ascending else 'desc'})"
+                order_desc = f"{url_panel_sort_key} ({'asc' if url_panel_sort_ascending else 'desc'})"
                 random_desc = "random" if args.url_random_order else "ranked"
-                palette = urlscan.Palette(enabled=True)
+                search_desc = f" | search: {url_panel_name_filter}" if url_panel_name_filter else ""
                 lines.append(
-                    f"URL Stats Panel | last refresh: {last_scan_label} | entries: {total_entries} | order: {order_desc} {random_desc}"
+                    f"URL Stats Panel | last refresh: {last_scan_label} | entries: {total_entries} "
+                    f"| order: {order_desc} {random_desc}{search_desc}"
                 )
                 lines.append("-" * min(cols, 100))
                 if url_scan_state and url_scan_state.entries:
+                    filtered_entries = urlscan.filter_entries_by_name(
+                        url_scan_state.entries,
+                        url_panel_name_filter,
+                    )
                     ordered_entries = urlscan.sort_entries(
-                        url_scan_state.entries, args.url_order_key, args.url_order_ascending
+                        filtered_entries,
+                        url_panel_sort_key,
+                        url_panel_sort_ascending,
                     )
                     max_rows = max(5, min(25, rows - 8))
                     url_panel_max_top = max(0, len(ordered_entries) - max_rows)
@@ -1981,6 +2409,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             f"{entry.mp4_bytes / urlscan.GBYTES:.2f}",
                         ]
                         table_lines.append(urlscan._format_interactive_columns(row_values))
+                    if url_panel_name_filter:
+                        table_lines.append(f"Matches: {len(ordered_entries)} / {total_entries}")
                     max_line_len = max((len(line) for line in table_lines), default=0)
                     url_panel_max_scroll = max(0, max_line_len - cols + 2)
                     url_panel_scroll = max(0, min(url_panel_scroll, url_panel_max_scroll))
@@ -1992,7 +2422,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 lines.append("-" * min(cols, 100))
                 auto_label = td_utils.color_text("ON", "green") if url_panel_auto_refresh else td_utils.color_text("OFF", "red")
                 lines.append(
-                    f"Auto refresh: {auto_label} | Keys: d=downloads, w=watcher, r=rescan, a=toggle auto, j/k=vert, h/l=horz, q=quit"
+                    f"Auto refresh: {auto_label} | Keys: d=downloads, w=watcher, r=rescan, "
+                    f"a=toggle auto, s=sort, /=search, Esc=clear, j/k=vert, h/l=horz, q=quit"
                 )
                 if (
                     url_panel_auto_refresh
@@ -2007,42 +2438,52 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 total_available = len([p for p in current_regular if str(p.resolve()) not in active]) + len(
                     [p for p in current_priority if str(p.resolve()) not in active]
                 )
-                # Header
-                pause_tag = td_utils.color_text(" [PAUSED]", "yellow") if paused else ""
-                quit_tag = td_utils.color_text(" [Press Y to confirm quit]", "red") if quit_confirm else ""
-                active_label = td_utils.color_text(str(active_workers), "green" if active_workers > 0 else "gray")
-                pool_label = td_utils.color_text(str(total_available), "cyan" if total_available > 0 else "gray")
-                header = (
-                    f"DL Manager{pause_tag}{quit_tag}"
-                    f"  |  threads={args.threads}"
-                    f"  active={active_label}"
-                    f"  pool={pool_label}"
-                    f"  elapsed={_hms(manager_elapsed)}"
-                )
-                lines.append(header[:cols])
-                # Totals bar
-                speed_color = "cyan" if total_speed_mib >= 1.0 else ("yellow" if total_speed_mib > 0 else "gray")
-                speed_str = td_utils.color_text(f"{total_speed_mib:.2f} MiB/s", speed_color)
-                avg_str = f"avg {avg_mib_s:.2f} MiB/s"
-                dl_str = td_utils.color_text(f"{(agg_bytes/1048576):.1f} MiB", "bright")
-                started_str = td_utils.color_text(str(total_started_urls), "bright")
-                done_str = td_utils.color_text(str(total_completed_urls), "green")
-                dup_count = total_processed_urls - total_completed_urls
-                dup_str = td_utils.color_text(str(dup_count), "yellow") if dup_count else str(dup_count)
-                lines.append(
-                    f"Speed: {speed_str}  {avg_str}  DL: {dl_str}"
-                    f"  URLs: {started_str} started / {done_str} done / {dup_str} dup"[:cols]
-                )
-                for storage_line in _storage_summary_lines(
-                    staging_stats,
-                    destination_stats,
-                    threshold_bytes=current_auto_trigger_bytes,
-                    download_speed_bps=avg_speed_bps,
-                ):
-                    lines.append(storage_line[:cols])
+                if controlled_quit:
+                    controlled_label = td_utils.color_text("CONTROLLED QUIT", "red")
+                    lines.append(f"{controlled_label} eta {_controlled_quit_eta_label(workers)}"[:cols])
+                if downloads_status_visible:
+                    # Header
+                    pause_tag = td_utils.color_text(" [PAUSED]", "yellow") if paused else ""
+                    quit_tag = td_utils.color_text(" [Press Y to confirm quit]", "red") if quit_confirm else ""
+                    active_label = td_utils.color_text(str(active_workers), "green" if active_workers > 0 else "gray")
+                    pool_label = td_utils.color_text(str(total_available), "cyan" if total_available > 0 else "gray")
+                    header = (
+                        f"DL Manager{pause_tag}{quit_tag}"
+                        f"  |  threads={args.threads}"
+                        f"  active={active_label}"
+                        f"  pool={pool_label}"
+                        f"  elapsed={_hms(manager_elapsed)}"
+                    )
+                    lines.append(header[:cols])
+                    # Totals bar
+                    speed_color = "cyan" if total_speed_mib >= 1.0 else ("yellow" if total_speed_mib > 0 else "gray")
+                    speed_str = td_utils.color_text(_format_download_rate(total_speed_bps), speed_color)
+                    avg_str = f"avg {_format_download_rate(avg_speed_bps)}"
+                    dl_str = td_utils.color_text(_format_download_bytes(agg_bytes), "bright")
+                    started_str = td_utils.color_text(str(total_started_urls), "bright")
+                    done_str = td_utils.color_text(str(total_completed_urls), "green")
+                    dup_count = total_processed_urls - total_completed_urls
+                    dup_str = td_utils.color_text(str(dup_count), "yellow") if dup_count else str(dup_count)
+                    lines.append(
+                        f"Speed: {speed_str}  {avg_str}  DL: {dl_str}"
+                        f"  URLs: {started_str} started / {done_str} done / {dup_str} dup"
+                        f"  Domains: {active_domain_count} now / {avg_domain_count:.1f} avg"[:cols]
+                    )
+                    if domain_summary:
+                        lines.append(f"Active domains: {domain_summary}"[:cols])
+                    for storage_line in _storage_summary_lines(
+                        staging_stats,
+                        destination_stats,
+                        threshold_bytes=current_auto_trigger_bytes,
+                        download_speed_bps=avg_speed_bps,
+                    ):
+                        lines.append(storage_line[:cols])
+                if destination_no_space:
+                    lines.append(td_utils.color_text("NO DISK SPACE LEFT AT FINAL DESTINATION", "red")[:cols])
                 if auto_block_reason:
                     lines.append(td_utils.color_text(auto_block_reason, "yellow")[:cols])
-                lines.append("-" * min(cols, 100))
+                if downloads_status_visible or controlled_quit or destination_no_space or auto_block_reason:
+                    lines.append("-" * min(cols, 100))
                 downloads_header_rows = len(lines)
                 now = time.time()
 
@@ -2101,13 +2542,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 for ws in workers:
                     name = ws.urlfile.name if (ws.urlfile) else "idle"
                     url_idx = f"URL {ws.url_index or 0}/{ws.url_count or 0}"
+                    domain_txt = _top_domain(ws.url_current)
                     elapsed = _hms(now - ws.assign_t0) if ws.urlfile else "00:00:00"
                     pct = f"{ws.percent:.2f}%" if isinstance(ws.percent, (int, float)) else "?%"
                     if ws.is_paused:
                         sp = "PAUSED"
                     else:
                         sp = (
-                            f"{(float(ws.speed_bps)/(1024*1024)):.2f}MiB/s"
+                            _format_download_rate(ws.speed_bps).replace(" ", "")
                             if isinstance(ws.speed_bps, (int, float)) and ws.speed_bps is not None
                             else "?/s"
                         )
@@ -2141,8 +2583,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         c4 = col(pct, 8)
                         c5 = col(sp, 12)
                         c6 = col(f"ETA {eta_txt}", 12)
-                        c7 = col(sizes, 12)
-                        mainline = " | ".join([c0, c1, c2, c3, c4, c5, c6, c7])[:cols]
+                        c7 = col(f"Dom {domain_txt}", 20)
+                        c8 = col(sizes, 12)
+                        mainline = " | ".join([c0, c1, c2, c3, c4, c5, c6, c7, c8])[:cols]
                         lines.append(ws.overlay_msg[:cols] if ws.overlay_msg else mainline)
                         barw = max(20, cols - 8)
                         lines.append(
@@ -2163,7 +2606,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         c2b = col(pct, 10)
                         c3b = col(sp, 12)
                         c4b = col(f"ETA {eta_txt}", 14)
-                        lines.append(" | ".join([c0b, c1b, c2b, c3b, c4b])[:cols])
+                        c5b = col(f"Dom {domain_txt}", 20)
+                        lines.append(" | ".join([c0b, c1b, c2b, c3b, c4b, c5b])[:cols])
                         barw = max(20, cols - 8)
                         lines.append("     " + make_bar(ws.percent, barw, speed_color_prefix(ws.speed_bps))[:cols])
                     else:
@@ -2175,7 +2619,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         c0b = col(f"{sel_marker}{tag}", 4)
                         c1b = col(f"{url_idx}  Elapsed {elapsed}", max(20, cols - 7))
                         lines.append(" | ".join([c0b, c1b])[:cols])
-                        c1c = col(f"{pct}  {sp}  ETA {eta_txt}  {sizes}", max(20, cols - 7))
+                        c1c = col(f"{pct}  {sp}  ETA {eta_txt}  Dom {domain_txt}  {sizes}", max(20, cols - 7))
                         lines.append(" | ".join([c0, c1c])[:cols])
                         barw = max(20, cols - 8)
                         lines.append("     " + make_bar(ws.percent, barw, speed_color_prefix(ws.speed_bps))[:cols])
@@ -2186,20 +2630,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 else:
                     downloads_footer_lines = [
                         line[:cols]
-                        for line in _wrap_hotkey_lines(
-                            "Keys: w=watcher, u=url stats, d=downloads, Up/Down=scroll, P=toggle selected, p=pause/unpause all, q=quit, v=cycle verbose, 1-9=select worker",
-                            cols,
-                        )
+                        for line in _wrap_hotkey_lines(_downloads_footer_text(), cols)
                     ]
+                verbose_lines = _build_verbose_lines(verbose_slot, verbose_mode, cols, rows)
+                downloads_rows = max(1, rows - len(verbose_lines))
                 lines.extend(downloads_footer_lines)
                 lines, downloads_panel_max_scroll = _apply_pinned_viewport(
                     lines,
-                    rows=rows,
+                    rows=downloads_rows,
                     header_rows=downloads_header_rows,
                     footer_rows=len(downloads_footer_lines),
                     scroll=downloads_panel_scroll,
                 )
                 downloads_panel_scroll = min(downloads_panel_scroll, downloads_panel_max_scroll)
+                lines.extend(verbose_lines[: max(0, rows - len(lines))])
 
             # Keyboard handling (for both panels)
             if os.name == "nt":
@@ -2212,9 +2656,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             special = msvcrt.getwch()
                             if active_panel == "downloads":
                                 if special == "H":
-                                    downloads_panel_scroll = max(0, downloads_panel_scroll - 1)
+                                    _select_worker_delta(-1)
                                 elif special == "P":
-                                    downloads_panel_scroll = min(downloads_panel_scroll + 1, downloads_panel_max_scroll)
+                                    _select_worker_delta(1)
                             continue
                         key = ch.lower() if ch else ""
                         if quit_confirm:
@@ -2242,6 +2686,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                     url_panel_auto_refresh = not url_panel_auto_refresh
                                 elif key == "r":
                                     _refresh_url_scan("url-panel-manual")
+                                elif key == "s":
+                                    url_panel_sort_key, url_panel_sort_ascending = _cycle_url_sort(
+                                        url_panel_sort_key,
+                                        url_panel_sort_ascending,
+                                    )
+                                    url_panel_top = 0
+                                    url_panel_scroll = 0
+                                elif ch == "/":
+                                    response = _prompt_text("URL name search (glob allowed, blank=clear)")
+                                    url_panel_name_filter = response or ""
+                                    url_panel_top = 0
+                                    url_panel_scroll = 0
+                                elif ch == "\x1b":
+                                    url_panel_name_filter = ""
+                                    url_panel_top = 0
+                                    url_panel_scroll = 0
                                 elif key in ("j",):
                                     url_panel_top = min(url_panel_top + 1, url_panel_max_top)
                                 elif key in ("k",):
@@ -2309,6 +2769,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                         mlog.info(f"MP4 watcher free-space trigger set to {new_threshold:.1f} GiB.")
                                     else:
                                         mlog.info("MP4 watcher free-space trigger disabled.")
+                                elif key == "m" and watcher and watcher_enabled:
+                                    response = _prompt_text(
+                                        "Destination disk space to keep free (examples: 1024MB, 100GB; blank=unlimited)"
+                                    )
+                                    if response is None:
+                                        continue
+                                    try:
+                                        reserve_bytes = _parse_size_bytes(response)
+                                    except argparse.ArgumentTypeError as exc:
+                                        mlog.error(f"Invalid destination reserve: {exc}")
+                                        continue
+                                    current = watcher.set_destination_space_remaining_bytes(reserve_bytes)
+                                    if current:
+                                        mlog.info(
+                                            f"MP4 watcher destination reserve set to {_format_disk_bytes(current)}."
+                                        )
+                                    else:
+                                        mlog.info("MP4 watcher destination reserve disabled.")
                                 elif key == "[" and watcher and watcher_enabled:
                                     step = max(1, watcher_log_meta.get("log_window", 10) // 2 or 1)
                                     watcher_log_scroll = min(
@@ -2336,74 +2814,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                 _toggle_selected_worker_pause()
                             elif key == "p":
                                 _toggle_all_workers_pause()
+                            elif key == "x":
+                                _set_controlled_quit(not controlled_quit)
+                            elif key == "h":
+                                downloads_status_visible = not downloads_status_visible
                             elif key == "q":
                                 # Request quit confirmation
                                 quit_confirm = True
                 except Exception:
                     pass
-            if verbose_mode:
-                lines.append("-" * min(cols, 100))
-                sel = next((w for w in workers if w.slot == verbose_slot), None)
-                # Mode 1: NDJSON buffer
-                if verbose_mode == 1:
-                    header_v = f"Verbose NDJSON [{verbose_slot:02d}]"
-                    lines.append(header_v[:cols])
-                    if sel and sel.ndjson_buf:
-                        try:
-                            max_lines = os.get_terminal_size().lines // 3
-                        except Exception:
-                            max_lines = 20
-                        max_lines = max(10, min(60, max_lines))
-                        for ln in sel.ndjson_buf[-max_lines:]:
-                            lines.append(ln[:cols])
-                # Mode 2: Program log tail (colorized statuses)
-                elif verbose_mode == 2:
-                    header_v = f"Program Log [{verbose_slot:02d}]"
-                    lines.append(header_v[:cols])
-
-                    def _tail_lines(p: Optional[Path], n: int) -> list[str]:
-                        if not p:
-                            return ["<no log path>"]
-                        try:
-                            txt = Path(p).read_text(encoding="utf-8", errors="ignore")
-                            arr = txt.splitlines()
-                            return arr[-n:]
-                        except Exception as _e:
-                            return [f"<error reading {p}: {_e}>"]
-
-                    def _colorize_log(s: str) -> str:
-                        # Color key statuses per line; ensure reset at end
-                        pairs = [
-                            ("FINISH_BAD", "\x1b[31m"),
-                            ("BAD", "\x1b[31m"),
-                            ("STALLED", "\x1b[31m"),
-                            ("DEADLINE", "\x1b[35m"),
-                            ("FORCE_EXIT", "\x1b[35m"),
-                            ("DUPLICATE", "\x1b[33m"),
-                            ("FINISH_SUCCESS", "\x1b[32m"),
-                            ("SUCCESS", "\x1b[32m"),
-                        ]
-                        out = s
-                        for token, colr in pairs:
-                            if token in out:
-                                out = out.replace(token, f"{colr}{token}\x1b[0m")
-                        # Ensure reset at end to prevent bleed
-                        if "\x1b[" in out and not out.endswith("\x1b[0m"):
-                            out = out + "\x1b[0m"
-                        return out
-
-                    try:
-                        max_lines = os.get_terminal_size().lines // 3
-                    except Exception:
-                        max_lines = 20
-                    max_lines = max(10, min(60, max_lines))
-                    tail = _tail_lines(sel.prog_log_path if sel else None, max_lines)
-                    for ln in tail:
-                        c = _colorize_log(ln)
-                        lines.append(c[:cols])
-
             # Redraw whole frame (reset attributes first to avoid color bleed)
             _render_screen(lines)
+
+            if _controlled_quit_complete(controlled_quit, workers):
+                break
 
             # If all workers idle and both pools empty, stop
             if all(w.proc is None for w in workers):
@@ -2415,6 +2839,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except KeyboardInterrupt:
         stop.set()
     finally:
+        try:
+            controlled_quit_sentinel.unlink(missing_ok=True)
+        except Exception:
+            pass
         # Cleanup
         for ws in workers:
             if ws.proc and ws.proc.poll() is None:

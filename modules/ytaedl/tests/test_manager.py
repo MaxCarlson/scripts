@@ -1,6 +1,7 @@
 """Tests for ytaedl.manager module."""
 
 import os
+import random
 import re
 import tempfile
 import threading
@@ -33,7 +34,10 @@ class TestManager:
         assert args.max_ndjson_rate == 5.0
         assert args.max_resolution is None
         assert args.download_root == "./stars"
+        assert args.url_order_key == "ratio"
+        assert args.url_order_ascending is False
         assert args.url_random_order is False
+        assert args.url_pick_temperature == 0.0
 
         assert args.proxy_dl_location is None
 
@@ -51,6 +55,21 @@ class TestManager:
 
         args_with_show = parser.parse_args(["-b"])
         assert args_with_show.show_bars is True
+
+        args_with_reserve = parser.parse_args(["-m", "100GB"])
+        assert args_with_reserve.space_remaining == 100 * 1024**3
+
+        args_with_reserve_long = parser.parse_args(["--space-remaining", "1024MB"])
+        assert args_with_reserve_long.space_remaining == 1024 * 1024**2
+
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--space-remaining", "not-a-size"])
+
+        args_with_temperature = parser.parse_args(["-Q", "0.75"])
+        assert args_with_temperature.url_pick_temperature == 0.75
+
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--url-pick-temperature", "-1"])
 
     def test_prepare_log_window(self):
         logs = [f"line {i}" for i in range(6)]
@@ -259,9 +278,193 @@ class TestManager:
     def test_human_short_bytes(self):
         """Test short human-readable byte formatting."""
         assert manager._human_short_bytes(None) == "?"
-        assert manager._human_short_bytes(1024 * 1024) == "1.0M"
-        assert manager._human_short_bytes(1024 * 1024 * 1024) == "1.0G"
-        assert manager._human_short_bytes(512 * 1024 * 1024) == "512.0M"
+        assert manager._human_short_bytes(1024 * 1024) == "1.00MiB"
+        assert manager._human_short_bytes(1024 * 1024 * 1024) == "1.00GiB"
+        assert manager._human_short_bytes(512 * 1024 * 1024) == "512.00MiB"
+
+    def test_size_parsing_and_disk_formatting(self):
+        assert manager._parse_size_bytes("100GB") == 100 * 1024**3
+        assert manager._parse_size_bytes("1024MB") == 1024 * 1024**2
+        assert manager._parse_size_bytes("unlimited") is None
+        assert manager._format_disk_bytes(1023 * 1024**2) == "1023.00 MB"
+        assert manager._format_disk_bytes(1024 * 1024**2) == "1.00 GB"
+
+    def test_download_footer_mentions_digit_selection_without_1_to_9_limit(self):
+        footer = manager._wrap_hotkey_lines(manager._downloads_footer_text(), 120)
+        text = " ".join(footer)
+        assert "digits=select worker" in text
+        assert "x=controlled quit" in text
+        assert "h=toggle status" in text
+        assert "1-9=select worker" not in text
+
+    def test_pinned_viewport_with_reserved_verbose_rows_keeps_header_first(self):
+        lines = ["HEADER", "TOTALS", "SEP"] + [f"worker {i}" for i in range(20)] + ["FOOTER"]
+        viewport, max_scroll = manager._apply_pinned_viewport(
+            lines,
+            rows=8,
+            header_rows=3,
+            footer_rows=1,
+            scroll=0,
+        )
+        verbose = ["---", "Verbose NDJSON [01]", "{}"]
+        combined = viewport + verbose[: max(0, 11 - len(viewport))]
+        assert len(combined) <= 11
+        assert combined[:3] == ["HEADER", "TOTALS", "SEP"]
+        assert max_scroll > 0
+
+    def test_cycle_url_sort_modes(self):
+        current = ("ratio", False)
+        expected = [
+            ("ratio", True),
+            ("stars", False),
+            ("remaining", False),
+            ("gb", False),
+            ("unique", False),
+            ("ratio", False),
+        ]
+        for wanted in expected:
+            current = manager._cycle_url_sort(*current)
+            assert current == wanted
+
+    def test_weighted_rank_choice_temperature_zero_returns_top_ranked(self, tmp_path):
+        paths = [tmp_path / "b.txt", tmp_path / "a.txt", tmp_path / "c.txt"]
+        rankings = {str(paths[0].resolve()): 1, str(paths[1].resolve()): 0, str(paths[2].resolve()): 2}
+
+        assert manager._weighted_rank_choice(paths, rankings, 0.0) == paths[1]
+
+    def test_weighted_rank_choice_with_seed_is_deterministic(self, tmp_path):
+        paths = [tmp_path / f"{name}.txt" for name in ("a", "b", "c")]
+        rankings = {str(path.resolve()): idx for idx, path in enumerate(paths)}
+
+        selected = manager._weighted_rank_choice(paths, rankings, 1.0, rng=random.Random(6))
+
+        assert selected == paths[1]
+
+    def test_top_domain_normalizes_urls(self):
+        assert manager._top_domain("https://example.com/video") == "example.com"
+        assert manager._top_domain("https://www.example.com/video") == "example.com"
+        assert manager._top_domain("https://cdn.example.com/video") == "cdn.example.com"
+        assert manager._top_domain("not-a-url") == "-"
+        assert manager._top_domain(None) == "-"
+
+    def test_domains_for_urlfile_reads_remaining_hosts(self, tmp_path):
+        urlfile = tmp_path / "star.txt"
+        urlfile.write_text(
+            "\n".join(
+                [
+                    "https://www.example.com/a",
+                    "https://cdn.example.com/b",
+                    "# ignored",
+                    "https://example.com/a",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        assert manager._domains_for_urlfile(urlfile) == {"example.com", "cdn.example.com"}
+
+    def test_domain_diverse_candidate_prefers_new_domain_over_better_rank(self, tmp_path):
+        existing = tmp_path / "existing.txt"
+        new = tmp_path / "new.txt"
+        candidate_domains = {
+            str(existing.resolve()): {"active.example"},
+            str(new.resolve()): {"fresh.example"},
+        }
+        rankings = {
+            str(existing.resolve()): 0,
+            str(new.resolve()): 1,
+        }
+
+        selected = manager._choose_domain_diverse_candidate(
+            [existing, new],
+            rankings,
+            candidate_domains,
+            {"active.example"},
+            0.0,
+        )
+
+        assert selected == new
+
+    def test_domain_diverse_candidate_falls_back_to_rank_on_equal_diversity(self, tmp_path):
+        first = tmp_path / "first.txt"
+        second = tmp_path / "second.txt"
+        candidate_domains = {
+            str(first.resolve()): {"active.example"},
+            str(second.resolve()): {"active.example"},
+        }
+        rankings = {
+            str(first.resolve()): 1,
+            str(second.resolve()): 0,
+        }
+
+        selected = manager._choose_domain_diverse_candidate(
+            [first, second],
+            rankings,
+            candidate_domains,
+            {"active.example"},
+            0.0,
+        )
+
+        assert selected == second
+
+    def test_domain_diverse_candidate_temperature_is_seeded(self, tmp_path):
+        paths = [tmp_path / f"{name}.txt" for name in ("a", "b", "c")]
+        candidate_domains = {
+            str(paths[0].resolve()): {"active.example"},
+            str(paths[1].resolve()): {"fresh.example"},
+            str(paths[2].resolve()): {"other.example"},
+        }
+        rankings = {str(path.resolve()): idx for idx, path in enumerate(paths)}
+
+        selected = manager._choose_domain_diverse_candidate(
+            paths,
+            rankings,
+            candidate_domains,
+            {"active.example"},
+            3.0,
+            rng=random.Random(7),
+        )
+
+        assert selected == paths[1]
+
+    def test_domain_diversity_averager_tracks_running_average(self):
+        avg = manager.DomainDiversityAverager()
+
+        assert avg.average == 0.0
+        assert avg.update(2) == 2.0
+        assert avg.update(4) == 3.0
+        assert avg.update(-1) == 2.0
+
+    def test_controlled_quit_eta_label(self):
+        assert manager._controlled_quit_eta_label([]) == "0s"
+
+        worker = manager.WorkerState(slot=1)
+        worker.proc = MagicMock()
+        worker.eta_s = None
+        assert manager._controlled_quit_eta_label([worker]) == "?"
+
+        worker.eta_s = 119.6
+        other = manager.WorkerState(slot=2)
+        other.proc = MagicMock()
+        other.eta_s = 30
+        assert manager._controlled_quit_eta_label([worker, other]) == "120s"
+
+    def test_controlled_quit_complete_requires_enabled_and_idle_workers(self):
+        worker = manager.WorkerState(slot=1)
+        assert manager._controlled_quit_complete(False, [worker]) is False
+        assert manager._controlled_quit_complete(True, [worker]) is True
+
+        worker.proc = MagicMock()
+        assert manager._controlled_quit_complete(True, [worker]) is False
+
+    def test_controlled_stopped_worker_zero_exit_is_not_finished(self):
+        worker = manager.WorkerState(slot=1)
+        worker.rc = 0
+        worker.controlled_stopped = True
+
+        finished = worker.rc == 0 and not worker.controlled_stopped
+
+        assert finished is False
 
     def test_hms(self):
         """Test HMS time formatting."""
@@ -392,6 +595,7 @@ class TestWorkerState:
         assert ws.cap_mibs is None
         assert ws.last_throttle_t == 0.0
         assert ws.last_already is False
+        assert ws.controlled_stopped is False
         assert ws.overlay_msg is None
         assert ws.overlay_since == 0.0
         assert len(ws.ndjson_buf) == 0
@@ -462,6 +666,7 @@ class TestStartWorker:
                 log_dir = tmp_root / "logs"
                 log_dir.mkdir()
                 archive_dir = tmp_root / "archive"
+                stop_sentinel = tmp_root / "controlled.stop"
                 urlfile = Path(temp_path)
                 canonical_root = tmp_root / "downloads"
                 canonical_root.mkdir()
@@ -481,6 +686,7 @@ class TestStartWorker:
                         cap_mibs=5.5,
                         proxy_dl_location="/tmp/proxy",
                         max_resolution="1080",
+                        stop_sentinel=stop_sentinel,
                     )
 
                     assert proc == mock_process
@@ -493,6 +699,9 @@ class TestStartWorker:
                     assert "--max-resolution" in cmd
                     res_idx = cmd.index("--max-resolution")
                     assert cmd[res_idx + 1] == "1080"
+                    assert "-B" in cmd
+                    stop_idx = cmd.index("-B")
+                    assert cmd[stop_idx + 1] == str(stop_sentinel)
                     assert "-q" not in cmd
         finally:
             os.unlink(temp_path)

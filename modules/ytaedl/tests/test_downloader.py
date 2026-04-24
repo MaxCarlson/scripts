@@ -1,11 +1,10 @@
 """Tests for ytaedl.downloader module."""
 
-import json
 import os
 import tempfile
 import pytest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import ytaedl.downloader as downloader
 
@@ -34,6 +33,9 @@ class TestDownloader:
 
         args_with_short = parser.parse_args(["-f", "test.txt", "-H", "720"])
         assert args_with_short.max_resolution == "720"
+
+        args_with_stop = parser.parse_args(["-f", "test.txt", "-B", "/tmp/stop"])
+        assert args_with_stop.stop_sentinel == "/tmp/stop"
 
     def test_read_urls_basic(self):
         """Test reading URLs from a file."""
@@ -229,6 +231,13 @@ class TestDownloader:
             mock_stdout.write.assert_called_once_with('{"event": "test", "value": 123}\n')
             mock_stdout.flush.assert_called_once()
 
+    def test_stop_sentinel_active(self, tmp_path):
+        sentinel = tmp_path / "stop"
+        assert downloader._stop_sentinel_active(None) is False
+        assert downloader._stop_sentinel_active(sentinel) is False
+        sentinel.write_text("stop", encoding="utf-8")
+        assert downloader._stop_sentinel_active(sentinel) is True
+
 
 class TestProgLogger:
     """Test cases for the ProgLogger class."""
@@ -359,6 +368,78 @@ class TestIntegration:
                 assert call_kwargs['max_height'] == 1440
         finally:
             os.unlink(temp_path)
+
+    def test_main_stop_sentinel_after_current_url_stops_before_next(self, tmp_path):
+        urlfile = tmp_path / "urls.txt"
+        urlfile.write_text("https://example.com/video1\nhttps://example.com/video2\n", encoding="utf-8")
+        stop_sentinel = tmp_path / "stop"
+        log_path = tmp_path / "prog.log"
+        raw_dir = tmp_path / "raw"
+        archive_dir = tmp_path / "archive"
+        raw_dir.mkdir()
+
+        def run_one_once(**kwargs):
+            stop_sentinel.write_text("stop", encoding="utf-8")
+            return (0, {"elapsed_s": 0.1, "downloaded": 0, "total": 0, "already": False, "downloader": "yt-dlp"})
+
+        argv = [
+            "ytaedl",
+            "-f",
+            str(urlfile),
+            "-q",
+            "-g",
+            str(log_path),
+            "-r",
+            str(raw_dir),
+            "-a",
+            str(archive_dir),
+            "-B",
+            str(stop_sentinel),
+        ]
+        with patch("sys.argv", argv):
+            with patch("ytaedl.downloader._run_one", side_effect=run_one_once) as mock_run:
+                result = downloader.main()
+
+        assert result == 0
+        assert mock_run.call_count == 1
+        archive_file = archive_dir / f"yt-{urlfile.stem}.txt"
+        assert archive_file.exists()
+        assert len(archive_file.read_text(encoding="utf-8").splitlines()) == 1
+        assert "CONTROLLED_STOP" in log_path.read_text(encoding="utf-8")
+
+    def test_main_existing_stop_sentinel_starts_no_urls_and_writes_no_archive(self, tmp_path):
+        urlfile = tmp_path / "urls.txt"
+        urlfile.write_text("https://example.com/video1\nhttps://example.com/video2\n", encoding="utf-8")
+        stop_sentinel = tmp_path / "stop"
+        stop_sentinel.write_text("stop", encoding="utf-8")
+        log_path = tmp_path / "prog.log"
+        raw_dir = tmp_path / "raw"
+        archive_dir = tmp_path / "archive"
+        raw_dir.mkdir()
+
+        argv = [
+            "ytaedl",
+            "-f",
+            str(urlfile),
+            "-q",
+            "-g",
+            str(log_path),
+            "-r",
+            str(raw_dir),
+            "-a",
+            str(archive_dir),
+            "-B",
+            str(stop_sentinel),
+        ]
+        with patch("sys.argv", argv):
+            with patch("ytaedl.downloader._run_one") as mock_run:
+                result = downloader.main()
+
+        assert result == 0
+        mock_run.assert_not_called()
+        archive_file = archive_dir / f"yt-{urlfile.stem}.txt"
+        assert not archive_file.exists()
+        assert "CONTROLLED_STOP" in log_path.read_text(encoding="utf-8")
 
     def test_main_archive_respects_existing_statuses(self):
         """Existing archive entries skip prior URLs and update only new ones."""

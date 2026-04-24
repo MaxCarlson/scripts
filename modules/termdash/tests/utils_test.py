@@ -28,6 +28,12 @@ def test_format_bytes_binary():
     assert td_utils.format_bytes_binary(1024 ** 2) == "1.00 MiB"
 
 
+def test_format_bytes_decimal_uses_disk_labels():
+    assert td_utils.format_bytes_decimal(0) == "0 B"
+    assert td_utils.format_bytes_decimal(1023 * 1024**2) == "1023.00 MB"
+    assert td_utils.format_bytes_decimal(1024 * 1024**2) == "1.00 GB"
+
+
 def test_get_disk_stats():
     base = Path(tempfile.mkdtemp(prefix="td-disk-", dir=Path(__file__).parent))
     try:

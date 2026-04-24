@@ -12,7 +12,6 @@ import importlib
 import json
 import math
 import re
-import shutil
 import sys
 from dataclasses import dataclass
 from fnmatch import fnmatch
@@ -37,7 +36,7 @@ INTERACTIVE_COLUMN_LAYOUT: List[Tuple[str, int, str]] = [
     ("GB", 6, ">"),
 ]
 
-SORT_CHOICES = ("remaining", "ratio", "name", "unique", "mp4", "ae", "stars")
+SORT_CHOICES = ("remaining", "ratio", "name", "unique", "mp4", "ae", "stars", "gb")
 
 
 @dataclass
@@ -222,9 +221,21 @@ def sort_entries(entries: List[UrlEntry], key: str, ascending: bool) -> List[Url
             return entry.ae_line_count
         if key == "stars":
             return entry.stars_line_count
+        if key == "gb":
+            return entry.mp4_bytes
         return entry.name.lower()
 
     return sorted(entries, key=key_func, reverse=not ascending)
+
+
+def filter_entries_by_name(entries: List[UrlEntry], pattern: str) -> List[UrlEntry]:
+    needle = pattern.strip().lower()
+    if not needle:
+        return list(entries)
+    has_glob = any(ch in needle for ch in "*?[")
+    if has_glob:
+        return [entry for entry in entries if fnmatch(entry.name.lower(), needle)]
+    return [entry for entry in entries if needle in entry.name.lower()]
 
 
 def compute_rankings(entries: List[UrlEntry], ascending: bool, key: str) -> Tuple[List[Path], Dict[str, int]]:
@@ -429,11 +440,7 @@ def load_interactive_components(termdash_hint: Optional[Path]):
 
 
 def _interactive_filter(entry: UrlEntry, pattern: str) -> bool:
-    needle = pattern.strip().lower()
-    if not needle:
-        return True
-    haystack = entry.name.lower()
-    return fnmatch(haystack, needle) or needle in haystack
+    return bool(filter_entries_by_name([entry], pattern))
 
 
 def run_interactive_ui(entries: List[UrlEntry], totals: Dict[str, int], args: argparse.Namespace,
@@ -514,6 +521,7 @@ def run_interactive_ui(entries: List[UrlEntry], totals: Dict[str, int], args: ar
         "mp4_count": lambda e: e.mp4_count,
         "remaining": lambda e: e.remaining,
         "ratio": lambda e: math.inf if math.isinf(e.ratio) else e.ratio,
+        "gb": lambda e: e.mp4_bytes,
         "mp4_bytes": lambda e: e.mp4_bytes,
     }
     initial_sort = args.sort_key if args.sort_key in sorters else "remaining"
@@ -571,7 +579,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-m", "--media-dir", default=DEFAULT_MEDIA_DIR,
                         help="Directory containing per-star folders with MP4 files")
     parser.add_argument("-k", "--sort-key", choices=SORT_CHOICES,
-                        default="remaining", help="Sort by remaining, ratio, name, unique, mp4, ae, or stars")
+                        default="remaining", help="Sort by remaining, ratio, name, unique, mp4, ae, stars, or gb")
     parser.add_argument("-A", "--ascending", action="store_true",
                         help="Sort ascending instead of descending")
     parser.add_argument("-j", "--json", action="store_true",

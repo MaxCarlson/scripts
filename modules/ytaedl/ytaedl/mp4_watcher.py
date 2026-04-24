@@ -18,6 +18,7 @@ class WatcherConfig:
     keep_source: bool
     total_size_trigger_bytes: Optional[int]  # Auto-trigger when total MP4 size exceeds this
     free_space_trigger_bytes: Optional[int]  # Auto-trigger when free space drops below this
+    destination_space_remaining_bytes: Optional[int] = None  # Preserve this much free space on destination
 
 
 @dataclass
@@ -50,6 +51,8 @@ class WatcherSnapshot:
     last_result: Optional[WatcherRunSummary]
     bytes_since_last: Optional[int]
     config: WatcherConfig
+    destination_no_space: bool = False
+    destination_space_message: Optional[str] = None
 
 
 def _format_bytes(num_bytes: Optional[int | float]) -> str:
@@ -63,6 +66,54 @@ def _format_bytes(num_bytes: Optional[int | float]) -> str:
         idx += 1
     precision = 0 if idx == 0 else 2
     return f"{value:.{precision}f} {units[idx]}"
+
+
+def _action_destination_growth(action: Any, mp4_sync: Any) -> int:
+    if action.action in {mp4_sync.ACTION_COPY, mp4_sync.ACTION_MOVE}:
+        return max(0, int(action.source_size or 0))
+    if action.action == mp4_sync.ACTION_REPLACE:
+        return max(0, int(action.source_size or 0) - int(action.destination_size or 0))
+    return 0
+
+
+def filter_plan_for_destination_space(plan: Any, mp4_sync: Any, available_bytes: int) -> tuple[Any, int, int]:
+    """Return a copy of *plan* limited to actions that fit available destination bytes."""
+    remaining = max(0, int(available_bytes))
+    selected_ids: set[int] = set()
+    selected_dest_dirs: set[str] = set()
+    selected_file_count = 0
+    skipped_file_count = 0
+
+    for action in plan.actions:
+        if action.action == mp4_sync.ACTION_CREATE_DIR:
+            continue
+        growth = _action_destination_growth(action, mp4_sync)
+        if growth <= remaining:
+            selected_ids.add(id(action))
+            selected_file_count += 1
+            remaining -= growth
+            if action.destination:
+                selected_dest_dirs.add(str(Path(action.destination).parent))
+        else:
+            skipped_file_count += 1
+
+    filtered_actions = []
+    for action in plan.actions:
+        if action.action == mp4_sync.ACTION_CREATE_DIR:
+            if action.destination and action.destination in selected_dest_dirs:
+                filtered_actions.append(action)
+            continue
+        if id(action) in selected_ids:
+            filtered_actions.append(action)
+
+    filtered_plan = mp4_sync.Plan(
+        source=plan.source,
+        destination=plan.destination,
+        operation=plan.operation,
+        generated_at=plan.generated_at,
+        actions=filtered_actions,
+    )
+    return filtered_plan, selected_file_count, skipped_file_count
 
 
 def _format_duration(seconds: Optional[int | float]) -> str:
@@ -108,6 +159,8 @@ class MP4Watcher:
         self._bytes_at_last_run = 0
         self._mp4_sync = None
         self._log_ready = False
+        self._destination_no_space = False
+        self._destination_space_message: Optional[str] = None
 
     def is_enabled(self) -> bool:
         return self._enabled and self._config_ok
@@ -186,6 +239,29 @@ class MP4Watcher:
         else:
             self._log_status("TRIGGER", "Free-space trigger disabled.")
         return new_bytes
+
+    def set_destination_space_remaining_bytes(self, value: Optional[int]) -> Optional[int]:
+        normalized = value if isinstance(value, int) and value > 0 else None
+        with self._lock:
+            self._config.destination_space_remaining_bytes = normalized
+            current = self._config.destination_space_remaining_bytes
+            self._destination_no_space = False
+            self._destination_space_message = None
+        if current:
+            self._log_status("LIMIT", f"Destination reserve set to {_format_bytes(current)}.")
+        else:
+            self._log_status("LIMIT", "Destination reserve disabled.")
+        return current
+
+    def _destination_available_bytes(self) -> Optional[int]:
+        reserve = self._config.destination_space_remaining_bytes
+        if not isinstance(reserve, int) or reserve <= 0:
+            return None
+        try:
+            free_bytes = shutil.disk_usage(self._config.destination_root).free
+        except Exception:
+            return None
+        return int(free_bytes) - reserve
 
     def manual_run(
         self, *, dry_run: bool, trigger: str, operation: Optional[str] = None, max_files: Optional[int] = None
@@ -273,6 +349,8 @@ class MP4Watcher:
                 last_result=self._last_result,
                 bytes_since_last=bytes_since_last,
                 config=replace(self._config),
+                destination_no_space=self._destination_no_space,
+                destination_space_message=self._destination_space_message,
             )
 
     def _load_mp4_sync(self):
@@ -338,6 +416,29 @@ class MP4Watcher:
                 operation,
                 progress=progress,
             )
+            destination_available = self._destination_available_bytes()
+            if destination_available is not None:
+                plan, selected_count, skipped_count = filter_plan_for_destination_space(
+                    plan,
+                    mp4_sync,
+                    destination_available,
+                )
+                if skipped_count:
+                    self._log_status(
+                        "WARN",
+                        "Destination reserve limited watcher run: "
+                        f"{selected_count} files fit, {skipped_count} skipped.",
+                    )
+                if selected_count == 0 and skipped_count > 0:
+                    message = "NO DISK SPACE LEFT AT FINAL DESTINATION"
+                    with self._lock:
+                        self._destination_no_space = True
+                        self._destination_space_message = message
+                    self._log_status("ERROR", message)
+                    return
+                with self._lock:
+                    self._destination_no_space = False
+                    self._destination_space_message = None
             if hasattr(progress, "set_folder_totals"):
                 progress.set_folder_totals(folder_totals)  # type: ignore[attr-defined]
             file_actions = [a for a in plan.actions if a.action != mp4_sync.ACTION_CREATE_DIR]

@@ -24,15 +24,14 @@ import argparse
 import json
 import os
 import shlex
-import signal
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import List, Optional
 
-from procparsers import iter_parsed_events, events_to_ndjson
+from procparsers import iter_parsed_events
 
 MAX_RESOLUTION_CHOICES = ("4k", "2k", "1080", "720", "480")
 _MAX_RESOLUTION_HEIGHTS = {
@@ -84,6 +83,8 @@ def make_parser() -> argparse.ArgumentParser:
                    help="Limit download speed to MiB/s (per process). Applies to yt-dlp via --limit-rate; aebndl currently not limited.")
     p.add_argument("-H", "--max-resolution", choices=MAX_RESOLUTION_CHOICES, default=None,
                    help="Highest video resolution to allow (yt-dlp uses format filters; aebndl requests nearest available <= target).")
+    p.add_argument("-B", "--stop-sentinel", type=str, default=None,
+                   help="If this file exists before a URL starts, exit cleanly without starting more URLs.")
 
     return p
 
@@ -209,6 +210,12 @@ class ProgLogger:
         elapsed = _hms_ms(time.time() - self.t0)
         self._write(f"FORCE_EXIT_PROGRAM [{elapsed}]")
 
+    def controlled_stop(self, next_url_index: int, url_total: int, sentinel: Path) -> None:
+        elapsed = _hms_ms(time.time() - self.t0)
+        self._write(
+            f"CONTROLLED_STOP [{elapsed}] next_url={next_url_index}/{url_total} sentinel={sentinel}"
+        )
+
     def force_exit(self, url_index: int, elapsed_url_s: float, last_progress: dict | None) -> None:
         elapsed_prog = _hms_ms(time.time() - self.t0)
         elapsed_url = _hms_ms(elapsed_url_s)
@@ -222,14 +229,18 @@ class ProgLogger:
             if b is None:
                 return "?"
             units = ["B", "KiB", "MiB", "GiB", "TiB"]
-            v = float(b); i = 0
+            v = float(b)
+            i = 0
             while v >= 1024 and i < len(units) - 1:
-                v /= 1024.0; i += 1
+                v /= 1024.0
+                i += 1
             return f"{v:.2f}{units[i]}"
         def _fmt_eta(s: int | None) -> str:
             if s is None:
                 return "?"
-            h = s // 3600; m = (s % 3600) // 60; sec = s % 60
+            h = s // 3600
+            m = (s % 3600) // 60
+            sec = s % 60
             return f"{h:02d}:{m:02d}:{sec:02d}"
         pct_s = f"{pct:.2f}%" if isinstance(pct, (int, float)) else "?%"
         sp_s = f"{_fmt_bytes(int(speed_bps))}/s" if isinstance(speed_bps, (int, float)) else "?/s"
@@ -254,7 +265,9 @@ class ProgLogger:
         def _fmt_eta(s: int | None) -> str:
             if s is None:
                 return "?"
-            h = s // 3600; m = (s % 3600) // 60; sec = s % 60
+            h = s // 3600
+            m = (s % 3600) // 60
+            sec = s % 60
             return f"{h:02d}:{m:02d}:{sec:02d}"
 
         elapsed_prog = _hms_ms(time.time() - self.t0)
@@ -440,6 +453,15 @@ def _emit_json(d: dict) -> None:
     sys.stdout.write(json.dumps(d, ensure_ascii=False) + "\n")
     sys.stdout.flush()
 
+
+def _stop_sentinel_active(path: Optional[Path]) -> bool:
+    if not path:
+        return False
+    try:
+        return path.exists()
+    except Exception:
+        return False
+
 def _run_one(
     tool: str,
     urls: List[str],
@@ -506,7 +528,6 @@ def _run_one(
     )
 
     already_seen = False
-    dest_path: Optional[Path] = None
     last_progress: Optional[dict] = None
     last_proglog_t = time.time()
     # rate limit for stdout NDJSON (progress events)
@@ -536,7 +557,6 @@ def _run_one(
                 raw_dest = evt.get("path")
                 if raw_dest:
                     candidate = Path(raw_dest).expanduser().resolve()
-                    dest_path = candidate
                     # Resolve the canonical destination path (works in both proxy and non-proxy mode)
                     if canonical_out_dir != out_dir:
                         try:
@@ -748,6 +768,7 @@ def main() -> int:
     # Program log
     proglog = ProgLogger(path=Path(args.program_log).expanduser().resolve(), t0=time.time())
     proglog.program_start(urlfile.resolve(), canonical_out_dir, args.mode)
+    stop_sentinel = Path(args.stop_sentinel).expanduser().resolve() if args.stop_sentinel else None
 
     urls = _read_urls(urlfile)
     # Archive support
@@ -788,6 +809,18 @@ def main() -> int:
             # Skip already processed based on archive
             if archive_file and i < first_unprocessed:
                 continue
+            if _stop_sentinel_active(stop_sentinel):
+                _emit_json(
+                    {
+                        "event": "controlled_stop",
+                        "url_index": i,
+                        "url_total": len(urls),
+                        "sentinel": str(stop_sentinel),
+                    }
+                )
+                if stop_sentinel:
+                    proglog.controlled_stop(i, len(urls), stop_sentinel)
+                break
             # Quick pre-filter: skip known unsupported listing pages
             if not _looks_supported_video(url):
                 _emit_json({"event": "skipped", "reason": "unsupported_url_shape", "url_index": i, "url": url})
