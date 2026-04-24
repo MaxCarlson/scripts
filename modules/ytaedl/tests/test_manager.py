@@ -994,5 +994,49 @@ class TestUtilityFunctions:
             assert len(plain) <= 10, f"_human_short_bytes({val}) → {plain!r} exceeds 10 chars"
 
 
+    def test_eta_display_zero_with_null_percent_shows_question_mark(self):
+        """eta_s=0 with unknown percent must display '?' not '00:00:00'."""
+        # Replicate the inline display logic from manager's render loop
+        def eta_txt(eta_s, percent):
+            if isinstance(eta_s, (int, float)):
+                eta_val = float(eta_s)
+                is_near_done = isinstance(percent, (int, float)) and percent >= 99.5
+                return manager._hms(eta_val) if (eta_val > 0 or is_near_done) else "?"
+            return "?"
+
+        # eta=0 with unknown percent → should be '?'
+        assert eta_txt(0, None) == "?"
+        assert eta_txt(0.0, None) == "?"
+        assert eta_txt(0, 50.0) == "?"   # 50% but eta=0 means stalled, not done
+        # eta=0 at near-completion → should show '00:00:00' (legitimately done)
+        assert eta_txt(0, 99.9) == "00:00:00"
+        assert eta_txt(0, 100.0) == "00:00:00"
+        # Positive ETA always shows
+        assert eta_txt(90.0, None) == "00:01:30"
+        assert eta_txt(90.0, 50.0) == "00:01:30"
+        # None eta → '?'
+        assert eta_txt(None, 50.0) == "?"
+
+    def test_footer_always_appended_after_verbose_lines(self):
+        """Footer lines are rendered after the verbose panel so they stay at the bottom."""
+        footer = ["Keys: q=quit"]
+        verbose = ["---sep---", "log line 1", "log line 2"]
+        downloads_rows = 5  # tight viewport
+
+        # Simulate the new layout logic
+        lines = ["H1", "H2", "W1", "W2", "W3"]
+        # Apply viewport (no footer reserved inside)
+        from ytaedl.manager import _apply_pinned_viewport
+        viewport, _ = _apply_pinned_viewport(lines, rows=downloads_rows, header_rows=2, footer_rows=0, scroll=0)
+        result = viewport + verbose + footer
+        result = result[:10]  # cap at rows
+
+        # Footer must be last visible content, after verbose
+        assert result[-1] == "Keys: q=quit"
+        verbose_pos = result.index("---sep---")
+        footer_pos = result.index("Keys: q=quit")
+        assert footer_pos > verbose_pos, "footer must appear after verbose separator"
+
+
 if __name__ == "__main__":
     pytest.main([__file__])

@@ -2325,16 +2325,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                     if isinstance(ws.speed_bps, (int, float)) and ws.speed_bps is not None
                                     else "?/s"
                                 )
-                            if isinstance(ws.eta_s, (int, float)) and ws.eta_s is not None:
-                                if (
-                                    isinstance(ws.percent, (int, float))
-                                    and ws.percent is not None
-                                    and ws.percent >= 99.5
-                                    and float(ws.eta_s) <= 0
-                                ):
-                                    eta_txt = "?"
-                                else:
-                                    eta_txt = _hms(float(ws.eta_s))
+                            if isinstance(ws.eta_s, (int, float)):
+                                eta_val = float(ws.eta_s)
+                                is_near_done = isinstance(ws.percent, (int, float)) and ws.percent >= 99.5
+                                eta_txt = _hms(eta_val) if (eta_val > 0 or is_near_done) else "?"
                             else:
                                 eta_txt = "?"
                             sizes = (
@@ -2569,16 +2563,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             else "?/s"
                         )
                     # Render ETA; if near completion and eta ≤ 0, show '?' to avoid stuck 00:00:00
-                    if isinstance(ws.eta_s, (int, float)) and ws.eta_s is not None:
-                        if (
-                            isinstance(ws.percent, (int, float))
-                            and ws.percent is not None
-                            and ws.percent >= 99.5
-                            and float(ws.eta_s) <= 0
-                        ):
-                            eta_txt = "?"
-                        else:
-                            eta_txt = _hms(float(ws.eta_s))
+                    if isinstance(ws.eta_s, (int, float)):
+                        eta_val = float(ws.eta_s)
+                        is_near_done = isinstance(ws.percent, (int, float)) and ws.percent >= 99.5
+                        eta_txt = _hms(eta_val) if (eta_val > 0 or is_near_done) else "?"
                     else:
                         eta_txt = "?"
                     has_dl = isinstance(ws.downloaded_bytes, int)
@@ -2650,17 +2638,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         for line in _wrap_hotkey_lines(_downloads_footer_text(), cols)
                     ]
                 verbose_lines = _build_verbose_lines(verbose_slot, verbose_mode, cols, rows)
-                downloads_rows = max(1, rows - len(verbose_lines))
-                lines.extend(downloads_footer_lines)
+                # Reserve rows for the footer (always pinned last) and the verbose panel.
+                # This ensures the hotkey guide is always visible at the bottom of the screen
+                # regardless of how many workers or how large the verbose panel is.
+                footer_row_count = len(downloads_footer_lines)
+                verbose_row_count = len(verbose_lines)
+                downloads_rows = max(1, rows - verbose_row_count - footer_row_count)
                 lines, downloads_panel_max_scroll = _apply_pinned_viewport(
                     lines,
                     rows=downloads_rows,
                     header_rows=downloads_header_rows,
-                    footer_rows=len(downloads_footer_lines),
+                    footer_rows=0,  # footer is rendered outside the viewport
                     scroll=downloads_panel_scroll,
                 )
                 downloads_panel_scroll = min(downloads_panel_scroll, downloads_panel_max_scroll)
-                lines.extend(verbose_lines[: max(0, rows - len(lines))])
+                # Append verbose panel then footer so keys are always visible at the bottom
+                lines.extend(verbose_lines)
+                lines.extend(downloads_footer_lines)
+                lines = lines[:rows]
 
             # Keyboard handling (for both panels)
             if os.name == "nt":

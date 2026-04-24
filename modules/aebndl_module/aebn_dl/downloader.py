@@ -592,13 +592,18 @@ class Downloader:
         for stream in streams:
             if stream.total_size > 0:
                 total_size += stream.total_size
-            else: # Fallback if size estimation failed
+            else:  # Fallback if init-segment size estimation failed
                 num_segments = segment_range[1] - segment_range[0] + 1
-                # A rough estimate, assuming 1MB per video segment and 100KB per audio segment
-                if stream.media_type == 'v':
-                    total_size += num_segments * 1024 * 1024
+                if stream.downloaded_segments and stream.downloaded_bytes > 0:
+                    # Use average actual segment size from already-downloaded segments.
+                    # This is much more accurate than the 1 MB/segment guess, especially
+                    # for high-quality content where segments are 5-50 MB each.
+                    avg_seg = stream.downloaded_bytes / len(stream.downloaded_segments)
+                    total_size += int(avg_seg * num_segments)
+                elif stream.media_type == 'v':
+                    total_size += num_segments * 1024 * 1024  # 1 MB/seg rough fallback
                 else:
-                    total_size += num_segments * 100 * 1024
+                    total_size += num_segments * 100 * 1024   # 100 KB/seg audio fallback
 
         # Thread to monitor and update progress
         stop_monitoring = Lock()
@@ -624,6 +629,7 @@ class Downloader:
                 live_total = sum(s.total_size for s in streams if s.total_size > 0)
                 if live_total > total_size:
                     total_size = live_total
+                has_live_data = live_total > 0  # True once actual segment data has set total_size
 
                 # instantaneous speed
                 inst_speed = None
@@ -640,14 +646,25 @@ class Downloader:
                 last_time = now
 
                 speed_bps = float(ema_speed) if ema_speed is not None else None
-                reliable_total = total_size if total_size > current_downloaded else None
+                # reliable_total: report the total only when we have a trustworthy value.
+                # Once live segment data has established total_size (has_live_data), use
+                # max(total_size, current_downloaded) so a resume never shows >100%.
+                # Before that, only trust total_size when it exceeds current_downloaded
+                # (avoids showing misleading 99.9% from an underestimated rough fallback).
+                if total_size > 0 and has_live_data:
+                    reliable_total = max(total_size, current_downloaded)
+                elif total_size > current_downloaded:
+                    reliable_total = total_size
+                else:
+                    reliable_total = None
                 eta_s = None
                 percent = None
-                if speed_bps and speed_bps > 0 and reliable_total:
+                if speed_bps and speed_bps > 0 and reliable_total and reliable_total > current_downloaded:
                     remaining = max(0, reliable_total - current_downloaded)
-                    eta_s = int(remaining / speed_bps)
-                if reliable_total:
-                    percent = round(current_downloaded * 100 / reliable_total, 2)
+                    eta_s = int(remaining / speed_bps) if remaining > 0 else None
+                if reliable_total and reliable_total > 0:
+                    raw_pct = current_downloaded * 100 / reliable_total
+                    percent = round(min(99.9, raw_pct), 2)  # cap at 99.9 while still active
 
                 self._json_log(
                     "progress",
