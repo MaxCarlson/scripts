@@ -543,3 +543,51 @@ class TestIntegration:
                         assert mock_run.called is False
         finally:
             os.unlink(temp_path)
+
+
+class TestEmitJsonEncoding:
+    """Verify _emit_json never raises UnicodeEncodeError for replacement chars."""
+
+    def test_emit_json_replacement_char_does_not_raise(self, capsys):
+        """A URL containing \\ufffd (the UTF-8 replacement char) must not crash _emit_json
+        even when sys.stdout uses a narrow encoding like cp1252."""
+        import io
+        import sys
+
+        # Simulate a cp1252 stdout that can't encode \\ufffd
+        class _Cp1252Writer(io.TextIOWrapper):
+            pass
+
+        original_stdout = sys.stdout
+        # We use a BytesIO wrapped in TextIOWrapper to simulate narrow encoding behaviour
+        buf = io.BytesIO()
+        narrow_stdout = io.TextIOWrapper(buf, encoding="cp1252", errors="strict")
+        sys.stdout = narrow_stdout
+        try:
+            # reconfigure to utf-8 (mirrors what main() now does)
+            if hasattr(sys.stdout, "reconfigure"):
+                sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            # This must not raise even though \\ufffd can't be encoded in cp1252
+            downloader._emit_json({"event": "start", "url": "https://example.com/test�"})
+            sys.stdout.flush()
+        finally:
+            sys.stdout = original_stdout
+
+    def test_emit_json_ascii_safe_with_replacement_char(self):
+        """_emit_json output round-trips through json.loads without data loss."""
+        import io
+        import json
+        import sys
+
+        buf = io.StringIO()
+        original_stdout = sys.stdout
+        sys.stdout = buf
+        try:
+            downloader._emit_json({"event": "start", "url": "https://example.com/test�"})
+        finally:
+            sys.stdout = original_stdout
+
+        line = buf.getvalue().strip()
+        parsed = json.loads(line)
+        assert parsed["event"] == "start"
+        assert "�" in parsed["url"]

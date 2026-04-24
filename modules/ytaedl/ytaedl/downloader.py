@@ -725,6 +725,14 @@ def _run_one(
     return rc, info
 
 def main() -> int:
+    # Ensure stdout uses UTF-8 regardless of terminal locale (avoids cp1252 UnicodeEncodeError
+    # when URLs or filenames contain replacement characters from UTF-8 decode errors).
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     args = make_parser().parse_args()
 
     urlfile = Path(args.url_file)

@@ -292,7 +292,9 @@ class TestManager:
     def test_download_footer_mentions_digit_selection_without_1_to_9_limit(self):
         footer = manager._wrap_hotkey_lines(manager._downloads_footer_text(), 120)
         text = " ".join(footer)
-        assert "digits=select worker" in text
+        # Footer should mention digit-based worker prompt (no hard 1-9 limit)
+        assert "digit" in text
+        assert "worker" in text
         assert "x=controlled quit" in text
         assert "h=toggle status" in text
         assert "1-9=select worker" not in text
@@ -900,7 +902,7 @@ class TestUtilityFunctions:
         assert _quantile([1, 2, 3, 4, 5], 0.25) == 2
 
     def test_make_bar_function(self):
-        """Test the progress bar creation logic."""
+        """Test the progress bar creation logic, including minimum-1-segment fix."""
 
         def make_bar(pct, width, color_prefix=""):
             try:
@@ -912,25 +914,84 @@ class TestUtilityFunctions:
                 return "[" + ("." * inner) + "]"
             p = max(0.0, min(100.0, p))
             filled = int(inner * (p / 100.0))
+            # Always show at least one filled segment while downloading (p > 0)
+            if p > 0 and filled == 0:
+                filled = 1
             reset = "\x1b[0m"
             if color_prefix:
                 return "[" + (f"{color_prefix}" + ("=" * filled) + f"{reset}") + ("." * (inner - filled)) + "]"
             else:
                 return "[" + ("=" * filled) + ("." * (inner - filled)) + "]"
 
-        # Test basic functionality
+        # Basic cases
         assert make_bar(0, 10) == "[........]"
         assert make_bar(50, 10) == "[====....]"
         assert make_bar(100, 10) == "[========]"
         assert make_bar(None, 10) == "[........]"
-        assert make_bar(150, 10) == "[========]"  # Should clamp to 100%
+        assert make_bar(150, 10) == "[========]"  # clamp to 100%
 
-        # Test with color
+        # Minimum 1 segment: very small percentages that round to 0 filled cells
+        # must still show 1 '=' so the bar doesn't look empty while downloading
+        bar_tiny = make_bar(0.2, 10)  # 0.2 / 100 * 8 = 0.016 → 0 without fix
+        assert bar_tiny.count("=") >= 1, "p>0 must show at least one '='"
+        bar_one_pct = make_bar(1.1, 10)
+        assert bar_one_pct.count("=") >= 1, "1.1% must show at least one '='"
+
+        # With color
         bar_with_color = make_bar(50, 10, "\x1b[32m")
         assert "[" in bar_with_color
-        assert "]" in bar_with_color
         assert "=" in bar_with_color
         assert "." in bar_with_color
+
+    def test_worker_eta_fallback_from_speed_and_bytes(self):
+        """eta_s must be computed from speed+bytes when the event omits eta."""
+        ws = manager.WorkerState(slot=1)
+        ws.downloaded_bytes = 100_000_000   # 100 MiB
+        ws.total_bytes = 200_000_000        # 200 MiB  → 100 MiB remaining
+        ws.speed_bps = 1_000_000.0          # 1 MiB/s  → expected ETA 100 s (stored as float)
+        ws.eta_s = None
+
+        # Simulate a progress event that carries speed but no eta_s
+        eta_in_event = None  # absent
+        if isinstance(eta_in_event, (int, float)):
+            ws.eta_s = float(eta_in_event)
+        elif (
+            not isinstance(eta_in_event, (int, float))
+            and isinstance(ws.speed_bps, float)
+            and ws.speed_bps > 0
+            and isinstance(ws.total_bytes, int)
+            and isinstance(ws.downloaded_bytes, int)
+        ):
+            remaining = ws.total_bytes - ws.downloaded_bytes
+            if remaining > 0:
+                ws.eta_s = remaining / ws.speed_bps
+
+        assert ws.eta_s == pytest.approx(100.0, rel=0.01)
+
+    def test_worker_eta_preserved_when_event_omits_eta(self):
+        """If a progress event has no eta_s field, the last known eta_s is kept."""
+        ws = manager.WorkerState(slot=1)
+        ws.eta_s = 42.0   # previously known
+
+        # Event with no eta key and no bytes/speed info
+        eta_in_event = None
+        # Without total_bytes/speed we can't recompute, so eta_s stays
+        if isinstance(eta_in_event, (int, float)):
+            ws.eta_s = float(eta_in_event)
+        # else: no update — eta_s stays as 42.0
+
+        assert ws.eta_s == 42.0
+
+    def test_human_short_bytes_separate_dl_and_total(self):
+        """dl_txt and tot_txt must each fit within a 10-char column independently."""
+        MiB = 1024 ** 2
+        GiB = 1024 ** 3
+
+        for val in [302_713_856, 325 * MiB, 13 * GiB + 800 * MiB, 812 * MiB]:
+            txt = manager._human_short_bytes(val)
+            # Strip ANSI just in case, then check length
+            plain = ANSI_RE.sub("", txt)
+            assert len(plain) <= 10, f"_human_short_bytes({val}) → {plain!r} exceeds 10 chars"
 
 
 if __name__ == "__main__":

@@ -360,7 +360,7 @@ def _downloads_footer_text() -> str:
     return (
         "Keys: w=watcher, u=url stats, d=downloads, Up/Down=select worker, "
         "P=toggle selected, p=pause/unpause all, x=controlled quit, h=toggle status, "
-        "q=quit, v=cycle verbose, digits=select worker"
+        "q=quit, v=cycle verbose, digit=prompt worker number"
     )
 
 
@@ -1535,8 +1535,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             else:
                                 ws.total_bytes = None
                         ws.speed_bps = float(sp) if isinstance(sp, (int, float)) else ws.speed_bps
-                        # eta may be 0 or negative near completion
-                        ws.eta_s = float(eta) if isinstance(eta, (int, float)) else None
+                        # Only overwrite eta_s when the event actually carries one; otherwise
+                        # keep the last known value so workers with partial events don't flicker to '?'.
+                        if isinstance(eta, (int, float)):
+                            ws.eta_s = float(eta)
+                        elif (
+                            not isinstance(eta, (int, float))
+                            and isinstance(ws.speed_bps, float)
+                            and ws.speed_bps > 0
+                            and isinstance(ws.total_bytes, int)
+                            and isinstance(ws.downloaded_bytes, int)
+                        ):
+                            remaining = ws.total_bytes - ws.downloaded_bytes
+                            if remaining > 0:
+                                ws.eta_s = remaining / ws.speed_bps
                         # Any progress clears overlay
                         ws.overlay_msg = None
                         ws.overlay_since = 0.0
@@ -2533,6 +2545,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         return "[" + ("." * inner) + "]"
                     p = max(0.0, min(100.0, p))
                     filled = int(inner * (p / 100.0))
+                    # Always show at least one filled segment while downloading (p > 0)
+                    if p > 0 and filled == 0:
+                        filled = 1
                     reset = "\x1b[0m"
                     if color_prefix:
                         return "[" + (f"{color_prefix}" + ("=" * filled) + f"{reset}") + ("." * (inner - filled)) + "]"
@@ -2566,11 +2581,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             eta_txt = _hms(float(ws.eta_s))
                     else:
                         eta_txt = "?"
-                    sizes = (
-                        f"{_human_short_bytes(ws.downloaded_bytes)}/{_human_short_bytes(ws.total_bytes)}"
-                        if (isinstance(ws.downloaded_bytes, int) and isinstance(ws.total_bytes, int) and ws.total_bytes)
-                        else ""
-                    )
+                    has_dl = isinstance(ws.downloaded_bytes, int)
+                    has_tot = isinstance(ws.total_bytes, int) and ws.total_bytes
+                    dl_txt = _human_short_bytes(ws.downloaded_bytes) if has_dl else ""
+                    tot_txt = _human_short_bytes(ws.total_bytes) if has_tot else ""
                     sel_marker = ">" if ws.slot == selected_worker_slot else " "
 
                     if cols >= 110:
@@ -2584,8 +2598,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         c5 = col(sp, 12)
                         c6 = col(f"ETA {eta_txt}", 12)
                         c7 = col(f"Dom {domain_txt}", 20)
-                        c8 = col(sizes, 12)
-                        mainline = " | ".join([c0, c1, c2, c3, c4, c5, c6, c7, c8])[:cols]
+                        c8 = col(dl_txt, 10)
+                        c9 = col(tot_txt, 10)
+                        mainline = " | ".join([c0, c1, c2, c3, c4, c5, c6, c7, c8, c9])[:cols]
                         lines.append(ws.overlay_msg[:cols] if ws.overlay_msg else mainline)
                         barw = max(20, cols - 8)
                         lines.append(
@@ -2598,8 +2613,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         c0 = col(f"{sel_marker}[{ws.slot:02d}]", 5)
                         c1 = col(name, 36)
                         c2 = col(url_idx, 12)
-                        c3 = col(sizes, 14)
-                        main1 = " | ".join([c0, c1, c2, c3])[:cols]
+                        c3 = col(dl_txt, 10)
+                        c4 = col(tot_txt, 10)
+                        main1 = " | ".join([c0, c1, c2, c3, c4])[:cols]
                         lines.append(ws.overlay_msg[:cols] if ws.overlay_msg else main1)
                         c0b = col(f"{sel_marker}{tag}", 4)
                         c1b = col(f"Elapsed {elapsed}", 20)
@@ -2619,7 +2635,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         c0b = col(f"{sel_marker}{tag}", 4)
                         c1b = col(f"{url_idx}  Elapsed {elapsed}", max(20, cols - 7))
                         lines.append(" | ".join([c0b, c1b])[:cols])
-                        c1c = col(f"{pct}  {sp}  ETA {eta_txt}  Dom {domain_txt}  {sizes}", max(20, cols - 7))
+                        sizes_compact = f"{dl_txt}/{tot_txt}" if (dl_txt or tot_txt) else ""
+                        c1c = col(f"{pct}  {sp}  ETA {eta_txt}  Dom {domain_txt}  {sizes_compact}", max(20, cols - 7))
                         lines.append(" | ".join([c0, c1c])[:cols])
                         barw = max(20, cols - 8)
                         lines.append("     " + make_bar(ws.percent, barw, speed_color_prefix(ws.speed_bps))[:cols])
@@ -2807,9 +2824,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                 except Exception:
                                     verbose_mode = 0
                                 verbose_mode = (verbose_mode + 1) % 3
-                            elif ch.isdigit() and ch != "0":
-                                verbose_slot = int(ch)
-                                selected_worker_slot = verbose_slot
+                            elif ch.isdigit():
+                                # Prompt for full worker number so slots 10+ are reachable.
+                                response = _prompt_text(f"Select worker (1-{len(workers)}) [{ch}]")
+                                try:
+                                    n = int(response) if response else int(ch)
+                                    if 1 <= n <= len(workers):
+                                        verbose_slot = n
+                                        selected_worker_slot = n
+                                except (ValueError, TypeError):
+                                    pass
                             elif ch == "P":
                                 _toggle_selected_worker_pause()
                             elif key == "p":
