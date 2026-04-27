@@ -735,9 +735,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         type=str,
         default="2",
         help=(
-            "Quality/thoroughness level or pipeline stages (default: 2): "
-            "Quality levels: 1=Size only, 2=Size+hash, 3=Size+hash+metadata, 4=Size+hash+metadata+pHash, 5=All+subset detect, 6=+audio analysis, 7=+advanced content analysis. "
-            "Pipeline stages: 1, 1-2, 1-3, 1-4, 1-5, 1-6, 1-7, etc. (e.g., '1-3' runs stages 1 through 3)"
+            "Stage selector (default: 2): "
+            "1=size only, 2=hash only, 3=metadata only, 4=pHash, 5=scene, 6=audio, 7=timeline. "
+            "Use ranges/lists to combine stages, e.g. 1-2 for size+hash or 1-5 for size+hash+metadata+pHash+scene."
         ),
     )
 
@@ -780,6 +780,13 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         type=int,
         default=None,
         help="Seed used with --sample-percent (default: random).",
+    )
+    p.add_argument(
+        "-N",
+        "--max-duplicates",
+        type=int,
+        default=None,
+        help="Stop after finding at least this many duplicate loser files during scan mode.",
     )
 
     # UI
@@ -922,22 +929,7 @@ def _quality_to_pipeline(quality: str) -> str:
     if "-" in quality and all(c.isdigit() or c == "-" for c in quality):
         return quality
 
-    # Map quality levels to pipeline stages first
-    quality_map = {
-        "1": "1",
-        "2": "1-2",
-        "3": "1-3",
-        "4": "1-4",
-        "5": "1-4",  # Level 5 enables subset detection via config
-        "6": "1-6",  # Level 6 adds audio analysis
-        "7": "1-7",  # Level 7 adds advanced content analysis
-    }
-
-    # If it's a known quality level, return the mapped pipeline
-    if quality in quality_map:
-        return quality_map[quality]
-
-    # If it's a single digit that's not a quality level, return as-is (for direct stage specs)
+    # Single digits are direct stage selectors. Use ranges/lists for combined scans.
     if quality.isdigit():
         return quality
 
@@ -967,6 +959,9 @@ def _validate_args(args: argparse.Namespace) -> Optional[str]:
 
     if args.threads > 64:  # Reasonable upper limit
         return "Thread count seems excessive (>64). Consider reducing for better performance"
+
+    if getattr(args, "max_duplicates", None) is not None and args.max_duplicates <= 0:
+        return "--max-duplicates must be positive"
 
     if getattr(args, "sample_percent", None) is not None:
         if args.sample_percent <= 0 or args.sample_percent > 100:
@@ -1058,14 +1053,6 @@ def _validate_args(args: argparse.Namespace) -> Optional[str]:
                     return f"Directory not found: {expanded_path}"
                 if not expanded_path.is_dir():
                     return f"Path is not a directory: {expanded_path}"
-
-    # Validate quality level enables required features
-    if args.quality in ["4", "5"] and 4 not in stages:
-        return "Quality levels 4 and 5 require pHash stage to be available"
-    if args.quality in ["6"] and 6 not in stages:
-        return "Quality level 6 requires audio analysis stage to be available"
-    if args.quality in ["7"] and 7 not in stages:
-        return "Quality level 7 requires advanced content analysis stage to be available"
 
     return None
 
@@ -1277,7 +1264,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     logger.info(f"Report file: {report_path}")
 
     quality_level = _infer_quality_level(args.quality)
-    subset_detect_enabled = quality_level >= 5
+    subset_detect_enabled = 4 in parse_pipeline(pipeline_str) and quality_level >= 5
 
     sample_ratio = None
     if getattr(args, "sample_percent", None) is not None:
@@ -1298,6 +1285,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         include_partials=bool(getattr(args, "include_partials", False)),
         sample_ratio=sample_ratio,
         sample_seed=getattr(args, "sample_seed", None),
+        max_duplicates=getattr(args, "max_duplicates", None),
     )
 
     logger.info(f"Pipeline configuration: threads={cfg.threads}, GPU={cfg.gpu}, subset_detect={cfg.subset_detect}")
@@ -1396,6 +1384,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 if isinstance(src_meta, dict) and k in src_meta:
                     group_metadata[nk] = dict(src_meta[k])
 
+        def _merged_duplicate_count() -> int:
+            return sum(max(0, len(members) - 1) for members in groups_all.values())
+
+        def _merged_limit_reached() -> bool:
+            limit = getattr(args, "max_duplicates", None)
+            return limit is not None and limit > 0 and _merged_duplicate_count() >= limit
+
         # Run unlimited batch (if any)
         if unlimited_roots:
             logger.info(f"Running unlimited depth pipeline on {len(unlimited_roots)} roots...")
@@ -1445,7 +1440,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             _merge_groups(groups_all, g_unlim)
 
         # Run finite-expanded batch in one go at depth=0 (if any)
-        if finite_expanded_roots:
+        if finite_expanded_roots and not _merged_limit_reached():
             logger.info(f"Running finite depth pipeline on {len(finite_expanded_roots)} roots...")
             try:
                 # Use the same reporter instance to ensure UI updates properly
@@ -1496,6 +1491,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
                 logger.info(f"Fallback finite depth pipeline completed with {len(g_fin)} groups")
             _merge_groups(groups_all, g_fin)
+        elif finite_expanded_roots:
+            logger.info("Skipping finite depth pipeline because --max-duplicates limit was reached by earlier roots")
 
         logger.info(f"Total groups found: {len(groups_all)}")
         logger.info("Choosing winners from duplicate groups...")

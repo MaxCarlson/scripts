@@ -23,9 +23,13 @@ def _is_writable_temp_root(path: Path) -> bool:
 
 
 def _select_pytest_tmp_root() -> Path:
-    repo_root = Path(__file__).resolve().parent / ".pytest_tmp"
-    fallback_root = Path(__file__).resolve().parent / ".pytest_tmp_runtime"
-    if os.name != "nt" and _is_writable_temp_root(repo_root):
+    tests_root = Path(__file__).resolve().parent
+    module_root = tests_root.parent
+    repo_root = module_root / ".pytest_tmp"
+    fallback_root = module_root / ".pytest_tmp_runtime"
+    if os.name != "nt" and _is_writable_temp_root(tests_root / ".pytest_tmp"):
+        return tests_root / ".pytest_tmp"
+    if _is_writable_temp_root(repo_root):
         return repo_root
     if _is_writable_temp_root(fallback_root):
         return fallback_root
@@ -105,8 +109,8 @@ def pytest_configure(config) -> None:  # pragma: no cover - exercised implicitly
     Force pytest to place tmp_path/tmp_path_factory assets inside the repository.
     Some CI sandboxes block access to %LOCALAPPDATA%, so we override basetemp early.
     """
-    base = _PYTEST_TMP_ROOT / "basetemp"
-    base.mkdir(parents=True, exist_ok=True)
+    base = _make_temp_dir(prefix="basetemp-")
+    os.environ["VDEDUP_PYTEST_BASETEMP"] = str(base)
     config.option.basetemp = str(base)
     # Ensure pytest rebuilds the factory with the new basetemp.
     if hasattr(config, "_tmp_path_factory"):

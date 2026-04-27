@@ -77,7 +77,40 @@ def test_apply_report_dry_run_does_not_move_when_keep_is_in_priority(capsys) -> 
 
     out = capsys.readouterr().out
     assert "[DRY] MOVING TO" not in out
+    assert "[DRY] NO-MOVE" in out
+    assert "priority" in out
+    assert "outside" in out
     assert "keeps moved       : 0" in out
+    tmp_dir.cleanup()
+
+
+def test_apply_report_dry_run_uses_common_prefix_and_real_paths(capsys) -> None:
+    tmp_dir = tempfile.TemporaryDirectory()
+    tmp_path = Path(tmp_dir.name)
+    keep = tmp_path / "folder_a" / "keep.mp4"
+    loser = tmp_path / "folder_b" / "lose.mp4"
+    keep.parent.mkdir()
+    loser.parent.mkdir()
+    keep.write_text("keep", encoding="utf-8")
+    loser.write_text("lose", encoding="utf-8")
+    report_path = tmp_path / "report.json"
+    _write_report(report_path, keep, [loser])
+
+    report.apply_report(
+        report_path,
+        dry_run=True,
+        force=False,
+        backup=None,
+        verbosity=1,
+    )
+
+    out = capsys.readouterr().out
+    assert f"Common path prefix: {tmp_path}" in out
+    assert "All paths below are relative to that prefix." in out
+    assert "[hash:" not in out
+    assert "KEEP  : folder_a" in out
+    assert "[DRY] DELETE folder_b" in out
+    assert "vset" not in out
     tmp_dir.cleanup()
 
 

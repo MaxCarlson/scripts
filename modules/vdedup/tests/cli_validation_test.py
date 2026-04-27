@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from video_dedupe import _validate_args, parse_args
+from video_dedupe import _quality_to_pipeline, _validate_args, parse_args
 
 
 def test_valid_args():
@@ -21,6 +21,14 @@ def test_valid_args():
         args = parse_args(["-D", str(temp_path), "-q", "1-2", "-t", "4"])
         error = _validate_args(args)
         assert error is None
+
+
+def test_quality_single_digits_are_individual_stages():
+    """Single-digit -q values select one method; ranges combine methods."""
+    assert _quality_to_pipeline("1") == "1"
+    assert _quality_to_pipeline("2") == "2"
+    assert _quality_to_pipeline("3") == "3"
+    assert _quality_to_pipeline("1-2") == "1-2"
 
 
 def test_invalid_pipeline():
@@ -53,6 +61,15 @@ def test_invalid_thread_count():
         error = _validate_args(args)
         assert error is not None
         assert "excessive" in error.lower()
+
+
+def test_invalid_max_duplicates():
+    """Test duplicate stop limit validation."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        args = parse_args(["-D", temp_dir, "-N", "0"])
+        error = _validate_args(args)
+        assert error is not None
+        assert "max-duplicates" in error
 
 
 def test_invalid_duration_tolerance():

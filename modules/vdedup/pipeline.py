@@ -32,11 +32,12 @@ import threading
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple, Union, Set
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union, Set
 
 # Optional dependency (fast partial hashing)
 try:
     import blake3  # type: ignore
+
     _BLAKE3_AVAILABLE = True
 except Exception:
     _BLAKE3_AVAILABLE = False
@@ -49,10 +50,10 @@ from vdedup.scoring import score_metadata_candidate, score_subset_candidate
 import random
 import time
 
-
 # -------------------------------------------------------------------------------------------------
 # Config & parsing
 # -------------------------------------------------------------------------------------------------
+
 
 @dataclass
 class PipelineConfig:
@@ -77,6 +78,7 @@ class PipelineConfig:
     sample_ratio: Optional[float] = None
     sample_seed: Optional[int] = None
     metadata_score_floor: float = 0.55
+    max_duplicates: Optional[int] = None
 
 
 def parse_pipeline(spec: Optional[str]) -> List[int]:
@@ -89,12 +91,6 @@ def parse_pipeline(spec: Optional[str]) -> List[int]:
     s = spec.strip().lower()
     if s in {"all", "full"}:
         return [1, 2, 3, 4, 5, 6, 7]  # Full pipeline with all stages
-    if s in {"1-4", "1-5"}:
-        return [1, 2, 3, 4]  # Legacy compatibility
-    if s in {"1-6"}:
-        return [1, 2, 3, 4, 5, 6]
-    if s in {"1-7"}:
-        return [1, 2, 3, 4, 5, 6, 7]
     parts = [p.strip() for p in s.split(",") if p.strip()]
     out: set[int] = set()
     for p in parts:
@@ -192,6 +188,7 @@ def _iter_files(
 ) -> Iterator[Path]:
     """Yield files under root matching include globs while honoring optional exclusions."""
     import logging
+
     logger = logging.getLogger(__name__)
 
     root = Path(root).resolve()
@@ -293,6 +290,7 @@ def _blake3_partial_hex(path: Path, head: int = 1 << 20, tail: int = 1 << 20, mi
     Hash up to head + mid + tail bytes (concatenated) using BLAKE3 for speed.
     Reads are bounded; safe on HDDs.
     """
+
     # If blake3 is missing, fall back to sha256 on the same slices (still bounded I/O).
     def _hinit():
         if _BLAKE3_AVAILABLE:
@@ -435,9 +433,9 @@ def _alignable_distance(a_sig, b_sig, per_frame_thresh: int) -> Optional[Alignme
 
     # Try different alignment strategies
     strategies = [
-        (1, 0),      # Standard 1:1 alignment
-        (2, 0),      # Skip every other frame in B (handles different frame rates)
-        (1, 1),      # Skip first frame in B (handles intro/outro differences)
+        (1, 0),  # Standard 1:1 alignment
+        (2, 0),  # Skip every other frame in B (handles different frame rates)
+        (1, 1),  # Skip first frame in B (handles intro/outro differences)
     ]
 
     for step, start_offset in strategies:
@@ -516,6 +514,7 @@ def _subset_master_loser(a: VideoMeta, b: VideoMeta) -> Tuple[VideoMeta, VideoMe
     Order a pair so that the preferred "master" (longer, higher quality) is first.
     This ensures downstream grouping consistently surfaces the highest-quality asset.
     """
+
     def _key(vm: VideoMeta) -> Tuple[float, int, int, int]:
         duration = vm.duration if vm.duration is not None else -1.0
         bitrate = vm.video_bitrate or 0
@@ -664,6 +663,7 @@ def run_pipeline(
     reporter = reporter or ProgressReporter(enable_dash=False)
 
     import logging
+
     logger = logging.getLogger(__name__)
 
     logger.info("=== run_pipeline() ENTRY ===")
@@ -687,6 +687,13 @@ def run_pipeline(
     reporter.set_stage_plan(_build_stage_plan(sorted(selected_stages)))
     max_stage_selected = max(selected_stages) if selected_stages else 0
     reporter.set_stage_ceiling(max_stage_selected)
+
+    def _duplicate_count() -> int:
+        return sum(max(0, len(members) - 1) for members in groups.values())
+
+    def _max_duplicates_reached() -> bool:
+        limit = getattr(cfg, "max_duplicates", None)
+        return limit is not None and limit > 0 and _duplicate_count() >= limit
 
     def _sync_runtime_stages() -> None:
         nonlocal max_stage_selected
@@ -731,8 +738,14 @@ def run_pipeline(
     artifact_skipped = 0
     discovery_bytes = 0
     for index, scan_root in enumerate(scan_roots, start=1):
-        logger.info("=== File enumeration starting for root %d/%d: %s (patterns: %s, max_depth: %s) ===",
-                    index, len(scan_roots), scan_root, patterns, max_depth)
+        logger.info(
+            "=== File enumeration starting for root %d/%d: %s (patterns: %s, max_depth: %s) ===",
+            index,
+            len(scan_roots),
+            scan_root,
+            patterns,
+            max_depth,
+        )
 
         try:
             reporter.update_root_progress(current=scan_root, completed=index - 1, total=len(scan_roots))
@@ -905,6 +918,7 @@ def run_pipeline(
     # Visual duplicates (different encodings/resolutions/clips) have DIFFERENT sizes
     # ALL files must continue to Q2/Q3/Q4 for visual similarity detection
     size_buckets_for_q2: Dict[int, List[FileMeta]] = {}  # Size-matched groups (optimization hint)
+    groups: GroupResults = GroupResults()
 
     _sync_runtime_stages()
     if 1 in selected_stages:
@@ -947,13 +961,33 @@ def run_pipeline(
         )
 
         reporter.finish_stage("Q1 size bucketing")
+
+        if selected_stages == {1}:
+            formed = 0
+            duplicate_members = 0
+            for size, bucket in size_buckets_for_q2.items():
+                groups[f"size:{size}"] = bucket
+                formed += 1
+                duplicate_members += max(0, len(bucket) - 1)
+                if _max_duplicates_reached():
+                    break
+            if formed:
+                reporter.inc_group("size", formed)
+            if duplicate_members:
+                reporter.add_duplicate_files(duplicate_members)
+            if _max_duplicates_reached():
+                reporter.add_log(
+                    f"Stopping after {_duplicate_count():,} duplicate file(s) due to --max-duplicates",
+                    source="limit",
+                )
+                reporter.flush()
+                return groups
     else:
         reporter.set_status("Skipping Q1 (size buckets disabled)")
 
     # ALL files continue to Q2 (nothing eliminated based on size alone!)
     all_candidates = metas
 
-    groups: GroupResults = GroupResults()
     excluded_after_q2: Set[Path] = set()
     excluded_after_q3: Set[Path] = set()
     excluded_after_q4: Set[Path] = set()
@@ -972,7 +1006,9 @@ def run_pipeline(
         remaining_files = [f for f in all_candidates if f not in priority_files]
         q2_candidates = priority_files + remaining_files
 
-        logger.info(f"Starting Q2: partial hashing for {len(q2_candidates):,} files ({len(priority_files):,} priority, {len(remaining_files):,} remaining)")
+        logger.info(
+            f"Starting Q2: partial hashing for {len(q2_candidates):,} files ({len(priority_files):,} priority, {len(remaining_files):,} remaining)"
+        )
         reporter.set_status("Q2 partial hashing")
         reporter.start_stage("Q2 partial", total=len(q2_candidates))
         reporter.set_hash_total(len(q2_candidates))
@@ -1007,7 +1043,9 @@ def run_pipeline(
                 # Log progress every 100 files
                 if current % 100 == 0:
                     pct = (current / len(q2_candidates)) * 100
-                    logger.info(f"Partial hashing: {current:,}/{len(q2_candidates):,} ({pct:.1f}%) - {cfg.threads} workers")
+                    logger.info(
+                        f"Partial hashing: {current:,}/{len(q2_candidates):,} ({pct:.1f}%) - {cfg.threads} workers"
+                    )
 
                 # Update UI every 20 files
                 if current % 20 == 0:
@@ -1031,7 +1069,7 @@ def run_pipeline(
         reporter.finish_stage("Q2 partial")
 
         if reporter.should_quit():
-            reporter.flush();
+            reporter.flush()
             return groups
 
         # Escalate only partial buckets that still collide
@@ -1091,7 +1129,9 @@ def run_pipeline(
         if to_full:
             # Multi-threaded full hash computation with progress tracking
             hash_algo = "BLAKE3" if _BLAKE3_AVAILABLE else "SHA-256"
-            logger.info(f"Starting {hash_algo} full hash computation for {len(to_full):,} files using {cfg.threads} threads")
+            logger.info(
+                f"Starting {hash_algo} full hash computation for {len(to_full):,} files using {cfg.threads} threads"
+            )
 
             # Thread-safe counter for progress
             completed = threading.Lock()
@@ -1107,7 +1147,9 @@ def run_pipeline(
                     # Log progress every 50 files
                     if current % 50 == 0:
                         pct = (current / len(to_full)) * 100
-                        logger.info(f"{hash_algo} hashing: {current:,}/{len(to_full):,} ({pct:.1f}%) - {cfg.threads} workers")
+                        logger.info(
+                            f"{hash_algo} hashing: {current:,}/{len(to_full):,} ({pct:.1f}%) - {cfg.threads} workers"
+                        )
 
                     # Update UI every 10 files
                     if current % 10 == 0:
@@ -1136,6 +1178,8 @@ def run_pipeline(
                     excluded_after_q2.add(_normalized_path(fm.path))
                 formed += 1
                 duplicate_members += max(0, len(lst) - 1)
+                if _max_duplicates_reached():
+                    break
         if formed:
             reporter.inc_group("hash", formed)
         if duplicate_members:
@@ -1147,6 +1191,12 @@ def run_pipeline(
         )
         reporter.finish_stage("Q2 full hash")
         reporter.flush()
+        if _max_duplicates_reached():
+            reporter.add_log(
+                f"Stopping after {_duplicate_count():,} duplicate file(s) due to --max-duplicates",
+                source="limit",
+            )
+            return groups
     elif 2 in selected_stages:
         reporter.set_status("Q2 skipped (no candidates)")
         reporter.mark_stage_skipped("Q2 partial")
@@ -1157,7 +1207,6 @@ def run_pipeline(
     if reporter.should_quit():
         reporter.flush()
         return groups
-
 
     # ---------------------------------------------
     # Q3: ffprobe metadata (duration/format/codec...)
@@ -1313,6 +1362,8 @@ def run_pipeline(
                     gid += 1
                     formed += 1
                     duplicate_members += len(filtered) - 1
+                    if _max_duplicates_reached():
+                        break
             if formed:
                 reporter.inc_group("meta", formed)
             if duplicate_members:
@@ -1327,6 +1378,12 @@ def run_pipeline(
 
             video_for_q4 = probed
             reporter.finish_stage("Q3 metadata")
+            if _max_duplicates_reached():
+                reporter.add_log(
+                    f"Stopping after {_duplicate_count():,} duplicate file(s) due to --max-duplicates",
+                    source="limit",
+                )
+                return groups
         else:
             reporter.set_status("Q3 skipped (no eligible videos)")
             video_for_q4 = []
@@ -1371,10 +1428,17 @@ def run_pipeline(
                 sig = compute_phash_signature(vm.path, frames=cfg.phash_frames, gpu=cfg.gpu)
                 if sig:
                     vm = VideoMeta(
-                        path=vm.path, size=vm.size, mtime=vm.mtime,
-                        duration=vm.duration, width=vm.width, height=vm.height,
-                        container=vm.container, vcodec=vm.vcodec, acodec=vm.acodec,
-                        overall_bitrate=vm.overall_bitrate, video_bitrate=vm.video_bitrate,
+                        path=vm.path,
+                        size=vm.size,
+                        mtime=vm.mtime,
+                        duration=vm.duration,
+                        width=vm.width,
+                        height=vm.height,
+                        container=vm.container,
+                        vcodec=vm.vcodec,
+                        acodec=vm.acodec,
+                        overall_bitrate=vm.overall_bitrate,
+                        video_bitrate=vm.video_bitrate,
                         phash_signature=tuple(int(x) for x in sig),
                     )
                 reporter.inc_hashed(1, cache_hit=False)
@@ -1418,6 +1482,8 @@ def run_pipeline(
                         gid += 1
                         formed_phash += 1
                         duplicate_members += len(grp) - 1
+                        if _max_duplicates_reached():
+                            break
             if formed_phash:
                 reporter.inc_group("phash", formed_phash)
             reporter.update_stage_metrics(
@@ -1487,6 +1553,8 @@ def run_pipeline(
                         gid += 1
                         formed_subset += 1
                         duplicate_members += 1
+                        if _max_duplicates_reached():
+                            break
 
             if formed_subset:
                 reporter.inc_group("subset", formed_subset)
@@ -1498,6 +1566,12 @@ def run_pipeline(
                 subset_matches=f"{formed_subset:,}",
             )
             reporter.finish_stage("Q4 pHash")
+            if _max_duplicates_reached():
+                reporter.add_log(
+                    f"Stopping after {_duplicate_count():,} duplicate file(s) due to --max-duplicates",
+                    source="limit",
+                )
+                return groups
         else:
             reporter.set_status("Q4 skipped (no analyzable videos)")
             reporter.mark_stage_skipped("Q4 pHash")
@@ -1513,8 +1587,7 @@ def run_pipeline(
         pending_for_q5 = [
             v
             for v in video_for_q4
-            if _normalized_path(v.path) not in excluded_after_q3
-            and _normalized_path(v.path) not in excluded_after_q4
+            if _normalized_path(v.path) not in excluded_after_q3 and _normalized_path(v.path) not in excluded_after_q4
         ]
 
         try:
@@ -1582,6 +1655,8 @@ def run_pipeline(
                             formed_scene += 1
                             duplicate_members += 1
                             gid += 1
+                            if _max_duplicates_reached():
+                                break
                             break
                     else:
                         ratio = min(len_a, len_b) / max_len if max_len else 0.0
@@ -1599,7 +1674,9 @@ def run_pipeline(
                             master, loser = _subset_master_loser(short_vm, long_vm)
                             group_id = f"scene-sub:{gid}"
                             groups[group_id] = [master, loser]
-                            _record_subset_metadata(groups, group_id, "subset-scene", short_vm, long_vm, match, reporter=reporter)
+                            _record_subset_metadata(
+                                groups, group_id, "subset-scene", short_vm, long_vm, match, reporter=reporter
+                            )
                             consumed.add(short_norm)
                             subset_consumed.add(short_norm)
                             excluded_after_q5.add(short_norm)
@@ -1607,7 +1684,11 @@ def run_pipeline(
                             subset_pairs += 1
                             duplicate_members += 1
                             gid += 1
+                            if _max_duplicates_reached():
+                                break
                             continue
+                if _max_duplicates_reached():
+                    break
 
             if formed_scene:
                 reporter.inc_group("scene", formed_scene)
@@ -1622,6 +1703,12 @@ def run_pipeline(
                 subset_pairs=f"{subset_pairs:,}",
             )
             reporter.finish_stage("Q5 scene")
+            if _max_duplicates_reached():
+                reporter.add_log(
+                    f"Stopping after {_duplicate_count():,} duplicate file(s) due to --max-duplicates",
+                    source="limit",
+                )
+                return groups
         else:
             reporter.set_status("Q5 skipped (no analyzable videos)")
             reporter.mark_stage_skipped("Q5 scene")
@@ -1711,6 +1798,8 @@ def run_pipeline(
                             formed_audio += 1
                             duplicate_members += 1
                             gid += 1
+                            if _max_duplicates_reached():
+                                break
                             break
                     else:
                         ratio = min(len_a, len_b) / max_len if max_len else 0.0
@@ -1728,7 +1817,9 @@ def run_pipeline(
                             master, loser = _subset_master_loser(short_vm, long_vm)
                             group_id = f"audio-sub:{gid}"
                             groups[group_id] = [master, loser]
-                            _record_subset_metadata(groups, group_id, "subset-audio", short_vm, long_vm, match, reporter=reporter)
+                            _record_subset_metadata(
+                                groups, group_id, "subset-audio", short_vm, long_vm, match, reporter=reporter
+                            )
                             processed_audio.add(short_norm)
                             subset_audio_consumed.add(short_norm)
                             excluded_after_q6.add(short_norm)
@@ -1736,7 +1827,11 @@ def run_pipeline(
                             duplicate_members += 1
                             audio_subset_pairs += 1
                             gid += 1
+                            if _max_duplicates_reached():
+                                break
                             continue
+                if _max_duplicates_reached():
+                    break
 
             if formed_audio:
                 reporter.inc_group("audio", formed_audio)
@@ -1751,6 +1846,12 @@ def run_pipeline(
                 subset_pairs=f"{audio_subset_pairs:,}",
             )
             reporter.finish_stage("Q6 audio")
+            if _max_duplicates_reached():
+                reporter.add_log(
+                    f"Stopping after {_duplicate_count():,} duplicate file(s) due to --max-duplicates",
+                    source="limit",
+                )
+                return groups
         else:
             reporter.set_status("Q6 skipped (no analyzable audio)")
             reporter.mark_stage_skipped("Q6 audio")
@@ -1839,6 +1940,8 @@ def run_pipeline(
                             formed_timeline += 1
                             duplicate_members += 1
                             gid += 1
+                            if _max_duplicates_reached():
+                                break
                             break
                     else:
                         ratio = min(len_a, len_b) / max_len if max_len else 0.0
@@ -1856,7 +1959,9 @@ def run_pipeline(
                             master, loser = _subset_master_loser(short_vm, long_vm)
                             group_id = f"timeline-sub:{gid}"
                             groups[group_id] = [master, loser]
-                            _record_subset_metadata(groups, group_id, "subset-timeline", short_vm, long_vm, match, reporter=reporter)
+                            _record_subset_metadata(
+                                groups, group_id, "subset-timeline", short_vm, long_vm, match, reporter=reporter
+                            )
                             processed_timeline.add(short_norm)
                             timeline_subset_consumed.add(short_norm)
                             excluded_after_q7.add(short_norm)
@@ -1864,7 +1969,11 @@ def run_pipeline(
                             timeline_subset_pairs += 1
                             duplicate_members += 1
                             gid += 1
+                            if _max_duplicates_reached():
+                                break
                             continue
+                if _max_duplicates_reached():
+                    break
 
             if formed_timeline:
                 reporter.inc_group("timeline", formed_timeline)
@@ -1879,6 +1988,12 @@ def run_pipeline(
                 subset_pairs=f"{timeline_subset_pairs:,}",
             )
             reporter.finish_stage("Q7 timeline")
+            if _max_duplicates_reached():
+                reporter.add_log(
+                    f"Stopping after {_duplicate_count():,} duplicate file(s) due to --max-duplicates",
+                    source="limit",
+                )
+                return groups
         else:
             reporter.set_status("Q7 skipped (no analyzable timelines)")
             reporter.mark_stage_skipped("Q7 timeline")

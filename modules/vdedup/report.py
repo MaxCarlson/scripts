@@ -199,6 +199,7 @@ def write_report(
     for gid, (keep, losers) in winners.items():
         keep_path = str(keep.path)
         loser_paths = [str(m.path) for m in losers]
+        method = getattr(keep, "method", None) or str(gid).split(":", 1)[0]
         group_meta = (metadata or {}).get(gid, {})
         hints = group_meta.get("overlap_hints") if isinstance(group_meta, dict) else None
         hints = hints if isinstance(hints, dict) else {}
@@ -218,7 +219,7 @@ def write_report(
         out[gid] = {
             "keep": keep_path,
             "losers": loser_paths,
-            "method": getattr(keep, "method", "unknown"),
+            "method": method,
             "evidence": evidence_payload,
             "keep_meta": _meta_from_meta(keep, overlap_hint=keep_hint if isinstance(keep_hint, (int, float)) else None),
             "loser_meta": loser_meta_payload,
@@ -229,7 +230,7 @@ def write_report(
                 total_size += int(Path(m.path).stat().st_size)
             except Exception:
                 pass
-        by_method[out[gid]["method"]] = by_method.get(out[gid]["method"], 0) + 1
+        by_method[method] = by_method.get(method, 0) + 1
 
     payload = {
         "summary": {"groups": len(out), "losers": losers_total, "size_bytes": total_size, "by_method": by_method},
@@ -286,7 +287,7 @@ def apply_report(
     data = load_report(report_path)
     groups: Dict[str, Any] = data.get("groups") or {}
 
-    # Determine a display base (common prefix) for pretty output
+    # Determine one common display directory so all operation paths remain comparable.
     all_paths: List[Path] = []
     for g in groups.values():
         if g.get("keep"):
@@ -296,7 +297,7 @@ def apply_report(
     display_base: Optional[Path] = None
     if all_paths:
         try:
-            display_base = Path(os.path.commonpath([str(p) for p in all_paths]))
+            display_base = Path(os.path.commonpath([str(p.resolve().parent) for p in all_paths]))
         except Exception:
             display_base = None
 
@@ -308,16 +309,7 @@ def apply_report(
                 return str(p)
         return str(p)
 
-    # helpers for compact aliases
-    def _friendly_gid(method: str, gid: str) -> str:
-        if method == "collapsed" and gid.startswith("collapsed:"):
-            try:
-                n = int(gid.split(":", 1)[1])
-                return f"Duplicate Set {n}"
-            except Exception:
-                return f"Duplicate Set ({gid})"
-        return f"{gid}"
-
+    # helpers for compact aliases used only by vault/hardlink preview output
     def _set_number(method: str, gid: str, fallback_index: int) -> int:
         if method == "collapsed" and gid.startswith("collapsed:"):
             try:
@@ -332,13 +324,6 @@ def apply_report(
         except Exception:
             pass
         return fallback_index
-
-    def _group_base(paths: List[str]) -> str:
-        if not paths:
-            return ""
-        prefix = os.path.commonprefix(paths)
-        i = max(prefix.rfind("/"), prefix.rfind("\\"))
-        return prefix[: i + 1] if i >= 0 else ""
 
     def _first_folder(trimmed: str) -> str:
         if not trimmed:
@@ -360,6 +345,7 @@ def apply_report(
     C_VAULT = "95"  # magenta
     C_LINK = "94"  # bright blue
     C_MOVE = "94"  # blue
+    C_NO_MOVE = "90"  # gray
     C_REPL = "93"  # yellow for REPLACE
     C_FOLD = "36"  # cyan folder token
     C_DIM = "2"
@@ -391,7 +377,8 @@ def apply_report(
     if verbosity >= 0:
         print(f"Applying report: {report_path}")
         if display_base:
-            print(f"Paths shown relative to: {display_base}")
+            print(f"Common path prefix: {display_base}")
+            print("All paths below are relative to that prefix.")
         if dry_run:
             print("[DRY] No filesystem changes will be made.")
         if vault:
@@ -490,10 +477,9 @@ def apply_report(
         # Resolve display-relative strings
         rel_keep = rel(keep) if keep else ""
         rel_losers = [rel(loser) for loser in losers]
-        gbase = _group_base([s for s in [rel_keep, *rel_losers] if s])
 
         def _trim(s: str) -> str:
-            return s[len(gbase) :] if gbase and s.startswith(gbase) else s
+            return s
 
         # numbering + alias names (only for compact mode)
         set_num = _set_number(method, gid, idx)
@@ -516,14 +502,9 @@ def apply_report(
 
         # Per-group headers (V1+)
         if verbosity >= 1:
-            print(_c(f"[{_friendly_gid(method, gid)}]", C_HDR))
-            if gbase:
-                print(_c(f"  Base  : {gbase}", C_DIM))
+            print(_c(f"[Duplicate Set {idx + 1}]", C_HDR))
             if keep:
-                if full_file_names:
-                    print(f"  KEEP  : {_c(_trim(rel_keep), C_KEEP)}")
-                else:
-                    print(f"  KEEP  : {_c(_fold_colored(_trim(rel_keep)), C_KEEP)}")
+                print(f"  KEEP  : {_c(rel_keep, C_KEEP)}")
             print(f"  LOSERS: {len(losers)}")
 
         # Detailed diffs (V2) — these are meaningful only with real paths
@@ -591,36 +572,22 @@ def apply_report(
                     for rl, la, loser in dry_losers:
                         if _same_path(loser, blocking_priority_loser):
                             if backup:
-                                if full_file_names:
-                                    print(f"    {_c('[DRY] BACKUP MOVE', C_DIM)} {_trim(rl)} -> {backup}")
-                                else:
-                                    print(
-                                        f"    {_c('[DRY] BACKUP MOVE', C_DIM)} {_fold_colored_loser(_trim(rl), la)} -> {backup}"
-                                    )
+                                print(f"    {_c('[DRY] BACKUP MOVE', C_DIM)} {rl} -> {backup}")
                             else:
-                                if full_file_names:
-                                    print(f"    {_c('[DRY] DELETE', C_LOSE)} {_trim(rl)}")
-                                else:
-                                    print(f"    {_c('[DRY] DELETE', C_LOSE)} {_fold_colored_loser(_trim(rl), la)}")
+                                print(f"    {_c('[DRY] DELETE', C_LOSE)} {rl}")
                             break
                 if planned_priority_dest and keep:
-                    print(f"    {_c('[DRY] MOVING TO', C_MOVE)} {_trim(rel_keep)} -> {rel(planned_priority_dest)}")
+                    print(f"    {_c('[DRY] MOVING TO', C_MOVE)} {rel_keep} -> {rel(planned_priority_dest)}")
                     keeps_moved += 1
+                elif keep:
+                    print(f"    {_c('[DRY] NO-MOVE', C_NO_MOVE)} {rel_keep}")
                 for rl, la, loser in dry_losers:
                     if blocking_priority_loser and _same_path(loser, blocking_priority_loser):
                         continue
                     if backup:
-                        if full_file_names:
-                            print(f"    {_c('[DRY] BACKUP MOVE', C_DIM)} {_trim(rl)} -> {backup}")
-                        else:
-                            print(
-                                f"    {_c('[DRY] BACKUP MOVE', C_DIM)} {_fold_colored_loser(_trim(rl), la)} -> {backup}"
-                            )
+                        print(f"    {_c('[DRY] BACKUP MOVE', C_DIM)} {rl} -> {backup}")
                     else:
-                        if full_file_names:
-                            print(f"    {_c('[DRY] DELETE', C_LOSE)} {_trim(rl)}")
-                        else:
-                            print(f"    {_c('[DRY] DELETE', C_LOSE)} {_fold_colored_loser(_trim(rl), la)}")
+                        print(f"    {_c('[DRY] DELETE', C_LOSE)} {rl}")
             losers_processed += len(losers)
         else:
             try:
@@ -671,9 +638,11 @@ def apply_report(
                     if can_move_priority:
                         planned_priority_dest.parent.mkdir(parents=True, exist_ok=True)
                         if verbosity >= 1:
-                            print(f"    {_c('MOVING TO', C_MOVE)} {_trim(rel_keep)} -> {rel(planned_priority_dest)}")
+                            print(f"    {_c('MOVING TO', C_MOVE)} {rel_keep} -> {rel(planned_priority_dest)}")
                         shutil.move(str(keep), str(planned_priority_dest))
                         keeps_moved += 1
+                    elif keep and verbosity >= 1:
+                        print(f"    {_c('NO-MOVE', C_NO_MOVE)} {rel_keep}")
                     for loser in losers:
                         if (
                             blocking_priority_loser
@@ -699,12 +668,10 @@ def apply_report(
 
         if verbosity == 0:
             # terse 1-liner per group
-            keep_name = (_trim(rel_keep) if full_file_names else keep_alias) if keep else "(missing)"
+            keep_name = rel_keep if keep else "(missing)"
             links = (1 + len(losers)) if vault else 0
             move_note = f"; move -> {rel(planned_priority_dest)}" if planned_priority_dest else ""
-            print(
-                f"[{_friendly_gid(method, gid)}] keep: {keep_name}{move_note}  <- {len(losers)} losers; +{links} links"
-            )
+            print(f"[Duplicate Set {idx + 1}] keep: {keep_name}{move_note}  <- {len(losers)} losers; +{links} links")
 
         if reporter:
             reporter.inc_hashed(1, cache_hit=False)

@@ -40,6 +40,79 @@ def test_run_pipeline_supports_multiple_roots(tmp_path: Path) -> None:
     assert deduped_paths == {file_a.resolve(), file_b.resolve()}
 
 
+def test_run_pipeline_q1_size_only_emits_size_groups(tmp_path: Path) -> None:
+    root = tmp_path / "size_only"
+    same_a = root / "same_a.mp4"
+    same_b = root / "same_b.mp4"
+    different = root / "different.mp4"
+    _touch(same_a, b"abc")
+    _touch(same_b, b"xyz")
+    _touch(different, b"longer")
+
+    cfg = PipelineConfig(threads=1)
+    reporter = ProgressReporter(enable_dash=False)
+    groups = run_pipeline(
+        roots=[root],
+        patterns=["*.mp4"],
+        max_depth=None,
+        selected_stages=[1],
+        cfg=cfg,
+        cache=None,
+        reporter=reporter,
+    )
+
+    assert list(groups.keys()) == ["size:3"]
+    assert {m.path.resolve() for m in groups["size:3"]} == {same_a.resolve(), same_b.resolve()}
+
+
+def test_run_pipeline_q2_hash_only_detects_exact_duplicates_without_q1(tmp_path: Path) -> None:
+    root = tmp_path / "hash_only"
+    dup_a = root / "dup_a.mp4"
+    dup_b = root / "dup_b.mp4"
+    same_size_different = root / "same_size_different.mp4"
+    _touch(dup_a, b"duplicate")
+    _touch(dup_b, b"duplicate")
+    _touch(same_size_different, b"different")
+
+    cfg = PipelineConfig(threads=1)
+    reporter = ProgressReporter(enable_dash=False)
+    groups = run_pipeline(
+        roots=[root],
+        patterns=["*.mp4"],
+        max_depth=None,
+        selected_stages=[2],
+        cfg=cfg,
+        cache=None,
+        reporter=reporter,
+    )
+
+    assert len(groups) == 1
+    group_id, members = next(iter(groups.items()))
+    assert group_id.startswith("hash:")
+    assert {m.path.resolve() for m in members} == {dup_a.resolve(), dup_b.resolve()}
+
+
+def test_run_pipeline_max_duplicates_limits_size_only_groups(tmp_path: Path) -> None:
+    root = tmp_path / "limited"
+    for idx in range(4):
+        _touch(root / f"same_{idx}.mp4", bytes([idx]) * 3)
+
+    cfg = PipelineConfig(threads=1, max_duplicates=1)
+    reporter = ProgressReporter(enable_dash=False)
+    groups = run_pipeline(
+        roots=[root],
+        patterns=["*.mp4"],
+        max_depth=None,
+        selected_stages=[1],
+        cfg=cfg,
+        cache=None,
+        reporter=reporter,
+    )
+
+    assert len(groups) == 1
+    assert sum(max(0, len(members) - 1) for members in groups.values()) >= 1
+
+
 def test_run_pipeline_sampling_reduces_discovery(tmp_path: Path) -> None:
     root = tmp_path / "samples"
     for idx in range(10):
