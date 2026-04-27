@@ -2,8 +2,8 @@
 """
 Tests for CLI argument validation enhancements.
 """
+
 import tempfile
-import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,7 +31,8 @@ def test_invalid_pipeline():
 
         # Mock parse_pipeline to raise an exception to test error handling
         from unittest.mock import patch
-        with patch('video_dedupe.parse_pipeline') as mock_parse:
+
+        with patch("video_dedupe.parse_pipeline") as mock_parse:
             mock_parse.side_effect = ValueError("Invalid pipeline")
             error = _validate_args(args)
             assert error is not None
@@ -126,6 +127,29 @@ def test_nonexistent_report_files():
     assert "not found" in error.lower()
 
 
+def test_folder_priority_apply_report_args():
+    """Test folder priority argument parsing and validation in apply mode."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        report_path = temp_path / "report.json"
+        report_path.write_text('{"groups": {}}', encoding="utf-8")
+        priority = temp_path / "priority"
+
+        args = parse_args(["-a", str(report_path), "-M", str(priority)])
+        assert args.folder_priority == str(priority)
+        assert _validate_args(args) is None
+
+
+def test_folder_priority_requires_apply_report():
+    """Test that folder priority is scoped to apply-report mode."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        args = parse_args(["-M", temp_dir])
+        error = _validate_args(args)
+        assert error is not None
+        assert "folder-priority" in error
+        assert "apply-report" in error
+
+
 def test_conflicting_ui_options():
     """Test validation of conflicting UI options - now handled by quality levels."""
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -197,15 +221,13 @@ def test_output_directory_creation():
 def test_enhanced_help_messages():
     """Test that enhanced help messages are present."""
     # This test ensures the help text improvements are in place
-    with patch('sys.argv', ['video-dedupe', '--help']):
+    with patch("sys.argv", ["video-dedupe", "--help"]):
         try:
-            parse_args(['--help'])
+            parse_args(["--help"])
         except SystemExit:
             pass  # argparse exits on --help, which is expected
 
-    # Test specific help content by parsing without exit
-    parser_help = parse_args.__doc__ or ""
-    # The enhanced help should be visible in the argument parser
+    # The enhanced help should be visible in the argument parser.
 
 
 def test_relative_paths():

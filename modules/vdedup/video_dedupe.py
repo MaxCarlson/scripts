@@ -42,6 +42,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 # Import EnforcedArgumentParser
 try:
     from argparse_enforcer import EnforcedArgumentParser
+
     ENFORCER_AVAILABLE = True
 except ImportError:
     # Fallback to regular argparse if enforcer not available
@@ -59,7 +60,6 @@ from vdedup.report import (
     pretty_print_reports,
     collect_exclusions,
     load_report,
-    collapse_report_file,
 )
 from vdedup.report_viewer import launch_report_viewer
 
@@ -147,7 +147,9 @@ def _release_output_lock(lock_file: Path, logger: logging.Logger) -> None:
         except Exception as exc:
             logger.warning(f"Failed to remove lock file: {exc}")
 
+
 # -------- helpers --------
+
 
 def _default_thread_count() -> int:
     """
@@ -186,34 +188,42 @@ def _quality_default_config(quality: Optional[str]) -> Dict[str, Any]:
         "include_partials": False,
     }
     if level >= 4:
-        defaults.update({
-            "duration_tolerance": 3.0,
-            "phash_frames": 12,
-            "phash_threshold": 11,
-            "subset_min_ratio": 0.12,
-        })
+        defaults.update(
+            {
+                "duration_tolerance": 3.0,
+                "phash_frames": 12,
+                "phash_threshold": 11,
+                "subset_min_ratio": 0.12,
+            }
+        )
     if level >= 5:
-        defaults.update({
-            "duration_tolerance": 4.0,
-            "phash_frames": 16,
-            "phash_threshold": 10,
-            "subset_min_ratio": 0.09,
-        })
+        defaults.update(
+            {
+                "duration_tolerance": 4.0,
+                "phash_frames": 16,
+                "phash_threshold": 10,
+                "subset_min_ratio": 0.09,
+            }
+        )
     if level >= 6:
-        defaults.update({
-            "duration_tolerance": 5.0,
-            "phash_frames": 20,
-            "phash_threshold": 9,
-            "subset_min_ratio": 0.08,
-            "include_partials": True,
-        })
+        defaults.update(
+            {
+                "duration_tolerance": 5.0,
+                "phash_frames": 20,
+                "phash_threshold": 9,
+                "subset_min_ratio": 0.08,
+                "include_partials": True,
+            }
+        )
     if level >= 7:
-        defaults.update({
-            "duration_tolerance": 6.0,
-            "phash_frames": 24,
-            "phash_threshold": 9,
-            "subset_min_ratio": 0.07,
-        })
+        defaults.update(
+            {
+                "duration_tolerance": 6.0,
+                "phash_frames": 24,
+                "phash_threshold": 9,
+                "subset_min_ratio": 0.07,
+            }
+        )
     return defaults
 
 
@@ -226,6 +236,7 @@ def _apply_quality_defaults(args: argparse.Namespace) -> None:
             setattr(args, field, value)
     if getattr(args, "threads", None) is None:
         args.threads = _default_thread_count()
+
 
 def _normalize_patterns(patts: Optional[List[str]]) -> Optional[List[str]]:
     if not patts:
@@ -264,7 +275,9 @@ def _fmt_bytes(n: int) -> str:
     return f"{n/1024**3:.2f} GiB"
 
 
-def _setup_logging(log_file: Optional[Path] = None, log_level: str = "INFO", console_level: str = "WARNING") -> logging.Logger:
+def _setup_logging(
+    log_file: Optional[Path] = None, log_level: str = "INFO", console_level: str = "WARNING"
+) -> logging.Logger:
     """
     Configure comprehensive logging for video deduplication operations.
 
@@ -277,7 +290,7 @@ def _setup_logging(log_file: Optional[Path] = None, log_level: str = "INFO", con
         Configured logger instance
     """
     # Create logger
-    logger = logging.getLogger('vdedup')
+    logger = logging.getLogger("vdedup")
     logger.setLevel(logging.DEBUG)  # Capture everything, filter at handler level
 
     # Clear any existing handlers
@@ -287,13 +300,12 @@ def _setup_logging(log_file: Optional[Path] = None, log_level: str = "INFO", con
     # File handler (detailed logging)
     if log_file:
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
+        file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
         file_handler.setLevel(getattr(logging, log_level.upper()))
 
         # Detailed format for file
         file_format = logging.Formatter(
-            '%(asctime)s | %(levelname)-8s | %(funcName)-20s | %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
+            "%(asctime)s | %(levelname)-8s | %(funcName)-20s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
         )
         file_handler.setFormatter(file_format)
         logger.addHandler(file_handler)
@@ -303,7 +315,7 @@ def _setup_logging(log_file: Optional[Path] = None, log_level: str = "INFO", con
     console_handler.setLevel(getattr(logging, console_level.upper()))
 
     # Simple format for console
-    console_format = logging.Formatter('%(levelname)s: %(message)s')
+    console_format = logging.Formatter("%(levelname)s: %(message)s")
     console_handler.setFormatter(console_format)
     logger.addHandler(console_handler)
 
@@ -311,6 +323,7 @@ def _setup_logging(log_file: Optional[Path] = None, log_level: str = "INFO", con
 
 
 # --- analysis helpers (kept here so tests can monkeypatch) ---
+
 
 def _fmt_dur(sec: Optional[float]) -> str:
     try:
@@ -338,6 +351,7 @@ def _probe_stats(path: Path) -> Dict[str, Any]:
     video_bitrate = None
     try:
         from vdedup.probe import run_ffprobe_json  # lazy
+
         fmt = run_ffprobe_json(path)
         if fmt:
             try:
@@ -410,6 +424,7 @@ def _render_pair_diff(keep: Path, lose: Path, a: Dict[str, Any], b: Dict[str, An
 
 # ---------- robust single-line progress bar ----------
 
+
 class _TextProgress:
     """
     A very small progress bar that overwrites a single line reliably.
@@ -417,6 +432,7 @@ class _TextProgress:
     Uses ANSI 'erase line' + carriage return to avoid consoles that ignore '\r'.
     Falls back to printing normally if not a TTY.
     """
+
     def __init__(self, total: int, label: str = "Processing"):
         self.total = max(0, int(total))
         self.label = label
@@ -448,7 +464,9 @@ class _TextProgress:
         if self._tty:
             # ANSI: erase line + carriage to col 0
             sys.stdout.write("\x1b[2K\r")
-            sys.stdout.write(f"{self.label} [{'#'*filled}{'-'*(barw - filled)}] {self.n}/{self.total}  {pct*100:5.1f}%  ETA {self._fmt_hms(eta)}")
+            sys.stdout.write(
+                f"{self.label} [{'#'*filled}{'-'*(barw - filled)}] {self.n}/{self.total}  {pct*100:5.1f}%  ETA {self._fmt_hms(eta)}"
+            )
             sys.stdout.flush()
         else:
             # Non-tty: print once every so often
@@ -467,6 +485,7 @@ class _TextProgress:
 
 
 # -------- report analysis printer with progress --------
+
 
 def render_analysis_for_reports(paths: List[Path], verbosity: int = 1, *, show_progress: bool = True) -> str:
     """
@@ -527,10 +546,10 @@ def render_analysis_for_reports(paths: List[Path], verbosity: int = 1, *, show_p
             losers = [Path(x) for x in (g.get("losers") or [])]
             if verbosity >= 1:
                 out.append(f"  [{g.get('method', 'unknown')}] {gid}")
-            for l in losers:
+            for loser in losers:
                 total_pairs += 1
                 a = _probe_stats(keep)
-                b = _probe_stats(l)
+                b = _probe_stats(loser)
                 # If report summary didn't contain size_bytes, accumulate via probing
                 if not isinstance(data.get("summary"), dict) or "size_bytes" not in data["summary"]:
                     try:
@@ -538,7 +557,7 @@ def render_analysis_for_reports(paths: List[Path], verbosity: int = 1, *, show_p
                     except Exception:
                         pass
                 if verbosity >= 1:
-                    out.extend(f"    {line}" for line in _render_pair_diff(keep, l, a, b))
+                    out.extend(f"    {line}" for line in _render_pair_diff(keep, loser, a, b))
                 if prog:
                     prog.update(1)
         out.append("")
@@ -559,6 +578,7 @@ def render_analysis_for_reports(paths: List[Path], verbosity: int = 1, *, show_p
 # ========================
 # QoL: auto-named outputs
 # ========================
+
 
 def _q_tag(pipeline: str) -> str:
     """
@@ -591,6 +611,7 @@ def _auto_outputs(prefix: Optional[str], name: Optional[str], pipeline: str) -> 
 # =============================================
 # Per-directory recursion: DIR::dN / DIR::r / globs
 # =============================================
+
 
 def _parse_dir_spec(spec: str, default_depth: Optional[int]) -> Tuple[str, Optional[int]]:
     """
@@ -666,6 +687,7 @@ def _walk_dirs_up_to(root: Path, max_depth: Optional[int]) -> Iterable[Path]:
 
 # -------- CLI parsing --------
 
+
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p = EnforcedArgumentParser(
         description="Find and remove duplicate/similar videos & files using a staged pipeline.",
@@ -673,7 +695,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     )
     # Directories (optional argument so it can be placed anywhere in the command)
     p.add_argument(
-        "-D", "--directory",
+        "-D",
+        "--directory",
         action="append",
         dest="directories",
         help=(
@@ -685,26 +708,52 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     )
 
     # Core scan options
-    p.add_argument("-p", "--pattern", action="append", default=["*.mp4"], help="Glob to include (repeatable), e.g. -p *.mp4 -p *.mkv (default: *.mp4)")
-    p.add_argument("-X", "--exclude-pattern", action="append", help="Glob to exclude (repeatable), e.g. -X *temp*.mp4 to skip partial exports")
-    p.add_argument("-r", "--recursive", action="store_true", help="Recurse into subdirectories (unlimited) for roots without a ::dN or ::r suffix. Default: no recursion (depth 0)")
+    p.add_argument(
+        "-p",
+        "--pattern",
+        action="append",
+        default=["*.mp4"],
+        help="Glob to include (repeatable), e.g. -p *.mp4 -p *.mkv (default: *.mp4)",
+    )
+    p.add_argument(
+        "-X",
+        "--exclude-pattern",
+        action="append",
+        help="Glob to exclude (repeatable), e.g. -X *temp*.mp4 to skip partial exports",
+    )
+    p.add_argument(
+        "-r",
+        "--recursive",
+        action="store_true",
+        help="Recurse into subdirectories (unlimited) for roots without a ::dN or ::r suffix. Default: no recursion (depth 0)",
+    )
 
     # Quality levels and pipeline selection
     p.add_argument(
-        "-q", "--quality",
-        type=str, default="2",
+        "-q",
+        "--quality",
+        type=str,
+        default="2",
         help=(
             "Quality/thoroughness level or pipeline stages (default: 2): "
             "Quality levels: 1=Size only, 2=Size+hash, 3=Size+hash+metadata, 4=Size+hash+metadata+pHash, 5=All+subset detect, 6=+audio analysis, 7=+advanced content analysis. "
             "Pipeline stages: 1, 1-2, 1-3, 1-4, 1-5, 1-6, 1-7, etc. (e.g., '1-3' runs stages 1 through 3)"
-        )
+        ),
     )
 
     # Output folder (replaces individual -C, -R, -S, -N arguments)
-    p.add_argument("-o", "--output-dir", type=str,
-                   help="Directory for all outputs (cache, reports, logs). If not specified, writes to current directory.")
-    p.add_argument("-K", "--resume-output", action="store_true",
-                   help="Reuse an existing output directory by removing its .vdedup.lock (for resuming interrupted runs).")
+    p.add_argument(
+        "-o",
+        "--output-dir",
+        type=str,
+        help="Directory for all outputs (cache, reports, logs). If not specified, writes to current directory.",
+    )
+    p.add_argument(
+        "-K",
+        "--resume-output",
+        action="store_true",
+        help="Reuse an existing output directory by removing its .vdedup.lock (for resuming interrupted runs).",
+    )
 
     # Performance
     threads_default = _default_thread_count()
@@ -715,8 +764,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=threads_default,
         help=f"Worker threads (default: cores-4 -> {threads_default})",
     )
-    p.add_argument("-g", "--gpu", action="store_true",
-                   help="Use GPU acceleration for pHash extraction (requires compatible GPU)")
+    p.add_argument(
+        "-g", "--gpu", action="store_true", help="Use GPU acceleration for pHash extraction (requires compatible GPU)"
+    )
     p.add_argument(
         "-m",
         "--sample-percent",
@@ -736,32 +786,63 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("-L", "--live", action="store_true", help="Show live progress UI")
 
     # Logging options
-    p.add_argument("-l", "--log-level", type=str, default="INFO",
-                   choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-                   help="File logging level (default: INFO)")
-    p.add_argument("-c", "--console-log-level", type=str, default="INFO",
-                   choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-                   help="Console logging level (default: INFO)")
-    p.add_argument("-n", "--no-log-file", action="store_true",
-                   help="Disable file logging (console only)")
+    p.add_argument(
+        "-l",
+        "--log-level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="File logging level (default: INFO)",
+    )
+    p.add_argument(
+        "-c",
+        "--console-log-level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Console logging level (default: INFO)",
+    )
+    p.add_argument("-n", "--no-log-file", action="store_true", help="Disable file logging (console only)")
 
     # Report utilities
     p.add_argument("-P", "--print-report", action="append", help="Path to a JSON report to pretty-print (repeatable)")
-    p.add_argument("-V", "--view-report", action="append", help="Path to a JSON report to inspect interactively (repeatable)")
-    p.add_argument("-v", "--verbosity", type=int, default=1, choices=[0, 1, 2], help="Report/apply verbosity (0-2). Default: 1")
-    p.add_argument("-e", "--exclude-by-report", action="append", help="Path to a JSON report; losers listed will be skipped during scan (repeatable)")
+    p.add_argument(
+        "-V", "--view-report", action="append", help="Path to a JSON report to inspect interactively (repeatable)"
+    )
+    p.add_argument(
+        "-v", "--verbosity", type=int, default=1, choices=[0, 1, 2], help="Report/apply verbosity (0-2). Default: 1"
+    )
+    p.add_argument(
+        "-e",
+        "--exclude-by-report",
+        action="append",
+        help="Path to a JSON report; losers listed will be skipped during scan (repeatable)",
+    )
 
     # Report analysis
-    p.add_argument("-y", "--analyze-report", action="append", help="Path to a JSON report to analyze (winner<->loser diffs). Repeatable.")
+    p.add_argument(
+        "-y",
+        "--analyze-report",
+        action="append",
+        help="Path to a JSON report to analyze (winner<->loser diffs). Repeatable.",
+    )
 
     # Apply report
     p.add_argument("-a", "--apply-report", type=str, help="Read a JSON report and delete/move all listed losers")
-    p.add_argument("-b", "--backup", type=str, help="Move losers to this folder instead of deleting (apply-report mode)")
+    p.add_argument(
+        "-b", "--backup", type=str, help="Move losers to this folder instead of deleting (apply-report mode)"
+    )
+    p.add_argument(
+        "-M",
+        "--folder-priority",
+        type=str,
+        help="Move kept files into this folder tree when a duplicate in the group is already there (apply-report mode)",
+    )
     p.add_argument("-f", "--force", action="store_true", help="Do not prompt for deletion (apply-report mode)")
     p.add_argument("-d", "--dry-run", action="store_true", help="No changes; just print / write report")
 
     # Advanced options (moved to subgroup)
-    advanced = p.add_argument_group('advanced options', 'Fine-tune detection parameters')
+    advanced = p.add_argument_group("advanced options", "Fine-tune detection parameters")
     advanced.add_argument(
         "-u",
         "--duration-tolerance",
@@ -791,7 +872,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Minimum duration ratio (short/long) for subset detection – quality-aware, aligned with the ≥10% research target.",
     )
     advanced.add_argument(
-        "-A", "--include-partials",
+        "-A",
+        "--include-partials",
         action="store_true",
         default=None,
         help="Include partial/incomplete downloads (.part, .partial, .tmp, .crdownload) during scan (defaults follow mode; base is skip).",
@@ -848,7 +930,7 @@ def _quality_to_pipeline(quality: str) -> str:
         "4": "1-4",
         "5": "1-4",  # Level 5 enables subset detection via config
         "6": "1-6",  # Level 6 adds audio analysis
-        "7": "1-7"   # Level 7 adds advanced content analysis
+        "7": "1-7",  # Level 7 adds advanced content analysis
     }
 
     # If it's a known quality level, return the mapped pipeline
@@ -891,22 +973,22 @@ def _validate_args(args: argparse.Namespace) -> Optional[str]:
             return "--sample-percent must be between 0 and 100"
 
     # Validate tolerance values
-    duration_tolerance = getattr(args, 'duration_tolerance', 2.0)
+    duration_tolerance = getattr(args, "duration_tolerance", 2.0)
     if duration_tolerance < 0:
         return "Duration tolerance must be non-negative"
     if duration_tolerance > 3600:  # 1 hour seems excessive
         return "Duration tolerance seems excessive (>1 hour). Consider reducing"
 
     # Validate pHash parameters
-    phash_frames = getattr(args, 'phash_frames', 5)
+    phash_frames = getattr(args, "phash_frames", 5)
     if phash_frames <= 0:
         return "pHash frames count must be positive"
 
     if phash_frames > 50:  # Reasonable upper limit
         return "pHash frames count seems excessive (>50). Consider reducing for performance"
 
-    phash_threshold = getattr(args, 'phash_threshold', 12)
-    subset_min_ratio = getattr(args, 'subset_min_ratio', 0.10)  # Aligned with >=10% overlap threshold
+    phash_threshold = getattr(args, "phash_threshold", 12)
+    subset_min_ratio = getattr(args, "subset_min_ratio", 0.10)  # Aligned with >=10% overlap threshold
     if phash_threshold < 0:
         return "pHash threshold must be non-negative"
 
@@ -924,6 +1006,9 @@ def _validate_args(args: argparse.Namespace) -> Optional[str]:
             return f"Report file not found: {report_path}"
         if not report_path.is_file():
             return f"Report path is not a file: {report_path}"
+
+    if getattr(args, "folder_priority", None) and not args.apply_report:
+        return "--folder-priority can only be used with -a/--apply-report"
 
     if args.exclude_by_report:
         for report in args.exclude_by_report:
@@ -949,14 +1034,14 @@ def _validate_args(args: argparse.Namespace) -> Optional[str]:
                 return f"Report file not found: {report_path}"
 
     # Validate output directories can be created
-    if getattr(args, 'backup', None):
+    if getattr(args, "backup", None):
         try:
             backup_path = Path(args.backup).expanduser().resolve()
             backup_path.parent.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             return f"Cannot create backup directory: {e}"
 
-    if getattr(args, 'output_dir', None):
+    if getattr(args, "output_dir", None):
         try:
             output_path = Path(args.output_dir).expanduser().resolve()
             output_path.mkdir(parents=True, exist_ok=True)
@@ -1011,7 +1096,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(f"Error during cleanup: {e}", file=sys.stderr)
 
     signal.signal(signal.SIGINT, signal_handler)
-    if hasattr(signal, 'SIGTERM'):
+    if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, signal_handler)
 
     args = parse_args(argv)
@@ -1064,7 +1149,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not _acquire_output_lock(lock_file, resume=bool(args.resume_output), logger=logger):
         print(f"video-dedupe: error: Another vdedup instance is running in {output_dir}", file=sys.stderr)
         print(f"video-dedupe: error: Lock file: {lock_file}", file=sys.stderr)
-        print("video-dedupe: error: Use --resume-output (or delete the lock) to continue a previous run.", file=sys.stderr)
+        print(
+            "video-dedupe: error: Use --resume-output (or delete the lock) to continue a previous run.", file=sys.stderr
+        )
         return 3
 
     # APPLY REPORT mode
@@ -1072,7 +1159,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         logger.info(f"Starting APPLY REPORT mode: {args.apply_report}")
         logger.info(f"Dry run: {args.dry_run}, Force: {args.force}")
 
-        banner = _banner_text(False, dry=args.dry_run, mode="apply", threads=args.threads, gpu=False, backup=getattr(args, 'backup', None))
+        banner = _banner_text(
+            False, dry=args.dry_run, mode="apply", threads=args.threads, gpu=False, backup=getattr(args, "backup", None)
+        )
         # Simplified: always disable UI to prevent freezing issues
         reporter = ProgressReporter(enable_dash=False, refresh_rate=0.25, banner=banner, stacked_ui=None)
         active_reporter = reporter
@@ -1091,15 +1180,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if args.directories:
                 # when multiple directories are provided, compute a common base for backup layout
                 try:
-                    base_root = Path(os.path.commonpath([str(Path(d).expanduser().resolve().absolute()) for d in args.directories]))
+                    base_root = Path(
+                        os.path.commonpath([str(Path(d).expanduser().resolve().absolute()) for d in args.directories])
+                    )
                     logger.info(f"Base root for backup: {base_root}")
                 except Exception as e:
                     logger.warning(f"Could not compute base root: {e}")
                     base_root = None
 
-            backup = Path(args.backup).expanduser().resolve() if getattr(args, 'backup', None) else None
+            backup = Path(args.backup).expanduser().resolve() if getattr(args, "backup", None) else None
             if backup:
                 logger.info(f"Backup directory: {backup}")
+
+            folder_priority = (
+                Path(args.folder_priority).expanduser().resolve() if getattr(args, "folder_priority", None) else None
+            )
+            if folder_priority:
+                logger.info(f"Folder priority directory: {folder_priority}")
 
             vault = None  # Vault functionality removed
             logger.info("Starting report application...")
@@ -1111,6 +1208,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 backup=backup,
                 base_root=base_root,
                 vault=vault,
+                folder_priority=folder_priority,
                 reporter=reporter,
                 verbosity=int(args.verbosity),
                 full_file_names=False,
@@ -1134,7 +1232,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # SCAN mode
     if not args.directories:
         logger.error("No directories specified for scanning")
-        print("video-dedupe: error: the following arguments are required: one or more directories (or use -P/--print-report / -Y/--analyze-report)", file=sys.stderr)
+        print(
+            "video-dedupe: error: the following arguments are required: one or more directories (or use -P/--print-report / -Y/--analyze-report)",
+            file=sys.stderr,
+        )
         return 2
 
     logger.info(f"Starting SCAN mode for directories: {args.directories}")
@@ -1184,15 +1285,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     cfg = PipelineConfig(
         threads=max(1, int(args.threads)),
-        duration_tolerance=getattr(args, 'duration_tolerance', 2.0),
+        duration_tolerance=getattr(args, "duration_tolerance", 2.0),
         same_res=False,
         same_codec=False,
         same_container=False,
-        phash_frames=getattr(args, 'phash_frames', 5),
-        phash_threshold=getattr(args, 'phash_threshold', 12),
+        phash_frames=getattr(args, "phash_frames", 5),
+        phash_threshold=getattr(args, "phash_threshold", 12),
         subset_detect=subset_detect_enabled,
-        subset_min_ratio=getattr(args, 'subset_min_ratio', 0.10),  # Aligned with >=10% overlap threshold
-        subset_frame_threshold=max(getattr(args, 'phash_threshold', 12), 12),
+        subset_min_ratio=getattr(args, "subset_min_ratio", 0.10),  # Aligned with >=10% overlap threshold
+        subset_frame_threshold=max(getattr(args, "phash_threshold", 12), 12),
         gpu=bool(args.gpu),
         include_partials=bool(getattr(args, "include_partials", False)),
         sample_ratio=sample_ratio,
@@ -1200,9 +1301,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
 
     logger.info(f"Pipeline configuration: threads={cfg.threads}, GPU={cfg.gpu}, subset_detect={cfg.subset_detect}")
-    logger.debug(f"Advanced config: duration_tolerance={cfg.duration_tolerance}, phash_frames={cfg.phash_frames}, phash_threshold={cfg.phash_threshold}")
+    logger.debug(
+        f"Advanced config: duration_tolerance={cfg.duration_tolerance}, phash_frames={cfg.phash_frames}, phash_threshold={cfg.phash_threshold}"
+    )
 
-    banner = _banner_text(True, dry=args.dry_run, mode=f"Q{args.quality}", threads=cfg.threads, gpu=cfg.gpu, backup=getattr(args, 'backup', None))
+    banner = _banner_text(
+        True,
+        dry=args.dry_run,
+        mode=f"Q{args.quality}",
+        threads=cfg.threads,
+        gpu=cfg.gpu,
+        backup=getattr(args, "backup", None),
+    )
 
     logger.info("Creating ProgressReporter...")
     # Re-enable UI for -L flag with thread-safe design
@@ -1401,8 +1511,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print("Scan interrupted early; partial findings saved to the report above.")
 
         losers = [loser for (_keep, losers) in winners.values() for loser in losers]
-        bytes_total = sum(int(getattr(l, "size", 0)) for l in losers)
-        logger.info(f"Final results: {len(winners)} duplicate groups, {len(losers)} losers, {_fmt_bytes(bytes_total)} reclaimable")
+        bytes_total = sum(int(getattr(loser, "size", 0)) for loser in losers)
+        logger.info(
+            f"Final results: {len(winners)} duplicate groups, {len(losers)} losers, {_fmt_bytes(bytes_total)} reclaimable"
+        )
         reporter.set_results(dup_groups=len(winners), losers_count=len(losers), bytes_total=bytes_total)
         reporter.set_status("Scan complete")
 

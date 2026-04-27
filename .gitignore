@@ -211,3 +211,4 @@ logs/
 **/node_modules/*
 archived/
 pyscripts/tmp/
+bin/

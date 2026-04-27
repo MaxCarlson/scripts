@@ -1,5 +1,9 @@
 tests/media_dataset/
-.\tests\media_samples\
+tests/media_samples/
 *.mp4
 pytest.*
 reports/
+.pytest_tmp/
+tests/.pytest_tmp/
+tests/.pytest_tmp_fallback/
+tests/.pytest_tmp_runtime/

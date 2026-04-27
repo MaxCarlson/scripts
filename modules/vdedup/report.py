@@ -5,7 +5,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .models import FileMeta, VideoMeta
 from .report_models import load_report_groups
@@ -16,6 +16,7 @@ Meta = FileMeta | VideoMeta
 # ------------------------
 # Formatting / probe utils
 # ------------------------
+
 
 def _fmt_bytes(n: int) -> str:
     try:
@@ -61,6 +62,7 @@ def _probe_stats(path: Path) -> Dict[str, Any]:
     }
     try:
         from .probe import run_ffprobe_json  # lazy import
+
         js = run_ffprobe_json(path)
         if js:
             try:
@@ -120,6 +122,7 @@ def _render_pair_diff(keep: Path, lose: Path, a: Dict[str, Any], b: Dict[str, An
 # Report I/O utils
 # ----------------
 
+
 def load_report(path: Path) -> Dict[str, Any]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
@@ -154,7 +157,7 @@ def collect_exclusions(paths: List[Path]) -> set[Path]:
         try:
             d = load_report(rp)
             for g in (d.get("groups") or {}).values():
-                for p in (g.get("losers") or []):
+                for p in g.get("losers") or []:
                     ex.add(Path(p))
         except Exception:
             continue
@@ -254,15 +257,18 @@ def apply_report(
     backup: Optional[Path],
     base_root: Optional[Path] = None,
     vault: Optional[Path] = None,
+    folder_priority: Optional[Path] = None,
     reporter: Any = None,
     verbosity: int = 0,
-    full_file_names: bool = False,   # NEW: show real paths if True; otherwise compact vset… aliases
+    full_file_names: bool = False,  # NEW: show real paths if True; otherwise compact vset… aliases
 ) -> Tuple:
     """
     Apply a report:
 
       • If vault is None:
           - Delete (or backup-move) losers.
+          - If folder_priority is provided, move the keep file into the first
+            matching priority-folder duplicate's folder before processing losers.
       • If vault is provided:
           - MOVE the group's winner (keep) into the vault.
           - RECREATE a HARDLINK at the original keep path pointing to the vaulted file.
@@ -348,14 +354,15 @@ def apply_report(
             return s
         return f"\x1b[{code}m{s}\x1b[0m"
 
-    C_HDR  = "96;1"   # bright cyan bold
-    C_KEEP = "92"     # green
-    C_LOSE = "91"     # red
-    C_VAULT= "95"     # magenta
-    C_LINK = "94"     # bright blue
-    C_REPL = "93"     # yellow for REPLACE
-    C_FOLD = "36"     # cyan folder token
-    C_DIM  = "2"
+    C_HDR = "96;1"  # bright cyan bold
+    C_KEEP = "92"  # green
+    C_LOSE = "91"  # red
+    C_VAULT = "95"  # magenta
+    C_LINK = "94"  # bright blue
+    C_MOVE = "94"  # blue
+    C_REPL = "93"  # yellow for REPLACE
+    C_FOLD = "36"  # cyan folder token
+    C_DIM = "2"
 
     # Progress
     if reporter:
@@ -370,7 +377,7 @@ def apply_report(
             total_size = 0
     if total_size == 0:
         for g in groups.values():
-            for p in (g.get("losers") or []):
+            for p in g.get("losers") or []:
                 try:
                     total_size += int(Path(p).stat().st_size)
                 except Exception:
@@ -378,6 +385,7 @@ def apply_report(
 
     link_ops = 0
     losers_processed = 0
+    keeps_moved = 0
     set_sizes: List[int] = []
 
     if verbosity >= 0:
@@ -388,6 +396,8 @@ def apply_report(
             print("[DRY] No filesystem changes will be made.")
         if vault:
             print(f"Vault: {vault}")
+        if folder_priority:
+            print(f"Folder priority: {folder_priority}")
 
     if not groups:
         return (0, 0)
@@ -401,6 +411,56 @@ def apply_report(
         vault = vault.expanduser().resolve()
         if not dry_run:
             vault.mkdir(parents=True, exist_ok=True)
+
+    if folder_priority:
+        folder_priority = folder_priority.expanduser().resolve()
+
+    def _resolved(path: Path) -> Path:
+        try:
+            return path.resolve()
+        except Exception:
+            return path.absolute()
+
+    def _is_relative_to(path: Path, root: Path) -> bool:
+        try:
+            _resolved(path).relative_to(_resolved(root))
+            return True
+        except ValueError:
+            return False
+        except Exception:
+            return False
+
+    def _choose_folder_priority_dest(priority_root: Path, keep_path: Path, group_losers: List[Path]) -> Optional[Path]:
+        if _is_relative_to(keep_path, priority_root):
+            return None
+        for loser_path in group_losers:
+            if _is_relative_to(loser_path, priority_root):
+                return loser_path.parent.joinpath(keep_path.name)
+        return None
+
+    def _dedupe_dest(dest: Path, source: Path) -> Path:
+        try:
+            if _resolved(dest) == _resolved(source):
+                return dest
+        except Exception:
+            pass
+        if not dest.exists():
+            return dest
+        i = 1
+        while True:
+            cand = dest.with_name(f"{dest.stem}.{i}{dest.suffix}")
+            if not cand.exists():
+                return cand
+            i += 1
+
+    def _same_path(left: Path, right: Path) -> bool:
+        return _resolved(left) == _resolved(right)
+
+    def _find_matching_loser(path: Path, group_losers: List[Path]) -> Optional[Path]:
+        for loser_path in group_losers:
+            if _same_path(path, loser_path):
+                return loser_path
+        return None
 
     def _choose_vault_dest(vroot: Path, keep_path: Path, evidence: Optional[Dict[str, Any]]) -> Path:
         dest = vroot.joinpath(keep_path.name)
@@ -429,10 +489,11 @@ def apply_report(
 
         # Resolve display-relative strings
         rel_keep = rel(keep) if keep else ""
-        rel_losers = [rel(l) for l in losers]
+        rel_losers = [rel(loser) for loser in losers]
         gbase = _group_base([s for s in [rel_keep, *rel_losers] if s])
+
         def _trim(s: str) -> str:
-            return s[len(gbase):] if gbase and s.startswith(gbase) else s
+            return s[len(gbase) :] if gbase and s.startswith(gbase) else s
 
         # numbering + alias names (only for compact mode)
         set_num = _set_number(method, gid, idx)
@@ -468,13 +529,15 @@ def apply_report(
         # Detailed diffs (V2) — these are meaningful only with real paths
         if verbosity >= 2 and keep:
             astats = _probe_stats(keep)
-            for l, rl in zip(losers, rel_losers):
-                bstats = _probe_stats(l)
+            for loser, rl in zip(losers, rel_losers):
+                bstats = _probe_stats(loser)
                 for line in _render_pair_diff(Path(_trim(rel_keep)), Path(_trim(rl)), astats, bstats):
                     print(f"    {line}")
 
         # Vault planning
         planned_vault_dest: Optional[Path] = None
+        planned_priority_dest: Optional[Path] = None
+        blocking_priority_loser: Optional[Path] = None
         if vault and keep:
             planned_vault_dest = _choose_vault_dest(vault, keep, evidence)
             if verbosity >= 1:
@@ -484,19 +547,35 @@ def apply_report(
                     print(f"  Vault : {_c('MOVE', C_VAULT)} -> {vault_short}")
                 print(f"  Links : {1 + len(losers)} path(s) will point to the vaulted file")
         else:
+            if folder_priority and keep:
+                raw_priority_dest = _choose_folder_priority_dest(folder_priority, keep, losers)
+                if raw_priority_dest:
+                    blocking_priority_loser = _find_matching_loser(raw_priority_dest, losers)
+                    planned_priority_dest = (
+                        raw_priority_dest if blocking_priority_loser else _dedupe_dest(raw_priority_dest, keep)
+                    )
             if verbosity >= 1:
-                print("  Action: delete losers" + (" (backup move)" if backup else ""))
+                if planned_priority_dest:
+                    action = "move keep to folder priority; "
+                else:
+                    action = ""
+                action += "delete losers" + (" (backup move)" if backup else "")
+                print(f"  Action: {action}")
 
         # Execute (or dry-run)
         if dry_run:
             if vault and planned_vault_dest and keep:
                 if full_file_names:
                     print(f"    {_c('[DRY] MOVE', C_VAULT)} {_trim(rel_keep)} -> {rel(planned_vault_dest)}")
-                    print(f"    {_c('[DRY] RECREATE HARDLINK', C_LINK)} at {_trim(rel_keep)} -> {rel(planned_vault_dest).rsplit('/',1)[0]}")
+                    print(
+                        f"    {_c('[DRY] RECREATE HARDLINK', C_LINK)} at {_trim(rel_keep)} -> {rel(planned_vault_dest).rsplit('/',1)[0]}"
+                    )
                     print(f"        {_c('WITH HARDLINK', C_LINK)} -> {planned_vault_dest.name}")
                 else:
                     print(f"    {_c('[DRY] MOVE', C_VAULT)} {_fold_colored(_trim(rel_keep))} -> {vault_short}")
-                    print(f"    {_c('[DRY] RECREATE HARDLINK', C_LINK)} at {_fold_colored(_trim(rel_keep))} -> {vault.name}")
+                    print(
+                        f"    {_c('[DRY] RECREATE HARDLINK', C_LINK)} at {_fold_colored(_trim(rel_keep))} -> {vault.name}"
+                    )
                     print(f"        {_c('WITH HARDLINK', C_LINK)} -> {keep_alias}")
                 for rl, la in zip(rel_losers, loser_aliases):
                     if full_file_names:
@@ -507,12 +586,36 @@ def apply_report(
                         print(f"        {_c('WITH HARDLINK', C_LINK)} -> {keep_alias}")
                 link_ops += 1 + len(losers)
             else:
-                for rl, la in zip(rel_losers, loser_aliases):
+                dry_losers = list(zip(rel_losers, loser_aliases, losers))
+                if blocking_priority_loser:
+                    for rl, la, loser in dry_losers:
+                        if _same_path(loser, blocking_priority_loser):
+                            if backup:
+                                if full_file_names:
+                                    print(f"    {_c('[DRY] BACKUP MOVE', C_DIM)} {_trim(rl)} -> {backup}")
+                                else:
+                                    print(
+                                        f"    {_c('[DRY] BACKUP MOVE', C_DIM)} {_fold_colored_loser(_trim(rl), la)} -> {backup}"
+                                    )
+                            else:
+                                if full_file_names:
+                                    print(f"    {_c('[DRY] DELETE', C_LOSE)} {_trim(rl)}")
+                                else:
+                                    print(f"    {_c('[DRY] DELETE', C_LOSE)} {_fold_colored_loser(_trim(rl), la)}")
+                            break
+                if planned_priority_dest and keep:
+                    print(f"    {_c('[DRY] MOVING TO', C_MOVE)} {_trim(rel_keep)} -> {rel(planned_priority_dest)}")
+                    keeps_moved += 1
+                for rl, la, loser in dry_losers:
+                    if blocking_priority_loser and _same_path(loser, blocking_priority_loser):
+                        continue
                     if backup:
                         if full_file_names:
                             print(f"    {_c('[DRY] BACKUP MOVE', C_DIM)} {_trim(rl)} -> {backup}")
                         else:
-                            print(f"    {_c('[DRY] BACKUP MOVE', C_DIM)} {_fold_colored_loser(_trim(rl), la)} -> {backup}")
+                            print(
+                                f"    {_c('[DRY] BACKUP MOVE', C_DIM)} {_fold_colored_loser(_trim(rl), la)} -> {backup}"
+                            )
                     else:
                         if full_file_names:
                             print(f"    {_c('[DRY] DELETE', C_LOSE)} {_trim(rl)}")
@@ -531,33 +634,64 @@ def apply_report(
                         pass
                     os.link(str(planned_vault_dest), str(keep))
                     link_ops += 1
-                    for l in losers:
+                    for loser in losers:
                         try:
                             if backup:
-                                ensure_backup_move(l, backup, base_root or Path("/"))
+                                ensure_backup_move(loser, backup, base_root or Path("/"))
                             else:
-                                l.unlink(missing_ok=True)
+                                loser.unlink(missing_ok=True)
                         except Exception:
                             pass
                         try:
-                            os.link(str(planned_vault_dest), str(l))
+                            os.link(str(planned_vault_dest), str(loser))
                             link_ops += 1
                         except Exception as e:
-                            print(f"    WARN: failed to hardlink {rel(l)}: {e}")
+                            print(f"    WARN: failed to hardlink {rel(loser)}: {e}")
                     losers_processed += len(losers)
                 else:
-                    for l in losers:
+                    priority_loser_processed = False
+                    if blocking_priority_loser:
                         if backup:
                             try:
-                                ensure_backup_move(l, backup, base_root or Path("/"))
+                                ensure_backup_move(blocking_priority_loser, backup, base_root or Path("/"))
+                                priority_loser_processed = True
                             except Exception as e:
-                                print(f"    WARN: backup move failed for {rel(l)}: {e}")
+                                print(f"    WARN: backup move failed for {rel(blocking_priority_loser)}: {e}")
+                        else:
+                            try:
+                                blocking_priority_loser.unlink(missing_ok=True)
+                                priority_loser_processed = True
+                            except Exception as e:
+                                print(f"    WARN: delete failed for {rel(blocking_priority_loser)}: {e}")
+                        if priority_loser_processed:
+                            losers_processed += 1
+                    can_move_priority = (
+                        planned_priority_dest and keep and (not blocking_priority_loser or priority_loser_processed)
+                    )
+                    if can_move_priority:
+                        planned_priority_dest.parent.mkdir(parents=True, exist_ok=True)
+                        if verbosity >= 1:
+                            print(f"    {_c('MOVING TO', C_MOVE)} {_trim(rel_keep)} -> {rel(planned_priority_dest)}")
+                        shutil.move(str(keep), str(planned_priority_dest))
+                        keeps_moved += 1
+                    for loser in losers:
+                        if (
+                            blocking_priority_loser
+                            and priority_loser_processed
+                            and _same_path(loser, blocking_priority_loser)
+                        ):
+                            continue
+                        if backup:
+                            try:
+                                ensure_backup_move(loser, backup, base_root or Path("/"))
+                            except Exception as e:
+                                print(f"    WARN: backup move failed for {rel(loser)}: {e}")
                                 continue
                         else:
                             try:
-                                l.unlink(missing_ok=True)
+                                loser.unlink(missing_ok=True)
                             except Exception as e:
-                                print(f"    WARN: delete failed for {rel(l)}: {e}")
+                                print(f"    WARN: delete failed for {rel(loser)}: {e}")
                                 continue
                         losers_processed += 1
             except Exception as e:
@@ -567,7 +701,10 @@ def apply_report(
             # terse 1-liner per group
             keep_name = (_trim(rel_keep) if full_file_names else keep_alias) if keep else "(missing)"
             links = (1 + len(losers)) if vault else 0
-            print(f"[{_friendly_gid(method, gid)}] keep: {keep_name}  <- {len(losers)} losers; +{links} links")
+            move_note = f"; move -> {rel(planned_priority_dest)}" if planned_priority_dest else ""
+            print(
+                f"[{_friendly_gid(method, gid)}] keep: {keep_name}{move_note}  <- {len(losers)} losers; +{links} links"
+            )
 
         if reporter:
             reporter.inc_hashed(1, cache_hit=False)
@@ -578,13 +715,14 @@ def apply_report(
         print(_c("Apply summary:", C_HDR))
         print(f"  groups            : {len(groups)}")
         print(f"  losers processed  : {losers_processed}")
+        print(f"  keeps moved       : {keeps_moved}" + (" (dry-run planned)" if dry_run and keeps_moved else ""))
         if vault:
             print(f"  hardlinks created : {link_ops}" + (" (dry-run planned)" if dry_run else ""))
         print(f"  space reclaimable : { _fmt_bytes(total_size) }")
         if set_sizes:
             s = sorted(set_sizes)
             n = len(s)
-            median = s[n//2] if n % 2 == 1 else (s[n//2 - 1] + s[n//2]) / 2
+            median = s[n // 2] if n % 2 == 1 else (s[n // 2 - 1] + s[n // 2]) / 2
             avg = sum(s) / n
             print(f"  set size (min/median/avg/max): {s[0]} / {median:.2f} / {avg:.2f} / {s[-1]}")
 
@@ -613,9 +751,12 @@ def collapse_report_file(in_path: Path, out_path: Optional[Path] = None, reporte
 
     # Build adjacency
     adj: Dict[str, set[str]] = {}
+
     def _add_edge(a: str, b: str):
-        if a not in adj: adj[a] = set()
-        if b not in adj: adj[b] = set()
+        if a not in adj:
+            adj[a] = set()
+        if b not in adj:
+            adj[b] = set()
         adj[a].add(b)
         adj[b].add(a)
 

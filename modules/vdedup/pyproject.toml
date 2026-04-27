@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vdedup"
-version = "0.10.1"
+version = "0.11.0"
 description = "Video & file deduplication toolkit with staged pipeline (size → partial+BLAKE3 → SHA-256 → metadata → pHash/subset), resumable cache, and responsive TUI."
 readme = { text = "See repository for usage. Requires ffmpeg/ffprobe on PATH.", content-type = "text/plain" }
 requires-python = ">=3.9"
@@ -53,4 +53,4 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 # Exclude manual/interactive UI test scripts (renamed with manual_ prefix)
 addopts = "--ignore=manual_test_*.py --basetemp=.pytest_tmp"
-cache_dir = ".pytest_tmp/.pytest_cache"
+cache_dir = "tests/.pytest_tmp_runtime/.pytest_cache"
