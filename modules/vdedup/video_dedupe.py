@@ -1454,6 +1454,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     base_name = f"vdedup-q{args.quality}"
     cache_path = output_dir / f"{base_name}-cache.jsonl"
+    gpu_signature_cache_path = output_dir / f"{base_name}-gpu-signatures.jsonl"
     report_path = output_dir / f"{base_name}-report.json"
 
     quality_level = _infer_quality_level(args.quality)
@@ -1477,6 +1478,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         gpu=False,          # resolved from gpu_mode by run_pipeline capability detection
         gpu_mode=args.gpu,
         gpu_device_id=getattr(args, "gpu_device_id", 0),
+        gpu_signature_cache_path=gpu_signature_cache_path,
         include_partials=bool(args.include_partials),
         sample_ratio=sample_ratio,
         sample_seed=args.sample_seed,

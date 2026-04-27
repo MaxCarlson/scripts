@@ -74,6 +74,17 @@ class PipelineConfig:
     gpu: bool = False
     gpu_mode: str = "auto"   # "auto" | "on" | "off" — controls capability detection
     gpu_device_id: int = 0
+    gpu_signature_cache_path: Optional[Path] = None
+    gpu_q4_signature_profile: str = "balanced"
+    gpu_q4_hash_field: str = "phash64"
+    gpu_q4_max_hamming_distance: int = 8
+    gpu_q4_weak_hamming_distance: int = 12
+    gpu_q4_min_valid_frames: int = 8
+    gpu_q4_min_band_votes: int = 3
+    gpu_q4_full_duplicate_coverage: float = 0.90
+    gpu_q4_full_duplicate_score: float = 0.88
+    gpu_q4_candidate_score: float = 0.45
+    gpu_q4_min_candidate_matches: int = 4
     # artifact handling
     include_partials: bool = False
     # sampling
@@ -729,10 +740,11 @@ def run_pipeline(
 
     skip_norm: Set[Path] = {p.expanduser().resolve() for p in skip_paths} if skip_paths else set()
     logger.info(f"Exclusions: {len(skip_norm)} paths")
+    gpu_caps = None
 
     # ── GPU capability detection ─────────────────────────────────────────────
-    # Detect and log GPU availability before any stage runs. The GPU route is not
-    # yet implemented for Q4+; this lays the foundation for future GPU stages.
+    # Detect and log GPU availability before any stage runs. Q4G uses this route
+    # when it is available; CPU Q4 remains the fallback path.
     if any(s >= 4 for s in selected_stages):
         try:
             from vdedup.gpu_capabilities import detect_gpu_capabilities  # lazy, CPU-safe
@@ -740,6 +752,7 @@ def run_pipeline(
                 getattr(cfg, "gpu_mode", "auto"),
                 getattr(cfg, "gpu_device_id", 0),
             )
+            gpu_caps = caps
             if caps.route_enabled:
                 vram_gib = (caps.total_vram_bytes or 0) / (1024 ** 3)
                 reporter.set_gpu_status(
@@ -752,11 +765,11 @@ def run_pipeline(
                 )
                 logger.info(
                     "GPU capability detected: %s, %.1f GiB VRAM (compute %s). "
-                    "GPU Q4+ route is available but not yet active in this build; using CPU path.",
+                    "GPU Q4G route is available.",
                     caps.device_name, vram_gib, caps.compute_capability,
                 )
                 reporter.add_log(
-                    f"GPU: {caps.device_name} ({vram_gib:.1f} GiB) detected — CPU Q4+ path active for now.",
+                    f"GPU: {caps.device_name} ({vram_gib:.1f} GiB) detected — Q4G route available.",
                     level="INFO", source="gpu",
                 )
                 # Set cfg.gpu so existing phash/scene/timeline helpers can use the flag
@@ -1612,276 +1625,382 @@ def run_pipeline(
     # ----------------------------------------------------------
     _sync_runtime_stages()
     if 4 in selected_stages and video_for_q4:
-        # Lazy import phash helpers here (avoid import-time errors in minimal env/tests)
-        try:
-            from vdedup.phash import compute_phash_signature, phash_distance  # type: ignore
-        except Exception:
-            compute_phash_signature = None  # type: ignore
-            phash_distance = None  # type: ignore
+        q4g_completed = False
+        if getattr(cfg, "gpu_mode", "auto") != "off" and gpu_caps is not None and getattr(gpu_caps, "route_enabled", False):
+            try:
+                from vdedup.gpu_q4 import run_q4g  # lazy, CPU-safe until the GPU route is selected
+                from vdedup.gpu_signature_cache import GpuSignatureCache
 
-        formed_phash = 0
-        duplicate_members = 0
-        all_phashed_for_subset: List[VideoMeta] = []  # accumulated across both passes for subset detection
-
-        def _do_phash(vm: VideoMeta) -> VideoMeta:
-            reporter.wait_if_paused()
-            if reporter.should_quit():
-                return vm
-            sig = compute_phash_signature(vm.path, frames=cfg.phash_frames, gpu=cfg.gpu)
-            if sig:
-                vm = VideoMeta(
-                    path=vm.path,
-                    size=vm.size,
-                    mtime=vm.mtime,
-                    duration=vm.duration,
-                    width=vm.width,
-                    height=vm.height,
-                    container=vm.container,
-                    vcodec=vm.vcodec,
-                    acodec=vm.acodec,
-                    overall_bitrate=vm.overall_bitrate,
-                    video_bitrate=vm.video_bitrate,
-                    phash_signature=tuple(int(x) for x in sig),
+                reporter.set_status("Q4G visual signature extraction")
+                reporter.start_stage("Q4 pHash", total=len(video_for_q4))
+                reporter.set_hash_total(len(video_for_q4))
+                reporter.set_gpu_status(
+                    available=True,
+                    active=True,
+                    name=getattr(gpu_caps, "device_name", None),
+                    free_vram_bytes=getattr(gpu_caps, "free_vram_bytes", None),
+                    total_vram_bytes=getattr(gpu_caps, "total_vram_bytes", None),
+                    device_id=getattr(cfg, "gpu_device_id", 0),
                 )
-            reporter.inc_hashed(1, cache_hit=False)
-            return vm
+                signature_cache = GpuSignatureCache(getattr(cfg, "gpu_signature_cache_path", None))
+                q4g_result = run_q4g(
+                    video_for_q4,
+                    config=cfg,
+                    q3_candidate_groups=q3_candidate_groups,
+                    signature_cache=signature_cache,
+                    reporter=reporter,
+                )
+                by_path = {_normalized_path(vm.path): vm for vm in video_for_q4}
 
-        # ---- Pass 1: Verify Q3 candidate groups via pHash ----
-        if q3_candidate_groups and compute_phash_signature and phash_distance:
-            # Collect all unique candidate members across all Q3 groups
-            cand_by_path: Dict[Path, VideoMeta] = {}
-            for cand_members in q3_candidate_groups.values():
-                for vm in cand_members:
-                    p = _normalized_path(vm.path)
-                    if p not in cand_by_path:
-                        cand_by_path[p] = vm
-
-            reporter.set_status("Q4 verifying Q3 metadata candidates")
-            phashed_cand_map: Dict[Path, VideoMeta] = {}
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(cfg.threads))) as ex:
-                for vm in ex.map(_do_phash, cand_by_path.values()):
-                    if vm.phash_signature:
-                        phashed_cand_map[_normalized_path(vm.path)] = vm
-                        all_phashed_for_subset.append(vm)
-
-            gid_p1 = 0
-            for cand_gid, cand_members in q3_candidate_groups.items():
-                phashed_group = [
-                    phashed_cand_map[_normalized_path(vm.path)]
-                    for vm in cand_members
-                    if _normalized_path(vm.path) in phashed_cand_map
-                ]
-                # Within-group all-pairs pHash comparison
-                verified: List[VideoMeta] = []
-                used_inner: set = set()
-                for i, a in enumerate(phashed_group):
-                    if i in used_inner or not a.phash_signature:
+                for group_id, paths in q4g_result.duplicate_groups.items():
+                    members = [by_path[_normalized_path(path)] for path in paths if _normalized_path(path) in by_path]
+                    if len(members) < 2:
                         continue
-                    grp = [a]
-                    for j in range(i + 1, len(phashed_group)):
-                        if j in used_inner:
-                            continue
-                        b = phashed_group[j]
-                        if not b.phash_signature:
-                            continue
-                        L = min(len(a.phash_signature), len(b.phash_signature))
-                        if L >= 2:
-                            dist = phash_distance(a.phash_signature[:L], b.phash_signature[:L])  # type: ignore[misc]
-                            if dist <= cfg.phash_threshold * L:
-                                grp.append(b)
-                                used_inner.add(j)
-                    if len(grp) > 1:
-                        verified.extend(grp)
-                        used_inner.add(i)
-
-                if len(verified) > 1:
-                    # Q4 confirmed the Q3 candidate — emit as a verified group
-                    groups[cand_gid] = verified
-                    m = groups.metadata.get(cand_gid, {})
-                    m.update({"confidence": "verified", "review_required": False, "verified_by": "phash"})
-                    groups.metadata[cand_gid] = m
-                    _annotate_group(groups, cand_gid)  # sets match_type=perceptual_duplicate, actionable=True
-                    for vm in verified:
+                    groups[group_id] = members
+                    groups.metadata[group_id] = dict(q4g_result.group_metadata.get(group_id, {}))
+                    for vm in members:
                         excluded_after_q4.add(_normalized_path(vm.path))
-                    formed_phash += 1
-                    duplicate_members += len(verified) - 1
-                    gid_p1 += 1
-                else:
-                    # Q4 rejected — remove from excluded_after_q3 so Q5/Q6/Q7 can see these videos
+
+                for candidate_id, paths in q4g_result.candidate_groups.items():
+                    members = [by_path[_normalized_path(path)] for path in paths if _normalized_path(path) in by_path]
+                    if len(members) < 2:
+                        continue
+                    groups.candidate_groups[candidate_id] = members
+                    groups.candidate_metadata[candidate_id] = dict(q4g_result.candidate_metadata.get(candidate_id, {}))
+
+                for cand_members in q3_candidate_groups.values():
                     for vm in cand_members:
                         excluded_after_q3.discard(_normalized_path(vm.path))
-                    groups.metadata.pop(cand_gid, None)
 
+                formed_gpu = len(q4g_result.duplicate_groups)
+                duplicate_members = sum(max(0, len(paths) - 1) for paths in q4g_result.duplicate_groups.values())
+                if formed_gpu:
+                    reporter.inc_group("phash", formed_gpu)
+                if duplicate_members:
+                    reporter.add_duplicate_files(duplicate_members)
+                if q4g_result.extraction_failures:
+                    reporter.add_log(
+                        f"Q4G: {len(q4g_result.extraction_failures):,} video(s) could not be decoded and were skipped",
+                        level="WARNING",
+                        source="gpu",
+                    )
+                reporter.update_stage_metrics(
+                    "Q4 pHash",
+                    backend="q4g",
+                    signatures=f"{q4g_result.signature_count:,}",
+                    cache_hits=f"{q4g_result.cache_hits:,}",
+                    cache_misses=f"{q4g_result.cache_misses:,}",
+                    groups=f"{formed_gpu:,}",
+                    candidates=f"{len(q4g_result.candidate_groups):,}",
+                    rejected=f"{len(q4g_result.rejected_pairs):,}",
+                )
+                reporter.finish_stage("Q4 pHash")
+                reporter.flush()
+                q4g_completed = True
+                reporter.set_gpu_status(
+                    available=True,
+                    active=False,
+                    name=getattr(gpu_caps, "device_name", None),
+                    free_vram_bytes=getattr(gpu_caps, "free_vram_bytes", None),
+                    total_vram_bytes=getattr(gpu_caps, "total_vram_bytes", None),
+                    device_id=getattr(cfg, "gpu_device_id", 0),
+                )
                 if _max_duplicates_reached():
-                    break
-
-            if gid_p1:
-                reporter.add_log(
-                    f"Q4 Pass 1: verified {gid_p1} of {len(q3_candidate_groups)} Q3 candidate group(s)",
-                    level="INFO",
-                    source="phash",
+                    reporter.add_log(
+                        f"Stopping after {_duplicate_count():,} duplicate file(s) due to --max-duplicates",
+                        source="limit",
+                    )
+                    return groups
+            except Exception as exc:
+                reporter.set_gpu_status(
+                    available=True,
+                    active=False,
+                    name=getattr(gpu_caps, "device_name", None),
+                    free_vram_bytes=getattr(gpu_caps, "free_vram_bytes", None),
+                    total_vram_bytes=getattr(gpu_caps, "total_vram_bytes", None),
+                    device_id=getattr(cfg, "gpu_device_id", 0),
                 )
-            rejected_count = len(q3_candidate_groups) - gid_p1
-            if rejected_count:
+                if getattr(cfg, "gpu_mode", "auto") == "on":
+                    raise RuntimeError(f"--gpu on: Q4G failed — {exc}") from exc
                 reporter.add_log(
-                    f"Q4 Pass 1: rejected {rejected_count} Q3 candidate group(s) (no visual match) — "
-                    "those videos are now available for Q5/Q6/Q7",
-                    level="INFO",
-                    source="phash",
+                    f"Q4G failed ({exc}); falling back to CPU Q4 pHash.",
+                    level="WARNING",
+                    source="gpu",
                 )
 
-        # ---- Pass 2: All-pairs pHash on remaining (non-Q3-candidate) videos ----
-        # Includes: videos not in any Q3 group, and videos whose Q3 group was just rejected (re-entered pool)
-        remaining_for_q4 = [
-            v for v in video_for_q4
-            if _normalized_path(v.path) not in excluded_after_q3
-            and _normalized_path(v.path) not in excluded_after_q4
-        ]
+        if q4g_completed:
+            pass
+        else:
+        # Lazy import phash helpers here (avoid import-time errors in minimal env/tests)
+            try:
+                from vdedup.phash import compute_phash_signature, phash_distance  # type: ignore
+            except Exception:
+                compute_phash_signature = None  # type: ignore
+                phash_distance = None  # type: ignore
 
-        if compute_phash_signature and phash_distance and remaining_for_q4:
-            reporter.set_status("Q4 visual similarity analysis")
-            reporter.start_stage("Q4 pHash", total=len(remaining_for_q4))
-            reporter.set_hash_total(len(remaining_for_q4))
+            formed_phash = 0
+            duplicate_members = 0
+            all_phashed_for_subset: List[VideoMeta] = []  # accumulated across both passes for subset detection
 
-            phashed: List[VideoMeta] = []
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(cfg.threads))) as ex:
-                for vm in ex.map(_do_phash, remaining_for_q4):
-                    phashed.append(vm)
-                    if vm.phash_signature:
-                        all_phashed_for_subset.append(vm)
+            def _do_phash(vm: VideoMeta) -> VideoMeta:
+                reporter.wait_if_paused()
+                if reporter.should_quit():
+                    return vm
+                sig = compute_phash_signature(vm.path, frames=cfg.phash_frames, gpu=cfg.gpu)
+                if sig:
+                    vm = VideoMeta(
+                        path=vm.path,
+                        size=vm.size,
+                        mtime=vm.mtime,
+                        duration=vm.duration,
+                        width=vm.width,
+                        height=vm.height,
+                        container=vm.container,
+                        vcodec=vm.vcodec,
+                        acodec=vm.acodec,
+                        overall_bitrate=vm.overall_bitrate,
+                        video_bitrate=vm.video_bitrate,
+                        phash_signature=tuple(int(x) for x in sig),
+                    )
+                reporter.inc_hashed(1, cache_hit=False)
+                return vm
 
-            # All-pairs pHash grouping
-            if phashed:
-                used = set()
-                gid = 0
-                for i, a in enumerate(phashed):
-                    if not a.phash_signature:
-                        continue
-                    if i in used:
-                        continue
-                    grp = [a]
-                    used.add(i)
-                    for j in range(i + 1, len(phashed)):
-                        if j in used:
+            # ---- Pass 1: Verify Q3 candidate groups via pHash ----
+            if q3_candidate_groups and compute_phash_signature and phash_distance:
+                # Collect all unique candidate members across all Q3 groups
+                cand_by_path: Dict[Path, VideoMeta] = {}
+                for cand_members in q3_candidate_groups.values():
+                    for vm in cand_members:
+                        p = _normalized_path(vm.path)
+                        if p not in cand_by_path:
+                            cand_by_path[p] = vm
+
+                reporter.set_status("Q4 verifying Q3 metadata candidates")
+                phashed_cand_map: Dict[Path, VideoMeta] = {}
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(cfg.threads))) as ex:
+                    for vm in ex.map(_do_phash, cand_by_path.values()):
+                        if vm.phash_signature:
+                            phashed_cand_map[_normalized_path(vm.path)] = vm
+                            all_phashed_for_subset.append(vm)
+
+                gid_p1 = 0
+                for cand_gid, cand_members in q3_candidate_groups.items():
+                    phashed_group = [
+                        phashed_cand_map[_normalized_path(vm.path)]
+                        for vm in cand_members
+                        if _normalized_path(vm.path) in phashed_cand_map
+                    ]
+                    # Within-group all-pairs pHash comparison
+                    verified: List[VideoMeta] = []
+                    used_inner: set = set()
+                    for i, a in enumerate(phashed_group):
+                        if i in used_inner or not a.phash_signature:
                             continue
-                        b = phashed[j]
-                        if not b.phash_signature:
-                            continue
-                        L = min(len(a.phash_signature), len(b.phash_signature))
-                        if L < 2:
-                            continue
-                        dist = phash_distance(a.phash_signature[:L], b.phash_signature[:L])  # type: ignore[misc]
-                        if dist <= cfg.phash_threshold * L:
-                            grp.append(b)
-                            used.add(j)
-                    if len(grp) > 1:
-                        phash_gid = f"phash:{gid}"
-                        groups[phash_gid] = grp
-                        _annotate_group(groups, phash_gid)
-                        for vm in grp:
-                            excluded_after_q4.add(_normalized_path(vm.path))
-                        gid += 1
-                        formed_phash += 1
-                        duplicate_members += len(grp) - 1
-                        if _max_duplicates_reached():
-                            break
-
-        # Use all_phashed_for_subset (from both passes) for subset detection below
-        phashed = all_phashed_for_subset  # type: ignore[assignment]
-
-        if formed_phash:
-            reporter.inc_group("phash", formed_phash)
-        reporter.update_stage_metrics(
-            "Q4 pHash",
-            signatures=f"{len(all_phashed_for_subset):,}",
-            groups=f"{formed_phash:,}",
-        )
-        reporter.flush()
-
-        if not (compute_phash_signature and phash_distance) and not remaining_for_q4 and not q3_candidate_groups:
-            reporter.set_status("Q4 skipped (no analyzable videos)")
-            reporter.mark_stage_skipped("Q4 pHash")
-
-        # Enhanced subset detection with cross-resolution support
-        formed_subset = 0  # Initialize before conditional block
-        if cfg.subset_detect and phashed:
-            gid = 0
-            vids_sorted = sorted([v for v in phashed if v.duration], key=lambda v: v.duration or 0.0)
-
-            # Group videos by resolution for more targeted comparisons
-            by_resolution = {}
-            for v in vids_sorted:
-                res_key = (v.width or 0, v.height or 0)
-                if res_key not in by_resolution:
-                    by_resolution[res_key] = []
-                by_resolution[res_key].append(v)
-
-            # Compare within and across resolution groups
-            all_pairs = []
-            for res1, vids1 in by_resolution.items():
-                for res2, vids2 in by_resolution.items():
-                    # Allow cross-resolution comparison with adjusted ratio thresholds
-                    res_factor = 1.0
-                    if res1 != res2 and res1[0] > 0 and res2[0] > 0:
-                        # Adjust threshold for different resolutions
-                        area1, area2 = res1[0] * res1[1], res2[0] * res2[1]
-                        res_factor = min(2.0, max(0.5, area2 / area1)) if area1 > 0 else 1.0
-
-                    for v1 in vids1:
-                        for v2 in vids2:
-                            if v1.path == v2.path:
+                        grp = [a]
+                        for j in range(i + 1, len(phashed_group)):
+                            if j in used_inner:
                                 continue
-                            if v1.duration and v2.duration and v1.duration < v2.duration:
-                                all_pairs.append((v1, v2, res_factor))
+                            b = phashed_group[j]
+                            if not b.phash_signature:
+                                continue
+                            L = min(len(a.phash_signature), len(b.phash_signature))
+                            if L >= 2:
+                                dist = phash_distance(a.phash_signature[:L], b.phash_signature[:L])  # type: ignore[misc]
+                                if dist <= cfg.phash_threshold * L:
+                                    grp.append(b)
+                                    used_inner.add(j)
+                        if len(grp) > 1:
+                            verified.extend(grp)
+                            used_inner.add(i)
 
-            # Process all potential subset pairs
-            subset_consumed: Set[Path] = set()
-            for short, long, res_factor in all_pairs:
-                short_norm = _normalized_path(short.path)
-                if short_norm in subset_consumed:
-                    continue
+                    if len(verified) > 1:
+                        # Q4 confirmed the Q3 candidate — emit as a verified group
+                        groups[cand_gid] = verified
+                        m = groups.metadata.get(cand_gid, {})
+                        m.update({"confidence": "verified", "review_required": False, "verified_by": "phash"})
+                        groups.metadata[cand_gid] = m
+                        _annotate_group(groups, cand_gid)  # sets match_type=perceptual_duplicate, actionable=True
+                        for vm in verified:
+                            excluded_after_q4.add(_normalized_path(vm.path))
+                        formed_phash += 1
+                        duplicate_members += len(verified) - 1
+                        gid_p1 += 1
+                    else:
+                        # Q4 rejected — remove from excluded_after_q3 so Q5/Q6/Q7 can see these videos
+                        for vm in cand_members:
+                            excluded_after_q3.discard(_normalized_path(vm.path))
+                        groups.metadata.pop(cand_gid, None)
 
-                if not short.duration or not long.duration:
-                    continue
-
-                ratio = short.duration / long.duration
-                adjusted_min_ratio = cfg.subset_min_ratio / res_factor
-
-                if ratio < adjusted_min_ratio or ratio > 0.95:  # Skip if too similar (likely same content)
-                    continue
-
-                # Use enhanced alignable distance with resolution awareness
-                match = _alignable_distance(short.phash_signature, long.phash_signature, cfg.subset_frame_threshold)
-                if match is not None:
-                    master, loser = _subset_master_loser(short, long)
-                    group_id = f"subset:{gid}"
-                    groups[group_id] = [master, loser]
-                    _record_subset_metadata(groups, group_id, "subset-phash", short, long, match, reporter=reporter)
-                    _annotate_group(groups, group_id)
-                    subset_consumed.add(short_norm)
-                    excluded_after_q4.add(_normalized_path(short.path))
-                    gid += 1
-                    formed_subset += 1
-                    duplicate_members += 1
                     if _max_duplicates_reached():
                         break
 
-        if formed_subset:
-            reporter.inc_group("subset", formed_subset)
-            reporter.flush()
-        if duplicate_members:
-            reporter.add_duplicate_files(duplicate_members)
-        reporter.update_stage_metrics(
-            "Q4 pHash",
-            subset_matches=f"{formed_subset:,}",
-        )
-        reporter.finish_stage("Q4 pHash")
-        if _max_duplicates_reached():
-            reporter.add_log(
-                f"Stopping after {_duplicate_count():,} duplicate file(s) due to --max-duplicates",
-                source="limit",
+                if gid_p1:
+                    reporter.add_log(
+                        f"Q4 Pass 1: verified {gid_p1} of {len(q3_candidate_groups)} Q3 candidate group(s)",
+                        level="INFO",
+                        source="phash",
+                    )
+                rejected_count = len(q3_candidate_groups) - gid_p1
+                if rejected_count:
+                    reporter.add_log(
+                        f"Q4 Pass 1: rejected {rejected_count} Q3 candidate group(s) (no visual match) — "
+                        "those videos are now available for Q5/Q6/Q7",
+                        level="INFO",
+                        source="phash",
+                    )
+
+            # ---- Pass 2: All-pairs pHash on remaining (non-Q3-candidate) videos ----
+            # Includes: videos not in any Q3 group, and videos whose Q3 group was just rejected (re-entered pool)
+            remaining_for_q4 = [
+                v for v in video_for_q4
+                if _normalized_path(v.path) not in excluded_after_q3
+                and _normalized_path(v.path) not in excluded_after_q4
+            ]
+
+            if compute_phash_signature and phash_distance and remaining_for_q4:
+                reporter.set_status("Q4 visual similarity analysis")
+                reporter.start_stage("Q4 pHash", total=len(remaining_for_q4))
+                reporter.set_hash_total(len(remaining_for_q4))
+
+                phashed: List[VideoMeta] = []
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(cfg.threads))) as ex:
+                    for vm in ex.map(_do_phash, remaining_for_q4):
+                        phashed.append(vm)
+                        if vm.phash_signature:
+                            all_phashed_for_subset.append(vm)
+
+                # All-pairs pHash grouping
+                if phashed:
+                    used = set()
+                    gid = 0
+                    for i, a in enumerate(phashed):
+                        if not a.phash_signature:
+                            continue
+                        if i in used:
+                            continue
+                        grp = [a]
+                        used.add(i)
+                        for j in range(i + 1, len(phashed)):
+                            if j in used:
+                                continue
+                            b = phashed[j]
+                            if not b.phash_signature:
+                                continue
+                            L = min(len(a.phash_signature), len(b.phash_signature))
+                            if L < 2:
+                                continue
+                            dist = phash_distance(a.phash_signature[:L], b.phash_signature[:L])  # type: ignore[misc]
+                            if dist <= cfg.phash_threshold * L:
+                                grp.append(b)
+                                used.add(j)
+                        if len(grp) > 1:
+                            phash_gid = f"phash:{gid}"
+                            groups[phash_gid] = grp
+                            _annotate_group(groups, phash_gid)
+                            for vm in grp:
+                                excluded_after_q4.add(_normalized_path(vm.path))
+                            gid += 1
+                            formed_phash += 1
+                            duplicate_members += len(grp) - 1
+                            if _max_duplicates_reached():
+                                break
+
+            # Use all_phashed_for_subset (from both passes) for subset detection below
+            phashed = all_phashed_for_subset  # type: ignore[assignment]
+
+            if formed_phash:
+                reporter.inc_group("phash", formed_phash)
+            reporter.update_stage_metrics(
+                "Q4 pHash",
+                signatures=f"{len(all_phashed_for_subset):,}",
+                groups=f"{formed_phash:,}",
             )
-            return groups
+            reporter.flush()
+
+            if not (compute_phash_signature and phash_distance) and not remaining_for_q4 and not q3_candidate_groups:
+                reporter.set_status("Q4 skipped (no analyzable videos)")
+                reporter.mark_stage_skipped("Q4 pHash")
+
+            # Enhanced subset detection with cross-resolution support
+            formed_subset = 0  # Initialize before conditional block
+            if cfg.subset_detect and phashed:
+                gid = 0
+                vids_sorted = sorted([v for v in phashed if v.duration], key=lambda v: v.duration or 0.0)
+
+                # Group videos by resolution for more targeted comparisons
+                by_resolution = {}
+                for v in vids_sorted:
+                    res_key = (v.width or 0, v.height or 0)
+                    if res_key not in by_resolution:
+                        by_resolution[res_key] = []
+                    by_resolution[res_key].append(v)
+
+                # Compare within and across resolution groups
+                all_pairs = []
+                for res1, vids1 in by_resolution.items():
+                    for res2, vids2 in by_resolution.items():
+                        # Allow cross-resolution comparison with adjusted ratio thresholds
+                        res_factor = 1.0
+                        if res1 != res2 and res1[0] > 0 and res2[0] > 0:
+                            # Adjust threshold for different resolutions
+                            area1, area2 = res1[0] * res1[1], res2[0] * res2[1]
+                            res_factor = min(2.0, max(0.5, area2 / area1)) if area1 > 0 else 1.0
+
+                        for v1 in vids1:
+                            for v2 in vids2:
+                                if v1.path == v2.path:
+                                    continue
+                                if v1.duration and v2.duration and v1.duration < v2.duration:
+                                    all_pairs.append((v1, v2, res_factor))
+
+                # Process all potential subset pairs
+                subset_consumed: Set[Path] = set()
+                for short, long, res_factor in all_pairs:
+                    short_norm = _normalized_path(short.path)
+                    if short_norm in subset_consumed:
+                        continue
+
+                    if not short.duration or not long.duration:
+                        continue
+
+                    ratio = short.duration / long.duration
+                    adjusted_min_ratio = cfg.subset_min_ratio / res_factor
+
+                    if ratio < adjusted_min_ratio or ratio > 0.95:  # Skip if too similar (likely same content)
+                        continue
+
+                    # Use enhanced alignable distance with resolution awareness
+                    match = _alignable_distance(short.phash_signature, long.phash_signature, cfg.subset_frame_threshold)
+                    if match is not None:
+                        master, loser = _subset_master_loser(short, long)
+                        group_id = f"subset:{gid}"
+                        groups[group_id] = [master, loser]
+                        _record_subset_metadata(groups, group_id, "subset-phash", short, long, match, reporter=reporter)
+                        _annotate_group(groups, group_id)
+                        subset_consumed.add(short_norm)
+                        excluded_after_q4.add(_normalized_path(short.path))
+                        gid += 1
+                        formed_subset += 1
+                        duplicate_members += 1
+                        if _max_duplicates_reached():
+                            break
+
+            if formed_subset:
+                reporter.inc_group("subset", formed_subset)
+                reporter.flush()
+            if duplicate_members:
+                reporter.add_duplicate_files(duplicate_members)
+            reporter.update_stage_metrics(
+                "Q4 pHash",
+                subset_matches=f"{formed_subset:,}",
+            )
+            reporter.finish_stage("Q4 pHash")
+            if _max_duplicates_reached():
+                reporter.add_log(
+                    f"Stopping after {_duplicate_count():,} duplicate file(s) due to --max-duplicates",
+                    source="limit",
+                )
+                return groups
     elif 4 in selected_stages:
         reporter.set_status("Q4 skipped (stage disabled by upstream filters)")
         reporter.mark_stage_skipped("Q4 pHash")
