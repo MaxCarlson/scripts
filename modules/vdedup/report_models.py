@@ -34,14 +34,59 @@ class FileStats:
         return meta
 
 
+# ---------------------------------------------------------------------------
+# Legacy inference helpers (used when loading reports written by older versions
+# that lack explicit actionable / match_type fields)
+# ---------------------------------------------------------------------------
+
+_ACTIONABLE_PREFIXES = frozenset({"hash"})
+_REVIEW_PREFIXES = frozenset({"phash"})  # old phash = actionable but check for safety
+_CANDIDATE_PREFIXES = frozenset({"size", "meta", "size_candidate", "meta_candidate"})
+
+_MATCH_TYPE_BY_PREFIX_LEGACY: Dict[str, str] = {
+    "hash":         "exact_byte_duplicate",
+    "phash":        "perceptual_duplicate",
+    "subset":       "subset_of_longer",
+    "scene":        "perceptual_duplicate",
+    "scene-sub":    "subset_of_longer",
+    "audio":        "perceptual_duplicate",
+    "audio-sub":    "subset_of_longer",
+    "timeline":     "perceptual_duplicate",
+    "timeline-sub": "subset_of_longer",
+    "meta":         "metadata_candidate",
+    "size":         "size_candidate",
+    "meta_candidate":  "metadata_candidate",
+    "size_candidate":  "size_candidate",
+}
+
+
+def _legacy_infer_actionable(gid: str, payload: Dict[str, Any]) -> bool:
+    prefix = gid.split(":", 1)[0]
+    method = (payload.get("method") or "").lower()
+    if prefix in _ACTIONABLE_PREFIXES or method in {"hash", "sha256", "blake3"}:
+        return True
+    if prefix in _CANDIDATE_PREFIXES or method in {"meta", "metadata", "size"}:
+        return False
+    if prefix in _REVIEW_PREFIXES:
+        return True  # old phash groups were actionable
+    return False
+
+
+def _legacy_infer_match_type(gid: str) -> str:
+    prefix = gid.split(":", 1)[0]
+    return _MATCH_TYPE_BY_PREFIX_LEGACY.get(prefix, "unknown")
+
+
 @dataclass(slots=True)
 class DuplicateGroup:
     group_id: str
     method: str
     keep: FileStats
     losers: List[FileStats] = field(default_factory=list)
-    confidence: str = "verified"   # "exact" | "verified" | "low"
-    review_required: bool = False  # True for metadata-only (Q3 standalone) groups
+    confidence: str = "verified"       # "exact" | "verified" | "low"
+    review_required: bool = False
+    actionable: bool = True            # False = not safe to apply without -F
+    match_type: str = "unknown"        # e.g. "exact_byte_duplicate", "perceptual_duplicate"
     source_report: Optional["ReportDocument"] = None
     raw_payload: Optional[Dict[str, Any]] = None
 
@@ -61,6 +106,25 @@ class DuplicateGroup:
         payload = self.raw_payload or {}
         evidence = payload.get("evidence")
         return evidence if isinstance(evidence, dict) else {}
+
+
+@dataclass(slots=True)
+class CandidateGroup:
+    """
+    A candidate cluster produced by Q1 (size) or Q3 (metadata).
+    Has members-only semantics — no keep/losers, never directly apply-safe.
+    """
+    candidate_id: str
+    method: str
+    members: List[Path] = field(default_factory=list)
+    candidate_only: bool = True
+    actionable: bool = False
+    review_required: bool = True
+    match_type: str = "unknown"        # "size_candidate" | "metadata_candidate"
+    evidence: Dict[str, Any] = field(default_factory=dict)
+    recommended_next_stage: Optional[str] = None
+    source_report: Optional["ReportDocument"] = None
+    raw_payload: Optional[Dict[str, Any]] = None
 
 
 def _safe_stat(path: Path) -> int:
@@ -107,6 +171,7 @@ class ReportDocument:
     path: Path
     data: Dict[str, Any]
     groups: List[DuplicateGroup]
+    candidate_groups: List[CandidateGroup] = field(default_factory=list)
 
     def save(self) -> None:
         self.path.write_text(json.dumps(self.data, indent=2, sort_keys=True), encoding="utf-8")
@@ -118,6 +183,8 @@ def load_report_documents(report_paths: Sequence[Path]) -> List[ReportDocument]:
         data = json.loads(Path(rp).read_text(encoding="utf-8"))
         groups_raw: Dict[str, Dict[str, Any]] = data.get("groups", {}) or {}
         groups: List[DuplicateGroup] = []
+        has_explicit_safety = False
+
         for gid, payload in groups_raw.items():
             keep_path = Path(payload.get("keep", "")).expanduser()
             losers = [Path(p).expanduser() for p in (payload.get("losers") or [])]
@@ -130,6 +197,12 @@ def load_report_documents(report_paths: Sequence[Path]) -> List[ReportDocument]:
             ]
             confidence = str(payload.get("confidence") or ("exact" if gid.startswith("hash:") else "verified"))
             review_required = bool(payload.get("review_required", False))
+            if "actionable" in payload:
+                actionable = bool(payload["actionable"])
+                has_explicit_safety = True
+            else:
+                actionable = _legacy_infer_actionable(gid, payload)
+            match_type = str(payload.get("match_type") or _legacy_infer_match_type(gid))
             groups.append(
                 DuplicateGroup(
                     group_id=gid,
@@ -138,13 +211,43 @@ def load_report_documents(report_paths: Sequence[Path]) -> List[ReportDocument]:
                     losers=loser_stats,
                     confidence=confidence,
                     review_required=review_required,
+                    actionable=actionable,
+                    match_type=match_type,
                     source_report=None,  # patched below
                     raw_payload=payload,
                 )
             )
-        document = ReportDocument(path=Path(rp), data=data, groups=groups)
+
+        # Load candidate groups (Q1/Q3 clusters with members-only semantics)
+        candidates_raw: Dict[str, Dict[str, Any]] = data.get("candidate_groups", {}) or {}
+        candidates: List[CandidateGroup] = []
+        for cid, payload in candidates_raw.items():
+            members = [Path(p).expanduser() for p in (payload.get("members") or [])]
+            candidates.append(CandidateGroup(
+                candidate_id=cid,
+                method=str(payload.get("method") or "unknown"),
+                members=members,
+                candidate_only=True,
+                actionable=False,
+                review_required=True,
+                match_type=str(payload.get("match_type") or "unknown"),
+                evidence=payload.get("evidence") or {},
+                recommended_next_stage=payload.get("recommended_next_stage"),
+                raw_payload=payload,
+            ))
+
+        document = ReportDocument(
+            path=Path(rp),
+            data=data,
+            groups=groups,
+            candidate_groups=candidates,
+        )
         for group in groups:
             group.source_report = document
+        for cg in candidates:
+            cg.source_report = document
+        # Stash whether this report has new-style safety fields (for apply warning)
+        document.data["_has_explicit_safety"] = has_explicit_safety
         documents.append(document)
     return documents
 

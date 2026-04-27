@@ -168,9 +168,7 @@ def _run_q3_standalone(tmp_path: Path, vm_a: VideoMeta, vm_b: VideoMeta, **cfg_k
 
 
 def test_q3_standalone_uses_high_score_floor(tmp_path: Path) -> None:
-    """With default q3_standalone_score_floor=0.85, a medium-score pair should not group."""
-    # Two videos with same duration and same codec — but we'll mock score to return 0.70
-    # (between 0.55 combined floor and 0.85 standalone floor)
+    """With default q3_standalone_score_floor=0.85, a medium-score pair produces no candidates."""
     vm_a = _make_vm(tmp_path / "a.mp4", duration=3600.0, vcodec="h264", container="mp4")
     vm_b = _make_vm(tmp_path / "b.mp4", duration=3600.0, vcodec="h264", container="mp4")
 
@@ -180,12 +178,13 @@ def test_q3_standalone_uses_high_score_floor(tmp_path: Path) -> None:
     with patch("vdedup.pipeline.score_metadata_candidate", return_value=mock_card):
         groups = _run_q3_standalone(tmp_path, vm_a, vm_b)
 
-    # 0.70 < 0.85 standalone floor → no group emitted
-    assert len(groups) == 0, f"Expected no groups but got: {list(groups.keys())}"
+    # 0.70 < 0.85 standalone floor → no candidate emitted
+    assert len(groups) == 0, f"Expected no verified groups: {list(groups.keys())}"
+    assert len(groups.candidate_groups) == 0, f"Expected no candidates: {list(groups.candidate_groups.keys())}"
 
 
-def test_q3_standalone_emits_high_score_as_low_confidence(tmp_path: Path) -> None:
-    """Score above standalone floor → group emitted as low-confidence."""
+def test_q3_standalone_emits_high_score_as_candidate(tmp_path: Path) -> None:
+    """Score above standalone floor → emitted as candidate (not a verified group with keep/losers)."""
     vm_a = _make_vm(tmp_path / "a.mp4", duration=3600.0, vcodec="h264", container="mp4")
     vm_b = _make_vm(tmp_path / "b.mp4", duration=3600.0, vcodec="h264", container="mp4")
 
@@ -195,15 +194,22 @@ def test_q3_standalone_emits_high_score_as_low_confidence(tmp_path: Path) -> Non
     with patch("vdedup.pipeline.score_metadata_candidate", return_value=mock_card):
         groups = _run_q3_standalone(tmp_path, vm_a, vm_b)
 
-    assert len(groups) == 1
-    gid = next(iter(groups))
-    meta = groups.metadata.get(gid, {})
-    assert meta.get("confidence") == "low", f"Expected confidence='low', got: {meta}"
-    assert meta.get("review_required") is True, f"Expected review_required=True, got: {meta}"
+    # No verified groups (no keep/losers)
+    assert len(groups) == 0, f"Expected no verified groups, got: {list(groups.keys())}"
+    # One candidate group
+    assert len(groups.candidate_groups) == 1, f"Expected 1 candidate group, got: {list(groups.candidate_groups.keys())}"
+    cid = next(iter(groups.candidate_groups))
+    assert cid.startswith("meta_candidate:"), f"Expected meta_candidate: prefix, got: {cid}"
+    cmeta = groups.candidate_metadata.get(cid, {})
+    assert cmeta.get("candidate_only") is True
+    assert cmeta.get("actionable") is False
+    assert cmeta.get("review_required") is True
+    assert cmeta.get("match_type") == "metadata_candidate"
+    assert cmeta.get("recommended_next_stage") == "q4"
 
 
 def test_q3_standalone_blocks_different_codecs(tmp_path: Path) -> None:
-    """Standalone mode forces same_codec=True; different codecs → no group even with high score."""
+    """Standalone mode forces same_codec=True; different codecs → no candidate even with high score."""
     vm_a = _make_vm(tmp_path / "a.mp4", duration=3600.0, vcodec="h264", container="mp4")
     vm_b = _make_vm(tmp_path / "b.mp4", duration=3600.0, vcodec="hevc", container="mp4")  # different codec
 
@@ -523,8 +529,8 @@ def test_write_report_confidence_fields(tmp_path: Path) -> None:
     assert g["confidence"] == "low"
     assert g["review_required"] is True
 
-    # Check summary
-    assert data["summary"]["low_confidence_groups"] == 1
+    # Check summary — old low_confidence_groups replaced by review_required_groups
+    assert data["summary"]["review_required_groups"] == 1
 
     # Check top-level warnings
     assert data["warnings"] == warnings_list
@@ -550,8 +556,8 @@ def test_write_report_hash_group_gets_exact_confidence(tmp_path: Path) -> None:
 # ──────────────────────────────────────────
 
 
-def test_apply_report_warns_on_review_required_groups(tmp_path: Path, capsys) -> None:
-    """apply_report prints a stderr warning when any group is review_required."""
+def test_apply_report_refuses_meta_candidate_group(tmp_path: Path, capsys) -> None:
+    """apply_report hard-refuses meta groups (candidate-only), printing ERROR to stderr."""
     from vdedup.report import apply_report
 
     keep_file = tmp_path / "keep.mp4"
@@ -562,7 +568,7 @@ def test_apply_report_warns_on_review_required_groups(tmp_path: Path, capsys) ->
     rp = tmp_path / "report.json"
     payload = {
         "summary": {"groups": 1, "losers": 1, "size_bytes": 5},
-        "warnings": ["1 group(s) are metadata-only."],
+        "warnings": [],
         "groups": {
             "meta:0": {
                 "keep": str(keep_file),
@@ -578,9 +584,11 @@ def test_apply_report_warns_on_review_required_groups(tmp_path: Path, capsys) ->
     }
     rp.write_text(json.dumps(payload), encoding="utf-8")
 
-    apply_report(rp, dry_run=True, force=True, backup=None)
+    count, size = apply_report(rp, dry_run=True, force=True, backup=None)
 
+    assert (count, size) == (0, 0)
     captured = capsys.readouterr()
-    assert "review_required" in captured.err or "metadata-only" in captured.err, (
-        f"Expected a review_required warning on stderr; got:\n{captured.err}"
+    # Must print an ERROR explaining why the meta group was refused
+    assert "ERROR" in captured.err or "candidate" in captured.err.lower(), (
+        f"Expected refusal on stderr; got:\n{captured.err}"
     )

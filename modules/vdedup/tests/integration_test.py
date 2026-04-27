@@ -41,8 +41,9 @@ def test_pipeline_stage_selection():
             reporter=reporter,
         )
 
-        # Size-only now reports same-size candidate groups without inspecting content.
-        assert len(groups) == 1
+        # Q1 standalone now emits size candidates (not verified groups).
+        assert len(groups) == 0
+        assert len(groups.candidate_groups) >= 1
 
 
 def test_pipeline_with_cache():

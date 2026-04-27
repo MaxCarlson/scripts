@@ -952,6 +952,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Console logging level (default: INFO).",
     )
     apply_p.add_argument("-n", "--no-log-file", action="store_true", help="Disable file logging.")
+    apply_p.add_argument(
+        "-F", "--force-review-required", action="store_true",
+        help=(
+            "Apply review-required groups (e.g. subset/scene/audio matches) that were not fully "
+            "content-verified. Candidate-only groups (Q1 size, Q3 metadata) are NEVER applied "
+            "regardless of this flag."
+        ),
+    )
 
     args = p.parse_args(argv)
     if args.command == "scan":
@@ -1242,6 +1250,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 report_path,
                 dry_run=args.dry_run,
                 force=args.force,
+                force_review_required=getattr(args, "force_review_required", False),
                 backup=backup,
                 base_root=base_root,
                 vault=None,
@@ -1396,6 +1405,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         groups_all: Dict[str, Tuple[Any, List[Any]]] = {}
         group_metadata: Dict[str, Dict[str, Any]] = {}
+        candidate_groups_all: Dict[str, List[Any]] = {}
+        candidate_metadata_all: Dict[str, Dict[str, Any]] = {}
 
         def _merge_groups(dst: Dict[str, Tuple[Any, List[Any]]], src: Dict[str, Tuple[Any, List[Any]]]):
             src_meta = getattr(src, "metadata", {}) if hasattr(src, "metadata") else {}
@@ -1408,6 +1419,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 dst[nk] = v
                 if isinstance(src_meta, dict) and k in src_meta:
                     group_metadata[nk] = dict(src_meta[k])
+            # Also merge candidate groups from this pipeline result
+            src_cands = getattr(src, "candidate_groups", {})
+            src_cmeta = getattr(src, "candidate_metadata", {})
+            for k, v in src_cands.items():
+                nk = k
+                i = 1
+                while nk in candidate_groups_all:
+                    nk = f"{k}#{i}"
+                    i += 1
+                candidate_groups_all[nk] = v
+                if k in src_cmeta:
+                    candidate_metadata_all[nk] = dict(src_cmeta[k])
 
         def _merged_duplicate_count() -> int:
             return sum(max(0, len(members) - 1) for members in groups_all.values())
@@ -1474,14 +1497,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         logger.info("Writing report with %d groups to: %s", len(winners), report_path)
         reporter.set_status("Writing report to disk")
-        low_conf_count = sum(1 for m in group_metadata.values() if m.get("review_required"))
+        review_count = sum(1 for m in group_metadata.values() if m.get("review_required") and m.get("actionable") is not False)
         report_warnings: List[str] = []
-        if low_conf_count:
+        if candidate_groups_all:
             report_warnings.append(
-                f"{low_conf_count} group(s) are metadata-only (no visual/audio verification). "
-                "Re-run with -q 4+ to verify before applying."
+                f"{len(candidate_groups_all)} candidate group(s) (Q1 size / Q3 metadata) are not apply-safe. "
+                "Re-run with -q 2 or -q 4+ to get content-verified results."
             )
-        write_report(report_path, winners, metadata=group_metadata, warnings=report_warnings)
+        if review_count:
+            report_warnings.append(
+                f"{review_count} group(s) require review (-F to apply). "
+                "Re-run with -q 7 for stronger verification."
+            )
+        write_report(
+            report_path,
+            winners,
+            metadata=group_metadata,
+            candidate_groups=candidate_groups_all,
+            candidate_metadata=candidate_metadata_all,
+            warnings=report_warnings,
+        )
         print(f"Wrote report to: {report_path}")
         if quit_requested:
             print("Scan interrupted early; partial findings saved to the report above.")

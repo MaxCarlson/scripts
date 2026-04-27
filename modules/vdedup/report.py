@@ -190,6 +190,8 @@ def write_report(
     winners: Dict[str, Tuple[Meta, List[Meta]]],
     *,
     metadata: Optional[Dict[str, Dict[str, Any]]] = None,
+    candidate_groups: Optional[Dict[str, List[Any]]] = None,
+    candidate_metadata: Optional[Dict[str, Dict[str, Any]]] = None,
     warnings: Optional[List[str]] = None,
 ):
     out = {}
@@ -217,17 +219,21 @@ def write_report(
         fallback_evidence = getattr(keep, "evidence", {})
         if not evidence_payload and isinstance(fallback_evidence, dict):
             evidence_payload = fallback_evidence
-        # Infer confidence from metadata or group_id prefix
+        # Read actionable/match_type/confidence from metadata (set by _annotate_group in pipeline)
         confidence = group_meta.get("confidence") if isinstance(group_meta, dict) else None
         if confidence is None:
             confidence = "exact" if gid.startswith("hash:") else "verified"
         review_required = bool(group_meta.get("review_required", False)) if isinstance(group_meta, dict) else False
+        actionable = bool(group_meta.get("actionable", not review_required)) if isinstance(group_meta, dict) else (not review_required)
+        match_type = group_meta.get("match_type", "unknown") if isinstance(group_meta, dict) else "unknown"
         out[gid] = {
             "keep": keep_path,
             "losers": loser_paths,
             "method": method,
             "confidence": confidence,
             "review_required": review_required,
+            "actionable": actionable,
+            "match_type": match_type,
             "evidence": evidence_payload,
             "keep_meta": _meta_from_meta(keep, overlap_hint=keep_hint if isinstance(keep_hint, (int, float)) else None),
             "loser_meta": loser_meta_payload,
@@ -240,17 +246,37 @@ def write_report(
                 pass
         by_method[method] = by_method.get(method, 0) + 1
 
-    low_conf_count = sum(1 for g in out.values() if g.get("review_required"))
+    # Serialize candidate groups (Q1/Q3 clusters — members-only, never apply-safe)
+    out_candidates: Dict[str, Any] = {}
+    if candidate_groups:
+        for cid, members in candidate_groups.items():
+            cmeta = (candidate_metadata or {}).get(cid, {})
+            out_candidates[cid] = {
+                "method": cmeta.get("method", cid.split(":", 1)[0]),
+                "candidate_only": True,
+                "actionable": False,
+                "review_required": True,
+                "match_type": cmeta.get("match_type", "unknown"),
+                "members": [str(m.path if hasattr(m, "path") else m) for m in members],
+                "evidence": cmeta.get("evidence", {}),
+                "recommended_next_stage": cmeta.get("recommended_next_stage"),
+            }
+
+    review_count = sum(1 for g in out.values() if g.get("review_required"))
+    apply_safe_count = sum(1 for g in out.values() if g.get("actionable"))
     payload = {
         "summary": {
             "groups": len(out),
+            "candidate_groups": len(out_candidates),
+            "apply_safe_groups": apply_safe_count,
+            "review_required_groups": review_count,
             "losers": losers_total,
             "size_bytes": total_size,
             "by_method": by_method,
-            "low_confidence_groups": low_conf_count,
         },
         "warnings": warnings or [],
         "groups": out,
+        "candidate_groups": out_candidates,
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -266,6 +292,39 @@ def ensure_backup_move(path: Path, backup_root: Path, base_root: Path) -> Path:
     return dest
 
 
+def _is_candidate_group(gid: str, group: Dict[str, Any]) -> bool:
+    """Return True if this group is candidate-only and must never be applied."""
+    if group.get("candidate_only"):
+        return True
+    prefix = gid.split(":", 1)[0]
+    method = (group.get("method") or "").lower()
+    return prefix in {"size", "meta", "size_candidate", "meta_candidate"} or \
+        method in {"size", "meta", "metadata"}
+
+
+def _group_is_actionable(gid: str, group: Dict[str, Any]) -> bool:
+    """Return True if this group is explicitly actionable (safe to apply by default)."""
+    if "actionable" in group:
+        return bool(group["actionable"])
+    # Legacy: infer from group_id prefix
+    prefix = gid.split(":", 1)[0]
+    method = (group.get("method") or "").lower()
+    if prefix == "hash" or method in {"hash", "sha256", "blake3"}:
+        return True
+    if prefix == "phash":
+        return True  # old phash groups were apply-safe
+    return False
+
+
+def _group_is_review_required(gid: str, group: Dict[str, Any]) -> bool:
+    """Return True if group needs -F/--force-review-required to apply."""
+    if "review_required" in group:
+        return bool(group["review_required"])
+    prefix = gid.split(":", 1)[0]
+    return prefix in {"subset", "scene", "scene-sub", "audio", "audio-sub",
+                      "timeline", "timeline-sub"}
+
+
 def apply_report(
     report_path: Path,
     *,
@@ -277,41 +336,90 @@ def apply_report(
     folder_priority: Optional[Path] = None,
     reporter: Any = None,
     verbosity: int = 0,
-    full_file_names: bool = False,  # NEW: show real paths if True; otherwise compact vset… aliases
+    full_file_names: bool = False,
+    force_review_required: bool = False,
 ) -> Tuple:
     """
     Apply a report:
 
-      • If vault is None:
-          - Delete (or backup-move) losers.
-          - If folder_priority is provided, move the keep file into the first
-            matching priority-folder duplicate's folder before processing losers.
-      • If vault is provided:
-          - MOVE the group's winner (keep) into the vault.
-          - RECREATE a HARDLINK at the original keep path pointing to the vaulted file.
-          - For every loser path:
-              - Delete/backup the loser.
-              - Create a HARDLINK at the loser path pointing to the vaulted file.
+      • Candidate-only groups (Q1 size, Q3 metadata) are ALWAYS refused.
+      • review_required groups are refused unless force_review_required=True.
+      • actionable groups require force=True to skip interactive confirmation.
 
-    Returns (ops_count, total_bytes_saved_from_losers)
+      Returns (ops_count, total_bytes_saved_from_losers)
 
-    Prints group-by-group details according to `verbosity`:
-      V=2 – full stats and every planned operation
-      V=1 – per-group summary
-      V=0 – terse one-liners
+      Prints group-by-group details according to `verbosity`:
+        V=2 – full stats and every planned operation
+        V=1 – per-group summary
+        V=0 – terse one-liners
     """
     data = load_report(report_path)
     groups: Dict[str, Any] = data.get("groups") or {}
 
-    # Warn when the report contains low-confidence (metadata-only) groups
-    low_conf = [gid for gid, g in groups.items() if g.get("review_required")]
-    if low_conf:
-        import sys as _sys
-        _sys.stderr.write(
-            f"WARNING: {len(low_conf)} group(s) in this report are marked 'review_required' "
-            "(metadata-only detection — no visual/audio verification was performed). "
-            "Applying anyway. Re-scan with -q 4+ to get verified results before applying.\n"
+    # ── Safety enforcement ──────────────────────────────────────────────────
+    # Refuse candidate-only groups unconditionally
+    candidate_gids = [gid for gid, g in groups.items() if _is_candidate_group(gid, g)]
+    if candidate_gids:
+        sys.stderr.write(
+            f"ERROR: {len(candidate_gids)} group(s) are candidate-only "
+            f"(e.g. method={[groups[g].get('method') for g in candidate_gids[:3]]}) "
+            "and cannot be applied — they lack content verification.\n"
+            "Re-scan with -q 4+ to produce verified duplicate groups.\n"
         )
+        return (0, 0)
+
+    # Warn if report was written by an older version (no explicit actionable field)
+    has_explicit_safety = any("actionable" in g for g in groups.values())
+    if groups and not has_explicit_safety:
+        sys.stderr.write(
+            "WARNING: This report lacks explicit safety fields (older vdedup version). "
+            "Actionability was inferred from group method names. "
+            "Re-scan with the current version for best safety.\n"
+        )
+
+    # Partition into actionable vs review-required
+    review_gids = [
+        gid for gid, g in groups.items()
+        if _group_is_review_required(gid, g) and not _is_candidate_group(gid, g)
+    ]
+    actionable_gids = [
+        gid for gid, g in groups.items()
+        if _group_is_actionable(gid, g) and not _group_is_review_required(gid, g)
+    ]
+    unknown_gids = [
+        gid for gid in groups
+        if gid not in review_gids and gid not in actionable_gids
+    ]
+
+    if unknown_gids:
+        sys.stderr.write(
+            f"WARNING: {len(unknown_gids)} group(s) have unknown safety status "
+            f"(ids: {unknown_gids[:3]}) and will be skipped.\n"
+        )
+
+    if review_gids:
+        if not force_review_required:
+            sys.stderr.write(
+                f"WARNING: {len(review_gids)} group(s) are marked review_required "
+                "(not fully content-verified) and will be SKIPPED.\n"
+                "Use -F/--force-review-required to apply them.\n"
+            )
+            # Remove review-required groups; only apply actionable ones
+            groups = {gid: g for gid, g in groups.items() if gid in actionable_gids}
+        else:
+            sys.stderr.write(
+                f"WARNING: Applying {len(review_gids)} review-required group(s) "
+                "at your request (-F). These were not fully content-verified.\n"
+            )
+            groups = {gid: g for gid, g in groups.items()
+                      if gid in actionable_gids or gid in review_gids}
+    else:
+        groups = {gid: g for gid, g in groups.items() if gid in actionable_gids}
+
+    if not groups and not dry_run:
+        sys.stderr.write("Nothing to apply (no actionable groups after safety filtering).\n")
+        return (0, 0)
+    # ── End safety enforcement ──────────────────────────────────────────────
 
     # Determine one common display directory so all operation paths remain comparable.
     all_paths: List[Path] = []

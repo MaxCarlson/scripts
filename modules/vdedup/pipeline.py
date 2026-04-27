@@ -639,14 +639,47 @@ Meta = Union[FileMeta, VideoMeta]
 GroupMap = Dict[str, List[Meta]]
 
 
+_MATCH_TYPE_BY_PREFIX: Dict[str, tuple] = {
+    # (match_type, actionable, review_required)
+    "hash":         ("exact_byte_duplicate",  True,  False),
+    "phash":        ("perceptual_duplicate",  True,  False),
+    "subset":       ("subset_of_longer",      False, True),
+    "scene":        ("perceptual_duplicate",  False, True),
+    "scene-sub":    ("subset_of_longer",      False, True),
+    "audio":        ("perceptual_duplicate",  False, True),
+    "audio-sub":    ("subset_of_longer",      False, True),
+    "timeline":     ("perceptual_duplicate",  False, True),
+    "timeline-sub": ("subset_of_longer",      False, True),
+}
+
+
 class GroupResults(dict):
     """
     Dict-like container for pipeline groups that carries detector metadata for each entry.
+    Verified/review-required duplicate groups live in the dict itself (have keep/losers semantics).
+    Candidate groups (Q1 size, Q3 metadata standalone) live in candidate_groups (members-only).
     """
 
     def __init__(self) -> None:
         super().__init__()
         self.metadata: Dict[str, Dict[str, Any]] = {}
+        self.candidate_groups: Dict[str, List[VideoMeta]] = {}
+        self.candidate_metadata: Dict[str, Dict[str, Any]] = {}
+
+
+def _annotate_group(groups: "GroupResults", group_id: str) -> None:
+    """
+    Write match_type, actionable, and review_required into groups.metadata for a group.
+    Called immediately after emitting a group to groups[group_id] in any stage.
+    """
+    prefix = group_id.split(":", 1)[0]
+    match_type, actionable, review_req = _MATCH_TYPE_BY_PREFIX.get(prefix, ("unknown", False, True))
+    meta = groups.metadata.get(group_id, {})
+    # Q3 candidates that were confirmed by Q4 Pass 1 have verified_by="phash"
+    if prefix == "meta" and meta.get("verified_by") == "phash":
+        match_type, actionable, review_req = "perceptual_duplicate", True, False
+    meta.update({"match_type": match_type, "actionable": actionable, "review_required": review_req})
+    groups.metadata[group_id] = meta
 
 
 def run_pipeline(
@@ -980,25 +1013,30 @@ def run_pipeline(
         reporter.finish_stage("Q1 size bucketing")
 
         if selected_stages == {1}:
+            # Q1 standalone: size equality is not duplicate evidence — emit as candidates only.
+            # candidate_groups have members-only semantics (no keep/losers).
             formed = 0
-            duplicate_members = 0
             for size, bucket in size_buckets_for_q2.items():
-                groups[f"size:{size}"] = bucket
+                cid = f"size_candidate:{size}"
+                groups.candidate_groups[cid] = bucket
+                groups.candidate_metadata[cid] = {
+                    "method": "size",
+                    "candidate_only": True,
+                    "actionable": False,
+                    "review_required": True,
+                    "match_type": "size_candidate",
+                    "evidence": {"size": size},
+                    "recommended_next_stage": "q2",
+                }
                 formed += 1
-                duplicate_members += max(0, len(bucket) - 1)
-                if _max_duplicates_reached():
-                    break
             if formed:
-                reporter.inc_group("size", formed)
-            if duplicate_members:
-                reporter.add_duplicate_files(duplicate_members)
-            if _max_duplicates_reached():
                 reporter.add_log(
-                    f"Stopping after {_duplicate_count():,} duplicate file(s) due to --max-duplicates",
-                    source="limit",
+                    f"Q1: {formed} size candidate group(s) — not apply-safe; re-run with -q 2+ to verify",
+                    level="INFO",
+                    source="Q1",
                 )
-                reporter.flush()
-                return groups
+            reporter.flush()
+            return groups
     else:
         reporter.set_status("Skipping Q1 (size buckets disabled)")
 
@@ -1191,7 +1229,9 @@ def run_pipeline(
         duplicate_members = 0
         for h, lst in by_hash.items():
             if len(lst) > 1:
-                groups[f"hash:{h}"] = lst
+                gid = f"hash:{h}"
+                groups[gid] = lst
+                _annotate_group(groups, gid)
                 for fm in lst:
                     excluded_after_q2.add(_normalized_path(fm.path))
                 formed += 1
@@ -1390,16 +1430,22 @@ def run_pipeline(
                 gid += 1
 
                 if q3_standalone:
-                    # Emit directly as a final (low-confidence) group
-                    groups[group_id] = filtered
+                    # Standalone: metadata is not duplicate evidence — emit as candidate only.
+                    # Use a distinct prefix so report tooling never confuses these with verified groups.
+                    cid = f"meta_candidate:{gid - 1}"
+                    groups.candidate_groups[cid] = filtered
                     if meta_payload:
-                        meta_payload["confidence"] = "low"
-                        meta_payload["review_required"] = True
-                        groups.metadata[group_id] = meta_payload
-                    for vm in filtered:
-                        excluded_after_q3.add(_normalized_path(vm.path))
+                        meta_payload.update({
+                            "candidate_only": True,
+                            "actionable": False,
+                            "review_required": True,
+                            "match_type": "metadata_candidate",
+                            "recommended_next_stage": "q4",
+                        })
+                        groups.candidate_metadata[cid] = meta_payload
+                    # Do NOT add to excluded_after_q3 — standalone has no later stages,
+                    # but keeping this clean preserves the invariant.
                     formed += 1
-                    duplicate_members += len(filtered) - 1
                 else:
                     # Candidate mode: store for Q4 verification; do NOT emit yet.
                     # Still add to excluded_after_q3 so Q4's all-pairs pass skips them
@@ -1414,21 +1460,22 @@ def run_pipeline(
                     break
 
             if formed:
-                reporter.inc_group("meta", formed)
-                if duplicate_members:
-                    reporter.add_duplicate_files(duplicate_members)
                 if q3_standalone:
                     import sys as _sys
                     _sys.stderr.write(
-                        f"\nWARNING: {formed} group(s) detected by metadata similarity only "
-                        "(no visual/audio verification). Results are marked 'review_required'.\n"
-                        "Re-run with -q 4 or higher to verify before applying.\n\n"
+                        f"\nWARNING: {formed} metadata candidate group(s) found. "
+                        "These are NOT apply-safe — metadata similarity is not duplicate evidence.\n"
+                        "Re-run with -q 4 or higher to get content-verified results.\n\n"
                     )
                     reporter.add_log(
-                        f"Q3 standalone: {formed} low-confidence group(s) emitted without visual verification",
+                        f"Q3 standalone: {formed} candidate group(s) emitted (not apply-safe)",
                         level="WARNING",
                         source="metadata",
                     )
+                else:
+                    reporter.inc_group("meta", formed)
+                    if duplicate_members:
+                        reporter.add_duplicate_files(duplicate_members)
             if q3_candidate_groups and not q3_standalone:
                 reporter.add_log(
                     f"Q3 candidate mode: {len(q3_candidate_groups)} group(s) pending Q4 pHash verification",
@@ -1565,6 +1612,7 @@ def run_pipeline(
                     m = groups.metadata.get(cand_gid, {})
                     m.update({"confidence": "verified", "review_required": False, "verified_by": "phash"})
                     groups.metadata[cand_gid] = m
+                    _annotate_group(groups, cand_gid)  # sets match_type=perceptual_duplicate, actionable=True
                     for vm in verified:
                         excluded_after_q4.add(_normalized_path(vm.path))
                     formed_phash += 1
@@ -1639,7 +1687,9 @@ def run_pipeline(
                             grp.append(b)
                             used.add(j)
                     if len(grp) > 1:
-                        groups[f"phash:{gid}"] = grp
+                        phash_gid = f"phash:{gid}"
+                        groups[phash_gid] = grp
+                        _annotate_group(groups, phash_gid)
                         for vm in grp:
                             excluded_after_q4.add(_normalized_path(vm.path))
                         gid += 1
@@ -1719,6 +1769,7 @@ def run_pipeline(
                     group_id = f"subset:{gid}"
                     groups[group_id] = [master, loser]
                     _record_subset_metadata(groups, group_id, "subset-phash", short, long, match, reporter=reporter)
+                    _annotate_group(groups, group_id)
                     subset_consumed.add(short_norm)
                     excluded_after_q4.add(_normalized_path(short.path))
                     gid += 1
@@ -1817,7 +1868,9 @@ def run_pipeline(
                     if diff <= max(5.0, 0.05 * max_len):
                         avg_dist = _avg_signature_distance(sig_a, sig_b)
                         if avg_dist <= per_scene_thresh:
-                            groups[f"scene:{gid}"] = [vm_a, vm_b]
+                            scene_gid = f"scene:{gid}"
+                            groups[scene_gid] = [vm_a, vm_b]
+                            _annotate_group(groups, scene_gid)
                             consumed.update({path_a, path_b})
                             excluded_after_q5.update({path_a, path_b})
                             formed_scene += 1
@@ -1845,6 +1898,7 @@ def run_pipeline(
                             _record_subset_metadata(
                                 groups, group_id, "subset-scene", short_vm, long_vm, match, reporter=reporter
                             )
+                            _annotate_group(groups, group_id)
                             consumed.add(short_norm)
                             subset_consumed.add(short_norm)
                             excluded_after_q5.add(short_norm)
@@ -1960,7 +2014,9 @@ def run_pipeline(
                     if diff <= max(6.0, 0.08 * max_len):
                         avg_dist = _avg_signature_distance(sig_a, sig_b)
                         if avg_dist <= audio_dup_thresh:
-                            groups[f"audio:{gid}"] = [vm_a, vm_b]
+                            audio_gid = f"audio:{gid}"
+                            groups[audio_gid] = [vm_a, vm_b]
+                            _annotate_group(groups, audio_gid)
                             processed_audio.update({path_a, path_b})
                             excluded_after_q6.update({path_a, path_b})
                             formed_audio += 1
@@ -1988,6 +2044,7 @@ def run_pipeline(
                             _record_subset_metadata(
                                 groups, group_id, "subset-audio", short_vm, long_vm, match, reporter=reporter
                             )
+                            _annotate_group(groups, group_id)
                             processed_audio.add(short_norm)
                             subset_audio_consumed.add(short_norm)
                             excluded_after_q6.add(short_norm)
@@ -2102,7 +2159,9 @@ def run_pipeline(
                     if diff <= max(8.0, 0.04 * max_len):
                         avg_dist = _avg_signature_distance(sig_a, sig_b)
                         if avg_dist <= timeline_dup_thresh:
-                            groups[f"timeline:{gid}"] = [vm_a, vm_b]
+                            tl_gid = f"timeline:{gid}"
+                            groups[tl_gid] = [vm_a, vm_b]
+                            _annotate_group(groups, tl_gid)
                             processed_timeline.update({path_a, path_b})
                             excluded_after_q7.update({path_a, path_b})
                             formed_timeline += 1
@@ -2130,6 +2189,7 @@ def run_pipeline(
                             _record_subset_metadata(
                                 groups, group_id, "subset-timeline", short_vm, long_vm, match, reporter=reporter
                             )
+                            _annotate_group(groups, group_id)
                             processed_timeline.add(short_norm)
                             timeline_subset_consumed.add(short_norm)
                             excluded_after_q7.add(short_norm)

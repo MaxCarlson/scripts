@@ -1,0 +1,895 @@
+diff --git a/modules/vdedup/pipeline.py b/modules/vdedup/pipeline.py
+index 68ab208..dc97344 100644
+--- a/modules/vdedup/pipeline.py
++++ b/modules/vdedup/pipeline.py
+@@ -639,14 +639,47 @@ Meta = Union[FileMeta, VideoMeta]
+ GroupMap = Dict[str, List[Meta]]
+ 
+ 
++_MATCH_TYPE_BY_PREFIX: Dict[str, tuple] = {
++    # (match_type, actionable, review_required)
++    "hash":         ("exact_byte_duplicate",  True,  False),
++    "phash":        ("perceptual_duplicate",  True,  False),
++    "subset":       ("subset_of_longer",      False, True),
++    "scene":        ("perceptual_duplicate",  False, True),
++    "scene-sub":    ("subset_of_longer",      False, True),
++    "audio":        ("perceptual_duplicate",  False, True),
++    "audio-sub":    ("subset_of_longer",      False, True),
++    "timeline":     ("perceptual_duplicate",  False, True),
++    "timeline-sub": ("subset_of_longer",      False, True),
++}
++
++
+ class GroupResults(dict):
+     """
+     Dict-like container for pipeline groups that carries detector metadata for each entry.
++    Verified/review-required duplicate groups live in the dict itself (have keep/losers semantics).
++    Candidate groups (Q1 size, Q3 metadata standalone) live in candidate_groups (members-only).
+     """
+ 
+     def __init__(self) -> None:
+         super().__init__()
+         self.metadata: Dict[str, Dict[str, Any]] = {}
++        self.candidate_groups: Dict[str, List[VideoMeta]] = {}
++        self.candidate_metadata: Dict[str, Dict[str, Any]] = {}
++
++
++def _annotate_group(groups: "GroupResults", group_id: str) -> None:
++    """
++    Write match_type, actionable, and review_required into groups.metadata for a group.
++    Called immediately after emitting a group to groups[group_id] in any stage.
++    """
++    prefix = group_id.split(":", 1)[0]
++    match_type, actionable, review_req = _MATCH_TYPE_BY_PREFIX.get(prefix, ("unknown", False, True))
++    meta = groups.metadata.get(group_id, {})
++    # Q3 candidates that were confirmed by Q4 Pass 1 have verified_by="phash"
++    if prefix == "meta" and meta.get("verified_by") == "phash":
++        match_type, actionable, review_req = "perceptual_duplicate", True, False
++    meta.update({"match_type": match_type, "actionable": actionable, "review_required": review_req})
++    groups.metadata[group_id] = meta
+ 
+ 
+ def run_pipeline(
+@@ -980,25 +1013,30 @@ def run_pipeline(
+         reporter.finish_stage("Q1 size bucketing")
+ 
+         if selected_stages == {1}:
++            # Q1 standalone: size equality is not duplicate evidence — emit as candidates only.
++            # candidate_groups have members-only semantics (no keep/losers).
+             formed = 0
+-            duplicate_members = 0
+             for size, bucket in size_buckets_for_q2.items():
+-                groups[f"size:{size}"] = bucket
++                cid = f"size_candidate:{size}"
++                groups.candidate_groups[cid] = bucket
++                groups.candidate_metadata[cid] = {
++                    "method": "size",
++                    "candidate_only": True,
++                    "actionable": False,
++                    "review_required": True,
++                    "match_type": "size_candidate",
++                    "evidence": {"size": size},
++                    "recommended_next_stage": "q2",
++                }
+                 formed += 1
+-                duplicate_members += max(0, len(bucket) - 1)
+-                if _max_duplicates_reached():
+-                    break
+             if formed:
+-                reporter.inc_group("size", formed)
+-            if duplicate_members:
+-                reporter.add_duplicate_files(duplicate_members)
+-            if _max_duplicates_reached():
+                 reporter.add_log(
+-                    f"Stopping after {_duplicate_count():,} duplicate file(s) due to --max-duplicates",
+-                    source="limit",
++                    f"Q1: {formed} size candidate group(s) — not apply-safe; re-run with -q 2+ to verify",
++                    level="INFO",
++                    source="Q1",
+                 )
+-                reporter.flush()
+-                return groups
++            reporter.flush()
++            return groups
+     else:
+         reporter.set_status("Skipping Q1 (size buckets disabled)")
+ 
+@@ -1191,7 +1229,9 @@ def run_pipeline(
+         duplicate_members = 0
+         for h, lst in by_hash.items():
+             if len(lst) > 1:
+-                groups[f"hash:{h}"] = lst
++                gid = f"hash:{h}"
++                groups[gid] = lst
++                _annotate_group(groups, gid)
+                 for fm in lst:
+                     excluded_after_q2.add(_normalized_path(fm.path))
+                 formed += 1
+@@ -1390,16 +1430,22 @@ def run_pipeline(
+                 gid += 1
+ 
+                 if q3_standalone:
+-                    # Emit directly as a final (low-confidence) group
+-                    groups[group_id] = filtered
++                    # Standalone: metadata is not duplicate evidence — emit as candidate only.
++                    # Use a distinct prefix so report tooling never confuses these with verified groups.
++                    cid = f"meta_candidate:{gid - 1}"
++                    groups.candidate_groups[cid] = filtered
+                     if meta_payload:
+-                        meta_payload["confidence"] = "low"
+-                        meta_payload["review_required"] = True
+-                        groups.metadata[group_id] = meta_payload
+-                    for vm in filtered:
+-                        excluded_after_q3.add(_normalized_path(vm.path))
++                        meta_payload.update({
++                            "candidate_only": True,
++                            "actionable": False,
++                            "review_required": True,
++                            "match_type": "metadata_candidate",
++                            "recommended_next_stage": "q4",
++                        })
++                        groups.candidate_metadata[cid] = meta_payload
++                    # Do NOT add to excluded_after_q3 — standalone has no later stages,
++                    # but keeping this clean preserves the invariant.
+                     formed += 1
+-                    duplicate_members += len(filtered) - 1
+                 else:
+                     # Candidate mode: store for Q4 verification; do NOT emit yet.
+                     # Still add to excluded_after_q3 so Q4's all-pairs pass skips them
+@@ -1414,21 +1460,22 @@ def run_pipeline(
+                     break
+ 
+             if formed:
+-                reporter.inc_group("meta", formed)
+-                if duplicate_members:
+-                    reporter.add_duplicate_files(duplicate_members)
+                 if q3_standalone:
+                     import sys as _sys
+                     _sys.stderr.write(
+-                        f"\nWARNING: {formed} group(s) detected by metadata similarity only "
+-                        "(no visual/audio verification). Results are marked 'review_required'.\n"
+-                        "Re-run with -q 4 or higher to verify before applying.\n\n"
++                        f"\nWARNING: {formed} metadata candidate group(s) found. "
++                        "These are NOT apply-safe — metadata similarity is not duplicate evidence.\n"
++                        "Re-run with -q 4 or higher to get content-verified results.\n\n"
+                     )
+                     reporter.add_log(
+-                        f"Q3 standalone: {formed} low-confidence group(s) emitted without visual verification",
++                        f"Q3 standalone: {formed} candidate group(s) emitted (not apply-safe)",
+                         level="WARNING",
+                         source="metadata",
+                     )
++                else:
++                    reporter.inc_group("meta", formed)
++                    if duplicate_members:
++                        reporter.add_duplicate_files(duplicate_members)
+             if q3_candidate_groups and not q3_standalone:
+                 reporter.add_log(
+                     f"Q3 candidate mode: {len(q3_candidate_groups)} group(s) pending Q4 pHash verification",
+@@ -1565,6 +1612,7 @@ def run_pipeline(
+                     m = groups.metadata.get(cand_gid, {})
+                     m.update({"confidence": "verified", "review_required": False, "verified_by": "phash"})
+                     groups.metadata[cand_gid] = m
++                    _annotate_group(groups, cand_gid)  # sets match_type=perceptual_duplicate, actionable=True
+                     for vm in verified:
+                         excluded_after_q4.add(_normalized_path(vm.path))
+                     formed_phash += 1
+@@ -1639,7 +1687,9 @@ def run_pipeline(
+                             grp.append(b)
+                             used.add(j)
+                     if len(grp) > 1:
+-                        groups[f"phash:{gid}"] = grp
++                        phash_gid = f"phash:{gid}"
++                        groups[phash_gid] = grp
++                        _annotate_group(groups, phash_gid)
+                         for vm in grp:
+                             excluded_after_q4.add(_normalized_path(vm.path))
+                         gid += 1
+@@ -1719,6 +1769,7 @@ def run_pipeline(
+                     group_id = f"subset:{gid}"
+                     groups[group_id] = [master, loser]
+                     _record_subset_metadata(groups, group_id, "subset-phash", short, long, match, reporter=reporter)
++                    _annotate_group(groups, group_id)
+                     subset_consumed.add(short_norm)
+                     excluded_after_q4.add(_normalized_path(short.path))
+                     gid += 1
+@@ -1817,7 +1868,9 @@ def run_pipeline(
+                     if diff <= max(5.0, 0.05 * max_len):
+                         avg_dist = _avg_signature_distance(sig_a, sig_b)
+                         if avg_dist <= per_scene_thresh:
+-                            groups[f"scene:{gid}"] = [vm_a, vm_b]
++                            scene_gid = f"scene:{gid}"
++                            groups[scene_gid] = [vm_a, vm_b]
++                            _annotate_group(groups, scene_gid)
+                             consumed.update({path_a, path_b})
+                             excluded_after_q5.update({path_a, path_b})
+                             formed_scene += 1
+@@ -1845,6 +1898,7 @@ def run_pipeline(
+                             _record_subset_metadata(
+                                 groups, group_id, "subset-scene", short_vm, long_vm, match, reporter=reporter
+                             )
++                            _annotate_group(groups, group_id)
+                             consumed.add(short_norm)
+                             subset_consumed.add(short_norm)
+                             excluded_after_q5.add(short_norm)
+@@ -1960,7 +2014,9 @@ def run_pipeline(
+                     if diff <= max(6.0, 0.08 * max_len):
+                         avg_dist = _avg_signature_distance(sig_a, sig_b)
+                         if avg_dist <= audio_dup_thresh:
+-                            groups[f"audio:{gid}"] = [vm_a, vm_b]
++                            audio_gid = f"audio:{gid}"
++                            groups[audio_gid] = [vm_a, vm_b]
++                            _annotate_group(groups, audio_gid)
+                             processed_audio.update({path_a, path_b})
+                             excluded_after_q6.update({path_a, path_b})
+                             formed_audio += 1
+@@ -1988,6 +2044,7 @@ def run_pipeline(
+                             _record_subset_metadata(
+                                 groups, group_id, "subset-audio", short_vm, long_vm, match, reporter=reporter
+                             )
++                            _annotate_group(groups, group_id)
+                             processed_audio.add(short_norm)
+                             subset_audio_consumed.add(short_norm)
+                             excluded_after_q6.add(short_norm)
+@@ -2102,7 +2159,9 @@ def run_pipeline(
+                     if diff <= max(8.0, 0.04 * max_len):
+                         avg_dist = _avg_signature_distance(sig_a, sig_b)
+                         if avg_dist <= timeline_dup_thresh:
+-                            groups[f"timeline:{gid}"] = [vm_a, vm_b]
++                            tl_gid = f"timeline:{gid}"
++                            groups[tl_gid] = [vm_a, vm_b]
++                            _annotate_group(groups, tl_gid)
+                             processed_timeline.update({path_a, path_b})
+                             excluded_after_q7.update({path_a, path_b})
+                             formed_timeline += 1
+@@ -2130,6 +2189,7 @@ def run_pipeline(
+                             _record_subset_metadata(
+                                 groups, group_id, "subset-timeline", short_vm, long_vm, match, reporter=reporter
+                             )
++                            _annotate_group(groups, group_id)
+                             processed_timeline.add(short_norm)
+                             timeline_subset_consumed.add(short_norm)
+                             excluded_after_q7.add(short_norm)
+diff --git a/modules/vdedup/report.py b/modules/vdedup/report.py
+index 236e312..0168951 100644
+--- a/modules/vdedup/report.py
++++ b/modules/vdedup/report.py
+@@ -190,6 +190,8 @@ def write_report(
+     winners: Dict[str, Tuple[Meta, List[Meta]]],
+     *,
+     metadata: Optional[Dict[str, Dict[str, Any]]] = None,
++    candidate_groups: Optional[Dict[str, List[Any]]] = None,
++    candidate_metadata: Optional[Dict[str, Dict[str, Any]]] = None,
+     warnings: Optional[List[str]] = None,
+ ):
+     out = {}
+@@ -217,17 +219,21 @@ def write_report(
+         fallback_evidence = getattr(keep, "evidence", {})
+         if not evidence_payload and isinstance(fallback_evidence, dict):
+             evidence_payload = fallback_evidence
+-        # Infer confidence from metadata or group_id prefix
++        # Read actionable/match_type/confidence from metadata (set by _annotate_group in pipeline)
+         confidence = group_meta.get("confidence") if isinstance(group_meta, dict) else None
+         if confidence is None:
+             confidence = "exact" if gid.startswith("hash:") else "verified"
+         review_required = bool(group_meta.get("review_required", False)) if isinstance(group_meta, dict) else False
++        actionable = bool(group_meta.get("actionable", not review_required)) if isinstance(group_meta, dict) else (not review_required)
++        match_type = group_meta.get("match_type", "unknown") if isinstance(group_meta, dict) else "unknown"
+         out[gid] = {
+             "keep": keep_path,
+             "losers": loser_paths,
+             "method": method,
+             "confidence": confidence,
+             "review_required": review_required,
++            "actionable": actionable,
++            "match_type": match_type,
+             "evidence": evidence_payload,
+             "keep_meta": _meta_from_meta(keep, overlap_hint=keep_hint if isinstance(keep_hint, (int, float)) else None),
+             "loser_meta": loser_meta_payload,
+@@ -240,17 +246,37 @@ def write_report(
+                 pass
+         by_method[method] = by_method.get(method, 0) + 1
+ 
+-    low_conf_count = sum(1 for g in out.values() if g.get("review_required"))
++    # Serialize candidate groups (Q1/Q3 clusters — members-only, never apply-safe)
++    out_candidates: Dict[str, Any] = {}
++    if candidate_groups:
++        for cid, members in candidate_groups.items():
++            cmeta = (candidate_metadata or {}).get(cid, {})
++            out_candidates[cid] = {
++                "method": cmeta.get("method", cid.split(":", 1)[0]),
++                "candidate_only": True,
++                "actionable": False,
++                "review_required": True,
++                "match_type": cmeta.get("match_type", "unknown"),
++                "members": [str(m.path if hasattr(m, "path") else m) for m in members],
++                "evidence": cmeta.get("evidence", {}),
++                "recommended_next_stage": cmeta.get("recommended_next_stage"),
++            }
++
++    review_count = sum(1 for g in out.values() if g.get("review_required"))
++    apply_safe_count = sum(1 for g in out.values() if g.get("actionable"))
+     payload = {
+         "summary": {
+             "groups": len(out),
++            "candidate_groups": len(out_candidates),
++            "apply_safe_groups": apply_safe_count,
++            "review_required_groups": review_count,
+             "losers": losers_total,
+             "size_bytes": total_size,
+             "by_method": by_method,
+-            "low_confidence_groups": low_conf_count,
+         },
+         "warnings": warnings or [],
+         "groups": out,
++        "candidate_groups": out_candidates,
+     }
+     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+ 
+@@ -266,6 +292,39 @@ def ensure_backup_move(path: Path, backup_root: Path, base_root: Path) -> Path:
+     return dest
+ 
+ 
++def _is_candidate_group(gid: str, group: Dict[str, Any]) -> bool:
++    """Return True if this group is candidate-only and must never be applied."""
++    if group.get("candidate_only"):
++        return True
++    prefix = gid.split(":", 1)[0]
++    method = (group.get("method") or "").lower()
++    return prefix in {"size", "meta", "size_candidate", "meta_candidate"} or \
++        method in {"size", "meta", "metadata"}
++
++
++def _group_is_actionable(gid: str, group: Dict[str, Any]) -> bool:
++    """Return True if this group is explicitly actionable (safe to apply by default)."""
++    if "actionable" in group:
++        return bool(group["actionable"])
++    # Legacy: infer from group_id prefix
++    prefix = gid.split(":", 1)[0]
++    method = (group.get("method") or "").lower()
++    if prefix == "hash" or method in {"hash", "sha256", "blake3"}:
++        return True
++    if prefix == "phash":
++        return True  # old phash groups were apply-safe
++    return False
++
++
++def _group_is_review_required(gid: str, group: Dict[str, Any]) -> bool:
++    """Return True if group needs -F/--force-review-required to apply."""
++    if "review_required" in group:
++        return bool(group["review_required"])
++    prefix = gid.split(":", 1)[0]
++    return prefix in {"subset", "scene", "scene-sub", "audio", "audio-sub",
++                      "timeline", "timeline-sub"}
++
++
+ def apply_report(
+     report_path: Path,
+     *,
+@@ -277,41 +336,90 @@ def apply_report(
+     folder_priority: Optional[Path] = None,
+     reporter: Any = None,
+     verbosity: int = 0,
+-    full_file_names: bool = False,  # NEW: show real paths if True; otherwise compact vset… aliases
++    full_file_names: bool = False,
++    force_review_required: bool = False,
+ ) -> Tuple:
+     """
+     Apply a report:
+ 
+-      • If vault is None:
+-          - Delete (or backup-move) losers.
+-          - If folder_priority is provided, move the keep file into the first
+-            matching priority-folder duplicate's folder before processing losers.
+-      • If vault is provided:
+-          - MOVE the group's winner (keep) into the vault.
+-          - RECREATE a HARDLINK at the original keep path pointing to the vaulted file.
+-          - For every loser path:
+-              - Delete/backup the loser.
+-              - Create a HARDLINK at the loser path pointing to the vaulted file.
+-
+-    Returns (ops_count, total_bytes_saved_from_losers)
+-
+-    Prints group-by-group details according to `verbosity`:
+-      V=2 – full stats and every planned operation
+-      V=1 – per-group summary
+-      V=0 – terse one-liners
++      • Candidate-only groups (Q1 size, Q3 metadata) are ALWAYS refused.
++      • review_required groups are refused unless force_review_required=True.
++      • actionable groups require force=True to skip interactive confirmation.
++
++      Returns (ops_count, total_bytes_saved_from_losers)
++
++      Prints group-by-group details according to `verbosity`:
++        V=2 – full stats and every planned operation
++        V=1 – per-group summary
++        V=0 – terse one-liners
+     """
+     data = load_report(report_path)
+     groups: Dict[str, Any] = data.get("groups") or {}
+ 
+-    # Warn when the report contains low-confidence (metadata-only) groups
+-    low_conf = [gid for gid, g in groups.items() if g.get("review_required")]
+-    if low_conf:
+-        import sys as _sys
+-        _sys.stderr.write(
+-            f"WARNING: {len(low_conf)} group(s) in this report are marked 'review_required' "
+-            "(metadata-only detection — no visual/audio verification was performed). "
+-            "Applying anyway. Re-scan with -q 4+ to get verified results before applying.\n"
++    # ── Safety enforcement ──────────────────────────────────────────────────
++    # Refuse candidate-only groups unconditionally
++    candidate_gids = [gid for gid, g in groups.items() if _is_candidate_group(gid, g)]
++    if candidate_gids:
++        sys.stderr.write(
++            f"ERROR: {len(candidate_gids)} group(s) are candidate-only "
++            f"(e.g. method={[groups[g].get('method') for g in candidate_gids[:3]]}) "
++            "and cannot be applied — they lack content verification.\n"
++            "Re-scan with -q 4+ to produce verified duplicate groups.\n"
+         )
++        return (0, 0)
++
++    # Warn if report was written by an older version (no explicit actionable field)
++    has_explicit_safety = any("actionable" in g for g in groups.values())
++    if groups and not has_explicit_safety:
++        sys.stderr.write(
++            "WARNING: This report lacks explicit safety fields (older vdedup version). "
++            "Actionability was inferred from group method names. "
++            "Re-scan with the current version for best safety.\n"
++        )
++
++    # Partition into actionable vs review-required
++    review_gids = [
++        gid for gid, g in groups.items()
++        if _group_is_review_required(gid, g) and not _is_candidate_group(gid, g)
++    ]
++    actionable_gids = [
++        gid for gid, g in groups.items()
++        if _group_is_actionable(gid, g) and not _group_is_review_required(gid, g)
++    ]
++    unknown_gids = [
++        gid for gid in groups
++        if gid not in review_gids and gid not in actionable_gids
++    ]
++
++    if unknown_gids:
++        sys.stderr.write(
++            f"WARNING: {len(unknown_gids)} group(s) have unknown safety status "
++            f"(ids: {unknown_gids[:3]}) and will be skipped.\n"
++        )
++
++    if review_gids:
++        if not force_review_required:
++            sys.stderr.write(
++                f"WARNING: {len(review_gids)} group(s) are marked review_required "
++                "(not fully content-verified) and will be SKIPPED.\n"
++                "Use -F/--force-review-required to apply them.\n"
++            )
++            # Remove review-required groups; only apply actionable ones
++            groups = {gid: g for gid, g in groups.items() if gid in actionable_gids}
++        else:
++            sys.stderr.write(
++                f"WARNING: Applying {len(review_gids)} review-required group(s) "
++                "at your request (-F). These were not fully content-verified.\n"
++            )
++            groups = {gid: g for gid, g in groups.items()
++                      if gid in actionable_gids or gid in review_gids}
++    else:
++        groups = {gid: g for gid, g in groups.items() if gid in actionable_gids}
++
++    if not groups and not dry_run:
++        sys.stderr.write("Nothing to apply (no actionable groups after safety filtering).\n")
++        return (0, 0)
++    # ── End safety enforcement ──────────────────────────────────────────────
+ 
+     # Determine one common display directory so all operation paths remain comparable.
+     all_paths: List[Path] = []
+diff --git a/modules/vdedup/report_models.py b/modules/vdedup/report_models.py
+index ff4a51d..140c00b 100644
+--- a/modules/vdedup/report_models.py
++++ b/modules/vdedup/report_models.py
+@@ -34,14 +34,59 @@ class FileStats:
+         return meta
+ 
+ 
++# ---------------------------------------------------------------------------
++# Legacy inference helpers (used when loading reports written by older versions
++# that lack explicit actionable / match_type fields)
++# ---------------------------------------------------------------------------
++
++_ACTIONABLE_PREFIXES = frozenset({"hash"})
++_REVIEW_PREFIXES = frozenset({"phash"})  # old phash = actionable but check for safety
++_CANDIDATE_PREFIXES = frozenset({"size", "meta", "size_candidate", "meta_candidate"})
++
++_MATCH_TYPE_BY_PREFIX_LEGACY: Dict[str, str] = {
++    "hash":         "exact_byte_duplicate",
++    "phash":        "perceptual_duplicate",
++    "subset":       "subset_of_longer",
++    "scene":        "perceptual_duplicate",
++    "scene-sub":    "subset_of_longer",
++    "audio":        "perceptual_duplicate",
++    "audio-sub":    "subset_of_longer",
++    "timeline":     "perceptual_duplicate",
++    "timeline-sub": "subset_of_longer",
++    "meta":         "metadata_candidate",
++    "size":         "size_candidate",
++    "meta_candidate":  "metadata_candidate",
++    "size_candidate":  "size_candidate",
++}
++
++
++def _legacy_infer_actionable(gid: str, payload: Dict[str, Any]) -> bool:
++    prefix = gid.split(":", 1)[0]
++    method = (payload.get("method") or "").lower()
++    if prefix in _ACTIONABLE_PREFIXES or method in {"hash", "sha256", "blake3"}:
++        return True
++    if prefix in _CANDIDATE_PREFIXES or method in {"meta", "metadata", "size"}:
++        return False
++    if prefix in _REVIEW_PREFIXES:
++        return True  # old phash groups were actionable
++    return False
++
++
++def _legacy_infer_match_type(gid: str) -> str:
++    prefix = gid.split(":", 1)[0]
++    return _MATCH_TYPE_BY_PREFIX_LEGACY.get(prefix, "unknown")
++
++
+ @dataclass(slots=True)
+ class DuplicateGroup:
+     group_id: str
+     method: str
+     keep: FileStats
+     losers: List[FileStats] = field(default_factory=list)
+-    confidence: str = "verified"   # "exact" | "verified" | "low"
+-    review_required: bool = False  # True for metadata-only (Q3 standalone) groups
++    confidence: str = "verified"       # "exact" | "verified" | "low"
++    review_required: bool = False
++    actionable: bool = True            # False = not safe to apply without -F
++    match_type: str = "unknown"        # e.g. "exact_byte_duplicate", "perceptual_duplicate"
+     source_report: Optional["ReportDocument"] = None
+     raw_payload: Optional[Dict[str, Any]] = None
+ 
+@@ -63,6 +108,25 @@ class DuplicateGroup:
+         return evidence if isinstance(evidence, dict) else {}
+ 
+ 
++@dataclass(slots=True)
++class CandidateGroup:
++    """
++    A candidate cluster produced by Q1 (size) or Q3 (metadata).
++    Has members-only semantics — no keep/losers, never directly apply-safe.
++    """
++    candidate_id: str
++    method: str
++    members: List[Path] = field(default_factory=list)
++    candidate_only: bool = True
++    actionable: bool = False
++    review_required: bool = True
++    match_type: str = "unknown"        # "size_candidate" | "metadata_candidate"
++    evidence: Dict[str, Any] = field(default_factory=dict)
++    recommended_next_stage: Optional[str] = None
++    source_report: Optional["ReportDocument"] = None
++    raw_payload: Optional[Dict[str, Any]] = None
++
++
+ def _safe_stat(path: Path) -> int:
+     try:
+         return int(path.stat().st_size)
+@@ -107,6 +171,7 @@ class ReportDocument:
+     path: Path
+     data: Dict[str, Any]
+     groups: List[DuplicateGroup]
++    candidate_groups: List[CandidateGroup] = field(default_factory=list)
+ 
+     def save(self) -> None:
+         self.path.write_text(json.dumps(self.data, indent=2, sort_keys=True), encoding="utf-8")
+@@ -118,6 +183,8 @@ def load_report_documents(report_paths: Sequence[Path]) -> List[ReportDocument]:
+         data = json.loads(Path(rp).read_text(encoding="utf-8"))
+         groups_raw: Dict[str, Dict[str, Any]] = data.get("groups", {}) or {}
+         groups: List[DuplicateGroup] = []
++        has_explicit_safety = False
++
+         for gid, payload in groups_raw.items():
+             keep_path = Path(payload.get("keep", "")).expanduser()
+             losers = [Path(p).expanduser() for p in (payload.get("losers") or [])]
+@@ -130,6 +197,12 @@ def load_report_documents(report_paths: Sequence[Path]) -> List[ReportDocument]:
+             ]
+             confidence = str(payload.get("confidence") or ("exact" if gid.startswith("hash:") else "verified"))
+             review_required = bool(payload.get("review_required", False))
++            if "actionable" in payload:
++                actionable = bool(payload["actionable"])
++                has_explicit_safety = True
++            else:
++                actionable = _legacy_infer_actionable(gid, payload)
++            match_type = str(payload.get("match_type") or _legacy_infer_match_type(gid))
+             groups.append(
+                 DuplicateGroup(
+                     group_id=gid,
+@@ -138,13 +211,43 @@ def load_report_documents(report_paths: Sequence[Path]) -> List[ReportDocument]:
+                     losers=loser_stats,
+                     confidence=confidence,
+                     review_required=review_required,
++                    actionable=actionable,
++                    match_type=match_type,
+                     source_report=None,  # patched below
+                     raw_payload=payload,
+                 )
+             )
+-        document = ReportDocument(path=Path(rp), data=data, groups=groups)
++
++        # Load candidate groups (Q1/Q3 clusters with members-only semantics)
++        candidates_raw: Dict[str, Dict[str, Any]] = data.get("candidate_groups", {}) or {}
++        candidates: List[CandidateGroup] = []
++        for cid, payload in candidates_raw.items():
++            members = [Path(p).expanduser() for p in (payload.get("members") or [])]
++            candidates.append(CandidateGroup(
++                candidate_id=cid,
++                method=str(payload.get("method") or "unknown"),
++                members=members,
++                candidate_only=True,
++                actionable=False,
++                review_required=True,
++                match_type=str(payload.get("match_type") or "unknown"),
++                evidence=payload.get("evidence") or {},
++                recommended_next_stage=payload.get("recommended_next_stage"),
++                raw_payload=payload,
++            ))
++
++        document = ReportDocument(
++            path=Path(rp),
++            data=data,
++            groups=groups,
++            candidate_groups=candidates,
++        )
+         for group in groups:
+             group.source_report = document
++        for cg in candidates:
++            cg.source_report = document
++        # Stash whether this report has new-style safety fields (for apply warning)
++        document.data["_has_explicit_safety"] = has_explicit_safety
+         documents.append(document)
+     return documents
+ 
+diff --git a/modules/vdedup/tests/integration_test.py b/modules/vdedup/tests/integration_test.py
+index 23d7066..8bb2671 100644
+--- a/modules/vdedup/tests/integration_test.py
++++ b/modules/vdedup/tests/integration_test.py
+@@ -41,8 +41,9 @@ def test_pipeline_stage_selection():
+             reporter=reporter,
+         )
+ 
+-        # Size-only now reports same-size candidate groups without inspecting content.
+-        assert len(groups) == 1
++        # Q1 standalone now emits size candidates (not verified groups).
++        assert len(groups) == 0
++        assert len(groups.candidate_groups) >= 1
+ 
+ 
+ def test_pipeline_with_cache():
+diff --git a/modules/vdedup/tests/pipeline_test.py b/modules/vdedup/tests/pipeline_test.py
+index 07ea221..c509673 100644
+--- a/modules/vdedup/tests/pipeline_test.py
++++ b/modules/vdedup/tests/pipeline_test.py
+@@ -61,8 +61,13 @@ def test_run_pipeline_q1_size_only_emits_size_groups(tmp_path: Path) -> None:
+         reporter=reporter,
+     )
+ 
+-    assert list(groups.keys()) == ["size:3"]
+-    assert {m.path.resolve() for m in groups["size:3"]} == {same_a.resolve(), same_b.resolve()}
++    # Q1 standalone: size equality is not duplicate evidence — emits to candidate_groups.
++    assert len(groups) == 0, "Q1 standalone must not emit verified groups"
++    assert "size_candidate:3" in groups.candidate_groups
++    cid = "size_candidate:3"
++    assert {m.path.resolve() for m in groups.candidate_groups[cid]} == {same_a.resolve(), same_b.resolve()}
++    assert groups.candidate_metadata[cid]["candidate_only"] is True
++    assert groups.candidate_metadata[cid]["actionable"] is False
+ 
+ 
+ def test_run_pipeline_q2_hash_only_detects_exact_duplicates_without_q1(tmp_path: Path) -> None:
+@@ -109,8 +114,9 @@ def test_run_pipeline_max_duplicates_limits_size_only_groups(tmp_path: Path) ->
+         reporter=reporter,
+     )
+ 
+-    assert len(groups) == 1
+-    assert sum(max(0, len(members) - 1) for members in groups.values()) >= 1
++    # Q1 standalone emits candidates; --max-duplicates does not apply to candidates.
++    assert len(groups) == 0
++    assert len(groups.candidate_groups) >= 1
+ 
+ 
+ def test_run_pipeline_sampling_reduces_discovery(tmp_path: Path) -> None:
+diff --git a/modules/vdedup/tests/q3_verification_test.py b/modules/vdedup/tests/q3_verification_test.py
+index 1e6936a..5c7c60c 100644
+--- a/modules/vdedup/tests/q3_verification_test.py
++++ b/modules/vdedup/tests/q3_verification_test.py
+@@ -168,9 +168,7 @@ def _run_q3_standalone(tmp_path: Path, vm_a: VideoMeta, vm_b: VideoMeta, **cfg_k
+ 
+ 
+ def test_q3_standalone_uses_high_score_floor(tmp_path: Path) -> None:
+-    """With default q3_standalone_score_floor=0.85, a medium-score pair should not group."""
+-    # Two videos with same duration and same codec — but we'll mock score to return 0.70
+-    # (between 0.55 combined floor and 0.85 standalone floor)
++    """With default q3_standalone_score_floor=0.85, a medium-score pair produces no candidates."""
+     vm_a = _make_vm(tmp_path / "a.mp4", duration=3600.0, vcodec="h264", container="mp4")
+     vm_b = _make_vm(tmp_path / "b.mp4", duration=3600.0, vcodec="h264", container="mp4")
+ 
+@@ -180,12 +178,13 @@ def test_q3_standalone_uses_high_score_floor(tmp_path: Path) -> None:
+     with patch("vdedup.pipeline.score_metadata_candidate", return_value=mock_card):
+         groups = _run_q3_standalone(tmp_path, vm_a, vm_b)
+ 
+-    # 0.70 < 0.85 standalone floor → no group emitted
+-    assert len(groups) == 0, f"Expected no groups but got: {list(groups.keys())}"
++    # 0.70 < 0.85 standalone floor → no candidate emitted
++    assert len(groups) == 0, f"Expected no verified groups: {list(groups.keys())}"
++    assert len(groups.candidate_groups) == 0, f"Expected no candidates: {list(groups.candidate_groups.keys())}"
+ 
+ 
+-def test_q3_standalone_emits_high_score_as_low_confidence(tmp_path: Path) -> None:
+-    """Score above standalone floor → group emitted as low-confidence."""
++def test_q3_standalone_emits_high_score_as_candidate(tmp_path: Path) -> None:
++    """Score above standalone floor → emitted as candidate (not a verified group with keep/losers)."""
+     vm_a = _make_vm(tmp_path / "a.mp4", duration=3600.0, vcodec="h264", container="mp4")
+     vm_b = _make_vm(tmp_path / "b.mp4", duration=3600.0, vcodec="h264", container="mp4")
+ 
+@@ -195,15 +194,22 @@ def test_q3_standalone_emits_high_score_as_low_confidence(tmp_path: Path) -> Non
+     with patch("vdedup.pipeline.score_metadata_candidate", return_value=mock_card):
+         groups = _run_q3_standalone(tmp_path, vm_a, vm_b)
+ 
+-    assert len(groups) == 1
+-    gid = next(iter(groups))
+-    meta = groups.metadata.get(gid, {})
+-    assert meta.get("confidence") == "low", f"Expected confidence='low', got: {meta}"
+-    assert meta.get("review_required") is True, f"Expected review_required=True, got: {meta}"
++    # No verified groups (no keep/losers)
++    assert len(groups) == 0, f"Expected no verified groups, got: {list(groups.keys())}"
++    # One candidate group
++    assert len(groups.candidate_groups) == 1, f"Expected 1 candidate group, got: {list(groups.candidate_groups.keys())}"
++    cid = next(iter(groups.candidate_groups))
++    assert cid.startswith("meta_candidate:"), f"Expected meta_candidate: prefix, got: {cid}"
++    cmeta = groups.candidate_metadata.get(cid, {})
++    assert cmeta.get("candidate_only") is True
++    assert cmeta.get("actionable") is False
++    assert cmeta.get("review_required") is True
++    assert cmeta.get("match_type") == "metadata_candidate"
++    assert cmeta.get("recommended_next_stage") == "q4"
+ 
+ 
+ def test_q3_standalone_blocks_different_codecs(tmp_path: Path) -> None:
+-    """Standalone mode forces same_codec=True; different codecs → no group even with high score."""
++    """Standalone mode forces same_codec=True; different codecs → no candidate even with high score."""
+     vm_a = _make_vm(tmp_path / "a.mp4", duration=3600.0, vcodec="h264", container="mp4")
+     vm_b = _make_vm(tmp_path / "b.mp4", duration=3600.0, vcodec="hevc", container="mp4")  # different codec
+ 
+@@ -523,8 +529,8 @@ def test_write_report_confidence_fields(tmp_path: Path) -> None:
+     assert g["confidence"] == "low"
+     assert g["review_required"] is True
+ 
+-    # Check summary
+-    assert data["summary"]["low_confidence_groups"] == 1
++    # Check summary — old low_confidence_groups replaced by review_required_groups
++    assert data["summary"]["review_required_groups"] == 1
+ 
+     # Check top-level warnings
+     assert data["warnings"] == warnings_list
+@@ -550,8 +556,8 @@ def test_write_report_hash_group_gets_exact_confidence(tmp_path: Path) -> None:
+ # ──────────────────────────────────────────
+ 
+ 
+-def test_apply_report_warns_on_review_required_groups(tmp_path: Path, capsys) -> None:
+-    """apply_report prints a stderr warning when any group is review_required."""
++def test_apply_report_refuses_meta_candidate_group(tmp_path: Path, capsys) -> None:
++    """apply_report hard-refuses meta groups (candidate-only), printing ERROR to stderr."""
+     from vdedup.report import apply_report
+ 
+     keep_file = tmp_path / "keep.mp4"
+@@ -562,7 +568,7 @@ def test_apply_report_warns_on_review_required_groups(tmp_path: Path, capsys) ->
+     rp = tmp_path / "report.json"
+     payload = {
+         "summary": {"groups": 1, "losers": 1, "size_bytes": 5},
+-        "warnings": ["1 group(s) are metadata-only."],
++        "warnings": [],
+         "groups": {
+             "meta:0": {
+                 "keep": str(keep_file),
+@@ -578,9 +584,11 @@ def test_apply_report_warns_on_review_required_groups(tmp_path: Path, capsys) ->
+     }
+     rp.write_text(json.dumps(payload), encoding="utf-8")
+ 
+-    apply_report(rp, dry_run=True, force=True, backup=None)
++    count, size = apply_report(rp, dry_run=True, force=True, backup=None)
+ 
++    assert (count, size) == (0, 0)
+     captured = capsys.readouterr()
+-    assert "review_required" in captured.err or "metadata-only" in captured.err, (
+-        f"Expected a review_required warning on stderr; got:\n{captured.err}"
++    # Must print an ERROR explaining why the meta group was refused
++    assert "ERROR" in captured.err or "candidate" in captured.err.lower(), (
++        f"Expected refusal on stderr; got:\n{captured.err}"
+     )
+diff --git a/modules/vdedup/video_dedupe.py b/modules/vdedup/video_dedupe.py
+index ecab613..d506f31 100644
+--- a/modules/vdedup/video_dedupe.py
++++ b/modules/vdedup/video_dedupe.py
+@@ -952,6 +952,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+         help="Console logging level (default: INFO).",
+     )
+     apply_p.add_argument("-n", "--no-log-file", action="store_true", help="Disable file logging.")
++    apply_p.add_argument(
++        "-F", "--force-review-required", action="store_true",
++        help=(
++            "Apply review-required groups (e.g. subset/scene/audio matches) that were not fully "
++            "content-verified. Candidate-only groups (Q1 size, Q3 metadata) are NEVER applied "
++            "regardless of this flag."
++        ),
++    )
+ 
+     args = p.parse_args(argv)
+     if args.command == "scan":
+@@ -1242,6 +1250,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
+                 report_path,
+                 dry_run=args.dry_run,
+                 force=args.force,
++                force_review_required=getattr(args, "force_review_required", False),
+                 backup=backup,
+                 base_root=base_root,
+                 vault=None,
+@@ -1396,6 +1405,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
+ 
+         groups_all: Dict[str, Tuple[Any, List[Any]]] = {}
+         group_metadata: Dict[str, Dict[str, Any]] = {}
++        candidate_groups_all: Dict[str, List[Any]] = {}
++        candidate_metadata_all: Dict[str, Dict[str, Any]] = {}
+ 
+         def _merge_groups(dst: Dict[str, Tuple[Any, List[Any]]], src: Dict[str, Tuple[Any, List[Any]]]):
+             src_meta = getattr(src, "metadata", {}) if hasattr(src, "metadata") else {}
+@@ -1408,6 +1419,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
+                 dst[nk] = v
+                 if isinstance(src_meta, dict) and k in src_meta:
+                     group_metadata[nk] = dict(src_meta[k])
++            # Also merge candidate groups from this pipeline result
++            src_cands = getattr(src, "candidate_groups", {})
++            src_cmeta = getattr(src, "candidate_metadata", {})
++            for k, v in src_cands.items():
++                nk = k
++                i = 1
++                while nk in candidate_groups_all:
++                    nk = f"{k}#{i}"
++                    i += 1
++                candidate_groups_all[nk] = v
++                if k in src_cmeta:
++                    candidate_metadata_all[nk] = dict(src_cmeta[k])
+ 
+         def _merged_duplicate_count() -> int:
+             return sum(max(0, len(members) - 1) for members in groups_all.values())
+@@ -1474,14 +1497,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
+ 
+         logger.info("Writing report with %d groups to: %s", len(winners), report_path)
+         reporter.set_status("Writing report to disk")
+-        low_conf_count = sum(1 for m in group_metadata.values() if m.get("review_required"))
++        review_count = sum(1 for m in group_metadata.values() if m.get("review_required") and m.get("actionable") is not False)
+         report_warnings: List[str] = []
+-        if low_conf_count:
++        if candidate_groups_all:
+             report_warnings.append(
+-                f"{low_conf_count} group(s) are metadata-only (no visual/audio verification). "
+-                "Re-run with -q 4+ to verify before applying."
++                f"{len(candidate_groups_all)} candidate group(s) (Q1 size / Q3 metadata) are not apply-safe. "
++                "Re-run with -q 2 or -q 4+ to get content-verified results."
+             )
+-        write_report(report_path, winners, metadata=group_metadata, warnings=report_warnings)
++        if review_count:
++            report_warnings.append(
++                f"{review_count} group(s) require review (-F to apply). "
++                "Re-run with -q 7 for stronger verification."
++            )
++        write_report(
++            report_path,
++            winners,
++            metadata=group_metadata,
++            candidate_groups=candidate_groups_all,
++            candidate_metadata=candidate_metadata_all,
++            warnings=report_warnings,
++        )
+         print(f"Wrote report to: {report_path}")
+         if quit_requested:
+             print("Scan interrupted early; partial findings saved to the report above.")

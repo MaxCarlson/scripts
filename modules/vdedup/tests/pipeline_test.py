@@ -61,8 +61,13 @@ def test_run_pipeline_q1_size_only_emits_size_groups(tmp_path: Path) -> None:
         reporter=reporter,
     )
 
-    assert list(groups.keys()) == ["size:3"]
-    assert {m.path.resolve() for m in groups["size:3"]} == {same_a.resolve(), same_b.resolve()}
+    # Q1 standalone: size equality is not duplicate evidence — emits to candidate_groups.
+    assert len(groups) == 0, "Q1 standalone must not emit verified groups"
+    assert "size_candidate:3" in groups.candidate_groups
+    cid = "size_candidate:3"
+    assert {m.path.resolve() for m in groups.candidate_groups[cid]} == {same_a.resolve(), same_b.resolve()}
+    assert groups.candidate_metadata[cid]["candidate_only"] is True
+    assert groups.candidate_metadata[cid]["actionable"] is False
 
 
 def test_run_pipeline_q2_hash_only_detects_exact_duplicates_without_q1(tmp_path: Path) -> None:
@@ -109,8 +114,9 @@ def test_run_pipeline_max_duplicates_limits_size_only_groups(tmp_path: Path) -> 
         reporter=reporter,
     )
 
-    assert len(groups) == 1
-    assert sum(max(0, len(members) - 1) for members in groups.values()) >= 1
+    # Q1 standalone emits candidates; --max-duplicates does not apply to candidates.
+    assert len(groups) == 0
+    assert len(groups.candidate_groups) >= 1
 
 
 def test_run_pipeline_sampling_reduces_discovery(tmp_path: Path) -> None:
