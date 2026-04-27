@@ -1,0 +1,22 @@
+{
+    "repository": "B:\\ResticRepos\\PC-Local",
+    "password_file": "C:\\BackupConfig\\restic-local-password.txt",
+    "sources_file": "C:\\BackupConfig\\local-sources.txt",
+    "excludes_file": "C:\\BackupConfig\\local-excludes.txt",
+    "status_file": "C:\\BackupConfig\\local-backup-status.json",
+    "log_file": "C:\\BackupConfig\\local-backup.log",
+    "lock_file": "C:\\BackupConfig\\local-backup.lock",
+    "tag": "local-main",
+    "restic_executable": "restic",
+    "default_restore_root": "B:\\ResticRestore",
+    "use_fs_snapshot": true,
+    "exclude_caches": true,
+    "dry_run": false,
+    "not_backup_days": 3.0,
+    "min_cpu_cutoff": 25.0,
+    "max_cpu_cutoff": 85.0,
+    "cpu_sample_seconds": 5.0,
+    "cpu_check_interval_seconds": 300.0,
+    "max_wait_minutes": 60.0,
+    "extra_backup_args": []
+}

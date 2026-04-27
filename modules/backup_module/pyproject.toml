@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "backup-module"
+version = "0.1.0"
+description = "Restic backup, search, restore, and scheduling CLI."
+requires-python = ">=3.10"
+dependencies = [
+    "psutil>=5.9.0"
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0.0"
+]
+
+[project.scripts]
+backup_module = "backup_module.cli:main"
+
+[tool.setuptools]
+packages = ["backup_module"]
+
+[tool.setuptools.package-dir]
+backup_module = "."
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+pythonpath = [
+    ".."
+]   
