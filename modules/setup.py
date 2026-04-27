@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 import re
 import time
+from importlib import metadata
 
 # ─────────────────────────────────────────────────────────
 # TOML support (tomllib on 3.11+, tomli otherwise)
@@ -126,6 +127,32 @@ def _pkg_name_from_source(module_dir: Path, verbose: bool) -> str:
                 log_warning(f"[{fallback}] pyproject.toml parse issue: {type(e).__name__}: {e}")
     return fallback
 
+def _project_version_from_source(module_dir: Path, verbose: bool) -> str | None:
+    pyproject = module_dir / "pyproject.toml"
+    if not pyproject.is_file():
+        return None
+    try:
+        with open(pyproject, "rb") as f:
+            data = tomllib.load(f)
+        if "project" in data and "version" in data["project"]:
+            return str(data["project"]["version"])
+        if "tool" in data and "poetry" in data["tool"] and "version" in data["tool"]["poetry"]:
+            return str(data["tool"]["poetry"]["version"])
+    except Exception as e:
+        if verbose:
+            log_warning(f"[{module_dir.name}] pyproject.toml version parse issue: {type(e).__name__}: {e}")
+    return None
+
+def _installed_pkg_version(pkg_name: str, verbose: bool) -> str | None:
+    try:
+        return metadata.version(pkg_name)
+    except metadata.PackageNotFoundError:
+        return None
+    except Exception as e:
+        if verbose:
+            log_warning(f"metadata.version error for '{pkg_name}': {type(e).__name__}: {e}")
+        return None
+
 def _determine_install_status(module_dir: Path, verbose: bool) -> str | None:
     pkg = _pkg_name_from_source(module_dir, verbose)
     try:
@@ -239,6 +266,37 @@ def _install_requirements(module_name: str, module_dir: Path, reqs: list[str], l
     sys.stdout.flush()
     return num_fail, results
 
+def _torch_cuda_available() -> bool:
+    code = (
+        "import torch; "
+        "raise SystemExit(0 if torch.version.cuda and torch.cuda.is_available() else 1)"
+    )
+    result = subprocess.run([sys.executable, "-c", code], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return result.returncode == 0
+
+def _install_vdedup_gpu_requirements(module_dir: Path, logs_dir: Path, verbose: bool) -> int:
+    if _torch_cuda_available():
+        return 0
+    req_file = module_dir / "requirements-gpu.txt"
+    if not req_file.exists():
+        return 0
+    status_line("vdedup: CUDA torch missing or CPU-only", "warn", "installing GPU requirements")
+    log_file = logs_dir / "vdedup-gpu-requirements-pip.log"
+    cmd = [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--no-input",
+        "--disable-pip-version-check",
+        "--force-reinstall",
+        "-r",
+        str(req_file),
+    ]
+    if not verbose:
+        cmd.insert(4, "-q")
+    return _run_with_log(cmd, log_file, verbose=verbose, heartbeat_every=15.0)
+
 # ─────────────────────────────────────────────────────────
 # Install a module (editable/non-editable), quiet with log
 # ─────────────────────────────────────────────────────────
@@ -315,10 +373,21 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
             if skip_reinstall:
                 current = _determine_install_status(entry, verbose)
                 if current == desired:
-                    status_line(f"{name}: already ({current})", "unchanged", "skip")
-                    # even if we skip, track package name so proxies can be refreshed
-                    touched_pkgs.append(_pkg_name_from_source(entry, verbose))
-                    continue
+                    pkg_name = _pkg_name_from_source(entry, verbose)
+                    source_version = _project_version_from_source(entry, verbose)
+                    installed_version = _installed_pkg_version(pkg_name, verbose)
+                    if pkg_name == "vdedup" and not _torch_cuda_available():
+                        log_info(f"{name}: CUDA torch missing or CPU-only → reinstalling GPU requirements.")
+                    elif source_version and installed_version and source_version != installed_version:
+                        log_info(
+                            f"{name}: installed version {installed_version}, source version {source_version} "
+                            "→ reinstalling."
+                        )
+                    else:
+                        status_line(f"{name}: already ({current})", "unchanged", "skip")
+                        # even if we skip, track package name so proxies can be refreshed
+                        touched_pkgs.append(pkg_name)
+                        continue
                 elif current:
                     log_info(f"{name}: installed as '{current}', but '{desired}' requested → reinstalling.")
                 else:
@@ -344,6 +413,17 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
                 status_line(f"{name}: no requirements.txt — skipped", "unchanged")
 
             # 2) module install (one line per module in non-verbose)
+            if _pkg_name_from_source(entry, verbose) == "vdedup":
+                gpu_rc = _install_vdedup_gpu_requirements(entry, logs_dir, verbose)
+                if gpu_rc != 0:
+                    status_line(
+                        f"{name}: GPU requirements install failed",
+                        "fail",
+                        f"log: {logs_dir / 'vdedup-gpu-requirements-pip.log'}",
+                    )
+                    errors_encountered.append(name)
+                    continue
+
             mode = "editable" if not production else "normal"
             print(f"[•] {name}: pip installing ({mode})" if not _ASCII_UI else f"[-] {name}: pip installing ({mode})")
             rc = _install_module(name, entry, editable=not production, logs_dir=logs_dir, verbose=verbose)

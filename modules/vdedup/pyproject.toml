@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vdedup"
-version = "0.13.0"
+version = "0.16.0"
 description = "Video & file deduplication toolkit with staged pipeline (size → partial+BLAKE3 → SHA-256 → metadata → pHash/subset), resumable cache, and responsive TUI."
 readme = { text = "See repository for usage. Requires ffmpeg/ffprobe on PATH.", content-type = "text/plain" }
 requires-python = ">=3.9"
@@ -24,6 +24,10 @@ dependencies = [
   "Pillow>=9.0.0",
   "ImageHash>=4.3.1",
   "blake3>=0.3.3",
+  "torch>=2.5",
+  "torchvision>=0.20",
+  "numpy>=1.26",
+  "PyNvVideoCodec>=2.1",
 ]
 
 [project.optional-dependencies]
@@ -31,7 +35,12 @@ dev = [
   "pytest>=9.0.3",
   "pytest-cov>=4.0",
 ]
-# GPU decode is provided by your system ffmpeg build; no extra Python deps required.
+gpu = []
+gpu-deep = [
+  "transformers>=4.45",
+  "accelerate>=1.0",
+  "safetensors>=0.4",
+]
 
 [project.scripts]
 video-dedupe = "video_dedupe:main"
@@ -54,3 +63,6 @@ python_functions = ["test_*"]
 # Exclude manual/interactive UI test scripts (renamed with manual_ prefix)
 addopts = "--ignore=manual_test_*.py --basetemp=.pytest_tmp"
 cache_dir = "tests/.pytest_tmp_runtime/.pytest_cache"
+markers = [
+  "gpu: tests that require a real CUDA-capable GPU or GPU runtime",
+]

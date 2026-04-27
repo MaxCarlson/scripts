@@ -213,3 +213,34 @@ def test_cli_gpu_device_id_custom():
     from video_dedupe import parse_args
     args = parse_args(["scan", "-D", ".", "--gpu-device-id", "1"])
     assert args.gpu_device_id == 1
+
+
+def test_cli_doctor_defaults():
+    from video_dedupe import parse_args
+    args = parse_args(["doctor"])
+    assert args.command == "doctor"
+    assert args.gpu == "auto"
+    assert args.gpu_device_id == 0
+
+
+def test_cli_doctor_accepts_gpu_mode_and_device_id():
+    from video_dedupe import parse_args
+    args = parse_args(["doctor", "-g", "on", "-i", "1"])
+    assert args.command == "doctor"
+    assert args.gpu == "on"
+    assert args.gpu_device_id == 1
+
+
+@pytest.mark.gpu
+def test_real_gpu_capability_route_when_runtime_available():
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("PyNvVideoCodec", exc_type=ImportError)
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is not available")
+
+    caps = detect_gpu_capabilities("auto")
+
+    assert caps.torch_available is True
+    assert caps.cuda_available is True
+    assert caps.pynvcodec_available is True
+    assert caps.route_enabled is True

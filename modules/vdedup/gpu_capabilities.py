@@ -10,6 +10,8 @@ detect_gpu_capabilities().
 
 from __future__ import annotations
 
+import contextlib
+import io
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -121,7 +123,8 @@ def detect_gpu_capabilities(
     # ── PyNvVideoCodec detection ─────────────────────────────────────────────
     pynvcodec_available = False
     try:
-        import PyNvVideoCodec  # noqa: F401, PLC0415
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            import PyNvVideoCodec  # noqa: F401, PLC0415
 
         pynvcodec_available = True
     except ImportError:

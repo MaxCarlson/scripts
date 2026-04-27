@@ -32,13 +32,16 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import glob
+import io
 import logging
 import os
 import random
 import re
 import shutil
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -970,6 +973,33 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="[DEPRECATED — no-op] REVIEW groups are applied automatically when actionable=True.",
     )
 
+    # ---- doctor subcommand (read-only runtime diagnostics) ----
+    doctor_p = subs.add_parser(
+        "doctor",
+        help="Check vdedup runtime health, including CUDA/GPU support.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    doctor_p.add_argument(
+        "-g", "--gpu",
+        type=_validate_gpu_mode,
+        default="auto",
+        metavar="{auto,on,off}",
+        help="GPU route mode to validate: auto, on, or off. Default: auto.",
+    )
+    doctor_p.add_argument(
+        "-i", "--gpu-device-id",
+        type=int,
+        default=0,
+        help="CUDA device index to validate (default: 0).",
+    )
+    doctor_p.add_argument(
+        "-v", "--verbosity",
+        type=int,
+        default=1,
+        choices=[0, 1, 2],
+        help="Output verbosity (0-2, default: 1).",
+    )
+
     args = p.parse_args(argv)
     if args.command == "scan":
         _apply_quality_defaults(args)
@@ -1135,7 +1165,103 @@ def _validate_args(args: argparse.Namespace) -> Optional[str]:
         return _validate_view_args(args)
     if args.command == "apply":
         return _validate_apply_args(args)
+    if args.command == "doctor":
+        if getattr(args, "gpu_device_id", 0) < 0:
+            return "--gpu-device-id must be non-negative"
+        return None
     return None
+
+
+def _doctor_line(name: str, value: Any) -> str:
+    return f"{name:<22} {value}"
+
+
+def _run_gpu_doctor(args: argparse.Namespace) -> int:
+    print("video-dedupe doctor")
+    print(_doctor_line("python", sys.executable))
+    print(_doctor_line("python version", sys.version.split()[0]))
+
+    torch_available = False
+    cuda_available = False
+    try:
+        import torch  # noqa: PLC0415
+
+        torch_available = True
+        cuda_available = bool(torch.cuda.is_available())
+        print(_doctor_line("torch", getattr(torch, "__version__", "unknown")))
+        print(_doctor_line("torch cuda build", torch.version.cuda))
+        print(_doctor_line("cuda available", cuda_available))
+        print(_doctor_line("cuda device count", torch.cuda.device_count()))
+        if cuda_available:
+            safe_id = min(args.gpu_device_id, torch.cuda.device_count() - 1)
+            print(_doctor_line("cuda device", torch.cuda.get_device_name(safe_id)))
+            try:
+                free_b, total_b = torch.cuda.mem_get_info(safe_id)
+                print(
+                    _doctor_line(
+                        "cuda vram",
+                        f"{free_b / (1024 ** 3):.1f} GiB free / {total_b / (1024 ** 3):.1f} GiB total",
+                    )
+                )
+            except Exception as exc:
+                print(_doctor_line("cuda vram", f"unavailable ({exc})"))
+    except Exception as exc:
+        print(_doctor_line("torch", f"unavailable ({type(exc).__name__}: {exc})"))
+
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            import PyNvVideoCodec as nvc  # noqa: PLC0415
+
+        print(_doctor_line("PyNvVideoCodec", f"ok ({getattr(nvc, '__file__', 'unknown path')})"))
+    except Exception as exc:
+        print(_doctor_line("PyNvVideoCodec", f"unavailable ({type(exc).__name__}: {exc})"))
+
+    try:
+        nvidia_smi = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            check=False,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=10,
+        )
+        if nvidia_smi.returncode == 0:
+            print(_doctor_line("nvidia-smi", nvidia_smi.stdout.strip() or "ok"))
+        else:
+            detail = (nvidia_smi.stderr or nvidia_smi.stdout or "").strip()
+            print(_doctor_line("nvidia-smi", f"failed ({detail or 'exit ' + str(nvidia_smi.returncode)})"))
+    except Exception as exc:
+        print(_doctor_line("nvidia-smi", f"unavailable ({type(exc).__name__}: {exc})"))
+
+    from vdedup.gpu_capabilities import detect_gpu_capabilities  # noqa: PLC0415
+
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        caps = detect_gpu_capabilities(args.gpu, args.gpu_device_id)
+    print(_doctor_line("gpu mode", caps.requested_mode))
+    print(_doctor_line("gpu route enabled", caps.route_enabled))
+    if caps.device_name:
+        print(_doctor_line("detected device", caps.device_name))
+    if caps.reason_unavailable:
+        print(_doctor_line("reason", caps.reason_unavailable))
+
+    if args.gpu == "off":
+        print("OK: GPU route is intentionally disabled.")
+        return 0
+    if caps.route_enabled:
+        print("OK: GPU route is available for vdedup.")
+        return 0
+
+    if not torch_available:
+        print("FIX: install vdedup GPU requirements into the scripts repo venv.")
+    elif not cuda_available:
+        print("FIX: replace CPU-only torch with a CUDA-enabled PyTorch wheel.")
+    print("Suggested command:")
+    print(
+        r"  C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pip install "
+        r"--force-reinstall -r C:\Users\mcarls\src\scripts\modules\vdedup\requirements-gpu.txt"
+    )
+    return 1
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -1173,6 +1299,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if validation_error:
         print(f"video-dedupe {args.command}: error: {validation_error}", file=sys.stderr)
         return 2
+
+    if args.command == "doctor":
+        return _run_gpu_doctor(args)
 
     # VIEW command — read-only; no output dir, no lock, no file logging needed.
     if args.command == "view":
