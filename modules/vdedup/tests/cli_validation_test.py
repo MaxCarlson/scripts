@@ -305,7 +305,7 @@ def test_view_nonexistent_print_report():
 
 def test_view_nonexistent_analyze_report():
     """view -y with a missing file is caught."""
-    args = parse_args(["view", "-y", "/nonexistent/report.json"])
+    args = parse_args(["view", "-a", "/nonexistent/report.json"])
     error = _validate_args(args)
     assert error is not None
     assert "not found" in error.lower()
@@ -320,7 +320,7 @@ def test_valid_view_args():
         args = parse_args(["view", "-P", str(rp)])
         assert _validate_args(args) is None
 
-        args = parse_args(["view", "-y", str(rp)])
+        args = parse_args(["view", "-a", str(rp)])
         assert _validate_args(args) is None
 
 
@@ -353,7 +353,7 @@ def test_folder_priority_apply_report_args():
         rp.write_text('{"groups": {}}', encoding="utf-8")
         priority = tmp_path / "priority"
 
-        args = parse_args(["apply", "-a", str(rp), "-M", str(priority)])
+        args = parse_args(["apply", "-a", str(rp), "-p", str(priority)])
         assert args.folder_priority == str(priority)
         assert _validate_args(args) is None
 
@@ -361,7 +361,7 @@ def test_folder_priority_apply_report_args():
 def test_folder_priority_requires_apply_report():
     """apply -M without -a returns an error mentioning both flags."""
     with tempfile.TemporaryDirectory() as tmp:
-        args = parse_args(["apply", "-M", tmp])
+        args = parse_args(["apply", "-p", tmp])
         error = _validate_args(args)
         assert error is not None
         # Error should mention both folder-priority and apply-report

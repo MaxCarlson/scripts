@@ -761,38 +761,6 @@ def _build_seed_include_paths(
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    # Shared options inherited by all subcommands (no help so subparsers add their own)
-    shared = argparse.ArgumentParser(add_help=False)
-    shared.add_argument(
-        "-o", "--output-dir", type=str,
-        help="Directory for all outputs (cache, reports, logs). Defaults to current directory.",
-    )
-    shared.add_argument(
-        "-K", "--resume-output", action="store_true",
-        help="Resume a previous run by removing the .vdedup.lock in the output directory.",
-    )
-    shared.add_argument("-L", "--live", action="store_true", help="Show live progress UI.")
-    shared.add_argument(
-        "-l", "--log-level", type=str, default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="File logging level (default: INFO).",
-    )
-    shared.add_argument(
-        "-c", "--console-log-level", type=str, default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Console logging level (default: INFO).",
-    )
-    shared.add_argument("-n", "--no-log-file", action="store_true", help="Disable file logging (console only).")
-    shared.add_argument(
-        "-v", "--verbosity", type=int, default=1, choices=[0, 1, 2],
-        help="Verbosity (0-2, default: 1).",
-    )
-    threads_default = _default_thread_count()
-    shared.add_argument(
-        "-t", "--threads", type=int, default=threads_default,
-        help=f"Worker threads (default: cores-4 → {threads_default}).",
-    )
-
     p = argparse.ArgumentParser(
         prog="video-dedupe",
         description="Find and remove duplicate/similar videos & files using a staged pipeline.",
@@ -802,70 +770,100 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     subs.required = True
 
     # ---- scan subcommand ----
+    # All scan-relevant args live here; nothing is inherited from a shared parent.
+    threads_default = _default_thread_count()
     scan_p = subs.add_parser(
         "scan",
         help="Scan directories for duplicate files.",
-        parents=[shared],
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    # Directories & patterns
     scan_p.add_argument(
         "-D", "--directory", action="append", dest="directories",
         help=(
             "Root directory to scan (repeatable). "
-            "Supports DIR::dN depth suffixes and globs. "
-            "Can be specified multiple times."
+            "Supports DIR::dN depth suffixes and globs."
         ),
     )
     scan_p.add_argument(
         "-p", "--pattern", action="append", default=["*.mp4"],
         help="Glob to include (repeatable, default: *.mp4).",
     )
-    scan_p.add_argument(
-        "-X", "--exclude-pattern", action="append",
-        help="Glob to exclude (repeatable).",
-    )
+    scan_p.add_argument("-X", "--exclude-pattern", action="append", help="Glob to exclude (repeatable).")
     scan_p.add_argument(
         "-r", "--recursive", action="store_true",
         help="Recurse into subdirectories (unlimited) for roots without a ::dN suffix.",
     )
+    # Quality / pipeline
     scan_p.add_argument(
         "-q", "--quality", type=str, default="2",
         help=(
             "Stage selector (default: 2): "
-            "1=size only, 2=hash only, 3=metadata only, 4=pHash, 5=scene, 6=audio, 7=timeline. "
+            "1=size, 2=hash, 3=metadata, 4=pHash, 5=scene, 6=audio, 7=timeline. "
             "Use ranges like 1-2 or 1-5 to combine stages."
         ),
     )
+    # Seed-report scan
     scan_p.add_argument(
         "-R", "--seed-report", type=str,
         help="Load an existing report and force all keep+loser paths into the scan set.",
     )
     scan_p.add_argument(
         "-J", "--seed-random-per-group", type=int, default=0,
-        help=(
-            "When using --seed-report, add up to N extra random files per duplicate group "
-            "from the scan directories. Requires -R/--seed-report."
-        ),
+        help="Add up to N extra random files per group from the scan dirs. Requires -R/--seed-report.",
     )
+    # Sampling & limits
     scan_p.add_argument(
         "-m", "--sample-percent", type=float, default=None,
-        help="Randomly sample this percentage (0-100] of discovered files for faster smoke tests.",
+        help="Randomly sample this percentage (0-100] of discovered files.",
     )
     scan_p.add_argument(
         "-E", "--sample-seed", type=int, default=None,
-        help="Deterministic seed for --sample-percent or --seed-random-per-group selection.",
+        help="Deterministic seed for --sample-percent or --seed-random-per-group.",
     )
     scan_p.add_argument(
         "-N", "--max-duplicates", type=int, default=None,
         help="Stop after finding at least this many duplicate loser files.",
     )
+    # Exclusions
     scan_p.add_argument(
         "-e", "--exclude-by-report", action="append",
         help="Report whose losers are skipped during scan (repeatable).",
     )
-    scan_p.add_argument("-d", "--dry-run", action="store_true", help="No changes; just print / write report.")
+    # Behaviour flags
+    scan_p.add_argument("-d", "--dry-run", action="store_true", help="Do not write report; just print findings.")
     scan_p.add_argument("-g", "--gpu", action="store_true", help="Use GPU acceleration for pHash extraction.")
-
+    scan_p.add_argument("-L", "--live", action="store_true", help="Show live progress UI.")
+    # Output & logging
+    scan_p.add_argument(
+        "-o", "--output-dir", type=str,
+        help="Directory for cache, report, and log files. Defaults to current directory.",
+    )
+    scan_p.add_argument(
+        "-K", "--resume-output", action="store_true",
+        help="Resume a previous run by removing the .vdedup.lock in the output directory.",
+    )
+    scan_p.add_argument(
+        "-l", "--log-level", type=str, default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="File logging level (default: INFO).",
+    )
+    scan_p.add_argument(
+        "-c", "--console-log-level", type=str, default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Console logging level (default: INFO).",
+    )
+    scan_p.add_argument("-n", "--no-log-file", action="store_true", help="Disable file logging.")
+    # Output verbosity and performance (scan-specific)
+    scan_p.add_argument(
+        "-v", "--verbosity", type=int, default=1, choices=[0, 1, 2],
+        help="Output verbosity (0-2, default: 1).",
+    )
+    scan_p.add_argument(
+        "-t", "--threads", type=int, default=threads_default,
+        help=f"Worker threads (default: cores-4 → {threads_default}).",
+    )
+    # Advanced detection options
     adv = scan_p.add_argument_group("advanced options", "Fine-tune detection parameters")
     adv.add_argument(
         "-u", "--duration-tolerance", type=float, default=None,
@@ -888,51 +886,72 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Include partial/incomplete downloads during scan.",
     )
 
-    # ---- view subcommand ----
+    # ---- view subcommand (read-only; no output dir, no logging, no threads) ----
     view_p = subs.add_parser(
         "view",
         help="View or analyze existing deduplication reports.",
-        parents=[shared],
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     view_p.add_argument(
         "-P", "--print-report", action="append",
-        help="Path to a JSON report to pretty-print (repeatable).",
+        help="Pretty-print a JSON report (repeatable).",
     )
     view_p.add_argument(
         "-V", "--view-report", action="append",
-        help="Path to a JSON report to inspect interactively (repeatable).",
+        help="Open a JSON report in the interactive viewer (repeatable).",
     )
     view_p.add_argument(
-        "-y", "--analyze-report", action="append",
-        help="Path to a JSON report to analyze (winner<->loser diffs). Repeatable.",
+        "-a", "--analyze-report", action="append",
+        help="Show winner<->loser stat diffs for a report (repeatable).",
+    )
+    view_p.add_argument(
+        "-v", "--verbosity", type=int, default=1, choices=[0, 1, 2],
+        help="Output verbosity (0-2, default: 1).",
     )
 
     # ---- apply subcommand ----
+    # Intentionally excludes -L/--live (apply always runs non-interactive) and
+    # -t/--threads (apply is single-threaded).
     apply_p = subs.add_parser(
         "apply",
         help="Apply a deduplication report (delete or move losers).",
-        parents=[shared],
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    apply_p.add_argument(
-        "-a", "--apply-report", type=str,
-        help="Path to the JSON report to apply.",
-    )
+    apply_p.add_argument("-a", "--apply-report", type=str, help="Path to the JSON report to apply.")
     apply_p.add_argument("-d", "--dry-run", action="store_true", help="No changes; just print what would happen.")
     apply_p.add_argument("-f", "--force", action="store_true", help="Do not prompt for deletion.")
+    apply_p.add_argument("-b", "--backup", type=str, help="Move losers to this folder instead of deleting.")
     apply_p.add_argument(
-        "-b", "--backup", type=str,
-        help="Move losers to this folder instead of deleting.",
-    )
-    apply_p.add_argument(
-        "-M", "--folder-priority", type=str,
+        "-p", "--folder-priority", type=str,
         help="Move kept files into this folder tree when a duplicate in the group is already there.",
     )
     apply_p.add_argument(
         "-D", "--directory", action="append", dest="directories",
         help="Base directories for relative backup path layout (optional).",
     )
+    apply_p.add_argument(
+        "-v", "--verbosity", type=int, default=1, choices=[0, 1, 2],
+        help="Output verbosity (0-2, default: 1).",
+    )
+    apply_p.add_argument(
+        "-o", "--output-dir", type=str,
+        help="Directory for log file. Defaults to current directory.",
+    )
+    apply_p.add_argument(
+        "-K", "--resume-output", action="store_true",
+        help="Resume a previous run by removing the .vdedup.lock in the output directory.",
+    )
+    apply_p.add_argument(
+        "-l", "--log-level", type=str, default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="File logging level (default: INFO).",
+    )
+    apply_p.add_argument(
+        "-c", "--console-log-level", type=str, default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Console logging level (default: INFO).",
+    )
+    apply_p.add_argument("-n", "--no-log-file", action="store_true", help="Disable file logging.")
 
     args = p.parse_args(argv)
     if args.command == "scan":
@@ -1050,7 +1069,7 @@ def _validate_view_args(args: argparse.Namespace) -> Optional[str]:
         getattr(args, "analyze_report", None),
     ])
     if not has_any:
-        return "view requires at least one of -P/--print-report, -V/--view-report, or -y/--analyze-report"
+        return "view requires at least one of -P/--print-report, -V/--view-report, or -a/--analyze-report"
 
     for attr in ("print_report", "view_report", "analyze_report"):
         paths_list = getattr(args, attr, None)
@@ -1138,24 +1157,33 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"video-dedupe {args.command}: error: {validation_error}", file=sys.stderr)
         return 2
 
-    # Setup output directory and logging
-    output_dir = Path(args.output_dir).expanduser().resolve() if getattr(args, "output_dir", None) else Path.cwd()
+    # VIEW command — read-only; no output dir, no lock, no file logging needed.
+    if args.command == "view":
+        logger = _setup_logging(None, "INFO", "WARNING")
+        if args.view_report:
+            paths = [Path(p).expanduser().resolve() for p in args.view_report]
+            launch_report_viewer(paths)
+        if args.print_report:
+            paths = [Path(p).expanduser().resolve() for p in args.print_report]
+            print(pretty_print_reports(paths, verbosity=int(args.verbosity)))
+        if args.analyze_report:
+            paths = [Path(p).expanduser().resolve() for p in args.analyze_report]
+            print(render_analysis_for_reports(paths, verbosity=1, show_progress=True))
+        return 0
+
+    # SCAN and APPLY: need output dir, logging, and a lock file.
+    output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else Path.cwd()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.command == "scan":
-        log_name = f"vdedup-q{args.quality}.log"
-    elif args.command == "apply":
-        log_name = "vdedup-apply.log"
-    else:
-        log_name = "vdedup-view.log"
+    log_name = f"vdedup-q{args.quality}.log" if args.command == "scan" else "vdedup-apply.log"
     log_file = None if args.no_log_file else output_dir / log_name
     logger = _setup_logging(log_file, args.log_level, args.console_log_level)
 
     logger.info("vdedup %s started: %s", args.command, " ".join(sys.argv[1:]))
     logger.info("Output directory: %s", output_dir)
 
-    # If live UI is enabled, suppress console logging NOW
-    if getattr(args, "live", False):
+    # scan only: live UI suppresses console logging
+    if args.command == "scan" and args.live:
         logger.info("Live UI enabled - suppressing console output")
         for handler in logger.handlers[:]:
             if isinstance(handler, logging.StreamHandler) and handler.stream in (sys.stdout, sys.stderr):
@@ -1165,26 +1193,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if isinstance(handler, logging.StreamHandler) and handler.stream in (sys.stdout, sys.stderr):
                 root_logger.removeHandler(handler)
 
-    # VIEW command — read-only, no lock needed
-    if args.command == "view":
-        if args.view_report:
-            paths = [Path(p).expanduser().resolve() for p in args.view_report]
-            launch_report_viewer(paths)
-
-        if args.print_report:
-            paths = [Path(p).expanduser().resolve() for p in args.print_report]
-            print(pretty_print_reports(paths, verbosity=int(args.verbosity)))
-
-        if args.analyze_report:
-            paths = [Path(p).expanduser().resolve() for p in args.analyze_report]
-            print(render_analysis_for_reports(paths, verbosity=1, show_progress=True))
-
-        logger.info("View command completed")
-        return 0
-
-    # Acquire lock for scan/apply (stateful operations that modify output dir)
+    # Acquire lock for scan/apply (stateful operations that modify the output dir)
     lock_file = output_dir / ".vdedup.lock"
-    if not _acquire_output_lock(lock_file, resume=bool(getattr(args, "resume_output", False)), logger=logger):
+    if not _acquire_output_lock(lock_file, resume=bool(args.resume_output), logger=logger):
         print(f"video-dedupe: error: Another vdedup instance is running in {output_dir}", file=sys.stderr)
         print(f"video-dedupe: error: Lock file: {lock_file}", file=sys.stderr)
         print(
@@ -1196,15 +1207,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # APPLY command
     if args.command == "apply":
         logger.info("Starting APPLY mode: %s", args.apply_report)
-        logger.info("Dry run: %s, Force: %s", getattr(args, "dry_run", False), getattr(args, "force", False))
+        logger.info("Dry run: %s, Force: %s", args.dry_run, args.force)
 
         banner = _banner_text(
             False,
-            dry=getattr(args, "dry_run", False),
+            dry=args.dry_run,
             mode="apply",
-            threads=args.threads,
+            threads=1,   # apply is single-threaded
             gpu=False,
-            backup=getattr(args, "backup", None),
+            backup=args.backup,
         )
         reporter = ProgressReporter(enable_dash=False, refresh_rate=0.25, banner=banner, stacked_ui=None)
         active_reporter = reporter
@@ -1213,7 +1224,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             report_path = Path(args.apply_report).expanduser().resolve()
 
             base_root: Optional[Path] = None
-            if getattr(args, "directories", None):
+            if args.directories:
                 try:
                     base_root = Path(
                         os.path.commonpath(
@@ -1224,17 +1235,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 except Exception as e:
                     logger.warning("Could not compute base root: %s", e)
 
-            backup = Path(args.backup).expanduser().resolve() if getattr(args, "backup", None) else None
-            folder_priority = (
-                Path(args.folder_priority).expanduser().resolve()
-                if getattr(args, "folder_priority", None)
-                else None
-            )
+            backup = Path(args.backup).expanduser().resolve() if args.backup else None
+            folder_priority = Path(args.folder_priority).expanduser().resolve() if args.folder_priority else None
 
             count, size = apply_report(
                 report_path,
-                dry_run=getattr(args, "dry_run", False),
-                force=getattr(args, "force", False),
+                dry_run=args.dry_run,
+                force=args.force,
                 backup=backup,
                 base_root=base_root,
                 vault=None,
@@ -1262,7 +1269,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # SCAN command
     assert args.command == "scan"
 
-    if not getattr(args, "directories", None):
+    if not args.directories:
         logger.error("No directories specified for scanning")
         print(
             "video-dedupe scan: error: at least one -D/--directory is required",
@@ -1290,7 +1297,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 2
 
     patterns = _normalize_patterns(args.pattern)
-    exclude_patterns = _normalize_patterns(getattr(args, "exclude_pattern", None))
+    exclude_patterns = _normalize_patterns(args.exclude_pattern)
     logger.info("File patterns: %s", patterns or "all files")
 
     pipeline_str = _quality_to_pipeline(args.quality)
@@ -1304,38 +1311,37 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     subset_detect_enabled = 4 in parse_pipeline(pipeline_str) and quality_level >= 5
 
     sample_ratio = None
-    if getattr(args, "sample_percent", None) is not None:
+    if args.sample_percent is not None:
         sample_ratio = float(args.sample_percent) / 100.0
 
     cfg = PipelineConfig(
         threads=max(1, int(args.threads)),
-        duration_tolerance=getattr(args, "duration_tolerance", 2.0),
+        duration_tolerance=args.duration_tolerance,
         same_res=False,
         same_codec=False,
         same_container=False,
-        phash_frames=getattr(args, "phash_frames", 5),
-        phash_threshold=getattr(args, "phash_threshold", 12),
+        phash_frames=args.phash_frames,
+        phash_threshold=args.phash_threshold,
         subset_detect=subset_detect_enabled,
-        subset_min_ratio=getattr(args, "subset_min_ratio", 0.10),
-        subset_frame_threshold=max(getattr(args, "phash_threshold", 12), 12),
-        gpu=bool(getattr(args, "gpu", False)),
-        include_partials=bool(getattr(args, "include_partials", False)),
+        subset_min_ratio=args.subset_min_ratio,
+        subset_frame_threshold=max(args.phash_threshold, 12),
+        gpu=bool(args.gpu),
+        include_partials=bool(args.include_partials),
         sample_ratio=sample_ratio,
-        sample_seed=getattr(args, "sample_seed", None),
-        max_duplicates=getattr(args, "max_duplicates", None),
+        sample_seed=args.sample_seed,
+        max_duplicates=args.max_duplicates,
     )
 
     banner = _banner_text(
         True,
-        dry=getattr(args, "dry_run", False),
+        dry=args.dry_run,
         mode=f"Q{args.quality}",
         threads=cfg.threads,
         gpu=cfg.gpu,
         backup=None,
     )
 
-    enable_ui = getattr(args, "live", False)
-    reporter = ProgressReporter(enable_dash=enable_ui, refresh_rate=0.25, banner=banner, stacked_ui=None)
+    reporter = ProgressReporter(enable_dash=args.live, refresh_rate=0.25, banner=banner, stacked_ui=None)
     active_reporter = reporter
     try:
         reporter.start()
@@ -1352,7 +1358,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     # Build exclusion set from reports, if any
     skip_paths: Set[Path] = set()
-    if getattr(args, "exclude_by_report", None):
+    if args.exclude_by_report:
         ex_paths = [Path(p).expanduser().resolve() for p in args.exclude_by_report]
         skip_paths = collect_exclusions(ex_paths)
         if skip_paths:
@@ -1361,14 +1367,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     # Report-seeded include_paths (optional)
     include_paths: Optional[Set[Path]] = None
-    if getattr(args, "seed_report", None):
+    if args.seed_report:
         include_paths = _build_seed_include_paths(
             seed_report=Path(args.seed_report).expanduser().resolve(),
             parsed_specs=parsed_specs,
             patterns=patterns,
             exclude_patterns=exclude_patterns,
-            seed_random_per_group=getattr(args, "seed_random_per_group", 0) or 0,
-            sample_seed=getattr(args, "sample_seed", None),
+            seed_random_per_group=args.seed_random_per_group or 0,
+            sample_seed=args.sample_seed,
             skip_paths=skip_paths,
             logger=logger,
         )
