@@ -368,7 +368,7 @@ def add_status_parser(
 ) -> None:
     parser = subparsers.add_parser(
         "status",
-        help="Print the last backup status JSON.",
+        help="Print backup status and the effective default paths being used.",
     )
     add_common_repository_args(parser)
     parser.add_argument(
@@ -376,6 +376,12 @@ def add_status_parser(
         "--json_output",
         action="store_true",
         help="Print compact JSON output.",
+    )
+    parser.add_argument(
+        "-q",
+        "--raw_status",
+        action="store_true",
+        help="Print only the raw status JSON file payload.",
     )
     parser.set_defaults(handler=handle_status)
 
@@ -551,6 +557,42 @@ def apply_backup_overrides(config: BackupConfig, args: argparse.Namespace) -> No
     config.validate()
 
 
+def build_config_metadata(
+    args: argparse.Namespace, config: BackupConfig
+) -> dict[str, object]:
+    effective_config_path = resolve_default_config_path(
+        getattr(args, "config_path", None)
+    )
+    status_path = Path(config.status_file)
+    log_path = Path(config.log_file)
+    lock_path = Path(config.lock_file)
+
+    return {
+        "config_path": str(effective_config_path),
+        "config_path_exists": effective_config_path.exists(),
+        "repository": config.repository,
+        "password_file": config.password_file,
+        "password_file_exists": Path(config.password_file).exists(),
+        "sources_file": config.sources_file,
+        "sources_file_exists": (
+            Path(config.sources_file).exists() if config.sources_file else False
+        ),
+        "excludes_file": config.excludes_file,
+        "excludes_file_exists": (
+            Path(config.excludes_file).exists() if config.excludes_file else False
+        ),
+        "status_file": config.status_file,
+        "status_file_exists": status_path.exists(),
+        "log_file": config.log_file,
+        "log_file_exists": log_path.exists(),
+        "lock_file": config.lock_file,
+        "lock_file_exists": lock_path.exists(),
+        "tag": config.tag,
+        "restic_executable": config.restic_executable,
+        "default_restore_root": config.default_restore_root,
+    }
+
+
 def handle_backup(args: argparse.Namespace) -> int:
     try:
         config = load_config_with_overrides(args)
@@ -688,7 +730,21 @@ def handle_restore(args: argparse.Namespace) -> int:
 def handle_status(args: argparse.Namespace) -> int:
     try:
         config = load_config_with_overrides(args)
-        payload = read_status(config.status_file)
+        status_payload = read_status(config.status_file)
+
+        if args.raw_status:
+            payload = status_payload
+        else:
+            payload = {
+                "message": (
+                    "No status file exists yet. This is normal until backup_module backup "
+                    "has completed at least once."
+                    if not Path(config.status_file).exists()
+                    else "Status file loaded."
+                ),
+                "effective_config": build_config_metadata(args, config),
+                "status": status_payload,
+            }
 
         if args.json_output:
             print(json.dumps(payload, separators=(",", ":"), sort_keys=True))
@@ -704,6 +760,8 @@ def handle_defaults(args: argparse.Namespace) -> int:
     try:
         config = load_config_with_overrides(args)
         payload = config_to_public_dict(config)
+        payload["config_path"] = str(resolve_default_config_path(args.config_path))
+        payload["config_path_exists"] = Path(payload["config_path"]).exists()
 
         if args.json_output:
             print(json.dumps(payload, separators=(",", ":"), sort_keys=True))
