@@ -651,6 +651,7 @@ def run_pipeline(
     cache: Optional[HashCache] = None,
     reporter: Optional[ProgressReporter] = None,
     skip_paths: Optional[Set[Path]] = None,
+    include_paths: Optional[Set[Path]] = None,
 ) -> GroupResults:
     """
     Execute the selected stages and return a mapping of {group_id: [members]}.
@@ -845,6 +846,12 @@ def run_pipeline(
         skipped_during_enum,
         artifact_skipped,
     )
+
+    if include_paths is not None:
+        include_norm: Set[Path] = {p.expanduser().resolve() for p in include_paths}
+        orig_count = len(files)
+        files = [f for f in files if f.expanduser().resolve() in include_norm]
+        logger.info("include_paths filter: %d → %d files (include set has %d entries)", orig_count, len(files), len(include_norm))
 
     reporter.set_total_files(len(files))
     reporter.update_root_progress(current=None, completed=len(scan_roots), total=len(scan_roots))

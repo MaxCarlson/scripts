@@ -178,3 +178,251 @@ def test_run_pipeline_sampling_honors_seed(monkeypatch, tmp_path: Path) -> None:
     assert recorded["seed"] == 42
     assert recorded["k"] == expected
     assert len(recorded["population"]) == total_files
+
+
+# ──────────────────────────────────────────
+# include_paths tests
+# ──────────────────────────────────────────
+
+
+def test_run_pipeline_include_paths_filters_to_subset(tmp_path: Path) -> None:
+    """include_paths limits pipeline to only the specified files."""
+    root = tmp_path / "incl"
+    a = root / "a.mp4"
+    b = root / "b.mp4"
+    c = root / "c.mp4"
+    _touch(a, b"same_content")
+    _touch(b, b"same_content")  # duplicate of a
+    _touch(c, b"different_content")
+
+    cfg = PipelineConfig(threads=1)
+    reporter = ProgressReporter(enable_dash=False)
+    groups = run_pipeline(
+        roots=[root],
+        patterns=["*.mp4"],
+        max_depth=None,
+        selected_stages=[2],
+        cfg=cfg,
+        reporter=reporter,
+        include_paths={a.resolve(), b.resolve()},  # exclude c
+    )
+
+    # Only a and b were processed; they are exact duplicates → 1 group
+    assert reporter.total_files == 2
+    assert len(groups) == 1
+    members = list(groups.values())[0]
+    member_paths = {m.path.resolve() for m in members}
+    assert c.resolve() not in member_paths
+
+
+def test_run_pipeline_include_paths_none_processes_all(tmp_path: Path) -> None:
+    """include_paths=None (default) processes all discovered files."""
+    root = tmp_path / "all"
+    for i in range(3):
+        _touch(root / f"v{i}.mp4", b"x" * (i + 1))
+
+    cfg = PipelineConfig(threads=1)
+    reporter = ProgressReporter(enable_dash=False)
+    run_pipeline(
+        roots=[root],
+        patterns=["*.mp4"],
+        max_depth=None,
+        selected_stages=[1],
+        cfg=cfg,
+        reporter=reporter,
+        include_paths=None,
+    )
+
+    assert reporter.total_files == 3
+
+
+def test_run_pipeline_include_paths_empty_set_processes_nothing(tmp_path: Path) -> None:
+    """include_paths=set() (empty) means no files pass the filter."""
+    root = tmp_path / "empty"
+    _touch(root / "a.mp4", b"data")
+
+    cfg = PipelineConfig(threads=1)
+    reporter = ProgressReporter(enable_dash=False)
+    run_pipeline(
+        roots=[root],
+        patterns=["*.mp4"],
+        max_depth=None,
+        selected_stages=[1],
+        cfg=cfg,
+        reporter=reporter,
+        include_paths=set(),
+    )
+
+    assert reporter.total_files == 0
+
+
+# ──────────────────────────────────────────
+# Report-seeded scan (_build_seed_include_paths) tests
+# ──────────────────────────────────────────
+
+
+def _write_seed_report(path: Path, keep: Path, losers: List[Path]) -> None:
+    """Write a minimal dedup report for seed scan tests."""
+    import json
+
+    payload = {
+        "summary": {"groups": 1, "losers": len(losers), "size_bytes": 0},
+        "groups": {
+            "hash:abc": {
+                "keep": str(keep),
+                "losers": [str(l) for l in losers],
+                "method": "hash",
+                "evidence": {},
+            }
+        },
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_seed_include_paths_includes_mandatory(tmp_path: Path) -> None:
+    """Seed scan includes all keep+loser paths from the report."""
+    from video_dedupe import _build_seed_include_paths
+    import logging
+
+    root = tmp_path / "scan_dir"
+    root.mkdir()
+    keep = root / "keep.mp4"
+    loser = root / "loser.mp4"
+    other = root / "other.mp4"
+    _touch(keep, b"keep")
+    _touch(loser, b"loser")
+    _touch(other, b"other")
+
+    rp = tmp_path / "report.json"
+    _write_seed_report(rp, keep, [loser])
+
+    logger = logging.getLogger("test")
+    result = _build_seed_include_paths(
+        seed_report=rp,
+        parsed_specs=[(root, None)],
+        patterns=["*.mp4"],
+        exclude_patterns=None,
+        seed_random_per_group=0,
+        sample_seed=None,
+        skip_paths=set(),
+        logger=logger,
+    )
+
+    assert result is not None
+    assert keep.resolve() in result
+    assert loser.resolve() in result
+
+
+def test_seed_include_paths_random_extras_count(tmp_path: Path) -> None:
+    """Random extras are N * group_count, capped at available candidates."""
+    from video_dedupe import _build_seed_include_paths
+    import logging
+
+    root = tmp_path / "scan_dir"
+    root.mkdir()
+    keep = root / "keep.mp4"
+    loser = root / "loser.mp4"
+    _touch(keep, b"keep")
+    _touch(loser, b"loser")
+    # 4 extra candidate files
+    extras = [root / f"extra_{i}.mp4" for i in range(4)]
+    for f in extras:
+        _touch(f, b"x" * extras.index(f))
+
+    rp = tmp_path / "report.json"
+    _write_seed_report(rp, keep, [loser])
+
+    logger = logging.getLogger("test")
+    result = _build_seed_include_paths(
+        seed_report=rp,
+        parsed_specs=[(root, None)],
+        patterns=["*.mp4"],
+        exclude_patterns=None,
+        seed_random_per_group=2,  # 2 extras * 1 group = 2
+        sample_seed=42,
+        skip_paths=set(),
+        logger=logger,
+    )
+
+    assert result is not None
+    # mandatory 2 + random 2 = 4 total
+    assert len(result) == 4
+    assert keep.resolve() in result
+    assert loser.resolve() in result
+
+
+def test_seed_include_paths_random_extras_deterministic(tmp_path: Path) -> None:
+    """Same sample_seed produces the same random extras."""
+    from video_dedupe import _build_seed_include_paths
+    import logging
+
+    root = tmp_path / "scan_dir"
+    root.mkdir()
+    keep = root / "keep.mp4"
+    loser = root / "loser.mp4"
+    _touch(keep, b"keep")
+    _touch(loser, b"loser")
+    for i in range(10):
+        _touch(root / f"extra_{i}.mp4", b"x" * (i + 1))
+
+    rp = tmp_path / "report.json"
+    _write_seed_report(rp, keep, [loser])
+    logger = logging.getLogger("test")
+
+    result_a = _build_seed_include_paths(
+        seed_report=rp,
+        parsed_specs=[(root, None)],
+        patterns=["*.mp4"],
+        exclude_patterns=None,
+        seed_random_per_group=3,
+        sample_seed=99,
+        skip_paths=set(),
+        logger=logger,
+    )
+    result_b = _build_seed_include_paths(
+        seed_report=rp,
+        parsed_specs=[(root, None)],
+        patterns=["*.mp4"],
+        exclude_patterns=None,
+        seed_random_per_group=3,
+        sample_seed=99,
+        skip_paths=set(),
+        logger=logger,
+    )
+
+    assert result_a == result_b
+
+
+def test_seed_include_paths_caps_at_available(tmp_path: Path) -> None:
+    """Random extras are capped when N * groups exceeds available candidates."""
+    from video_dedupe import _build_seed_include_paths
+    import logging
+
+    root = tmp_path / "scan_dir"
+    root.mkdir()
+    keep = root / "keep.mp4"
+    loser = root / "loser.mp4"
+    _touch(keep, b"keep")
+    _touch(loser, b"loser")
+    # Only 1 candidate extra
+    extra = root / "only_extra.mp4"
+    _touch(extra, b"extra")
+
+    rp = tmp_path / "report.json"
+    _write_seed_report(rp, keep, [loser])
+    logger = logging.getLogger("test")
+
+    result = _build_seed_include_paths(
+        seed_report=rp,
+        parsed_specs=[(root, None)],
+        patterns=["*.mp4"],
+        exclude_patterns=None,
+        seed_random_per_group=100,  # wants 100 but only 1 available
+        sample_seed=1,
+        skip_paths=set(),
+        logger=logger,
+    )
+
+    assert result is not None
+    # mandatory 2 + capped 1 extra = 3
+    assert len(result) == 3
