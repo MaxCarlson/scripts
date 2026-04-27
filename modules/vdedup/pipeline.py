@@ -70,8 +70,10 @@ class PipelineConfig:
     subset_detect: bool = False
     subset_min_ratio: float = 0.10  # Aligned with research: ≥10% overlap threshold
     subset_frame_threshold: int = 14
-    # gpu hint for pHash
+    # gpu hint for pHash (set to True by run_pipeline when GPU route is active)
     gpu: bool = False
+    gpu_mode: str = "auto"   # "auto" | "on" | "off" — controls capability detection
+    gpu_device_id: int = 0
     # artifact handling
     include_partials: bool = False
     # sampling
@@ -727,6 +729,51 @@ def run_pipeline(
 
     skip_norm: Set[Path] = {p.expanduser().resolve() for p in skip_paths} if skip_paths else set()
     logger.info(f"Exclusions: {len(skip_norm)} paths")
+
+    # ── GPU capability detection ─────────────────────────────────────────────
+    # Detect and log GPU availability before any stage runs. The GPU route is not
+    # yet implemented for Q4+; this lays the foundation for future GPU stages.
+    if any(s >= 4 for s in selected_stages):
+        try:
+            from vdedup.gpu_capabilities import detect_gpu_capabilities  # lazy, CPU-safe
+            caps = detect_gpu_capabilities(
+                getattr(cfg, "gpu_mode", "auto"),
+                getattr(cfg, "gpu_device_id", 0),
+            )
+            if caps.route_enabled:
+                vram_gib = (caps.total_vram_bytes or 0) / (1024 ** 3)
+                logger.info(
+                    "GPU capability detected: %s, %.1f GiB VRAM (compute %s). "
+                    "GPU Q4+ route is available but not yet active in this build; using CPU path.",
+                    caps.device_name, vram_gib, caps.compute_capability,
+                )
+                reporter.add_log(
+                    f"GPU: {caps.device_name} ({vram_gib:.1f} GiB) detected — CPU Q4+ path active for now.",
+                    level="INFO", source="gpu",
+                )
+                # Set cfg.gpu so existing phash/scene/timeline helpers can use the flag
+                object.__setattr__(cfg, "gpu", True) if hasattr(type(cfg), "__dataclass_fields__") else None
+                try:
+                    cfg.gpu = True  # type: ignore[misc]
+                except Exception:
+                    pass
+            else:
+                logger.info("GPU route unavailable: %s. Using CPU path.", caps.reason_unavailable)
+                reporter.add_log(
+                    f"GPU unavailable: {caps.reason_unavailable}. Using CPU Q4+ path.",
+                    level="INFO", source="gpu",
+                )
+            if getattr(cfg, "gpu_mode", "auto") == "on" and not caps.route_enabled:
+                raise RuntimeError(
+                    f"--gpu on: GPU route unavailable — {caps.reason_unavailable}"
+                )
+        except ImportError:
+            logger.debug("gpu_capabilities module not available; skipping GPU detection.")
+        except RuntimeError:
+            raise
+        except Exception as _e:
+            logger.debug("GPU capability detection failed: %s", _e)
+    # ── End GPU capability detection ─────────────────────────────────────────
 
     reporter.set_stage_plan(_build_stage_plan(sorted(selected_stages)))
     max_stage_selected = max(selected_stages) if selected_stages else 0

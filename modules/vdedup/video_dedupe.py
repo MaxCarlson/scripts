@@ -54,6 +54,7 @@ except ImportError:
     ENFORCER_AVAILABLE = False
 
 # NOTE: absolute imports so the CLI works whether installed or run from source
+from vdedup.gpu_capabilities import validate_gpu_mode as _validate_gpu_mode
 from vdedup.pipeline import PipelineConfig, parse_pipeline, run_pipeline
 from vdedup.progress import ProgressReporter
 from vdedup.cache import HashCache
@@ -832,7 +833,19 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     )
     # Behaviour flags
     scan_p.add_argument("-d", "--dry-run", action="store_true", help="Do not write report; just print findings.")
-    scan_p.add_argument("-g", "--gpu", action="store_true", help="Use GPU acceleration for pHash extraction.")
+    scan_p.add_argument(
+        "-g", "--gpu",
+        type=_validate_gpu_mode,
+        default="auto",
+        metavar="{auto,on,off}",
+        help="GPU route mode: auto (use if available), on (require GPU), off (force CPU). Default: auto.",
+    )
+    scan_p.add_argument(
+        "--gpu-device-id",
+        type=int,
+        default=0,
+        help="CUDA device index to use for GPU operations (default: 0).",
+    )
     scan_p.add_argument("-L", "--live", action="store_true", help="Show live progress UI.")
     # Output & logging
     scan_p.add_argument(
@@ -954,11 +967,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     apply_p.add_argument("-n", "--no-log-file", action="store_true", help="Disable file logging.")
     apply_p.add_argument(
         "-F", "--force-review-required", action="store_true",
-        help=(
-            "Apply review-required groups (e.g. subset/scene/audio matches) that were not fully "
-            "content-verified. Candidate-only groups (Q1 size, Q3 metadata) are NEVER applied "
-            "regardless of this flag."
-        ),
+        help="[DEPRECATED — no-op] REVIEW groups are applied automatically when actionable=True.",
     )
 
     args = p.parse_args(argv)
@@ -1246,11 +1255,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             backup = Path(args.backup).expanduser().resolve() if args.backup else None
             folder_priority = Path(args.folder_priority).expanduser().resolve() if args.folder_priority else None
 
+            if getattr(args, "force_review_required", False):
+                print(
+                    "WARNING: -F/--force-review-required is deprecated and has no effect. "
+                    "REVIEW groups (actionable=True) are applied automatically.",
+                    file=sys.stderr,
+                )
+
             count, size = apply_report(
                 report_path,
                 dry_run=args.dry_run,
                 force=args.force,
-                force_review_required=getattr(args, "force_review_required", False),
                 backup=backup,
                 base_root=base_root,
                 vault=None,
@@ -1334,7 +1349,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         subset_detect=subset_detect_enabled,
         subset_min_ratio=args.subset_min_ratio,
         subset_frame_threshold=max(args.phash_threshold, 12),
-        gpu=bool(args.gpu),
+        gpu=False,          # resolved from gpu_mode by run_pipeline capability detection
+        gpu_mode=args.gpu,
+        gpu_device_id=getattr(args, "gpu_device_id", 0),
         include_partials=bool(args.include_partials),
         sample_ratio=sample_ratio,
         sample_seed=args.sample_seed,

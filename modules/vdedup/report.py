@@ -130,21 +130,32 @@ def load_report(path: Path) -> Dict[str, Any]:
 def pretty_print_reports(paths: List[Path], verbosity: int = 1) -> str:
     if verbosity <= 0:
         # Minimal summary output
-        tot_groups = tot_losers = tot_bytes = 0
+        tot_groups = tot_losers = tot_bytes = tot_review = tot_cand = 0
         lines = []
         for rp in paths:
+            try:
+                raw = json.loads(Path(rp).read_text(encoding="utf-8"))
+            except Exception:
+                raw = {}
             report_groups = load_report_groups(rp)
             group_count = len(report_groups)
             loser_count = sum(g.duplicate_count for g in report_groups)
             reclaim_bytes = sum(g.reclaimable_bytes for g in report_groups)
+            review_count = sum(1 for g in report_groups if g.review_required)
+            cand_count = len(raw.get("candidate_groups") or {})
             tot_groups += group_count
             tot_losers += loser_count
             tot_bytes += reclaim_bytes
-            lines.append(f"{rp}: {group_count} groups, {loser_count} losers, {_fmt_bytes(reclaim_bytes)} reclaimable")
+            tot_review += review_count
+            tot_cand += cand_count
+            parts = [f"{group_count} groups ({review_count} REVIEW)", f"{cand_count} candidates",
+                     f"{loser_count} losers", f"{_fmt_bytes(reclaim_bytes)} reclaimable"]
+            lines.append(f"{rp}: {', '.join(parts)}")
         lines.append("Overall:")
-        lines.append(f"  groups : {tot_groups}")
-        lines.append(f"  losers : {tot_losers}")
-        lines.append(f"  space  : {_fmt_bytes(tot_bytes)}")
+        lines.append(f"  groups     : {tot_groups} ({tot_review} REVIEW)")
+        lines.append(f"  candidates : {tot_cand}")
+        lines.append(f"  losers     : {tot_losers}")
+        lines.append(f"  space      : {_fmt_bytes(tot_bytes)}")
         return "\n".join(lines)
 
     color_output = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
@@ -337,13 +348,13 @@ def apply_report(
     reporter: Any = None,
     verbosity: int = 0,
     full_file_names: bool = False,
-    force_review_required: bool = False,
 ) -> Tuple:
     """
     Apply a report:
 
       • Candidate-only groups (Q1 size, Q3 metadata) are ALWAYS refused.
-      • review_required groups are refused unless force_review_required=True.
+      • actionable=False groups are skipped with a warning.
+      • review_required groups ARE applied (REVIEW is a label, not a gate) but warned.
       • actionable groups require force=True to skip interactive confirmation.
 
       Returns (ops_count, total_bytes_saved_from_losers)
@@ -377,44 +388,36 @@ def apply_report(
             "Re-scan with the current version for best safety.\n"
         )
 
-    # Partition into actionable vs review-required
-    review_gids = [
-        gid for gid, g in groups.items()
-        if _group_is_review_required(gid, g) and not _is_candidate_group(gid, g)
-    ]
+    # Partition: actionable (includes review_required) vs blocked (actionable=False)
     actionable_gids = [
         gid for gid, g in groups.items()
-        if _group_is_actionable(gid, g) and not _group_is_review_required(gid, g)
+        if _group_is_actionable(gid, g)
     ]
-    unknown_gids = [
+    review_gids = [
+        gid for gid in actionable_gids
+        if _group_is_review_required(gid, groups[gid])
+    ]
+    blocked_gids = [
         gid for gid in groups
-        if gid not in review_gids and gid not in actionable_gids
+        if gid not in actionable_gids
     ]
 
-    if unknown_gids:
+    if blocked_gids:
         sys.stderr.write(
-            f"WARNING: {len(unknown_gids)} group(s) have unknown safety status "
-            f"(ids: {unknown_gids[:3]}) and will be skipped.\n"
+            f"WARNING: {len(blocked_gids)} group(s) are not actionable "
+            f"(ids: {blocked_gids[:3]}) and will be skipped.\n"
         )
 
+    # REVIEW groups are applied — REVIEW is a label, not an apply gate.
     if review_gids:
-        if not force_review_required:
-            sys.stderr.write(
-                f"WARNING: {len(review_gids)} group(s) are marked review_required "
-                "(not fully content-verified) and will be SKIPPED.\n"
-                "Use -F/--force-review-required to apply them.\n"
-            )
-            # Remove review-required groups; only apply actionable ones
-            groups = {gid: g for gid, g in groups.items() if gid in actionable_gids}
-        else:
-            sys.stderr.write(
-                f"WARNING: Applying {len(review_gids)} review-required group(s) "
-                "at your request (-F). These were not fully content-verified.\n"
-            )
-            groups = {gid: g for gid, g in groups.items()
-                      if gid in actionable_gids or gid in review_gids}
-    else:
-        groups = {gid: g for gid, g in groups.items() if gid in actionable_gids}
+        mt_list = [groups[gid].get("match_type", "unknown") for gid in review_gids[:3]]
+        sys.stderr.write(
+            f"WARNING: Applying {len(review_gids)} REVIEW group(s) "
+            f"(e.g. {mt_list}) — not fully content-verified. "
+            "Inspect match evidence before deleting originals.\n"
+        )
+
+    groups = {gid: g for gid, g in groups.items() if gid in actionable_gids}
 
     if not groups and not dry_run:
         sys.stderr.write("Nothing to apply (no actionable groups after safety filtering).\n")
@@ -636,7 +639,12 @@ def apply_report(
 
         # Per-group headers (V1+)
         if verbosity >= 1:
-            print(_c(f"[Duplicate Set {idx + 1}]", C_HDR))
+            # Build safety/match_type label for display
+            _review = g.get("review_required", False)
+            _match = g.get("match_type", "")
+            _label = "[REVIEW]" if _review else "[SAFE]"
+            _match_str = f" [{_match}]" if _match else ""
+            print(_c(f"[Duplicate Set {idx + 1}]{_match_str} {_label}", C_HDR))
             if keep:
                 print(f"  KEEP  : {_c(rel_keep, C_KEEP)}")
             print(f"  LOSERS: {len(losers)}")

@@ -949,6 +949,89 @@ def launch_report_viewer(report_paths: Sequence[Path]) -> None:
     list_view.run()
 
 
+def _group_safety_label(gid: str, payload: Dict) -> str:
+    """Return a safety label for a group based on its payload fields."""
+    if payload.get("candidate_only"):
+        return "[CANDIDATE]"
+    if not payload.get("actionable", True):
+        return "[BLOCKED]"
+    if payload.get("review_required"):
+        return "[REVIEW]  "
+    return "[SAFE]    "
+
+
+def _render_safety_section(data: Dict, *, color: bool = True) -> List[str]:
+    """
+    Render a concise safety-labeled section before the main group table.
+    Shows SAFE/REVIEW/CANDIDATE + match_type for every group and candidate group.
+    """
+    ANSI_SAFE = "\033[92m" if color else ""  # green
+    ANSI_REVIEW = "\033[93m" if color else ""  # yellow
+    ANSI_CAND = "\033[90m" if color else ""  # dark grey
+    ANSI_MATCH = "\033[96m" if color else ""  # cyan
+    RESET = "\033[0m" if color else ""
+
+    lines: List[str] = []
+    groups_raw: Dict = data.get("groups") or {}
+    cand_raw: Dict = data.get("candidate_groups") or {}
+    warnings: List = data.get("warnings") or []
+
+    safe_groups = {gid: g for gid, g in groups_raw.items() if not g.get("review_required") and g.get("actionable", True)}
+    review_groups = {gid: g for gid, g in groups_raw.items() if g.get("review_required") and g.get("actionable", True)}
+    blocked_groups = {gid: g for gid, g in groups_raw.items() if not g.get("actionable", True) and not g.get("candidate_only")}
+
+    def _short(path_str: str) -> str:
+        return Path(path_str).name if path_str else "?"
+
+    def _emit_group(gid: str, g: Dict, label_color: str, label: str) -> None:
+        match_type = g.get("match_type", "")
+        match_str = f"{ANSI_MATCH}{match_type}{RESET}" if match_type else ""
+        keep = _short(g.get("keep", ""))
+        n_losers = len(g.get("losers") or [])
+        lines.append(f"  {label_color}{label}{RESET}  {gid}  {match_str}")
+        lines.append(f"          KEEP {keep} → {n_losers} loser(s)")
+
+    if safe_groups or review_groups or blocked_groups or cand_raw:
+        lines.append("══ Safety Overview " + "═" * 50)
+
+    if safe_groups:
+        lines.append(f"{ANSI_SAFE}  Verified Groups (apply-safe){RESET}")
+        for gid, g in safe_groups.items():
+            _emit_group(gid, g, ANSI_SAFE, "[SAFE]")
+
+    if review_groups:
+        lines.append(f"{ANSI_REVIEW}  Review-Required Groups (applied with warning){RESET}")
+        for gid, g in review_groups.items():
+            _emit_group(gid, g, ANSI_REVIEW, "[REVIEW]")
+
+    if blocked_groups:
+        lines.append(f"  Blocked Groups (actionable=False — not applied)")
+        for gid, g in blocked_groups.items():
+            _emit_group(gid, g, "", "[BLOCKED]")
+
+    if cand_raw:
+        lines.append(f"{ANSI_CAND}  Candidate Groups (not apply-safe — content verification needed){RESET}")
+        for cid, c in cand_raw.items():
+            match_type = c.get("match_type", "")
+            match_str = f"{ANSI_MATCH}{match_type}{RESET}" if match_type else ""
+            members = [_short(m) for m in (c.get("members") or [])]
+            next_stage = c.get("recommended_next_stage", "")
+            next_str = f"  → {next_stage}" if next_stage else ""
+            lines.append(f"  {ANSI_CAND}[CANDIDATE]{RESET}  {cid}  {match_str}{next_str}")
+            lines.append(f"          MEMBERS: {', '.join(members[:4])}{'…' if len(members) > 4 else ''}")
+
+    if warnings:
+        lines.append("  Warnings")
+        for w in warnings:
+            lines.append(f"    ⚠ {w}")
+
+    if lines:
+        lines.append("═" * 68)
+        lines.append("")
+
+    return lines
+
+
 def render_reports_to_text(report_paths: Sequence[Path], *, color: bool = True, width: Optional[int] = None) -> str:
     width = width or _term_width()
     lines: List[str] = []
@@ -958,6 +1041,12 @@ def render_reports_to_text(report_paths: Sequence[Path], *, color: bool = True, 
 
     for rp in report_paths:
         rp = Path(rp)
+        # Load raw JSON for safety section
+        try:
+            raw_data = json.loads(rp.read_text(encoding="utf-8"))
+        except Exception:
+            raw_data = {}
+
         groups = load_report_groups(rp)
         manager = DuplicateListManager(groups)
         if manager.groups:
@@ -966,6 +1055,8 @@ def render_reports_to_text(report_paths: Sequence[Path], *, color: bool = True, 
         rows = manager.visible_rows()
 
         lines.append(f"Report: {rp}")
+        # Safety overview (SAFE/REVIEW/CANDIDATE labels + match_type)
+        lines.extend(_render_safety_section(raw_data, color=color))
         lines.append(_column_header(width))
         rendered_rows = render_items_to_text(rows, _formatter, sort_field="", width=width, show_date=True, show_time=True)
         for row, rendered in zip(rows, rendered_rows):
@@ -980,6 +1071,8 @@ def render_reports_to_text(report_paths: Sequence[Path], *, color: bool = True, 
         group_count = len(groups)
         loser_count = sum(g.duplicate_count for g in groups)
         space_bytes = sum(g.reclaimable_bytes for g in groups)
+        cand_count = len(raw_data.get("candidate_groups") or {})
+        review_count = sum(1 for g in groups if g.review_required)
 
         total_groups += group_count
         total_losers += loser_count
@@ -992,9 +1085,11 @@ def render_reports_to_text(report_paths: Sequence[Path], *, color: bool = True, 
             [
                 "",
                 summary_header,
-                f"  groups : {group_count}",
-                f"  losers : {loser_count}",
-                f"  reclaim: {stats_color}{_fmt_bytes(space_bytes)}{reset}",
+                f"  groups        : {group_count}",
+                f"  review (REVIEW): {review_count}",
+                f"  candidates    : {cand_count}",
+                f"  losers        : {loser_count}",
+                f"  reclaim       : {stats_color}{_fmt_bytes(space_bytes)}{reset}",
                 "",
             ]
         )

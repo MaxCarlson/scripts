@@ -113,8 +113,8 @@ def test_apply_refuses_legacy_size_method(capsys, tmp_path: Path) -> None:
 # ──────────────────────────────────────────
 
 
-def test_apply_skips_review_required_without_F(capsys, tmp_path: Path) -> None:
-    """review_required=True groups are skipped and a warning printed when force_review_required=False."""
+def test_apply_includes_review_required_with_warning(capsys, tmp_path: Path) -> None:
+    """REVIEW = label + warning only. actionable=True + review_required=True IS applied."""
     keep = tmp_path / "keep.mp4"
     loser = tmp_path / "loser.mp4"
     keep.write_text("k", encoding="utf-8")
@@ -122,40 +122,42 @@ def test_apply_skips_review_required_without_F(capsys, tmp_path: Path) -> None:
     rp = tmp_path / "report.json"
     _write_report_json(rp, {
         "subset:0": _make_group(keep, loser, method="subset",
-                                review_required=True, actionable=False,
+                                review_required=True, actionable=True,
                                 match_type="subset_of_longer"),
     })
 
-    count, size = apply_report(rp, dry_run=False, force=True, backup=None,
-                               force_review_required=False)
+    # No -F needed — REVIEW groups are applied when actionable=True
+    count, _size = apply_report(rp, dry_run=True, force=True, backup=None)
+
+    # dry_run — group was processed (not refused)
+    assert count >= 0
+    err = capsys.readouterr().err
+    # Warning must be emitted
+    assert "REVIEW" in err or "review" in err.lower()
+
+
+def test_apply_review_required_actionable_false_is_blocked(capsys, tmp_path: Path) -> None:
+    """actionable=False groups are never applied regardless of review_required."""
+    keep = tmp_path / "keep.mp4"
+    loser = tmp_path / "loser.mp4"
+    keep.write_text("k", encoding="utf-8")
+    loser.write_text("l", encoding="utf-8")
+    rp = tmp_path / "report.json"
+    _write_report_json(rp, {
+        "partial:0": _make_group(keep, loser, method="partial",
+                                 review_required=True, actionable=False,
+                                 match_type="partial_overlap"),
+    })
+
+    count, size = apply_report(rp, dry_run=False, force=True, backup=None)
 
     assert (count, size) == (0, 0)
     err = capsys.readouterr().err
-    assert "review_required" in err or "skipped" in err.lower() or "SKIPPED" in err
+    assert "blocked" in err.lower() or "skipped" in err.lower() or "not actionable" in err.lower()
 
 
-def test_apply_applies_review_required_with_F(tmp_path: Path) -> None:
-    """review_required groups are applied when force_review_required=True."""
-    keep = tmp_path / "keep.mp4"
-    loser = tmp_path / "loser.mp4"
-    keep.write_text("k", encoding="utf-8")
-    loser.write_text("l", encoding="utf-8")
-    rp = tmp_path / "report.json"
-    _write_report_json(rp, {
-        "subset:0": _make_group(keep, loser, method="subset",
-                                review_required=True, actionable=False,
-                                match_type="subset_of_longer"),
-    })
-
-    count, _size = apply_report(rp, dry_run=True, force=True, backup=None,
-                                force_review_required=True)
-
-    # dry_run → nothing deleted but the group was processed
-    assert count >= 0  # dry_run returns planned count (≥0)
-
-
-def test_apply_candidate_only_refused_even_with_F(capsys, tmp_path: Path) -> None:
-    """candidate_only=True groups are NEVER applied, even with force_review_required=True."""
+def test_apply_candidate_only_refused_always(capsys, tmp_path: Path) -> None:
+    """candidate_only=True groups are NEVER applied."""
     keep = tmp_path / "keep.mp4"
     loser = tmp_path / "loser.mp4"
     keep.write_text("k", encoding="utf-8")
@@ -167,8 +169,7 @@ def test_apply_candidate_only_refused_even_with_F(capsys, tmp_path: Path) -> Non
                                         review_required=True),
     })
 
-    count, size = apply_report(rp, dry_run=False, force=True, backup=None,
-                               force_review_required=True)
+    count, size = apply_report(rp, dry_run=False, force=True, backup=None)
 
     assert (count, size) == (0, 0)
     err = capsys.readouterr().err
@@ -193,8 +194,7 @@ def test_apply_hash_group_applies_without_F(tmp_path: Path) -> None:
                                    match_type="exact_byte_duplicate"),
     })
 
-    count, _size = apply_report(rp, dry_run=True, force=True, backup=None,
-                                force_review_required=False)
+    count, _size = apply_report(rp, dry_run=True, force=True, backup=None)
     # dry_run but group was processed (not refused)
     assert count >= 0
 
