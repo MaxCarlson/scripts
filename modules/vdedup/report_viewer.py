@@ -424,6 +424,15 @@ def _open_media(
     return False
 
 
+def _format_seconds_as_timestamp(seconds: float) -> str:
+    """Convert seconds to HH:MM:SS string."""
+    s = int(seconds)
+    h = s // 3600
+    m = (s % 3600) // 60
+    sec = s % 60
+    return f"{h:02d}:{m:02d}:{sec:02d}"
+
+
 def _build_provenance_entry(group: DuplicateGroup) -> Optional[DetailEntry]:
     evidence = group.evidence() if hasattr(group, "evidence") else {}
     if not evidence:
@@ -459,6 +468,47 @@ def _build_provenance_entry(group: DuplicateGroup) -> Optional[DetailEntry]:
         for hint_path, ts in sorted(hints.items()):
             if isinstance(ts, (int, float)):
                 body.append(f"Hint {Path(hint_path).name}: {ts:.2f}s")
+
+    # Q5G temporal alignment evidence
+    verified_by = evidence.get("verified_by") or []
+    if "gpu_q5_temporal_alignment" in verified_by:
+        match_type = evidence.get("match_type", "")
+        q5_overlap_s = evidence.get("overlap_seconds")
+        q5_confidence = evidence.get("confidence")
+        q5_ratio_left = evidence.get("overlap_ratio_left")
+        q5_ratio_right = evidence.get("overlap_ratio_right")
+        q5_ratio_shorter = evidence.get("overlap_ratio_shorter")
+        q5_ratio_longer = evidence.get("overlap_ratio_longer")
+        q5_matched = evidence.get("matched_frame_count")
+        q5_mean_dist = evidence.get("mean_hamming_distance")
+        q5_median_dist = evidence.get("median_hamming_distance")
+        segments = evidence.get("segments", [])
+
+        if match_type:
+            body.append(f"Match type : {match_type.replace('_', ' ')}")
+        if isinstance(q5_confidence, (int, float)):
+            body.append(f"Confidence : {q5_confidence * 100:.1f}%")
+        if isinstance(q5_overlap_s, (int, float)):
+            body.append(f"Overlap duration : {q5_overlap_s:.1f}s")
+        if isinstance(q5_ratio_left, (int, float)) and isinstance(q5_ratio_right, (int, float)):
+            body.append(f"Coverage : left {q5_ratio_left * 100:.1f}%  right {q5_ratio_right * 100:.1f}%")
+        if isinstance(q5_ratio_shorter, (int, float)) and isinstance(q5_ratio_longer, (int, float)):
+            body.append(f"Shorter/Longer ratio : {q5_ratio_shorter * 100:.1f}% / {q5_ratio_longer * 100:.1f}%")
+        if isinstance(q5_matched, int):
+            body.append(f"Matched frames : {q5_matched:,}")
+        if isinstance(q5_median_dist, (int, float)):
+            body.append(f"Median Hamming distance : {q5_median_dist:.1f}")
+        elif isinstance(q5_mean_dist, (int, float)):
+            body.append(f"Mean Hamming distance : {q5_mean_dist:.1f}")
+        for i, seg in enumerate(segments[:5]):  # show up to 5 segments
+            sl = _format_seconds_as_timestamp(seg.get("start_left_seconds", 0))
+            el = _format_seconds_as_timestamp(seg.get("end_left_seconds", 0))
+            sr = _format_seconds_as_timestamp(seg.get("start_right_seconds", 0))
+            er = _format_seconds_as_timestamp(seg.get("end_right_seconds", 0))
+            seg_score = seg.get("score", 0)
+            body.append(
+                f"Segment {i + 1}: L {sl}–{el}  R {sr}–{er}  score {seg_score:.3f}"
+            )
 
     if not body:
         body = ["No detector metadata captured"]

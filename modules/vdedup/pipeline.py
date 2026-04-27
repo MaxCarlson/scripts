@@ -85,6 +85,19 @@ class PipelineConfig:
     gpu_q4_full_duplicate_score: float = 0.88
     gpu_q4_candidate_score: float = 0.45
     gpu_q4_min_candidate_matches: int = 4
+    # Q5G temporal alignment
+    gpu_q5_hash_field: str = "auto"
+    gpu_q5_max_hamming_distance: int = 10
+    gpu_q5_offset_bin_seconds: float = 2.0
+    gpu_q5_top_offset_bins: int = 5
+    gpu_q5_max_gap_seconds: float = 4.0
+    gpu_q5_min_segment_seconds: float = 5.0
+    gpu_q5_min_segment_matches: int = 4
+    gpu_q5_full_duplicate_ratio: float = 0.90
+    gpu_q5_subset_ratio: float = 0.85
+    gpu_q5_partial_min_seconds: float = 10.0
+    gpu_q5_partial_min_shorter_ratio: float = 0.10
+    gpu_q5_min_confidence: float = 0.50
     # artifact handling
     include_partials: bool = False
     # sampling
@@ -1624,6 +1637,8 @@ def run_pipeline(
     #   Pass 2 — all-pairs pHash on remaining (non-Q3, or Q3-rejected) videos
     # ----------------------------------------------------------
     _sync_runtime_stages()
+    q4g_result = None  # populated when GPU Q4G route is taken; used by Q5G
+    _q4g_by_path: Dict[Path, "VideoMeta"] = {}  # parallel index for Q5G path→VideoMeta lookup
     if 4 in selected_stages and video_for_q4:
         q4g_completed = False
         if getattr(cfg, "gpu_mode", "auto") != "off" and gpu_caps is not None and getattr(gpu_caps, "route_enabled", False):
@@ -1651,6 +1666,7 @@ def run_pipeline(
                     reporter=reporter,
                 )
                 by_path = {_normalized_path(vm.path): vm for vm in video_for_q4}
+                _q4g_by_path = by_path  # expose for Q5G block below
 
                 for group_id, paths in q4g_result.duplicate_groups.items():
                     members = [by_path[_normalized_path(path)] for path in paths if _normalized_path(path) in by_path]
@@ -2004,6 +2020,94 @@ def run_pipeline(
     elif 4 in selected_stages:
         reporter.set_status("Q4 skipped (stage disabled by upstream filters)")
         reporter.mark_stage_skipped("Q4 pHash")
+
+    # ----------------------------------------------------------
+    # Q5G: Temporal Alignment (GPU route — consumes Q4G candidates)
+    # Runs when GPU Q4G completed and stage 5 is selected.
+    # ----------------------------------------------------------
+    _sync_runtime_stages()
+    q5g_completed = False
+    if 5 in selected_stages and q4g_result is not None and q4g_result.candidate_pairs:
+        try:
+            from vdedup.gpu_q5 import run_q5g  # lazy import; CPU-safe
+            reporter.set_status("Q5G temporal alignment of visual candidates")
+            reporter.start_stage("Q5 temporal alignment", total=len(q4g_result.candidate_pairs))
+            q5g_result = run_q5g(
+                q4g_result.candidate_pairs,
+                q4g_result.signatures_by_path,
+                config=cfg,
+                reporter=reporter,
+            )
+
+            # Merge full-duplicate groups
+            for group_id, paths in q5g_result.duplicate_groups.items():
+                members = [_q4g_by_path[_normalized_path(p)] for p in paths if _normalized_path(p) in _q4g_by_path]
+                if len(members) < 2:
+                    continue
+                groups[group_id] = members
+                groups.metadata[group_id] = dict(q5g_result.group_metadata.get(group_id, {}))
+                for vm in members:
+                    excluded_after_q4.add(_normalized_path(vm.path))
+
+            # Merge subset groups (actionable=True, review_required=True)
+            for group_id, paths in q5g_result.subset_groups.items():
+                members = [_q4g_by_path[_normalized_path(p)] for p in paths if _normalized_path(p) in _q4g_by_path]
+                if len(members) < 2:
+                    continue
+                groups[group_id] = members
+                groups.metadata[group_id] = dict(q5g_result.subset_metadata.get(group_id, {}))
+
+            # Merge partial overlap groups (actionable=False)
+            for group_id, paths in q5g_result.overlap_groups.items():
+                members = [_q4g_by_path[_normalized_path(p)] for p in paths if _normalized_path(p) in _q4g_by_path]
+                if len(members) < 2:
+                    continue
+                groups[group_id] = members
+                meta = dict(q5g_result.overlap_metadata.get(group_id, {}))
+                meta["actionable"] = False  # enforce non-actionable for apply safety
+                groups.metadata[group_id] = meta
+
+            formed_q5g = (
+                len(q5g_result.duplicate_groups)
+                + len(q5g_result.subset_groups)
+                + len(q5g_result.overlap_groups)
+            )
+            if formed_q5g:
+                reporter.inc_group("phash", formed_q5g)
+            if q5g_result.alignment_failures:
+                reporter.add_log(
+                    f"Q5G: {len(q5g_result.alignment_failures):,} pair(s) failed alignment",
+                    level="WARNING",
+                    source="gpu",
+                )
+            reporter.update_stage_metrics(
+                "Q5 temporal alignment",
+                backend="q5g",
+                full_duplicates=f"{len(q5g_result.duplicate_groups):,}",
+                subsets=f"{len(q5g_result.subset_groups):,}",
+                partial_overlaps=f"{len(q5g_result.overlap_groups):,}",
+                rejected=f"{q5g_result.candidate_pairs_rejected:,}",
+            )
+            reporter.finish_stage("Q5 temporal alignment")
+            reporter.flush()
+            q5g_completed = True
+        except Exception as exc:
+            if getattr(cfg, "gpu_mode", "auto") == "on":
+                raise RuntimeError(f"--gpu on: Q5G failed — {exc}") from exc
+            reporter.add_log(
+                f"Q5G failed ({exc}); skipping temporal alignment.",
+                level="WARNING",
+                source="gpu",
+            )
+    elif 5 in selected_stages and q4g_result is not None and not q4g_result.candidate_pairs:
+        reporter.set_status("Q5G skipped (no Q4G candidate pairs)")
+    elif 5 in selected_stages and q4g_result is None:
+        # Q4G did not run — either GPU is off or Q4 was skipped
+        if getattr(cfg, "gpu_mode", "auto") == "on" and 4 in selected_stages:
+            raise NotImplementedError(
+                "Q5G requires GPU Q4G (stage 4 with --gpu on). "
+                "Ensure Q4G succeeded before requesting stage 5."
+            )
 
     # ----------------------------------------------------------
     # Q5: Scene-aware fingerprinting (advanced visual matching)

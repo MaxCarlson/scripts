@@ -49,6 +49,7 @@ class Q4GResult:
     candidate_metadata: Dict[str, Dict[str, object]] = field(default_factory=dict)
     candidate_pairs: List[VisualCandidatePair] = field(default_factory=list)
     rejected_pairs: List[VisualCandidatePair] = field(default_factory=list)
+    signatures_by_path: Dict[Path, "VideoSignature"] = field(default_factory=dict)
     signature_count: int = 0
     extraction_failures: Dict[str, str] = field(default_factory=dict)
     cache_hits: int = 0
@@ -452,6 +453,7 @@ def run_q4g(
     verified_pairs, candidate_pairs, rejected_pairs = _classify_pairs(signatures, pair_sources, config=config)
     result.candidate_pairs = candidate_pairs
     result.rejected_pairs = rejected_pairs
+    result.signatures_by_path = signatures
 
     components = merge_duplicate_pairs(verified_pairs)
     verified_by_pair = {normalize_pair(pair.left, pair.right): pair for pair in verified_pairs}
