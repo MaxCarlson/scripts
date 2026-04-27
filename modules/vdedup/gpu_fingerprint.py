@@ -90,6 +90,13 @@ def _pack_bits(bits: List[bool]) -> int:
     return int(value)
 
 
+def _image_flat_data(image: Any) -> List[Any]:
+    getter = getattr(image, "get_flattened_data", None)
+    if getter is not None:
+        return list(getter())
+    return list(image.getdata())
+
+
 def _torch_normalize_batch(frames: List[Any]) -> Any:
     torch = _import_torch()
     tensors = []
@@ -156,7 +163,7 @@ def _compute_phash64_pil(frame: Any) -> int:
     from PIL import Image  # noqa: PLC0415
 
     image = _frame_to_pil(frame).resize((PHASH_RESIZE_SIZE, PHASH_RESIZE_SIZE), resample=Image.Resampling.BILINEAR)
-    pixels = list(image.getdata())
+    pixels = _image_flat_data(image)
     luma = [
         [
             (
@@ -227,7 +234,7 @@ def compute_frame_quality(frames: List[Any], use_gpu: bool = True) -> List[Tuple
     qualities: List[Tuple[float, float]] = []
     for frame in frames:
         image = _frame_to_pil(frame).convert("L").resize((64, 64))
-        values = [pixel / 255.0 for pixel in image.getdata()]
+        values = [pixel / 255.0 for pixel in _image_flat_data(image)]
         entropy, mean_luma, _std_luma = _quality_from_luma_values(values)
         qualities.append((float(entropy), float(mean_luma)))
     return qualities
@@ -235,7 +242,7 @@ def compute_frame_quality(frames: List[Any], use_gpu: bool = True) -> List[Tuple
 
 def _compute_frame_std_luma(frame: Any) -> float:
     image = _frame_to_pil(frame).convert("L").resize((64, 64))
-    values = [pixel / 255.0 for pixel in image.getdata()]
+    values = [pixel / 255.0 for pixel in _image_flat_data(image)]
     _entropy, _mean_luma, std_luma = _quality_from_luma_values(values)
     return float(std_luma)
 

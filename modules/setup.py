@@ -266,21 +266,27 @@ def _install_requirements(module_name: str, module_dir: Path, reqs: list[str], l
     sys.stdout.flush()
     return num_fail, results
 
-def _torch_cuda_available() -> bool:
+def _package_installed(package_name: str) -> bool:
+    return _installed_pkg_version(package_name, verbose=False) is not None
+
+def _torch_cuda_build_installed() -> bool:
     code = (
         "import torch; "
-        "raise SystemExit(0 if torch.version.cuda and torch.cuda.is_available() else 1)"
+        "raise SystemExit(0 if torch.version.cuda else 1)"
     )
     result = subprocess.run([sys.executable, "-c", code], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return result.returncode == 0
 
+def _vdedup_gpu_requirements_installed() -> bool:
+    return _torch_cuda_build_installed() and _package_installed("PyNvVideoCodec")
+
 def _install_vdedup_gpu_requirements(module_dir: Path, logs_dir: Path, verbose: bool) -> int:
-    if _torch_cuda_available():
+    if _vdedup_gpu_requirements_installed():
         return 0
     req_file = module_dir / "requirements-gpu.txt"
     if not req_file.exists():
         return 0
-    status_line("vdedup: CUDA torch missing or CPU-only", "warn", "installing GPU requirements")
+    status_line("vdedup: GPU requirements missing or CPU-only torch", "warn", "installing GPU requirements")
     log_file = logs_dir / "vdedup-gpu-requirements-pip.log"
     cmd = [
         sys.executable,
@@ -376,8 +382,8 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
                     pkg_name = _pkg_name_from_source(entry, verbose)
                     source_version = _project_version_from_source(entry, verbose)
                     installed_version = _installed_pkg_version(pkg_name, verbose)
-                    if pkg_name == "vdedup" and not _torch_cuda_available():
-                        log_info(f"{name}: CUDA torch missing or CPU-only → reinstalling GPU requirements.")
+                    if pkg_name == "vdedup" and not _vdedup_gpu_requirements_installed():
+                        log_info(f"{name}: GPU requirements missing or CPU-only torch → reinstalling.")
                     elif source_version and installed_version and source_version != installed_version:
                         log_info(
                             f"{name}: installed version {installed_version}, source version {source_version} "

@@ -742,6 +742,14 @@ def run_pipeline(
             )
             if caps.route_enabled:
                 vram_gib = (caps.total_vram_bytes or 0) / (1024 ** 3)
+                reporter.set_gpu_status(
+                    available=True,
+                    active=False,
+                    name=caps.device_name,
+                    free_vram_bytes=caps.free_vram_bytes,
+                    total_vram_bytes=caps.total_vram_bytes,
+                    device_id=getattr(cfg, "gpu_device_id", 0),
+                )
                 logger.info(
                     "GPU capability detected: %s, %.1f GiB VRAM (compute %s). "
                     "GPU Q4+ route is available but not yet active in this build; using CPU path.",
@@ -758,6 +766,12 @@ def run_pipeline(
                 except Exception:
                     pass
             else:
+                reporter.set_gpu_status(
+                    available=False,
+                    active=False,
+                    reason=caps.reason_unavailable,
+                    device_id=getattr(cfg, "gpu_device_id", 0),
+                )
                 logger.info("GPU route unavailable: %s. Using CPU path.", caps.reason_unavailable)
                 reporter.add_log(
                     f"GPU unavailable: {caps.reason_unavailable}. Using CPU Q4+ path.",
@@ -1175,8 +1189,11 @@ def run_pipeline(
             reporter.flush()
             return groups
 
-        # Escalate only partial buckets that still collide
-        to_full: List[FileMeta] = [m for lst in partial_map.values() if len(lst) > 1 for m in lst]
+        # Escalate only partial buckets that still collide. Keep buckets separate so
+        # --max-duplicates can stop early instead of hashing every collision first.
+        full_buckets: List[List[FileMeta]] = [lst for lst in partial_map.values() if len(lst) > 1]
+        full_buckets.sort(key=lambda bucket: (-len(bucket), -max((m.size for m in bucket), default=0)))
+        to_full: List[FileMeta] = [m for lst in full_buckets for m in lst]
 
         reporter.start_stage("Q2 full hash", total=len(to_full))
         reporter.set_status("Q2 full hash (BLAKE3/SHA-256)")
@@ -1229,11 +1246,20 @@ def run_pipeline(
                     pass  # Only catch specific UI threading issues
                 return m, None, False
 
+        formed = 0
+        duplicate_members = 0
+
         if to_full:
-            # Multi-threaded full hash computation with progress tracking
+            # Full-file hashing is I/O-heavy. Keep concurrency lower than metadata/pHash
+            # stages to avoid starving HDDs or network-backed folders.
             hash_algo = "BLAKE3" if _BLAKE3_AVAILABLE else "SHA-256"
+            full_hash_workers = max(1, min(int(cfg.threads), 4))
             logger.info(
-                f"Starting {hash_algo} full hash computation for {len(to_full):,} files using {cfg.threads} threads"
+                "Starting %s full hash computation for %s files in %s collision bucket(s) using %s workers",
+                hash_algo,
+                f"{len(to_full):,}",
+                f"{len(full_buckets):,}",
+                full_hash_workers,
             )
 
             # Thread-safe counter for progress
@@ -1254,37 +1280,52 @@ def run_pipeline(
                             f"{hash_algo} hashing: {current:,}/{len(to_full):,} ({pct:.1f}%) - {cfg.threads} workers"
                         )
 
-                    # Update UI every 10 files
-                    if current % 10 == 0:
-                        reporter.update_progress_periodically(current, len(to_full))
+                    reporter.update_progress_periodically(current, len(to_full))
 
                 return result
 
-            # Execute with thread pool
-            with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.threads) as ex:
-                for m_result, full_hash, _hit in ex.map(_do_full_tracked, to_full):
-                    if full_hash:
-                        by_hash[full_hash].append(m_result)
-
-            # Final update
-        reporter.update_progress_periodically(len(to_full), len(to_full), force_update=True)
-        hash_algo = "BLAKE3" if _BLAKE3_AVAILABLE else "SHA-256"
-        logger.info(f"{hash_algo} complete: {len(by_hash):,} unique full hashes using {cfg.threads} threads")
-
-        # Form groups from exact hashes and mark **all members** excluded for later stages
-        formed = 0
-        duplicate_members = 0
-        for h, lst in by_hash.items():
-            if len(lst) > 1:
-                gid = f"hash:{h}"
-                groups[gid] = lst
-                _annotate_group(groups, gid)
-                for fm in lst:
-                    excluded_after_q2.add(_normalized_path(fm.path))
-                formed += 1
-                duplicate_members += max(0, len(lst) - 1)
-                if _max_duplicates_reached():
+            for bucket_index, bucket in enumerate(full_buckets, start=1):
+                if reporter.should_quit() or _max_duplicates_reached():
                     break
+                reporter.update_stage_metrics(
+                    "Q2 full hash",
+                    bucket=f"{bucket_index:,}/{len(full_buckets):,}",
+                    bucket_files=f"{len(bucket):,}",
+                    completed=f"{completed_count[0]:,}/{len(to_full):,}",
+                    workers=f"{min(full_hash_workers, len(bucket)):,}",
+                )
+                bucket_by_hash: Dict[str, List[FileMeta]] = defaultdict(list)
+                workers = max(1, min(full_hash_workers, len(bucket)))
+                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+                    future_map = {ex.submit(_do_full_tracked, m): m for m in bucket}
+                    for future in concurrent.futures.as_completed(future_map):
+                        if reporter.should_quit():
+                            break
+                        try:
+                            m_result, full_hash, _hit = future.result()
+                        except Exception:
+                            continue
+                        if full_hash:
+                            by_hash[full_hash].append(m_result)
+                            bucket_by_hash[full_hash].append(m_result)
+
+                for h, lst in bucket_by_hash.items():
+                    if len(lst) > 1:
+                        gid = f"hash:{h}"
+                        groups[gid] = lst
+                        _annotate_group(groups, gid)
+                        for fm in lst:
+                            excluded_after_q2.add(_normalized_path(fm.path))
+                        formed += 1
+                        duplicate_members += max(0, len(lst) - 1)
+                        if _max_duplicates_reached():
+                            break
+
+        final_done = len(to_full) if not (_max_duplicates_reached() or reporter.should_quit()) else completed_count[0]
+        reporter.update_progress_periodically(final_done, len(to_full), force_update=True)
+        hash_algo = "BLAKE3" if _BLAKE3_AVAILABLE else "SHA-256"
+        logger.info(f"{hash_algo} complete: {len(by_hash):,} unique full hashes using limited full-hash workers")
+
         if formed:
             reporter.inc_group("hash", formed)
         if duplicate_members:

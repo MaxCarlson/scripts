@@ -267,7 +267,7 @@ def _normalize_patterns(patts: Optional[List[str]]) -> Optional[List[str]]:
 
 def _banner_text(scan: bool, *, dry: bool, mode: str, threads: int, gpu: bool, backup: Optional[str]) -> str:
     rt = f"{'SCAN' if scan else 'APPLY'} {'DRY' if dry else 'LIVE'}"
-    b = f"Run: {rt}  |  Mode: {mode}  |  Threads: {threads}  |  GPU: {'ON' if gpu else 'OFF'}"
+    b = f"Run: {rt}  |  Mode: {mode}  |  Threads: {threads}"
     if backup:
         b += f"  |  Backup: {backup}"
     return b
@@ -1272,21 +1272,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # Set up signal handling for proper Ctrl+C behavior
     def signal_handler(sig, frame):
         nonlocal quit_requested, active_reporter
-        if quit_requested:
-            print("\n\nForce quitting...", file=sys.stderr)
-            os._exit(1)
-
         quit_requested = True
-        print("\n\n=== Interrupt detected! Shutting down... ===", file=sys.stderr)
-        print("(Press Ctrl+C again to force quit)", file=sys.stderr)
-
+        print("\n\n=== Ctrl+C received: quitting now ===", file=sys.stderr)
         if active_reporter:
             try:
                 active_reporter._quit_evt.set()
-                active_reporter.add_log("User requested shutdown (Ctrl+C)", "WARNING", source="signals")
-                active_reporter.stop()
-            except Exception as e:
-                print(f"Error during cleanup: {e}", file=sys.stderr)
+                active_reporter._stop_evt.set()
+                active_reporter._control_stop.set()
+                active_reporter._heartbeat_stop.set()
+            except Exception:
+                pass
+        os._exit(130)
 
     signal.signal(signal.SIGINT, signal_handler)
     if hasattr(signal, "SIGTERM"):

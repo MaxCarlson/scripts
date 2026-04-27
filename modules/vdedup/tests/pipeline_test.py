@@ -119,6 +119,38 @@ def test_run_pipeline_max_duplicates_limits_size_only_groups(tmp_path: Path) -> 
     assert len(groups.candidate_groups) >= 1
 
 
+def test_run_pipeline_q2_stops_full_hashing_after_duplicate_limit(monkeypatch, tmp_path: Path) -> None:
+    root = tmp_path / "q2_limited"
+    payloads = [b"largest duplicate", b"medium duplicate", b"small duplicate"]
+    for group_idx, payload in enumerate(payloads):
+        _touch(root / f"dup_{group_idx}_a.mp4", payload)
+        _touch(root / f"dup_{group_idx}_b.mp4", payload)
+
+    calls: List[Path] = []
+    original_full_hash = pipeline_mod._blake3_full_file
+
+    def _counting_full_hash(path: Path) -> str:
+        calls.append(path)
+        return original_full_hash(path)
+
+    monkeypatch.setattr(pipeline_mod, "_blake3_full_file", _counting_full_hash)
+
+    cfg = PipelineConfig(threads=8, max_duplicates=1)
+    reporter = ProgressReporter(enable_dash=False)
+    groups = run_pipeline(
+        roots=[root],
+        patterns=["*.mp4"],
+        max_depth=None,
+        selected_stages=[1, 2],
+        cfg=cfg,
+        cache=None,
+        reporter=reporter,
+    )
+
+    assert len(groups) == 1
+    assert len(calls) == 2
+
+
 def test_run_pipeline_sampling_reduces_discovery(tmp_path: Path) -> None:
     root = tmp_path / "samples"
     for idx in range(10):

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import select
+import subprocess
 import sys
 import threading
 import time
@@ -222,6 +223,7 @@ class ProgressReporter:
         self._control_stop = threading.Event()
         self._key_reader: Optional[_KeyReader] = None
         self._stage_ceiling = 0
+        self._quit_confirm_pending = False
 
         # Last print time for throttling
         self._last_print = 0.0
@@ -250,6 +252,17 @@ class ProgressReporter:
         self.low_confidence = 0
         self.penalty_counts: Dict[str, int] = {}
 
+        # GPU telemetry
+        self.gpu_available = False
+        self.gpu_active = False
+        self.gpu_name = ""
+        self.gpu_reason = ""
+        self.gpu_free_vram_bytes: Optional[int] = None
+        self.gpu_total_vram_bytes: Optional[int] = None
+        self.gpu_util_percent: Optional[int] = None
+        self._gpu_device_id = 0
+        self._gpu_last_probe_ts = 0.0
+
     # ------------------------------------------------------------------ public API
 
     def start(self) -> None:
@@ -273,6 +286,30 @@ class ProgressReporter:
         """Update status line."""
         with self.lock:
             self.status_line = text
+        self._print_if_due()
+
+    def set_gpu_status(
+        self,
+        *,
+        available: bool,
+        active: bool,
+        name: Optional[str] = None,
+        reason: Optional[str] = None,
+        free_vram_bytes: Optional[int] = None,
+        total_vram_bytes: Optional[int] = None,
+        util_percent: Optional[int] = None,
+        device_id: int = 0,
+    ) -> None:
+        """Update GPU availability and whether the current pipeline route is actively using it."""
+        with self.lock:
+            self.gpu_available = bool(available)
+            self.gpu_active = bool(active)
+            self.gpu_name = name or ""
+            self.gpu_reason = reason or ""
+            self.gpu_free_vram_bytes = free_vram_bytes
+            self.gpu_total_vram_bytes = total_vram_bytes
+            self.gpu_util_percent = util_percent
+            self._gpu_device_id = max(0, int(device_id))
         self._print_if_due()
 
     def set_stage_plan(self, names: Sequence[str]) -> None:
@@ -698,7 +735,9 @@ class ProgressReporter:
         self._control_stop = threading.Event()
         self._control_thread = threading.Thread(target=self._control_loop, daemon=True)
         self._control_thread.start()
-        self._record_control_event("Controls: P=Pause, +=Extend, S=Stop, Q=Abort, 1/2/3=Log filter, PgUp/PgDn=Scroll")
+        self._record_control_event(
+            "Controls: P=Pause, +=Extend, S=Graceful stop, Q=Quit prompt, Ctrl+Q=Quit now"
+        )
 
     def _start_heartbeat(self) -> None:
         if self._heartbeat_thread or not self.enable_dash:
@@ -757,6 +796,9 @@ class ProgressReporter:
 
     def _handle_control_key(self, raw_key: str) -> None:
         """Map key presses to control actions."""
+        if raw_key in {"\x11", "\x03"}:
+            self._hard_abort("Ctrl+Q" if raw_key == "\x11" else "Ctrl+C")
+            return
         if raw_key == "PAGE_UP":
             self._scroll_logs(1)
             return
@@ -764,6 +806,18 @@ class ProgressReporter:
             self._scroll_logs(-1)
             return
         key = raw_key.lower()
+        if self._quit_confirm_pending:
+            if key == "y":
+                self._hard_abort("Q confirmation")
+                return
+            if key == "n" or raw_key == "\x1b":
+                self._quit_confirm_pending = False
+                self._record_control_event("Quit cancelled")
+                self.add_log("Quit cancelled via dashboard controls", "INFO", source="controls")
+                return
+            self._record_control_event("Quit? Press Y to quit now, N to cancel")
+            self._print_if_due()
+            return
         if key == "p":
             self._toggle_pause()
             return
@@ -773,10 +827,14 @@ class ProgressReporter:
             self.add_log("Stop requested via dashboard controls", "WARNING", source="controls")
             return
         if key == "q":
-            self._quit_evt.set()
-            self._stop_evt.set()
-            self._record_control_event("Abort requested (Q)")
-            self.add_log("Abort requested via dashboard controls", "ERROR", source="controls")
+            self._quit_confirm_pending = True
+            self._record_control_event("Quit now? Y/N")
+            self.add_log(
+                "Quit confirmation requested (Q). Press Y to quit now, N to cancel.",
+                "WARNING",
+                source="controls",
+            )
+            self._print_now()
             return
         if key == "+":
             self.request_stage_extension()
@@ -797,8 +855,29 @@ class ProgressReporter:
             self.add_log("Pipeline resumed via dashboard controls", "INFO", source="controls")
         self._print_if_due()
 
+    def _hard_abort(self, source: str) -> None:
+        """Terminate the process immediately from an interactive dashboard request."""
+        self._quit_evt.set()
+        self._stop_evt.set()
+        self._control_stop.set()
+        self._heartbeat_stop.set()
+        self._record_control_event(f"Immediate quit requested ({source})")
+        try:
+            if self._live:
+                self._live.stop()
+        except Exception:
+            pass
+        try:
+            self.console.print(
+                Panel(Text(f"Immediate quit requested ({source})", style="bold red"), border_style="red")
+            )
+        except Exception:
+            pass
+        os._exit(130)
+
     def _render_layout(self) -> Layout:
         """Build the main dashboard layout."""
+        self._maybe_refresh_gpu_telemetry()
         with self.lock:
             elapsed = max(0.0, time.time() - self.start_ts)
             stage_elapsed = max(0.0, time.time() - self.stage_start_ts)
@@ -839,11 +918,28 @@ class ProgressReporter:
             low_confidence = self.low_confidence
             detector_counts = dict(self.detector_counts)
             penalty_counts = dict(self.penalty_counts)
+            gpu_snapshot = {
+                "available": self.gpu_available,
+                "active": self.gpu_active,
+                "name": self.gpu_name,
+                "reason": self.gpu_reason,
+                "free_vram_bytes": self.gpu_free_vram_bytes,
+                "total_vram_bytes": self.gpu_total_vram_bytes,
+                "util_percent": self.gpu_util_percent,
+            }
 
         layout = Layout()
         layout.split_column(
             Layout(
-                self._render_header(elapsed, stage_elapsed, pct, stage_position, stage_total_count, stage_eta),
+                self._render_header(
+                    elapsed,
+                    stage_elapsed,
+                    pct,
+                    stage_position,
+                    stage_total_count,
+                    stage_eta,
+                    gpu_snapshot,
+                ),
                 size=7,
             ),
             Layout(name="body", ratio=1),
@@ -854,6 +950,7 @@ class ProgressReporter:
                     score_hist=score_hist_snapshot,
                     detector_counts=detector_counts,
                     penalty_counts=penalty_counts,
+                    gpu_snapshot=gpu_snapshot,
                 ),
                 size=10,
             ),
@@ -872,6 +969,7 @@ class ProgressReporter:
                     low_confidence,
                     detector_counts,
                     penalty_counts,
+                    gpu_snapshot,
                 ),
                 ratio=3,
             ),
@@ -886,6 +984,7 @@ class ProgressReporter:
         stage_position: int,
         stage_total_count: int,
         stage_eta: Optional[float],
+        gpu_snapshot: Dict[str, Any],
     ) -> Panel:
         """Pipeline headline with progress bar."""
         table = Table.grid(expand=True)
@@ -915,7 +1014,13 @@ class ProgressReporter:
             status.append("STOPPING ", style="bold red")
         status.append(self.status_line, style="italic magenta")
         banner = Text(self.banner, style="dim") if self.banner else Text("")
-        table.add_row(status, banner)
+        gpu_text = self._gpu_status_text(gpu_snapshot)
+        right = Text()
+        if banner:
+            right.append_text(banner)
+            right.append("  |  ", style="dim")
+        right.append_text(gpu_text)
+        table.add_row(status, right)
 
         return Panel(table, title="Video Deduplication Pipeline", border_style="cyan")
 
@@ -977,6 +1082,7 @@ class ProgressReporter:
         low_confidence: int,
         detector_counts: Dict[str, int],
         penalty_counts: Dict[str, int],
+        gpu_snapshot: Dict[str, Any],
     ) -> Panel:
         """Render global statistics."""
         table = Table.grid(expand=True)
@@ -1019,7 +1125,14 @@ class ProgressReporter:
             ("Low Confidence (<0.5)", f"{low_confidence}"),
             ("Detectors", detector_text or "--"),
             ("Penalties", penalty_text or "--"),
+            ("GPU Available", "YES" if gpu_snapshot["available"] else "NO"),
+            ("GPU Step Active", "YES" if gpu_snapshot["active"] else "NO"),
         ]
+        if gpu_snapshot.get("util_percent") is not None:
+            summary.append(("GPU Util", f"{gpu_snapshot['util_percent']}%"))
+        if gpu_snapshot.get("total_vram_bytes"):
+            used = int(gpu_snapshot["total_vram_bytes"] or 0) - int(gpu_snapshot["free_vram_bytes"] or 0)
+            summary.append(("GPU VRAM", f"{_format_bytes(used)} / {_format_bytes(int(gpu_snapshot['total_vram_bytes']))}"))
 
         for label, value in summary:
             table.add_row(label, Text(value, style="bold"))
@@ -1034,13 +1147,14 @@ class ProgressReporter:
         score_hist: Dict[str, int],
         detector_counts: Dict[str, int],
         penalty_counts: Dict[str, int],
+        gpu_snapshot: Dict[str, Any],
     ) -> Panel:
         """Render the hotkey ribbon plus log feed & telemetry cards."""
         table = Table.grid(expand=True)
         table.add_column(ratio=3)
         table.add_column(ratio=2)
         hotkeys = Text(
-            "Hotkeys: P=Pause | +=Extend | S=Stop | Q=Abort | 1/2/3=Log level | PgUp/PgDn=scroll | Ctrl+C=exit UI",
+            "Hotkeys: P=Pause | +=Extend | S=Graceful stop | Q=Quit? | Ctrl+Q=Quit now | 1/2/3=Log | PgUp/PgDn=scroll",
             style="bold white",
         )
         filter_label = {1: "Errors", 2: "Stages+Warn", 3: "Full debug"}.get(self._log_level, "Custom")
@@ -1054,10 +1168,13 @@ class ProgressReporter:
         table.add_row(hotkeys, Text(" | ".join(status_bits), style="cyan"))
 
         log_panel = Panel(self._render_log_lines(logs), title="Command Log", border_style="grey50")
-        meta_panel = self._render_log_meta(throughput, score_hist, detector_counts, penalty_counts)
+        meta_panel = self._render_log_meta(throughput, score_hist, detector_counts, penalty_counts, gpu_snapshot)
         table.add_row(log_panel, meta_panel)
 
-        hint = self._control_messages[-1] if self._control_messages else "Use these hotkeys to steer the scan in real time."
+        if self._quit_confirm_pending:
+            hint = "Quit now? Press Y to quit immediately, or N/Esc to cancel."
+        else:
+            hint = self._control_messages[-1] if self._control_messages else "Use these hotkeys to steer the scan in real time."
         table.add_row(Text(hint, style="magenta"), Text("", style="dim"))
         return Panel(table, title="Command & Log Deck", border_style="grey39")
 
@@ -1079,13 +1196,22 @@ class ProgressReporter:
         score_hist: Dict[str, int],
         detector_counts: Dict[str, int],
         penalty_counts: Dict[str, int],
+        gpu_snapshot: Dict[str, Any],
     ) -> Panel:
         runtime_lines = [
             f"Throughput : {_format_bytes(int(throughput))}/s",
             f"Cache hits : {self.cache_hits:,}",
             f"Low confidence : {self.low_confidence:,}",
             f"Dup groups : {self.dup_groups_total:,}",
+            f"GPU avail : {'YES' if gpu_snapshot['available'] else 'NO'}",
+            f"GPU step : {'YES' if gpu_snapshot['active'] else 'NO'}",
         ]
+        if gpu_snapshot.get("util_percent") is not None:
+            runtime_lines.append(f"GPU util : {gpu_snapshot['util_percent']}%")
+        if gpu_snapshot.get("total_vram_bytes"):
+            total = int(gpu_snapshot["total_vram_bytes"])
+            used = total - int(gpu_snapshot.get("free_vram_bytes") or 0)
+            runtime_lines.append(f"GPU VRAM : {_format_bytes(used)} / {_format_bytes(total)}")
         score_lines = [f"{bucket:>9}: {score_hist.get(bucket, 0):>4}" for bucket in score_hist.keys()]
         detector_lines = (
             [f"{name:<10}{count:>4}" for name, count in sorted(detector_counts.items(), key=lambda kv: kv[1], reverse=True)[:3]]
@@ -1105,6 +1231,63 @@ class ProgressReporter:
             border_style="magenta",
         )
         return Panel(Group(runtime_panel, score_panel, detector_panel), border_style="grey42")
+
+    def _gpu_status_text(self, gpu_snapshot: Dict[str, Any]) -> Text:
+        text = Text()
+        text.append("GPU ", style="bold")
+        if gpu_snapshot["available"]:
+            text.append("YES", style="bold green")
+        else:
+            text.append("NO", style="bold red")
+        text.append(" / STEP ", style="bold")
+        if gpu_snapshot["active"]:
+            text.append("YES", style="bold green")
+        else:
+            text.append("NO", style="bold red")
+        if gpu_snapshot.get("util_percent") is not None:
+            text.append(f" / UTIL {gpu_snapshot['util_percent']}%", style="bold cyan")
+        if gpu_snapshot.get("total_vram_bytes"):
+            total = int(gpu_snapshot["total_vram_bytes"])
+            used = total - int(gpu_snapshot.get("free_vram_bytes") or 0)
+            text.append(f" / VRAM {_format_bytes(used)}/{_format_bytes(total)}", style="bold cyan")
+        return text
+
+    def _maybe_refresh_gpu_telemetry(self) -> None:
+        now = time.time()
+        with self.lock:
+            if not self.gpu_available or now - self._gpu_last_probe_ts < 5.0:
+                return
+            self._gpu_last_probe_ts = now
+            device_id = self._gpu_device_id
+        try:
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    f"--id={device_id}",
+                    "--query-gpu=utilization.gpu,memory.used,memory.total",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                encoding="utf-8",
+                errors="ignore",
+                timeout=1.0,
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                return
+            parts = [part.strip() for part in result.stdout.strip().split(",", 2)]
+            if len(parts) != 3:
+                return
+            util = int(float(parts[0]))
+            used_bytes = int(float(parts[1]) * 1024 * 1024)
+            total_bytes = int(float(parts[2]) * 1024 * 1024)
+            with self.lock:
+                self.gpu_util_percent = util
+                self.gpu_total_vram_bytes = total_bytes
+                self.gpu_free_vram_bytes = max(0, total_bytes - used_bytes)
+        except Exception:
+            return
 
     def _progress_bar(self, pct: float) -> Text:
         """Return a colorized progress bar string."""
