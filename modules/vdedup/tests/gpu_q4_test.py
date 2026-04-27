@@ -161,7 +161,13 @@ def test_visual_candidates_are_not_merged_into_large_components(monkeypatch):
 
     monkeypatch.setattr(gpu_q4, "_load_or_extract_signature", fake_load)
 
-    result = run_q4g(metas, config=_config(gpu_q4_min_band_votes=1), signature_cache=None)
+    # max_hamming_distance=2 ensures 0xAAAA... vs 0xBBBB... (4-bit diff) do NOT match,
+    # so only the shared [0..3] frames pair up, giving 50% coverage — not a full duplicate.
+    result = run_q4g(
+        metas,
+        config=_config(gpu_q4_min_band_votes=1, gpu_q4_max_hamming_distance=2, gpu_q4_weak_hamming_distance=2),
+        signature_cache=None,
+    )
 
     assert result.duplicate_groups == {}
     assert all(len(members) == 2 for members in result.candidate_groups.values())
@@ -219,8 +225,8 @@ def test_q3_candidate_with_visual_match_records_source_not_metadata_score(monkey
 def test_transitive_component_group_preserves_pair_level_evidence(monkeypatch):
     sigs = {
         Path("a.mp4"): _signature("a.mp4", [0] * 8),
-        Path("b.mp4"): _signature("b.mp4", [0xF] * 8),
-        Path("c.mp4"): _signature("c.mp4", [0xFF] * 8),
+        Path("b.mp4"): _signature("b.mp4", [1] * 8),   # hamming(0,1)=1 → score=0.9375 ≥ 0.88
+        Path("c.mp4"): _signature("c.mp4", [3] * 8),   # hamming(1,3)=1 (b↔c), hamming(0,3)=2 (a↔c, score=0.875<0.88)
     }
     metas = [
         SimpleNamespace(path=Path("a.mp4"), size=1, mtime=1.0, duration=8.0),

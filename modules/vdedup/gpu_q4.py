@@ -204,8 +204,7 @@ def merge_duplicate_pairs(pairs: Sequence[VisualCandidatePair]) -> List[set[Path
             parent[right_root] = left_root
 
     for pair in pairs:
-        left, right = normalize_pair(pair.left, pair.right)
-        union(left, right)
+        union(pair.left, pair.right)
 
     components: Dict[Path, set[Path]] = {}
     for path in list(parent):
