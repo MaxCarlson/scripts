@@ -646,25 +646,26 @@ class Downloader:
                 last_time = now
 
                 speed_bps = float(ema_speed) if ema_speed is not None else None
-                # reliable_total: report the total only when we have a trustworthy value.
-                # Once live segment data has established total_size (has_live_data), use
-                # max(total_size, current_downloaded) so a resume never shows >100%.
-                # Before that, only trust total_size when it exceeds current_downloaded
-                # (avoids showing misleading 99.9% from an underestimated rough fallback).
+                # reliable_total: report total_size once we trust it.
+                # has_live_data = True once any data segment has set stream.total_size, which
+                # is far more accurate than the rough startup estimate.
+                # We do NOT use max(total_size, current_downloaded) because that would cause
+                # downloaded == total when current_downloaded > total_size, locking percent
+                # at 99.9% forever while the download is still in progress.
                 if total_size > 0 and has_live_data:
-                    reliable_total = max(total_size, current_downloaded)
+                    reliable_total = total_size  # trust live segment estimate as-is
                 elif total_size > current_downloaded:
-                    reliable_total = total_size
+                    reliable_total = total_size  # rough estimate is still above current
                 else:
-                    reliable_total = None
+                    reliable_total = None  # estimate too small; wait for live data
                 eta_s = None
                 percent = None
                 if speed_bps and speed_bps > 0 and reliable_total and reliable_total > current_downloaded:
-                    remaining = max(0, reliable_total - current_downloaded)
-                    eta_s = int(remaining / speed_bps) if remaining > 0 else None
+                    remaining = reliable_total - current_downloaded
+                    eta_s = int(remaining / speed_bps)
                 if reliable_total and reliable_total > 0:
                     raw_pct = current_downloaded * 100 / reliable_total
-                    percent = round(min(99.9, raw_pct), 2)  # cap at 99.9 while still active
+                    percent = round(min(100.0, raw_pct), 2)
 
                 self._json_log(
                     "progress",

@@ -443,9 +443,9 @@ def _clamp_progress(evt: dict) -> dict:
         clamped["downloaded"] = actual_dl
         clamped["total"] = tot
         pct_calc = (actual_dl / tot) * 100.0
-        clamped["percent"] = min(99.9, max(0.0, pct_calc))
+        clamped["percent"] = min(100.0, max(0.0, pct_calc))
     elif pct is not None:
-        clamped["percent"] = min(99.9, max(0.0, pct))
+        clamped["percent"] = min(100.0, max(0.0, pct))
 
     return clamped
 

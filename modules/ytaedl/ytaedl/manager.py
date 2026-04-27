@@ -839,6 +839,7 @@ class WorkerState:
     cap_mibs: Optional[float] = None
     last_throttle_t: float = 0.0
     last_already: bool = False
+    is_searching: bool = False  # True between a finish event and the next start event
     overlay_msg: Optional[str] = None
     overlay_since: float = 0.0
     ndjson_buf: list[str] = field(default_factory=list)
@@ -1489,9 +1490,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     # Reset progress state on new URL
                     _clear_worker_progress(ws)
                     ws.url_t0 = time.time()
-                    # Clear overlay upon new activity
+                    # Clear overlay and searching flag upon new activity
                     ws.overlay_msg = None
                     ws.overlay_since = 0.0
+                    ws.is_searching = False
                     nonlocal total_started_urls
                     total_started_urls += 1
                     mlog.info(f"[{ws.slot:02d}] START idx={ws.url_index} url={ws.url_current}")
@@ -1519,11 +1521,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             ws.downloaded_bytes = show_dl
                             ws.total_bytes = tot
                             pct_calc = 100.0 * (float(show_dl) / float(tot))
-                            ws.percent = min(99.9, pct_calc)
+                            ws.percent = min(100.0, pct_calc)
                         else:
                             # Clamp percentage even when bytes unavailable
                             if isinstance(pct, (int, float)):
-                                ws.percent = min(99.9, max(0.0, float(pct)))
+                                ws.percent = min(100.0, max(0.0, float(pct)))
                             else:
                                 ws.percent = None
                             if isinstance(dl, int):
@@ -1583,8 +1585,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         f" {status_colored}{size_info} {elapsed_url}"
                     )
                     ws.overlay_since = time.time()
-                    # Reset progress so stale values do not leak into retries or reassignment
-                    _clear_worker_progress(ws)
+                    ws.is_searching = True
+                    # On success show 100 %; on failure/duplicate clear percent.
+                    # Set speed to 0 so the display doesn't freeze on the last value.
+                    # Keep downloaded/total_bytes for the overlay size display; they are
+                    # cleared by _clear_worker_progress on the next 'start' event.
+                    if rc_v == 0 and not ws.last_already:
+                        ws.percent = 100.0
+                    else:
+                        ws.percent = None
+                    ws.speed_bps = 0.0
+                    ws.eta_s = None
                 elif ev == "aborted":
                     mlog.info(f"[{ws.slot:02d}] ABORT reason={evt.get('reason')}")
                     elapsed_url = _hms(time.time() - (ws.url_t0 or ws.assign_t0))
@@ -1593,6 +1604,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         f" \x1b[35mABORTED\x1b[0m {elapsed_url}"
                     )
                     ws.overlay_since = time.time()
+                    ws.is_searching = True
                     _clear_worker_progress(ws)
                 elif ev == "stalled":
                     mlog.info(f"[{ws.slot:02d}] STALLED stall_seconds={evt.get('stall_seconds')}")
@@ -2549,8 +2561,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         return "[" + ("=" * filled) + ("." * (inner - filled)) + "]"
 
                 for ws in workers:
-                    name = ws.urlfile.name if (ws.urlfile) else "idle"
-                    url_idx = f"URL {ws.url_index or 0}/{ws.url_count or 0}"
+                    name = ws.urlfile.name if ws.urlfile else "searching..."
+                    # Show a → marker in the URL index when between individual URLs
+                    if ws.is_searching and ws.urlfile:
+                        url_idx = f"\x1b[33m→\x1b[0m URL {ws.url_index or 0}/{ws.url_count or 0}"
+                    else:
+                        url_idx = f"URL {ws.url_index or 0}/{ws.url_count or 0}"
                     domain_txt = _top_domain(ws.url_current)
                     elapsed = _hms(now - ws.assign_t0) if ws.urlfile else "00:00:00"
                     pct = f"{ws.percent:.2f}%" if isinstance(ws.percent, (int, float)) else "?%"

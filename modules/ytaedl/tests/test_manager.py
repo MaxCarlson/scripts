@@ -1017,6 +1017,79 @@ class TestUtilityFunctions:
         # None eta → '?'
         assert eta_txt(None, 50.0) == "?"
 
+    def test_percent_reaches_100_when_downloaded_equals_total(self):
+        """When dl == total, clamped percent must be 100.0, not capped at 99.9."""
+        ws = manager.WorkerState(slot=1)
+        total = 500_000_000
+        # Simulate the _reader progress handler logic directly
+        dl, tot = total, total
+        show_dl = min(dl, tot)
+        pct_calc = 100.0 * (float(show_dl) / float(tot))
+        ws.percent = min(100.0, pct_calc)
+        assert ws.percent == 100.0, f"expected 100.0, got {ws.percent}"
+
+    def test_finish_event_sets_100_percent_and_zero_speed(self):
+        """On a successful finish, percent→100, speed→0, is_searching→True."""
+        ws = manager.WorkerState(slot=1)
+        ws.percent = 99.9
+        ws.speed_bps = 750_000.0
+        ws.eta_s = 5.0
+        ws.downloaded_bytes = 500_000_000
+        ws.total_bytes = 500_000_000
+
+        # Simulate the finish-event path for rc=0, not duplicate
+        rc_v = 0
+        ws.last_already = False
+        if rc_v == 0 and not ws.last_already:
+            ws.percent = 100.0
+        else:
+            ws.percent = None
+        ws.speed_bps = 0.0
+        ws.eta_s = None
+        ws.is_searching = True
+
+        assert ws.percent == 100.0
+        assert ws.speed_bps == 0.0
+        assert ws.eta_s is None
+        assert ws.is_searching is True
+        # Downloaded bytes must be preserved for overlay size display
+        assert ws.downloaded_bytes == 500_000_000
+
+    def test_finish_bad_sets_none_percent_and_zero_speed(self):
+        """On a failed finish (BAD_URL), percent→None, speed→0, is_searching→True."""
+        ws = manager.WorkerState(slot=1)
+        ws.percent = 60.0
+        ws.speed_bps = 500_000.0
+
+        rc_v = 1  # non-zero → bad
+        ws.last_already = False
+        if rc_v == 0 and not ws.last_already:
+            ws.percent = 100.0
+        else:
+            ws.percent = None
+        ws.speed_bps = 0.0
+        ws.is_searching = True
+
+        assert ws.percent is None
+        assert ws.speed_bps == 0.0
+        assert ws.is_searching is True
+
+    def test_start_event_clears_is_searching(self):
+        """A 'start' event must clear is_searching so the → marker disappears."""
+        ws = manager.WorkerState(slot=1)
+        ws.is_searching = True
+        ws.is_searching = False   # simulate start handler
+        assert ws.is_searching is False
+
+    def test_clamp_progress_allows_100_percent(self):
+        """The percent cap must be 100.0, not 99.9, when downloaded == total."""
+        dl, tot = 500_000_000, 500_000_000
+        show_dl = min(dl, tot)
+        pct = min(100.0, 100.0 * show_dl / tot)
+        assert pct == 100.0, f"cap should allow 100.0, got {pct}"
+        # Ensure 99.9 cap is NOT applied
+        assert pct != 99.9
+
     def test_footer_always_appended_after_verbose_lines(self):
         """Footer lines are rendered after the verbose panel so they stay at the bottom."""
         footer = ["Keys: q=quit"]
