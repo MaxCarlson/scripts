@@ -40,6 +40,8 @@ class DuplicateGroup:
     method: str
     keep: FileStats
     losers: List[FileStats] = field(default_factory=list)
+    confidence: str = "verified"   # "exact" | "verified" | "low"
+    review_required: bool = False  # True for metadata-only (Q3 standalone) groups
     source_report: Optional["ReportDocument"] = None
     raw_payload: Optional[Dict[str, Any]] = None
 
@@ -126,12 +128,16 @@ def load_report_documents(report_paths: Sequence[Path]) -> List[ReportDocument]:
             loser_stats = [
                 _build_stats(lp, loser_meta_map.get(str(lp), {})) for lp in losers
             ]
+            confidence = str(payload.get("confidence") or ("exact" if gid.startswith("hash:") else "verified"))
+            review_required = bool(payload.get("review_required", False))
             groups.append(
                 DuplicateGroup(
                     group_id=gid,
                     method=method,
                     keep=keep_stats,
                     losers=loser_stats,
+                    confidence=confidence,
+                    review_required=review_required,
                     source_report=None,  # patched below
                     raw_payload=payload,
                 )

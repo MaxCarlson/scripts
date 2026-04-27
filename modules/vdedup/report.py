@@ -190,6 +190,7 @@ def write_report(
     winners: Dict[str, Tuple[Meta, List[Meta]]],
     *,
     metadata: Optional[Dict[str, Dict[str, Any]]] = None,
+    warnings: Optional[List[str]] = None,
 ):
     out = {}
     total_size = 0
@@ -216,10 +217,17 @@ def write_report(
         fallback_evidence = getattr(keep, "evidence", {})
         if not evidence_payload and isinstance(fallback_evidence, dict):
             evidence_payload = fallback_evidence
+        # Infer confidence from metadata or group_id prefix
+        confidence = group_meta.get("confidence") if isinstance(group_meta, dict) else None
+        if confidence is None:
+            confidence = "exact" if gid.startswith("hash:") else "verified"
+        review_required = bool(group_meta.get("review_required", False)) if isinstance(group_meta, dict) else False
         out[gid] = {
             "keep": keep_path,
             "losers": loser_paths,
             "method": method,
+            "confidence": confidence,
+            "review_required": review_required,
             "evidence": evidence_payload,
             "keep_meta": _meta_from_meta(keep, overlap_hint=keep_hint if isinstance(keep_hint, (int, float)) else None),
             "loser_meta": loser_meta_payload,
@@ -232,8 +240,16 @@ def write_report(
                 pass
         by_method[method] = by_method.get(method, 0) + 1
 
+    low_conf_count = sum(1 for g in out.values() if g.get("review_required"))
     payload = {
-        "summary": {"groups": len(out), "losers": losers_total, "size_bytes": total_size, "by_method": by_method},
+        "summary": {
+            "groups": len(out),
+            "losers": losers_total,
+            "size_bytes": total_size,
+            "by_method": by_method,
+            "low_confidence_groups": low_conf_count,
+        },
+        "warnings": warnings or [],
         "groups": out,
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -286,6 +302,16 @@ def apply_report(
     """
     data = load_report(report_path)
     groups: Dict[str, Any] = data.get("groups") or {}
+
+    # Warn when the report contains low-confidence (metadata-only) groups
+    low_conf = [gid for gid, g in groups.items() if g.get("review_required")]
+    if low_conf:
+        import sys as _sys
+        _sys.stderr.write(
+            f"WARNING: {len(low_conf)} group(s) in this report are marked 'review_required' "
+            "(metadata-only detection — no visual/audio verification was performed). "
+            "Applying anyway. Re-scan with -q 4+ to get verified results before applying.\n"
+        )
 
     # Determine one common display directory so all operation paths remain comparable.
     all_paths: List[Path] = []

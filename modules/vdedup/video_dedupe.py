@@ -1474,7 +1474,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         logger.info("Writing report with %d groups to: %s", len(winners), report_path)
         reporter.set_status("Writing report to disk")
-        write_report(report_path, winners, metadata=group_metadata)
+        low_conf_count = sum(1 for m in group_metadata.values() if m.get("review_required"))
+        report_warnings: List[str] = []
+        if low_conf_count:
+            report_warnings.append(
+                f"{low_conf_count} group(s) are metadata-only (no visual/audio verification). "
+                "Re-run with -q 4+ to verify before applying."
+            )
+        write_report(report_path, winners, metadata=group_metadata, warnings=report_warnings)
         print(f"Wrote report to: {report_path}")
         if quit_requested:
             print("Scan interrupted early; partial findings saved to the report above.")
