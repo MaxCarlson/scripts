@@ -108,6 +108,19 @@ class RescueDownloadOptions:
     verbose: bool = False
     yt_dlp_verbose: bool = False
     extra_yt_dlp_args: tuple[str, ...] = ()
+    timing: bool = False        # Print per-attempt and per-URL timing summaries
+    stop_on_start: bool = False  # Kill yt-dlp the instant the download begins (timing mode)
+
+
+@dataclasses.dataclass
+class AttemptTiming:
+    """Records how long one download attempt took."""
+    attempt_number: int
+    description: str
+    method_group: str   # "normal_ytdlp" | "static_html" | "browser_network"
+    elapsed_s: float
+    success: bool
+    stopped_early: bool = False  # True when stop_on_start interrupted the download
 
 
 @dataclasses.dataclass(frozen=True)
@@ -873,7 +886,7 @@ def build_yt_dlp_command(
     return command
 
 
-def run_command(command: Sequence[str], *, dry_run: bool) -> CommandResult:
+def run_command(command: Sequence[str], *, dry_run: bool, stop_on_start: bool = False) -> CommandResult:
     if dry_run:
         print(format_command(command))
         return CommandResult(return_code=0, command=list(command), output="")
@@ -907,6 +920,14 @@ def run_command(command: Sequence[str], *, dry_run: bool) -> CommandResult:
 
         if chunk == "\r":
             progress_active = _emit_process_line(pending, progress_active=progress_active, final=False)
+            if stop_on_start and progress_active:
+                # A [download] progress line was rendered — download has started; kill now.
+                try:
+                    process.terminate()
+                except Exception:
+                    pass
+                pending = ""
+                break
             pending = ""
             continue
 
@@ -1108,6 +1129,7 @@ def download_candidates_until_success(
     method_prefix: str,
     step_label: str,
     attempt_start: int,
+    timings: Optional[list] = None,
 ) -> RescueDownloadResult:
     logger.step(step_label, f"Trying {method_prefix} fallback candidates with yt-dlp.")
     logger.detail(f"Candidate count: {len(candidates)}")
@@ -1161,9 +1183,26 @@ def download_candidates_until_success(
         )
         logger.command(command)
 
-        result = run_command(command, dry_run=options.dry_run)
+        _t0 = time.time()
+        result = run_command(command, dry_run=options.dry_run, stop_on_start=options.stop_on_start)
+        _elapsed = time.time() - _t0
         last_result = result
         last_candidate = candidate
+
+        _method_group = "static_html" if method_prefix.startswith("static") else "browser_network"
+        if timings is not None:
+            timings.append(AttemptTiming(
+                attempt_number=attempt_number,
+                description=method_name,
+                method_group=_method_group,
+                elapsed_s=_elapsed,
+                success=result.return_code == 0,
+                stopped_early=options.stop_on_start and result.return_code == 0,
+            ))
+        if options.timing:
+            _status = "stopped (download started)" if (options.stop_on_start and result.return_code == 0) else (
+                "succeeded" if result.return_code == 0 else f"failed rc={result.return_code}")
+            print(f"  ↳ Attempt {attempt_number} elapsed: {_elapsed:.2f}s  [{_status}]")
 
         if result.return_code == 0:
             print_attempt_success(attempt_number, method_name)
@@ -1192,6 +1231,7 @@ def download_video_with_fallback(
     *,
     options: RescueDownloadOptions,
     command_runner: CommandRunner = run_command,
+    timings: Optional[list] = None,
 ) -> RescueDownloadResult:
     logger = StepLogger(options.verbose)
 
@@ -1220,7 +1260,24 @@ def download_video_with_fallback(
         logger.command(normal_command)
 
         print_attempt(1, "normal yt-dlp page download")
-        normal_result = command_runner(normal_command, dry_run=options.dry_run)
+        _t1 = time.time()
+        normal_result = command_runner(normal_command, dry_run=options.dry_run,
+                                       stop_on_start=options.stop_on_start)
+        _elapsed1 = time.time() - _t1
+        _stopped = options.stop_on_start and normal_result.return_code == 0
+        if timings is not None:
+            timings.append(AttemptTiming(
+                attempt_number=1,
+                description="normal yt-dlp page download",
+                method_group="normal_ytdlp",
+                elapsed_s=_elapsed1,
+                success=normal_result.return_code == 0,
+                stopped_early=_stopped,
+            ))
+        if options.timing:
+            _st = "stopped (download started)" if _stopped else (
+                "succeeded" if normal_result.return_code == 0 else f"failed rc={normal_result.return_code}")
+            print(f"  ↳ Attempt 1 elapsed: {_elapsed1:.2f}s  [{_st}]")
 
         if normal_result.return_code == 0:
             print_attempt_success(1, "normal yt-dlp page download")
@@ -1255,6 +1312,7 @@ def download_video_with_fallback(
         method_prefix="static_html",
         step_label="2d",
         attempt_start=fallback_attempt_start,
+        timings=timings,
     )
     if static_result.success:
         return static_result
@@ -1280,6 +1338,7 @@ def download_video_with_fallback(
         method_prefix="browser_network",
         step_label="3h",
         attempt_start=fallback_attempt_start + static_attempt_count,
+        timings=timings,
     )
     if browser_result.success:
         return browser_result
@@ -1294,6 +1353,28 @@ def download_video_with_fallback(
     )
 
 
+def _timing_stats(values: list[float]) -> str:
+    if not values:
+        return "n/a"
+    values = sorted(values)
+    n = len(values)
+    mn = values[0]
+    mx = values[-1]
+    avg = sum(values) / n
+    mid = n // 2
+    median = values[mid] if n % 2 else (values[mid - 1] + values[mid]) / 2
+    return f"min={mn:.1f}s  avg={avg:.1f}s  median={median:.1f}s  max={mx:.1f}s  (n={n})"
+
+
+def _print_timing_summary(label: str, timings: list[AttemptTiming], group: Optional[str] = None) -> None:
+    subset = [t for t in timings if group is None or t.method_group == group]
+    if not subset:
+        return
+    values = [t.elapsed_s for t in subset]
+    n_ok = sum(1 for t in subset if t.success)
+    print(f"  {label:<22}: {_timing_stats(values)}  succeeded={n_ok}/{len(subset)}")
+
+
 def download_urls(
     urls: Sequence[str],
     *,
@@ -1302,16 +1383,19 @@ def download_urls(
 ) -> list[RescueDownloadResult]:
     results: list[RescueDownloadResult] = []
     total = len(urls)
+    all_timings: list[AttemptTiming] = []
 
     for index, url in enumerate(urls, start=1):
         if total > 1:
             print(f"\nURL {index}/{total}: {url}")
 
+        url_timings: list[AttemptTiming] = []
         try:
             result = download_video_with_fallback(
                 url,
                 options=options,
                 command_runner=command_runner,
+                timings=url_timings if options.timing else None,
             )
         except Exception as exc:
             print(failure_text(f"URL {index}/{total} failed before download attempts: {exc}"), file=sys.stderr)
@@ -1324,11 +1408,31 @@ def download_urls(
             )
 
         results.append(result)
+        all_timings.extend(url_timings)
+
+        if options.timing and url_timings:
+            total_url_s = sum(t.elapsed_s for t in url_timings)
+            print(f"\n  ── Attempt timing for this URL (total active time: {total_url_s:.1f}s) ──")
+            for t in url_timings:
+                mark = "✓" if t.success else "✗"
+                extra = " [stopped early]" if t.stopped_early else ""
+                print(f"    Attempt {t.attempt_number:>2} [{mark}]  {t.elapsed_s:6.2f}s  {t.description}{extra}")
 
         if total > 1 and result.success:
             print(success_text(f"URL {index}/{total} completed with method: {result.method}"))
         elif total > 1:
             print(failure_text(f"URL {index}/{total} failed."))
+
+    if options.timing and all_timings and total > 1:
+        print("\n" + "=" * 70)
+        print("MASTER TIMING SUMMARY")
+        print("=" * 70)
+        _print_timing_summary("normal yt-dlp",    all_timings, "normal_ytdlp")
+        _print_timing_summary("static_html",       all_timings, "static_html")
+        _print_timing_summary("browser_network",   all_timings, "browser_network")
+        print("  " + "-" * 60)
+        _print_timing_summary("ALL attempts",      all_timings, None)
+        print("=" * 70)
 
     return results
 
@@ -1551,6 +1655,23 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=[],
         help="Extra argument appended to every yt-dlp command. Repeat as needed.",
     )
+    advanced.add_argument(
+        "--timing",
+        action="store_true",
+        help=(
+            "Print per-attempt elapsed time, per-URL summary, and a master summary "
+            "(min/avg/median/max) across all attempt types. Useful for tuning stall timeouts."
+        ),
+    )
+    advanced.add_argument(
+        "--stop-on-start",
+        action="store_true",
+        help=(
+            "Kill yt-dlp the instant a download actually begins (first [download] progress "
+            "line). Combine with --timing and a URL file to measure time-to-start for each "
+            "attempt type without waiting for full downloads."
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -1592,6 +1713,8 @@ def options_from_args(args: argparse.Namespace) -> RescueDownloadOptions:
         verbose=args.verbose,
         yt_dlp_verbose=args.yt_dlp_verbose,
         extra_yt_dlp_args=tuple(args.extra_yt_dlp_arg),
+        timing=args.timing,
+        stop_on_start=args.stop_on_start,
     )
 
 

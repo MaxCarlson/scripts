@@ -42,6 +42,7 @@ except ImportError:
     ENFORCER_AVAILABLE = False
 
 from . import archive_builder, urlscan
+from .domain_index import DomainIndex, ScanLogEntry, _extract_domain as _domain_of_url
 from .downloader import MAX_RESOLUTION_CHOICES
 from .mp4_watcher import MP4Watcher, WatcherConfig, WatcherSnapshot
 from termdash import utils as td_utils
@@ -154,8 +155,9 @@ def _top_domain(url: Optional[str]) -> str:
     host = (parsed.hostname or "").lower().strip(".")
     if not host:
         return "-"
-    if host.startswith("www."):
-        host = host[4:]
+    for prefix in ("www.", "m."):
+        if host.startswith(prefix):
+            host = host[len(prefix):]
     return host or "-"
 
 
@@ -877,6 +879,13 @@ class WorkerState:
     is_paused: bool = False
     paused_speed_bps: Optional[float] = None
     controlled_stopped: bool = False
+    is_waiting_domain: bool = False     # True when idle because all domain slots are taken
+    waiting_domain_since: float = 0.0   # timestamp when domain-wait began
+    domain_search_file: Optional[str] = None   # file currently being scanned for domain
+    domain_search_progress: tuple = (0, 0)     # (checked_count, total_urls) during scan
+    url_entry: Optional[object] = None          # DomainIndex UrlEntry for this assignment
+    original_urlfile: Optional[Path] = None    # original URL file (before temp wrapping)
+    worker_log_counter: int = 0                # counter for manager-written log entries
 
 
 class DomainDiversityAverager:
@@ -946,8 +955,12 @@ def _start_worker(
     extdl_browser_wait: float = 12.0,
     extdl_capture_browser: str = "auto",
     skip_simulate_check: bool = False,
+    canonical_dir_override: Optional[Path] = None,
 ) -> subprocess.Popen:
-    canonical_dir = (canonical_root / urlfile.stem).expanduser().resolve()
+    if canonical_dir_override is not None:
+        canonical_dir = canonical_dir_override
+    else:
+        canonical_dir = (canonical_root / urlfile.stem).expanduser().resolve()
     canonical_dir.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         sys.executable,
@@ -994,6 +1007,26 @@ def _start_worker(
         bufsize=1,
         creationflags=0,
     )
+
+
+def _write_worker_log(log_path: Path, counter: int, elapsed_s: float, status: str, message: str) -> None:
+    """Write a manager-side log entry to a worker's prog log file.
+
+    Uses the same ``[NNNN][HH:MM:SS.mmm] STATUS  message`` format as ProgLogger so
+    entries appear seamlessly in the TUI verbose log panel.
+    """
+    try:
+        h = int(elapsed_s) // 3600
+        m = (int(elapsed_s) % 3600) // 60
+        s = int(elapsed_s) % 60
+        ms = int((elapsed_s - int(elapsed_s)) * 1000)
+        elapsed_str = f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+        line = f"[{counter:04d}][{elapsed_str}] {status:<14s}  {message}"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except Exception:
+        pass
 
 
 def make_parser() -> argparse.ArgumentParser:
@@ -1103,10 +1136,13 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "-D",
         "--unique-domain-dls",
-        action="store_true",
+        type=int,
+        default=-1,
+        metavar="N",
         help=(
-            "Hard-lock domain uniqueness: workers are only assigned URL files whose domains are not already "
-            "actively downloading. Falls back to any available file only when no unique-domain file exists."
+            "Limit concurrent workers per domain. -1 = off (unlimited). "
+            "1 = one worker per unique domain. 2 = up to two workers per domain, etc. "
+            "Workers that cannot find a qualifying domain slot stay idle until one opens."
         ),
     )
     p.add_argument(
@@ -1136,6 +1172,16 @@ def make_parser() -> argparse.ArgumentParser:
         "-K", "--skip-simulate-check",
         action="store_true",
         help="Skip the yt-dlp --simulate pre-download duplicate check.",
+    )
+    p.add_argument(
+        "-H", "--domain-index-path",
+        default="./logs/domain_index.json",
+        help="Path to save/load the domain URL index (used by -D). Rebuilt when URL files change.",
+    )
+    p.add_argument(
+        "-M", "--rebuild-domain-index",
+        action="store_true",
+        help="Force a full domain index rebuild even if a saved index exists.",
     )
     p.add_argument(
         "-O",
@@ -1340,6 +1386,55 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         test_aebn = (repo_root / "test" / "files" / "downloads" / "ae-stars").resolve()
         roots = [test_stars, test_aebn]
         pool, priority_pool = _gather_from_roots(roots, finished_log, args.priority_files)
+    # ------------------------------------------------------------------
+    # Domain index (used when -D is active for URL-level domain locking)
+    domain_index: Optional[DomainIndex] = None
+    domain_index_path: Optional[Path] = None
+
+    _udl_active = isinstance(getattr(args, "unique_domain_dls", -1), int) and args.unique_domain_dls >= 1
+    if _udl_active:
+        # Gather ALL URL files from roots (including finished ones) for a complete index
+        _all_url_files: List[Path] = []
+        for root in roots:
+            if root.exists():
+                _all_url_files.extend(sorted(root.rglob("*.txt")))
+
+        # Resolve index path: default to same directory as other logs
+        _idx_arg = getattr(args, "domain_index_path", "./logs/domain_index.json")
+        if _idx_arg == "./logs/domain_index.json":
+            domain_index_path = log_dir / "domain_index.json"
+        else:
+            domain_index_path = Path(_idx_arg).expanduser().resolve()
+        _idx_log: List[str] = []
+        _should_rebuild = getattr(args, "rebuild_domain_index", False)
+
+        if not _should_rebuild and domain_index_path.exists():
+            try:
+                mlog.info(f"Loading domain index from {domain_index_path} …")
+                _loaded = DomainIndex.load(domain_index_path)
+                if _loaded.is_stale():
+                    mlog.info("Domain index is stale (URL files changed) – rebuilding.")
+                    _should_rebuild = True
+                else:
+                    domain_index = _loaded
+                    mlog.info(f"Domain index loaded: {domain_index.summary_line()}")
+            except Exception as exc:
+                mlog.error(f"Failed to load domain index: {exc} – rebuilding.")
+                _should_rebuild = True
+
+        if domain_index is None or _should_rebuild:
+            mlog.info(f"Building domain index from {len(_all_url_files)} URL file(s) …")
+            domain_index = DomainIndex.build(
+                _all_url_files,
+                progress_cb=lambda msg: mlog.info(f"  {msg}"),
+            )
+            domain_index.save(domain_index_path)
+            mlog.info(f"Domain index saved to {domain_index_path}")
+
+        # Register save path for auto-save on updates
+        domain_index.save_debounced(domain_index_path, delay_s=5.0)
+        mlog.info(f"Domain index ready: {domain_index.summary_line()}")
+
     active: set[str] = set()
     watcher_log_scroll = 0
     watcher_log_follow = True
@@ -1512,38 +1607,60 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     def _candidate_domain_map(candidates: List[Path]) -> Dict[str, set[str]]:
         return {str(path.resolve()): _cached_domains_for_urlfile(path) for path in candidates}
 
-    def _hard_domain_filter(pool: List[Path]) -> List[Path]:
-        """When --unique-domain-dls is active, filter to files with at least one
-        domain not already actively downloading. Falls back to full pool if empty."""
-        if not getattr(args, "unique_domain_dls", False):
-            return pool
-        active = _active_scheduling_domains()
-        unique_pool = [f for f in pool if not _domains_for_urlfile(f).issubset(active)]
-        if unique_pool:
-            return unique_pool
-        mlog.info("unique-domain-dls: no unique-domain files available; falling back to full pool.")
-        return pool
+    def _active_domain_worker_counts() -> Dict[str, int]:
+        """Return the number of currently-assigned workers per domain.
 
-    def _select_best(candidates: List[Path]) -> Path:
+        Counts every worker that has a urlfile assigned (regardless of whether
+        the subprocess has started yet), so the domain slot budget is always
+        accurate during the sequential startup assignment loop.
+        """
+        counts: Dict[str, int] = {}
+        for worker in workers:
+            if not worker.urlfile:
+                continue
+            for domain in _cached_domains_for_urlfile(worker.urlfile):
+                counts[domain] = counts.get(domain, 0) + 1
+        return counts
+
+    def _hard_domain_filter(pool: List[Path]) -> List[Path]:
+        """Filter *pool* to files whose domains have room under the per-domain cap.
+
+        Returns an empty list (never falls back to the full pool) when all
+        domains in *pool* are at the limit — the caller must leave the worker
+        idle so it can retry on the next main-loop tick.
+        """
+        max_per = getattr(args, "unique_domain_dls", -1)
+        if not isinstance(max_per, int) or max_per < 1:
+            return pool  # feature disabled
+        counts = _active_domain_worker_counts()
+        return [
+            f for f in pool
+            if any(counts.get(d, 0) < max_per for d in _cached_domains_for_urlfile(f))
+        ]
+
+    def _select_best(candidates: List[Path]) -> Optional[Path]:
         eligible = [c for c in candidates if _remaining_for_path(c) != 0]
         if not eligible:
-            return random.choice(candidates)
+            eligible = list(candidates)
         if args.url_random_order:
-            return random.choice(eligible)
-        eligible = _hard_domain_filter(eligible)
+            filtered = _hard_domain_filter(eligible)
+            return random.choice(filtered) if filtered else None
+        filtered = _hard_domain_filter(eligible)
+        if not filtered:
+            return None  # domain slots full — caller leaves worker idle
         if not url_rankings:
-            fallback_rankings = {str(path.resolve()): idx for idx, path in enumerate(sorted(eligible))}
+            fallback_rankings = {str(path.resolve()): idx for idx, path in enumerate(sorted(filtered))}
             return _choose_domain_diverse_candidate(
-                eligible,
+                filtered,
                 fallback_rankings,
-                _candidate_domain_map(eligible),
+                _candidate_domain_map(filtered),
                 _active_scheduling_domains(),
                 float(args.url_pick_temperature or 0.0),
             )
         return _choose_domain_diverse_candidate(
-            eligible,
+            filtered,
             url_rankings,
-            _candidate_domain_map(eligible),
+            _candidate_domain_map(filtered),
             _active_scheduling_domains(),
             float(args.url_pick_temperature or 0.0),
         )
@@ -1553,13 +1670,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if not eligible:
             return None
         if args.url_random_order:
-            return random.choice(eligible)
-        eligible = _hard_domain_filter(eligible)
-        priority_rankings = {str(path.resolve()): idx for idx, path in enumerate(eligible)}
+            filtered = _hard_domain_filter(eligible)
+            return random.choice(filtered) if filtered else None
+        filtered = _hard_domain_filter(eligible)
+        if not filtered:
+            return None  # domain slots full
+        priority_rankings = {str(path.resolve()): idx for idx, path in enumerate(filtered)}
         return _choose_domain_diverse_candidate(
-            eligible,
+            filtered,
             priority_rankings,
-            _candidate_domain_map(eligible),
+            _candidate_domain_map(filtered),
             _active_scheduling_domains(),
             float(args.url_pick_temperature or 0.0),
         )
@@ -1618,10 +1738,39 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     ws.last_already = True
                     canon = evt.get("canonical_path", "?")
                     mlog.info(f"[{ws.slot:02d}] CANONICAL_DUP dest={canon}")
+                elif ev == "simulate_start":
+                    ws.overlay_msg = "\x1b[36m[Simulating…]\x1b[0m checking for existing file at destination"
+                    ws.overlay_since = time.time()
+                    mlog.info(f"[{ws.slot:02d}] SIMULATE_START url={ws.url_current}")
+                elif ev == "simulate_result":
+                    is_dup = evt.get("is_duplicate", False)
+                    if is_dup and domain_index and ws.url_current and ws.url_current != "-":
+                        try:
+                            domain_index.mark_finished(ws.url_current, "preexisting")
+                        except Exception:
+                            pass
+                    if is_dup:
+                        existing = evt.get("existing_path", "?")
+                        ws.overlay_msg = (
+                            "\x1b[33m[Sim: CONFLICT]\x1b[0m"
+                            f" file exists – skipping  ({Path(existing).name if existing else '?'})"
+                        )
+                        mlog.info(f"[{ws.slot:02d}] SIMULATE_SKIP existing={existing}")
+                    else:
+                        name = evt.get("predicted_name", "")
+                        ws.overlay_msg = (
+                            "\x1b[32m[Sim: OK]\x1b[0m"
+                            f" no conflict – starting download ({name})"
+                        )
+                        mlog.info(f"[{ws.slot:02d}] SIMULATE_OK predicted={name}")
+                    ws.overlay_since = time.time()
                 elif ev == "fallback_start":
                     method = evt.get("method", "?")
                     ws.overlay_msg = f"\x1b[33m[Fallback:{method}]\x1b[0m Discovering media URLs…"
                     ws.overlay_since = time.time()
+                    # Clear stale download stats so the UI doesn't show the previous
+                    # download's progress (e.g. 100%) while the fallback is running.
+                    _clear_worker_progress(ws)
                     mlog.info(f"[{ws.slot:02d}] FALLBACK_START method={method} url={ws.url_current}")
                 elif ev == "fallback_attempt":
                     method = evt.get("method", "?")
@@ -1704,6 +1853,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         pass
                 elif ev == "finish":
                     mlog.info(f"[{ws.slot:02d}] FINISH rc={evt.get('rc')} idx={ws.url_index}")
+                    try:
+                        rc_v = int(evt.get("rc")) if evt.get("rc") is not None else None
+                    except Exception:
+                        rc_v = None
+                    # Update domain index if active
+                    if domain_index and ws.url_current and ws.url_current != "-":
+                        try:
+                            if rc_v == 0 and not ws.last_already:
+                                domain_index.mark_finished(ws.url_current, "downloaded")
+                            elif rc_v == 0 and ws.last_already:
+                                domain_index.mark_finished(ws.url_current, "preexisting")
+                            elif rc_v not in (None, 130, 131):
+                                # Failed URL (not user abort/deadline) — mark as failed
+                                domain_index.mark_finished(ws.url_current, "failed")
+                        except Exception:
+                            pass
                     # Update per-URL counters here (process continues running)
                     try:
                         rc_v = int(evt.get("rc")) if evt.get("rc") is not None else None
@@ -1785,11 +1950,132 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         except Exception as e:
             mlog.error(f"reader exception slot={ws.slot}: {e}\n{traceback.format_exc()}")
 
+    def _worker_prog_log_path(ws: WorkerState) -> Path:
+        return (Path(log_dir) / f"ytaedler-worker-{ws.slot:02d}.log").resolve()
+
+    def _wlog(ws: WorkerState, status: str, message: str) -> None:
+        """Write a manager-side entry to the worker's prog log file."""
+        ws.worker_log_counter += 1
+        elapsed = time.time() - t0
+        _write_worker_log(_worker_prog_log_path(ws), ws.worker_log_counter, elapsed, status, message)
+
     def _assign(ws: WorkerState) -> bool:
         nonlocal pool, priority_pool
         if controlled_quit:
             return False
-        # Filter out finished from current pools on each assignment
+
+        _max_per = getattr(args, "unique_domain_dls", -1)
+        _use_index = (
+            domain_index is not None
+            and isinstance(_max_per, int)
+            and _max_per >= 1
+        )
+
+        # ---- Domain-index path (single-URL assignment) --------------------
+        if _use_index:
+            assert domain_index is not None  # narrowing
+            # Active domain counts — only workers with a RUNNING process hold a domain
+            # slot. Idle/waiting workers have stale url_current from their previous
+            # download; counting those would incorrectly block new assignments.
+            active_counts: Dict[str, int] = {}
+            for w in workers:
+                if not w.proc:
+                    continue  # finished or waiting — does not occupy a domain slot
+                url = w.url_current
+                if url and url != "-":
+                    d = _domain_of_url(url)
+                    if d != "-":
+                        active_counts[d] = active_counts.get(d, 0) + 1
+
+            # File-priority map: file_id -> rank (lower = better)
+            fp_map: Dict[int, int] = {}
+            for fid, fpath in domain_index._file_map.items():
+                fp_map[fid] = url_rankings.get(str(Path(fpath).resolve()), 999_999)
+
+            scan_log: List[ScanLogEntry] = []
+            entry = domain_index.pick_url(active_counts, _max_per, fp_map, scan_log)
+
+            # Write scan log to worker's prog log
+            for sl in scan_log:
+                _wlog(ws, f"DOMAIN_{sl.kind}", sl.message)
+
+            if entry is None:
+                if not ws.is_waiting_domain:
+                    ws.is_waiting_domain = True
+                    ws.waiting_domain_since = time.time()
+                    _wlog(ws, "DOMAIN_WAIT",
+                          f"all domain slots filled (max={_max_per}); will retry each tick")
+                    mlog.info(f"[{ws.slot:02d}] DOMAIN_WAIT no URL available (max={_max_per}/domain)")
+                return False
+
+            # Write a single-URL temp file so downloader.py sees a normal URL file
+            tmp_dir = Path(log_dir) / "tmp_urls"
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            tmp_file = tmp_dir / f"w{ws.slot:02d}_{entry.file_id}_{entry.line_num}.txt"
+            tmp_file.write_text(entry.url + "\n", encoding="utf-8")
+
+            original_file = Path(entry.file_path)
+            canonical_dir = (download_root / original_file.stem).resolve()
+
+            mlog.info(
+                f"[{ws.slot:02d}] ASSIGN_URL {_domain_of_url(entry.url)} "
+                f"→ {original_file.name}:{entry.line_num}  {entry.url}"
+            )
+            _wlog(ws, "DOMAIN_FOUND",
+                  f"{_domain_of_url(entry.url)} → {original_file.name} line {entry.line_num}")
+
+            # Reset worker state
+            ws.is_waiting_domain = False
+            ws.waiting_domain_since = 0.0
+            ws.url_entry = entry
+            ws.original_urlfile = original_file
+            # Pre-set url_current so domain counts are correct immediately
+            ws.url_current = entry.url
+            _clear_worker_progress(ws)
+            ws.url_index = None
+            ws.destination = None
+            ws.url_t0 = 0.0
+            ws.assign_t0 = time.time()
+            ws.rc = None
+            ws.last_already = False
+            ws.controlled_stopped = False
+            ws.overlay_msg = None
+            ws.overlay_since = 0.0
+            ws.url_count = 1  # single URL assignment
+            ws.cap_mibs = (
+                float(args.max_process_dl_speed)
+                if isinstance(args.max_process_dl_speed, (int, float))
+                and args.max_process_dl_speed and args.max_process_dl_speed > 0
+                else None
+            )
+            ws.prog_log_path = _worker_prog_log_path(ws)
+            ws.urlfile = tmp_file
+            ws.canonical_dir = canonical_dir
+            ws.proc = _start_worker(
+                ws.slot,
+                tmp_file,
+                download_root,
+                args.max_ndjson_rate,
+                args.quiet,
+                archive_dir,
+                log_dir,
+                ws.cap_mibs,
+                args.proxy_dl_location,
+                args.max_resolution,
+                controlled_quit_sentinel,
+                no_extdl_fallback=getattr(args, "no_extdl_fallback", False),
+                extdl_max_candidates=getattr(args, "extdl_max_candidates", 5),
+                extdl_browser_wait=getattr(args, "extdl_browser_wait", 12.0),
+                extdl_capture_browser=getattr(args, "extdl_capture_browser", "auto"),
+                skip_simulate_check=getattr(args, "skip_simulate_check", False),
+                canonical_dir_override=canonical_dir,
+            )
+            ws.reader_stop.clear()
+            ws.reader = threading.Thread(target=_reader, args=(ws,), daemon=True)
+            ws.reader.start()
+            return True
+
+        # ---- File-level assignment (no domain index / -D off) -------------
         finished: set[str] = set()
         if finished_log.exists():
             try:
@@ -1797,7 +2083,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             except Exception:
                 finished = set()
 
-        # Try priority files first
         priority_avail = [
             p
             for p in priority_pool
@@ -1806,27 +2091,40 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if priority_avail:
             selected = _select_priority(priority_avail)
             if selected is None:
-                priority_pool[:] = []
+                if not ws.is_waiting_domain:
+                    ws.is_waiting_domain = True
+                    ws.waiting_domain_since = time.time()
+                    mlog.info(f"[{ws.slot:02d}] ASSIGN DEFERRED (priority) – domain slots full")
                 return False
             urlfile = selected
             priority_pool = [p for p in priority_pool if p != urlfile]
             mlog.info(f"[{ws.slot:02d}] ASSIGN PRIORITY {urlfile}")
         else:
-            # Fall back to regular pool
             avail = [
                 p
                 for p in pool
                 if str(p.resolve()) not in active and str(p.resolve()) not in finished and _remaining_for_path(p) != 0
             ]
             if not avail:
+                ws.is_waiting_domain = False
+                ws.waiting_domain_since = 0.0
                 return False
             urlfile = _select_best(avail)
+            if urlfile is None:
+                if not ws.is_waiting_domain:
+                    ws.is_waiting_domain = True
+                    ws.waiting_domain_since = time.time()
+                    mlog.info(f"[{ws.slot:02d}] ASSIGN DEFERRED – domain slots full (max={_max_per})")
+                return False
             mlog.info(f"[{ws.slot:02d}] ASSIGN {urlfile}")
 
+        ws.is_waiting_domain = False
+        ws.waiting_domain_since = 0.0
+        ws.url_entry = None
+        ws.original_urlfile = None
         active.add(str(urlfile.resolve()))
         ws.urlfile = urlfile
         ws.url_count = len(_read_urls(urlfile))
-        # If archive indicates completion, skip assignment
         if archive_dir and ws.url_count > 0:
             prefix = "ae" if ("ae-stars" in str(urlfile.parent)) else "yt"
             arch = archive_dir / f"{prefix}-{urlfile.stem}.txt"
@@ -1837,7 +2135,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     statuses = []
                 done = sum(1 for s in statuses if s.strip())
                 if done >= ws.url_count:
-                    # mark finished and choose another
                     try:
                         with finished_log.open("a", encoding="utf-8") as f:
                             f.write(str(urlfile.resolve()) + "\n")
@@ -1860,13 +2157,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ws.cap_mibs = (
             float(args.max_process_dl_speed)
             if isinstance(args.max_process_dl_speed, (int, float))
-            and args.max_process_dl_speed
-            and args.max_process_dl_speed > 0
+            and args.max_process_dl_speed and args.max_process_dl_speed > 0
             else None
         )
-        # Remember program log path for this worker
         try:
-            ws.prog_log_path = (Path(log_dir) / f"ytaedler-worker-{ws.slot:02d}.log").resolve()
+            ws.prog_log_path = _worker_prog_log_path(ws)
         except Exception:
             ws.prog_log_path = None
         canonical_dir = (download_root / urlfile.stem).resolve()
@@ -1895,6 +2190,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return True
 
     def _requeue(ws: WorkerState, finished: bool, reason: str):
+        # Domain-index cleanup: if URL didn't get a finish event, requeue it
+        if domain_index and ws.url_entry:
+            url = ws.url_current or ws.url_entry.url
+            if domain_index.is_in_progress(url):
+                # Determine if we should requeue or mark failed
+                rc = ws.proc.poll() if ws.proc else None
+                if rc in (130, 131):
+                    # User abort or deadline — return to queue for next session
+                    domain_index.requeue_url(url)
+                elif not finished:
+                    # Stall, bad URL, etc. — also requeue (let simulate/retries handle it)
+                    domain_index.requeue_url(url)
+        # Delete temp single-URL file if present
+        if ws.urlfile and ws.urlfile.parent.name == "tmp_urls":
+            try:
+                ws.urlfile.unlink(missing_ok=True)
+            except Exception:
+                pass
         # Cleanup process
         if ws.proc and ws.proc.poll() is None:
             # Resume if paused before terminating
@@ -1928,6 +2241,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ws.proc = None
         ws.urlfile = None
         ws.canonical_dir = None
+        ws.url_entry = None
+        ws.original_urlfile = None
+        ws.domain_search_file = None
+        ws.domain_search_progress = (0, 0)
+        # Clear download stats immediately so the UI doesn't show stale progress
+        # (e.g. 100% bar from the just-finished download) during the next search/assign.
+        _clear_worker_progress(ws)
+        ws.is_searching = False
         if finished:
             _schedule_url_scan("post-finish")
             if args.url_preempt:
@@ -2616,7 +2937,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     quit_tag = td_utils.color_text(" [Press Y to confirm quit]", "red") if quit_confirm else ""
                     active_label = td_utils.color_text(str(active_workers), "green" if active_workers > 0 else "gray")
                     pool_label = td_utils.color_text(str(total_available), "cyan" if total_available > 0 else "gray")
-                    domain_lock_tag = td_utils.color_text(" [D]", "cyan") if getattr(args, "unique_domain_dls", False) else ""
+                    _udl = getattr(args, "unique_domain_dls", -1)
+                    domain_lock_tag = td_utils.color_text(f" [D:{_udl}]", "cyan") if isinstance(_udl, int) and _udl >= 1 else ""
                     header = (
                         f"DL Manager{pause_tag}{quit_tag}{domain_lock_tag}"
                         f"  |  threads={args.threads}"
@@ -2640,7 +2962,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         f"  Domains: {active_domain_count} now / {avg_domain_count:.1f} avg"[:cols]
                     )
                     if domain_summary:
-                        lines.append(f"Active domains: {domain_summary}"[:cols])
+                        unique_total = domain_index.total_unique_domains if domain_index else 0
+                        unique_suffix = f" / {unique_total} unique" if unique_total else ""
+                        lines.append(f"Active domains: {domain_summary}{unique_suffix}"[:cols])
                     for storage_line in _storage_summary_lines(
                         staging_stats,
                         destination_stats,
@@ -2713,7 +3037,32 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         return "[" + ("=" * filled) + ("." * (inner - filled)) + "]"
 
                 for ws in workers:
-                    name = ws.urlfile.name if ws.urlfile else "searching..."
+                    # Workers blocked on the domain cap show a distinct waiting row
+                    if ws.is_waiting_domain and not ws.proc:
+                        wait_elapsed = _hms(now - ws.waiting_domain_since) if ws.waiting_domain_since else "?"
+                        sel_marker = ">" if ws.slot == selected_worker_slot else " "
+                        idx_stat = ""
+                        if domain_index:
+                            queued = domain_index.total_queued
+                            domains = domain_index.total_unique_domains
+                            idx_stat = f"  ({queued} queued / {domains} domains)"
+                        wait_line = (
+                            f"{sel_marker}[{ws.slot:02d}] "
+                            + td_utils.color_text(
+                                f"[Waiting: all domain slots taken – max {args.unique_domain_dls}/domain]",
+                                "yellow",
+                            )
+                            + f"  {wait_elapsed}{idx_stat}"
+                        )
+                        lines.append(wait_line[:cols])
+                        continue
+                    # For single-URL assignments, show the original file name (not temp file)
+                    if ws.original_urlfile:
+                        name = ws.original_urlfile.name
+                    elif ws.urlfile:
+                        name = ws.urlfile.name
+                    else:
+                        name = "searching..."
                     # Show a → marker in the URL index when between individual URLs
                     if ws.is_searching and ws.urlfile:
                         url_idx = f"\x1b[33m→\x1b[0m URL {ws.url_index or 0}/{ws.url_count or 0}"
@@ -3063,6 +3412,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if url_scan_thread and url_scan_thread.is_alive():
             try:
                 url_scan_thread.join(timeout=2)
+            except Exception:
+                pass
+        # Flush domain index on exit
+        if domain_index and domain_index_path:
+            try:
+                domain_index.flush_save()
             except Exception:
                 pass
         # Leave cursor below
