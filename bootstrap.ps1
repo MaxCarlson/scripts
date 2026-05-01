@@ -1,4 +1,7 @@
 param(
+  [Alias('s')]
+  [switch]$SkipReinstall,
+  [switch]$NoSkipReinstall,
   [Parameter(ValueFromRemainingArguments=$true)]
   [string[]]$Args
 )
@@ -9,6 +12,11 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::InputEncoding = [System.Text.Encoding]::UTF8
 $env:PYTHONIOENCODING = "utf-8"
+
+if ($SkipReinstall -and $NoSkipReinstall) {
+    Write-Host "[ERROR] Use either --skip-reinstall or --no-skip-reinstall, not both." -ForegroundColor Red
+    exit 2
+}
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $VenvDir = Join-Path $Root '.venv'
@@ -82,6 +90,14 @@ if ([float]$PythonVersion -lt 3.11) {
 
 # 4) Execute repo setup (installs core modules, wires bin wrappers)
 Write-Host "[BOOTSTRAP] Running setup.py with venv Python..." -ForegroundColor Cyan
-& $VenvPython (Join-Path $Root 'setup.py') @Args
+$SetupArgs = @()
+if ($SkipReinstall) {
+    $SetupArgs += "--skip-reinstall"
+}
+if ($NoSkipReinstall) {
+    $SetupArgs += "--no-skip-reinstall"
+}
+$SetupArgs += $Args
+& $VenvPython (Join-Path $Root 'setup.py') @SetupArgs
 exit $LASTEXITCODE
 

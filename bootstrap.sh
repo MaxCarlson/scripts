@@ -4,6 +4,40 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}" )" && pwd)"
 
 VENV_DIR="$ROOT_DIR/.venv"
 VENV_PYTHON="$VENV_DIR/bin/python"
+SETUP_ARGS=()
+SKIP_REINSTALL_SEEN=0
+NO_SKIP_REINSTALL_SEEN=0
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -s|--skip-reinstall)
+            SKIP_REINSTALL_SEEN=1
+            SETUP_ARGS+=("--skip-reinstall")
+            shift
+            ;;
+        --no-skip-reinstall)
+            NO_SKIP_REINSTALL_SEEN=1
+            SETUP_ARGS+=("--no-skip-reinstall")
+            shift
+            ;;
+        --)
+            shift
+            while [ "$#" -gt 0 ]; do
+                SETUP_ARGS+=("$1")
+                shift
+            done
+            ;;
+        *)
+            SETUP_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+if [ "$SKIP_REINSTALL_SEEN" -eq 1 ] && [ "$NO_SKIP_REINSTALL_SEEN" -eq 1 ]; then
+    echo "[ERROR] Use either --skip-reinstall or --no-skip-reinstall, not both." >&2
+    exit 2
+fi
 
 echo "[BOOTSTRAP] Ensuring Python virtual environment..."
 
@@ -56,5 +90,5 @@ fi
 
 # 4) Execute repo setup (installs core modules, wires bin wrappers)
 echo "[BOOTSTRAP] Running setup.py with venv Python..."
-exec "$VENV_PYTHON" "$ROOT_DIR/setup.py" "$@"
+exec "$VENV_PYTHON" "$ROOT_DIR/setup.py" "${SETUP_ARGS[@]}"
 

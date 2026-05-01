@@ -173,37 +173,64 @@ LOG_COLOURS = {
 
 
 def log_event(status: str, message: str, *, level: int = logging.INFO) -> None:
-    """Emit a log entry with the required prefixed timestamp and status."""
+    """Emit a log entry with the required prefixed timestamp and status.
+
+    Multi-line messages are written as separate file records so that the watcher
+    UI renders each sub-line on its own row rather than collapsing them with ' | '.
+    Continuation lines (lines 2+) use a 4-space indent prefix in the file so the
+    UI reader can distinguish them from new events.
+    """
     elapsed = time.perf_counter() - LOG_START_TIME if LOG_START_TIME else 0.0
     prefix = format_elapsed_for_log(elapsed)
     status_upper = status.upper()
     formatted = message.splitlines() if message else []
     first_line_extra = formatted[0].strip() if formatted else ""
+    colour_fn = LOG_COLOURS.get(status_upper, bright)
+    status_coloured = colour_fn(status_upper)
+
+    # Build the ANSI-coloured in-memory representation (for ProgressState / UI overlay)
     coloured_lines: List[str] = []
-    status_coloured = LOG_COLOURS.get(status_upper, bright)(status_upper)
     if first_line_extra:
         coloured_lines.append(f"{prefix} {status_coloured} {first_line_extra}")
     else:
         coloured_lines.append(f"{prefix} {status_coloured}")
 
+    # Plain continuation lines for the file (written as separate logger records)
+    plain_continuations: List[str] = []
     for line in formatted[1:]:
         raw = line.strip()
         if not raw:
             coloured_lines.append("")
             continue
-        colour_fn = LOG_COLOURS.get(status_upper, bright)
         if raw.startswith("→"):
             value = raw[1:].strip()
             coloured_lines.append(f"    → {colour_fn(value)}")
+            plain_continuations.append(f"    → {value}")
+        elif raw.startswith(("KEEP", "KEPT", "DEL ", "DEL\t")):
+            coloured_lines.append(f"    {colour_fn(raw)}")
+            plain_continuations.append(f"    {raw}")
         elif ":" in raw:
-            label, value = raw.split(":", 1)
-            coloured_lines.append(f"    {label.strip():<12}: {colour_fn(value.strip())}")
+            # Guard against Windows drive letters (e.g. "B:/path") being split as label:value.
+            # A valid label has length > 1 and contains no path separators.
+            label_candidate = raw.partition(":")[0]
+            label_clean = label_candidate.strip()
+            if len(label_clean) > 1 and "/" not in label_candidate and "\\" not in label_candidate:
+                label, value = raw.split(":", 1)
+                coloured_lines.append(f"    {label.strip():<12}: {colour_fn(value.strip())}")
+                plain_continuations.append(f"    {label.strip():<12}: {value.strip()}")
+            else:
+                coloured_lines.append(f"    {colour_fn(raw)}")
+                plain_continuations.append(f"    {raw}")
         else:
             coloured_lines.append(f"    {colour_fn(raw)}")
+            plain_continuations.append(f"    {raw}")
 
     full_message = "\n".join(coloured_lines)
-    plain_message = " | ".join(line.strip() for line in formatted if line.strip()) if formatted else ""
-    LOGGER.log(level, f"{prefix} {status_upper} {plain_message}".strip())
+    # Write the first line as the timestamped record, then each continuation separately
+    # so the file reader (and UI) sees one display line per item.
+    LOGGER.log(level, f"{prefix} {status_upper} {first_line_extra}".strip())
+    for cont in plain_continuations:
+        LOGGER.log(level, cont)
     if PROGRESS_TRACKER:
         PROGRESS_TRACKER.add_log_entry(full_message)
 
@@ -222,21 +249,24 @@ ACTION_MOVE = "move"
 ACTION_SKIP = "skip"
 ACTION_REPLACE = "replace"
 ACTION_CREATE_DIR = "create_dir"
+ACTION_DELETE = "delete"  # Delete an inferior copy (stay-at-staging collision resolution)
 
 VALID_OPERATIONS = {ACTION_COPY, ACTION_MOVE}
 
-ACTIONS_ORDER = [ACTION_COPY, ACTION_MOVE, ACTION_REPLACE, ACTION_SKIP]
+ACTIONS_ORDER = [ACTION_COPY, ACTION_MOVE, ACTION_REPLACE, ACTION_SKIP, ACTION_DELETE]
 ACTION_LABELS = {
     ACTION_COPY: "Copies",
     ACTION_MOVE: "Moves",
     ACTION_REPLACE: "Replacements",
     ACTION_SKIP: "Skipped",
+    ACTION_DELETE: "Deletions",
 }
 ACTION_COLORS = {
     ACTION_COPY: green,
     ACTION_MOVE: cyan,
     ACTION_REPLACE: magenta,
     ACTION_SKIP: yellow,
+    ACTION_DELETE: red,
 }
 
 
@@ -615,6 +645,11 @@ def compute_summary(actions: Iterable[Action], *, delete_source: bool) -> Summar
                 row.source_deleted_size += source_size
                 stats.total_source_deleted_count += 1
                 stats.total_source_deleted_size += source_size
+        elif action.action == ACTION_DELETE:
+            # source is the inferior copy being removed; no data is transferred.
+            row.source_deleted_size += source_size
+            stats.total_source_deleted_count += 1
+            stats.total_source_deleted_size += source_size
 
     return stats
 
@@ -1008,6 +1043,252 @@ def build_plan(
     return plan, folder_totals
 
 
+def _common_suffix_parts(path_a: Path, path_b: Path) -> List[str]:
+    """Return the rightmost path-parent parts shared by both paths (case-insensitive)."""
+    parts_a = list(path_a.parent.parts)
+    parts_b = list(path_b.parent.parts)
+    common: List[str] = []
+    for pa, pb in zip(reversed(parts_a), reversed(parts_b)):
+        if pa.lower() == pb.lower():
+            common.append(pa)
+        else:
+            break
+    common.reverse()
+    return common
+
+
+def _unique_location_label(path: Path, other: Path) -> str:
+    """Return the shortest root prefix of *path* that distinguishes it from *other*.
+
+    E.g. given ``B:\\stars\\yuki_rino\\file.mp4`` vs ``D:\\tmp\\stars\\yuki_rino\\file.mp4``
+    the common suffix is ``stars\\yuki_rino`` so this returns ``B:\\``.
+    """
+    parts_self = list(path.parent.parts)
+    parts_other = list(other.parent.parts)
+    common_len = 0
+    for ps, po in zip(reversed(parts_self), reversed(parts_other)):
+        if ps.lower() == po.lower():
+            common_len += 1
+        else:
+            break
+    unique_parts = parts_self[: len(parts_self) - common_len] if common_len < len(parts_self) else parts_self
+    if not unique_parts:
+        return str(path.parent)
+    try:
+        result = str(Path(*unique_parts))
+    except Exception:
+        result = os.sep.join(unique_parts)
+    if not result.endswith((os.sep, "/")):
+        result += os.sep
+    return result
+
+
+def _format_collision_log(
+    winner: Path,
+    winner_size: int,
+    loser: Path,
+    loser_size: int,
+    verdict: str,
+    dry_run: bool,
+) -> str:
+    """Return a compact multi-line log message for a stay-at-staging collision.
+
+    The first line is a one-line verdict bracket suitable as the log_event header.
+    Subsequent lines show KEEP/DEL with minimal distinguishing paths so the reader
+    can immediately see *where* each copy lives without repeating redundant path segments.
+    """
+    size_diff = abs(winner_size - loser_size)
+    action_word = "would delete" if dry_run else "deleted"
+    size_summary = f"{format_bytes(winner_size)} > {format_bytes(loser_size)}  (+{format_bytes(size_diff)})"
+    header = f"[{verdict} · {size_summary} · {action_word} inferior copy]"
+
+    same_name = winner.name.lower() == loser.name.lower()
+    common = _common_suffix_parts(winner, loser)
+
+    if common and same_name:
+        # Compact form: show the filename + common path once, then just the unique roots
+        common_str = os.sep.join(common)
+        winner_root = _unique_location_label(winner, loser)
+        loser_root = _unique_location_label(loser, winner)
+        return (
+            f"{header}\n"
+            f"→ {winner.name}  (in ...{os.sep}{common_str}{os.sep})\n"
+            f"KEEP   {winner_root}\n"
+            f"DEL    {loser_root}"
+        )
+    else:
+        # Full paths when names differ or no common parent
+        return (
+            f"{header}\n"
+            f"KEEP   {winner}\n"
+            f"DEL    {loser}"
+        )
+
+
+def build_stay_at_staging_plan(
+    staging_root: Path,
+    original_destination_root: Path,
+    progress: Optional[ProgressState] = None,
+) -> Tuple[Plan, Dict[str, Dict[str, int]]]:
+    """Build a collision-check plan for stay-at-staging mode.
+
+    In this mode files at *staging_root* are already in their final location and will
+    not be moved.  We scan for duplicate files between *staging_root* and
+    *original_destination_root* and plan to delete whichever copy is inferior (smaller).
+
+    Actions produced:
+    - ACTION_SKIP  – no collision; staging file is fine where it is.
+    - ACTION_DELETE – delete the inferior duplicate.
+        metadata["winner_path"]     = absolute path of the file that will be kept.
+        metadata["winner_location"] = "staging" | "original_destination".
+        metadata["loser_path"]      = absolute path of the file that will be deleted.
+        metadata["loser_location"]  = "staging" | "original_destination".
+        metadata["resolution"]      = "delete_original" | "delete_staging".
+    """
+    actions: List[Action] = []
+    total_files = 0
+    no_collision_count = 0
+    folder_totals: Dict[str, Dict[str, int]] = {}
+
+    for staging_subdir in sorted(list_immediate_subdirs(staging_root)):
+        mp4_files = sorted(iter_mp4_files(staging_subdir))
+        folder_total_files = len(mp4_files)
+        folder_total_bytes = 0
+        file_stats: List[Tuple[Path, int]] = []
+        for staging_file in mp4_files:
+            try:
+                size = staging_file.stat().st_size
+            except FileNotFoundError:
+                continue
+            folder_total_bytes += size
+            file_stats.append((staging_file, size))
+
+        folder_key = staging_subdir.name
+        if folder_total_files:
+            folder_totals[folder_key] = {"files": folder_total_files, "bytes": folder_total_bytes}
+
+        orig_dest_subdir = original_destination_root / staging_subdir.name
+
+        if progress:
+            progress.set_message(f"Scanning {staging_subdir}")
+
+        for staging_file, staging_size in file_stats:
+            total_files += 1
+            if progress:
+                progress.increment_total()
+
+            base_metadata: Dict[str, str] = {
+                "folder_key": folder_key,
+                "folder_total_files": str(folder_total_files),
+                "folder_total_bytes": str(folder_total_bytes),
+                "stay_at_staging": "true",
+            }
+
+            # Locate a matching file in the original destination (exact name or stem match).
+            orig_match: Optional[Path] = None
+            orig_size: int = 0
+            orig_file = orig_dest_subdir / staging_file.name
+            if orig_file.exists():
+                orig_match = orig_file
+                try:
+                    orig_size = orig_file.stat().st_size
+                except Exception:
+                    orig_size = 0
+            else:
+                stem_match = _find_stem_in_dir(staging_file.stem, orig_dest_subdir)
+                if stem_match is not None:
+                    orig_match = stem_match
+                    try:
+                        orig_size = stem_match.stat().st_size
+                    except Exception:
+                        orig_size = 0
+
+            if orig_match is None:
+                # No collision – staging file is already correctly placed.
+                no_collision_count += 1
+                action = Action(
+                    action=ACTION_SKIP,
+                    source=str(staging_file),
+                    destination=None,
+                    reason="no collision detected; file stays at staging location",
+                    source_size=staging_size,
+                    destination_size=None,
+                    collision=False,
+                    metadata={
+                        **base_metadata,
+                        "winner_path": str(staging_file),
+                        "winner_location": "staging",
+                        "delete_source": "false",
+                    },
+                )
+            elif staging_size >= orig_size:
+                # Staging copy is better or equal – delete the original-destination copy.
+                action = Action(
+                    action=ACTION_DELETE,
+                    source=str(orig_match),
+                    destination=None,
+                    reason=(
+                        f"staging copy is larger or equal "
+                        f"({format_bytes(staging_size)} >= {format_bytes(orig_size)}); "
+                        "deleting inferior original-destination copy"
+                    ),
+                    source_size=orig_size,
+                    destination_size=staging_size,
+                    collision=True,
+                    metadata={
+                        **base_metadata,
+                        "winner_path": str(staging_file),
+                        "winner_location": "staging",
+                        "loser_path": str(orig_match),
+                        "loser_location": "original_destination",
+                        "resolution": "delete_original",
+                    },
+                )
+            else:
+                # Original-destination copy is better – delete the staging copy.
+                action = Action(
+                    action=ACTION_DELETE,
+                    source=str(staging_file),
+                    destination=None,
+                    reason=(
+                        f"original-destination copy is larger "
+                        f"({format_bytes(orig_size)} > {format_bytes(staging_size)}); "
+                        "deleting inferior staging copy"
+                    ),
+                    source_size=staging_size,
+                    destination_size=orig_size,
+                    collision=True,
+                    metadata={
+                        **base_metadata,
+                        "winner_path": str(orig_match),
+                        "winner_location": "original_destination",
+                        "loser_path": str(staging_file),
+                        "loser_location": "staging",
+                        "resolution": "delete_staging",
+                    },
+                )
+
+            actions.append(action)
+
+    plan = Plan(
+        source=str(staging_root),
+        destination=str(original_destination_root),
+        operation="stay_at_staging",
+        generated_at=time.time(),
+        actions=actions,
+    )
+
+    collision_count = total_files - no_collision_count
+    if progress:
+        progress.set_message(f"Stay-at-staging plan ready: {collision_count} collision(s), {no_collision_count} clean")
+    log_event(
+        "PLAN",
+        f"Stay-at-staging plan: {len(actions)} entries across {total_files} staging files "
+        f"({collision_count} collision(s), {no_collision_count} with no duplicate)",
+    )
+    return plan, folder_totals
+
+
 def write_plan(plan: Plan, output_path: Path) -> None:
     payload = plan.to_dict()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1063,21 +1344,50 @@ def prompt_confirmation(action: Action) -> bool:
         console_print("Please respond with y, n, or q.")
 
 
+def _file_label(src_path: Path) -> str:
+    """Compact display: filename + immediate parent folder (no full path repetition)."""
+    return f"{src_path.name}  ({src_path.parent.name})"
+
+
+def _skip_verdict(action: Action) -> str:
+    dest_sz = format_bytes(action.destination_size or 0)
+    src_sz = format_bytes(action.source_size or 0)
+    if action.collision:
+        return f"dest kept – {dest_sz} >= src {src_sz}"
+    return "skipped"
+
+
+def _replace_verdict(action: Action, *, dry_run: bool = False) -> str:
+    src_sz = format_bytes(action.source_size or 0)
+    dest_sz = format_bytes(action.destination_size or 0)
+    verb = "would replace" if dry_run else "replaced"
+    return f"{verb} – src {src_sz} > dest {dest_sz}"
+
+
+def _transfer_verdict(action: Action, verb: str, *, dry_run: bool = False) -> str:
+    src_sz = format_bytes(action.source_size or 0)
+    prefix = "would " if dry_run else ""
+    return f"{prefix}{verb} {src_sz}"
+
+
 def maybe_delete_source(src_path: Path, dry_run: bool, no_delete: bool) -> bool:
-    """Delete source file unless prevented; returns True if removed."""
+    """Delete source file unless prevented; returns True if removed.
+
+    Logging is intentionally omitted here — every caller already emits a log entry
+    that names the file and describes the intended operation.  A separate DELETE /
+    DRYRUN line would repeat the path and clutter the activity log.
+    """
     if no_delete:
         return False
     if dry_run:
-        log_event("DRYRUN", f"source: {src_path}")
         return False
     if not src_path.exists():
         return True
     try:
         src_path.unlink()
-        log_event("DELETE", f"source: {src_path}")
         return True
     except Exception as exc:
-        log_event("ERROR", f"source: {src_path}\nerror: {exc}", level=logging.ERROR)
+        log_event("ERROR", f"delete failed: {src_path.name}\nerror: {exc}", level=logging.ERROR)
         return False
 
 
@@ -1126,6 +1436,68 @@ def execute_action(
             console_print()
         return None
 
+    # Stay-at-staging no-collision skip: source is the staging file staying in place; no destination.
+    if action.action == ACTION_SKIP and action.metadata.get("stay_at_staging") == "true":
+        src_path = Path(action.source) if action.source else None
+        file_size = action.source_size or 0
+        f_key = action.metadata.get("folder_key", "")
+        f_display = str(src_path.parent) if src_path else ""
+        f_name = src_path.name if src_path else "?"
+        progress.start_file(f_key or (src_path.parent.name if src_path else ""), f_display, f_name, file_size)
+        log_event(
+            "SKIP",
+            f"[no collision – stays at staging]\n"
+            f"→ {src_path}  ({format_bytes(file_size)})",
+        )
+        progress.increment_processed()
+        progress.record_skip(file_size)
+        progress.set_message(f"No collision: {f_name} stays at staging")
+        action.metadata["delete_source"] = "false"
+        return action
+
+    # Stay-at-staging collision resolution: delete the inferior copy (no file transfer).
+    if action.action == ACTION_DELETE:
+        if not action.source:
+            return None
+        del_path = Path(action.source)
+        file_size = action.source_size or 0
+        f_key = action.metadata.get("folder_key", "")
+        progress.start_file(f_key or del_path.parent.name, str(del_path.parent), del_path.name, file_size)
+        winner_path_str = action.metadata.get("winner_path", "unknown")
+        winner_p = Path(winner_path_str) if winner_path_str != "unknown" else del_path
+        winner_size = action.destination_size or 0
+        resolution = action.metadata.get("resolution", "")
+        verdict = "staging wins" if resolution == "delete_original" else "orig-dest wins"
+        collision_msg = _format_collision_log(
+            winner=winner_p,
+            winner_size=winner_size,
+            loser=del_path,
+            loser_size=file_size,
+            verdict=verdict,
+            dry_run=dry_run,
+        )
+        if dry_run:
+            log_event("DRYRUN", collision_msg)
+            progress.increment_processed()
+            progress.increment_collisions(replaced=resolution == "delete_original")
+            progress.set_message(f"[dry-run] would delete {del_path.name}")
+            progress.complete_simulated_file(file_size)
+            action.metadata["delete_source"] = "true"
+            return action
+        try:
+            if del_path.exists():
+                del_path.unlink()
+            log_event("DELETE", collision_msg)
+        except Exception as exc:
+            log_event("ERROR", f"delete failed: {del_path}\nerror: {exc}", level=logging.ERROR)
+            return None
+        progress.increment_processed()
+        progress.increment_collisions(replaced=resolution == "delete_original")
+        progress.set_message(f"Deleted inferior copy: {del_path.name}")
+        progress.finish_file(file_size)
+        action.metadata["delete_source"] = "true"
+        return action
+
     if not action.source or not action.destination:
         log_event("WARN", f"action: {action}", level=logging.WARNING)
         return None
@@ -1153,10 +1525,7 @@ def execute_action(
     if confirm and not dry_run and action.action in {ACTION_COPY, ACTION_MOVE, ACTION_REPLACE}:
         proceed = prompt_confirmation(action)
         if not proceed:
-            log_event(
-                "SKIP",
-                f"source: {src_path}\n→ {dest_path}\nreason: user declined operation",
-            )
+            log_event("SKIP", f"[user declined]\n→ {_file_label(src_path)}")
             progress.increment_processed()
             progress.set_message("User declined operation")
             declined_metadata = dict(action.metadata)
@@ -1175,48 +1544,34 @@ def execute_action(
             return declined_action
 
     if action.action == ACTION_SKIP:
-        msg = (
-            f"source: {src_path}\n"
-            f"→ {dest_path}\n"
-            f"reason: {action.reason}\n"
-            f"source size: {format_bytes(action.source_size or 0)}\n"
-            f"destination size: {format_bytes(action.destination_size or 0)}"
-        )
-        log_event("SKIP", msg)
+        verdict = _skip_verdict(action)
+        will_del = not no_delete
+        del_note = " · src will be deleted" if will_del else ""
+        log_event("SKIP", f"[{verdict}{del_note}]\n→ {_file_label(src_path)}")
         progress.increment_processed()
         progress.increment_collisions(replaced=False)
-        progress.set_message("Skipped due to destination being larger or equal")
+        progress.set_message(f"Skipped: {src_path.name}")
         progress.record_skip(file_size)
         removed = maybe_delete_source(src_path, dry_run=dry_run, no_delete=no_delete)
         if removed:
-            progress.set_message("Removed source after skip")
+            progress.set_message(f"Skipped + removed src: {src_path.name}")
         if not no_delete:
             action.metadata["delete_source"] = "true" if dry_run or removed else "false"
         return action
 
     if dry_run:
+        verb = "replace" if action.action == ACTION_REPLACE else ("move" if action.action == ACTION_MOVE else "copy")
         if action.action == ACTION_REPLACE:
-            status = "DRYRUN"
-            verb = "replace"
-        elif action.action == ACTION_MOVE:
-            status = "DRYRUN"
-            verb = "move"
+            log_event("DRYRUN", f"[{_replace_verdict(action, dry_run=True)}]\n→ {_file_label(src_path)}")
         else:
-            status = "DRYRUN"
-            verb = "copy"
-        msg = (
-            f"source: {src_path}\n"
-            f"→ {dest_path}\n"
-            f"reason: {action.reason}\n"
-            f"source size: {format_bytes(action.source_size or 0)}"
-        )
-        log_event(status, msg)
+            verdict = _transfer_verdict(action, verb, dry_run=True)
+            log_event("DRYRUN", f"[{verdict}]\n→ {_file_label(src_path)}")
         progress.increment_processed()
         if action.collision:
             progress.increment_collisions(replaced=action.action == ACTION_REPLACE)
         else:
             progress.increment_copied()
-        progress.set_message(f"[dry-run] would {action.action} {src_path.name}")
+        progress.set_message(f"[dry-run] would {verb} {src_path.name}")
         progress.complete_simulated_file(file_size)
         maybe_delete_source(src_path, dry_run=True, no_delete=no_delete)
         if not no_delete:
@@ -1232,31 +1587,22 @@ def execute_action(
     except Exception as exc:
         log_event(
             "ERROR",
-            f"source: {src_path}\n→ {dest_path}\nerror: {exc}",
+            f"copy failed: {_file_label(src_path)}\nerror: {exc}",
             level=logging.ERROR,
         )
         return None
 
     if action.action == ACTION_REPLACE:
-        msg = (
-            f"source: {src_path}\n"
-            f"→ {dest_path}\n"
-            f"resolution: {action.metadata.get('resolution', 'replace')}\n"
-            f"source size: {format_bytes(action.source_size or 0)}\n"
-            f"previous dest size: {format_bytes(action.destination_size or 0)}"
-        )
-        log_event("REPLACE", msg)
+        log_event("REPLACE", f"[{_replace_verdict(action, dry_run=False)}]\n→ {_file_label(src_path)}")
     elif action.action == ACTION_MOVE:
-        msg = f"source: {src_path}\n" f"→ {dest_path}\n" f"source size: {format_bytes(action.source_size or 0)}"
-        log_event("MOVE", msg)
+        log_event("MOVE", f"[{_transfer_verdict(action, 'move')}]\n→ {_file_label(src_path)}")
     else:
-        msg = f"source: {src_path}\n" f"→ {dest_path}\n" f"source size: {format_bytes(action.source_size or 0)}"
-        log_event("COPY", msg)
+        log_event("COPY", f"[{_transfer_verdict(action, 'copy')}]\n→ {_file_label(src_path)}")
 
     progress.increment_processed()
     if action.collision:
         progress.increment_collisions(replaced=True)
-        progress.set_message(f"Collision resolved by replacing destination with {src_path.name}")
+        progress.set_message(f"Replaced dest with {src_path.name}")
     else:
         progress.increment_copied()
         verb = "Moved" if action.action == ACTION_MOVE else "Copied"

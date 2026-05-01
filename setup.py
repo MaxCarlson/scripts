@@ -557,6 +557,13 @@ def main():
         default=False,
         help="Force re-installation even when modules already match the desired install mode.",
     )
+    parser.add_argument(
+        "-s",
+        "--skip-reinstall",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Skip reinstall when modules already match the desired install mode.",
+    )
     parser.add_argument("-p", "--production", action="store_true",
                         help="Install Python modules in production mode (non-editable).")
     parser.add_argument("-v", "--verbose", action="store_true",
@@ -573,6 +580,9 @@ def main():
 
     args = parser.parse_args()
     _is_verbose = args.verbose
+
+    if args.force_reinstall and args.skip_reinstall is True:
+        parser.error("--force-reinstall conflicts with --skip-reinstall")
 
     if args.no_venv:
         os.environ["SKIP_VENV_BOOTSTRAP"] = "1"
@@ -598,8 +608,10 @@ def main():
 
     bin_dir = args.bin_dir if args.bin_dir else scripts_dir / "bin"
 
-    # Invert the flags: skip_reinstall is True by default, force_reinstall inverts it
-    skip_reinstall = not args.force_reinstall
+    if args.skip_reinstall is None:
+        skip_reinstall = not args.force_reinstall
+    else:
+        skip_reinstall = args.skip_reinstall
     # soft_fail_modules is True by default, fail_fast inverts it
     soft_fail_modules = not args.fail_fast
 

@@ -19,6 +19,7 @@ class WatcherConfig:
     total_size_trigger_bytes: Optional[int]  # Auto-trigger when total MP4 size exceeds this
     free_space_trigger_bytes: Optional[int]  # Auto-trigger when free space drops below this
     destination_space_remaining_bytes: Optional[int] = None  # Preserve this much free space on destination
+    stay_at_staging: bool = False  # Files stay at staging; only cross-check for inferior duplicates at original dest
 
 
 @dataclass
@@ -253,6 +254,34 @@ class MP4Watcher:
             self._log_status("LIMIT", "Destination reserve disabled.")
         return current
 
+    def set_stay_at_staging(self, value: bool) -> bool:
+        with self._lock:
+            self._config.stay_at_staging = value
+            current = self._config.stay_at_staging
+        if current:
+            self._log_status(
+                "MODE",
+                "Stay-at-staging enabled: downloaded files will remain at staging location. "
+                "Watcher will only scan for and remove inferior duplicates at the original destination.",
+            )
+        else:
+            self._log_status("MODE", "Stay-at-staging disabled: watcher will move/copy files to final destination as normal.")
+        return current
+
+    def toggle_stay_at_staging(self) -> bool:
+        with self._lock:
+            self._config.stay_at_staging = not self._config.stay_at_staging
+            current = self._config.stay_at_staging
+        if current:
+            self._log_status(
+                "MODE",
+                "Stay-at-staging enabled: downloaded files will remain at staging location. "
+                "Watcher will only scan for and remove inferior duplicates at the original destination.",
+            )
+        else:
+            self._log_status("MODE", "Stay-at-staging disabled: watcher will move/copy files to final destination as normal.")
+        return current
+
     def _destination_available_bytes(self) -> Optional[int]:
         reserve = self._config.destination_space_remaining_bytes
         if not isinstance(reserve, int) or reserve <= 0:
@@ -390,9 +419,10 @@ class MP4Watcher:
             keep_source = self._config.keep_source
         run_label = "Dry-run" if dry_run else "Run"
         limit_desc = _format_max_files(self._resolve_max_files(max_files))
+        mode_extra = " [stay-at-staging]" if self._config.stay_at_staging else ""
         self._log_status(
             "STATE",
-            f"{run_label} started ({operation}, max_files={limit_desc}, {_operation_mode_label(keep_source)}) via {trigger}",
+            f"{run_label} started ({operation}, max_files={limit_desc}, {_operation_mode_label(keep_source)}{mode_extra}) via {trigger}",
         )
         return True
 
@@ -410,13 +440,21 @@ class MP4Watcher:
         total_files = 0
         total_bytes = 0
         try:
-            plan, folder_totals = mp4_sync.build_plan(
-                self._config.staging_root,
-                self._config.destination_root,
-                operation,
-                progress=progress,
-            )
-            destination_available = self._destination_available_bytes()
+            stay_at_staging = self._config.stay_at_staging
+            if stay_at_staging:
+                plan, folder_totals = mp4_sync.build_stay_at_staging_plan(
+                    self._config.staging_root,
+                    self._config.destination_root,
+                    progress=progress,
+                )
+            else:
+                plan, folder_totals = mp4_sync.build_plan(
+                    self._config.staging_root,
+                    self._config.destination_root,
+                    operation,
+                    progress=progress,
+                )
+            destination_available = None if stay_at_staging else self._destination_available_bytes()
             if destination_available is not None:
                 plan, selected_count, skipped_count = filter_plan_for_destination_space(
                     plan,
@@ -453,16 +491,19 @@ class MP4Watcher:
                 self._plan_bytes = total_bytes
 
             effective_max = self._resolve_max_files(max_files)
+            # In stay-at-staging mode deletions are always explicit (ACTION_DELETE); no_delete=False
+            # so the normal keep_source flag doesn't accidentally suppress them.
+            no_delete_flag = False if stay_at_staging else self._config.keep_source
             processed_actions = mp4_sync.execute_plan(
                 plan,
                 dry_run=dry_run,
                 progress=progress,
                 confirm=False,
-                no_delete=self._config.keep_source,
+                no_delete=no_delete_flag,
                 max_files=effective_max,
             )
             processed_bytes = sum(a.source_size or 0 for a in processed_actions)
-            summary = mp4_sync.compute_summary(processed_actions, delete_source=not self._config.keep_source)
+            summary = mp4_sync.compute_summary(processed_actions, delete_source=not no_delete_flag)
             run_summary = WatcherRunSummary(
                 completed_at=time.time(),
                 duration_s=time.time() - start_time,

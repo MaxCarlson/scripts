@@ -36,6 +36,25 @@ def _needs_ascii_ui() -> bool:
 
 _ASCII_UI = _needs_ascii_ui()
 
+def _supports_color() -> bool:
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("FORCE_COLOR"):
+        return True
+    return bool(getattr(sys.stderr, "isatty", lambda: False)())
+
+def _red(text: str) -> str:
+    if not _supports_color():
+        return text
+    return f"\033[31m{text}\033[0m"
+
+def _print_dependency_failure_group(module_name: str, failed_items: list[str], detail: str | None = None) -> None:
+    print(_red(f"[ERROR] {module_name}: dependency install failed"), file=sys.stderr)
+    if detail:
+        print(_red(f"    {detail}"), file=sys.stderr)
+    for item in failed_items:
+        print(_red(f"    - {item}"), file=sys.stderr)
+
 def _fb_info(msg):
     if _is_verbose:
         print(f"[INFO] {msg}")
@@ -231,6 +250,41 @@ def _parse_requirements(req_file: Path) -> list[str]:
         pass
     return reqs
 
+def _project_dependencies_from_source(module_dir: Path) -> list[str]:
+    pyproject = module_dir / "pyproject.toml"
+    if not pyproject.is_file():
+        return []
+    try:
+        with open(pyproject, "rb") as f:
+            data = tomllib.load(f)
+        dependencies = data.get("project", {}).get("dependencies", [])
+    except Exception:
+        return []
+    if not isinstance(dependencies, list):
+        return []
+    return [str(dep) for dep in dependencies if dep]
+
+def _extract_failed_dependency_names(log_file: Path) -> list[str]:
+    try:
+        text = log_file.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return []
+
+    patterns = [
+        r"Failed building wheel for\s+([A-Za-z0-9_.\-]+)",
+        r"Could not build wheels for\s+([A-Za-z0-9_.\-]+)",
+        r"No matching distribution found for\s+([A-Za-z0-9_.\-\[\]<>=!~,\"]+)",
+        r"Could not find a version that satisfies the requirement\s+([A-Za-z0-9_.\-\[\]<>=!~,\"]+)",
+        r"ERROR:\s+Could not install packages due to an OSError:\s+(.+)",
+    ]
+    failed: list[str] = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, text):
+            value = match.group(1).strip()
+            if value and value not in failed:
+                failed.append(value)
+    return failed
+
 def _install_requirements(module_name: str, module_dir: Path, reqs: list[str], logs_dir: Path, verbose: bool) -> tuple[int, list[tuple[str, bool, int]]]:
     """
     Installs each requirement separately so we can show progress and partial failures.
@@ -302,6 +356,59 @@ def _install_vdedup_gpu_requirements(module_dir: Path, logs_dir: Path, verbose: 
     if not verbose:
         cmd.insert(4, "-q")
     return _run_with_log(cmd, log_file, verbose=verbose, heartbeat_every=15.0)
+
+def _web_docs_processor_runtime_ready() -> tuple[bool, str]:
+    code = (
+        "from pathlib import Path\n"
+        "import reportlab\n"
+        "from playwright.sync_api import sync_playwright\n"
+        "with sync_playwright() as p:\n"
+        "    path = Path(p.chromium.executable_path)\n"
+        "    raise SystemExit(0 if path.exists() else 2)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+        encoding="utf-8",
+        errors="ignore",
+    )
+    if result.returncode == 0:
+        return True, "runtime ready"
+    detail = (result.stderr or result.stdout or f"check exited {result.returncode}").strip()
+    return False, detail.splitlines()[-1] if detail else f"check exited {result.returncode}"
+
+def _install_web_docs_processor_browsers(logs_dir: Path, verbose: bool) -> int:
+    log_file = logs_dir / "web_docs_processor-browser-install.log"
+    cmd = [
+        sys.executable,
+        "-m",
+        "web_docs_processor.docs_source_builder",
+        "setup-browsers",
+        "-b",
+        "chromium",
+    ]
+    if not verbose:
+        status_line("web_docs_processor: Chromium runtime missing", "warn", "installing browser runtime")
+    return _run_with_log(cmd, log_file, verbose=verbose, heartbeat_every=15.0)
+
+def _ensure_web_docs_processor_runtime(module_dir: Path, logs_dir: Path, *, editable: bool, verbose: bool) -> int:
+    ready, detail = _web_docs_processor_runtime_ready()
+    if ready:
+        return 0
+
+    log_info(f"web_docs_processor: runtime check failed ({detail})")
+    rc = _install_web_docs_processor_browsers(logs_dir, verbose)
+    if rc != 0:
+        return rc
+
+    ready, detail = _web_docs_processor_runtime_ready()
+    if ready:
+        return 0
+
+    log_info(f"web_docs_processor: browser install did not fix runtime check ({detail}); reinstalling module.")
+    return _install_module("web_docs_processor", module_dir, editable=editable, logs_dir=logs_dir, verbose=verbose)
 
 # ─────────────────────────────────────────────────────────
 # Install a module (editable/non-editable), quiet with log
@@ -389,6 +496,24 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
                             f"{name}: installed version {installed_version}, source version {source_version} "
                             "→ reinstalling."
                         )
+                    elif pkg_name == "web-docs-processor":
+                        runtime_rc = _ensure_web_docs_processor_runtime(
+                            entry,
+                            logs_dir,
+                            editable=not production,
+                            verbose=verbose,
+                        )
+                        if runtime_rc == 0:
+                            status_line(f"{name}: already ({current})", "unchanged", "runtime ready")
+                            touched_pkgs.append(pkg_name)
+                            continue
+                        status_line(
+                            f"{name}: runtime setup failed",
+                            "fail",
+                            f"log: {logs_dir / 'web_docs_processor-browser-install.log'}",
+                        )
+                        errors_encountered.append(name)
+                        continue
                     else:
                         status_line(f"{name}: already ({current})", "unchanged", "skip")
                         # even if we skip, track package name so proxies can be refreshed
@@ -408,9 +533,8 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
                         status_line(f"{name}: requirements {len(reqs)}/{len(reqs)} installed", "ok")
                     else:
                         status_line(f"{name}: requirements installed with {num_fail} failure(s)", "warn", f"log: {logs_dir / (name + '-pip.log')}")
-                        for r, ok, _rc in results:
-                            mark = "✅" if ok else "❌"
-                            print(f"  {mark} {r}")
+                        failed_reqs = [r for r, ok, _rc in results if not ok]
+                        _print_dependency_failure_group(name, failed_reqs, "requirements.txt entries that failed:")
                 else:
                     status_line(f"{name}: requirements.txt empty — skipped", "unchanged")
             elif req_file.exists() and has_pyproject:
@@ -438,6 +562,17 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
                 touched_pkgs.append(_pkg_name_from_source(entry, verbose))
             else:
                 status_line(f"{name}: install failed", "fail", f"log: {logs_dir / (name + '-pip.log')}")
+                failed_deps = _extract_failed_dependency_names(logs_dir / f"{name}-pip.log")
+                if failed_deps:
+                    _print_dependency_failure_group(name, failed_deps, "pip-reported failed dependency/install items:")
+                elif has_pyproject:
+                    dependency_candidates = _project_dependencies_from_source(entry)
+                    if dependency_candidates:
+                        _print_dependency_failure_group(
+                            name,
+                            dependency_candidates,
+                            "declared pyproject dependencies; see pip log for the exact failure:",
+                        )
                 errors_encountered.append(name)
 
     if hidden_skipped:

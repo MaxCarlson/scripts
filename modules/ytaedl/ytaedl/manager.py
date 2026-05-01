@@ -60,6 +60,7 @@ WATCHER_LOG_STATUS_COLOURS = {
     "ERROR": "red",
     "DRYRUN": "yellow",
     "SCAN": "cyan",
+    "PLAN": "cyan",
     "WARN": "yellow",
     "MODE": "cyan",
     "LIMIT": "yellow",
@@ -369,13 +370,35 @@ def _watcher_keep_source_label(config: WatcherConfig) -> str:
     return label
 
 
+def _colorize_log_continuation(clean: str) -> str:
+    """Apply semantic colours to a log continuation line (one not starting with '[')."""
+    stripped = clean.lstrip()
+    indent = clean[: len(clean) - len(stripped)]
+    if stripped.startswith("KEEP") or stripped.startswith("KEPT"):
+        tag, rest = stripped[:4], stripped[4:]
+        return indent + td_utils.color_text(tag, "green") + rest
+    if stripped.startswith("DEL"):
+        tag, rest = stripped[:3], stripped[3:]
+        return indent + td_utils.color_text(tag, "red") + rest
+    if stripped.startswith("→"):
+        arrow, rest = "→", stripped[1:]
+        return indent + td_utils.color_text(arrow, "cyan") + rest
+    if stripped.startswith("file:") or stripped.startswith("file "):
+        colon_pos = stripped.index(":") + 1
+        label = stripped[:colon_pos]
+        rest = stripped[colon_pos:]
+        return indent + td_utils.color_text(label, "bright") + rest
+    return clean
+
+
 def _format_watcher_log_line(line: str) -> str:
     stripped = line.rstrip()
     if not stripped:
         return ""
     clean = ANSI_ESCAPE_RE.sub("", stripped)
+    # Continuation lines (written by log_event as separate records) start with spaces
     if not clean.startswith("["):
-        return clean
+        return _colorize_log_continuation(clean)
     parts = clean.split(" ", 2)
     if len(parts) < 3:
         return clean
@@ -613,6 +636,8 @@ def _render_watcher_panel(
             f"Default op: {_color_operation(cfg.default_operation)} | Keep source: {_watcher_keep_source_label(cfg)}"
         )
         lines.append(op_line[:cols])
+        stay_label = td_utils.color_text("YES – files stay at staging", "yellow") if cfg.stay_at_staging else "no"
+        lines.append(f"Stay-at-staging: {stay_label}"[:cols])
         max_label = cfg.max_files if cfg.max_files is not None else "unlimited"
         trigger_bytes = cfg.free_space_trigger_bytes or auto_trigger_bytes
         lines.append(f"Max files/run: {max_label} | Free trigger: {_watcher_trigger_label(trigger_bytes)}"[:cols])
@@ -693,6 +718,7 @@ def _render_watcher_panel(
     else:
         hotkey_lines = _wrap_hotkey_lines(
             "Keys: d=downloads, u=url stats, c=start cleaner, s=scan (dry-run), o=toggle copy/move, "
+            "t=toggle stay-at-staging, "
             "k=set max-files, f=set staging free GiB, m=set destination reserve, "
             "[=scroll log up, ]=scroll log down, q=quit",
             cols,
@@ -1047,6 +1073,15 @@ def make_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "-T",
+        "--mp4-stay-at-staging",
+        action="store_true",
+        help=(
+            "Keep downloaded files at the staging/proxy location instead of moving them to the final destination. "
+            "The watcher will only scan for inferior duplicate files that exist at both locations and delete the worse copy."
+        ),
+    )
+    p.add_argument(
         "-O",
         "--url-order-key",
         choices=urlscan.SORT_CHOICES,
@@ -1190,6 +1225,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 total_size_trigger_bytes=mp4_trigger_total_bytes,
                 free_space_trigger_bytes=mp4_trigger_free_bytes,
                 destination_space_remaining_bytes=args.space_remaining,
+                stay_at_staging=args.mp4_stay_at_staging,
             )
             watcher = MP4Watcher(config=config, enabled=True)
             if watcher.is_enabled():
@@ -1209,12 +1245,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 keep_desc = "keep source" if keep_source else "delete source"
                 staging_label = str(staging_root)
                 destination_label = str(destination_root)
+                stay_desc = "stay-at-staging=yes (files will not be moved; collision dedup only)" if args.mp4_stay_at_staging else "stay-at-staging=no"
                 watcher.log_event(
                     "CONFIG",
                     f"Watcher configured: staging={staging_label} -> {destination_label}, "
                     f"default={args.mp4_operation}, "
                     f"{keep_desc}, max_files={max_label}, free_trigger={free_label}, size_trigger={size_label}, "
-                    f"destination_reserve={reserve_label}.",
+                    f"destination_reserve={reserve_label}, {stay_desc}.",
                 )
                 watcher.log_event(
                     "STATE",
@@ -2815,6 +2852,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                         )
                                     else:
                                         mlog.info("MP4 watcher destination reserve disabled.")
+                                elif key == "t" and watcher and watcher_enabled:
+                                    new_val = watcher.toggle_stay_at_staging()
+                                    if new_val:
+                                        mlog.info(
+                                            "MP4 watcher stay-at-staging enabled: files will not be moved; "
+                                            "watcher will only remove inferior duplicates."
+                                        )
+                                    else:
+                                        mlog.info("MP4 watcher stay-at-staging disabled: normal move/copy mode.")
                                 elif key == "[" and watcher and watcher_enabled:
                                     step = max(1, watcher_log_meta.get("log_window", 10) // 2 or 1)
                                     watcher_log_scroll = min(
