@@ -76,7 +76,7 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("-U", "--max-ndjson-rate", type=float, default=5.0,
                    help="Max NDJSON progress events printed per second (-1 for unlimited). Applies to 'progress' events.")
     p.add_argument("-a", "--archive-dir", type=str, default=None, help="Directory to store per-urlfile archive status files.")
-    p.add_argument("-S", "--stall-seconds", type=int, default=30, help="If no non-heartbeat events arrive for N seconds, treat URL as stalled and move to next.")
+    p.add_argument("-S", "--stall-seconds", type=int, default=4, help="If no non-heartbeat events arrive for N seconds, treat URL as stalled and try fallback methods.")
     p.add_argument("-C", "--complete-stall-seconds", type=int, default=300, help="If download is stuck at >=99%% for N seconds (progress events still arriving), treat as stalled.")
     p.add_argument("-E", "--exit-at-time", type=int, default=-1, help="Exit the program after N seconds (<=0 disables).")
     p.add_argument("-X", "--max-dl-speed", type=float, default=None,

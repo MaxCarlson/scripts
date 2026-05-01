@@ -547,8 +547,13 @@ class DomainIndex:
                     idx._stem_to_url.setdefault(stem, entry.url)
             idx._url_queues[domain] = q
 
+        # URLs that were in-progress when the previous session ended were never
+        # finished.  Restore them to the front of their domain queue so they
+        # get retried rather than being silently skipped forever.
         for url in data.get("in_progress", []):
-            idx._in_progress.add(url)
+            if url not in idx._finished:
+                idx.requeue_url(url)
+        # _in_progress starts empty for this session; pick_url will re-populate it.
 
         for url, s in data.get("finished", {}).items():
             fid = int(s.get("file_id", -1))

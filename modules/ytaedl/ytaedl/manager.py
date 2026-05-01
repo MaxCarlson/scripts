@@ -956,6 +956,7 @@ def _start_worker(
     extdl_capture_browser: str = "auto",
     skip_simulate_check: bool = False,
     canonical_dir_override: Optional[Path] = None,
+    stall_seconds: int = 4,
 ) -> subprocess.Popen:
     if canonical_dir_override is not None:
         canonical_dir = canonical_dir_override
@@ -994,6 +995,8 @@ def _start_worker(
         cmd += ["--extdl-capture-browser", extdl_capture_browser]
     if skip_simulate_check:
         cmd.append("--skip-simulate-check")
+    if stall_seconds and stall_seconds != 4:
+        cmd += ["-S", str(stall_seconds)]
     if quiet:
         cmd.append("-q")
     # line buffered
@@ -1172,6 +1175,15 @@ def make_parser() -> argparse.ArgumentParser:
         "-K", "--skip-simulate-check",
         action="store_true",
         help="Skip the yt-dlp --simulate pre-download duplicate check.",
+    )
+    p.add_argument(
+        "-S", "--stall-seconds",
+        type=int,
+        default=4,
+        help=(
+            "Seconds with no yt-dlp output before a worker kills the attempt and tries the "
+            "next fallback method. Default 4s is tuned for the extdl fallback chain."
+        ),
     )
     p.add_argument(
         "-H", "--domain-index-path",
@@ -2069,6 +2081,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 extdl_capture_browser=getattr(args, "extdl_capture_browser", "auto"),
                 skip_simulate_check=getattr(args, "skip_simulate_check", False),
                 canonical_dir_override=canonical_dir,
+                stall_seconds=getattr(args, "stall_seconds", 4),
             )
             ws.reader_stop.clear()
             ws.reader = threading.Thread(target=_reader, args=(ws,), daemon=True)
@@ -2183,6 +2196,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             extdl_browser_wait=getattr(args, "extdl_browser_wait", 12.0),
             extdl_capture_browser=getattr(args, "extdl_capture_browser", "auto"),
             skip_simulate_check=getattr(args, "skip_simulate_check", False),
+            stall_seconds=getattr(args, "stall_seconds", 4),
         )
         ws.reader_stop.clear()
         ws.reader = threading.Thread(target=_reader, args=(ws,), daemon=True)

@@ -933,6 +933,14 @@ def run_command(command: Sequence[str], *, dry_run: bool, stop_on_start: bool = 
 
         if chunk == "\n":
             progress_active = _emit_process_line(pending, progress_active=progress_active, final=True)
+            if stop_on_start and progress_active:
+                # yt-dlp uses \n (not \r) when stdout is a pipe; catch that case too.
+                try:
+                    process.terminate()
+                except Exception:
+                    pass
+                pending = ""
+                break
             pending = ""
             continue
 
@@ -1009,6 +1017,81 @@ def write_candidates(path: str, candidates: Sequence[MediaCandidate]) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = [dataclasses.asdict(candidate) for candidate in candidates]
     target.write_text(json.dumps(payload, indent=4, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _extract_domain_simple(url: str) -> str:
+    """Extract base domain from URL, stripping www./m. prefixes."""
+    try:
+        host = urllib.parse.urlparse(url).netloc.lower()
+        if not host:
+            return ""
+        if ":" in host:
+            host = host.rsplit(":", 1)[0]
+        for prefix in ("www.", "m."):
+            if host.startswith(prefix):
+                host = host[len(prefix):]
+        return host
+    except Exception:
+        return ""
+
+
+def run_sample_mode(folder: Path, count: int, seed: int) -> int:
+    """
+    Scan all .txt URL files under *folder*, group URLs by base domain,
+    then print *count* randomly-selected URLs per domain to stdout.
+
+    Output is one URL per line — suitable for piping into ``--url-file``.
+    """
+    import random
+
+    rng = random.Random(seed)
+
+    txt_files = sorted(folder.rglob("*.txt"))
+    if not txt_files:
+        print(f"No .txt files found in {folder}", file=sys.stderr)
+        return 2
+
+    domain_map: dict[str, list[str]] = {}
+    seen_urls: set[str] = set()
+    total_files = 0
+
+    for txt_file in txt_files:
+        try:
+            lines = read_url_file(str(txt_file))
+        except Exception:
+            continue
+        total_files += 1
+        for url in lines:
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+            domain = _extract_domain_simple(url)
+            if domain:
+                domain_map.setdefault(domain, []).append(url)
+
+    if not domain_map:
+        print("No valid URLs found.", file=sys.stderr)
+        return 2
+
+    # Print sample header to stderr so stdout stays clean for piping
+    print(
+        f"# Sampled from {total_files} file(s)  |  "
+        f"{len(domain_map)} unique domain(s)  |  "
+        f"{len(seen_urls)} total URLs  |  "
+        f"seed={seed}  count={count}",
+        file=sys.stderr,
+    )
+
+    output_count = 0
+    for domain in sorted(domain_map.keys()):
+        urls = domain_map[domain]
+        sample = rng.sample(urls, min(count, len(urls)))
+        for url in sample:
+            print(url)
+            output_count += 1
+
+    print(f"# {output_count} URLs printed ({count} per domain)", file=sys.stderr)
+    return 0
 
 
 def read_url_file(path: str) -> list[str]:
@@ -1655,7 +1738,37 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=[],
         help="Extra argument appended to every yt-dlp command. Repeat as needed.",
     )
+    sample = parser.add_argument_group("domain-sampling mode (--sample-dir replaces --url / --url-file)")
+    sample.add_argument(
+        "-Q",
+        "--sample-dir",
+        default=None,
+        metavar="DIR",
+        help=(
+            "Scan all .txt URL files under DIR, group URLs by base domain, "
+            "and print a random sample to stdout (one URL per line). "
+            "Output can be piped directly into --url-file for batch testing."
+        ),
+    )
+    sample.add_argument(
+        "-E",
+        "--sample-count",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Number of URLs to sample per unique base domain (default: 1).",
+    )
+    sample.add_argument(
+        "-R",
+        "--sample-seed",
+        type=int,
+        default=0,
+        metavar="SEED",
+        help="Random seed for reproducible sampling (default: 0).",
+    )
+
     advanced.add_argument(
+        "-Z",
         "--timing",
         action="store_true",
         help=(
@@ -1664,19 +1777,22 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         ),
     )
     advanced.add_argument(
+        "-X",
         "--stop-on-start",
         action="store_true",
         help=(
             "Kill yt-dlp the instant a download actually begins (first [download] progress "
-            "line). Combine with --timing and a URL file to measure time-to-start for each "
-            "attempt type without waiting for full downloads."
+            "line). Combine with --timing / -Z and a URL file to measure time-to-start for "
+            "each attempt type without waiting for full downloads."
         ),
     )
 
     args = parser.parse_args(argv)
 
-    if bool(args.url) == bool(args.url_file):
-        parser.error("pass exactly one of --url or --url-file")
+    # Exactly one input mode must be chosen
+    input_modes = [bool(args.url), bool(args.url_file), bool(args.sample_dir)]
+    if sum(input_modes) != 1:
+        parser.error("pass exactly one of --url, --url-file, or --sample-dir")
 
     if isinstance(args.browser, str) and args.browser.strip().lower() in {"", "none", "false", "off", "no"}:
         args.browser = None
@@ -1720,6 +1836,15 @@ def options_from_args(args: argparse.Namespace) -> RescueDownloadOptions:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
+
+    # Domain sampling mode — prints URLs to stdout, no downloads
+    if args.sample_dir:
+        return run_sample_mode(
+            folder=Path(args.sample_dir).expanduser().resolve(),
+            count=args.sample_count,
+            seed=args.sample_seed,
+        )
+
     options = options_from_args(args)
 
     try:
