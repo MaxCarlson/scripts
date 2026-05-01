@@ -1,9 +1,20 @@
 """Pytest configuration and fixtures for ytaedl tests."""
 
+import sys
+import os
+import shutil
 import pytest
 import tempfile
-import os
 from pathlib import Path
+
+# On Windows, the system-level pytest-of-<user> directory in %TEMP% can become
+# inaccessible (Access Denied on os.scandir) if its mode bits get misconfigured.
+# Redirect pytest to a local temp root inside the module directory so tests are
+# not blocked by that broken system directory.
+if sys.platform == "win32" and "PYTEST_DEBUG_TEMPROOT" not in os.environ:
+    _local_temproot = Path(__file__).parent.parent / ".pytest_tmp_root"
+    _local_temproot.mkdir(exist_ok=True)
+    os.environ["PYTEST_DEBUG_TEMPROOT"] = str(_local_temproot)
 
 
 @pytest.fixture

@@ -113,7 +113,7 @@ class DomainIndex:
     ``build`` and ``load`` are intended for use on the main thread only.
     """
 
-    VERSION = "1.1"
+    VERSION = "1.2"
 
     def __init__(self) -> None:
         # Domain registry
@@ -496,8 +496,18 @@ class DomainIndex:
                     for e in q
                 ]
                 for domain, q in self._url_queues.items()
+                if q  # omit empty queues — they are noise and cause confusion
             },
-            "in_progress": list(self._in_progress),
+            "in_progress": [
+                {
+                    "url": url,
+                    "file_id": e.file_id,
+                    "file_path": e.file_path,
+                    "line": e.line_num,
+                }
+                for url in self._in_progress
+                if (e := self._url_entry_map.get(url)) is not None
+            ],
             "finished": {
                 url: {
                     "status": s.status,
@@ -531,6 +541,8 @@ class DomainIndex:
             idx._domain_names[did] = name
 
         for domain, entries in data.get("queues", {}).items():
+            if not entries:
+                continue  # skip empty queues (noise from previous sessions)
             q: deque[UrlEntry] = deque()
             for e in entries:
                 fid = int(e["file_id"])
@@ -550,8 +562,33 @@ class DomainIndex:
         # URLs that were in-progress when the previous session ended were never
         # finished.  Restore them to the front of their domain queue so they
         # get retried rather than being silently skipped forever.
-        for url in data.get("in_progress", []):
-            if url not in idx._finished:
+        #
+        # in_progress items may be dicts {url, file_id, file_path, line} (v1.2+)
+        # or bare strings (v1.1 legacy).  For dicts, we reconstruct the UrlEntry
+        # and insert it into _url_entry_map before re-queuing — this is necessary
+        # because in_progress URLs were popped from their domain queues and are
+        # therefore absent from _url_entry_map after load().
+        for item in data.get("in_progress", []):
+            if isinstance(item, str):
+                # Legacy v1.1 format: bare URL string.  May silently drop if
+                # the URL was already popped from its queue (not in _url_entry_map).
+                url = item
+                if url not in idx._finished:
+                    idx.requeue_url(url)
+            else:
+                url = item.get("url", "")
+                if not url or url in idx._finished:
+                    continue
+                # Pre-populate _url_entry_map so requeue_url can find the entry.
+                if url not in idx._url_entry_map:
+                    fid = int(item.get("file_id", -1))
+                    entry = UrlEntry(
+                        url=url,
+                        file_id=fid,
+                        file_path=item.get("file_path", idx._file_map.get(fid, "")),
+                        line_num=int(item.get("line", 0)),
+                    )
+                    idx._url_entry_map[url] = entry
                 idx.requeue_url(url)
         # _in_progress starts empty for this session; pick_url will re-populate it.
 

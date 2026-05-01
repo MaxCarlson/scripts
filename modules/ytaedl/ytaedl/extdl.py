@@ -78,7 +78,7 @@ def looks_like_preview_video(lowered_url: str) -> bool:
     return (
         "/pv/" in lowered_url
         or "/preview" in lowered_url
-        or re.search(r"(^|[/_-])pv[_-]", lowered_url) is not None
+        or re.search(r"(^|[/_-])pv([_.-]|$)", lowered_url) is not None
     )
 
 
@@ -90,7 +90,11 @@ def looks_like_embedded_player_url(lowered_url: str) -> bool:
         return False
     if "mydaddy.cc" in host and "/video/" in path:
         return True
-    return any(part in path for part in ("/embed/", "/player/", "/video/"))
+    # Only /embed/ and /player/ are reliable embedded-player path indicators.
+    # /video/ is intentionally excluded: on most tube sites it is the normal
+    # page URL pattern (e.g. site.com/video/123/title/) so matching it causes
+    # the scraper to treat every related-video link on the page as a candidate.
+    return any(part in path for part in ("/embed/", "/player/"))
 
 
 def infer_resolution_bonus(url: str) -> int:

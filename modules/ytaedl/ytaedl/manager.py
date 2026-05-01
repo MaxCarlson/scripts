@@ -22,6 +22,7 @@ import random
 import signal
 import subprocess
 import sys
+import datetime
 import threading
 import time
 import traceback
@@ -886,6 +887,8 @@ class WorkerState:
     url_entry: Optional[object] = None          # DomainIndex UrlEntry for this assignment
     original_urlfile: Optional[Path] = None    # original URL file (before temp wrapping)
     worker_log_counter: int = 0                # counter for manager-written log entries
+    progress_log_started: bool = False         # True after first manager-side PROGRESS written for current download
+    last_progress_log_t: float = 0.0           # time of last manager-side PROGRESS entry
 
 
 class DomainDiversityAverager:
@@ -1015,7 +1018,7 @@ def _start_worker(
 def _write_worker_log(log_path: Path, counter: int, elapsed_s: float, status: str, message: str) -> None:
     """Write a manager-side log entry to a worker's prog log file.
 
-    Uses the same ``[NNNN][HH:MM:SS.mmm] STATUS  message`` format as ProgLogger so
+    Uses the same ``[HH:MM:SS][HH:MM:SS.mmm] STATUS  message`` format as ProgLogger so
     entries appear seamlessly in the TUI verbose log panel.
     """
     try:
@@ -1024,7 +1027,8 @@ def _write_worker_log(log_path: Path, counter: int, elapsed_s: float, status: st
         s = int(elapsed_s) % 60
         ms = int((elapsed_s - int(elapsed_s)) * 1000)
         elapsed_str = f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
-        line = f"[{counter:04d}][{elapsed_str}] {status:<14s}  {message}"
+        wall = datetime.datetime.now().strftime("%H:%M:%S")
+        line = f"[{wall}][{elapsed_str}] {status:<14s}  {message}"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(line + "\n")
@@ -1707,8 +1711,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     def _reader(ws: WorkerState):
         f = ws.proc.stdout  # type: ignore
+        # Capture the stop event once at thread-start.  _assign() may replace
+        # ws.reader_stop with a fresh threading.Event() for the NEXT reader while
+        # this (old) reader is still draining buffered stdout.  Holding a local
+        # reference ensures the old reader continues to see *its* stop signal even
+        # after ws.reader_stop is reassigned, and prevents ws.reader_stop.clear()
+        # from silently re-enabling this thread.
+        my_stop = ws.reader_stop
         try:
             for line in f:
+                # Check BEFORE processing so stale buffered events from a
+                # just-finished download don't overwrite the freshly cleared ws state.
+                if my_stop.is_set():
+                    break
                 line = line.strip()
                 if not line:
                     continue
@@ -1736,6 +1751,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     ws.overlay_msg = None
                     ws.overlay_since = 0.0
                     ws.is_searching = False
+                    ws.progress_log_started = False
+                    ws.last_progress_log_t = 0.0
                     nonlocal total_started_urls
                     total_started_urls += 1
                     mlog.info(f"[{ws.slot:02d}] START idx={ws.url_index} url={ws.url_current}")
@@ -1783,6 +1800,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     # Clear stale download stats so the UI doesn't show the previous
                     # download's progress (e.g. 100%) while the fallback is running.
                     _clear_worker_progress(ws)
+                    # The log will show FALLBACK_START (not START/PROGRESS) so reset
+                    # progress_log_started so the next progress event writes DOWNLOAD_START.
+                    ws.progress_log_started = False
+                    ws.last_progress_log_t = 0.0
                     mlog.info(f"[{ws.slot:02d}] FALLBACK_START method={method} url={ws.url_current}")
                 elif ev == "fallback_attempt":
                     method = evt.get("method", "?")
@@ -1861,6 +1882,41 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         # Any progress clears overlay
                         ws.overlay_msg = None
                         ws.overlay_since = 0.0
+                        # --- Manager-side progress log entries ---
+                        # Write a DOWNLOAD_START line the first time a progress
+                        # event arrives (covers fallback downloads that begin
+                        # without emitting their own START log line).
+                        _now = time.time()
+                        if ws.prog_log_path and not ws.progress_log_started:
+                            ws.progress_log_started = True
+                            ws.last_progress_log_t = _now
+                            _url_label = ws.url_current or "-"
+                            _idx_label = f"{ws.url_index or 0}/{ws.url_count or 0}"
+                            _wlog(ws, "DOWNLOAD_START",
+                                  f"[{_idx_label}] {_url_label}")
+                        # Write a PROGRESS line every ~15 s while downloading.
+                        _PROGRESS_INTERVAL = 15.0
+                        if (
+                            ws.prog_log_path
+                            and ws.progress_log_started
+                            and (_now - ws.last_progress_log_t) >= _PROGRESS_INTERVAL
+                        ):
+                            ws.last_progress_log_t = _now
+                            _pct_s = f"{ws.percent:.1f}%" if isinstance(ws.percent, (int, float)) else "?%"
+                            _dl_s = _human_short_bytes(ws.downloaded_bytes)
+                            _tot_s = _human_short_bytes(ws.total_bytes)
+                            _sp_s = (
+                                f"{_human_short_bytes(int(ws.speed_bps))}/s"
+                                if isinstance(ws.speed_bps, (int, float)) and ws.speed_bps > 0
+                                else "?/s"
+                            )
+                            _eta_s = (
+                                _hms(ws.eta_s)
+                                if isinstance(ws.eta_s, (int, float))
+                                else "?"
+                            )
+                            _wlog(ws, "PROGRESS",
+                                  f"{_pct_s} {_dl_s}/{_tot_s} @ {_sp_s} ETA {_eta_s}")
                     except Exception:
                         pass
                 elif ev == "finish":
@@ -1903,6 +1959,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     ws.last_already = False
                     elapsed_url = _hms(time.time() - (ws.url_t0 or ws.assign_t0))
                     size_info = f" [{_human_short_bytes(ws.downloaded_bytes)}]" if ws.downloaded_bytes else ""
+                    # Write DOWNLOAD_DONE to worker prog log if we ever started logging progress.
+                    if ws.prog_log_path and ws.progress_log_started:
+                        _status_word = "DOWNLOAD_DONE" if rc_v == 0 else "DOWNLOAD_FAIL"
+                        _size_part = f" [{_human_short_bytes(ws.downloaded_bytes)}]" if ws.downloaded_bytes else ""
+                        _wlog(ws, _status_word,
+                              f"[{ws.url_index or 0}/{ws.url_count or 0}]"
+                              f" Elapsed {elapsed_url}{_size_part} rc={rc_v}")
+                        ws.progress_log_started = False
+                        ws.last_progress_log_t = 0.0
                     ws.overlay_msg = (
                         f"\x1b[90m[{ws.slot:02d}]\x1b[0m URL {ws.url_index or 0}/{ws.url_count or 0}"
                         f" {status_colored}{size_info} {elapsed_url}"
@@ -1957,7 +2022,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     )
                     ws.overlay_since = time.time()
                     _clear_worker_progress(ws)
-                if ws.reader_stop.is_set():
+                if my_stop.is_set():
                     break
         except Exception as e:
             mlog.error(f"reader exception slot={ws.slot}: {e}\n{traceback.format_exc()}")
@@ -2083,7 +2148,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 canonical_dir_override=canonical_dir,
                 stall_seconds=getattr(args, "stall_seconds", 4),
             )
-            ws.reader_stop.clear()
+            # Create a fresh stop event so the old reader's captured reference
+            # (set by _requeue) keeps firing while the new reader starts clean.
+            ws.reader_stop = threading.Event()
             ws.reader = threading.Thread(target=_reader, args=(ws,), daemon=True)
             ws.reader.start()
             return True
@@ -2198,7 +2265,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             skip_simulate_check=getattr(args, "skip_simulate_check", False),
             stall_seconds=getattr(args, "stall_seconds", 4),
         )
-        ws.reader_stop.clear()
+        # Create a fresh stop event so the old reader's captured reference
+        # (set by _requeue) keeps firing while the new reader starts clean.
+        ws.reader_stop = threading.Event()
         ws.reader = threading.Thread(target=_reader, args=(ws,), daemon=True)
         ws.reader.start()
         return True
@@ -2643,7 +2712,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                         w.reader.join(timeout=1)
                                     except Exception:
                                         pass
-                                w.reader_stop.clear()
+                                w.reader_stop = threading.Event()
                                 try:
                                     w.prog_log_path = (Path(log_dir) / f"ytaedler-worker-{w.slot:02d}.log").resolve()
                                 except Exception:
@@ -2696,7 +2765,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                             w.reader.join(timeout=1)
                                         except Exception:
                                             pass
-                                    w.reader_stop.clear()
+                                    w.reader_stop = threading.Event()
                                     try:
                                         w.prog_log_path = (
                                             Path(log_dir) / f"ytaedler-worker-{w.slot:02d}.log"

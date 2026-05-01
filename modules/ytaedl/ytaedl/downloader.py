@@ -21,6 +21,7 @@ Argument style: short -k, long --full-words-with-dashes
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import shlex
@@ -168,6 +169,10 @@ class ProgLogger:
     t0: float
     counter: int = 0
 
+    def _wall(self) -> str:
+        """Return current local time as HH:MM:SS for log prefixes."""
+        return datetime.datetime.now().strftime("%H:%M:%S")
+
     def _write(self, msg: str) -> None:
         _ensure_dir(self.path.parent)
         # Cross-process safe append (best effort): lock during write
@@ -205,26 +210,26 @@ class ProgLogger:
     def start(self, url_index: int, url_total: int, url: str) -> None:
         self.counter += 1
         elapsed = _hms_ms(time.time() - self.t0)
-        self._write(f"[{self.counter:04d}][{elapsed}] START  [{url_index}/{url_total}] {url}")
+        self._write(f"[{self._wall()}][{elapsed}] START  [{url_index}/{url_total}] {url}")
 
     def finish(self, url_index: int, elapsed_url_s: float, status: str, reason: str = "") -> None:
         elapsed_prog = _hms_ms(time.time() - self.t0)
         elapsed_url = _hms_ms(elapsed_url_s)
         reason_part = f"  ({reason})" if reason else ""
         self._write(
-            f"[{self.counter:04d}][{elapsed_prog}] {status} [{url_index}]"
+            f"[{self._wall()}][{elapsed_prog}] {status} [{url_index}]"
             f" Elapsed {elapsed_url}, Status={status.replace('FINISH_', '')}{reason_part}"
         )
 
     def fallback_start(self, method: str) -> None:
         elapsed = _hms_ms(time.time() - self.t0)
-        self._write(f"[{self.counter:04d}][{elapsed}] FALLBACK_START  method={method}")
+        self._write(f"[{self._wall()}][{elapsed}] FALLBACK_START  method={method}")
 
     def fallback_attempt(self, method: str, attempt: int, total: int, kind: str, candidate_url: str) -> None:
         elapsed = _hms_ms(time.time() - self.t0)
         short_url = candidate_url[:100] + "…" if len(candidate_url) > 100 else candidate_url
         self._write(
-            f"[{self.counter:04d}][{elapsed}] FALLBACK_TRY    "
+            f"[{self._wall()}][{elapsed}] FALLBACK_TRY    "
             f"attempt {attempt}/{total}  method={method}  kind={kind}\n"
             f"                        url: {short_url}"
         )
@@ -234,41 +239,41 @@ class ProgLogger:
         ok = rc == 0
         status_word = "SUCCESS" if ok else f"FAILED (rc={rc})"
         self._write(
-            f"[{self.counter:04d}][{elapsed}] FALLBACK_RESULT "
+            f"[{self._wall()}][{elapsed}] FALLBACK_RESULT "
             f"attempt {attempt}/{total}  method={method}  {status_word}"
         )
 
     def fallback_skip(self, method: str, reason: str) -> None:
         elapsed = _hms_ms(time.time() - self.t0)
-        self._write(f"[{self.counter:04d}][{elapsed}] FALLBACK_SKIP   method={method}  {reason}")
+        self._write(f"[{self._wall()}][{elapsed}] FALLBACK_SKIP   method={method}  {reason}")
 
     def fallback_exhausted(self) -> None:
         elapsed = _hms_ms(time.time() - self.t0)
-        self._write(f"[{self.counter:04d}][{elapsed}] FALLBACK_EXHAUSTED  all methods failed – URL marked BAD")
+        self._write(f"[{self._wall()}][{elapsed}] FALLBACK_EXHAUSTED  all methods failed – URL marked BAD")
 
     def attempt_start(self, attempt_num: int, description: str) -> None:
         elapsed = _hms_ms(time.time() - self.t0)
-        self._write(f"[{self.counter:04d}][{elapsed}] ATTEMPT_{attempt_num}_START  {description}")
+        self._write(f"[{self._wall()}][{elapsed}] ATTEMPT_{attempt_num}_START  {description}")
 
     def attempt_fail(self, attempt_num: int, description: str, reason: str) -> None:
         elapsed = _hms_ms(time.time() - self.t0)
         self._write(
-            f"[{self.counter:04d}][{elapsed}] ATTEMPT_{attempt_num}_FAIL   "
+            f"[{self._wall()}][{elapsed}] ATTEMPT_{attempt_num}_FAIL   "
             f"{description}  ({reason})"
         )
 
     def attempt_success(self, attempt_num: int, description: str) -> None:
         elapsed = _hms_ms(time.time() - self.t0)
-        self._write(f"[{self.counter:04d}][{elapsed}] ATTEMPT_{attempt_num}_OK    {description}")
+        self._write(f"[{self._wall()}][{elapsed}] ATTEMPT_{attempt_num}_OK    {description}")
 
     def simulate_start(self, url: str) -> None:
         elapsed = _hms_ms(time.time() - self.t0)
-        self._write(f"[{self.counter:04d}][{elapsed}] SIMULATE_START  {url}")
+        self._write(f"[{self._wall()}][{elapsed}] SIMULATE_START  {url}")
 
     def simulate_skip(self, url: str, existing_path: Optional[str]) -> None:
         elapsed = _hms_ms(time.time() - self.t0)
         self._write(
-            f"[{self.counter:04d}][{elapsed}] SIMULATE_SKIP   "
+            f"[{self._wall()}][{elapsed}] SIMULATE_SKIP   "
             f"DUPLICATE FOUND – skipping download\n"
             f"                        existing: {existing_path or '?'}\n"
             f"                        url:      {url}"
@@ -277,7 +282,7 @@ class ProgLogger:
     def simulate_ok(self, url: str, predicted_name: Optional[str]) -> None:
         elapsed = _hms_ms(time.time() - self.t0)
         self._write(
-            f"[{self.counter:04d}][{elapsed}] SIMULATE_OK     "
+            f"[{self._wall()}][{elapsed}] SIMULATE_OK     "
             f"no conflict – proceeding with download\n"
             f"                        predicted: {predicted_name or '?'}\n"
             f"                        url:       {url}"
@@ -328,7 +333,7 @@ class ProgLogger:
         dl_s = _fmt_bytes(downloaded)
         tot_s = _fmt_bytes(total)
         eta_str = _fmt_eta(eta_s)
-        self._write(f"[{self.counter:04d}][{elapsed_prog}] FORCE_EXIT [{url_index}] {pct_s} {dl_s}/{tot_s} {sp_s} ETA {eta_str} Elapsed {elapsed_url}")
+        self._write(f"[{self._wall()}][{elapsed_prog}] FORCE_EXIT [{url_index}] {pct_s} {dl_s}/{tot_s} {sp_s} ETA {eta_str} Elapsed {elapsed_url}")
 
     def progress(self, url_index: int, pct: float | None, downloaded: int | None,
                  total: int | None, speed_bps: float | None, eta_s: int | None) -> None:
@@ -357,7 +362,7 @@ class ProgLogger:
         dl_s = _fmt_bytes(downloaded)
         tot_s = _fmt_bytes(total)
         eta_str = _fmt_eta(eta_s)
-        self._write(f"[{self.counter:04d}][{elapsed_prog}] PROGRESS [{url_index}] {pct_s} {dl_s}/{tot_s} {sp_s} ETA {eta_str}")
+        self._write(f"[{self._wall()}][{elapsed_prog}] PROGRESS [{url_index}] {pct_s} {dl_s}/{tot_s} {sp_s} ETA {eta_str}")
 
 # ---- Runner -----------------------------------------------------------------
 
@@ -655,6 +660,7 @@ def _run_extdl_fallback(
     dry_run: bool = False,
     proglog: Optional["ProgLogger"] = None,
     first_attempt_num: int = 2,
+    stall_seconds: int | None = None,
 ) -> int:
     """Try Method 2 (static HTML) then Method 3 (Playwright) for *url*.
 
@@ -745,9 +751,14 @@ def _run_extdl_fallback(
                 # Parse yt-dlp's --newline output via procparsers so the manager
                 # receives live progress events (speed, %, ETA) for fallback downloads.
                 try:
+                    _cand_last_real_t = time.time()
+                    _cand_stall_s = stall_seconds if (stall_seconds and stall_seconds > 0) else 120
+                    _cand_stalled = False
                     for evt in iter_parsed_events("yt-dlp", proc.stdout,
                                                   raw_log_path=None, heartbeat_secs=0.2):
                         ev = evt.get("event")
+                        if ev != "heartbeat":
+                            _cand_last_real_t = time.time()
                         if ev == "progress":
                             _emit_json({**evt, "downloader": "yt-dlp",
                                         "url_index": url_index, "url": url})
@@ -762,6 +773,14 @@ def _run_extdl_fallback(
                         elif ev in ("destination", "finish"):
                             _emit_json({**evt, "downloader": "yt-dlp",
                                         "url_index": url_index, "url": url})
+                        # Stall detection: kill candidate if no real events for stall_seconds
+                        if ev == "heartbeat" and (time.time() - _cand_last_real_t) > _cand_stall_s:
+                            _cand_stalled = True
+                            try:
+                                proc.kill()
+                            except Exception:
+                                pass
+                            break
                 except Exception:
                     # procparsers unavailable or parse error — drain silently
                     try:
@@ -769,7 +788,18 @@ def _run_extdl_fallback(
                             pass
                     except Exception:
                         pass
-                rc = proc.wait()
+                if _cand_stalled:
+                    _emit_json({"event": "fallback_stalled", "method": method_name,
+                                "attempt": idx_in_method, "stall_seconds": _cand_stall_s,
+                                "url_index": url_index, "url": url})
+                try:
+                    rc = proc.wait(timeout=5)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    rc = 124
             except Exception as exc:
                 rc = 1
                 _emit_json({"event": "fallback_failure", "method": method_name,
@@ -1163,6 +1193,7 @@ def _run_one(
             dry_run=dry_run,
             proglog=proglog,
             first_attempt_num=2,  # Attempt 1 was the normal yt-dlp try
+            stall_seconds=stall_seconds,
         )
         if fallback_rc == 0:
             rc = 0
@@ -1223,7 +1254,11 @@ def main() -> int:
     download_out_dir = canonical_out_dir
     if args.proxy_dl_location:
         proxy_root = Path(args.proxy_dl_location).expanduser().resolve()
-        download_out_dir = (proxy_root / urlfile.stem).expanduser().resolve()
+        # Use the canonical output dir's name (original urlfile stem) so that proxy
+        # downloads land in B:\stars\upperfloor2\ even when the urlfile passed by the
+        # manager is a single-URL temp file (e.g. w05_217_27.txt in domain-index mode).
+        proxy_subdir = canonical_out_dir.name if canonical_out_dir.name else urlfile.stem
+        download_out_dir = (proxy_root / proxy_subdir).expanduser().resolve()
         _ensure_dir(proxy_root)
         if args.work_dir == './tmp':
             work_dir = (download_out_dir / '_tmp').resolve()

@@ -253,29 +253,37 @@ class TestProgLogger:
 
     def test_prog_logger_start(self):
         """Test ProgLogger start method."""
+        import datetime
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "test.log"
 
-            with patch('time.time', return_value=1001.5):
+            fixed_dt = datetime.datetime(2025, 1, 1, 10, 41, 37)
+            with patch('time.time', return_value=1001.5), \
+                 patch('ytaedl.downloader.datetime') as mock_dt:
+                mock_dt.datetime.now.return_value = fixed_dt
                 logger = downloader.ProgLogger(log_path, t0=1000.0)
                 logger.start(1, 1, "https://example.com/video")
 
             content = log_path.read_text()
-            assert "[0001][00:00:01.500] START  [1/1] https://example.com/video" in content
+            assert "[10:41:37][00:00:01.500] START  [1/1] https://example.com/video" in content
             assert logger.counter == 1
 
     def test_prog_logger_finish(self):
         """Test ProgLogger finish method."""
+        import datetime
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "test.log"
 
-            with patch('time.time', return_value=1002.0):
+            fixed_dt = datetime.datetime(2025, 1, 1, 10, 41, 37)
+            with patch('time.time', return_value=1002.0), \
+                 patch('ytaedl.downloader.datetime') as mock_dt:
+                mock_dt.datetime.now.return_value = fixed_dt
                 logger = downloader.ProgLogger(log_path, t0=1000.0)
                 logger.counter = 1
                 logger.finish(1, 1.5, "FINISH_SUCCESS")
 
             content = log_path.read_text()
-            assert "[0001][00:00:02.000] FINISH_SUCCESS [1] Elapsed 00:00:01.500, Status=SUCCESS" in content
+            assert "[10:41:37][00:00:02.000] FINISH_SUCCESS [1] Elapsed 00:00:01.500, Status=SUCCESS" in content
 
 
 @pytest.mark.integration
