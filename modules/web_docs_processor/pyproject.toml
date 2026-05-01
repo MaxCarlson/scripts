@@ -11,7 +11,7 @@ backend-path = [
 
 [project]
 name = "web-docs-processor"
-version = "0.2.0"
+version = "0.3.0"
 description = "Build retrieval-friendly Markdown, JSON, and PDF source packs from documentation websites."
 readme = "README.md"
 requires-python = ">=3.10"

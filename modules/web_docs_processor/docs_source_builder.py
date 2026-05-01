@@ -37,7 +37,7 @@ except ImportError:
 
 
 DEFAULT_USER_AGENT = (
-    "web-docs-processor/0.2.0 "
+    "web-docs-processor/0.3.0 "
     "(personal archival and LLM source preparation; respectful crawling)"
 )
 MIN_EXTRACTED_TEXT_CHARS = 300
@@ -94,6 +94,11 @@ OutputFormat = Literal[
     "pdf",
 ]
 
+UrlFileMode = Literal[
+    "exact",
+    "expand",
+]
+
 INPUT_FORMATS = {
     "auto",
     "single-page",
@@ -137,6 +142,9 @@ class CrawlConfig:
     keep_query: bool
     write_manifest: bool
     write_candidates: bool
+    url_file: Path | None = None
+    url_file_mode: UrlFileMode | None = None
+    batch_seed_url: str | None = None
 
     @property
     def output_dir(self) -> Path:
@@ -222,6 +230,12 @@ def is_probably_documentation_url(url: str) -> bool:
     return parsed.scheme in {"http", "https"}
 
 
+def is_sitemap_url(url: str) -> bool:
+    parsed = urlparse(url)
+    path = parsed.path.lower()
+    return parsed.scheme in {"http", "https"} and ("sitemap" in path or path.endswith(".xml"))
+
+
 def infer_input_format(urls: list[str], explicit_input_format: InputFormat) -> InputFormat:
     if explicit_input_format != "auto":
         return explicit_input_format
@@ -256,8 +270,11 @@ def default_scope_for_input_format(input_format: InputFormat, explicit_scope: st
     if input_format == "single-page":
         return "single"
 
-    if input_format in {"github-wiki", "github-pages", "docs-site", "sitemap"}:
+    if input_format in {"github-wiki", "github-pages", "docs-site"}:
         return "prefix"
+
+    if input_format == "sitemap":
+        return "domain"
 
     return "prefix"
 
@@ -317,16 +334,25 @@ def in_scope(candidate_url: str, seed_urls: list[str], scope: str, same_prefix_d
 
         if scope == "prefix":
             prefix = urlparse(url_prefix(seed_url, same_prefix_depth)).path
-            return candidate.path == prefix.rstrip("/") or candidate.path.startswith(prefix)
+            if candidate.path == prefix.rstrip("/") or candidate.path.startswith(prefix):
+                return True
+            continue
 
         if scope == "single":
-            return normalize_url(candidate_url) == normalize_url(seed_url)
+            if normalize_url(candidate_url) == normalize_url(seed_url):
+                return True
+            continue
 
     return False
 
 
 def should_keep_url(candidate_url: str, config: CrawlConfig) -> bool:
-    if not is_probably_documentation_url(candidate_url):
+    if config.input_format == "sitemap" and is_sitemap_url(candidate_url):
+        allowed_url_type = True
+    else:
+        allowed_url_type = is_probably_documentation_url(candidate_url)
+
+    if not allowed_url_type:
         return False
 
     if not in_scope(candidate_url, config.urls, config.scope, config.same_prefix_depth):
@@ -514,7 +540,33 @@ def discover_all_links(soup: BeautifulSoup, base_url: str, config: CrawlConfig) 
     return links
 
 
+def discover_sitemap_links(page_xml: str, base_url: str, config: CrawlConfig) -> list[str]:
+    soup = BeautifulSoup(page_xml, "xml")
+    links: list[str] = []
+    seen: set[str] = set()
+
+    for loc in soup.find_all("loc"):
+        loc_text = loc.get_text(strip=True)
+        if not loc_text:
+            continue
+
+        candidate = normalize_url(
+            urljoin(base_url, loc_text),
+            keep_query=config.keep_query,
+        )
+        if candidate in seen:
+            continue
+        if should_keep_url(candidate, config):
+            links.append(candidate)
+            seen.add(candidate)
+
+    return links
+
+
 def discover_next_links(page_html: str, base_url: str, config: CrawlConfig) -> list[str]:
+    if config.input_format == "sitemap" and is_sitemap_url(base_url):
+        return discover_sitemap_links(page_html, base_url, config)
+
     soup = soup_from_html(page_html)
 
     nav_links = discover_links_from_selectors(soup, base_url, NAV_SELECTORS, config)
@@ -568,6 +620,78 @@ def default_output_path(
         "pdf": ".pdf",
     }
     return (Path.cwd() / "out" / f"{base_name}{suffix_by_format[output_format]}").resolve()
+
+
+def default_url_file_output_path(
+    url_file: str | Path,
+    output_format: OutputFormat,
+    mode: UrlFileMode,
+    explicit_output: str | None,
+) -> Path:
+    if explicit_output:
+        return Path(explicit_output).expanduser().resolve()
+
+    stem = Path(url_file).stem or "sources"
+
+    if mode == "expand":
+        return (Path.cwd() / "out" / stem).resolve()
+
+    suffix_by_format = {
+        "markdown": ".md",
+        "json": ".json",
+        "pdf": ".pdf",
+    }
+    return (Path.cwd() / "out" / f"{stem}{suffix_by_format[output_format]}").resolve()
+
+
+def output_path_for_seed(output_dir: Path, seed_url: str, output_format: OutputFormat) -> Path:
+    parsed = urlparse(seed_url)
+    host_slug = slugify(parsed.netloc.removeprefix("www."), fallback="site")
+    path_slug = slugify(parsed.path, fallback="docs")
+    suffix_by_format = {
+        "markdown": ".md",
+        "json": ".json",
+        "pdf": ".pdf",
+    }
+    return output_dir / f"{host_slug}-{path_slug}{suffix_by_format[output_format]}"
+
+
+def unique_output_path(output_path: Path, used_paths: set[Path]) -> Path:
+    candidate = output_path
+    counter = 2
+
+    while candidate in used_paths:
+        candidate = output_path.with_name(f"{output_path.stem}-{counter}{output_path.suffix}")
+        counter += 1
+
+    used_paths.add(candidate)
+    return candidate
+
+
+def read_url_file(url_file: str | Path, keep_query: bool = False) -> list[str]:
+    path = Path(url_file).expanduser().resolve()
+
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise RuntimeError(f"Could not read URL file: {path}") from exc
+
+    urls: list[str] = []
+    for line_number, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        parsed = urlparse(line)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise RuntimeError(f"URL file contains an invalid URL on line {line_number}: {line}")
+
+        urls.append(normalize_url(line, keep_query=keep_query))
+
+    if not urls:
+        raise RuntimeError(f"URL file did not contain any URLs: {path}")
+
+    return urls
 
 
 def read_manifest(manifest_path: str | Path) -> dict[str, object]:
@@ -697,6 +821,9 @@ def pages_to_json_payload(
         "timeout_seconds": config.timeout_seconds,
         "min_chars": config.min_chars,
         "keep_query": config.keep_query,
+        "url_file": str(config.url_file.as_posix()) if config.url_file else None,
+        "url_file_mode": config.url_file_mode,
+        "batch_seed_url": config.batch_seed_url,
         "include": pattern_strings(config.include_patterns),
         "exclude": pattern_strings(config.exclude_patterns),
         "page_count": len(pages),
@@ -933,7 +1060,10 @@ def write_manifest(
     config: CrawlConfig,
     candidate_urls_file: Path | None = None,
 ) -> Path:
-    output_path = config.output_dir / "manifest.json"
+    if config.batch_seed_url and output_file is not None:
+        output_path = config.output_dir / f"{output_file.stem}-manifest.json"
+    else:
+        output_path = config.output_dir / "manifest.json"
 
     payload = {
         "title": config.title,
@@ -948,6 +1078,9 @@ def write_manifest(
         "timeout_seconds": config.timeout_seconds,
         "min_chars": config.min_chars,
         "keep_query": config.keep_query,
+        "url_file": str(config.url_file.as_posix()) if config.url_file else None,
+        "url_file_mode": config.url_file_mode,
+        "batch_seed_url": config.batch_seed_url,
         "include": pattern_strings(config.include_patterns),
         "exclude": pattern_strings(config.exclude_patterns),
         "page_count": len(pages),
@@ -977,7 +1110,10 @@ def write_manifest(
 
 
 def write_candidate_urls(discovered_urls: Iterable[str], config: CrawlConfig) -> Path:
-    output_path = config.output_dir / "candidate-urls.txt"
+    if config.batch_seed_url and config.output_path.suffix:
+        output_path = config.output_dir / f"{config.output_path.stem}-candidate-urls.txt"
+    else:
+        output_path = config.output_dir / "candidate-urls.txt"
     unique_urls = list(dict.fromkeys(discovered_urls))
     output_path.write_text("\n".join(unique_urls) + "\n", encoding="utf-8")
     return output_path
@@ -1071,7 +1207,8 @@ def crawl(config: CrawlConfig) -> tuple[list[PageResult], list[str]]:
         normalized = normalize_url(url, keep_query=config.keep_query)
         if should_keep_url(normalized, config):
             queue.append(normalized)
-            discovered.append(normalized)
+            if not (config.input_format == "sitemap" and is_sitemap_url(normalized)):
+                discovered.append(normalized)
 
     while queue and len(visited) < config.max_pages:
         current_url = queue.popleft()
@@ -1089,10 +1226,15 @@ def crawl(config: CrawlConfig) -> tuple[list[PageResult], list[str]]:
 
         next_links = discover_next_links(page_html, current_url, config)
         for link in next_links:
-            if link not in discovered:
+            if not (config.input_format == "sitemap" and is_sitemap_url(link)) and link not in discovered:
                 discovered.append(link)
             if link not in visited and link not in queue and len(visited) + len(queue) < config.max_pages * 3:
                 queue.append(link)
+
+        if config.input_format == "sitemap" and is_sitemap_url(current_url):
+            if config.delay_seconds > 0:
+                time.sleep(config.delay_seconds)
+            continue
 
         if config.dry_run:
             print(current_url)
@@ -1312,6 +1454,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Read crawl settings and discovered URL order from a previous manifest.json.",
     )
+    build_parser.add_argument(
+        "--url-file",
+        "-F",
+        default=None,
+        help="Plain-text URL file. Blank lines and lines starting with # are ignored.",
+    )
+    build_parser.add_argument(
+        "--url-file-mode",
+        "-U",
+        choices=["exact", "expand"],
+        default="exact",
+        help=(
+            "URL file handling mode. exact fetches only listed URLs into one document; "
+            "expand treats each URL as a seed and writes one document per seed."
+        ),
+    )
+    build_parser.add_argument(
+        "--one-output-per-seed",
+        "-O",
+        action="store_true",
+        help="Write one output per URL-file seed. This is implied by --url-file-mode expand.",
+    )
 
     discover_parser = subparsers.add_parser(
         "discover",
@@ -1377,13 +1541,21 @@ def build_config(args: argparse.Namespace, dry_run: bool) -> CrawlConfig:
     if getattr(args, "manifest", None):
         manifest_payload = read_manifest(args.manifest)
 
+    url_file = Path(args.url_file).expanduser().resolve() if getattr(args, "url_file", None) else None
+    url_file_mode: UrlFileMode | None = args.url_file_mode if url_file else None
+    if url_file and getattr(args, "one_output_per_seed", False):
+        url_file_mode = "expand"
+    keep_query = args.keep_query or manifest_bool(manifest_payload or {}, "keep_query", False)
+    url_file_urls = read_url_file(url_file, keep_query=keep_query) if url_file else []
     manifest_seed_urls = manifest_string_list(manifest_payload or {}, "seed_urls")
     manifest_discovered_urls = manifest_string_list(manifest_payload or {}, "discovered_urls")
-    source_urls = args.url or manifest_discovered_urls or manifest_seed_urls
+    cli_urls = args.url or []
+    source_urls = url_file_urls + cli_urls
+    if not source_urls:
+        source_urls = manifest_discovered_urls or manifest_seed_urls
     if not source_urls:
         raise RuntimeError("At least one --url/-u is required unless --manifest/-g provides URLs.")
 
-    keep_query = args.keep_query or manifest_bool(manifest_payload or {}, "keep_query", False)
     urls = [normalize_url(url, keep_query=keep_query) for url in source_urls]
     explicit_input_format: InputFormat = args.input_format
     manifest_input_format = manifest_str(manifest_payload or {}, "input_format", "auto")
@@ -1392,19 +1564,35 @@ def build_config(args: argparse.Namespace, dry_run: bool) -> CrawlConfig:
     inferred_input_format = infer_input_format(urls, explicit_input_format)
 
     manifest_scope = manifest_str(manifest_payload or {}, "scope", "")
-    scope = default_scope_for_input_format(inferred_input_format, args.scope or manifest_scope or None)
+    explicit_scope = args.scope or manifest_scope or None
+    if url_file_mode == "exact" and explicit_scope is None:
+        explicit_scope = "single"
+    scope = default_scope_for_input_format(inferred_input_format, explicit_scope)
 
     output_format: OutputFormat = getattr(args, "format", "markdown")
-    final_output_path = default_output_path(
-        urls,
-        output_format,
-        dry_run,
-        getattr(args, "output", None),
-    )
+    if url_file and not dry_run:
+        final_output_path = default_url_file_output_path(
+            url_file,
+            output_format,
+            url_file_mode or "exact",
+            getattr(args, "output", None),
+        )
+    elif getattr(args, "one_output_per_seed", False) and not dry_run:
+        final_output_path = Path(getattr(args, "output", None) or (Path.cwd() / "out" / "seeds")).expanduser().resolve()
+    else:
+        final_output_path = default_output_path(
+            urls,
+            output_format,
+            dry_run,
+            getattr(args, "output", None),
+        )
     title = getattr(args, "title", None) or manifest_str(manifest_payload or {}, "title", "") or title_from_url(urls[0])
     manifest_max_pages = manifest_int(manifest_payload or {}, "max_pages", 0) or None
+    if url_file_mode == "exact" and args.max_pages is None and manifest_max_pages is None:
+        max_pages = len(urls)
+    else:
+        max_pages = default_max_pages_for_input_format(inferred_input_format, args.max_pages or manifest_max_pages)
     manifest_prefix_depth = manifest_int(manifest_payload or {}, "same_prefix_depth", -1)
-    max_pages = default_max_pages_for_input_format(inferred_input_format, args.max_pages or manifest_max_pages)
     explicit_prefix_depth = args.same_prefix_depth
     if explicit_prefix_depth is None and manifest_prefix_depth >= 0:
         explicit_prefix_depth = manifest_prefix_depth
@@ -1453,11 +1641,13 @@ def build_config(args: argparse.Namespace, dry_run: bool) -> CrawlConfig:
         keep_query=keep_query,
         write_manifest=not getattr(args, "no_manifest", False),
         write_candidates=not getattr(args, "no_candidates", False),
+        url_file=url_file,
+        url_file_mode=url_file_mode,
+        batch_seed_url=None,
     )
 
 
-def run_build(args: argparse.Namespace) -> int:
-    config = build_config(args, dry_run=False)
+def run_single_build(config: CrawlConfig) -> int:
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
     pages, discovered_urls = crawl(config)
@@ -1498,6 +1688,46 @@ def run_build(args: argparse.Namespace) -> int:
     print(f"Extracted page count: {len(pages)}", file=sys.stderr)
 
     return 0
+
+
+def run_expand_build(config: CrawlConfig) -> int:
+    output_dir = config.output_path
+    output_dir.mkdir(parents=True, exist_ok=True)
+    used_paths: set[Path] = set()
+    failures = 0
+
+    for seed_url in config.urls:
+        seed_output_path = unique_output_path(
+            output_path_for_seed(output_dir, seed_url, config.output_format),
+            used_paths,
+        )
+        seed_config = dataclasses.replace(
+            config,
+            urls=[seed_url],
+            output_path=seed_output_path,
+            title=title_from_url(seed_url),
+            batch_seed_url=seed_url,
+        )
+
+        result = run_single_build(seed_config)
+        if result != 0:
+            failures += 1
+
+    if failures:
+        print(f"Batch completed with {failures} failed seed(s).", file=sys.stderr)
+        return 2
+
+    print(f"Batch completed successfully for {len(config.urls)} seed(s).", file=sys.stderr)
+    return 0
+
+
+def run_build(args: argparse.Namespace) -> int:
+    config = build_config(args, dry_run=False)
+
+    if config.url_file_mode == "expand" or getattr(args, "one_output_per_seed", False):
+        return run_expand_build(config)
+
+    return run_single_build(config)
 
 
 def run_discover(args: argparse.Namespace) -> int:
