@@ -977,6 +977,7 @@ def _run_one(
         encoding="utf-8",
         errors="replace",
         bufsize=1,  # line-buffered (still handle '\r' via reader)
+        cwd=str(work_dir),  # redirect CWD so tools (e.g. aebndl) don't litter the launch directory
     )
 
     already_seen = False

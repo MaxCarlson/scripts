@@ -982,6 +982,7 @@ def _start_worker(
         cmd += ["-X", str(cap_mibs)]
     if archive_dir:
         cmd += ["-a", str(archive_dir)]
+    cmd += ["-r", str(Path(log_dir) / "raw")]  # raw tool logs alongside other logs
     if proxy_dl_location:
         cmd += ["--proxy-dl-location", str(proxy_dl_location)]
     if max_resolution:
@@ -1066,7 +1067,7 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("-s", "--stars-dir", default="./files/downloads/stars", help="Folder of yt-dlp url files")
     p.add_argument("-d", "--aebn-dir", default="./files/downloads/ae-stars", help="Folder of AEBN url files")
     p.add_argument(
-        "-f", "--finished-log", default="./logs/finished_urlfiles.txt", help="Path to record completed url files"
+        "-f", "--finished-log", default="./logs/finished_urls.txt", help="Path to record completed URLs (default: <log-dir>/finished_urls.txt)"
     )
     p.add_argument("-r", "--refresh-hz", type=float, default=5.0, help="UI refresh rate")
     p.add_argument("-e", "--exit-at-time", type=int, default=-1, help="Exit the manager after N seconds (<=0 disables)")
@@ -1302,7 +1303,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     archive_dir: Optional[Path] = Path(args.archive).expanduser().resolve() if args.archive else None
     if archive_dir:
         archive_dir.mkdir(parents=True, exist_ok=True)
-    finished_log = Path(args.finished_log).expanduser().resolve()
+    # Mirror finished_log into log_dir when using the default path
+    _fl_arg = args.finished_log
+    if _fl_arg == "./logs/finished_urls.txt":
+        finished_log = log_dir / "finished_urls.txt"
+    else:
+        finished_log = Path(_fl_arg).expanduser().resolve()
     finished_log.parent.mkdir(parents=True, exist_ok=True)
 
     mp4_trigger_total_bytes = (
@@ -1439,6 +1445,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 _should_rebuild = True
 
         if domain_index is None or _should_rebuild:
+            if _should_rebuild and domain_index_path and domain_index_path.exists():
+                try:
+                    domain_index_path.unlink()
+                    mlog.info(f"-M: deleted existing domain index {domain_index_path} for clean rebuild")
+                except Exception as _e:
+                    mlog.error(f"-M: failed to delete {domain_index_path}: {_e}")
             mlog.info(f"Building domain index from {len(_all_url_files)} URL file(s) …")
             domain_index = DomainIndex.build(
                 _all_url_files,
@@ -2316,8 +2328,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             active.discard(key)
             if finished:
                 try:
+                    # In domain-index mode record the URL; in file-mode record the path
+                    if ws.url_entry is not None:
+                        _finished_line = (ws.url_current or ws.url_entry.url) + "\n"
+                    else:
+                        _finished_line = key + "\n"
                     with finished_log.open("a", encoding="utf-8") as f:
-                        f.write(key + "\n")
+                        f.write(_finished_line)
                 except Exception:
                     pass
         mlog.info(f"[{ws.slot:02d}] REQUEUE finished={finished} reason={reason}")
