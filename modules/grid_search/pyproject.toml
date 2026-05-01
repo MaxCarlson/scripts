@@ -1,0 +1,170 @@
+[build-system]
+requires = [
+    "setuptools>=69.0",
+    "wheel"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gsearch"
+version = "0.1.0"
+description = "Durable adaptive grid-search manager, optimizer, recorder, and reporter for discrete parameter searches."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "Max Carlson" }
+]
+keywords = [
+    "grid-search",
+    "adaptive-search",
+    "optimization",
+    "benchmarking",
+    "sqlite",
+    "cli"
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+    "Topic :: System :: Benchmark"
+]
+dependencies = [
+    "matplotlib>=3.8.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.6.0",
+    "mypy>=1.10.0"
+]
+
+[project.scripts]
+gsearch = "gsearch.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/MaxCarlson/scripts/tree/main/modules/grid_search"
+Repository = "https://github.com/MaxCarlson/scripts"
+Issues = "https://github.com/MaxCarlson/scripts/issues"
+
+[tool.setuptools.packages.find]
+where = [
+    "."
+]
+include = [
+    "gsearch"
+]
+exclude = [
+    "gsearch.tests",
+    "gsearch.tests.*"
+]
+namespaces = false
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = [
+    "tests"
+]
+python_files = [
+    "*_test.py"
+]
+python_classes = [
+    "Test*"
+]
+python_functions = [
+    "test_*"
+]
+addopts = [
+    "--strict-config",
+    "--strict-markers",
+    "--basetemp=.pytest_tmp"
+]
+
+[tool.coverage.run]
+branch = true
+source = [
+    "gsearch"
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 0
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "raise SystemExit\\(main\\(\\))"
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+src = [
+    "gsearch"
+]
+
+[tool.ruff.lint]
+select = [
+    "A",
+    "ARG",
+    "B",
+    "C4",
+    "E",
+    "F",
+    "I",
+    "N",
+    "PERF",
+    "PL",
+    "PTH",
+    "RET",
+    "RUF",
+    "SIM",
+    "UP",
+    "W"
+]
+ignore = [
+    "PLR0912",
+    "PLR0913",
+    "PLR0915"
+]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "gsearch"
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.mypy]
+python_version = "3.10"
+packages = [
+    "gsearch"
+]
+mypy_path = [
+    "."
+]
+strict_optional = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+check_untyped_defs = true
+disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = [
+    "matplotlib.*"
+]
+ignore_missing_imports = true
