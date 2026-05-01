@@ -54,6 +54,7 @@ class WatcherSnapshot:
     config: WatcherConfig
     destination_no_space: bool = False
     destination_space_message: Optional[str] = None
+    stay_at_staging_auto: bool = False  # True when auto-enabled, False if manual or off
 
 
 def _format_bytes(num_bytes: Optional[int | float]) -> str:
@@ -162,6 +163,10 @@ class MP4Watcher:
         self._log_ready = False
         self._destination_no_space = False
         self._destination_space_message: Optional[str] = None
+        # Auto-toggle tracking: True when stay_at_staging was enabled automatically
+        # (not by user hotkey or CLI arg) so it can be auto-disabled when space opens.
+        self._auto_stay_at_staging = False
+        self._stay_at_staging_manually_set = False
 
     def is_enabled(self) -> bool:
         return self._enabled and self._config_ok
@@ -254,32 +259,46 @@ class MP4Watcher:
             self._log_status("LIMIT", "Destination reserve disabled.")
         return current
 
-    def set_stay_at_staging(self, value: bool) -> bool:
+    def set_stay_at_staging(self, value: bool, *, manual: bool = True) -> bool:
         with self._lock:
             self._config.stay_at_staging = value
+            if manual:
+                self._stay_at_staging_manually_set = True
+                self._auto_stay_at_staging = False
+            else:
+                self._auto_stay_at_staging = value
             current = self._config.stay_at_staging
+        tag = "manual" if manual else "auto"
         if current:
             self._log_status(
                 "MODE",
-                "Stay-at-staging enabled: downloaded files will remain at staging location. "
-                "Watcher will only scan for and remove inferior duplicates at the original destination.",
+                f"Stay-at-staging enabled ({tag}): files remain at staging; "
+                "watcher will only remove inferior duplicates at the original destination.",
             )
         else:
-            self._log_status("MODE", "Stay-at-staging disabled: watcher will move/copy files to final destination as normal.")
+            self._log_status(
+                "MODE",
+                f"Stay-at-staging disabled ({tag}): normal move/copy to final destination.",
+            )
         return current
 
     def toggle_stay_at_staging(self) -> bool:
         with self._lock:
             self._config.stay_at_staging = not self._config.stay_at_staging
+            self._stay_at_staging_manually_set = True
+            self._auto_stay_at_staging = False
             current = self._config.stay_at_staging
         if current:
             self._log_status(
                 "MODE",
-                "Stay-at-staging enabled: downloaded files will remain at staging location. "
-                "Watcher will only scan for and remove inferior duplicates at the original destination.",
+                "Stay-at-staging enabled (manual): files remain at staging; "
+                "watcher will only remove inferior duplicates at the original destination.",
             )
         else:
-            self._log_status("MODE", "Stay-at-staging disabled: watcher will move/copy files to final destination as normal.")
+            self._log_status(
+                "MODE",
+                "Stay-at-staging disabled (manual): normal move/copy to final destination.",
+            )
         return current
 
     def _destination_available_bytes(self) -> Optional[int]:
@@ -357,6 +376,35 @@ class MP4Watcher:
                         f"Auto-clean triggered ({trigger}); operation={self._config.default_operation}, max_files={limit_desc}.",
                     )
                     return trigger
+
+            # Auto-toggle stay-at-staging based on destination disk space vs reserve.
+            # Only acts when a destination reserve is configured and the user has not
+            # manually controlled stay_at_staging via hotkey or CLI arg.
+            reserve = self._config.destination_space_remaining_bytes
+            if reserve and isinstance(reserve, int) and reserve > 0 and not self._stay_at_staging_manually_set:
+                try:
+                    dest_free = shutil.disk_usage(self._config.destination_root).free
+                except Exception:
+                    dest_free = None
+                if dest_free is not None:
+                    if dest_free < reserve and not self._config.stay_at_staging:
+                        self._config.stay_at_staging = True
+                        self._auto_stay_at_staging = True
+                        self._log_status(
+                            "AUTO",
+                            f"Destination disk below reserve "
+                            f"({dest_free / (1024**3):.1f} GiB free < {reserve / (1024**3):.1f} GiB reserve) "
+                            "— stay-at-staging auto-enabled.",
+                        )
+                    elif dest_free >= reserve and self._auto_stay_at_staging and self._config.stay_at_staging:
+                        self._config.stay_at_staging = False
+                        self._auto_stay_at_staging = False
+                        self._log_status(
+                            "AUTO",
+                            f"Destination disk above reserve "
+                            f"({dest_free / (1024**3):.1f} GiB free >= {reserve / (1024**3):.1f} GiB reserve) "
+                            "— stay-at-staging auto-disabled.",
+                        )
         return None
 
     def snapshot(self) -> WatcherSnapshot:
@@ -380,6 +428,7 @@ class MP4Watcher:
                 config=replace(self._config),
                 destination_no_space=self._destination_no_space,
                 destination_space_message=self._destination_space_message,
+                stay_at_staging_auto=self._auto_stay_at_staging,
             )
 
     def _load_mp4_sync(self):

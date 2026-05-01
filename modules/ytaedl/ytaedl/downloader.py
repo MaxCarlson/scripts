@@ -85,6 +85,17 @@ def make_parser() -> argparse.ArgumentParser:
                    help="Highest video resolution to allow (yt-dlp uses format filters; aebndl requests nearest available <= target).")
     p.add_argument("-B", "--stop-sentinel", type=str, default=None,
                    help="If this file exists before a URL starts, exit cleanly without starting more URLs.")
+    p.add_argument("--no-extdl-fallback", action="store_true",
+                   help="Disable the extdl static-HTML and Playwright fallback when yt-dlp fails.")
+    p.add_argument("--extdl-max-candidates", type=int, default=5,
+                   help="Max fallback media candidates to try per method (0 = all).")
+    p.add_argument("--extdl-browser-wait", type=float, default=12.0,
+                   help="Seconds to collect browser network traffic in the Playwright fallback.")
+    p.add_argument("--extdl-capture-browser", default="auto",
+                   choices=["auto", "chromium", "firefox", "webkit"],
+                   help="Playwright browser backend for the network capture fallback.")
+    p.add_argument("--skip-simulate-check", action="store_true",
+                   help="Skip the yt-dlp --simulate pre-download duplicate check.")
 
     return p
 
@@ -462,6 +473,221 @@ def _stop_sentinel_active(path: Optional[Path]) -> bool:
     except Exception:
         return False
 
+
+@dataclass
+class _SimulateResult:
+    is_duplicate: bool
+    existing_path: Optional[str] = None
+    predicted_name: Optional[str] = None
+
+
+def _simulate_check(
+    url: str,
+    canonical_out_dir: Path,
+    *,
+    timeout_seconds: int = 15,
+) -> _SimulateResult:
+    """Run yt-dlp --simulate to predict filename/size and check for an existing duplicate.
+
+    Returns a ``_SimulateResult`` indicating whether the file already exists.
+    If yt-dlp --simulate fails (unsupported site, network error, etc.) returns
+    ``is_duplicate=False`` so the caller proceeds with the normal download.
+    """
+    try:
+        proc = subprocess.Popen(
+            [
+                "yt-dlp",
+                "--simulate",
+                "--print", "%(title)s.%(ext)s",
+                "--print", "%(filesize,filesize_approx)s",
+                url,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        try:
+            stdout, _ = proc.communicate(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            return _SimulateResult(is_duplicate=False)
+
+        if proc.returncode != 0:
+            return _SimulateResult(is_duplicate=False)
+
+        lines = [ln.strip() for ln in stdout.splitlines() if ln.strip()]
+        if not lines:
+            return _SimulateResult(is_duplicate=False)
+
+        predicted_name = lines[0]
+        raw_size = lines[1] if len(lines) > 1 else "NA"
+        try:
+            predicted_size = int(raw_size)
+        except (ValueError, TypeError):
+            predicted_size = None
+
+        predicted_file = canonical_out_dir / predicted_name
+
+        # Check exact filename match
+        if predicted_file.exists():
+            if predicted_size is None:
+                return _SimulateResult(is_duplicate=True, existing_path=str(predicted_file),
+                                       predicted_name=predicted_name)
+            existing_size = predicted_file.stat().st_size
+            # Allow 1% tolerance to handle minor muxing size differences
+            if predicted_size > 0 and abs(existing_size - predicted_size) / predicted_size <= 0.01:
+                return _SimulateResult(is_duplicate=True, existing_path=str(predicted_file),
+                                       predicted_name=predicted_name)
+            # File exists but sizes differ significantly — not a duplicate
+            return _SimulateResult(is_duplicate=False, predicted_name=predicted_name)
+
+        # Stem match (same video, different container e.g. .webm vs .mp4)
+        stem_match = _find_stem_in_dir(Path(predicted_name).stem, canonical_out_dir)
+        if stem_match is not None:
+            if predicted_size is None:
+                return _SimulateResult(is_duplicate=True, existing_path=str(stem_match),
+                                       predicted_name=predicted_name)
+            existing_size = stem_match.stat().st_size
+            if predicted_size > 0 and abs(existing_size - predicted_size) / predicted_size <= 0.01:
+                return _SimulateResult(is_duplicate=True, existing_path=str(stem_match),
+                                       predicted_name=predicted_name)
+
+        return _SimulateResult(is_duplicate=False, predicted_name=predicted_name)
+
+    except Exception:
+        return _SimulateResult(is_duplicate=False)
+
+
+def _is_abort_rc(rc: int) -> bool:
+    """True for return codes that should not trigger the extdl fallback (user abort, deadline)."""
+    return rc in (124, 130, 131)
+
+
+def _run_extdl_fallback(
+    url: str,
+    out_dir: Path,
+    url_index: int,
+    *,
+    extdl_max_candidates: int = 5,
+    extdl_browser_wait: float = 12.0,
+    extdl_capture_browser: str = "auto",
+    yt_dlp_executable: str = "yt-dlp",
+    max_dl_speed: Optional[float] = None,
+    max_height: Optional[int] = None,
+    dry_run: bool = False,
+) -> int:
+    """Try Method 2 (static HTML) then Method 3 (Playwright) for *url*.
+
+    Emits ``fallback_*`` NDJSON events so the manager TUI can show progress.
+    Returns 0 on any successful download, non-zero if all methods exhausted.
+    """
+    try:
+        from . import extdl as _extdl  # lazy import
+    except ImportError:
+        _emit_json({"event": "fallback_skip", "method": "all", "reason": "extdl module not available",
+                    "url_index": url_index, "url": url})
+        return 1
+
+    referer = url
+    try:
+        origin = _extdl.infer_origin(url)
+    except Exception:
+        origin = ""
+
+    def _try_candidates(candidates, method_name: str) -> int:
+        limited = candidates[:extdl_max_candidates] if extdl_max_candidates > 0 else candidates
+        for attempt_num, candidate in enumerate(limited, start=1):
+            _emit_json({
+                "event": "fallback_attempt",
+                "method": method_name,
+                "attempt": attempt_num,
+                "total": len(limited),
+                "kind": candidate.kind,
+                "candidate_url": candidate.url,
+                "url_index": url_index,
+                "url": url,
+            })
+            cmd = _extdl.build_yt_dlp_command_for_candidate(
+                candidate.url,
+                out_dir=out_dir,
+                referer=referer,
+                origin=origin,
+                yt_dlp_executable=yt_dlp_executable,
+                max_dl_speed=max_dl_speed,
+                max_height=max_height,
+            )
+            if dry_run:
+                import shlex
+                _emit_json({"event": "fallback_dryrun", "method": method_name,
+                            "attempt": attempt_num, "cmd": shlex.join(cmd),
+                            "url_index": url_index, "url": url})
+                return 0
+            try:
+                proc = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, encoding="utf-8", errors="replace", bufsize=1,
+                )
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    pass  # drain stdout; raw output intentionally discarded here
+                rc = proc.wait()
+            except Exception as exc:
+                rc = 1
+                _emit_json({"event": "fallback_failure", "method": method_name,
+                            "attempt": attempt_num, "rc": rc, "error": str(exc),
+                            "url_index": url_index, "url": url})
+                continue
+            if rc == 0:
+                _emit_json({"event": "fallback_success", "method": method_name,
+                            "attempt": attempt_num, "candidate_url": candidate.url,
+                            "url_index": url_index, "url": url})
+                return 0
+            _emit_json({"event": "fallback_failure", "method": method_name,
+                        "attempt": attempt_num, "rc": rc,
+                        "url_index": url_index, "url": url})
+        return 1
+
+    # Method 2: static HTML scan
+    _emit_json({"event": "fallback_start", "method": "static_html",
+                "url_index": url_index, "url": url})
+    try:
+        static_candidates = _extdl.discover_static_media_candidates(url)
+    except Exception as exc:
+        static_candidates = []
+        _emit_json({"event": "fallback_failure", "method": "static_html", "rc": -1,
+                    "error": str(exc), "url_index": url_index, "url": url})
+
+    if static_candidates and _try_candidates(static_candidates, "static_html") == 0:
+        return 0
+
+    # Method 3: Playwright browser capture
+    _emit_json({"event": "fallback_start", "method": "browser",
+                "url_index": url_index, "url": url})
+    try:
+        browser_candidates = _extdl.discover_browser_media_candidates(
+            url,
+            wait_seconds=extdl_browser_wait,
+            capture_browser=extdl_capture_browser,
+        )
+    except RuntimeError as exc:
+        _emit_json({"event": "fallback_skip", "method": "browser",
+                    "reason": str(exc), "url_index": url_index, "url": url})
+        browser_candidates = []
+    except Exception as exc:
+        _emit_json({"event": "fallback_failure", "method": "browser", "rc": -1,
+                    "error": str(exc), "url_index": url_index, "url": url})
+        browser_candidates = []
+
+    if browser_candidates and _try_candidates(browser_candidates, "browser") == 0:
+        return 0
+
+    _emit_json({"event": "fallback_exhausted", "url_index": url_index, "url": url})
+    return 1
+
+
 def _run_one(
     tool: str,
     urls: List[str],
@@ -482,6 +708,11 @@ def _run_one(
     max_dl_speed: Optional[float] = None,
     max_height: Optional[int] = None,
     complete_stall_seconds: int = 300,
+    extdl_fallback: bool = True,
+    extdl_max_candidates: int = 5,
+    extdl_browser_wait: float = 12.0,
+    extdl_capture_browser: str = "auto",
+    skip_simulate_check: bool = False,
 ) -> tuple[int, dict]:
     """
     Returns rc (0 on success). Emits NDJSON to stdout during run.
@@ -491,6 +722,21 @@ def _run_one(
     assert len(urls) == 1
     url = urls[0]
     stem = _urlfile_stem(Path(url))
+
+    # Pre-download simulate check: run yt-dlp --simulate to predict filename/size
+    # and skip if the file already exists at the canonical destination.
+    _canonical_resolved = canonical_out_dir.expanduser().resolve()
+    if not dry_run and tool == "yt-dlp" and not skip_simulate_check:
+        sim = _simulate_check(url, _canonical_resolved)
+        if sim.is_duplicate:
+            _emit_json({
+                "event": "canonical_duplicate",
+                "canonical_path": sim.existing_path,
+                "url_index": url_index,
+                "url": url,
+                "source": "simulate_check",
+            })
+            return 0, {"elapsed_s": 0.0, "downloaded": None, "total": None, "already": True, "downloader": tool}
 
     proglog.start(url_index, len(urls), url)
     t_url_start = time.time()
@@ -709,6 +955,21 @@ def _run_one(
         except Exception:
             pass
 
+    # extdl fallback: when yt-dlp fails (not due to user abort/stall) try static HTML
+    # scan then Playwright browser capture before retrying or giving up.
+    if rc != 0 and tool == "yt-dlp" and extdl_fallback and not _is_abort_rc(rc):
+        fallback_rc = _run_extdl_fallback(
+            url, out_dir, url_index,
+            extdl_max_candidates=extdl_max_candidates,
+            extdl_browser_wait=extdl_browser_wait,
+            extdl_capture_browser=extdl_capture_browser,
+            max_dl_speed=max_dl_speed,
+            max_height=max_height,
+            dry_run=dry_run,
+        )
+        if fallback_rc == 0:
+            rc = 0
+
     # classify status
     status = "FINISH_SUCCESS" if rc == 0 else "FINISH_BAD"
     if rc == 0 and tool == "yt-dlp" and already_seen:
@@ -721,7 +982,7 @@ def _run_one(
     # retry if bad
     info = {"elapsed_s": elapsed_s, "downloaded": (last_progress or {}).get("downloaded"), "total": (last_progress or {}).get("total"), "already": bool(already_seen), "downloader": tool}
     if rc != 0 and retries > 0:
-        return _run_one(tool, urls, out_dir, canonical_out_dir, work_dir, raw_dir, url_index, proglog, timeout, retries - 1, quiet, dry_run, progress_freq_s, max_ndjson_rate, stall_seconds, program_deadline, max_dl_speed, max_height, complete_stall_seconds)
+        return _run_one(tool, urls, out_dir, canonical_out_dir, work_dir, raw_dir, url_index, proglog, timeout, retries - 1, quiet, dry_run, progress_freq_s, max_ndjson_rate, stall_seconds, program_deadline, max_dl_speed, max_height, complete_stall_seconds, extdl_fallback, extdl_max_candidates, extdl_browser_wait, extdl_capture_browser, skip_simulate_check=True)
     return rc, info
 
 def main() -> int:
@@ -863,6 +1124,11 @@ def main() -> int:
                 program_deadline=(time.time() + args.exit_at_time) if (args.exit_at_time and args.exit_at_time > 0) else None,
                 max_dl_speed=args.max_dl_speed,
                 max_height=_max_height_for_label(args.max_resolution),
+                extdl_fallback=not getattr(args, "no_extdl_fallback", False),
+                extdl_max_candidates=getattr(args, "extdl_max_candidates", 5),
+                extdl_browser_wait=getattr(args, "extdl_browser_wait", 12.0),
+                extdl_capture_browser=getattr(args, "extdl_capture_browser", "auto"),
+                skip_simulate_check=getattr(args, "skip_simulate_check", False),
             )
             # Update archive status (skip marking on Ctrl-C abort rc==130)
             if archive_file:

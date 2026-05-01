@@ -636,7 +636,11 @@ def _render_watcher_panel(
             f"Default op: {_color_operation(cfg.default_operation)} | Keep source: {_watcher_keep_source_label(cfg)}"
         )
         lines.append(op_line[:cols])
-        stay_label = td_utils.color_text("YES – files stay at staging", "yellow") if cfg.stay_at_staging else "no"
+        if cfg.stay_at_staging:
+            auto_tag = " (auto)" if (snapshot and snapshot.stay_at_staging_auto) else " (manual)"
+            stay_label = td_utils.color_text(f"YES – files stay at staging{auto_tag}", "yellow")
+        else:
+            stay_label = "no"
         lines.append(f"Stay-at-staging: {stay_label}"[:cols])
         max_label = cfg.max_files if cfg.max_files is not None else "unlimited"
         trigger_bytes = cfg.free_space_trigger_bytes or auto_trigger_bytes
@@ -937,6 +941,11 @@ def _start_worker(
     proxy_dl_location: Optional[str] = None,
     max_resolution: Optional[str] = None,
     stop_sentinel: Optional[Path] = None,
+    no_extdl_fallback: bool = False,
+    extdl_max_candidates: int = 5,
+    extdl_browser_wait: float = 12.0,
+    extdl_capture_browser: str = "auto",
+    skip_simulate_check: bool = False,
 ) -> subprocess.Popen:
     canonical_dir = (canonical_root / urlfile.stem).expanduser().resolve()
     canonical_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -962,6 +971,16 @@ def _start_worker(
         cmd += ["--max-resolution", max_resolution]
     if stop_sentinel:
         cmd += ["-B", str(stop_sentinel)]
+    if no_extdl_fallback:
+        cmd.append("--no-extdl-fallback")
+    if extdl_max_candidates != 5:
+        cmd += ["--extdl-max-candidates", str(extdl_max_candidates)]
+    if extdl_browser_wait != 12.0:
+        cmd += ["--extdl-browser-wait", str(extdl_browser_wait)]
+    if extdl_capture_browser != "auto":
+        cmd += ["--extdl-capture-browser", extdl_capture_browser]
+    if skip_simulate_check:
+        cmd.append("--skip-simulate-check")
     if quiet:
         cmd.append("-q")
     # line buffered
@@ -1080,6 +1099,43 @@ def make_parser() -> argparse.ArgumentParser:
             "Keep downloaded files at the staging/proxy location instead of moving them to the final destination. "
             "The watcher will only scan for inferior duplicate files that exist at both locations and delete the worse copy."
         ),
+    )
+    p.add_argument(
+        "-D",
+        "--unique-domain-dls",
+        action="store_true",
+        help=(
+            "Hard-lock domain uniqueness: workers are only assigned URL files whose domains are not already "
+            "actively downloading. Falls back to any available file only when no unique-domain file exists."
+        ),
+    )
+    p.add_argument(
+        "-n", "--no-extdl-fallback",
+        action="store_true",
+        help="Disable the extdl static-HTML / Playwright fallback when yt-dlp fails.",
+    )
+    p.add_argument(
+        "-j", "--extdl-max-candidates",
+        type=int,
+        default=5,
+        help="Max fallback media candidates to try per method (0 = all).",
+    )
+    p.add_argument(
+        "-J", "--extdl-browser-wait",
+        type=float,
+        default=12.0,
+        help="Seconds to collect browser network traffic in the Playwright fallback.",
+    )
+    p.add_argument(
+        "-N", "--extdl-capture-browser",
+        default="auto",
+        choices=["auto", "chromium", "firefox", "webkit"],
+        help="Playwright browser backend for network capture fallback.",
+    )
+    p.add_argument(
+        "-K", "--skip-simulate-check",
+        action="store_true",
+        help="Skip the yt-dlp --simulate pre-download duplicate check.",
     )
     p.add_argument(
         "-O",
@@ -1228,6 +1284,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 stay_at_staging=args.mp4_stay_at_staging,
             )
             watcher = MP4Watcher(config=config, enabled=True)
+            if args.mp4_stay_at_staging and watcher.is_enabled():
+                # CLI arg sets stay-at-staging as a manual choice so auto-disable won't fire.
+                watcher.set_stay_at_staging(True, manual=True)
             if watcher.is_enabled():
                 mlog.info(
                     f"MP4 watcher enabled: staging={staging_root} destination={destination_root} operation={args.mp4_operation}"
@@ -1453,12 +1512,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     def _candidate_domain_map(candidates: List[Path]) -> Dict[str, set[str]]:
         return {str(path.resolve()): _cached_domains_for_urlfile(path) for path in candidates}
 
+    def _hard_domain_filter(pool: List[Path]) -> List[Path]:
+        """When --unique-domain-dls is active, filter to files with at least one
+        domain not already actively downloading. Falls back to full pool if empty."""
+        if not getattr(args, "unique_domain_dls", False):
+            return pool
+        active = _active_scheduling_domains()
+        unique_pool = [f for f in pool if not _domains_for_urlfile(f).issubset(active)]
+        if unique_pool:
+            return unique_pool
+        mlog.info("unique-domain-dls: no unique-domain files available; falling back to full pool.")
+        return pool
+
     def _select_best(candidates: List[Path]) -> Path:
         eligible = [c for c in candidates if _remaining_for_path(c) != 0]
         if not eligible:
             return random.choice(candidates)
         if args.url_random_order:
             return random.choice(eligible)
+        eligible = _hard_domain_filter(eligible)
         if not url_rankings:
             fallback_rankings = {str(path.resolve()): idx for idx, path in enumerate(sorted(eligible))}
             return _choose_domain_diverse_candidate(
@@ -1482,6 +1554,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return None
         if args.url_random_order:
             return random.choice(eligible)
+        eligible = _hard_domain_filter(eligible)
         priority_rankings = {str(path.resolve()): idx for idx, path in enumerate(eligible)}
         return _choose_domain_diverse_candidate(
             eligible,
@@ -1545,6 +1618,42 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     ws.last_already = True
                     canon = evt.get("canonical_path", "?")
                     mlog.info(f"[{ws.slot:02d}] CANONICAL_DUP dest={canon}")
+                elif ev == "fallback_start":
+                    method = evt.get("method", "?")
+                    ws.overlay_msg = f"\x1b[33m[Fallback:{method}]\x1b[0m Discovering media URLs…"
+                    ws.overlay_since = time.time()
+                    mlog.info(f"[{ws.slot:02d}] FALLBACK_START method={method} url={ws.url_current}")
+                elif ev == "fallback_attempt":
+                    method = evt.get("method", "?")
+                    attempt = evt.get("attempt", "?")
+                    total = evt.get("total", "?")
+                    kind = evt.get("kind", "")
+                    ws.overlay_msg = (
+                        f"\x1b[33m[Fallback:{method}]\x1b[0m"
+                        f" Trying candidate {attempt}/{total} ({kind})…"
+                    )
+                    ws.overlay_since = time.time()
+                    mlog.info(f"[{ws.slot:02d}] FALLBACK_ATTEMPT method={method} {attempt}/{total} kind={kind}")
+                elif ev == "fallback_success":
+                    method = evt.get("method", "?")
+                    ws.overlay_msg = f"\x1b[32m[Fallback:{method} OK]\x1b[0m Downloading…"
+                    ws.overlay_since = time.time()
+                    mlog.info(f"[{ws.slot:02d}] FALLBACK_SUCCESS method={method}")
+                elif ev == "fallback_failure":
+                    method = evt.get("method", "?")
+                    attempt = evt.get("attempt", "?")
+                    rc_f = evt.get("rc", "?")
+                    mlog.info(f"[{ws.slot:02d}] FALLBACK_FAILURE method={method} attempt={attempt} rc={rc_f}")
+                elif ev == "fallback_skip":
+                    method = evt.get("method", "?")
+                    reason = evt.get("reason", "")
+                    ws.overlay_msg = f"\x1b[33m[Fallback:{method} skipped]\x1b[0m {reason}"
+                    ws.overlay_since = time.time()
+                    mlog.info(f"[{ws.slot:02d}] FALLBACK_SKIP method={method} reason={reason}")
+                elif ev == "fallback_exhausted":
+                    ws.overlay_msg = "\x1b[31m[All fallbacks exhausted]\x1b[0m"
+                    ws.overlay_since = time.time()
+                    mlog.info(f"[{ws.slot:02d}] FALLBACK_EXHAUSTED url={ws.url_current}")
                 elif ev == "progress":
                     # Clamp and normalize to avoid >100% and >total displays
                     try:
@@ -1774,6 +1883,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.proxy_dl_location,
             args.max_resolution,
             controlled_quit_sentinel,
+            no_extdl_fallback=getattr(args, "no_extdl_fallback", False),
+            extdl_max_candidates=getattr(args, "extdl_max_candidates", 5),
+            extdl_browser_wait=getattr(args, "extdl_browser_wait", 12.0),
+            extdl_capture_browser=getattr(args, "extdl_capture_browser", "auto"),
+            skip_simulate_check=getattr(args, "skip_simulate_check", False),
         )
         ws.reader_stop.clear()
         ws.reader = threading.Thread(target=_reader, args=(ws,), daemon=True)
@@ -2502,8 +2616,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     quit_tag = td_utils.color_text(" [Press Y to confirm quit]", "red") if quit_confirm else ""
                     active_label = td_utils.color_text(str(active_workers), "green" if active_workers > 0 else "gray")
                     pool_label = td_utils.color_text(str(total_available), "cyan" if total_available > 0 else "gray")
+                    domain_lock_tag = td_utils.color_text(" [D]", "cyan") if getattr(args, "unique_domain_dls", False) else ""
                     header = (
-                        f"DL Manager{pause_tag}{quit_tag}"
+                        f"DL Manager{pause_tag}{quit_tag}{domain_lock_tag}"
                         f"  |  threads={args.threads}"
                         f"  active={active_label}"
                         f"  pool={pool_label}"

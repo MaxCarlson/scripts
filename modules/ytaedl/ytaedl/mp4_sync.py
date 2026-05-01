@@ -1083,6 +1083,61 @@ def _unique_location_label(path: Path, other: Path) -> str:
     return result
 
 
+def _trunc_filename(path: Path, stem_chars: int = 10) -> str:
+    """Return a truncated filename: first *stem_chars* chars of stem + '....' + suffix."""
+    stem = path.stem
+    suffix = path.suffix or ""
+    if len(stem) > stem_chars:
+        return f"{stem[:stem_chars]}....{suffix.lstrip('.')}" if suffix else f"{stem[:stem_chars]}...."
+    return path.name
+
+
+def _abbrev_parent(path: Path, other: Path) -> str:
+    """Return an abbreviated parent-directory label for *path* relative to *other*.
+
+    If the unique prefix before the common suffix has more than 2 components, the
+    middle parts are collapsed to '..', e.g. D:\\Pictures\\Saved\\tmpvids\\ becomes
+    D:\\..\\ .  The common suffix folder(s) are always appended so the reader can
+    see the full folder context.
+    """
+    parts_self = list(path.parent.parts)
+    parts_other = list(other.parent.parts)
+    common_len = 0
+    for ps, po in zip(reversed(parts_self), reversed(parts_other)):
+        if ps.lower() == po.lower():
+            common_len += 1
+        else:
+            break
+
+    unique_parts = parts_self[: len(parts_self) - common_len] if common_len < len(parts_self) else parts_self
+    common_parts = parts_self[len(parts_self) - common_len :] if common_len else []
+
+    # Build the unique-prefix string (possibly abbreviated)
+    if not unique_parts:
+        prefix = str(path.parent)
+    else:
+        try:
+            root_str = str(Path(unique_parts[0]))
+        except Exception:
+            root_str = unique_parts[0]
+        if len(unique_parts) > 2:
+            # Collapse intermediate parts to ".."
+            sep = "" if root_str.endswith((os.sep, "/")) else os.sep
+            prefix = root_str + sep + ".."
+        elif len(unique_parts) == 2:
+            prefix = str(Path(*unique_parts))
+        else:
+            prefix = root_str
+
+    if not prefix.endswith((os.sep, "/")):
+        prefix += os.sep
+
+    if common_parts:
+        suffix_str = os.sep.join(common_parts)
+        return prefix + suffix_str + os.sep
+    return prefix
+
+
 def _format_collision_log(
     winner: Path,
     winner_size: int,
@@ -1090,38 +1145,42 @@ def _format_collision_log(
     loser_size: int,
     verdict: str,
     dry_run: bool,
+    reason_note: str = "",
 ) -> str:
     """Return a compact multi-line log message for a stay-at-staging collision.
 
-    The first line is a one-line verdict bracket suitable as the log_event header.
-    Subsequent lines show KEEP/DEL with minimal distinguishing paths so the reader
-    can immediately see *where* each copy lives without repeating redundant path segments.
+    Each KEEP/DEL line is self-contained: abbreviated path-to-folder + truncated filename.
+    No separate filename line is emitted so the reader sees everything on two lines.
     """
     size_diff = abs(winner_size - loser_size)
     action_word = "would delete" if dry_run else "deleted"
-    size_summary = f"{format_bytes(winner_size)} > {format_bytes(loser_size)}  (+{format_bytes(size_diff)})"
-    header = f"[{verdict} · {size_summary} · {action_word} inferior copy]"
+    if size_diff == 0:
+        size_summary = f"{format_bytes(winner_size)} = {format_bytes(loser_size)}"
+    else:
+        size_summary = f"{format_bytes(winner_size)} > {format_bytes(loser_size)}  (+{format_bytes(size_diff)})"
+    note_part = f" · {reason_note}" if reason_note else ""
+    header = f"[{verdict} · {size_summary}{note_part} · {action_word} inferior copy]"
 
     same_name = winner.name.lower() == loser.name.lower()
     common = _common_suffix_parts(winner, loser)
 
+    winner_short = _trunc_filename(winner)
+    loser_short = _trunc_filename(loser)
+
     if common and same_name:
-        # Compact form: show the filename + common path once, then just the unique roots
-        common_str = os.sep.join(common)
-        winner_root = _unique_location_label(winner, loser)
-        loser_root = _unique_location_label(loser, winner)
+        winner_parent = _abbrev_parent(winner, loser)
+        loser_parent = _abbrev_parent(loser, winner)
         return (
             f"{header}\n"
-            f"→ {winner.name}  (in ...{os.sep}{common_str}{os.sep})\n"
-            f"KEEP   {winner_root}\n"
-            f"DEL    {loser_root}"
+            f"KEEP  {winner_parent}{winner_short}\n"
+            f"DEL   {loser_parent}{loser_short}"
         )
     else:
-        # Full paths when names differ or no common parent
+        # Different filenames — show full paths with truncated names
         return (
             f"{header}\n"
-            f"KEEP   {winner}\n"
-            f"DEL    {loser}"
+            f"KEEP  {winner.parent}{os.sep}{winner_short}\n"
+            f"DEL   {loser.parent}{os.sep}{loser_short}"
         )
 
 
@@ -1221,15 +1280,15 @@ def build_stay_at_staging_plan(
                         "delete_source": "false",
                     },
                 )
-            elif staging_size >= orig_size:
-                # Staging copy is better or equal – delete the original-destination copy.
+            elif staging_size > orig_size:
+                # Staging copy is strictly larger – staging wins.
                 action = Action(
                     action=ACTION_DELETE,
                     source=str(orig_match),
                     destination=None,
                     reason=(
-                        f"staging copy is larger or equal "
-                        f"({format_bytes(staging_size)} >= {format_bytes(orig_size)}); "
+                        f"staging copy is larger "
+                        f"({format_bytes(staging_size)} > {format_bytes(orig_size)}); "
                         "deleting inferior original-destination copy"
                     ),
                     source_size=orig_size,
@@ -1242,10 +1301,68 @@ def build_stay_at_staging_plan(
                         "loser_path": str(orig_match),
                         "loser_location": "original_destination",
                         "resolution": "delete_original",
+                        "reason_note": "",
                     },
                 )
+            elif staging_size == orig_size:
+                # Identical size — keep copy on whichever disk has more free space.
+                try:
+                    staging_free = shutil.disk_usage(staging_root).free
+                except Exception:
+                    staging_free = 0
+                try:
+                    orig_free = shutil.disk_usage(original_destination_root).free
+                except Exception:
+                    orig_free = 0
+                staging_disk_wins = staging_free >= orig_free
+                if staging_disk_wins:
+                    reason_note = f"equal size – kept on disk with more free space ({staging_root.anchor.rstrip(os.sep) or staging_root})"
+                    action = Action(
+                        action=ACTION_DELETE,
+                        source=str(orig_match),
+                        destination=None,
+                        reason=(
+                            f"equal size ({format_bytes(staging_size)}); "
+                            f"staging disk has more free space; deleting original-destination copy"
+                        ),
+                        source_size=orig_size,
+                        destination_size=staging_size,
+                        collision=True,
+                        metadata={
+                            **base_metadata,
+                            "winner_path": str(staging_file),
+                            "winner_location": "staging",
+                            "loser_path": str(orig_match),
+                            "loser_location": "original_destination",
+                            "resolution": "delete_original",
+                            "reason_note": reason_note,
+                        },
+                    )
+                else:
+                    reason_note = f"equal size – kept on disk with more free space ({orig_match.anchor.rstrip(os.sep) or original_destination_root})"
+                    action = Action(
+                        action=ACTION_DELETE,
+                        source=str(staging_file),
+                        destination=None,
+                        reason=(
+                            f"equal size ({format_bytes(orig_size)}); "
+                            f"original-destination disk has more free space; deleting staging copy"
+                        ),
+                        source_size=staging_size,
+                        destination_size=orig_size,
+                        collision=True,
+                        metadata={
+                            **base_metadata,
+                            "winner_path": str(orig_match),
+                            "winner_location": "original_destination",
+                            "loser_path": str(staging_file),
+                            "loser_location": "staging",
+                            "resolution": "delete_staging",
+                            "reason_note": reason_note,
+                        },
+                    )
             else:
-                # Original-destination copy is better – delete the staging copy.
+                # Original-destination copy is strictly larger – orig wins.
                 action = Action(
                     action=ACTION_DELETE,
                     source=str(staging_file),
@@ -1265,6 +1382,7 @@ def build_stay_at_staging_plan(
                         "loser_path": str(staging_file),
                         "loser_location": "staging",
                         "resolution": "delete_staging",
+                        "reason_note": "",
                     },
                 )
 
@@ -1468,6 +1586,7 @@ def execute_action(
         winner_size = action.destination_size or 0
         resolution = action.metadata.get("resolution", "")
         verdict = "staging wins" if resolution == "delete_original" else "orig-dest wins"
+        reason_note = action.metadata.get("reason_note", "")
         collision_msg = _format_collision_log(
             winner=winner_p,
             winner_size=winner_size,
@@ -1475,6 +1594,7 @@ def execute_action(
             loser_size=file_size,
             verdict=verdict,
             dry_run=dry_run,
+            reason_note=reason_note,
         )
         if dry_run:
             log_event("DRYRUN", collision_msg)
