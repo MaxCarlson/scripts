@@ -37,7 +37,7 @@ except ImportError:
 
 
 DEFAULT_USER_AGENT = (
-    "web-docs-processor/0.3.0 "
+    "web-docs-processor/0.3.3 "
     "(personal archival and LLM source preparation; respectful crawling)"
 )
 MIN_EXTRACTED_TEXT_CHARS = 300
@@ -107,6 +107,15 @@ INPUT_FORMATS = {
     "github-pages",
     "sitemap",
 }
+
+GITHUB_WIKI_BLOCKED_PAGE_NAMES = {
+    "_edit",
+    "_history",
+    "_new",
+    "_pages",
+}
+GITHUB_WIKI_MIN_PARTS = 3
+GITHUB_WIKI_PAGE_INDEX = 3
 
 
 @dataclasses.dataclass(frozen=True)
@@ -346,6 +355,46 @@ def in_scope(candidate_url: str, seed_urls: list[str], scope: str, same_prefix_d
     return False
 
 
+def is_github_wiki_url(candidate_url: str, seed_url: str) -> bool:
+    candidate = urlparse(candidate_url)
+    seed = urlparse(seed_url)
+    seed_parts = [part for part in seed.path.split("/") if part]
+    candidate_parts = [part for part in candidate.path.split("/") if part]
+    has_seed_wiki_root = len(seed_parts) >= GITHUB_WIKI_MIN_PARTS and seed_parts[2].lower() == "wiki"
+    has_candidate_wiki_root = (
+        len(candidate_parts) >= GITHUB_WIKI_MIN_PARTS
+        and candidate_parts[0].lower() == seed_parts[0].lower()
+        and candidate_parts[1].lower() == seed_parts[1].lower()
+        and candidate_parts[2].lower() == "wiki"
+    )
+    is_blocked_wiki_page = (
+        len(candidate_parts) > GITHUB_WIKI_PAGE_INDEX
+        and candidate_parts[GITHUB_WIKI_PAGE_INDEX].lower() in GITHUB_WIKI_BLOCKED_PAGE_NAMES
+    )
+
+    return (
+        candidate.scheme in {"http", "https"}
+        and candidate.netloc.lower() == "github.com"
+        and candidate.netloc.lower() == seed.netloc.lower()
+        and has_seed_wiki_root
+        and has_candidate_wiki_root
+        and not is_blocked_wiki_page
+    )
+
+
+def is_allowed_candidate_url(
+    candidate_url: str,
+    seed_urls: list[str],
+    input_format: InputFormat,
+    scope: str,
+    same_prefix_depth: int,
+) -> bool:
+    if input_format == "github-wiki":
+        return any(is_github_wiki_url(candidate_url, seed_url) for seed_url in seed_urls)
+
+    return in_scope(candidate_url, seed_urls, scope, same_prefix_depth)
+
+
 def should_keep_url(candidate_url: str, config: CrawlConfig) -> bool:
     if config.input_format == "sitemap" and is_sitemap_url(candidate_url):
         allowed_url_type = True
@@ -355,8 +404,17 @@ def should_keep_url(candidate_url: str, config: CrawlConfig) -> bool:
     if not allowed_url_type:
         return False
 
-    if not in_scope(candidate_url, config.urls, config.scope, config.same_prefix_depth):
+    if not is_allowed_candidate_url(
+        candidate_url,
+        config.urls,
+        config.input_format,
+        config.scope,
+        config.same_prefix_depth,
+    ):
         return False
+
+    if config.input_format == "sitemap" and is_sitemap_url(candidate_url):
+        return True
 
     if config.include_patterns and not matches_any(config.include_patterns, candidate_url):
         return False

@@ -1,0 +1,19 @@
+# single-page
+https://developers.openai.com/api/docs/guides/prompt-guidance
+https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering/use-xml-tags
+
+# docs-site
+https://developers.openai.com/api/docs/guides
+https://code.claude.com/docs/en/overview
+
+# github-wiki
+https://github.com/Netflix/Hystrix/wiki
+https://github.com/wting/autojump/wiki
+
+# github-pages
+https://mmistakes.github.io/minimal-mistakes/docs/quick-start-guide/
+https://jekyll.github.io/github-metadata/
+
+# sitemap
+https://docs.python.org/3/sitemap.xml
+https://docs.github.com/sitemap.xml

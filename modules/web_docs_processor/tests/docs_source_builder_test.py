@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+import functools
+import http.server
+import importlib.util
 import json
 import shutil
+import sys
+import threading
+import warnings
+from collections.abc import Callable, Iterator
+from http.server import ThreadingHTTPServer
+from types import ModuleType
 
 import pytest
+import requests
 
 from web_docs_processor import docs_source_builder as dsb
 
@@ -13,19 +23,53 @@ SINGLE_PAGE_PREFIX_DEPTH = 2
 EXPLICIT_PREFIX_DEPTH = 4
 EXPLICIT_MAX_PAGES = 42
 URL_FILE_COMBINED_COUNT = 3
+MIN_LOCAL_DOCS_SITE_PAGES = 2
+MIN_LOCAL_SITEMAP_PAGES = 2
+FIXTURE_TOTAL_WARN_MB = 50
+FIXTURE_GROUP_WARN_MB = 25
 MANIFEST_MAX_PAGES = 50
 MANIFEST_DELAY_SECONDS = 0.1
 MANIFEST_TIMEOUT_SECONDS = 9.0
 MANIFEST_MIN_CHARS = 25
+TESTS_DIR = dsb.Path(__file__).resolve().parent
+FROZEN_FIXTURE_ROOT = TESTS_DIR / "fixtures" / "frozen_sites"
 MANIFEST_PATH = dsb.Path("out") / "test-manifest.json"
 URL_FILE_PATH = dsb.Path("out") / "test-urls.txt"
 OUTPUT_TEST_DIR = dsb.Path("out") / "test-output-formats"
 URL_FILE_TEST_DIR = dsb.Path("out") / "test-url-file"
+LOCAL_HTTP_TEST_DIR = dsb.Path("out") / "test-local-http"
+SYNTHETIC_SITEMAP_SITE = "sitemap__local-fixture__sitemap-xml"
 SINGLE_PAGE_EXAMPLE_URL = "https://example.com/guide"
 DOCS_SITE_EXAMPLE_URL = "https://geminicli.com/docs/"
 GITHUB_WIKI_EXAMPLE_URL = "https://github.com/Homebrew/brew/wiki"
 GITHUB_PAGES_EXAMPLE_URL = "https://pytest-dev.github.io/pytest/"
 SITEMAP_EXAMPLE_URL = "https://example.com/sitemap.xml"
+GITHUB_WIKI_SEED_URL = "https://github.com/Netflix/Hystrix/wiki"
+GITHUB_WIKI_ALLOWED_URLS = [
+    "https://github.com/Netflix/Hystrix/wiki",
+    "https://github.com/Netflix/Hystrix/wiki/Configuration",
+]
+GITHUB_WIKI_BLOCKED_URLS = [
+    "https://github.com/Netflix/Hystrix",
+    "https://github.com/Netflix/Hystrix/issues",
+    "https://github.com/Netflix/Hystrix/pulls",
+    "https://github.com/Netflix/Hystrix/actions",
+    "https://github.com/Netflix/Hystrix/projects",
+    "https://github.com/Netflix/Hystrix/security",
+    "https://github.com/Netflix/Hystrix/pulse",
+    "https://github.com/Netflix/Hystrix/labels",
+    "https://github.com/Netflix/Hystrix/milestones",
+    "https://github.com/Netflix/Hystrix/actions/workflows/build.yml",
+    "https://github.com/Netflix/Hystrix/blob/master/README.md",
+    "https://github.com/Netflix/Hystrix/tree/master/docs",
+    "https://github.com/Netflix/Hystrix/graphs/contributors",
+    "https://github.com/Netflix/Hystrix/network",
+    "https://github.com/Netflix/Hystrix/wiki/_new",
+    "https://github.com/Netflix/Hystrix/wiki/_edit",
+    "https://github.com/Netflix/Hystrix/wiki/_history",
+    "https://github.com/Netflix/Hystrix/wiki/_pages",
+    "https://github.com/wting/autojump/wiki",
+]
 DOCS_FIXTURE_BODY = """
 <main>
     <h1>{title}</h1>
@@ -33,6 +77,81 @@ DOCS_FIXTURE_BODY = """
     <p>This paragraph makes the fixture long enough for markdown conversion.</p>
 </main>
 """
+
+
+def load_freezer_module() -> ModuleType:
+    module_path = TESTS_DIR.parent / "tools" / "freeze_test_sites.py"
+    spec = importlib.util.spec_from_file_location("web_docs_processor_freeze_test_sites", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load freezer module from {module_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+freezer = load_freezer_module()
+
+
+class QuietFixtureRequestHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, _message_format: str, *_args: object) -> None:
+        return
+
+
+@pytest.fixture(autouse=True)
+def block_non_localhost_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_request = requests.sessions.Session.request
+
+    def guarded_request(
+        self: requests.sessions.Session,
+        method: str,
+        url: str,
+        *args: object,
+        **kwargs: object,
+    ) -> requests.Response:
+        hostname = dsb.urlparse(str(url)).hostname
+        if hostname not in {"127.0.0.1", "localhost", "::1"}:
+            raise AssertionError(f"Blocked non-localhost HTTP request during tests: {url}")
+        return real_request(self, method, url, *args, **kwargs)
+
+    monkeypatch.setattr(requests.sessions.Session, "request", guarded_request)
+
+
+@pytest.fixture
+def serve_fixture_site() -> Iterator[Callable[[dsb.Path], str]]:
+    servers: list[ThreadingHTTPServer] = []
+    threads: list[threading.Thread] = []
+
+    def start_server(site_dir: dsb.Path) -> str:
+        handler = functools.partial(QuietFixtureRequestHandler, directory=str(site_dir))
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        servers.append(server)
+        threads.append(thread)
+        return f"http://127.0.0.1:{server.server_port}"
+
+    try:
+        yield start_server
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+        for thread in threads:
+            thread.join(timeout=2)
+
+
+def load_fixture_manifest(site_name: str) -> dict[str, object]:
+    manifest_path = FROZEN_FIXTURE_ROOT / site_name / "fixture-manifest.json"
+    return json.loads(manifest_path.read_text(encoding="utf-8"))
+
+
+def fixture_entry_url(base_url: str, manifest: dict[str, object]) -> str:
+    hint = manifest["entry_local_url_hint"]
+    if not isinstance(hint, str) or not hint:
+        raise AssertionError("Fixture manifest does not have an entry_local_url_hint.")
+    return f"{base_url}{hint}"
 
 
 def write_test_manifest(payload: dict[str, object]) -> dsb.Path:
@@ -211,6 +330,97 @@ def test_single_scope_checks_all_seed_urls() -> None:
         "single",
         1,
     )
+
+
+@pytest.mark.parametrize("url", GITHUB_WIKI_ALLOWED_URLS)
+def test_github_wiki_filter_allows_only_wiki_pages(url: str) -> None:
+    assert dsb.is_github_wiki_url(url, GITHUB_WIKI_SEED_URL)
+    assert freezer.is_github_wiki_url(url, GITHUB_WIKI_SEED_URL)
+
+
+@pytest.mark.parametrize("url", GITHUB_WIKI_BLOCKED_URLS)
+def test_github_wiki_filter_rejects_repo_and_admin_pages(url: str) -> None:
+    assert not dsb.is_github_wiki_url(url, GITHUB_WIKI_SEED_URL)
+    assert not freezer.is_github_wiki_url(url, GITHUB_WIKI_SEED_URL)
+
+
+def test_should_keep_url_rejects_github_wiki_repo_tabs() -> None:
+    config = make_config(
+        urls=[GITHUB_WIKI_SEED_URL],
+        input_format="github-wiki",
+        scope="prefix",
+        same_prefix_depth=2,
+    )
+
+    assert dsb.should_keep_url("https://github.com/Netflix/Hystrix/wiki/Configuration", config)
+    assert not dsb.should_keep_url("https://github.com/Netflix/Hystrix/issues", config)
+    assert not dsb.should_keep_url("https://github.com/Netflix/Hystrix/actions/workflows/build.yml", config)
+    assert not dsb.should_keep_url("https://github.com/Netflix/Hystrix/wiki/_new", config)
+
+
+def test_discover_next_links_filters_github_wiki_repo_tabs() -> None:
+    config = make_config(
+        urls=[GITHUB_WIKI_SEED_URL],
+        input_format="github-wiki",
+        scope="prefix",
+        same_prefix_depth=2,
+    )
+    html = page_html(
+        "Hystrix Wiki",
+        """
+        <a href="/Netflix/Hystrix">Code</a>
+        <a href="/Netflix/Hystrix/issues">Issues</a>
+        <a href="/Netflix/Hystrix/actions">Actions</a>
+        <a href="/Netflix/Hystrix/wiki/Configuration">Configuration</a>
+        <a href="/Netflix/Hystrix/wiki/_new">New page</a>
+        <a href="/wting/autojump/wiki">Other wiki</a>
+        """,
+    )
+
+    assert dsb.discover_next_links(html, GITHUB_WIKI_SEED_URL, config) == [
+        "https://github.com/Netflix/Hystrix/wiki/Configuration",
+    ]
+
+
+def test_freezer_html_discovery_filters_github_wiki_repo_tabs() -> None:
+    html = page_html(
+        "Hystrix Wiki",
+        """
+        <a href="/Netflix/Hystrix">Code</a>
+        <a href="/Netflix/Hystrix/issues">Issues</a>
+        <a href="/Netflix/Hystrix/wiki/Configuration">Configuration</a>
+        <a href="/Netflix/Hystrix/wiki/_history">History</a>
+        """,
+    )
+
+    assert freezer.discover_html_links(
+        html,
+        GITHUB_WIKI_SEED_URL,
+        GITHUB_WIKI_SEED_URL,
+        "github-wiki",
+        "prefix",
+        2,
+    ) == ["https://github.com/Netflix/Hystrix/wiki/Configuration"]
+
+
+def test_freezer_sitemap_discovery_filters_github_wiki_repo_tabs() -> None:
+    xml = """
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>https://github.com/Netflix/Hystrix/issues</loc></url>
+    <url><loc>https://github.com/Netflix/Hystrix/wiki/Configuration</loc></url>
+    <url><loc>https://github.com/Netflix/Hystrix/wiki/_edit</loc></url>
+</urlset>
+"""
+
+    assert freezer.discover_sitemap_links(
+        xml,
+        GITHUB_WIKI_SEED_URL,
+        GITHUB_WIKI_SEED_URL,
+        "github-wiki",
+        "prefix",
+        2,
+    ) == ["https://github.com/Netflix/Hystrix/wiki/Configuration"]
 
 
 def test_slugify_and_page_filename_are_stable() -> None:
@@ -823,6 +1033,353 @@ def test_run_build_url_file_expand_writes_one_output_per_seed(monkeypatch: objec
     assert second_manifest["batch_seed_url"] == "https://example.com/docs/b"
     assert first_candidate_exists
     assert second_candidate_exists
+
+
+def test_network_guard_blocks_non_localhost_requests() -> None:
+    with pytest.raises(AssertionError, match="Blocked non-localhost HTTP request"):
+        requests.get("https://example.com", timeout=1)
+
+
+def test_local_http_single_page_fixture_build(serve_fixture_site: Callable[[dsb.Path], str]) -> None:
+    shutil.rmtree(LOCAL_HTTP_TEST_DIR, ignore_errors=True)
+    site_name = "single-page__developers-openai-com__api-docs-guides-prompt-guidance"
+    site_dir = FROZEN_FIXTURE_ROOT / site_name
+    manifest = load_fixture_manifest(site_name)
+    entry_url = fixture_entry_url(serve_fixture_site(site_dir), manifest)
+    output_path = LOCAL_HTTP_TEST_DIR / "single-page.md"
+
+    try:
+        args = dsb.parse_args(
+            [
+                "build",
+                "-u",
+                entry_url,
+                "-I",
+                "single-page",
+                "-o",
+                str(output_path),
+                "-c",
+                "1",
+                "-J",
+                "-M",
+                "-C",
+            ]
+        )
+
+        result = dsb.run_build(args)
+
+        markdown = output_path.read_text(encoding="utf-8")
+    finally:
+        shutil.rmtree(LOCAL_HTTP_TEST_DIR, ignore_errors=True)
+
+    assert result == 0
+    assert "Prompt guidance" in markdown
+    assert entry_url in markdown
+
+
+def test_local_http_docs_site_fixture_build_discovers_local_pages(
+    serve_fixture_site: Callable[[dsb.Path], str],
+) -> None:
+    shutil.rmtree(LOCAL_HTTP_TEST_DIR, ignore_errors=True)
+    site_name = "docs-site__developers-openai-com__api-docs-guides"
+    site_dir = FROZEN_FIXTURE_ROOT / site_name
+    manifest = load_fixture_manifest(site_name)
+    entry_url = fixture_entry_url(serve_fixture_site(site_dir), manifest)
+    output_path = LOCAL_HTTP_TEST_DIR / "docs-site.md"
+
+    try:
+        args = dsb.parse_args(
+            [
+                "build",
+                "-u",
+                entry_url,
+                "-I",
+                "docs-site",
+                "-o",
+                str(output_path),
+                "-m",
+                "4",
+                "-c",
+                "1",
+                "-J",
+            ]
+        )
+
+        result = dsb.run_build(args)
+
+        markdown = output_path.read_text(encoding="utf-8")
+        output_manifest = json.loads((output_path.parent / "manifest.json").read_text(encoding="utf-8"))
+    finally:
+        shutil.rmtree(LOCAL_HTTP_TEST_DIR, ignore_errors=True)
+
+    assert result == 0
+    assert output_manifest["page_count"] >= MIN_LOCAL_DOCS_SITE_PAGES
+    assert all(str(url).startswith("http://127.0.0.1:") for url in output_manifest["discovered_urls"])
+    assert "Text generation" in markdown
+
+
+def test_local_http_github_pages_fixture_build_discovers_local_pages(
+    serve_fixture_site: Callable[[dsb.Path], str],
+) -> None:
+    shutil.rmtree(LOCAL_HTTP_TEST_DIR, ignore_errors=True)
+    site_name = "github-pages__jekyll-github-io__github-metadata"
+    site_dir = FROZEN_FIXTURE_ROOT / site_name
+    manifest = load_fixture_manifest(site_name)
+    entry_url = fixture_entry_url(serve_fixture_site(site_dir), manifest)
+    output_path = LOCAL_HTTP_TEST_DIR / "github-pages.md"
+
+    try:
+        args = dsb.parse_args(
+            [
+                "build",
+                "-u",
+                entry_url,
+                "-I",
+                "github-pages",
+                "-o",
+                str(output_path),
+                "-m",
+                "3",
+                "-c",
+                "1",
+                "-J",
+            ]
+        )
+
+        result = dsb.run_build(args)
+
+        output_manifest = json.loads((output_path.parent / "manifest.json").read_text(encoding="utf-8"))
+    finally:
+        shutil.rmtree(LOCAL_HTTP_TEST_DIR, ignore_errors=True)
+
+    assert result == 0
+    assert output_manifest["page_count"] >= 1
+    assert all(str(url).startswith("http://127.0.0.1:") for url in output_manifest["discovered_urls"])
+
+
+def test_local_http_github_wiki_fixture_is_serveable_and_manifest_stays_in_wiki(
+    serve_fixture_site: Callable[[dsb.Path], str],
+) -> None:
+    shutil.rmtree(LOCAL_HTTP_TEST_DIR, ignore_errors=True)
+    site_name = "github-wiki__github-com__netflix-hystrix-wiki"
+    site_dir = FROZEN_FIXTURE_ROOT / site_name
+    manifest = load_fixture_manifest(site_name)
+    entry_url = fixture_entry_url(serve_fixture_site(site_dir), manifest)
+    output_path = LOCAL_HTTP_TEST_DIR / "github-wiki-entry.md"
+    pages = manifest["pages"]
+
+    try:
+        args = dsb.parse_args(
+            [
+                "build",
+                "-u",
+                entry_url,
+                "-I",
+                "single-page",
+                "-o",
+                str(output_path),
+                "-c",
+                "1",
+                "-J",
+                "-M",
+                "-C",
+            ]
+        )
+
+        result = dsb.run_build(args)
+
+        markdown = output_path.read_text(encoding="utf-8")
+    finally:
+        shutil.rmtree(LOCAL_HTTP_TEST_DIR, ignore_errors=True)
+
+    assert result == 0
+    assert pages
+    for page in pages:
+        original_url = str(page["original_url"])
+        parsed_url = dsb.urlparse(original_url)
+        assert parsed_url.netloc == "github.com"
+        assert parsed_url.path.startswith("/Netflix/Hystrix/wiki")
+    assert "Hystrix" in markdown
+
+
+def test_local_http_sitemap_fixture_build_respects_include_and_exclude(
+    serve_fixture_site: Callable[[dsb.Path], str],
+) -> None:
+    shutil.rmtree(LOCAL_HTTP_TEST_DIR, ignore_errors=True)
+    site_dir = FROZEN_FIXTURE_ROOT / SYNTHETIC_SITEMAP_SITE
+    manifest = load_fixture_manifest(SYNTHETIC_SITEMAP_SITE)
+    entry_url = fixture_entry_url(serve_fixture_site(site_dir), manifest)
+    output_path = LOCAL_HTTP_TEST_DIR / "sitemap.md"
+
+    try:
+        args = dsb.parse_args(
+            [
+                "build",
+                "-u",
+                entry_url,
+                "-I",
+                "sitemap",
+                "-o",
+                str(output_path),
+                "-i",
+                "/docs/",
+                "-x",
+                "skip",
+                "-c",
+                "1",
+                "-J",
+            ]
+        )
+
+        result = dsb.run_build(args)
+
+        markdown = output_path.read_text(encoding="utf-8")
+        output_manifest = json.loads((output_path.parent / "manifest.json").read_text(encoding="utf-8"))
+    finally:
+        shutil.rmtree(LOCAL_HTTP_TEST_DIR, ignore_errors=True)
+
+    assert result == 0
+    assert output_manifest["input_format"] == "sitemap"
+    assert output_manifest["page_count"] == MIN_LOCAL_SITEMAP_PAGES
+    assert "Keep Page" in markdown
+    assert "Other Page" in markdown
+    assert "Skip Page" not in markdown
+    assert all("skip" not in str(url) for url in output_manifest["discovered_urls"])
+
+
+def test_local_http_url_file_exact_combines_frozen_pages_in_file_order(
+    serve_fixture_site: Callable[[dsb.Path], str],
+) -> None:
+    shutil.rmtree(LOCAL_HTTP_TEST_DIR, ignore_errors=True)
+    first_site = "single-page__developers-openai-com__api-docs-guides-prompt-guidance"
+    second_site = "single-page__docs-anthropic-com__en-docs-build-with-claude-prompt-engineering-use-xml-tags"
+    first_url = fixture_entry_url(
+        serve_fixture_site(FROZEN_FIXTURE_ROOT / first_site),
+        load_fixture_manifest(first_site),
+    )
+    second_url = fixture_entry_url(
+        serve_fixture_site(FROZEN_FIXTURE_ROOT / second_site),
+        load_fixture_manifest(second_site),
+    )
+    url_file = LOCAL_HTTP_TEST_DIR / "exact-urls.txt"
+    output_path = LOCAL_HTTP_TEST_DIR / "exact.md"
+    url_file.parent.mkdir(parents=True, exist_ok=True)
+    url_file.write_text(f"{second_url}\n{first_url}\n", encoding="utf-8")
+
+    try:
+        args = dsb.parse_args(
+            [
+                "build",
+                "-F",
+                str(url_file),
+                "-U",
+                "exact",
+                "-o",
+                str(output_path),
+                "-c",
+                "1",
+                "-J",
+            ]
+        )
+
+        result = dsb.run_build(args)
+
+        markdown = output_path.read_text(encoding="utf-8")
+        output_manifest = json.loads((output_path.parent / "manifest.json").read_text(encoding="utf-8"))
+    finally:
+        shutil.rmtree(LOCAL_HTTP_TEST_DIR, ignore_errors=True)
+
+    assert result == 0
+    assert output_manifest["url_file_mode"] == "exact"
+    assert output_manifest["seed_urls"] == [second_url, first_url]
+    assert output_manifest["discovered_urls"] == [second_url, first_url]
+    assert markdown.index(second_url) < markdown.index(first_url)
+    assert "Prompt guidance" in markdown
+
+
+def test_local_http_url_file_expand_writes_one_output_for_frozen_seed(
+    serve_fixture_site: Callable[[dsb.Path], str],
+) -> None:
+    shutil.rmtree(LOCAL_HTTP_TEST_DIR, ignore_errors=True)
+    site_name = "docs-site__developers-openai-com__api-docs-guides"
+    entry_url = fixture_entry_url(
+        serve_fixture_site(FROZEN_FIXTURE_ROOT / site_name),
+        load_fixture_manifest(site_name),
+    )
+    url_file = LOCAL_HTTP_TEST_DIR / "expand-urls.txt"
+    output_dir = LOCAL_HTTP_TEST_DIR / "expanded"
+    url_file.parent.mkdir(parents=True, exist_ok=True)
+    url_file.write_text(f"{entry_url}\n", encoding="utf-8")
+
+    try:
+        args = dsb.parse_args(
+            [
+                "build",
+                "-F",
+                str(url_file),
+                "-U",
+                "expand",
+                "-I",
+                "docs-site",
+                "-o",
+                str(output_dir),
+                "-m",
+                "3",
+                "-c",
+                "1",
+                "-J",
+            ]
+        )
+
+        result = dsb.run_build(args)
+
+        markdown_outputs = sorted(output_dir.glob("*.md"))
+        manifest_outputs = sorted(output_dir.glob("*-manifest.json"))
+        candidate_outputs = sorted(output_dir.glob("*-candidate-urls.txt"))
+        markdown = markdown_outputs[0].read_text(encoding="utf-8")
+        output_manifest = json.loads(manifest_outputs[0].read_text(encoding="utf-8"))
+    finally:
+        shutil.rmtree(LOCAL_HTTP_TEST_DIR, ignore_errors=True)
+
+    assert result == 0
+    assert len(markdown_outputs) == 1
+    assert len(manifest_outputs) == 1
+    assert len(candidate_outputs) == 1
+    assert output_manifest["url_file_mode"] == "expand"
+    assert output_manifest["batch_seed_url"] == entry_url
+    assert output_manifest["page_count"] >= MIN_LOCAL_DOCS_SITE_PAGES
+    assert "Text generation" in markdown
+
+
+def test_frozen_fixture_size_guard_warns_only() -> None:
+    fixture_files = [path for path in FROZEN_FIXTURE_ROOT.rglob("*") if path.is_file()]
+    total_bytes = sum(path.stat().st_size for path in fixture_files)
+    largest_group: tuple[str, int] = ("", 0)
+
+    for site_dir in FROZEN_FIXTURE_ROOT.iterdir():
+        if not site_dir.is_dir():
+            continue
+        group_bytes = sum(path.stat().st_size for path in site_dir.rglob("*") if path.is_file())
+        if group_bytes > largest_group[1]:
+            largest_group = (site_dir.name, group_bytes)
+
+    total_mb = total_bytes / 1024 / 1024
+    largest_group_mb = largest_group[1] / 1024 / 1024
+
+    if total_mb > FIXTURE_TOTAL_WARN_MB:
+        warnings.warn(
+            f"Frozen fixtures are {total_mb:.2f} MB, above warning threshold {FIXTURE_TOTAL_WARN_MB} MB.",
+            stacklevel=2,
+        )
+    if largest_group_mb > FIXTURE_GROUP_WARN_MB:
+        warnings.warn(
+            f"Largest fixture group {largest_group[0]} is {largest_group_mb:.2f} MB, "
+            f"above warning threshold {FIXTURE_GROUP_WARN_MB} MB.",
+            stacklevel=2,
+        )
+
+    assert fixture_files
+    assert total_mb > 0
 
 
 def test_write_output_file_markdown_json_and_pdf() -> None:

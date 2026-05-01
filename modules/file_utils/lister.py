@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import locale
+
 try:
     import curses  # type: ignore
 except Exception:  # On Windows without windows-curses
     curses = None  # type: ignore
+import shutil
 import subprocess
 import sys
 import threading
@@ -28,11 +31,13 @@ from .filter_stack import FilterStack, FilterCriterion, FilterMode, FilterType
 
 try:
     from cross_platform.clipboard_utils import set_clipboard
+
     CLIPBOARD_AVAILABLE = True
 except ImportError:
     CLIPBOARD_AVAILABLE = False
 
 import re
+
 
 @dataclass
 class Entry:
@@ -60,11 +65,13 @@ class Entry:
         """Check if folder size has been calculated."""
         return self.calculated_size is not None
 
+
 def _safe_timestamp(dt) -> float:
     try:
         return dt.timestamp()
     except (OSError, OverflowError, ValueError):
         return 0.0
+
 
 SORT_FUNCS: Dict[str, Callable[[Entry], object]] = {
     "created": lambda entry: _safe_timestamp(entry.created),
@@ -75,9 +82,68 @@ SORT_FUNCS: Dict[str, Callable[[Entry], object]] = {
 }
 
 DATE_FIELDS = {"created", "modified", "accessed"}
+TEXT_PREVIEW_MAX_BYTES = 128 * 1024
+TEXT_PREVIEW_MAX_LINES = 400
 
 # Alias for backward compatibility (uses cross_platform.size_utils)
 human_size = format_bytes_binary
+
+
+def _looks_like_text(data: bytes) -> bool:
+    """Return True when a byte sample appears to be text rather than binary."""
+    if not data:
+        return True
+    if b"\x00" in data:
+        return False
+
+    allowed_controls = {7, 8, 9, 10, 12, 13, 27}
+    control_count = sum(1 for byte in data if byte < 32 and byte not in allowed_controls)
+    return (control_count / len(data)) < 0.30
+
+
+def is_text_file(path: Path, *, sample_size: int = 4096) -> bool:
+    """Best-effort text detection for preview/open actions."""
+    if not path.is_file():
+        return False
+    try:
+        with path.open("rb") as fh:
+            sample = fh.read(sample_size)
+    except OSError:
+        return False
+    return _looks_like_text(sample)
+
+
+def read_text_preview(
+    path: Path,
+    *,
+    max_bytes: int = TEXT_PREVIEW_MAX_BYTES,
+    max_lines: int = TEXT_PREVIEW_MAX_LINES,
+) -> Tuple[List[str], bool]:
+    """Read a bounded text preview and return (lines, truncated)."""
+    with path.open("rb") as fh:
+        data = fh.read(max_bytes + 1)
+
+    truncated = len(data) > max_bytes
+    data = data[:max_bytes]
+    if not _looks_like_text(data):
+        raise UnicodeDecodeError("binary", data, 0, 1, "file appears to be binary")
+
+    encodings = ["utf-8-sig", locale.getpreferredencoding(False), "utf-16", "cp1252"]
+    text = None
+    for encoding in dict.fromkeys(encodings):
+        try:
+            text = data.decode(encoding)
+            break
+        except (LookupError, UnicodeDecodeError):
+            continue
+    if text is None:
+        text = data.decode("utf-8", errors="replace")
+
+    lines = text.splitlines()
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        truncated = True
+    return lines, truncated
 
 
 @dataclass
@@ -87,6 +153,7 @@ class SearchFilter:
 
     All criteria are applied with AND logic (file must match all active filters).
     """
+
     extensions: Optional[List[str]] = None  # List of extensions (OR logic within)
     min_size: Optional[int] = None  # Minimum size in bytes
     max_size: Optional[int] = None  # Maximum size in bytes
@@ -98,8 +165,7 @@ class SearchFilter:
         """Check if entry matches all active filter criteria."""
         # Extension filter (only for files)
         if self.extensions and not entry.is_dir:
-            if not any(matches_ext(entry.path, ext, case_sensitive=self.case_sensitive)
-                      for ext in self.extensions):
+            if not any(matches_ext(entry.path, ext, case_sensitive=self.case_sensitive) for ext in self.extensions):
                 return False
 
         # Size filters (only for files)
@@ -148,27 +214,27 @@ class SearchFilter:
         return " AND ".join(parts) if parts else "No filters"
 
     @classmethod
-    def from_args(cls, args: argparse.Namespace) -> 'SearchFilter':
+    def from_args(cls, args: argparse.Namespace) -> "SearchFilter":
         """Create SearchFilter from CLI arguments."""
         # Parse extensions (support pipe-separated list)
         extensions = None
-        ext_arg = getattr(args, 'extension', None) or getattr(args, 'type', None)
+        ext_arg = getattr(args, "extension", None) or getattr(args, "type", None)
         if ext_arg:
             # Split by pipe and normalize
-            extensions = [e.strip().lstrip('*').lstrip('.') for e in ext_arg.split('|')]
+            extensions = [e.strip().lstrip("*").lstrip(".") for e in ext_arg.split("|")]
             extensions = [e for e in extensions if e]  # Remove empty strings
 
         # Parse size filters
         min_size = None
         max_size = None
-        if getattr(args, 'min_size', None):
+        if getattr(args, "min_size", None):
             try:
                 min_size = parse_size_to_bytes(args.min_size)
             except ValueError as e:
                 sys.stderr.write(f"Invalid --min-size: {e}\n")
                 sys.exit(1)
 
-        if getattr(args, 'max_size', None):
+        if getattr(args, "max_size", None):
             try:
                 max_size = parse_size_to_bytes(args.max_size)
             except ValueError as e:
@@ -177,22 +243,24 @@ class SearchFilter:
 
         # Validate size range
         if min_size is not None and max_size is not None and min_size > max_size:
-            sys.stderr.write(f"Error: --min-size ({format_bytes_binary(min_size)}) "
-                           f"cannot be greater than --max-size ({format_bytes_binary(max_size)})\n")
+            sys.stderr.write(
+                f"Error: --min-size ({format_bytes_binary(min_size)}) "
+                f"cannot be greater than --max-size ({format_bytes_binary(max_size)})\n"
+            )
             sys.exit(1)
 
         # Parse name filters
-        name_pattern = getattr(args, 'name', None)
+        name_pattern = getattr(args, "name", None)
         name_regex = None
-        if getattr(args, 'name_regex', None):
+        if getattr(args, "name_regex", None):
             try:
-                flags = 0 if getattr(args, 'case_sensitive', False) else re.IGNORECASE
+                flags = 0 if getattr(args, "case_sensitive", False) else re.IGNORECASE
                 name_regex = re.compile(args.name_regex, flags)
             except re.error as e:
                 sys.stderr.write(f"Invalid --name-regex: {e}\n")
                 sys.exit(1)
 
-        case_sensitive = getattr(args, 'case_sensitive', False)
+        case_sensitive = getattr(args, "case_sensitive", False)
 
         return cls(
             extensions=extensions,
@@ -206,12 +274,13 @@ class SearchFilter:
     def has_filters(self) -> bool:
         """Check if any filters are active."""
         return bool(
-            self.extensions or
-            self.min_size is not None or
-            self.max_size is not None or
-            self.name_pattern or
-            self.name_regex
+            self.extensions
+            or self.min_size is not None
+            or self.max_size is not None
+            or self.name_pattern
+            or self.name_regex
         )
+
 
 def calculate_folder_size(path: Path) -> Tuple[int, int]:
     """Calculate total size and item count for a folder recursively.
@@ -220,7 +289,7 @@ def calculate_folder_size(path: Path) -> Tuple[int, int]:
     item_count = 0
 
     try:
-        for item in path.rglob('*'):
+        for item in path.rglob("*"):
             try:
                 if item.is_file():
                     total_size += item.stat().st_size
@@ -234,6 +303,7 @@ def calculate_folder_size(path: Path) -> Tuple[int, int]:
 
     return total_size, item_count
 
+
 def matches_extension(path: Path, extension: Optional[str]) -> bool:
     """
     Check if file matches the extension filter.
@@ -242,8 +312,9 @@ def matches_extension(path: Path, extension: Optional[str]) -> bool:
     if not extension:
         return True
     # Normalize extension (remove leading *. or .)
-    ext = extension.lstrip('*').lstrip('.')
+    ext = extension.lstrip("*").lstrip(".")
     return matches_ext(path, ext, case_sensitive=False)
+
 
 def collapse_intermediate_paths(entries: List[Entry], search_root: Path) -> List[Entry]:
     """
@@ -266,9 +337,6 @@ def collapse_intermediate_paths(entries: List[Entry], search_root: Path) -> List
     """
     if not entries:
         return entries
-
-    # Build a map of path -> entry for quick lookup
-    path_to_entry = {e.path: e for e in entries}
 
     # For each entry, build a collapsed path
     for entry in entries:
@@ -296,10 +364,7 @@ def collapse_intermediate_paths(entries: List[Entry], search_root: Path) -> List
                 # 1. In our entries list (matching files)
                 # 2. Parent of something in our entries list
                 children_count = sum(
-                    1 for e in entries
-                    if e.path.parent == parent or (
-                        e.path != parent and parent in e.path.parents
-                    )
+                    1 for e in entries if e.path.parent == parent or (e.path != parent and parent in e.path.parents)
                 )
 
                 # If this parent has multiple children, it's significant
@@ -342,13 +407,14 @@ def collapse_intermediate_paths(entries: List[Entry], search_root: Path) -> List
 
     return entries
 
+
 def read_entries_recursive(
     target: Path,
     max_depth: int,
     parent_path: Path = None,
     search_filter: Optional[SearchFilter] = None,
     stats: Optional[SearchStats] = None,
-    progress_callback: Optional[Callable[[SearchStats], None]] = None
+    progress_callback: Optional[Callable[[SearchStats], None]] = None,
 ) -> List[Entry]:
     """
     Recursively read directory entries with optional filtering.
@@ -451,7 +517,10 @@ def read_entries_recursive(
 
     return entries
 
-def format_entry_line(entry: Entry, sort_field: str, width: int, show_date: bool = True, show_time: bool = True, scroll_offset: int = 0) -> str:
+
+def format_entry_line(
+    entry: Entry, sort_field: str, width: int, show_date: bool = True, show_time: bool = True, scroll_offset: int = 0
+) -> str:
     time_source = entry.created
     if sort_field in DATE_FIELDS:
         time_source = getattr(entry, sort_field)
@@ -508,10 +577,10 @@ def format_entry_line(entry: Entry, sort_field: str, width: int, show_date: bool
         actual_offset = min(scroll_offset, max_scroll)
         scrolled_name = name[actual_offset:]
         if len(scrolled_name) > name_space:
-            scrolled_name = scrolled_name[:name_space - 3] + "..."
+            scrolled_name = scrolled_name[: name_space - 3] + "..."
         name = scrolled_name.ljust(name_space)
     elif len(name) > name_space:
-        name = name[:name_space - 3] + "..." if name_space > 3 else name[:name_space]
+        name = name[: name_space - 3] + "..." if name_space > 3 else name[:name_space]
     else:
         name = name.ljust(name_space)
 
@@ -523,8 +592,10 @@ def format_entry_line(entry: Entry, sort_field: str, width: int, show_date: bool
 
     return line
 
+
 def filter_entry(entry: Entry, pattern: str) -> bool:
     return fnmatch(entry.name, pattern)
+
 
 def detail_formatter(entry: Entry) -> List[str]:
     """Format detailed information about a file/directory entry."""
@@ -537,11 +608,75 @@ def detail_formatter(entry: Entry) -> List[str]:
     lines.append(f"Modified: {entry.modified.strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append(f"Accessed: {entry.accessed.strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append(f"Depth: {entry.depth}")
+
+    if not entry.is_dir and is_text_file(entry.path):
+        lines.append("")
+        lines.append("Text preview:")
+        try:
+            preview_lines, truncated = read_text_preview(entry.path)
+        except (OSError, UnicodeDecodeError) as exc:
+            lines.append(f"  Unable to read text preview: {exc}")
+        else:
+            if preview_lines:
+                lines.extend(preview_lines)
+            else:
+                lines.append("  <empty file>")
+            if truncated:
+                lines.append("")
+                lines.append(
+                    f"  <preview truncated at {human_size(TEXT_PREVIEW_MAX_BYTES)} "
+                    f"or {TEXT_PREVIEW_MAX_LINES} lines>"
+                )
     return lines
+
 
 def size_extractor(entry: Entry) -> int:
     """Extract size from an entry for color gradient calculation."""
     return entry.size
+
+
+def _text_file_entries(entries: List[Entry]) -> List[Entry]:
+    """Return unique text-file entries, preserving selection order."""
+    text_entries = []
+    seen = set()
+    for entry in entries:
+        if entry.path in seen:
+            continue
+        if not entry.is_dir and is_text_file(entry.path):
+            text_entries.append(entry)
+            seen.add(entry.path)
+    return text_entries
+
+
+def open_entries_in_nvim(entries: List[Entry]) -> bool:
+    """Open one or more text files in nvim tabs. Returns True if launched."""
+    text_entries = _text_file_entries(entries)
+    if not text_entries:
+        return False
+
+    nvim = shutil.which("nvim")
+    if not nvim:
+        sys.stderr.write("nvim was not found on PATH\n")
+        return True
+
+    command = [nvim]
+    if len(text_entries) > 1:
+        command.append("-p")
+    command.extend(str(entry.path) for entry in text_entries)
+
+    try:
+        if curses:
+            curses.endwin()
+        subprocess.run(command, check=False)
+        if curses:
+            try:
+                curses.doupdate()
+            except curses.error:
+                pass
+    except OSError as exc:
+        sys.stderr.write(f"Failed to open nvim: {exc}\n")
+    return True
+
 
 class FileTypeColorManager:
     """Manages file type to color mappings."""
@@ -580,7 +715,7 @@ class FileTypeColorManager:
                 return
 
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, "r") as f:
                 self.config = json.load(f)
         except Exception as e:
             sys.stderr.write(f"Failed to load color config from {config_path}: {e}\n")
@@ -598,6 +733,7 @@ class FileTypeColorManager:
 
         return self.COLOR_MAP.get(color_name, 1)  # Default to white
 
+
 class ListerManager:
     """Manages the state and actions for the interactive file lister."""
 
@@ -611,7 +747,9 @@ class ListerManager:
         # Cache for size calculations to avoid duplicate work across sessions
         self._size_lock = threading.Lock()
 
-    def get_visible_entries(self, sort_func: Optional[Callable[[Entry], object]] = None, descending: bool = True, dirs_first: bool = True) -> List[Entry]:
+    def get_visible_entries(
+        self, sort_func: Optional[Callable[[Entry], object]] = None, descending: bool = True, dirs_first: bool = True
+    ) -> List[Entry]:
         """Get the list of currently visible entries in hierarchical order.
 
         Returns entries sorted hierarchically: parent, then its children, then next parent.
@@ -643,8 +781,11 @@ class ListerManager:
                     add_entry_and_children(child)
 
         # Get top-level entries (those with no parent or parent not in our list)
-        top_level = [e for e in self.all_entries if e.parent_path is None or
-                     not any(p.path == e.parent_path for p in self.all_entries)]
+        top_level = [
+            e
+            for e in self.all_entries
+            if e.parent_path is None or not any(p.path == e.parent_path for p in self.all_entries)
+        ]
 
         # Sort top-level entries
         if sort_func:
@@ -802,6 +943,7 @@ class ListerManager:
             if self.filter_stack.move_down(self.filter_stack.selected_index):
                 self.filter_stack.selected_index += 1
 
+
 def create_filter_dialog(stdscr, mode: FilterMode) -> Optional[FilterCriterion]:
     """
     Show a dialog to create a new filter.
@@ -819,7 +961,7 @@ def create_filter_dialog(stdscr, mode: FilterMode) -> Optional[FilterCriterion]:
     # Save current cursor visibility
     try:
         old_cursor = curses.curs_set(1)
-    except:
+    except curses.error:
         old_cursor = 0
 
     h, w = stdscr.getmaxyx()
@@ -861,7 +1003,7 @@ def create_filter_dialog(stdscr, mode: FilterMode) -> Optional[FilterCriterion]:
             curses.curs_set(old_cursor)
             return None
 
-        if key in (ord('1'), ord('2'), ord('3'), ord('4')):
+        if key in (ord("1"), ord("2"), ord("3"), ord("4")):
             choice = int(chr(key))
             break
 
@@ -877,16 +1019,13 @@ def create_filter_dialog(stdscr, mode: FilterMode) -> Optional[FilterCriterion]:
         dialog.refresh()
 
         curses.echo()
-        ext_input = dialog.getstr(4, 2, 50).decode('utf-8').strip()
+        ext_input = dialog.getstr(4, 2, 50).decode("utf-8").strip()
         curses.noecho()
 
         if ext_input:
-            extensions = [e.strip().lstrip('.') for e in ext_input.split('|')]
+            extensions = [e.strip().lstrip(".") for e in ext_input.split("|")]
             criterion = FilterCriterion(
-                filter_type=FilterType.EXTENSION,
-                mode=mode,
-                extensions=extensions,
-                description=f"ext={ext_input}"
+                filter_type=FilterType.EXTENSION, mode=mode, extensions=extensions, description=f"ext={ext_input}"
             )
 
     elif choice == 2:  # Size range
@@ -898,13 +1037,13 @@ def create_filter_dialog(stdscr, mode: FilterMode) -> Optional[FilterCriterion]:
         dialog.refresh()
 
         curses.echo()
-        min_input = dialog.getstr(4, 2, 20).decode('utf-8').strip()
+        min_input = dialog.getstr(4, 2, 20).decode("utf-8").strip()
 
         dialog.addstr(6, 2, "Max size (e.g., '100M', '1G', or blank):")
         dialog.addstr(8, 2, "")
         dialog.refresh()
 
-        max_input = dialog.getstr(8, 2, 20).decode('utf-8').strip()
+        max_input = dialog.getstr(8, 2, 20).decode("utf-8").strip()
         curses.noecho()
 
         min_size = parse_size_to_bytes(min_input) if min_input else None
@@ -922,7 +1061,7 @@ def create_filter_dialog(stdscr, mode: FilterMode) -> Optional[FilterCriterion]:
                 mode=mode,
                 min_size=min_size,
                 max_size=max_size,
-                description=" AND ".join(desc_parts)
+                description=" AND ".join(desc_parts),
             )
 
     elif choice == 3:  # Name glob
@@ -934,7 +1073,7 @@ def create_filter_dialog(stdscr, mode: FilterMode) -> Optional[FilterCriterion]:
         dialog.refresh()
 
         curses.echo()
-        pattern_input = dialog.getstr(4, 2, 50).decode('utf-8').strip()
+        pattern_input = dialog.getstr(4, 2, 50).decode("utf-8").strip()
         curses.noecho()
 
         if pattern_input:
@@ -942,7 +1081,7 @@ def create_filter_dialog(stdscr, mode: FilterMode) -> Optional[FilterCriterion]:
                 filter_type=FilterType.NAME_GLOB,
                 mode=mode,
                 name_pattern=pattern_input,
-                description=f"name={pattern_input}"
+                description=f"name={pattern_input}",
             )
 
     elif choice == 4:  # Name regex
@@ -954,7 +1093,7 @@ def create_filter_dialog(stdscr, mode: FilterMode) -> Optional[FilterCriterion]:
         dialog.refresh()
 
         curses.echo()
-        regex_input = dialog.getstr(4, 2, 50).decode('utf-8').strip()
+        regex_input = dialog.getstr(4, 2, 50).decode("utf-8").strip()
         curses.noecho()
 
         if regex_input:
@@ -964,7 +1103,7 @@ def create_filter_dialog(stdscr, mode: FilterMode) -> Optional[FilterCriterion]:
                     filter_type=FilterType.NAME_REGEX,
                     mode=mode,
                     name_regex=regex_pattern,
-                    description=f"regex={regex_input}"
+                    description=f"regex={regex_input}",
                 )
             except re.error:
                 # Invalid regex, ignore
@@ -974,6 +1113,7 @@ def create_filter_dialog(stdscr, mode: FilterMode) -> Optional[FilterCriterion]:
     curses.curs_set(old_cursor)
 
     return criterion
+
 
 def run_lister(args: argparse.Namespace) -> int:
     target = Path(args.directory).expanduser()
@@ -987,9 +1127,9 @@ def run_lister(args: argparse.Namespace) -> int:
 
     # Determine depth: max_depth > depth > default
     # Default is 0 (current dir only), unless any filter is set (then 999999)
-    if getattr(args, 'max_depth', None) is not None:
+    if getattr(args, "max_depth", None) is not None:
         depth = args.max_depth
-    elif getattr(args, 'depth', None) is not None:
+    elif getattr(args, "depth", None) is not None:
         depth = args.depth
     elif search_filter.has_filters():
         depth = 999999  # Deep search when filtering
@@ -997,8 +1137,8 @@ def run_lister(args: argparse.Namespace) -> int:
         depth = 0  # Default: current directory only
 
     # Determine path collapse setting
-    collapse_paths = getattr(args, 'collapse_paths', False)
-    if getattr(args, 'no_collapse_paths', False):
+    collapse_paths = getattr(args, "collapse_paths", False)
+    if getattr(args, "no_collapse_paths", False):
         collapse_paths = False
 
     # Create search stats tracker
@@ -1029,11 +1169,7 @@ def run_lister(args: argparse.Namespace) -> int:
 
     # Read entries with progress tracking
     entries = read_entries_recursive(
-        target,
-        depth,
-        search_filter=search_filter,
-        stats=search_stats,
-        progress_callback=progress_callback
+        target, depth, search_filter=search_filter, stats=search_stats, progress_callback=progress_callback
     )
 
     # Clear progress line and show final stats
@@ -1061,7 +1197,6 @@ def run_lister(args: argparse.Namespace) -> int:
     # If JSON output requested, skip TUI
     if getattr(args, "json", False):
         import json
-        from datetime import datetime
 
         # Apply filter if specified
         if args.glob:
@@ -1118,7 +1253,9 @@ def run_lister(args: argparse.Namespace) -> int:
                     manager.toggle_folder(parent)
                     # Update visible entries
                     sort_func = SORT_FUNCS[list_view.state.sort_field]
-                    new_visible = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
+                    new_visible = manager.get_visible_entries(
+                        sort_func, list_view.state.descending, list_view.state.dirs_first
+                    )
                     list_view.state.items = new_visible
                     list_view.state.visible = new_visible
 
@@ -1143,10 +1280,13 @@ def run_lister(args: argparse.Namespace) -> int:
                 manager.toggle_folder(item)
                 # Update the items list to reflect expansion (with hierarchical sorting)
                 sort_func = SORT_FUNCS[list_view.state.sort_field]
-                list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
+                list_view.state.items = manager.get_visible_entries(
+                    sort_func, list_view.state.descending, list_view.state.dirs_first
+                )
 
                 # Calculate size for this folder if not already calculated
                 if not item.has_calculated_size() and not item.size_calculating:
+
                     def calc_single():
                         item.size_calculating = True
                         try:
@@ -1164,28 +1304,40 @@ def run_lister(args: argparse.Namespace) -> int:
             return False, False  # Not handled, let default detail view happen
 
         # 'r' key - calculate size for selected folder only
-        elif key == ord('r'):
+        elif key == ord("r"):
             if item.is_dir and not item.size_calculating:
+
                 def calc_one():
                     manager.calculate_entry_size(item)
+
                 threading.Thread(target=calc_one, daemon=True).start()
                 return True, False
             return False, False
 
-        # Ctrl+Enter (key code 10 with Ctrl modifier, or we use 'o' as alternative)
-        # Using 'o' for "open in new window" since Ctrl+Enter is hard to detect
-        elif key == ord('o'):
-            if item.is_dir:
+        # 'o' opens selected text files in nvim tabs. Directories keep the
+        # existing behavior of opening a lister in a new terminal.
+        elif key == ord("o"):
+            selected_items = []
+            try:
+                selected_items = list_view.get_selected_items()
+            except Exception:
+                selected_items = []
+            open_targets = selected_items or [item]
+
+            if open_entries_in_nvim(open_targets):
+                return True, False
+
+            if item.is_dir and not selected_items:
                 # Open folder in new terminal window
                 try:
-                    if sys.platform == 'win32':
+                    if sys.platform == "win32":
                         # Windows - open new cmd window with file-util
-                        subprocess.Popen(['start', 'cmd', '/k', 'file-util', 'ls', str(item.path)], shell=True)
+                        subprocess.Popen(["start", "cmd", "/k", "file-util", "ls", str(item.path)], shell=True)
                     else:
                         # Linux/Mac - try various terminal emulators
-                        for term in ['x-terminal-emulator', 'gnome-terminal', 'xterm']:
+                        for term in ["x-terminal-emulator", "gnome-terminal", "xterm"]:
                             try:
-                                subprocess.Popen([term, '-e', f'file-util ls {item.path}'])
+                                subprocess.Popen([term, "-e", f"file-util ls {item.path}"])
                                 break
                             except FileNotFoundError:
                                 continue
@@ -1195,17 +1347,19 @@ def run_lister(args: argparse.Namespace) -> int:
             return False, False
 
         # 'e' key - expand all at current depth
-        elif key == ord('e'):
+        elif key == ord("e"):
             # Find the depth of the current item
             current_depth = item.depth
             manager.expand_all_at_depth(current_depth)
             # Update the items list (with hierarchical sorting)
             sort_func = SORT_FUNCS[list_view.state.sort_field]
-            list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
+            list_view.state.items = manager.get_visible_entries(
+                sort_func, list_view.state.descending, list_view.state.dirs_first
+            )
             return True, True  # Handled, refresh to update state.visible
 
         # 'y' key - copy path to clipboard (vim-style "yank")
-        elif key == ord('y'):
+        elif key == ord("y"):
             if CLIPBOARD_AVAILABLE:
                 try:
                     full_path = str(item.path.resolve())
@@ -1218,17 +1372,19 @@ def run_lister(args: argparse.Namespace) -> int:
             return True, False  # Handled, no refresh needed
 
         # 'U' key - collapse all expanded folders
-        elif key == ord('U'):
+        elif key == ord("U"):
             manager.collapse_all()
             sort_func = SORT_FUNCS[list_view.state.sort_field]
-            list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
+            list_view.state.items = manager.get_visible_entries(
+                sort_func, list_view.state.descending, list_view.state.dirs_first
+            )
             # Reset scroll to top after collapsing
             list_view.state.selected_index = 0
             list_view.state.top_index = 0
             return True, True
 
         # 'S' key - calculate folder sizes
-        elif key == ord('S'):
+        elif key == ord("S"):
             if list_view.state.calculating_sizes:
                 # Already calculating
                 return True, False
@@ -1269,7 +1425,7 @@ def run_lister(args: argparse.Namespace) -> int:
             return True, False  # Handled, no refresh needed (progress updates will trigger redraws)
 
         # 'A' key - calculate sizes for currently visible directories only
-        elif key == ord('A'):
+        elif key == ord("A"):
             if list_view.state.calculating_sizes:
                 return True, False
 
@@ -1289,14 +1445,14 @@ def run_lister(args: argparse.Namespace) -> int:
             return True, False
 
         # Handle sort key changes (c/m/a/s/n) with hierarchical sorting
-        elif key in (ord('c'), ord('m'), ord('a'), ord('s'), ord('n')):
+        elif key in (ord("c"), ord("m"), ord("a"), ord("s"), ord("n")):
             # Map key to sort field
             sort_key_map = {
-                ord('c'): 'created',
-                ord('m'): 'modified',
-                ord('a'): 'accessed',
-                ord('s'): 'size',
-                ord('n'): 'name',
+                ord("c"): "created",
+                ord("m"): "modified",
+                ord("a"): "accessed",
+                ord("s"): "size",
+                ord("n"): "name",
             }
             new_field = sort_key_map.get(key)
             if new_field:
@@ -1309,7 +1465,9 @@ def run_lister(args: argparse.Namespace) -> int:
 
                 # Re-sort hierarchically
                 sort_func = SORT_FUNCS[list_view.state.sort_field]
-                list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
+                list_view.state.items = manager.get_visible_entries(
+                    sort_func, list_view.state.descending, list_view.state.dirs_first
+                )
                 return True, True  # Handled, refresh to update state.visible
 
         # Filter management keybindings
@@ -1319,93 +1477,109 @@ def run_lister(args: argparse.Namespace) -> int:
             return True, False
 
         # 'F' - Add INCLUDE filter (capital F to avoid conflict with 'f' for filter)
-        elif key == ord('F'):
+        elif key == ord("F"):
             if stdscr_ref[0]:
                 criterion = create_filter_dialog(stdscr_ref[0], FilterMode.INCLUDE)
                 if criterion:
                     manager.filter_stack.add_filter(criterion)
                     # Refilter entries
                     sort_func = SORT_FUNCS[list_view.state.sort_field]
-                    list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
+                    list_view.state.items = manager.get_visible_entries(
+                        sort_func, list_view.state.descending, list_view.state.dirs_first
+                    )
                     return True, True
             return True, False
 
         # 'X' - Add EXCLUDE filter
-        elif key == ord('X'):
+        elif key == ord("X"):
             if stdscr_ref[0]:
                 criterion = create_filter_dialog(stdscr_ref[0], FilterMode.EXCLUDE)
                 if criterion:
                     manager.filter_stack.add_filter(criterion)
                     # Refilter entries
                     sort_func = SORT_FUNCS[list_view.state.sort_field]
-                    list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
+                    list_view.state.items = manager.get_visible_entries(
+                        sort_func, list_view.state.descending, list_view.state.dirs_first
+                    )
                     return True, True
             return True, False
 
         # 'T' - Toggle current filter mode (INCLUDE <-> EXCLUDE)
-        elif key == ord('T'):
+        elif key == ord("T"):
             if manager.filter_panel_focused:
                 manager.toggle_current_filter_mode()
                 # Refilter entries
                 sort_func = SORT_FUNCS[list_view.state.sort_field]
-                list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
+                list_view.state.items = manager.get_visible_entries(
+                    sort_func, list_view.state.descending, list_view.state.dirs_first
+                )
                 return True, True
             return False, False
 
         # Space - Toggle current filter enabled/disabled
-        elif key == ord(' '):
+        elif key == ord(" "):
             if manager.filter_panel_focused:
                 manager.toggle_current_filter_enabled()
                 # Refilter entries
                 sort_func = SORT_FUNCS[list_view.state.sort_field]
-                list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
+                list_view.state.items = manager.get_visible_entries(
+                    sort_func, list_view.state.descending, list_view.state.dirs_first
+                )
                 return True, True
             return False, False
 
         # 'D' - Delete current filter (when filter panel focused)
-        elif key == ord('D'):
+        elif key == ord("D"):
             if manager.filter_panel_focused:
                 manager.delete_current_filter()
                 # Refilter entries
                 sort_func = SORT_FUNCS[list_view.state.sort_field]
-                list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
+                list_view.state.items = manager.get_visible_entries(
+                    sort_func, list_view.state.descending, list_view.state.dirs_first
+                )
                 return True, True
             return False, False
 
         # 'C' - Clear all filters
-        elif key == ord('C'):
+        elif key == ord("C"):
             manager.filter_stack.clear()
             # Refilter entries
             sort_func = SORT_FUNCS[list_view.state.sort_field]
-            list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
+            list_view.state.items = manager.get_visible_entries(
+                sort_func, list_view.state.descending, list_view.state.dirs_first
+            )
             return True, True
 
         # '[' or '<' - Move current filter up
-        elif key in (ord('['), ord('<')):
+        elif key in (ord("["), ord("<")):
             if manager.filter_panel_focused:
                 manager.move_current_filter_up()
                 # Refilter entries
                 sort_func = SORT_FUNCS[list_view.state.sort_field]
-                list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
+                list_view.state.items = manager.get_visible_entries(
+                    sort_func, list_view.state.descending, list_view.state.dirs_first
+                )
                 return True, True
             return False, False
 
         # ']' or '>' - Move current filter down
-        elif key in (ord(']'), ord('>')):
+        elif key in (ord("]"), ord(">")):
             if manager.filter_panel_focused:
                 manager.move_current_filter_down()
                 # Refilter entries
                 sort_func = SORT_FUNCS[list_view.state.sort_field]
-                list_view.state.items = manager.get_visible_entries(sort_func, list_view.state.descending, list_view.state.dirs_first)
+                list_view.state.items = manager.get_visible_entries(
+                    sort_func, list_view.state.descending, list_view.state.dirs_first
+                )
                 return True, True
             return False, False
 
         # Up/Down arrows in filter panel
-        elif key in (curses.KEY_UP, ord('k')) and manager.filter_panel_focused:
+        elif key in (curses.KEY_UP, ord("k")) and manager.filter_panel_focused:
             manager.filter_panel_up()
             return True, False
 
-        elif key in (curses.KEY_DOWN, ord('j')) and manager.filter_panel_focused:
+        elif key in (curses.KEY_DOWN, ord("j")) and manager.filter_panel_focused:
             manager.filter_panel_down()
             return True, False
 
@@ -1447,10 +1621,14 @@ def run_lister(args: argparse.Namespace) -> int:
                 parts.append(f"Showing: {visible_count:,} of {total_found:,} files")
             elif visible_count is not None:
                 # No TUI filter, show all found files
-                parts.append(f"Showing: {visible_count:,} files (scanned {total_scanned:,}, {initial_search_stats.match_percentage():.1f}% match)")
+                parts.append(
+                    f"Showing: {visible_count:,} files (scanned {total_scanned:,}, {initial_search_stats.match_percentage():.1f}% match)"
+                )
             else:
                 # Initial state
-                parts.append(f"Found: {total_found:,} of {total_scanned:,} files ({initial_search_stats.match_percentage():.1f}%)")
+                parts.append(
+                    f"Found: {total_found:,} of {total_scanned:,} files ({initial_search_stats.match_percentage():.1f}%)"
+                )
 
         return " │ ".join(parts)
 
@@ -1459,8 +1637,8 @@ def run_lister(args: argparse.Namespace) -> int:
 
     # Build footer with search stats
     footer_lines = [
-        "↑↓/jk/PgUp/Dn │ f:filter x:exclude │ ↵:expand ESC:collapse U:collapse-all ^Q:quit",
-        "Sort c/m/a/n/s │ e:all o:open F:dirs │ d:date t:time │ y:copy r:calc-one A:calc-visible S:calc-all │ ←→",
+        "↑↓/jk/PgUp/Dn │ Space:select │ ↵:expand/details/back │ ESC:collapse U:collapse-all ^Q:quit",
+        "Sort c/m/a/n/s │ o:nvim tabs/open dir │ f/x:filter F:dirs │ d:date t:time │ y:copy r/A/S:calc │ ←→",
     ]
 
     # Add search stats line if filters were used or deep search
@@ -1473,7 +1651,9 @@ def run_lister(args: argparse.Namespace) -> int:
         footer_lines.insert(0, stats_line)
 
     list_view = InteractiveList(
-        items=manager.get_visible_entries(SORT_FUNCS[sort_field], args.order == "desc", not getattr(args, 'no_dirs_first', False)),
+        items=manager.get_visible_entries(
+            SORT_FUNCS[sort_field], args.order == "desc", not getattr(args, "no_dirs_first", False)
+        ),
         sorters=SORT_FUNCS,
         formatter=format_entry_line,
         filter_func=filter_entry,
@@ -1486,8 +1666,10 @@ def run_lister(args: argparse.Namespace) -> int:
         size_extractor=size_extractor,
         enable_color_gradient=True,
         custom_action_handler=action_handler,
-        dirs_first=not getattr(args, 'no_dirs_first', False),
+        dirs_first=not getattr(args, "no_dirs_first", False),
         name_color_getter=file_color_manager.get_color_pair,
+        multi_select=True,
+        item_key_func=lambda entry: str(entry.path),
     )
 
     if args.glob:
@@ -1495,9 +1677,7 @@ def run_lister(args: argparse.Namespace) -> int:
 
     # If curses is unavailable (e.g., Windows without windows-curses), print a plain listing
     if curses is None:
-        sys.stderr.write(
-            "Curses UI not available. On Windows, install windows-curses or use -j for JSON.\n"
-        )
+        sys.stderr.write("Curses UI not available. On Windows, install windows-curses or use -j for JSON.\n")
         width = 120
         # Filter and sort like the TUI would
         sort_field_map = {"c": "created", "m": "modified", "a": "accessed", "s": "size", "n": "name"}
@@ -1510,10 +1690,11 @@ def run_lister(args: argparse.Namespace) -> int:
         return 0
 
     # Start size calculation if requested via CLI
-    if getattr(args, 'calc_sizes', False):
+    if getattr(args, "calc_sizes", False):
         # Trigger calculation after TUI starts
         def start_calc():
             import time
+
             time.sleep(0.1)  # Brief delay to let TUI initialize
             # Simulate pressing 'S' key
             folders = [e for e in manager.all_entries if e.is_dir]
@@ -1551,7 +1732,9 @@ def run_lister(args: argparse.Namespace) -> int:
             width = 120
             # Recompute visible list consistent with current sort/order/dirs_first
             sort_func = SORT_FUNCS[sort_field]
-            visible = manager.get_visible_entries(sort_func, args.order == "desc", not getattr(args, 'no_dirs_first', False))
+            visible = manager.get_visible_entries(
+                sort_func, args.order == "desc", not getattr(args, "no_dirs_first", False)
+            )
             for e in visible:
                 line = format_entry_line(e, sort_field, width, show_date=True, show_time=True, scroll_offset=0)
                 print(line)

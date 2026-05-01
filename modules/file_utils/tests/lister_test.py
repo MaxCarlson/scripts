@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import pytest
@@ -6,6 +5,7 @@ from pathlib import Path
 from datetime import datetime
 
 from file_utils import lister
+
 
 @pytest.fixture
 def temp_dir_structure(tmp_path: Path) -> Path:
@@ -20,12 +20,14 @@ def temp_dir_structure(tmp_path: Path) -> Path:
     (deep_dir / "file3.txt").touch()
     return tmp_path
 
+
 def test_read_entries_recursive_depth_0(temp_dir_structure: Path):
     entries = lister.read_entries_recursive(temp_dir_structure, max_depth=0)
     names = sorted([e.name for e in entries])
     assert names == ["empty_dir", "file1.txt", "sub_dir"]
     for entry in entries:
         assert entry.depth == 0
+
 
 def test_read_entries_recursive_depth_1(temp_dir_structure: Path):
     entries = lister.read_entries_recursive(temp_dir_structure, max_depth=1)
@@ -38,12 +40,13 @@ def test_read_entries_recursive_depth_1(temp_dir_structure: Path):
         "sub_dir/file2.txt",
     ]
     assert paths == expected_paths
-    
+
     sub_dir_entry = next(e for e in entries if e.name == "sub_dir")
     assert sub_dir_entry.depth == 0
-    
+
     file2_entry = next(e for e in entries if e.name == "file2.txt")
     assert file2_entry.depth == 1
+
 
 def test_read_entries_recursive_full_depth(temp_dir_structure: Path):
     # A large max_depth should walk the entire tree
@@ -58,9 +61,10 @@ def test_read_entries_recursive_full_depth(temp_dir_structure: Path):
         "sub_dir/file2.txt",
     ]
     assert paths == expected_paths
-    
+
     file3_entry = next(e for e in entries if e.name == "file3.txt")
     assert file3_entry.depth == 2
+
 
 def test_format_entry_line_no_indent():
     now = datetime.now()
@@ -80,6 +84,59 @@ def test_format_entry_line_no_indent():
     assert not formatted_line.lstrip().startswith("  ")
     assert "1.00 KiB" in formatted_line  # Binary units (KiB, not KB)
 
+
+def test_is_text_file_rejects_binary(tmp_path: Path):
+    text_file = tmp_path / "notes.txt"
+    binary_file = tmp_path / "image.bin"
+    text_file.write_text("hello\nworld\n", encoding="utf-8")
+    binary_file.write_bytes(b"\x00\x01\x02binary")
+
+    assert lister.is_text_file(text_file)
+    assert not lister.is_text_file(binary_file)
+
+
+def test_detail_formatter_includes_text_preview(tmp_path: Path):
+    path = tmp_path / "notes.txt"
+    path.write_text("line one\nline two\n", encoding="utf-8")
+    stat = path.stat()
+    entry = lister.Entry(
+        path=path,
+        name=path.name,
+        is_dir=False,
+        size=stat.st_size,
+        created=datetime.fromtimestamp(stat.st_ctime),
+        modified=datetime.fromtimestamp(stat.st_mtime),
+        accessed=datetime.fromtimestamp(stat.st_atime),
+        depth=0,
+    )
+
+    details = lister.detail_formatter(entry)
+
+    assert "Text preview:" in details
+    assert "line one" in details
+    assert "line two" in details
+
+
+def test_open_entries_in_nvim_uses_tabs_for_multiple_text_files(monkeypatch, tmp_path: Path):
+    first = tmp_path / "one.txt"
+    second = tmp_path / "two.txt"
+    first.write_text("one", encoding="utf-8")
+    second.write_text("two", encoding="utf-8")
+    now = datetime.now()
+    entries = [
+        lister.Entry(first, first.name, False, 3, now, now, now, 0),
+        lister.Entry(second, second.name, False, 3, now, now, now, 0),
+    ]
+    commands = []
+
+    monkeypatch.setattr(lister.shutil, "which", lambda name: "nvim" if name == "nvim" else None)
+    monkeypatch.setattr(lister.subprocess, "run", lambda command, check=False: commands.append(command))
+    monkeypatch.setattr(lister, "curses", None)
+
+    assert lister.open_entries_in_nvim(entries)
+    assert commands == [["nvim", "-p", str(first), str(second)]]
+
+
 def test_format_entry_line_with_indent():
     now = datetime.now()
     entry = lister.Entry(
@@ -95,6 +152,7 @@ def test_format_entry_line_with_indent():
     formatted_line = lister.format_entry_line(entry, "created", 80, show_date=True, show_time=True, scroll_offset=0)
     # Check for 2 levels of indentation (4 spaces)
     assert "    file.txt" in formatted_line
+
 
 def test_format_entry_line_no_date():
     now = datetime.now()
@@ -113,6 +171,7 @@ def test_format_entry_line_no_date():
     assert now.strftime("%H:%M:%S") in formatted_line
     assert "1.00 KiB" in formatted_line  # Binary units (KiB, not KB)
 
+
 def test_format_entry_line_no_time():
     now = datetime.now()
     entry = lister.Entry(
@@ -129,6 +188,7 @@ def test_format_entry_line_no_time():
     assert now.strftime("%Y-%m-%d") in formatted_line
     assert now.strftime("%H:%M:%S") not in formatted_line
     assert "1.00 KiB" in formatted_line  # Binary units (KiB, not KB)
+
 
 def test_format_entry_line_no_date_no_time():
     now = datetime.now()
@@ -148,6 +208,7 @@ def test_format_entry_line_no_date_no_time():
     assert "file.txt" in formatted_line
     assert "1.00 KiB" in formatted_line  # Binary units (KiB, not KB)
 
+
 def test_format_entry_line_with_scroll():
     now = datetime.now()
     entry = lister.Entry(
@@ -161,13 +222,18 @@ def test_format_entry_line_with_scroll():
         depth=0,
     )
     # With small width, name gets truncated
-    formatted_line_no_scroll = lister.format_entry_line(entry, "created", 50, show_date=True, show_time=True, scroll_offset=0)
+    formatted_line_no_scroll = lister.format_entry_line(
+        entry, "created", 50, show_date=True, show_time=True, scroll_offset=0
+    )
     assert "..." in formatted_line_no_scroll
 
     # With scroll offset, we see different part of the name
-    formatted_line_scrolled = lister.format_entry_line(entry, "created", 50, show_date=True, show_time=True, scroll_offset=10)
+    formatted_line_scrolled = lister.format_entry_line(
+        entry, "created", 50, show_date=True, show_time=True, scroll_offset=10
+    )
     # Scrolled version should show different content
     assert formatted_line_scrolled != formatted_line_no_scroll
+
 
 def test_format_entry_line_folder_collapsed():
     now = datetime.now()
@@ -187,6 +253,7 @@ def test_format_entry_line_folder_collapsed():
     assert "▶" in formatted_line
     assert "mydir/" in formatted_line
 
+
 def test_format_entry_line_folder_expanded():
     now = datetime.now()
     entry = lister.Entry(
@@ -205,6 +272,7 @@ def test_format_entry_line_folder_expanded():
     assert "▼" in formatted_line
     assert "mydir/" in formatted_line
 
+
 def test_format_entry_line_folder_collapsed_shows_count_when_available():
     now = datetime.now()
     entry = lister.Entry(
@@ -222,6 +290,7 @@ def test_format_entry_line_folder_collapsed_shows_count_when_available():
     )
     formatted_line = lister.format_entry_line(entry, "created", 80, show_date=True, show_time=True, scroll_offset=0)
     assert "(12)" in formatted_line
+
 
 def test_lister_manager_toggle_folder(temp_dir_structure: Path):
     entries = lister.read_entries_recursive(temp_dir_structure, max_depth=5)
@@ -245,6 +314,7 @@ def test_lister_manager_toggle_folder(temp_dir_structure: Path):
     assert not dir_entry.expanded
     assert dir_entry.path not in manager.expanded_folders
 
+
 def test_lister_manager_expand_all_at_depth(temp_dir_structure: Path):
     entries = lister.read_entries_recursive(temp_dir_structure, max_depth=5)
     manager = lister.ListerManager(entries, max_depth=5)
@@ -257,6 +327,7 @@ def test_lister_manager_expand_all_at_depth(temp_dir_structure: Path):
         if entry.is_dir and entry.depth == 0:
             assert entry.expanded
             assert entry.path in manager.expanded_folders
+
 
 def test_lister_manager_collapse_all(temp_dir_structure: Path):
     entries = lister.read_entries_recursive(temp_dir_structure, max_depth=5)
@@ -271,6 +342,7 @@ def test_lister_manager_collapse_all(temp_dir_structure: Path):
     manager.collapse_all()
     assert not manager.expanded_folders
     assert all(not e.expanded for e in entries)
+
 
 def test_lister_manager_get_visible_entries(temp_dir_structure: Path):
     entries = lister.read_entries_recursive(temp_dir_structure, max_depth=5)
@@ -289,7 +361,7 @@ def test_lister_manager_get_visible_entries(temp_dir_structure: Path):
     # Now should see sub_dir's direct children (depth 1)
     visible_names = [e.name for e in visible]
     assert "file2.txt" in visible_names  # Direct child of sub_dir
-    assert "deep_dir" in visible_names   # Direct child of sub_dir
+    assert "deep_dir" in visible_names  # Direct child of sub_dir
     # But file3.txt should NOT be visible yet (it's in deep_dir which is not expanded)
     assert "file3.txt" not in visible_names
 
@@ -301,6 +373,7 @@ def test_lister_manager_get_visible_entries(temp_dir_structure: Path):
     # Now file3.txt should be visible
     visible_names = [e.name for e in visible]
     assert "file3.txt" in visible_names
+
 
 def test_calculate_folder_size(temp_dir_structure: Path):
     """Test folder size calculation."""
@@ -318,6 +391,7 @@ def test_calculate_folder_size(temp_dir_structure: Path):
     # Item count: file2.txt, deep_dir, file3.txt = 3
     assert total_size == 500
     assert item_count == 3
+
 
 def test_entry_calculated_size():
     """Test Entry calculated size methods."""
@@ -343,6 +417,7 @@ def test_entry_calculated_size():
 
     assert entry.has_calculated_size()
     assert entry.get_display_size() == 1024000
+
 
 def test_calculate_single_entry_size(tmp_path: Path):
     """Ensure calculate_entry_size populates size and item count for a single folder."""
@@ -370,6 +445,7 @@ def test_calculate_single_entry_size(tmp_path: Path):
     assert entry.item_count == 3  # folder contents: file, subdir, file in subdir
     assert not entry.size_calculating
 
+
 def test_format_entry_line_folder_with_calculated_size():
     """Test folder formatting with calculated size."""
     now = datetime.now()
@@ -392,6 +468,7 @@ def test_format_entry_line_folder_with_calculated_size():
     assert "1000.00 KiB" in formatted_line  # Binary units: 1024000 bytes = 1000 KiB
     assert "(42)" in formatted_line  # Count < 1000 shows as just number in parens
 
+
 def test_format_entry_line_folder_calculating():
     """Test folder formatting while calculating size."""
     now = datetime.now()
@@ -411,6 +488,7 @@ def test_format_entry_line_folder_calculating():
 
     # Should show spinner indicator
     assert "[...]" in formatted_line
+
 
 def test_format_entry_line_folder_not_calculated():
     """Test folder formatting without calculated size."""
@@ -432,6 +510,7 @@ def test_format_entry_line_folder_not_calculated():
     # The size part should be empty/blank, but other parts should be present
     assert "mydir/" in formatted_line
 
+
 def test_folders_first_sorting_by_name():
     """Test folders-first with name sorting (ascending)."""
     now = datetime.now()
@@ -451,6 +530,7 @@ def test_folders_first_sorting_by_name():
     assert visible[1].name == "zdir"
     assert visible[2].name == "bfile.txt"
     assert visible[3].name == "file.txt"
+
 
 def test_folders_first_sorting_by_name_descending():
     """Test folders-first with name sorting (descending) - CRITICAL FIX TEST."""
@@ -473,6 +553,7 @@ def test_folders_first_sorting_by_name_descending():
     assert visible[2].name == "file.txt"
     assert visible[3].name == "bfile.txt"
 
+
 def test_folders_first_toggle_off():
     """Test that dirs_first=False mixes files and folders."""
     now = datetime.now()
@@ -491,24 +572,32 @@ def test_folders_first_toggle_off():
     assert visible[1].name == "file.txt"
     assert visible[2].name == "zdir"
 
+
 def test_item_count_abbreviation():
     """Test item count abbreviation for large numbers."""
     now = datetime.now()
 
     # < 1000: show full number
-    entry1 = lister.Entry(Path("/a"), "folder1", True, 0, now, now, now, 0, expanded=True, calculated_size=1000000, item_count=999)
+    entry1 = lister.Entry(
+        Path("/a"), "folder1", True, 0, now, now, now, 0, expanded=True, calculated_size=1000000, item_count=999
+    )
     line1 = lister.format_entry_line(entry1, "created", 100, True, True, 0)
     assert "(999)" in line1
 
     # < 1000000: show "Nk"
-    entry2 = lister.Entry(Path("/b"), "folder2", True, 0, now, now, now, 0, expanded=True, calculated_size=1000000, item_count=45282)
+    entry2 = lister.Entry(
+        Path("/b"), "folder2", True, 0, now, now, now, 0, expanded=True, calculated_size=1000000, item_count=45282
+    )
     line2 = lister.format_entry_line(entry2, "created", 100, True, True, 0)
     assert "(45k)" in line2
 
     # >= 1000000: show "N.NM"
-    entry3 = lister.Entry(Path("/c"), "folder3", True, 0, now, now, now, 0, expanded=True, calculated_size=1000000, item_count=1234567)
+    entry3 = lister.Entry(
+        Path("/c"), "folder3", True, 0, now, now, now, 0, expanded=True, calculated_size=1000000, item_count=1234567
+    )
     line3 = lister.format_entry_line(entry3, "created", 100, True, True, 0)
     assert "(1.2M)" in line3
+
 
 def test_deep_nesting_size_display(temp_dir_structure: Path):
     """Test that size column is visible even with deep nesting."""
