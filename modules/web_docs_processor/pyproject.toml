@@ -1,0 +1,188 @@
+[build-system]
+requires = [
+    "setuptools>=69.0",
+    "wheel",
+    "playwright==1.59.0"
+]
+build-backend = "build_backend"
+backend-path = [
+    "."
+]
+
+[project]
+name = "web-docs-processor"
+version = "0.2.0"
+description = "Build retrieval-friendly Markdown, JSON, and PDF source packs from documentation websites."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "Max Carlson" }
+]
+keywords = [
+    "documentation",
+    "markdown",
+    "retrieval",
+    "rag",
+    "llm",
+    "sources",
+    "web-scraping",
+    "docs",
+    "pdf"
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Documentation",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Text Processing :: Markup :: Markdown",
+    "Typing :: Typed"
+]
+dependencies = [
+    "beautifulsoup4>=4.12.0",
+    "build>=1.2.0",
+    "lxml>=5.0.0",
+    "markdownify>=0.12.1",
+    "mypy>=1.10.0",
+    "playwright==1.59.0",
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "reportlab>=4.2.0",
+    "requests>=2.31.0",
+    "ruff>=0.6.0",
+    "trafilatura>=1.8.0",
+    "types-beautifulsoup4>=4.12.0",
+    "types-requests>=2.31.0"
+]
+
+[project.urls]
+Homepage = "https://github.com/MaxCarlson/scripts/tree/main/modules/web_docs_processor"
+Repository = "https://github.com/MaxCarlson/scripts"
+Issues = "https://github.com/MaxCarlson/scripts/issues"
+
+[project.scripts]
+web-docs-processor = "web_docs_processor.docs_source_builder:main"
+wdp = "web_docs_processor.docs_source_builder:main"
+docs-source-builder = "web_docs_processor.docs_source_builder:main"
+
+[tool.setuptools]
+packages = [
+    "web_docs_processor"
+]
+package-dir = { "web_docs_processor" = "." }
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = [
+    "tests"
+]
+python_files = [
+    "*_test.py"
+]
+python_classes = [
+    "Test*"
+]
+python_functions = [
+    "test_*"
+]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "--cov=web_docs_processor",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-report=xml"
+]
+
+[tool.coverage.run]
+branch = true
+source = [
+    "web_docs_processor"
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 0
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "raise SystemExit\\(main\\(\\)\\)"
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+src = [
+    ".",
+    "tests"
+]
+
+[tool.ruff.lint]
+select = [
+    "A",
+    "ARG",
+    "B",
+    "C4",
+    "E",
+    "F",
+    "I",
+    "N",
+    "PERF",
+    "PL",
+    "PTH",
+    "RET",
+    "RUF",
+    "SIM",
+    "UP",
+    "W"
+]
+ignore = [
+    "PLR0912",
+    "PLR0913",
+    "PLR0915"
+]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "web_docs_processor"
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.mypy]
+python_version = "3.10"
+packages = [
+    "web_docs_processor"
+]
+mypy_path = [
+    "."
+]
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+check_untyped_defs = true
+disallow_untyped_defs = false
+no_implicit_optional = true
+strict_optional = true
+
+[[tool.mypy.overrides]]
+module = [
+    "trafilatura",
+    "markdownify",
+    "playwright.*",
+    "reportlab.*"
+]
+ignore_missing_imports = true
