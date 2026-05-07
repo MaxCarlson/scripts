@@ -897,6 +897,34 @@ class WorkerState:
     ytdlp_grid_recorded: bool = False
 
 
+def _normalize_active_progress(
+    downloaded: object,
+    total: object,
+    percent: object,
+    speed_bps: object,
+) -> tuple[Optional[float], Optional[int], Optional[int]]:
+    """Normalize an in-flight progress event without showing active transfers as done."""
+    dl = downloaded if isinstance(downloaded, int) else None
+    tot = total if isinstance(total, int) and total > 0 else None
+    sp = float(speed_bps) if isinstance(speed_bps, (int, float)) else None
+    pct = float(percent) if isinstance(percent, (int, float)) else None
+
+    if dl is not None and tot is not None:
+        pct_value = min(100.0, max(0.0, 100.0 * (float(dl) / float(tot))))
+        if pct_value >= 100.0 and sp is not None and sp > 0:
+            pct_value = 99.9
+        return pct_value, dl, tot
+
+    if pct is not None:
+        pct_value = min(100.0, max(0.0, pct))
+        if pct_value >= 100.0 and sp is not None and sp > 0:
+            pct_value = 99.9
+    else:
+        pct_value = None
+
+    return pct_value, dl, tot
+
+
 class DomainDiversityAverager:
     def __init__(self) -> None:
         self.samples = 0
@@ -1909,26 +1937,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         sp = evt.get("speed_bps")
                         eta = evt.get("eta_s")
                         pct = evt.get("percent")
-                        if isinstance(dl, int) and isinstance(tot, int) and tot and tot > 0:
-                            show_dl = min(dl, tot)
-                            ws.downloaded_bytes = show_dl
-                            ws.total_bytes = tot
-                            pct_calc = 100.0 * (float(show_dl) / float(tot))
-                            ws.percent = min(100.0, pct_calc)
-                        else:
-                            # Clamp percentage even when bytes unavailable
-                            if isinstance(pct, (int, float)):
-                                ws.percent = min(100.0, max(0.0, float(pct)))
-                            else:
-                                ws.percent = None
-                            if isinstance(dl, int):
-                                ws.downloaded_bytes = dl
-                            else:
-                                ws.downloaded_bytes = None
-                            if isinstance(tot, int) and tot > 0:
-                                ws.total_bytes = tot
-                            else:
-                                ws.total_bytes = None
+                        norm_pct, norm_dl, norm_tot = _normalize_active_progress(dl, tot, pct, sp)
+                        ws.percent = norm_pct
+                        ws.downloaded_bytes = norm_dl
+                        ws.total_bytes = norm_tot
                         ws.speed_bps = float(sp) if isinstance(sp, (int, float)) else ws.speed_bps
                         # Only overwrite eta_s when the event actually carries one; otherwise
                         # keep the last known value so workers with partial events don't flicker to '?'.

@@ -523,8 +523,14 @@ def _coerce_progress_number(value):
     return None
 
 
-def _clamp_progress(evt: dict) -> dict:
-    """Clamp progress event values to prevent active downloads from displaying >=100%."""
+def _active_stall_seconds(stall_seconds: int | None) -> Optional[int]:
+    if not stall_seconds or stall_seconds <= 0:
+        return None
+    return max(30, int(stall_seconds) * 5)
+
+
+def _clamp_progress(evt: dict, *, terminal: bool = False) -> dict:
+    """Normalize progress values without turning active resumed downloads into 100%."""
     if evt.get("event") != "progress":
         return evt
 
@@ -532,26 +538,107 @@ def _clamp_progress(evt: dict) -> dict:
     dl_raw = _coerce_progress_number(evt.get("downloaded"))
     tot_raw = _coerce_progress_number(evt.get("total"))
     pct_raw = _coerce_progress_number(evt.get("percent"))
+    speed_raw = _coerce_progress_number(evt.get("speed_bps"))
 
     dl = int(dl_raw) if isinstance(dl_raw, (int, float)) else None
     tot = int(tot_raw) if isinstance(tot_raw, (int, float)) else None
     pct = float(pct_raw) if isinstance(pct_raw, (int, float)) else None
+    speed = float(speed_raw) if isinstance(speed_raw, (int, float)) else None
 
     if dl is not None:
         clamped["downloaded"] = dl
     if tot is not None:
         clamped["total"] = tot
+    if speed is not None:
+        clamped["speed_bps"] = speed
 
     if dl is not None and tot is not None and tot > 0:
-        actual_dl = min(dl, tot)
-        clamped["downloaded"] = actual_dl
         clamped["total"] = tot
-        pct_calc = (actual_dl / tot) * 100.0
-        clamped["percent"] = min(100.0, max(0.0, pct_calc))
+        pct_calc = (dl / tot) * 100.0
+        pct_value = min(100.0, max(0.0, pct_calc))
+        if not terminal and pct_value >= 100.0:
+            pct_value = 99.9
+        clamped["percent"] = pct_value
     elif pct is not None:
-        clamped["percent"] = min(100.0, max(0.0, pct))
+        pct_value = min(100.0, max(0.0, pct))
+        if not terminal and pct_value >= 100.0:
+            pct_value = 99.9
+        clamped["percent"] = pct_value
 
     return clamped
+
+
+@dataclass
+class _ProgressActivity:
+    stall_seconds: int | None
+    complete_stall_seconds: int
+    started_at: float
+    last_real_event_t: float
+    last_progress_event_t: Optional[float] = None
+    last_progress_growth_t: Optional[float] = None
+    last_progress_bytes: Optional[int] = None
+    active_started: bool = False
+    near_complete_since: Optional[float] = None
+
+    @property
+    def active_stall_seconds(self) -> Optional[int]:
+        return _active_stall_seconds(self.stall_seconds)
+
+    def observe(self, evt: dict, now: float) -> None:
+        ev = evt.get("event")
+        if ev != "heartbeat":
+            self.last_real_event_t = now
+        if ev != "progress":
+            return
+
+        self.last_progress_event_t = now
+        dl_raw = _coerce_progress_number(evt.get("downloaded"))
+        pct_raw = _coerce_progress_number(evt.get("percent"))
+        speed_raw = _coerce_progress_number(evt.get("speed_bps"))
+        dl = int(dl_raw) if isinstance(dl_raw, (int, float)) else None
+        pct = float(pct_raw) if isinstance(pct_raw, (int, float)) else None
+        speed = float(speed_raw) if isinstance(speed_raw, (int, float)) else None
+
+        if dl is not None or (speed is not None and speed > 0):
+            if not self.active_started:
+                self.active_started = True
+                self.last_progress_growth_t = now
+
+        if dl is not None:
+            if self.last_progress_bytes is None or dl > self.last_progress_bytes:
+                self.last_progress_growth_t = now
+            self.last_progress_bytes = max(dl, self.last_progress_bytes or 0)
+
+        if speed is not None and speed > 0 and (pct is None or pct < 99.0):
+            self.last_progress_growth_t = now
+
+        if isinstance(pct, (int, float)) and pct >= 99.0:
+            if self.near_complete_since is None:
+                self.near_complete_since = now
+        else:
+            self.near_complete_since = None
+
+    def stall(self, now: float) -> Optional[tuple[int, str]]:
+        if (
+            self.near_complete_since is not None
+            and self.complete_stall_seconds > 0
+            and (now - self.near_complete_since) > self.complete_stall_seconds
+        ):
+            return self.complete_stall_seconds, "near_complete_stall"
+
+        if not self.stall_seconds or self.stall_seconds <= 0:
+            return None
+
+        if not self.active_started:
+            if (now - self.last_real_event_t) > self.stall_seconds:
+                return int(self.stall_seconds), "pre_transfer_no_output"
+            return None
+
+        active_stall_s = self.active_stall_seconds
+        if active_stall_s and self.last_progress_growth_t is not None:
+            if self.near_complete_since is None and (now - self.last_progress_growth_t) > active_stall_s:
+                return active_stall_s, "active_no_byte_growth"
+        return None
 
 def _emit_json(d: dict) -> None:
     sys.stdout.write(json.dumps(d, ensure_ascii=False) + "\n")
@@ -679,7 +766,7 @@ def _run_extdl_fallback(
     proglog: Optional["ProgLogger"] = None,
     first_attempt_num: int = 2,
     stall_seconds: int | None = None,
-) -> int:
+) -> tuple[int, Optional[dict]]:
     """Try Method 2 (static HTML) then Method 3 (Playwright) for *url*.
 
     Emits ``fallback_*`` NDJSON events for the manager TUI and, when *proglog*
@@ -706,7 +793,7 @@ def _run_extdl_fallback(
                     "url_index": url_index, "url": url})
         if proglog:
             proglog.fallback_skip("all", msg)
-        return 1
+        return 1, None
 
     referer = url
     try:
@@ -718,7 +805,7 @@ def _run_extdl_fallback(
     # so the log mirrors ytdlp-extdl.py's "Attempt 1 / Attempt 2 / …" framing.
     _global_attempt = [first_attempt_num - 1]
 
-    def _try_candidates(candidates, method_name: str) -> int:
+    def _try_candidates(candidates, method_name: str) -> tuple[int, Optional[dict]]:
         limited = candidates[:extdl_max_candidates] if extdl_max_candidates > 0 else candidates
         for idx_in_method, candidate in enumerate(limited, start=1):
             _global_attempt[0] += 1
@@ -759,7 +846,8 @@ def _run_extdl_fallback(
                 if proglog:
                     proglog.fallback_result(method_name, idx_in_method, len(limited), 0)
                     proglog.attempt_success(global_num, f"{method_name} {candidate.kind} candidate {idx_in_method}/{len(limited)}")
-                return 0
+                return 0, None
+            candidate_last_progress: Optional[dict] = None
             try:
                 proc = subprocess.Popen(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -769,14 +857,24 @@ def _run_extdl_fallback(
                 # Parse yt-dlp's --newline output via procparsers so the manager
                 # receives live progress events (speed, %, ETA) for fallback downloads.
                 try:
-                    _cand_last_real_t = time.time()
-                    _cand_stall_s = stall_seconds if (stall_seconds and stall_seconds > 0) else 120
+                    _cand_now = time.time()
+                    _cand_activity = _ProgressActivity(
+                        stall_seconds=stall_seconds,
+                        complete_stall_seconds=300,
+                        started_at=_cand_now,
+                        last_real_event_t=_cand_now,
+                    )
+                    _cand_stall_s = _active_stall_seconds(stall_seconds) or 120
+                    _cand_stall_reason = "pre_transfer_no_output"
                     _cand_stalled = False
                     for evt in iter_parsed_events("yt-dlp", proc.stdout,
                                                   raw_log_path=None, heartbeat_secs=0.2):
+                        _cand_now = time.time()
                         ev = evt.get("event")
-                        if ev != "heartbeat":
-                            _cand_last_real_t = time.time()
+                        if ev == "progress":
+                            evt = _clamp_progress(evt)
+                            candidate_last_progress = evt
+                        _cand_activity.observe(evt, _cand_now)
                         if ev == "progress":
                             _emit_json({**evt, "downloader": "yt-dlp",
                                         "url_index": url_index, "url": url})
@@ -791,8 +889,9 @@ def _run_extdl_fallback(
                         elif ev in ("destination", "finish"):
                             _emit_json({**evt, "downloader": "yt-dlp",
                                         "url_index": url_index, "url": url})
-                        # Stall detection: kill candidate if no real events for stall_seconds
-                        if ev == "heartbeat" and (time.time() - _cand_last_real_t) > _cand_stall_s:
+                        stalled = _cand_activity.stall(_cand_now)
+                        if stalled is not None:
+                            _cand_stall_s, _cand_stall_reason = stalled
                             _cand_stalled = True
                             try:
                                 proc.kill()
@@ -809,6 +908,7 @@ def _run_extdl_fallback(
                 if _cand_stalled:
                     _emit_json({"event": "fallback_stalled", "method": method_name,
                                 "attempt": idx_in_method, "stall_seconds": _cand_stall_s,
+                                "reason": _cand_stall_reason,
                                 "url_index": url_index, "url": url})
                 try:
                     rc = proc.wait(timeout=5)
@@ -835,13 +935,13 @@ def _run_extdl_fallback(
                             "url_index": url_index, "url": url})
                 if proglog:
                     proglog.attempt_success(global_num, f"{method_name} {candidate.kind} candidate {idx_in_method}/{len(limited)}")
-                return 0
+                return 0, candidate_last_progress
             _emit_json({"event": "fallback_failure", "method": method_name,
                         "attempt": idx_in_method, "rc": rc,
                         "url_index": url_index, "url": url})
             if proglog:
                 proglog.attempt_fail(global_num, f"{method_name} {candidate.kind} candidate {idx_in_method}/{len(limited)}", f"exit code {rc}")
-        return 1
+        return 1, None
 
     # Method 2: static HTML scan
     _emit_json({"event": "fallback_start", "method": "static_html",
@@ -855,8 +955,10 @@ def _run_extdl_fallback(
         _emit_json({"event": "fallback_failure", "method": "static_html", "rc": -1,
                     "error": str(exc), "url_index": url_index, "url": url})
 
-    if static_candidates and _try_candidates(static_candidates, "static_html") == 0:
-        return 0
+    if static_candidates:
+        static_rc, static_progress = _try_candidates(static_candidates, "static_html")
+        if static_rc == 0:
+            return 0, static_progress
 
     # Method 3: Playwright browser capture
     _emit_json({"event": "fallback_start", "method": "browser",
@@ -881,13 +983,15 @@ def _run_extdl_fallback(
                     "error": str(exc), "url_index": url_index, "url": url})
         browser_candidates = []
 
-    if browser_candidates and _try_candidates(browser_candidates, "browser_network") == 0:
-        return 0
+    if browser_candidates:
+        browser_rc, browser_progress = _try_candidates(browser_candidates, "browser_network")
+        if browser_rc == 0:
+            return 0, browser_progress
 
     _emit_json({"event": "fallback_exhausted", "url_index": url_index, "url": url})
     if proglog:
         proglog.fallback_exhausted()
-    return 1
+    return 1, None
 
 
 def _run_one(
@@ -1045,8 +1149,13 @@ def _run_one(
     try:
         # internal heartbeat for scheduling; also used for stall detection
         hb = 0.2 if (max_ndjson_rate is not None and max_ndjson_rate > 0) else 0.5
-        last_real_event_t = time.time()
-        near_complete_since: Optional[float] = None  # time when pct first reached >=99%
+        activity_start = time.time()
+        activity = _ProgressActivity(
+            stall_seconds=stall_seconds,
+            complete_stall_seconds=complete_stall_seconds,
+            started_at=activity_start,
+            last_real_event_t=activity_start,
+        )
         for evt in iter_parsed_events(tool, proc.stdout, raw_log_path=raw_path, heartbeat_secs=hb):
             # track 'already' to classify FINISH_DUPLICATE later for yt-dlp
             if evt.get("event") == "already":
@@ -1099,16 +1208,8 @@ def _run_one(
             if evt.get("event") == "progress":
                 evt = _clamp_progress(evt)
                 last_progress = evt
-                pct = evt.get("percent")
-                if isinstance(pct, (int, float)) and pct >= 99.0:
-                    if near_complete_since is None:
-                        near_complete_since = time.time()
-                else:
-                    near_complete_since = None
             now = time.time()
-            # Update last activity time for any non-heartbeat event
-            if evt.get("event") != "heartbeat":
-                last_real_event_t = now
+            activity.observe(evt, now)
             # Emit non-progress events immediately (except heartbeats)
             if evt.get("event") != "progress" and evt.get("event") != "heartbeat":
                 _emit_json({**evt, "downloader": tool, "url_index": url_index, "url": url})
@@ -1137,31 +1238,16 @@ def _run_one(
                 rc = 131
                 _emit_json({"event": "deadline", "url_index": url_index, "url": url})
                 break
-            # Stall detection: if no non-heartbeat events for S seconds, kill and mark as stalled.
-            # Skip this check when in near-complete mode (pct >= 99%) — yt-dlp may be silently
-            # muxing / post-processing; the near-complete timer below handles that case.
-            stall_s = stall_seconds
-            if (near_complete_since is None
-                    and stall_s and stall_s > 0
-                    and (now - last_real_event_t) > stall_s):
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-                rc = 124
-                _emit_json({"event": "stalled", "url_index": url_index, "url": url, "stall_seconds": stall_s})
-                break
-            # Near-complete stall: progress events keep arriving at >=99% but download never finishes
-            if (near_complete_since is not None
-                    and complete_stall_seconds > 0
-                    and (now - near_complete_since) > complete_stall_seconds):
+            stalled = activity.stall(now)
+            if stalled is not None:
+                stalled_s, stalled_reason = stalled
                 try:
                     proc.kill()
                 except Exception:
                     pass
                 rc = 124
                 _emit_json({"event": "stalled", "url_index": url_index, "url": url,
-                            "stall_seconds": complete_stall_seconds, "reason": "near_complete_stall"})
+                            "stall_seconds": stalled_s, "reason": stalled_reason})
                 break
             if timeout and (time.time() - t_url_start) > timeout:
                 proc.kill()
@@ -1236,7 +1322,7 @@ def _run_one(
     _fallback_tried = False
     if rc != 0 and tool == "yt-dlp" and extdl_fallback and not _is_abort_rc(rc):
         _fallback_tried = True
-        fallback_rc = _run_extdl_fallback(
+        fallback_rc, fallback_progress = _run_extdl_fallback(
             url, out_dir, url_index,
             extdl_max_candidates=extdl_max_candidates,
             extdl_browser_wait=extdl_browser_wait,
@@ -1250,6 +1336,8 @@ def _run_one(
         )
         if fallback_rc == 0:
             rc = 0
+            if fallback_progress:
+                last_progress = fallback_progress
 
     # classify status and build a human-readable failure reason
     status = "FINISH_SUCCESS" if rc == 0 else "FINISH_BAD"

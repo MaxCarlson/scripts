@@ -1086,15 +1086,15 @@ class TestUtilityFunctions:
         assert eta_txt(None, 50.0) == "?"
 
     def test_percent_reaches_100_when_downloaded_equals_total(self):
-        """When dl == total, clamped percent must be 100.0, not capped at 99.9."""
+        """A finished event, not active progress, is what marks a worker 100%."""
         ws = manager.WorkerState(slot=1)
-        total = 500_000_000
-        # Simulate the _reader progress handler logic directly
-        dl, tot = total, total
-        show_dl = min(dl, tot)
-        pct_calc = 100.0 * (float(show_dl) / float(tot))
-        ws.percent = min(100.0, pct_calc)
-        assert ws.percent == 100.0, f"expected 100.0, got {ws.percent}"
+        rc_v = 0
+        ws.last_already = False
+        if rc_v == 0 and not ws.last_already:
+            ws.percent = 100.0
+        else:
+            ws.percent = None
+        assert ws.percent == 100.0
 
     def test_finish_event_sets_100_percent_and_zero_speed(self):
         """On a successful finish, percent→100, speed→0, is_searching→True."""
@@ -1150,13 +1150,26 @@ class TestUtilityFunctions:
         assert ws.is_searching is False
 
     def test_clamp_progress_allows_100_percent(self):
-        """The percent cap must be 100.0, not 99.9, when downloaded == total."""
+        """Active progress stays below 100% when bytes still appear to be moving."""
         dl, tot = 500_000_000, 500_000_000
-        show_dl = min(dl, tot)
-        pct = min(100.0, 100.0 * show_dl / tot)
-        assert pct == 100.0, f"cap should allow 100.0, got {pct}"
-        # Ensure 99.9 cap is NOT applied
-        assert pct != 99.9
+        pct, norm_dl, norm_tot = manager._normalize_active_progress(dl, tot, 100.0, 1_000.0)
+        assert pct == 99.9
+        assert norm_dl == dl
+        assert norm_tot == tot
+
+    def test_active_progress_preserves_downloaded_over_reported_total(self):
+        pct, norm_dl, norm_tot = manager._normalize_active_progress(600, 500, 120.0, 10_000.0)
+
+        assert pct == 99.9
+        assert norm_dl == 600
+        assert norm_tot == 500
+
+    def test_active_progress_without_positive_speed_can_show_100(self):
+        pct, norm_dl, norm_tot = manager._normalize_active_progress(500, 500, 100.0, 0.0)
+
+        assert pct == 100.0
+        assert norm_dl == 500
+        assert norm_tot == 500
 
     def test_footer_always_appended_after_verbose_lines(self):
         """Footer lines are rendered after the verbose panel so they stay at the bottom."""

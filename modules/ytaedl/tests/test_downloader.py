@@ -12,6 +12,51 @@ import ytaedl.downloader as downloader
 class TestDownloader:
     """Test cases for the downloader module."""
 
+    class _FakeProc:
+        def __init__(self, rc=0):
+            self.stdout = object()
+            self._rc = rc
+            self.killed = False
+            self.terminated = False
+
+        def kill(self):
+            self.killed = True
+            self._rc = 124
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return self._rc
+
+    class _NoopProgLogger:
+        def simulate_start(self, *args, **kwargs):
+            pass
+
+        def simulate_ok(self, *args, **kwargs):
+            pass
+
+        def start(self, *args, **kwargs):
+            pass
+
+        def attempt_start(self, *args, **kwargs):
+            pass
+
+        def attempt_success(self, *args, **kwargs):
+            pass
+
+        def attempt_fail(self, *args, **kwargs):
+            pass
+
+        def progress(self, *args, **kwargs):
+            pass
+
+        def finish(self, *args, **kwargs):
+            pass
+
+        def force_exit(self, *args, **kwargs):
+            pass
+
     def test_make_parser(self):
         """Test that make_parser creates a valid ArgumentParser."""
         parser = downloader.make_parser()
@@ -117,6 +162,211 @@ class TestDownloader:
 
         # Default allow
         assert downloader._looks_supported_video("https://example.com/video")
+
+    def test_clamp_progress_preserves_active_bytes_and_caps_100(self):
+        evt = {
+            "event": "progress",
+            "downloaded": 125,
+            "total": 100,
+            "percent": 125.0,
+            "speed_bps": 50_000,
+        }
+
+        clamped = downloader._clamp_progress(evt)
+
+        assert clamped["downloaded"] == 125
+        assert clamped["total"] == 100
+        assert clamped["percent"] == 99.9
+
+    def test_progress_activity_pre_transfer_stalls_on_short_window(self):
+        activity = downloader._ProgressActivity(
+            stall_seconds=4,
+            complete_stall_seconds=300,
+            started_at=0.0,
+            last_real_event_t=0.0,
+        )
+        activity.observe({"event": "heartbeat"}, 5.0)
+
+        assert activity.stall(5.0) == (4, "pre_transfer_no_output")
+
+    def test_progress_activity_active_transfer_uses_longer_window(self):
+        activity = downloader._ProgressActivity(
+            stall_seconds=4,
+            complete_stall_seconds=300,
+            started_at=0.0,
+            last_real_event_t=0.0,
+        )
+        activity.observe(
+            {"event": "progress", "downloaded": 100, "total": 1_000, "percent": 10.0, "speed_bps": 1_000.0},
+            1.0,
+        )
+        activity.observe({"event": "heartbeat"}, 10.0)
+
+        assert activity.stall(10.0) is None
+
+    def test_progress_activity_active_transfer_stalls_after_growth_window(self):
+        activity = downloader._ProgressActivity(
+            stall_seconds=4,
+            complete_stall_seconds=300,
+            started_at=0.0,
+            last_real_event_t=0.0,
+        )
+        activity.observe(
+            {"event": "progress", "downloaded": 100, "total": 1_000, "percent": 10.0, "speed_bps": 0.0},
+            1.0,
+        )
+        activity.observe({"event": "heartbeat"}, 32.0)
+
+        assert activity.stall(32.0) == (30, "active_no_byte_growth")
+
+    def test_progress_activity_near_complete_uses_complete_stall_window(self):
+        activity = downloader._ProgressActivity(
+            stall_seconds=4,
+            complete_stall_seconds=300,
+            started_at=0.0,
+            last_real_event_t=0.0,
+        )
+        activity.observe(
+            {"event": "progress", "downloaded": 990, "total": 1_000, "percent": 99.0, "speed_bps": 0.0},
+            1.0,
+        )
+
+        assert activity.stall(302.0) == (300, "near_complete_stall")
+
+    def test_run_one_active_progress_survives_short_heartbeat_gap(self, monkeypatch):
+        current_time = [0.0]
+
+        def fake_time():
+            return current_time[0]
+
+        def fake_iter(tool, stdout, raw_log_path=None, heartbeat_secs=None):
+            current_time[0] = 1.0
+            yield {"event": "progress", "downloaded": 100, "total": 1_000, "percent": 10.0, "speed_bps": 1_000.0}
+            current_time[0] = 10.0
+            yield {"event": "heartbeat"}
+
+        emitted = []
+        monkeypatch.setattr(downloader.time, "time", fake_time)
+        monkeypatch.setattr(downloader, "iter_parsed_events", fake_iter)
+        monkeypatch.setattr(downloader, "_emit_json", emitted.append)
+        monkeypatch.setattr(downloader.subprocess, "Popen", lambda *a, **k: self._FakeProc(rc=0))
+
+        rc, info = downloader._run_one(
+            tool="yt-dlp",
+            urls=["https://example.com/video"],
+            out_dir=Path("."),
+            canonical_out_dir=Path("."),
+            work_dir=Path("."),
+            raw_dir=Path("."),
+            url_index=1,
+            proglog=self._NoopProgLogger(),
+            timeout=None,
+            retries=0,
+            quiet=True,
+            dry_run=False,
+            progress_freq_s=None,
+            max_ndjson_rate=-1,
+            stall_seconds=4,
+            program_deadline=None,
+            max_dl_speed=None,
+            max_height=None,
+            extdl_fallback=False,
+            skip_simulate_check=True,
+        )
+
+        assert rc == 0
+        assert info["downloaded"] == 100
+        assert not any(evt.get("event") == "stalled" for evt in emitted)
+
+    def test_run_one_pre_transfer_still_stalls(self, monkeypatch):
+        current_time = [0.0]
+
+        def fake_time():
+            return current_time[0]
+
+        def fake_iter(tool, stdout, raw_log_path=None, heartbeat_secs=None):
+            current_time[0] = 5.0
+            yield {"event": "heartbeat"}
+
+        emitted = []
+        monkeypatch.setattr(downloader.time, "time", fake_time)
+        monkeypatch.setattr(downloader, "iter_parsed_events", fake_iter)
+        monkeypatch.setattr(downloader, "_emit_json", emitted.append)
+        monkeypatch.setattr(downloader.subprocess, "Popen", lambda *a, **k: self._FakeProc(rc=0))
+
+        rc, _info = downloader._run_one(
+            tool="yt-dlp",
+            urls=["https://example.com/video"],
+            out_dir=Path("."),
+            canonical_out_dir=Path("."),
+            work_dir=Path("."),
+            raw_dir=Path("."),
+            url_index=1,
+            proglog=self._NoopProgLogger(),
+            timeout=None,
+            retries=0,
+            quiet=True,
+            dry_run=False,
+            progress_freq_s=None,
+            max_ndjson_rate=-1,
+            stall_seconds=4,
+            program_deadline=None,
+            max_dl_speed=None,
+            max_height=None,
+            extdl_fallback=False,
+            skip_simulate_check=True,
+        )
+
+        stalled_events = [evt for evt in emitted if evt.get("event") == "stalled"]
+        assert rc == 124
+        assert stalled_events
+        assert stalled_events[-1]["reason"] == "pre_transfer_no_output"
+
+    def test_run_one_successful_fallback_uses_fallback_progress(self, monkeypatch):
+        current_time = [0.0]
+
+        def fake_time():
+            return current_time[0]
+
+        def fake_iter(tool, stdout, raw_log_path=None, heartbeat_secs=None):
+            current_time[0] = 5.0
+            yield {"event": "heartbeat"}
+
+        monkeypatch.setattr(downloader.time, "time", fake_time)
+        monkeypatch.setattr(downloader, "iter_parsed_events", fake_iter)
+        monkeypatch.setattr(downloader.subprocess, "Popen", lambda *a, **k: self._FakeProc(rc=0))
+        monkeypatch.setattr(
+            downloader,
+            "_run_extdl_fallback",
+            lambda *a, **k: (0, {"event": "progress", "downloaded": 200, "total": 300, "percent": 66.7}),
+        )
+
+        rc, info = downloader._run_one(
+            tool="yt-dlp",
+            urls=["https://example.com/video"],
+            out_dir=Path("."),
+            canonical_out_dir=Path("."),
+            work_dir=Path("."),
+            raw_dir=Path("."),
+            url_index=1,
+            proglog=self._NoopProgLogger(),
+            timeout=None,
+            retries=0,
+            quiet=True,
+            dry_run=False,
+            progress_freq_s=None,
+            max_ndjson_rate=-1,
+            stall_seconds=4,
+            program_deadline=None,
+            max_dl_speed=None,
+            max_height=None,
+            extdl_fallback=True,
+            skip_simulate_check=True,
+        )
+
+        assert rc == 0
+        assert info["downloaded"] == 200
+        assert info["total"] == 300
 
     def test_extract_video_id(self):
         """Test video ID extraction from URLs."""
