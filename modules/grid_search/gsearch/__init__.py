@@ -18,7 +18,7 @@ from gsearch.manager import Trial
 from gsearch.manager import config_id
 from gsearch.reporting import generate_report
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "__version__",
@@ -30,4 +30,3 @@ __all__ = [
     "generate_report",
 ]
 
-__version__ = "0.1.0"

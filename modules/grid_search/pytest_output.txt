@@ -1,0 +1,926 @@
+EE.......EEEEEEEEEEEEE.......................EEEEEEEEEE................. [ 54%]
+EEEEEEEE...........EEEE................EEEEEEEEEEEEEEEEEEEE              [100%]
+=================================== ERRORS ====================================
+______________ ERROR at setup of TestParseArgs.test_init_parses _______________
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+__________ ERROR at setup of TestParseArgs.test_next_parses_defaults __________
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+______ ERROR at setup of TestMainRoundTrip.test_init_creates_experiment _______
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+_ ERROR at setup of TestMainRoundTrip.test_next_returns_trial_json_to_stdout __
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+_______ ERROR at setup of TestMainRoundTrip.test_next_writes_trial_file _______
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+______ ERROR at setup of TestMainRoundTrip.test_record_ok_updates_trial _______
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+______ ERROR at setup of TestMainRoundTrip.test_record_failed_no_metric _______
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+_ ERROR at setup of TestMainRoundTrip.test_record_ok_without_metric_returns_error _
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+________ ERROR at setup of TestMainRoundTrip.test_export_writes_jsonl _________
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+___________ ERROR at setup of TestMainRoundTrip.test_summary_stdout ___________
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+________ ERROR at setup of TestMainRoundTrip.test_summary_writes_file _________
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+__________ ERROR at setup of TestMainRoundTrip.test_full_round_trip ___________
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+_ ERROR at setup of TestMainRoundTrip.test_error_missing_experiment_returns_1 _
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+___ ERROR at setup of TestMainRoundTrip.test_record_missing_trial_returns_1 ___
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+_______ ERROR at setup of TestMainRoundTrip.test_group_next_uses_domain _______
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+__ ERROR at setup of TestAdaptiveGridStore.test_initialize_schema_idempotent __
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+___ ERROR at setup of TestAdaptiveGridStore.test_upsert_and_read_experiment ___
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+____ ERROR at setup of TestAdaptiveGridStore.test_upsert_updates_existing _____
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+_ ERROR at setup of TestAdaptiveGridStore.test_read_missing_experiment_raises _
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+_______ ERROR at setup of TestAdaptiveGridStore.test_load_trials_empty ________
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+______ ERROR at setup of TestAdaptiveGridStore.test_create_planned_trial ______
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+________ ERROR at setup of TestAdaptiveGridStore.test_record_result_ok ________
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+_ ERROR at setup of TestAdaptiveGridStore.test_record_result_missing_trial_raises _
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+__ ERROR at setup of TestAdaptiveGridStore.test_expire_stale_planned_trials ___
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+_ ERROR at setup of TestAdaptiveGridStore.test_group_value_normalized_to_lowercase _
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+_________ ERROR at setup of TestPublicAPI.test_initialize_experiment __________
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+______ ERROR at setup of TestPublicAPI.test_create_next_trial_round_trip ______
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+__ ERROR at setup of TestPublicAPI.test_create_next_trial_writes_output_file __
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+_______ ERROR at setup of TestPublicAPI.test_record_ok_requires_metric ________
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+_______ ERROR at setup of TestPublicAPI.test_record_failed_no_metric_ok _______
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+__________ ERROR at setup of TestPublicAPI.test_export_trials_jsonl ___________
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+_________ ERROR at setup of TestPublicAPI.test_summarize_trials_empty _________
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+_____ ERROR at setup of TestPublicAPI.test_summarize_trials_with_results ______
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+______ ERROR at setup of TestWriteTrialsCsv.test_empty_writes_empty_file ______
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+_________ ERROR at setup of TestWriteTrialsCsv.test_single_trial_csv __________
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+_________ ERROR at setup of TestWriteTrialsCsv.test_fieldnames_sorted _________
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+________ ERROR at setup of TestWriteTrialsCsv.test_creates_parent_dirs ________
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+____ ERROR at setup of TestPlotFunctions.test_plot_metric_over_time_empty _____
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+__ ERROR at setup of TestPlotFunctions.test_plot_metric_over_time_with_data ___
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+_____ ERROR at setup of TestPlotFunctions.test_plot_cumulative_best_empty _____
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+___ ERROR at setup of TestPlotFunctions.test_plot_cumulative_best_maximize ____
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+___ ERROR at setup of TestPlotFunctions.test_plot_cumulative_best_minimize ____
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+_________ ERROR at setup of TestPlotFunctions.test_plot_counter_empty _________
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+_______ ERROR at setup of TestPlotFunctions.test_plot_counter_with_data _______
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+____ ERROR at setup of TestPlotFunctions.test_plot_parameter_effect_empty _____
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+__ ERROR at setup of TestPlotFunctions.test_plot_parameter_effect_with_data ___
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+____________ ERROR at setup of TestLoadFromDb.test_load_experiment ____________
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+____ ERROR at setup of TestLoadFromDb.test_load_experiment_missing_raises _____
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+___________ ERROR at setup of TestLoadFromDb.test_load_trials_count ___________
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+_________ ERROR at setup of TestLoadFromDb.test_load_trials_statuses __________
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+_______ ERROR at setup of TestLoadFromDb.test_load_trials_metric_value ________
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+___ ERROR at setup of TestGenerateReport.test_report_writes_required_files ____
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+___________ ERROR at setup of TestGenerateReport.test_manifest_keys ___________
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+________ ERROR at setup of TestGenerateReport.test_trials_csv_has_data ________
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+______ ERROR at setup of TestGenerateReport.test_summary_json_structure _______
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+___________ ERROR at setup of TestGenerateReport.test_plots_written ___________
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+_____ ERROR at setup of TestGenerateReport.test_empty_db_report_no_crash ______
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:637: in _rmtree_unsafe
+    os.rmdir(path)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+
+During handling of the above exception, another exception occurred:
+.venv\Lib\site-packages\pytest_asyncio\plugin.py:728: in pytest_fixture_setup
+    return (yield)
+            ^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:781: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\AppData\Local\Programs\Python\Python312\Lib\shutil.py:639: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+E   PermissionError: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+============================== warnings summary ===============================
+tests/cli_test.py: 15 warnings
+tests/manager_test.py: 18 warnings
+tests/reporting_test.py: 24 warnings
+  C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\_pytest\pathlib.py:103: PytestWarning: (rm_rf) unknown function <built-in function scandir> when removing \\?\C:\Users\mcarls\src\scripts\.pytest_tmp:
+  <class 'PermissionError'>: [WinError 5] Access is denied: '\\\\?\\C:\\Users\\mcarls\\src\\scripts\\.pytest_tmp'
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+ERROR modules\grid_search\tests\cli_test.py::TestParseArgs::test_init_parses
+ERROR modules\grid_search\tests\cli_test.py::TestParseArgs::test_next_parses_defaults
+ERROR modules\grid_search\tests\cli_test.py::TestMainRoundTrip::test_init_creates_experiment
+ERROR modules\grid_search\tests\cli_test.py::TestMainRoundTrip::test_next_returns_trial_json_to_stdout
+ERROR modules\grid_search\tests\cli_test.py::TestMainRoundTrip::test_next_writes_trial_file
+ERROR modules\grid_search\tests\cli_test.py::TestMainRoundTrip::test_record_ok_updates_trial
+ERROR modules\grid_search\tests\cli_test.py::TestMainRoundTrip::test_record_failed_no_metric
+ERROR modules\grid_search\tests\cli_test.py::TestMainRoundTrip::test_record_ok_without_metric_returns_error
+ERROR modules\grid_search\tests\cli_test.py::TestMainRoundTrip::test_export_writes_jsonl
+ERROR modules\grid_search\tests\cli_test.py::TestMainRoundTrip::test_summary_stdout
+ERROR modules\grid_search\tests\cli_test.py::TestMainRoundTrip::test_summary_writes_file
+ERROR modules\grid_search\tests\cli_test.py::TestMainRoundTrip::test_full_round_trip
+ERROR modules\grid_search\tests\cli_test.py::TestMainRoundTrip::test_error_missing_experiment_returns_1
+ERROR modules\grid_search\tests\cli_test.py::TestMainRoundTrip::test_record_missing_trial_returns_1
+ERROR modules\grid_search\tests\cli_test.py::TestMainRoundTrip::test_group_next_uses_domain
+ERROR modules\grid_search\tests\manager_test.py::TestAdaptiveGridStore::test_initialize_schema_idempotent
+ERROR modules\grid_search\tests\manager_test.py::TestAdaptiveGridStore::test_upsert_and_read_experiment
+ERROR modules\grid_search\tests\manager_test.py::TestAdaptiveGridStore::test_upsert_updates_existing
+ERROR modules\grid_search\tests\manager_test.py::TestAdaptiveGridStore::test_read_missing_experiment_raises
+ERROR modules\grid_search\tests\manager_test.py::TestAdaptiveGridStore::test_load_trials_empty
+ERROR modules\grid_search\tests\manager_test.py::TestAdaptiveGridStore::test_create_planned_trial
+ERROR modules\grid_search\tests\manager_test.py::TestAdaptiveGridStore::test_record_result_ok
+ERROR modules\grid_search\tests\manager_test.py::TestAdaptiveGridStore::test_record_result_missing_trial_raises
+ERROR modules\grid_search\tests\manager_test.py::TestAdaptiveGridStore::test_expire_stale_planned_trials
+ERROR modules\grid_search\tests\manager_test.py::TestAdaptiveGridStore::test_group_value_normalized_to_lowercase
+ERROR modules\grid_search\tests\manager_test.py::TestPublicAPI::test_initialize_experiment
+ERROR modules\grid_search\tests\manager_test.py::TestPublicAPI::test_create_next_trial_round_trip
+ERROR modules\grid_search\tests\manager_test.py::TestPublicAPI::test_create_next_trial_writes_output_file
+ERROR modules\grid_search\tests\manager_test.py::TestPublicAPI::test_record_ok_requires_metric
+ERROR modules\grid_search\tests\manager_test.py::TestPublicAPI::test_record_failed_no_metric_ok
+ERROR modules\grid_search\tests\manager_test.py::TestPublicAPI::test_export_trials_jsonl
+ERROR modules\grid_search\tests\manager_test.py::TestPublicAPI::test_summarize_trials_empty
+ERROR modules\grid_search\tests\manager_test.py::TestPublicAPI::test_summarize_trials_with_results
+ERROR modules\grid_search\tests\reporting_test.py::TestWriteTrialsCsv::test_empty_writes_empty_file
+ERROR modules\grid_search\tests\reporting_test.py::TestWriteTrialsCsv::test_single_trial_csv
+ERROR modules\grid_search\tests\reporting_test.py::TestWriteTrialsCsv::test_fieldnames_sorted
+ERROR modules\grid_search\tests\reporting_test.py::TestWriteTrialsCsv::test_creates_parent_dirs
+ERROR modules\grid_search\tests\reporting_test.py::TestPlotFunctions::test_plot_metric_over_time_empty
+ERROR modules\grid_search\tests\reporting_test.py::TestPlotFunctions::test_plot_metric_over_time_with_data
+ERROR modules\grid_search\tests\reporting_test.py::TestPlotFunctions::test_plot_cumulative_best_empty
+ERROR modules\grid_search\tests\reporting_test.py::TestPlotFunctions::test_plot_cumulative_best_maximize
+ERROR modules\grid_search\tests\reporting_test.py::TestPlotFunctions::test_plot_cumulative_best_minimize
+ERROR modules\grid_search\tests\reporting_test.py::TestPlotFunctions::test_plot_counter_empty
+ERROR modules\grid_search\tests\reporting_test.py::TestPlotFunctions::test_plot_counter_with_data
+ERROR modules\grid_search\tests\reporting_test.py::TestPlotFunctions::test_plot_parameter_effect_empty
+ERROR modules\grid_search\tests\reporting_test.py::TestPlotFunctions::test_plot_parameter_effect_with_data
+ERROR modules\grid_search\tests\reporting_test.py::TestLoadFromDb::test_load_experiment
+ERROR modules\grid_search\tests\reporting_test.py::TestLoadFromDb::test_load_experiment_missing_raises
+ERROR modules\grid_search\tests\reporting_test.py::TestLoadFromDb::test_load_trials_count
+ERROR modules\grid_search\tests\reporting_test.py::TestLoadFromDb::test_load_trials_statuses
+ERROR modules\grid_search\tests\reporting_test.py::TestLoadFromDb::test_load_trials_metric_value
+ERROR modules\grid_search\tests\reporting_test.py::TestGenerateReport::test_report_writes_required_files
+ERROR modules\grid_search\tests\reporting_test.py::TestGenerateReport::test_manifest_keys
+ERROR modules\grid_search\tests\reporting_test.py::TestGenerateReport::test_trials_csv_has_data
+ERROR modules\grid_search\tests\reporting_test.py::TestGenerateReport::test_summary_json_structure
+ERROR modules\grid_search\tests\reporting_test.py::TestGenerateReport::test_plots_written
+ERROR modules\grid_search\tests\reporting_test.py::TestGenerateReport::test_empty_db_report_no_crash
+74 passed, 57 warnings, 57 errors in 1.89s

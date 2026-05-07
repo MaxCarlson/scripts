@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gsearch"
-version = "0.1.0"
+version = "0.1.1"
 description = "Durable adaptive grid-search manager, optimizer, recorder, and reporter for discrete parameter searches."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -85,8 +85,7 @@ python_functions = [
 ]
 addopts = [
     "--strict-config",
-    "--strict-markers",
-    "--basetemp=.pytest_tmp"
+    "--strict-markers"
 ]
 
 [tool.coverage.run]

@@ -26,7 +26,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--version",
         "-V",
         action="version",
-        version="gsearch 0.1.0",
+        version="gsearch 0.1.2",
     )
 
     subparsers = parser.add_subparsers(
@@ -104,7 +104,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--trial-id", "-t", required=True, help="Trial ID returned by next."
     )
     record_parser.add_argument(
-        "--metric-value", "-v", type=float, default=None, help="Measured metric value."
+        "--metric-value",
+        "-v",
+        type=float,
+        default=None,
+        help="Measured optimization metric value.",
     )
     record_parser.add_argument(
         "--status",
@@ -169,6 +173,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     report_parser.add_argument(
         "--top-limit", "-l", type=int, default=20, help="Top config limit."
+    )
+    report_parser.add_argument(
+        "--max-groups",
+        "-g",
+        type=int,
+        default=20,
+        help="Maximum groups to include in group performance plots.",
+    )
+    report_parser.add_argument(
+        "--heatmap-x",
+        "-x",
+        default=None,
+        help="Optional parameter name for heatmap x-axis.",
+    )
+    report_parser.add_argument(
+        "--heatmap-y",
+        "-y",
+        default=None,
+        help="Optional parameter name for heatmap y-axis.",
+    )
+    report_parser.add_argument(
+        "--interaction-limit",
+        "-i",
+        type=int,
+        default=30,
+        help="Maximum pairwise interactions to summarize and plot.",
     )
 
     return parser.parse_args(argv)
@@ -257,6 +287,10 @@ def run_report(args: argparse.Namespace) -> int:
         experiment=args.experiment,
         output_dir=args.output_dir,
         top_limit=args.top_limit,
+        max_groups=args.max_groups,
+        heatmap_x=args.heatmap_x,
+        heatmap_y=args.heatmap_y,
+        interaction_limit=args.interaction_limit,
     )
     print(json.dumps(manifest, indent=4, ensure_ascii=False))
     return 0

@@ -134,15 +134,25 @@ class GridSpec:
         baseline = payload.get("baseline", {})
         self.baseline = baseline if isinstance(baseline, dict) else {}
 
-        metric = payload.get("metric", {})
-        self.metric_name = "score"
-        self.metric_direction: MetricDirection = "maximize"
+        metric = payload.get("metric")
+        if not isinstance(metric, dict):
+            raise RuntimeError(
+                "Grid spec must contain a metric object, e.g. "
+                '{"metric": {"name": "average_mbps", "direction": "maximize"}}.'
+            )
 
-        if isinstance(metric, dict):
-            if isinstance(metric.get("name"), str):
-                self.metric_name = metric["name"]
-            if metric.get("direction") in {"maximize", "minimize"}:
-                self.metric_direction = metric["direction"]
+        metric_name = metric.get("name")
+        if not isinstance(metric_name, str) or not metric_name.strip():
+            raise RuntimeError("Grid metric.name must be a non-empty string.")
+
+        metric_direction = metric.get("direction")
+        if metric_direction not in {"maximize", "minimize"}:
+            raise RuntimeError(
+                "Grid metric.direction must be either 'maximize' or 'minimize'."
+            )
+
+        self.metric_name = metric_name.strip()
+        self.metric_direction: MetricDirection = metric_direction
 
         policy = dict(DEFAULT_POLICY)
         raw_policy = payload.get("policy")
@@ -329,6 +339,7 @@ class AdaptiveGridStore:
 
     def upsert_experiment(self, experiment_name: str, grid: dict[str, Any]) -> None:
         self.initialize_schema()
+        GridSpec(grid)
         timestamp = now_unix()
 
         with self.connect() as connection:
@@ -371,6 +382,7 @@ class AdaptiveGridStore:
                 f"Stored grid for experiment is invalid: {experiment_name}"
             )
 
+        GridSpec(payload)
         return payload
 
     def load_trials(self, experiment_name: str) -> list[Trial]:
@@ -547,7 +559,10 @@ class AdaptiveGridStore:
 
 class AdaptiveGridOptimizer:
     def __init__(
-        self, grid: GridSpec, trials: list[Trial], seed: int | None = None
+        self,
+        grid: GridSpec,
+        trials: list[Trial],
+        seed: int | None = None,
     ) -> None:
         self.grid = grid
         self.trials = trials
@@ -831,6 +846,8 @@ class AdaptiveGridOptimizer:
             "group_mode": group_mode,
             "group_key": group_key,
             "group_value": normalize_group_value(group_value),
+            "metric_name": self.grid.metric_name,
+            "metric_direction": self.grid.metric_direction,
         }
 
         return config, metadata
