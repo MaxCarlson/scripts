@@ -30,7 +30,7 @@ import types
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, TextIO
 from urllib.parse import urlparse
 
 # Import EnforcedArgumentParser with fallback
@@ -44,7 +44,7 @@ except ImportError:
 
 from . import archive_builder, urlscan, yt_grid
 from .domain_index import DomainIndex, ScanLogEntry, _extract_domain as _domain_of_url
-from .downloader import MAX_RESOLUTION_CHOICES
+from .downloader import ARCHIVE_PROCESSED_STATUSES, MAX_RESOLUTION_CHOICES
 from .mp4_watcher import MP4Watcher, WatcherConfig, WatcherSnapshot
 from termdash import utils as td_utils
 
@@ -132,6 +132,58 @@ class ManagerLogger:
         self._write(f"{t}|ERROR|{msg}")
 
 
+class DomainIndexFileLock:
+    """Manager-lifetime lock guarding a shared domain index file."""
+
+    def __init__(self, index_path: Path):
+        self.path = index_path.with_suffix(index_path.suffix + ".lock")
+        self._fh: Optional[TextIO] = None
+
+    def acquire(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fh = self.path.open("a+", encoding="utf-8")
+        try:
+            if os.name == "nt":
+                import msvcrt  # type: ignore
+
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl  # type: ignore
+
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except Exception as exc:
+            fh.close()
+            raise RuntimeError(f"domain index is already locked: {self.path}") from exc
+        self._fh = fh
+
+    def release(self) -> None:
+        fh = self._fh
+        if fh is None:
+            return
+        try:
+            if os.name == "nt":
+                import msvcrt  # type: ignore
+
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl  # type: ignore
+
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        try:
+            fh.close()
+        finally:
+            self._fh = None
+
+    def __enter__(self) -> "DomainIndexFileLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.release()
+
+
 def _read_urls(path: Path) -> List[str]:
     lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
     out: List[str] = []
@@ -144,6 +196,38 @@ def _read_urls(path: Path) -> List[str]:
         out.append(s.split("  #", 1)[0].split("  ;", 1)[0].strip())
     # stable de-dup
     return list(dict.fromkeys(out))
+
+
+def _archive_statuses_from_file(path: Path) -> Dict[str, str]:
+    statuses: Dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except Exception:
+        return statuses
+    for line in lines:
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) < 6:
+            continue
+        status = parts[0].strip().lower()
+        url = parts[-1].strip()
+        if status and url:
+            statuses[url] = status
+    return statuses
+
+
+def _load_archive_finished_urls(archive_dir: Optional[Path]) -> Dict[str, str]:
+    if not archive_dir or not archive_dir.exists():
+        return {}
+    finished: Dict[str, str] = {}
+    for path in sorted(archive_dir.glob("*.txt")):
+        if path.name.endswith(".rebuild.txt"):
+            continue
+        for url, status in _archive_statuses_from_file(path).items():
+            if status in ARCHIVE_PROCESSED_STATUSES:
+                finished[url] = status
+    return finished
 
 
 def _top_domain(url: Optional[str]) -> str:
@@ -903,22 +987,24 @@ def _normalize_active_progress(
     percent: object,
     speed_bps: object,
 ) -> tuple[Optional[float], Optional[int], Optional[int]]:
-    """Normalize an in-flight progress event without showing active transfers as done."""
+    """Normalize in-flight progress without displaying impossible totals as complete."""
     dl = downloaded if isinstance(downloaded, int) else None
     tot = total if isinstance(total, int) and total > 0 else None
     sp = float(speed_bps) if isinstance(speed_bps, (int, float)) else None
     pct = float(percent) if isinstance(percent, (int, float)) else None
 
+    if dl is not None and tot is not None and dl >= tot:
+        if dl > tot or (sp is not None and sp > 0) or (pct is not None and pct >= 99.5):
+            return None, dl, None
+
     if dl is not None and tot is not None:
         pct_value = min(100.0, max(0.0, 100.0 * (float(dl) / float(tot))))
-        if pct_value >= 100.0 and sp is not None and sp > 0:
-            pct_value = 99.9
         return pct_value, dl, tot
 
     if pct is not None:
         pct_value = min(100.0, max(0.0, pct))
         if pct_value >= 100.0 and sp is not None and sp > 0:
-            pct_value = 99.9
+            pct_value = None
     else:
         pct_value = None
 
@@ -993,6 +1079,7 @@ def _start_worker(
     extdl_capture_browser: str = "auto",
     skip_simulate_check: bool = False,
     canonical_dir_override: Optional[Path] = None,
+    archive_source_file: Optional[Path] = None,
     stall_seconds: int = 4,
     ytdlp_grid_config_file: Optional[Path] = None,
 ) -> subprocess.Popen:
@@ -1017,6 +1104,8 @@ def _start_worker(
         cmd += ["-X", str(cap_mibs)]
     if archive_dir:
         cmd += ["-a", str(archive_dir)]
+        if archive_source_file is not None:
+            cmd += ["-O", str(archive_source_file)]
     cmd += ["-r", str(Path(log_dir) / "raw")]  # raw tool logs alongside other logs
     if proxy_dl_location:
         cmd += ["--proxy-dl-location", str(proxy_dl_location)]
@@ -1484,6 +1573,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # Domain index (used when -D is active for URL-level domain locking)
     domain_index: Optional[DomainIndex] = None
     domain_index_path: Optional[Path] = None
+    domain_index_lock: Optional[DomainIndexFileLock] = None
 
     _udl_active = (
         (isinstance(getattr(args, "unique_domain_dls", -1), int) and args.unique_domain_dls >= 1)
@@ -1502,6 +1592,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             domain_index_path = log_dir / "domain_index.json"
         else:
             domain_index_path = Path(_idx_arg).expanduser().resolve()
+        domain_index_lock = DomainIndexFileLock(domain_index_path)
+        try:
+            domain_index_lock.acquire()
+        except RuntimeError as exc:
+            mlog.error(str(exc))
+            return 2
         _idx_log: List[str] = []
         _should_rebuild = getattr(args, "rebuild_domain_index", False)
 
@@ -1527,8 +1623,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 except Exception as _e:
                     mlog.error(f"-M: failed to delete {domain_index_path}: {_e}")
             mlog.info(f"Building domain index from {len(_all_url_files)} URL file(s) …")
+            finished_urls = _load_archive_finished_urls(archive_dir)
+            if finished_urls:
+                mlog.info(f"Seeding domain index from archive: {len(finished_urls)} finished URL(s)")
             domain_index = DomainIndex.build(
                 _all_url_files,
+                finished_urls=finished_urls,
                 progress_cb=lambda msg: mlog.info(f"  {msg}"),
             )
             domain_index.save(domain_index_path)
@@ -2358,6 +2458,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 extdl_capture_browser=getattr(args, "extdl_capture_browser", "auto"),
                 skip_simulate_check=getattr(args, "skip_simulate_check", False),
                 canonical_dir_override=canonical_dir,
+                archive_source_file=original_file,
                 stall_seconds=getattr(args, "stall_seconds", 4),
                 ytdlp_grid_config_file=ytdlp_grid_config_file,
             )
@@ -3726,6 +3827,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 domain_index.flush_save()
             except Exception:
                 pass
+        if domain_index_lock:
+            domain_index_lock.release()
         # Leave cursor below
     return 0
 

@@ -7,14 +7,29 @@ import pytest
 import tempfile
 from pathlib import Path
 
+_PACKAGE_ROOT = Path(__file__).resolve().parent.parent
+if str(_PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PACKAGE_ROOT))
+
 # On Windows, the system-level pytest-of-<user> directory in %TEMP% can become
 # inaccessible (Access Denied on os.scandir) if its mode bits get misconfigured.
-# Redirect pytest to a local temp root inside the module directory so tests are
-# not blocked by that broken system directory.
+# Redirect pytest to a workspace temp root outside the ytaedl package tree so
+# pytest will not later collect its own scratch directories as tests.
 if sys.platform == "win32" and "PYTEST_DEBUG_TEMPROOT" not in os.environ:
-    _local_temproot = Path(__file__).parent.parent / ".pytest_tmp_root"
-    _local_temproot.mkdir(exist_ok=True)
-    os.environ["PYTEST_DEBUG_TEMPROOT"] = str(_local_temproot)
+    _candidate_temproots = [
+        Path(os.environ["YTAEDL_PYTEST_TEMPROOT"])
+        if "YTAEDL_PYTEST_TEMPROOT" in os.environ
+        else None,
+        Path(__file__).resolve().parents[3] / ".pytest_tmp" / "ytaedl",
+        Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "ytaedl_pytest_tmp",
+    ]
+    for _local_temproot in [p for p in _candidate_temproots if p is not None]:
+        try:
+            _local_temproot.mkdir(parents=True, exist_ok=True)
+            os.environ["PYTEST_DEBUG_TEMPROOT"] = str(_local_temproot)
+            break
+        except OSError:
+            continue
 
 
 @pytest.fixture

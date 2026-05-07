@@ -376,6 +376,59 @@ class PartFileTest(unittest.TestCase):
         self.assertEqual(mock_manifest.video_stream.downloaded_bytes, 2000)
         self.assertEqual(mock_manifest.video_stream.total_size, 20000)
 
+    def test_restore_recomputes_low_total_size_from_existing_segments(self):
+        """Resumed downloads should not keep stale totals below downloaded bytes."""
+        from aebn_dl.models import VideoStream
+        from aebn_dl.manifest_parser import Manifest
+
+        downloader = Downloader(
+            url=self.url,
+            work_dir=self.work_dir,
+            output_dir=self.output_dir,
+            target_height=0,
+            log_level="INFO",
+        )
+
+        movie_work_dir = os.path.join(self.work_dir, "test_movie")
+        os.makedirs(movie_work_dir, exist_ok=True)
+
+        init_seg = os.path.join(movie_work_dir, "vi_test_video.mp4")
+        seg1 = os.path.join(movie_work_dir, "v_test_video_0.mp4")
+        seg2 = os.path.join(movie_work_dir, "v_test_video_1.mp4")
+        with open(init_seg, 'wb') as f:
+            f.write(b'i' * 100)
+        with open(seg1, 'wb') as f:
+            f.write(b'x' * 1000)
+        with open(seg2, 'wb') as f:
+            f.write(b'x' * 3000)
+
+        mock_manifest = MagicMock(spec=Manifest)
+        mock_manifest.total_number_of_data_segments = 10
+        mock_manifest.audio_stream = None
+        mock_manifest.video_stream = VideoStream()
+        mock_manifest.video_stream.stream_id = "test_video"
+
+        downloader.manifest = mock_manifest
+        downloader.movie_work_dir = movie_work_dir
+
+        part_data = {
+            'url': self.url,
+            'movie_id': 'test_movie',
+            'streams': {
+                'v': {
+                    'stream_id': 'test_video',
+                    'downloaded_segments': [init_seg, seg1, seg2],
+                    'downloaded_bytes': 4100,
+                    'total_size': 750,
+                }
+            }
+        }
+
+        downloader._restore_from_part_file(part_data)
+
+        self.assertEqual(mock_manifest.video_stream.downloaded_bytes, 4100)
+        self.assertEqual(mock_manifest.video_stream.total_size, 20100)
+
     def test_restore_filters_missing_segments(self):
         """Test that restore ignores segments that no longer exist on disk"""
         from aebn_dl.models import AudioStream

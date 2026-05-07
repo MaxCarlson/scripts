@@ -776,6 +776,90 @@ class TestStartWorker:
         assert "-G" in cmd
         assert cmd[cmd.index("-G") + 1] == str(grid_config)
 
+    def test_start_worker_passes_archive_source_file_when_provided(self, tmp_path):
+        tmp_urlfile = tmp_path / "logs" / "tmp_urls" / "w02_1_6.txt"
+        tmp_urlfile.parent.mkdir(parents=True)
+        tmp_urlfile.write_text("https://example.com/video1\n", encoding="utf-8")
+        source_file = tmp_path / "files" / "downloads" / "stars" / "adele_booty.txt"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("https://example.com/video1\n", encoding="utf-8")
+        log_dir = tmp_path / "logs"
+        archive_dir = tmp_path / "archive"
+        canonical_root = tmp_path / "downloads"
+        canonical_root.mkdir()
+
+        with patch("subprocess.Popen") as mock_popen:
+            mock_popen.return_value = MagicMock()
+            manager._start_worker(
+                slot=2,
+                urlfile=tmp_urlfile,
+                canonical_root=canonical_root,
+                max_rate=5.0,
+                quiet=False,
+                archive_dir=archive_dir,
+                log_dir=log_dir,
+                cap_mibs=None,
+                archive_source_file=source_file,
+            )
+
+        cmd = mock_popen.call_args.args[0]
+        assert "-O" in cmd
+        assert cmd[cmd.index("-O") + 1] == str(source_file)
+
+    def test_start_worker_omits_archive_source_file_by_default(self, tmp_path):
+        urlfile = tmp_path / "url.txt"
+        urlfile.write_text("https://example.com/video1\n", encoding="utf-8")
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        archive_dir = tmp_path / "archive"
+        canonical_root = tmp_path / "downloads"
+        canonical_root.mkdir()
+
+        with patch("subprocess.Popen") as mock_popen:
+            mock_popen.return_value = MagicMock()
+            manager._start_worker(
+                slot=1,
+                urlfile=urlfile,
+                canonical_root=canonical_root,
+                max_rate=5.0,
+                quiet=False,
+                archive_dir=archive_dir,
+                log_dir=log_dir,
+                cap_mibs=None,
+            )
+
+        cmd = mock_popen.call_args.args[0]
+        assert "-a" in cmd
+        assert "-O" not in cmd
+
+    def test_load_archive_finished_urls_only_returns_processed_statuses(self, tmp_path):
+        archive_dir = tmp_path / "archive"
+        archive_dir.mkdir()
+        archive_file = archive_dir / "yt-star.txt"
+        archive_file.write_text(
+            "\n".join(
+                [
+                    "downloaded\t1.000\t2026-05-07T04:13:23\t1.00MiB\tid1\thttps://example.com/done",
+                    "already\t1.000\t2026-05-07T04:13:24\t0.00MiB\tid2\thttps://example.com/already",
+                    "bad-url\t1.000\t2026-05-07T04:13:25\t0.00MiB\tid3\thttps://example.com/retry",
+                    "stalled\t1.000\t2026-05-07T04:13:26\t0.00MiB\tid4\thttps://example.com/stalled",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (archive_dir / "yt-star.rebuild.txt").write_text(
+            "downloaded\t1.000\t2026-05-07T04:13:27\t1.00MiB\tid5\thttps://example.com/rebuild-only\n",
+            encoding="utf-8",
+        )
+
+        finished = manager._load_archive_finished_urls(archive_dir)
+
+        assert finished == {
+            "https://example.com/done": "downloaded",
+            "https://example.com/already": "already",
+        }
+
 
 @pytest.mark.integration
 class TestMainFunction:
@@ -1149,27 +1233,27 @@ class TestUtilityFunctions:
         ws.is_searching = False   # simulate start handler
         assert ws.is_searching is False
 
-    def test_clamp_progress_allows_100_percent(self):
-        """Active progress stays below 100% when bytes still appear to be moving."""
+    def test_active_equal_total_progress_with_speed_is_unknown(self):
+        """Active progress with a matched/low total is not displayed as 99.9%."""
         dl, tot = 500_000_000, 500_000_000
         pct, norm_dl, norm_tot = manager._normalize_active_progress(dl, tot, 100.0, 1_000.0)
-        assert pct == 99.9
+        assert pct is None
         assert norm_dl == dl
-        assert norm_tot == tot
+        assert norm_tot is None
 
-    def test_active_progress_preserves_downloaded_over_reported_total(self):
+    def test_active_progress_drops_reported_total_below_downloaded(self):
         pct, norm_dl, norm_tot = manager._normalize_active_progress(600, 500, 120.0, 10_000.0)
 
-        assert pct == 99.9
+        assert pct is None
         assert norm_dl == 600
-        assert norm_tot == 500
+        assert norm_tot is None
 
-    def test_active_progress_without_positive_speed_can_show_100(self):
+    def test_active_progress_without_positive_speed_still_waits_for_finish(self):
         pct, norm_dl, norm_tot = manager._normalize_active_progress(500, 500, 100.0, 0.0)
 
-        assert pct == 100.0
+        assert pct is None
         assert norm_dl == 500
-        assert norm_tot == 500
+        assert norm_tot is None
 
     def test_footer_always_appended_after_verbose_lines(self):
         """Footer lines are rendered after the verbose panel so they stay at the bottom."""

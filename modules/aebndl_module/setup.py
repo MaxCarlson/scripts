@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="aebndl",
-    version="0.7.2",
+    version="0.7.3",
     packages=find_packages(),
     install_requires=[
         "lxml",

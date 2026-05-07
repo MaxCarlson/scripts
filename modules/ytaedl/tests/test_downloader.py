@@ -163,7 +163,7 @@ class TestDownloader:
         # Default allow
         assert downloader._looks_supported_video("https://example.com/video")
 
-    def test_clamp_progress_preserves_active_bytes_and_caps_100(self):
+    def test_clamp_progress_preserves_active_bytes_and_drops_unreliable_total(self):
         evt = {
             "event": "progress",
             "downloaded": 125,
@@ -175,8 +175,10 @@ class TestDownloader:
         clamped = downloader._clamp_progress(evt)
 
         assert clamped["downloaded"] == 125
-        assert clamped["total"] == 100
-        assert clamped["percent"] == 99.9
+        assert clamped["total"] is None
+        assert clamped["percent"] is None
+        assert clamped["eta_s"] is None
+        assert clamped["unreliable_total"] is True
 
     def test_progress_activity_pre_transfer_stalls_on_short_window(self):
         activity = downloader._ProgressActivity(
@@ -789,6 +791,125 @@ class TestIntegration:
                 assert second_fields[0] == 'downloaded'
         finally:
             os.unlink(temp_path)
+
+    def test_main_archive_skips_by_url_not_line_position(self, tmp_path):
+        urlfile = tmp_path / "urls.txt"
+        urlfile.write_text(
+            "https://example.com/video1\nhttps://example.com/video2\n",
+            encoding="utf-8",
+        )
+        archive_dir = tmp_path / "archive"
+        archive_dir.mkdir()
+        archive_file = archive_dir / f"yt-{urlfile.stem}.txt"
+        archive_file.write_text(
+            downloader._format_archive_line(
+                "downloaded",
+                1.0,
+                "2026-05-07T04:13:23",
+                0.0,
+                "id2",
+                "https://example.com/video2",
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        argv = ["ytaedl", "-f", str(urlfile), "--archive-dir", str(archive_dir)]
+        with patch("sys.argv", argv):
+            with patch("ytaedl.downloader._run_one") as mock_run:
+                mock_run.return_value = (
+                    0,
+                    {
+                        "elapsed_s": 0.5,
+                        "downloaded": 150,
+                        "total": 150,
+                        "already": False,
+                        "downloader": "yt-dlp",
+                    },
+                )
+                result = downloader.main()
+
+        assert result == 0
+        assert mock_run.call_count == 1
+        assert mock_run.call_args.kwargs["url_index"] == 1
+        assert mock_run.call_args.kwargs["urls"] == ["https://example.com/video1"]
+
+    def test_main_archive_source_file_controls_archive_name(self, tmp_path):
+        tmp_urlfile = tmp_path / "logs" / "tmp_urls" / "w03_166_14.txt"
+        tmp_urlfile.parent.mkdir(parents=True)
+        tmp_urlfile.write_text("https://example.com/video2\n", encoding="utf-8")
+        source_file = tmp_path / "files" / "downloads" / "stars" / "sofi_li.txt"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text(
+            "https://example.com/video1\nhttps://example.com/video2\n",
+            encoding="utf-8",
+        )
+        archive_dir = tmp_path / "archive"
+
+        argv = [
+            "ytaedl",
+            "-f",
+            str(tmp_urlfile),
+            "--archive-dir",
+            str(archive_dir),
+            "-O",
+            str(source_file),
+        ]
+        with patch("sys.argv", argv):
+            with patch("ytaedl.downloader._run_one") as mock_run:
+                mock_run.return_value = (
+                    0,
+                    {
+                        "elapsed_s": 0.5,
+                        "downloaded": 150,
+                        "total": 150,
+                        "already": False,
+                        "downloader": "yt-dlp",
+                    },
+                )
+                result = downloader.main()
+
+        assert result == 0
+        assert mock_run.call_count == 1
+        assert (archive_dir / "yt-sofi_li.txt").exists()
+        assert not (archive_dir / "yt-w03_166_14.txt").exists()
+
+    def test_main_archive_does_not_skip_failed_statuses(self, tmp_path):
+        urlfile = tmp_path / "urls.txt"
+        urlfile.write_text("https://example.com/video1\n", encoding="utf-8")
+        archive_dir = tmp_path / "archive"
+        archive_dir.mkdir()
+        archive_file = archive_dir / f"yt-{urlfile.stem}.txt"
+        archive_file.write_text(
+            downloader._format_archive_line(
+                "bad-url",
+                1.0,
+                "2026-05-07T04:13:23",
+                0.0,
+                "id1",
+                "https://example.com/video1",
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        argv = ["ytaedl", "-f", str(urlfile), "--archive-dir", str(archive_dir)]
+        with patch("sys.argv", argv):
+            with patch("ytaedl.downloader._run_one") as mock_run:
+                mock_run.return_value = (
+                    0,
+                    {
+                        "elapsed_s": 0.5,
+                        "downloaded": 150,
+                        "total": 150,
+                        "already": False,
+                        "downloader": "yt-dlp",
+                    },
+                )
+                result = downloader.main()
+
+        assert result == 0
+        assert mock_run.call_count == 1
 
     def test_main_archive_records_stalled_url(self):
         """Stalled downloads are recorded in the archive."""

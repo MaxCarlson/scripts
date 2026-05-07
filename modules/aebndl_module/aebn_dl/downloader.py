@@ -252,6 +252,40 @@ class Downloader:
                 stream.downloaded_bytes = stream_data['downloaded_bytes']
             if 'total_size' in stream_data:
                 stream.total_size = stream_data['total_size']
+            self._refresh_stream_total_estimate(stream)
+
+    def _stream_segment_sizes(self, stream: MediaStream) -> tuple[int, int, int]:
+        """Return (data_count, data_bytes, init_bytes) for downloaded stream segments."""
+        data_count = 0
+        data_bytes = 0
+        init_bytes = 0
+        data_prefix = f"{stream.media_type}_{stream.stream_id}_"
+        init_prefix = f"{stream.media_type}i_{stream.stream_id}"
+        for segment_path in stream.downloaded_segments:
+            try:
+                segment_size = os.path.getsize(segment_path)
+            except OSError:
+                continue
+            segment_name = os.path.basename(segment_path)
+            if segment_name.startswith(data_prefix):
+                data_count += 1
+                data_bytes += segment_size
+            elif segment_name.startswith(init_prefix):
+                init_bytes += segment_size
+        return data_count, data_bytes, init_bytes
+
+    def _refresh_stream_total_estimate(self, stream: MediaStream) -> None:
+        """Recompute total size from actual resumed/downloaded data segments."""
+        total_segments = getattr(self.manifest, "total_number_of_data_segments", None)
+        if not total_segments:
+            return
+        data_count, data_bytes, init_bytes = self._stream_segment_sizes(stream)
+        if data_count <= 0 or data_bytes <= 0:
+            return
+        avg_segment_size = data_bytes / data_count
+        estimated_total = int(avg_segment_size * int(total_segments)) + init_bytes
+        if estimated_total > stream.total_size:
+            stream.total_size = estimated_total
 
     def run(self) -> None:
         """Executes the movie download process."""
@@ -652,7 +686,7 @@ class Downloader:
                 # We do NOT use max(total_size, current_downloaded) because that would cause
                 # downloaded == total when current_downloaded > total_size, locking percent
                 # at 99.9% forever while the download is still in progress.
-                if total_size > 0 and has_live_data:
+                if total_size > 0 and has_live_data and total_size > current_downloaded:
                     reliable_total = total_size  # trust live segment estimate as-is
                 elif total_size > current_downloaded:
                     reliable_total = total_size  # rough estimate is still above current
@@ -829,6 +863,11 @@ class Downloader:
             if stream.total_size == 0 and segment_number is not None:
                 stream.total_size = segment_size * self.manifest.total_number_of_data_segments
                 if download_bar:
+                    download_bar.total = stream.total_size
+            elif segment_number is not None:
+                previous_total = stream.total_size
+                self._refresh_stream_total_estimate(stream)
+                if download_bar and stream.total_size != previous_total:
                     download_bar.total = stream.total_size
             if download_bar:
                 download_bar.update(segment_size)

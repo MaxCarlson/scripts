@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ytaedl"
-version = "1.10.1"
+version = "1.10.4"
 description = "Batch downloader using yt-dlp/aebn with an optional orchestrator."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -28,5 +28,13 @@ packages = ["ytaedl"]
 addopts = "-ra"
 testpaths = ["tests"]
 python_files = ["*_test.py", "test_*.py"]
+norecursedirs = [
+  ".*",
+  "__pycache__",
+  ".pytest_cache",
+  ".pytest_tmp_root",
+  "codex_tmp_test",
+  "ytaedl_test_tmp*",
+]
 tmp_path_retention_policy = "failed"
 

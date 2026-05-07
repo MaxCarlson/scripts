@@ -201,6 +201,10 @@ claude-*.txt
 modules/file_utils/path_backups/
 modules/poe2craft/**/*.json
 .pytest_tmp/
+.pytest_tmp*/
+**/.pytest_tmp_codex/
+**/pytest-cache-files-*/
+.pytest_run_tmp*/
 logs/
 
 # Video File Stuff

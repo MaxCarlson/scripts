@@ -30,7 +30,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Set, Tuple
 
 from procparsers import iter_parsed_events
 
@@ -90,6 +90,8 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("-U", "--max-ndjson-rate", type=float, default=5.0,
                    help="Max NDJSON progress events printed per second (-1 for unlimited). Applies to 'progress' events.")
     p.add_argument("-a", "--archive-dir", type=str, default=None, help="Directory to store per-urlfile archive status files.")
+    p.add_argument("-O", "--archive-source-file", type=str, default=None,
+                   help="Original URL file used for archive naming and status lookup; defaults to --url-file.")
     p.add_argument("-S", "--stall-seconds", type=int, default=4, help="If no non-heartbeat events arrive for N seconds, treat URL as stalled and try fallback methods.")
     p.add_argument("-C", "--complete-stall-seconds", type=int, default=300, help="If download is stuck at >=99%% for N seconds (progress events still arriving), treat as stalled.")
     p.add_argument("-E", "--exit-at-time", type=int, default=-1, help="Exit the program after N seconds (<=0 disables).")
@@ -457,6 +459,9 @@ def _format_archive_line(status: str, elapsed_s: float, when: str, downloaded_mi
     ])
 
 
+ARCHIVE_PROCESSED_STATUSES = {"downloaded", "already", "preexisting"}
+
+
 def _ensure_archive_line_has_url(line: str, url: str) -> str:
     if not line.strip():
         return ''
@@ -465,6 +470,80 @@ def _ensure_archive_line_has_url(line: str, url: str) -> str:
         parts = (parts + [''] * 6)[:6]
     parts[5] = url
     return '	'.join(parts)
+
+
+def _archive_prefix_for(path: Path) -> str:
+    return "ae" if "ae-stars" in str(path.parent) else "yt"
+
+
+def _parse_archive_line(line: str) -> Optional[Tuple[str, str]]:
+    if not line.strip():
+        return None
+    parts = line.rstrip("\n").split("	")
+    if not parts:
+        return None
+    status = parts[0].strip().lower()
+    url = parts[-1].strip() if len(parts) >= 6 else ""
+    if not status or not url:
+        return None
+    return status, url
+
+
+def _read_archive_statuses(archive_file: Path, source_urls: List[str]) -> Tuple[Dict[str, str], List[str], bool]:
+    statuses: Dict[str, str] = {}
+    normalized_lines: List[str] = []
+    changed = False
+    try:
+        raw_lines = archive_file.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return statuses, normalized_lines, changed
+
+    for idx, line in enumerate(raw_lines):
+        if not line.strip():
+            continue
+        normalized = line
+        parsed = _parse_archive_line(line)
+        if parsed is None and idx < len(source_urls):
+            normalized = _ensure_archive_line_has_url(line, source_urls[idx])
+            parsed = _parse_archive_line(normalized)
+            changed = changed or normalized != line
+        normalized_lines.append(normalized)
+        if parsed:
+            status, url = parsed
+            statuses[url] = status
+    return statuses, normalized_lines, changed
+
+
+def _locked_append_line(path: Path, line: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        import msvcrt  # type: ignore
+    except Exception:
+        msvcrt = None  # type: ignore
+    try:
+        import fcntl  # type: ignore
+    except Exception:
+        fcntl = None  # type: ignore
+    with path.open("a", encoding="utf-8") as fh:
+        try:
+            if msvcrt and os.name == "nt":
+                msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1_000_000)
+            elif fcntl and os.name != "nt":
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        except Exception:
+            pass
+        try:
+            fh.write(line + "\n")
+            fh.flush()
+        finally:
+            try:
+                if msvcrt and os.name == "nt":
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1_000_000)
+                elif fcntl and os.name != "nt":
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+
 
 def _build_ytdlp_cmd(
     urls: List[str],
@@ -530,7 +609,7 @@ def _active_stall_seconds(stall_seconds: int | None) -> Optional[int]:
 
 
 def _clamp_progress(evt: dict, *, terminal: bool = False) -> dict:
-    """Normalize progress values without turning active resumed downloads into 100%."""
+    """Normalize progress values without trusting impossible in-flight totals."""
     if evt.get("event") != "progress":
         return evt
 
@@ -552,17 +631,23 @@ def _clamp_progress(evt: dict, *, terminal: bool = False) -> dict:
     if speed is not None:
         clamped["speed_bps"] = speed
 
-    if dl is not None and tot is not None and tot > 0:
+    if not terminal and dl is not None and tot is not None and tot > 0 and dl >= tot:
+        clamped["total"] = None
+        clamped["percent"] = None
+        clamped["eta_s"] = None
+        clamped["unreliable_total"] = True
+    elif dl is not None and tot is not None and tot > 0:
         clamped["total"] = tot
         pct_calc = (dl / tot) * 100.0
         pct_value = min(100.0, max(0.0, pct_calc))
-        if not terminal and pct_value >= 100.0:
-            pct_value = 99.9
         clamped["percent"] = pct_value
     elif pct is not None:
         pct_value = min(100.0, max(0.0, pct))
         if not terminal and pct_value >= 100.0:
-            pct_value = 99.9
+            clamped["percent"] = None
+            clamped["eta_s"] = None
+            clamped["unreliable_total"] = True
+            return clamped
         clamped["percent"] = pct_value
 
     return clamped
@@ -1441,32 +1526,32 @@ def main() -> int:
     urls = _read_urls(urlfile)
     # Archive support
     archive_dir = Path(args.archive_dir).expanduser().resolve() if args.archive_dir else None
+    archive_source_file = Path(args.archive_source_file).expanduser() if args.archive_source_file else urlfile
+    archive_source_file = archive_source_file.resolve()
     archive_file: Optional[Path] = None
+    archive_statuses: Dict[str, str] = {}
+    archive_processed_urls: Set[str] = set()
     if archive_dir:
         try:
-            prefix = 'ae' if 'ae-stars' in str(urlfile.parent) else 'yt'
+            prefix = _archive_prefix_for(archive_source_file)
             archive_dir.mkdir(parents=True, exist_ok=True)
-            archive_file = archive_dir / f"{prefix}-{urlfile.stem}.txt"
+            archive_file = archive_dir / f"{prefix}-{archive_source_file.stem}.txt"
         except Exception:
             archive_file = None
-    # Read existing archive entries and compute starting index
-    processed_lines: list[str] = []
+    # Read existing archive entries by URL, not by line count. This keeps
+    # domain-index temp files from creating one archive per generated URL file.
     if archive_file and archive_file.exists():
-        try:
-            raw_lines = archive_file.read_text(encoding='utf-8').splitlines()
-        except Exception:
-            raw_lines = []
-        for idx, ln in enumerate(raw_lines):
-            if not ln.strip():
-                continue
-            url_for_line = urls[idx] if idx < len(urls) else ''
-            processed_lines.append(_ensure_archive_line_has_url(ln, url_for_line))
-        if processed_lines and processed_lines != [ln for ln in raw_lines if ln.strip()]:
+        source_urls = _read_urls(archive_source_file) if archive_source_file.exists() else urls
+        archive_statuses, normalized_lines, archive_changed = _read_archive_statuses(archive_file, source_urls)
+        archive_processed_urls = {
+            url for url, status in archive_statuses.items()
+            if status.lower() in ARCHIVE_PROCESSED_STATUSES
+        }
+        if archive_changed and normalized_lines:
             try:
-                archive_file.write_text('\n'.join(processed_lines) + '\n', encoding='utf-8')
+                archive_file.write_text('\n'.join(normalized_lines) + '\n', encoding='utf-8')
             except Exception:
                 pass
-    first_unprocessed = (len(processed_lines) + 1) if archive_file else 1
     if not urls:
         print("[ERROR] No URLs found.", file=sys.stderr)
         return 3
@@ -1474,8 +1559,8 @@ def main() -> int:
     overall_rc = 0
     try:
         for i, url in enumerate(urls, 1):
-            # Skip already processed based on archive
-            if archive_file and i < first_unprocessed:
+            # Skip successfully processed URLs based on archive status.
+            if archive_file and url in archive_processed_urls:
                 continue
             if _stop_sentinel_active(stop_sentinel):
                 _emit_json(
@@ -1547,10 +1632,11 @@ def main() -> int:
                     downloaded_mib = downloaded / (1024*1024)
                     vid = _extract_video_id(url)
                     line = _format_archive_line(status, elapsed_s, when, downloaded_mib, vid, url)
-                    processed_lines.append(line)
                     try:
-                        with archive_file.open('a', encoding='utf-8') as fh:
-                            fh.write(line + "\n")
+                        _locked_append_line(archive_file, line)
+                        archive_statuses[url] = status
+                        if status in ARCHIVE_PROCESSED_STATUSES:
+                            archive_processed_urls.add(url)
                         _emit_json({"event": "archive_write", "status": status, "url_index": i, "url": url, "archive_path": str(archive_file)})
                     except Exception:
                         _emit_json({"event": "archive_write_failed", "status": status, "url_index": i, "url": url, "archive_path": str(archive_file)})

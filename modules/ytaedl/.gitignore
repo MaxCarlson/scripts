@@ -1,1 +1,4 @@
 .pytest_tmp/
+.pytest_tmp_root/
+codex_tmp_test/
+ytaedl_test_tmp*/
