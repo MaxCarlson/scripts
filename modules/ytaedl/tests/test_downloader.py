@@ -37,6 +37,9 @@ class TestDownloader:
         args_with_stop = parser.parse_args(["-f", "test.txt", "-B", "/tmp/stop"])
         assert args_with_stop.stop_sentinel == "/tmp/stop"
 
+        args_with_grid = parser.parse_args(["-f", "test.txt", "-G", "/tmp/trial.json"])
+        assert args_with_grid.ytdlp_grid_config_file == "/tmp/trial.json"
+
     def test_read_urls_basic(self):
         """Test reading URLs from a file."""
         with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
@@ -170,6 +173,60 @@ class TestDownloader:
         assert "--format" in cmd
         fmt = cmd[cmd.index("--format") + 1]
         assert "height<=1080" in fmt
+
+    def test_build_ytdlp_cmd_with_native_grid_config(self):
+        urls = ["https://example.com/video1"]
+        out_dir = Path("/tmp/output")
+        config = {
+            "downloader": "native",
+            "concurrent_fragments": 8,
+            "http_chunk_size": "10M",
+            "buffer_size": "4M",
+            "resize_buffer": False,
+            "socket_timeout": 30,
+            "retries": 5,
+            "fragment_retries": 20,
+            "force_ip": "ipv4",
+            "format": "best",
+        }
+
+        cmd = downloader._build_ytdlp_cmd(urls, out_dir, grid_config=config)
+
+        assert cmd[cmd.index("--downloader") + 1] == "native"
+        assert cmd[cmd.index("--concurrent-fragments") + 1] == "8"
+        assert cmd[cmd.index("--http-chunk-size") + 1] == "10M"
+        assert cmd[cmd.index("--buffer-size") + 1] == "4M"
+        assert "--no-resize-buffer" in cmd
+        assert cmd[cmd.index("--socket-timeout") + 1] == "30"
+        assert cmd[cmd.index("--retries") + 1] == "5"
+        assert cmd[cmd.index("--fragment-retries") + 1] == "20"
+        assert "--force-ipv4" in cmd
+        assert cmd[cmd.index("--format") + 1] == "best"
+
+    def test_build_ytdlp_cmd_with_aria2c_grid_config(self):
+        urls = ["https://example.com/video1"]
+        out_dir = Path("/tmp/output")
+        config = {
+            "downloader": "aria2c",
+            "aria2c_max_connection_per_server": 4,
+            "aria2c_split": 8,
+            "aria2c_min_split_size": "10M",
+            "aria2c_piece_length": "2M",
+            "aria2c_file_allocation": "none",
+            "aria2c_disk_cache": "64M",
+        }
+
+        cmd = downloader._build_ytdlp_cmd(urls, out_dir, grid_config=config)
+
+        assert cmd[cmd.index("--downloader") + 1] == "aria2c"
+        aria_args = cmd[cmd.index("--downloader-args") + 1]
+        assert aria_args.startswith("aria2c:")
+        assert "-x 4" in aria_args
+        assert "-s 8" in aria_args
+        assert "-k 10M" in aria_args
+        assert "--piece-length=2M" in aria_args
+        assert "--file-allocation=none" in aria_args
+        assert "--disk-cache=64M" in aria_args
 
     def test_build_aebndl_cmd(self):
         """Test aebndl command building."""

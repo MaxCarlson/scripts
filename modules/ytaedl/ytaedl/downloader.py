@@ -34,6 +34,19 @@ from typing import List, Optional
 
 from procparsers import iter_parsed_events
 
+try:
+    from . import yt_grid
+except ImportError:  # pragma: no cover - used when downloader.py is executed by file path.
+    import importlib.util
+
+    _yt_grid_path = Path(__file__).with_name("yt_grid.py")
+    _yt_grid_spec = importlib.util.spec_from_file_location("ytaedl_yt_grid", _yt_grid_path)
+    if _yt_grid_spec is None or _yt_grid_spec.loader is None:
+        raise
+    yt_grid = importlib.util.module_from_spec(_yt_grid_spec)
+    sys.modules[_yt_grid_spec.name] = yt_grid
+    _yt_grid_spec.loader.exec_module(yt_grid)
+
 MAX_RESOLUTION_CHOICES = ("4k", "2k", "1080", "720", "480")
 _MAX_RESOLUTION_HEIGHTS = {
     "4k": 2160,
@@ -97,6 +110,8 @@ def make_parser() -> argparse.ArgumentParser:
                    help="Playwright browser backend for the network capture fallback.")
     p.add_argument("--skip-simulate-check", action="store_true",
                    help="Skip the yt-dlp --simulate pre-download duplicate check.")
+    p.add_argument("-G", "--ytdlp-grid-config-file", default=None,
+                   help="JSON trial/config file with yt-dlp options selected by ytaedl grid search.")
 
     return p
 
@@ -457,6 +472,7 @@ def _build_ytdlp_cmd(
     max_mibs: Optional[float] = None,
     max_height: Optional[int] = None,
     temp_dir: Optional[Path] = None,
+    grid_config: Optional[dict] = None,
 ) -> List[str]:
     # no --print; --newline ensures line-terminated progress
     cmd = [
@@ -469,6 +485,8 @@ def _build_ytdlp_cmd(
         cmd += ["--limit-rate", rate_arg]
     if isinstance(max_height, int) and max_height > 0:
         cmd += ["--format", _format_selector_for_height(max_height)]
+    if grid_config:
+        cmd += yt_grid.build_ytdlp_grid_args(grid_config, allow_format=not (isinstance(max_height, int) and max_height > 0))
     if temp_dir:
         cmd += ["--paths", f"temp:{temp_dir}"]
     cmd += [*urls]
@@ -897,6 +915,7 @@ def _run_one(
     extdl_browser_wait: float = 12.0,
     extdl_capture_browser: str = "auto",
     skip_simulate_check: bool = False,
+    ytdlp_grid_config: Optional[dict] = None,
 ) -> tuple[int, dict]:
     """
     Returns rc (0 on success). Emits NDJSON to stdout during run.
@@ -931,6 +950,19 @@ def _run_one(
                 "url": url,
                 "source": "simulate_check",
             })
+            _emit_json({
+                "event": "finish",
+                "downloader": tool,
+                "url_index": url_index,
+                "url": url,
+                "rc": 0,
+                "reason": "pre-download simulate found existing canonical file",
+                "elapsed_s": 0.0,
+                "downloaded": None,
+                "total": None,
+                "already": True,
+                "raw_log_path": None,
+            })
             return 0, {"elapsed_s": 0.0, "downloaded": None, "total": None, "already": True, "downloader": tool}
         else:
             proglog.simulate_ok(url, sim.predicted_name)
@@ -955,15 +987,35 @@ def _run_one(
     if tool == "aebndl":
         cmd = _build_aebndl_cmd(url, out_dir, work_dir, max_height)
     else:
-        cmd = _build_ytdlp_cmd([url], out_dir, max_dl_speed, max_height, temp_dir=work_dir)
+        cmd = _build_ytdlp_cmd(
+            [url],
+            out_dir,
+            max_dl_speed,
+            max_height,
+            temp_dir=work_dir,
+            grid_config=ytdlp_grid_config,
+        )
 
     _emit_json({"event": "start", "downloader": tool, "url_index": url_index, "url_total": None,
-                "url": url, "out_dir": str(out_dir), "cmd": None})
+                "url": url, "out_dir": str(out_dir), "cmd": None,
+                "ytdlp_grid_config": ytdlp_grid_config if tool == "yt-dlp" else None})
 
     if dry_run:
         if not quiet:
             print("DRY RUN:", " ".join(shlex.quote(x) for x in cmd))
-        _emit_json({"event": "finish", "downloader": tool, "url_index": url_index, "url": url, "rc": 0})
+        _emit_json({
+            "event": "finish",
+            "downloader": tool,
+            "url_index": url_index,
+            "url": url,
+            "rc": 0,
+            "reason": "dry run",
+            "elapsed_s": 0.0,
+            "downloaded": 0,
+            "total": 0,
+            "already": False,
+            "raw_log_path": None,
+        })
         proglog.finish(url_index, time.time() - t_url_start, "FINISH_SUCCESS")
         info = {"elapsed_s": 0.0, "downloaded": 0, "total": 0, "already": False, "downloader": tool}
         return 0, info
@@ -1217,15 +1269,26 @@ def _run_one(
         else:
             _finish_reason = f"yt-dlp exited with code {rc} (no fallback attempted)"
 
-    _emit_json({"event": "finish", "downloader": tool, "url_index": url_index, "url": url,
-                "rc": rc, "reason": _finish_reason})
     elapsed_s = time.time() - t_url_start
+    _emit_json({
+        "event": "finish",
+        "downloader": tool,
+        "url_index": url_index,
+        "url": url,
+        "rc": rc,
+        "reason": _finish_reason,
+        "elapsed_s": elapsed_s,
+        "downloaded": (last_progress or {}).get("downloaded"),
+        "total": (last_progress or {}).get("total"),
+        "already": bool(already_seen),
+        "raw_log_path": str(raw_path),
+    })
     proglog.finish(url_index, elapsed_s, status, reason=_finish_reason)
 
     # retry if bad
     info = {"elapsed_s": elapsed_s, "downloaded": (last_progress or {}).get("downloaded"), "total": (last_progress or {}).get("total"), "already": bool(already_seen), "downloader": tool}
     if rc != 0 and retries > 0:
-        return _run_one(tool, urls, out_dir, canonical_out_dir, work_dir, raw_dir, url_index, proglog, timeout, retries - 1, quiet, dry_run, progress_freq_s, max_ndjson_rate, stall_seconds, program_deadline, max_dl_speed, max_height, complete_stall_seconds, extdl_fallback, extdl_max_candidates, extdl_browser_wait, extdl_capture_browser, skip_simulate_check=True)
+        return _run_one(tool, urls, out_dir, canonical_out_dir, work_dir, raw_dir, url_index, proglog, timeout, retries - 1, quiet, dry_run, progress_freq_s, max_ndjson_rate, stall_seconds, program_deadline, max_dl_speed, max_height, complete_stall_seconds, extdl_fallback, extdl_max_candidates, extdl_browser_wait, extdl_capture_browser, skip_simulate_check=True, ytdlp_grid_config=ytdlp_grid_config)
     return rc, info
 
 def main() -> int:
@@ -1238,6 +1301,7 @@ def main() -> int:
             pass
 
     args = make_parser().parse_args()
+    ytdlp_grid_config = yt_grid.load_trial_config(args.ytdlp_grid_config_file)
 
     urlfile = Path(args.url_file)
     if not urlfile.exists():
@@ -1376,6 +1440,7 @@ def main() -> int:
                 extdl_browser_wait=getattr(args, "extdl_browser_wait", 12.0),
                 extdl_capture_browser=getattr(args, "extdl_capture_browser", "auto"),
                 skip_simulate_check=getattr(args, "skip_simulate_check", False),
+                ytdlp_grid_config=ytdlp_grid_config if tool == "yt-dlp" else None,
             )
             # Update archive status (skip marking on Ctrl-C abort rc==130)
             if archive_file:

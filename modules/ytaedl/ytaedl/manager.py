@@ -42,7 +42,7 @@ except ImportError:
     EnforcedArgumentParser = argparse.ArgumentParser
     ENFORCER_AVAILABLE = False
 
-from . import archive_builder, urlscan
+from . import archive_builder, urlscan, yt_grid
 from .domain_index import DomainIndex, ScanLogEntry, _extract_domain as _domain_of_url
 from .downloader import MAX_RESOLUTION_CHOICES
 from .mp4_watcher import MP4Watcher, WatcherConfig, WatcherSnapshot
@@ -889,6 +889,12 @@ class WorkerState:
     worker_log_counter: int = 0                # counter for manager-written log entries
     progress_log_started: bool = False         # True after first manager-side PROGRESS written for current download
     last_progress_log_t: float = 0.0           # time of last manager-side PROGRESS entry
+    ytdlp_grid_trial_id: Optional[str] = None
+    ytdlp_grid_config: Optional[dict] = None
+    ytdlp_grid_config_path: Optional[Path] = None
+    ytdlp_grid_source_urlfile: Optional[str] = None
+    ytdlp_grid_stats: Optional[yt_grid.GridRuntimeStats] = None
+    ytdlp_grid_recorded: bool = False
 
 
 class DomainDiversityAverager:
@@ -960,6 +966,7 @@ def _start_worker(
     skip_simulate_check: bool = False,
     canonical_dir_override: Optional[Path] = None,
     stall_seconds: int = 4,
+    ytdlp_grid_config_file: Optional[Path] = None,
 ) -> subprocess.Popen:
     if canonical_dir_override is not None:
         canonical_dir = canonical_dir_override
@@ -1001,6 +1008,8 @@ def _start_worker(
         cmd.append("--skip-simulate-check")
     if stall_seconds and stall_seconds != 4:
         cmd += ["-S", str(stall_seconds)]
+    if ytdlp_grid_config_file:
+        cmd += ["-G", str(ytdlp_grid_config_file)]
     if quiet:
         cmd.append("-q")
     # line buffered
@@ -1182,6 +1191,24 @@ def make_parser() -> argparse.ArgumentParser:
         help="Skip the yt-dlp --simulate pre-download duplicate check.",
     )
     p.add_argument(
+        "-X",
+        "--yt-dlp-grid-search",
+        action="store_true",
+        help="Enable adaptive gsearch trials for yt-dlp worker downloads.",
+    )
+    p.add_argument(
+        "-B",
+        "--yt-dlp-grid-db",
+        default=None,
+        help="SQLite grid-search database path; defaults to <log-dir>/yt-dlp-grid.db when grid search is enabled.",
+    )
+    p.add_argument(
+        "-V",
+        "--yt-dlp-grid-experiment",
+        default=yt_grid.DEFAULT_GRID_EXPERIMENT,
+        help="gsearch experiment name for yt-dlp grid search.",
+    )
+    p.add_argument(
         "-S", "--stall-seconds",
         type=int,
         default=4,
@@ -1300,6 +1327,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     controlled_quit_sentinel = log_dir / f"controlled-quit-{ts}-{os.getpid()}.stop"
     mlog = ManagerLogger(manager_log_path)
 
+    ytdlp_grid_db: Optional[Path] = None
+    if args.yt_dlp_grid_search:
+        ytdlp_grid_db = (
+            Path(args.yt_dlp_grid_db).expanduser().resolve()
+            if args.yt_dlp_grid_db
+            else (log_dir / "yt-dlp-grid.db").resolve()
+        )
+        try:
+            yt_grid.ensure_grid_experiment(ytdlp_grid_db, args.yt_dlp_grid_experiment)
+        except RuntimeError as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            return 2
+        mlog.info(
+            f"yt-dlp grid search enabled db={ytdlp_grid_db} "
+            f"experiment={args.yt_dlp_grid_experiment}"
+        )
+
     archive_dir: Optional[Path] = Path(args.archive).expanduser().resolve() if args.archive else None
     if archive_dir:
         archive_dir.mkdir(parents=True, exist_ok=True)
@@ -1413,7 +1457,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     domain_index: Optional[DomainIndex] = None
     domain_index_path: Optional[Path] = None
 
-    _udl_active = isinstance(getattr(args, "unique_domain_dls", -1), int) and args.unique_domain_dls >= 1
+    _udl_active = (
+        (isinstance(getattr(args, "unique_domain_dls", -1), int) and args.unique_domain_dls >= 1)
+        or bool(args.yt_dlp_grid_search)
+    )
     if _udl_active:
         # Gather ALL URL files from roots (including finished ones) for a complete index
         _all_url_files: List[Path] = []
@@ -1759,6 +1806,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     # Reset progress state on new URL
                     _clear_worker_progress(ws)
                     ws.url_t0 = time.time()
+                    if ws.ytdlp_grid_trial_id and ws.downloader == "yt-dlp":
+                        ws.ytdlp_grid_stats = yt_grid.GridRuntimeStats(
+                            base_domain=yt_grid.base_domain(str(ws.url_current or "")),
+                            started_at=ws.url_t0,
+                            last_update_at=ws.url_t0,
+                        )
                     # Clear overlay and searching flag upon new activity
                     ws.overlay_msg = None
                     ws.overlay_since = 0.0
@@ -1961,6 +2014,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         total_completed_urls += 1
                         if isinstance(ws.downloaded_bytes, int):
                             total_completed_bytes += ws.downloaded_bytes
+                    if ws.downloader == "yt-dlp":
+                        _record_ytdlp_grid_result(ws, evt)
                     # Build overlay message until next start/progress
                     if rc_v == 0 and not ws.last_already:
                         status_colored = "\x1b[32mDOWNLOADED\x1b[0m"
@@ -2048,12 +2103,115 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         elapsed = time.time() - t0
         _write_worker_log(_worker_prog_log_path(ws), ws.worker_log_counter, elapsed, status, message)
 
+    def _clear_ytdlp_grid_state(ws: WorkerState) -> None:
+        ws.ytdlp_grid_trial_id = None
+        ws.ytdlp_grid_config = None
+        ws.ytdlp_grid_config_path = None
+        ws.ytdlp_grid_source_urlfile = None
+        ws.ytdlp_grid_stats = None
+        ws.ytdlp_grid_recorded = False
+
+    def _active_grid_workers() -> List[WorkerState]:
+        return [
+            worker
+            for worker in workers
+            if worker.proc
+            and worker.ytdlp_grid_trial_id
+            and worker.ytdlp_grid_stats
+            and not worker.is_paused
+        ]
+
+    def _update_worker_grid_runtime(ws: WorkerState, now: Optional[float] = None) -> None:
+        if not ws.ytdlp_grid_stats:
+            return
+        stamp = time.time() if now is None else now
+        active_workers = [worker for worker in workers if worker.proc and not worker.is_paused]
+        same_count = sum(
+            1
+            for worker in active_workers
+            if _domain_of_url(worker.url_current or "") == ws.ytdlp_grid_stats.base_domain
+        )
+        total_speed_bps = sum(
+            float(worker.speed_bps)
+            for worker in active_workers
+            if isinstance(worker.speed_bps, (int, float)) and worker.speed_bps > 0
+        )
+        worker_speed_bps = float(ws.speed_bps) if isinstance(ws.speed_bps, (int, float)) and ws.speed_bps > 0 else 0.0
+        ws.ytdlp_grid_stats.update(
+            now=stamp,
+            same_domain_other_count=max(0, same_count - 1),
+            same_domain_including_self_count=same_count,
+            total_speed_bps=total_speed_bps,
+            worker_speed_bps=worker_speed_bps,
+        )
+
+    def _record_ytdlp_grid_result(ws: WorkerState, event: dict) -> None:
+        if not ytdlp_grid_db or not ws.ytdlp_grid_trial_id or ws.ytdlp_grid_recorded:
+            return
+        now = time.time()
+        _update_worker_grid_runtime(ws, now)
+        runtime = ws.ytdlp_grid_stats.snapshot(now=now) if ws.ytdlp_grid_stats else {}
+        try:
+            rc_value = int(event.get("rc")) if event.get("rc") is not None else None
+        except Exception:
+            rc_value = None
+        downloaded = event.get("downloaded")
+        if not isinstance(downloaded, (int, float)):
+            downloaded = ws.downloaded_bytes
+        downloader_elapsed = event.get("elapsed_s")
+        manager_elapsed = runtime.get("manager_observed_elapsed_seconds")
+        metric_elapsed = downloader_elapsed if isinstance(downloader_elapsed, (int, float)) and downloader_elapsed > 0 else manager_elapsed
+        worker_average_mbps = yt_grid.average_mbps(downloaded, metric_elapsed)
+        already = bool(event.get("already") or ws.last_already)
+        status = "ok" if rc_value == 0 and not already and worker_average_mbps is not None else "failed"
+        metric_value = worker_average_mbps if status == "ok" else None
+        url = str(event.get("url") or ws.url_current or "")
+        base_domain = ws.ytdlp_grid_stats.base_domain if ws.ytdlp_grid_stats else yt_grid.base_domain(url)
+        metadata = {
+            "trial_id": ws.ytdlp_grid_trial_id,
+            "grid_config": ws.ytdlp_grid_config or {},
+            "url": url,
+            "hostname": yt_grid.hostname(url),
+            "base_domain": base_domain,
+            "worker_slot": ws.slot,
+            "source_urlfile": ws.ytdlp_grid_source_urlfile,
+            "downloader_elapsed_seconds": downloader_elapsed,
+            "manager_observed_elapsed_seconds": manager_elapsed,
+            "downloaded_bytes": downloaded,
+            "worker_average_mbps": worker_average_mbps,
+            "worker_sampled_average_mbps": runtime.get("worker_sampled_average_mbps"),
+            "total_workers_average_mbps": runtime.get("total_workers_average_mbps"),
+            "same_base_domain_other_active_average": runtime.get("same_base_domain_other_active_average"),
+            "same_base_domain_including_self_active_average": runtime.get(
+                "same_base_domain_including_self_active_average"
+            ),
+            "rc": rc_value,
+            "already": already,
+            "failure_reason": event.get("reason") or None,
+            "raw_log_path": event.get("raw_log_path"),
+        }
+        try:
+            yt_grid.record_trial(
+                database=ytdlp_grid_db,
+                trial_id=ws.ytdlp_grid_trial_id,
+                status=status,
+                metric_value=metric_value,
+                metadata=metadata,
+            )
+            yt_grid.append_raw_result(ytdlp_grid_db, {**metadata, "status": status, "metric_value": metric_value})
+            ws.ytdlp_grid_recorded = True
+            mlog.info(f"[{ws.slot:02d}] YTDLP_GRID_RECORD trial={ws.ytdlp_grid_trial_id} status={status}")
+        except Exception as exc:
+            mlog.error(f"[{ws.slot:02d}] YTDLP_GRID_RECORD_FAILED trial={ws.ytdlp_grid_trial_id}: {exc}")
+
     def _assign(ws: WorkerState) -> bool:
         nonlocal pool, priority_pool
         if controlled_quit:
             return False
 
         _max_per = getattr(args, "unique_domain_dls", -1)
+        if bool(args.yt_dlp_grid_search) and (not isinstance(_max_per, int) or _max_per < 1):
+            _max_per = max(1, int(args.threads or 1))
         _use_index = (
             domain_index is not None
             and isinstance(_max_per, int)
@@ -2120,6 +2278,36 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             ws.original_urlfile = original_file
             # Pre-set url_current so domain counts are correct immediately
             ws.url_current = entry.url
+            _clear_ytdlp_grid_state(ws)
+            ytdlp_grid_config_file: Optional[Path] = None
+            if args.yt_dlp_grid_search and not _domain_of_url(entry.url).endswith("aebn.com"):
+                try:
+                    assert ytdlp_grid_db is not None
+                    trial_payload = yt_grid.create_trial(
+                        database=ytdlp_grid_db,
+                        experiment=args.yt_dlp_grid_experiment,
+                        url=entry.url,
+                        base_domain=_domain_of_url(entry.url),
+                        worker_slot=ws.slot,
+                        source_urlfile=str(original_file),
+                    )
+                    ytdlp_grid_config_dir = Path(log_dir) / "grid_trials"
+                    ytdlp_grid_config_file = yt_grid.write_trial_config(
+                        ytdlp_grid_config_dir / f"{trial_payload['trial_id']}.json",
+                        trial_payload,
+                    )
+                    ws.ytdlp_grid_trial_id = str(trial_payload["trial_id"])
+                    ws.ytdlp_grid_config = dict(trial_payload.get("config") or {})
+                    ws.ytdlp_grid_config_path = ytdlp_grid_config_file
+                    ws.ytdlp_grid_source_urlfile = str(original_file)
+                    _wlog(ws, "YTDLP_GRID", f"trial={ws.ytdlp_grid_trial_id} config={ws.ytdlp_grid_config}")
+                except Exception as exc:
+                    try:
+                        domain_index.requeue_url(entry.url)
+                    except Exception:
+                        pass
+                    mlog.error(f"[{ws.slot:02d}] YTDLP_GRID_CREATE_FAILED url={entry.url}: {exc}")
+                    return False
             _clear_worker_progress(ws)
             ws.url_index = None
             ws.destination = None
@@ -2159,6 +2347,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 skip_simulate_check=getattr(args, "skip_simulate_check", False),
                 canonical_dir_override=canonical_dir,
                 stall_seconds=getattr(args, "stall_seconds", 4),
+                ytdlp_grid_config_file=ytdlp_grid_config_file,
             )
             # Create a fresh stop event so the old reader's captured reference
             # (set by _requeue) keeps firing while the new reader starts clean.
@@ -2214,6 +2403,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ws.waiting_domain_since = 0.0
         ws.url_entry = None
         ws.original_urlfile = None
+        _clear_ytdlp_grid_state(ws)
         active.add(str(urlfile.resolve()))
         ws.urlfile = urlfile
         ws.url_count = len(_read_urls(urlfile))
@@ -2343,6 +2533,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ws.canonical_dir = None
         ws.url_entry = None
         ws.original_urlfile = None
+        _clear_ytdlp_grid_state(ws)
         ws.domain_search_file = None
         ws.domain_search_progress = (0, 0)
         # Clear download stats immediately so the UI doesn't show stale progress
@@ -2841,6 +3032,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             total_speed_bps = sum(
                 float(w.speed_bps) for w in workers if isinstance(w.speed_bps, (int, float)) and not w.is_paused
             )
+            _grid_sample_now = time.time()
+            for _grid_worker in _active_grid_workers():
+                _update_worker_grid_runtime(_grid_worker, _grid_sample_now)
             total_speed_mib = total_speed_bps / (1024 * 1024) if total_speed_bps else 0.0
             inprog_bytes = sum(int(w.downloaded_bytes) for w in workers if isinstance(w.downloaded_bytes, int))
             agg_bytes = total_completed_bytes + inprog_bytes

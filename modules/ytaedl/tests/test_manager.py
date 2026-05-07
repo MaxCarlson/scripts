@@ -71,6 +71,17 @@ class TestManager:
         with pytest.raises(SystemExit):
             parser.parse_args(["--url-pick-temperature", "-1"])
 
+        args_with_grid = parser.parse_args([
+            "-X",
+            "-B",
+            "grid.db",
+            "-V",
+            "yt-speed",
+        ])
+        assert args_with_grid.yt_dlp_grid_search is True
+        assert args_with_grid.yt_dlp_grid_db == "grid.db"
+        assert args_with_grid.yt_dlp_grid_experiment == "yt-speed"
+
     def test_prepare_log_window(self):
         logs = [f"line {i}" for i in range(6)]
         window, max_scroll = manager._prepare_log_window(logs, available_rows=3, scroll=0)
@@ -437,6 +448,33 @@ class TestManager:
         assert avg.update(4) == 3.0
         assert avg.update(-1) == 2.0
 
+    def test_grid_runtime_stats_time_weighted_averages(self):
+        stats = manager.yt_grid.GridRuntimeStats(
+            base_domain="example.com",
+            started_at=0.0,
+            last_update_at=0.0,
+        )
+
+        stats.update(
+            now=10.0,
+            same_domain_other_count=1,
+            same_domain_including_self_count=2,
+            total_speed_bps=2_000_000.0,
+            worker_speed_bps=1_000_000.0,
+        )
+        stats.update(
+            now=30.0,
+            same_domain_other_count=0,
+            same_domain_including_self_count=1,
+            total_speed_bps=1_000_000.0,
+            worker_speed_bps=500_000.0,
+        )
+
+        snapshot = stats.snapshot(now=30.0)
+        assert snapshot["same_base_domain_other_active_average"] == pytest.approx(1 / 3)
+        assert snapshot["same_base_domain_including_self_active_average"] == pytest.approx(4 / 3)
+        assert snapshot["worker_sampled_average_mbps"] == pytest.approx((20_000_000 / 30) * 8 / 1_000_000)
+
     def test_controlled_quit_eta_label(self):
         assert manager._controlled_quit_eta_label([]) == "0s"
 
@@ -707,6 +745,36 @@ class TestStartWorker:
                     assert "-q" not in cmd
         finally:
             os.unlink(temp_path)
+
+    def test_start_worker_passes_grid_config_file(self, tmp_path):
+        urlfile = tmp_path / "url.txt"
+        urlfile.write_text("https://example.com/video1\n", encoding="utf-8")
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        canonical_root = tmp_path / "downloads"
+        canonical_root.mkdir()
+        grid_config = tmp_path / "trial.json"
+        grid_config.write_text("{}", encoding="utf-8")
+
+        with patch("subprocess.Popen") as mock_popen:
+            mock_process = MagicMock()
+            mock_popen.return_value = mock_process
+
+            manager._start_worker(
+                slot=1,
+                urlfile=urlfile,
+                canonical_root=canonical_root,
+                max_rate=5.0,
+                quiet=False,
+                archive_dir=None,
+                log_dir=log_dir,
+                cap_mibs=None,
+                ytdlp_grid_config_file=grid_config,
+            )
+
+        cmd = mock_popen.call_args.args[0]
+        assert "-G" in cmd
+        assert cmd[cmd.index("-G") + 1] == str(grid_config)
 
 
 @pytest.mark.integration
