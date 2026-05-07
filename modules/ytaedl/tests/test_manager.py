@@ -140,6 +140,32 @@ class TestManager:
             result = manager.main(argv)
         assert result == 0
 
+    def test_archive_finished_urls_processed_status_wins_over_later_stall(self, tmp_path):
+        archive_dir = tmp_path / "archives"
+        archive_dir.mkdir()
+        url = "https://example.com/video"
+        (archive_dir / "yt-alpha.txt").write_text(
+            "\n".join([
+                f"downloaded\t1.000\t2026-05-07T07:00:00\t2.00MiB\tid\t{url}",
+                f"stalled\t30.000\t2026-05-07T07:01:00\t2.00MiB\tid\t{url}",
+            ])
+            + "\n",
+            encoding="utf-8",
+        )
+
+        assert manager._load_archive_finished_urls(archive_dir) == {url: "downloaded"}
+
+    def test_archive_finished_urls_ignores_stalled_only_records(self, tmp_path):
+        archive_dir = tmp_path / "archives"
+        archive_dir.mkdir()
+        url = "https://example.com/video"
+        (archive_dir / "yt-alpha.txt").write_text(
+            f"stalled\t30.000\t2026-05-07T07:01:00\t2.00MiB\tid\t{url}\n",
+            encoding="utf-8",
+        )
+
+        assert manager._load_archive_finished_urls(archive_dir) == {}
+
     def test_manager_skips_completed_urlfiles(self, tmp_path):
         """Workers should not be assigned URL files that have zero remaining downloads."""
         stars_dir = tmp_path / "stars"

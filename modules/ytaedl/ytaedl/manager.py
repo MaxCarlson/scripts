@@ -44,7 +44,7 @@ except ImportError:
 
 from . import archive_builder, urlscan, yt_grid
 from .domain_index import DomainIndex, ScanLogEntry, _extract_domain as _domain_of_url
-from .downloader import ARCHIVE_PROCESSED_STATUSES, MAX_RESOLUTION_CHOICES
+from .downloader import ARCHIVE_PROCESSED_STATUSES, MAX_RESOLUTION_CHOICES, _merge_archive_status
 from .mp4_watcher import MP4Watcher, WatcherConfig, WatcherSnapshot
 from termdash import utils as td_utils
 
@@ -213,7 +213,7 @@ def _archive_statuses_from_file(path: Path) -> Dict[str, str]:
         status = parts[0].strip().lower()
         url = parts[-1].strip()
         if status and url:
-            statuses[url] = status
+            _merge_archive_status(statuses, url, status)
     return statuses
 
 
@@ -2094,6 +2094,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             )
                             _wlog(ws, "PROGRESS",
                                   f"{_pct_s} {_dl_s}/{_tot_s} @ {_sp_s} ETA {_eta_s}")
+                    except Exception:
+                        pass
+                elif ev == "complete":
+                    try:
+                        file_size = evt.get("file_size")
+                        if isinstance(file_size, int) and file_size > 0:
+                            ws.downloaded_bytes = file_size
+                            ws.total_bytes = file_size
+                        ws.percent = 100.0
+                        ws.speed_bps = 0.0
+                        ws.eta_s = None
+                        if ws.prog_log_path:
+                            _size_s = _human_short_bytes(ws.downloaded_bytes)
+                            _wlog(ws, "COMPLETE", f"[{ws.url_index or 0}/{ws.url_count or 0}] {_size_s}")
                     except Exception:
                         pass
                 elif ev == "finish":

@@ -1,20 +1,12 @@
-
-=================================== ERRORS ====================================
-______________________ ERROR collecting ytaedl_test_tmp _______________________
-.venv\Lib\site-packages\_pytest\runner.py:353: in from_call
-    result: TResult | None = func()
-                             ^^^^^^
-.venv\Lib\site-packages\_pytest\runner.py:398: in collect
-    return list(collector.collect())
-           ^^^^^^^^^^^^^^^^^^^^^^^^^
-.venv\Lib\site-packages\_pytest\main.py:557: in collect
-    for direntry in scandir(self.path):
-                    ^^^^^^^^^^^^^^^^^^
-.venv\Lib\site-packages\_pytest\pathlib.py:963: in scandir
-    scandir_iter = os.scandir(path)
-                   ^^^^^^^^^^^^^^^^
-E   PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\src\\scripts\\modules\\ytaedl\\ytaedl_test_tmp'
+.............F........................................................s. [ 48%]
+........................................................................ [ 96%]
+......                                                                   [100%]
+================================== FAILURES ===================================
+______ test_archive_migrate_cli_lists_touched_folders_and_verbose_files _______
+modules\ytaedl\tests\test_archive_builder.py:187: in test_archive_migrate_cli_lists_touched_folders_and_verbose_files
+    assert "\033[31m" in out
+E   AssertionError: assert '\x1b[31m' in 'Archive temp-file migration summary (DRY RUN)\n----------------------------------------\nURL directories: C:\\Users\\...t (1 line)\x1b[0m\n\nDry run only. Re-run with -p/--apply to write new archives and delete fully migrated old files.\n'
 =========================== short test summary info ===========================
-ERROR modules\ytaedl\ytaedl_test_tmp - PermissionError: [WinError 5] Access i...
-!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
-1 error in 0.23s
+SKIPPED [1] modules\ytaedl\tests\test_entry_points.py:96: Process handling differs on Windows
+FAILED modules\ytaedl\tests\test_archive_builder.py::test_archive_migrate_cli_lists_touched_folders_and_verbose_files
+1 failed, 148 passed, 1 skipped in 1.56s

@@ -5,12 +5,13 @@ Archive file rebuilder for ytaedl URL files.
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple
 
-from .downloader import _ensure_archive_line_has_url, _format_archive_line
+from .downloader import _format_archive_line
 from .urlscan import read_url_lines
 
 DEFAULT_URL_DIRS = ["files/downloads/stars", "files/downloads/ae-stars"]

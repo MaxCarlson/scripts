@@ -643,18 +643,21 @@ class Downloader:
         stop_monitoring = Lock()
         stop_monitoring.acquire()
 
-        # rolling state for speed/eta
-        last_bytes: int | None = None
+        # rolling state for speed/eta. Speed uses only bytes fetched from the
+        # network in this process; restored on-disk segments still count toward
+        # progress but must not appear as GiB/s throughput on resume.
+        last_network_bytes: int | None = None
         last_time: float | None = None
         ema_speed: float | None = None  # bytes per second
         alpha = 0.3  # smoothing factor for EMA
         t0 = time.time()
 
         def monitor_progress():
-            nonlocal last_bytes, last_time, ema_speed, total_size
+            nonlocal last_network_bytes, last_time, ema_speed, total_size
             while not stop_monitoring.acquire(blocking=False):
                 now = time.time()
                 current_downloaded = sum(s.downloaded_bytes for s in streams)
+                current_network_downloaded = sum(getattr(s, "network_downloaded_bytes", 0) for s in streams)
 
                 # Refresh total_size from streams: once data segments start downloading,
                 # each stream sets total_size = first_segment_size * segment_count, which
@@ -667,16 +670,16 @@ class Downloader:
 
                 # instantaneous speed
                 inst_speed = None
-                if last_bytes is not None and last_time is not None:
+                if last_network_bytes is not None and last_time is not None:
                     dt = max(1e-6, now - last_time)
-                    db = max(0, current_downloaded - last_bytes)
+                    db = max(0, current_network_downloaded - last_network_bytes)
                     inst_speed = db / dt
                     if ema_speed is None:
                         ema_speed = inst_speed
                     else:
                         ema_speed = alpha * inst_speed + (1 - alpha) * ema_speed
 
-                last_bytes = current_downloaded
+                last_network_bytes = current_network_downloaded
                 last_time = now
 
                 speed_bps = float(ema_speed) if ema_speed is not None else None
@@ -860,6 +863,7 @@ class Downloader:
             segment_size = len(response.content)
             stream.downloaded_segments.append(segment_path)
             stream.downloaded_bytes += segment_size
+            stream.network_downloaded_bytes += segment_size
             if stream.total_size == 0 and segment_number is not None:
                 stream.total_size = segment_size * self.manifest.total_number_of_data_segments
                 if download_bar:

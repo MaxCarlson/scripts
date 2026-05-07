@@ -180,6 +180,36 @@ class TestDownloader:
         assert clamped["eta_s"] is None
         assert clamped["unreliable_total"] is True
 
+    def test_archive_processed_status_wins_over_later_stall(self, tmp_path):
+        archive_file = tmp_path / "yt-alpha.txt"
+        url = "https://example.com/video"
+        archive_file.write_text(
+            "\n".join([
+                f"downloaded\t1.000\t2026-05-07T07:00:00\t2.00MiB\tid\t{url}",
+                f"stalled\t30.000\t2026-05-07T07:01:00\t2.00MiB\tid\t{url}",
+            ])
+            + "\n",
+            encoding="utf-8",
+        )
+
+        statuses, _lines, changed = downloader._read_archive_statuses(archive_file, [url])
+
+        assert changed is False
+        assert statuses[url] == "downloaded"
+
+    def test_archive_stalled_only_remains_retryable(self, tmp_path):
+        archive_file = tmp_path / "yt-alpha.txt"
+        url = "https://example.com/video"
+        archive_file.write_text(
+            f"stalled\t30.000\t2026-05-07T07:01:00\t2.00MiB\tid\t{url}\n",
+            encoding="utf-8",
+        )
+
+        statuses, _lines, _changed = downloader._read_archive_statuses(archive_file, [url])
+
+        assert statuses[url] == "stalled"
+        assert statuses[url] not in downloader.ARCHIVE_PROCESSED_STATUSES
+
     def test_progress_activity_pre_transfer_stalls_on_short_window(self):
         activity = downloader._ProgressActivity(
             stall_seconds=4,

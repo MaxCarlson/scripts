@@ -429,6 +429,76 @@ class PartFileTest(unittest.TestCase):
         self.assertEqual(mock_manifest.video_stream.downloaded_bytes, 4100)
         self.assertEqual(mock_manifest.video_stream.total_size, 20100)
 
+    def test_existing_segment_does_not_count_as_network_bytes(self):
+        """Resume-discovered local segments should update progress but not speed counters."""
+        from aebn_dl.models import VideoStream
+        from aebn_dl.manifest_parser import Manifest
+
+        downloader = Downloader(
+            url=self.url,
+            work_dir=self.work_dir,
+            output_dir=self.output_dir,
+            target_height=0,
+            log_level="INFO",
+        )
+
+        movie_work_dir = os.path.join(self.work_dir, "test_movie")
+        os.makedirs(movie_work_dir, exist_ok=True)
+        segment_path = os.path.join(movie_work_dir, "v_test_video_0.mp4")
+        with open(segment_path, "wb") as f:
+            f.write(b"x" * 4096)
+
+        mock_manifest = MagicMock(spec=Manifest)
+        mock_manifest.base_stream_url = "https://media.example/stream"
+        mock_manifest.total_number_of_data_segments = 10
+        mock_manifest.audio_stream = None
+        mock_manifest.video_stream = VideoStream()
+        mock_manifest.video_stream.stream_id = "test_video"
+
+        downloader.manifest = mock_manifest
+        downloader.movie_work_dir = movie_work_dir
+
+        downloader._download_segment(mock_manifest.video_stream, None, segment_number=0)
+
+        self.assertEqual(mock_manifest.video_stream.downloaded_bytes, 4096)
+        self.assertEqual(mock_manifest.video_stream.network_downloaded_bytes, 0)
+
+    def test_new_segment_counts_as_network_bytes(self):
+        """Freshly fetched segments should update both progress and speed counters."""
+        from aebn_dl.models import VideoStream
+        from aebn_dl.manifest_parser import Manifest
+
+        downloader = Downloader(
+            url=self.url,
+            work_dir=self.work_dir,
+            output_dir=self.output_dir,
+            target_height=0,
+            log_level="INFO",
+        )
+
+        movie_work_dir = os.path.join(self.work_dir, "test_movie")
+        os.makedirs(movie_work_dir, exist_ok=True)
+
+        mock_manifest = MagicMock(spec=Manifest)
+        mock_manifest.base_stream_url = "https://media.example/stream"
+        mock_manifest.total_number_of_data_segments = 10
+        mock_manifest.audio_stream = None
+        mock_manifest.video_stream = VideoStream()
+        mock_manifest.video_stream.stream_id = "test_video"
+
+        response = MagicMock()
+        response.ok = True
+        response.content = b"x" * 2048
+        downloader.session = MagicMock()
+        downloader.session.get = MagicMock(return_value=response)
+        downloader.manifest = mock_manifest
+        downloader.movie_work_dir = movie_work_dir
+
+        downloader._download_segment(mock_manifest.video_stream, None, segment_number=0)
+
+        self.assertEqual(mock_manifest.video_stream.downloaded_bytes, 2048)
+        self.assertEqual(mock_manifest.video_stream.network_downloaded_bytes, 2048)
+
     def test_restore_filters_missing_segments(self):
         """Test that restore ignores segments that no longer exist on disk"""
         from aebn_dl.models import AudioStream

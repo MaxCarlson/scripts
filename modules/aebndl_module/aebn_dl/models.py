@@ -19,6 +19,7 @@ class MediaStream:
     downloaded_segments: list[str] = field(default_factory=list)
     total_size: int = 0
     downloaded_bytes: int = 0
+    network_downloaded_bytes: int = 0
 
 
 @dataclass

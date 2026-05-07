@@ -462,6 +462,19 @@ def _format_archive_line(status: str, elapsed_s: float, when: str, downloaded_mi
 ARCHIVE_PROCESSED_STATUSES = {"downloaded", "already", "preexisting"}
 
 
+def _archive_status_rank(status: str) -> int:
+    return 2 if status.lower() in ARCHIVE_PROCESSED_STATUSES else 1
+
+
+def _merge_archive_status(statuses: Dict[str, str], url: str, status: str) -> None:
+    normalized_status = status.strip().lower()
+    if not url or not normalized_status:
+        return
+    previous = statuses.get(url)
+    if previous is None or _archive_status_rank(normalized_status) > _archive_status_rank(previous):
+        statuses[url] = normalized_status
+
+
 def _ensure_archive_line_has_url(line: str, url: str) -> str:
     if not line.strip():
         return ''
@@ -510,7 +523,7 @@ def _read_archive_statuses(archive_file: Path, source_urls: List[str]) -> Tuple[
         normalized_lines.append(normalized)
         if parsed:
             status, url = parsed
-            statuses[url] = status
+            _merge_archive_status(statuses, url, status)
     return statuses, normalized_lines, changed
 
 
