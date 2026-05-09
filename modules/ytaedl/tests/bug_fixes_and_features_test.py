@@ -414,8 +414,9 @@ class TestMultiRoot:
                 extra_canonical_roots=extra,
             )
 
-        assert "--extra-canonical-roots" in cmd_captured
-        idx = cmd_captured.index("--extra-canonical-roots")
+        assert "-Z" in cmd_captured
+        assert "--extra-canonical-roots" not in cmd_captured
+        idx = cmd_captured.index("-Z")
         assert "root_b" in cmd_captured[idx + 1]
 
 

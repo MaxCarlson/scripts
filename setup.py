@@ -426,6 +426,7 @@ def _popen_stream_and_log(cmd, cwd=None, env=None, tag: str = ""):
 # ─────────────────────────────────────────────────────────
 def _get_pkg_name_from_source(module_dir: Path, verbose: bool) -> str:
     pyproject_file = module_dir / "pyproject.toml"
+    setup_file = module_dir / "setup.py"
     fallback = module_dir.name
     if pyproject_file.is_file():
         try:
@@ -438,27 +439,54 @@ def _get_pkg_name_from_source(module_dir: Path, verbose: bool) -> str:
         except Exception as e:
             if verbose:
                 log_warning(f"[{fallback}] pyproject.toml parse problem: {type(e).__name__}: {e}")
+    if setup_file.is_file():
+        try:
+            text = setup_file.read_text(encoding="utf-8", errors="ignore")
+            match = re.search(r"\bname\s*=\s*['\"]([^'\"]+)['\"]", text)
+            if match:
+                return match.group(1)
+        except Exception as e:
+            if verbose:
+                log_warning(f"[{fallback}] setup.py parse problem: {type(e).__name__}: {e}")
     return fallback
 
 def _get_source_version(module_dir: Path, verbose: bool) -> tuple[int, int, int] | None:
-    """Read MAJOR.MINOR.PATCH from pyproject.toml [project].version."""
+    """Read MAJOR.MINOR.PATCH from pyproject.toml or setup.py."""
     pyproject_file = module_dir / "pyproject.toml"
-    if not pyproject_file.is_file():
-        return None
-    try:
-        with open(pyproject_file, "rb") as f:
-            data = tomllib.load(f)
-        raw = data.get("project", {}).get("version", "")
-        parts = raw.split(".")
+    setup_file = module_dir / "setup.py"
+
+    def _parse_version(raw: str) -> tuple[int, int, int] | None:
+        core = raw.strip().split("+", 1)[0].split("-", 1)[0]
+        parts = core.split(".")
         if len(parts) >= 3:
             return int(parts[0]), int(parts[1]), int(parts[2])
         if len(parts) == 2:
             return int(parts[0]), int(parts[1]), 0
         if len(parts) == 1 and parts[0]:
             return int(parts[0]), 0, 0
-    except Exception as e:
-        if verbose:
-            log_warning(f"[{module_dir.name}] version parse error: {e}")
+        return None
+
+    if pyproject_file.is_file():
+        try:
+            with open(pyproject_file, "rb") as f:
+                data = tomllib.load(f)
+            raw = data.get("project", {}).get("version", "")
+            parsed = _parse_version(raw)
+            if parsed is not None:
+                return parsed
+        except Exception as e:
+            if verbose:
+                log_warning(f"[{module_dir.name}] pyproject.toml version parse error: {e}")
+
+    if setup_file.is_file():
+        try:
+            text = setup_file.read_text(encoding="utf-8", errors="ignore")
+            match = re.search(r"\bversion\s*=\s*['\"]([^'\"]+)['\"]", text)
+            if match:
+                return _parse_version(match.group(1))
+        except Exception as e:
+            if verbose:
+                log_warning(f"[{module_dir.name}] setup.py version parse error: {e}")
     return None
 
 

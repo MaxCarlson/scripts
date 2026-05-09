@@ -1,10 +1,9 @@
 """ytaedl package.
 
-Provides two CLIs:
- - `ytaedl` (main command) -> ytaedl.manager:main
- - `ytaedl-download` (single URL file downloader) -> ytaedl.downloader:main
+Primary CLI entry point: ytaedl.manager:main.
+Internal downloader entry point: ytaedl.downloader:main.
 """
 
 __all__ = ["__version__"]
-__version__ = "1.10.0"
+__version__ = "2.0.1"
 

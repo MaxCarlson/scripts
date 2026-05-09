@@ -1281,6 +1281,49 @@ class TestUtilityFunctions:
         assert norm_dl == 500
         assert norm_tot is None
 
+    def test_new_assignment_advances_generation_and_clears_progress(self):
+        ws = manager.WorkerState(slot=1)
+        ws.percent = 99.6
+        ws.speed_bps = 44_000_000.0
+        ws.eta_s = 0.0
+        ws.downloaded_bytes = 978_000_000
+        ws.total_bytes = 982_000_000
+        old_generation = ws.attempt_generation
+
+        new_generation = manager._begin_worker_assignment(ws)
+
+        assert new_generation == old_generation + 1
+        assert ws.attempt_phase == "assigned"
+        assert ws.percent is None
+        assert ws.speed_bps is None
+        assert ws.eta_s is None
+        assert ws.downloaded_bytes is None
+        assert ws.total_bytes is None
+        assert ws.progress_generation is None
+
+    def test_simulate_and_fallback_phases_clear_stale_progress(self):
+        ws = manager.WorkerState(slot=1)
+        ws.percent = 99.9
+        ws.speed_bps = 42_000_000.0
+        ws.eta_s = 0.0
+        ws.downloaded_bytes = 972_000_000
+        ws.total_bytes = 973_000_000
+
+        manager._begin_worker_phase(ws, "simulating", clear_progress=True)
+
+        assert ws.attempt_phase == "simulating"
+        assert ws.percent is None
+        assert ws.downloaded_bytes is None
+        assert ws.total_bytes is None
+
+        ws.percent = 99.6
+        ws.speed_bps = 40_000_000.0
+        manager._begin_worker_phase(ws, "fallback", clear_progress=True)
+
+        assert ws.attempt_phase == "fallback"
+        assert ws.percent is None
+        assert ws.speed_bps is None
+
     def test_footer_always_appended_after_verbose_lines(self):
         """Footer lines are rendered after the verbose panel so they stay at the bottom."""
         footer = ["Keys: q=quit"]

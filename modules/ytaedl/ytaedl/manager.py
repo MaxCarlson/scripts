@@ -2195,9 +2195,10 @@ def run_main(
                     if ws.downloader == "yt-dlp":
                         _record_ytdlp_grid_result(ws, evt)
                     # Build overlay message until next start/progress
-                    if rc_v == 0 and not ws.last_already:
+                    was_already = ws.last_already
+                    if rc_v == 0 and not was_already:
                         status_colored = "\x1b[32mDOWNLOADED\x1b[0m"
-                    elif rc_v == 0 and ws.last_already:
+                    elif rc_v == 0 and was_already:
                         status_colored = "\x1b[33mDUPLICATE\x1b[0m"
                     else:
                         status_colored = "\x1b[31mBAD_URL\x1b[0m"
@@ -2223,7 +2224,7 @@ def run_main(
                     # Set speed to 0 so the display doesn't freeze on the last value.
                     # Keep downloaded/total_bytes for the overlay size display; they are
                     # cleared by _clear_worker_progress on the next 'start' event.
-                    if rc_v == 0 and not ws.last_already:
+                    if rc_v == 0 and not was_already:
                         ws.percent = 100.0
                     else:
                         ws.percent = None

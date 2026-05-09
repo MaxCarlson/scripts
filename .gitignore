@@ -205,6 +205,7 @@ modules/poe2craft/**/*.json
 **/.pytest_tmp_codex/
 **/pytest-cache-files-*/
 .pytest_run_tmp*/
+codex_tmp_test/
 logs/
 
 # Video File Stuff

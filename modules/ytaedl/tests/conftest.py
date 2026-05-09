@@ -2,8 +2,9 @@
 
 import os
 import sys
-import tempfile
+from itertools import count
 from pathlib import Path
+import tempfile
 
 import pytest
 
@@ -11,36 +12,107 @@ _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 if str(_PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_ROOT))
 
+_TMP_COUNTER = count(1)
 # On Windows, the system-level pytest-of-<user> directory in %TEMP% can become
 # inaccessible (Access Denied on os.scandir) if its mode bits get misconfigured.
 # Redirect pytest to a workspace temp root outside the ytaedl package tree so
 # pytest will not later collect its own scratch directories as tests.
-if sys.platform == "win32" and "PYTEST_DEBUG_TEMPROOT" not in os.environ:
+_WIN_TEMP_ROOT: Path | None = None
+
+if sys.platform == "win32":
+    _default_temp_root = (
+        Path(__file__).resolve().parents[3]
+        / "codex_tmp_test"
+        / f"ytaedl-temp-{os.getpid()}"
+    )
     _candidate_temproots = [
         Path(os.environ["YTAEDL_PYTEST_TEMPROOT"])
         if "YTAEDL_PYTEST_TEMPROOT" in os.environ
         else None,
-        Path(__file__).resolve().parents[3] / ".pytest_tmp" / "ytaedl",
-        Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "ytaedl_pytest_tmp",
+        _default_temp_root,
     ]
     for _local_temproot in [p for p in _candidate_temproots if p is not None]:
         try:
             _local_temproot.mkdir(parents=True, exist_ok=True)
+            (_local_temproot / "probe.tmp").write_text("ok", encoding="utf-8")
             _root = str(_local_temproot)
             os.environ["PYTEST_DEBUG_TEMPROOT"] = _root
             os.environ["TMP"] = _root
             os.environ["TEMP"] = _root
             tempfile.tempdir = _root
+            _WIN_TEMP_ROOT = _local_temproot
             break
         except OSError:
             continue
 
 
+def _make_test_temp_dir(prefix: str) -> Path:
+    """Create a unique test temp directory without relying on cleanup hooks."""
+    root = _WIN_TEMP_ROOT or Path(tempfile.gettempdir())
+    root.mkdir(parents=True, exist_ok=True)
+    while True:
+        path = root / f"{prefix}_{next(_TMP_COUNTER):04d}"
+        try:
+            path.mkdir(parents=True, exist_ok=False)
+            return path
+        except FileExistsError:
+            continue
+
+
+class _WorkspaceTemporaryDirectory:
+    """Small TemporaryDirectory stand-in that avoids Windows cleanup failures."""
+
+    def __init__(self, *args, **kwargs):
+        prefix = kwargs.get("prefix") or "tmp"
+        self.name = str(_make_test_temp_dir(prefix.rstrip("_")))
+
+    def __enter__(self):
+        return self.name
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def cleanup(self):
+        return None
+
+
+def _workspace_temporary_directory(*args, **kwargs):
+    """Route legacy TemporaryDirectory calls into the writable test root."""
+    return _WorkspaceTemporaryDirectory(*args, **kwargs)
+
+
+if sys.platform == "win32" and _WIN_TEMP_ROOT is not None:
+    tempfile.TemporaryDirectory = _workspace_temporary_directory
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _force_writable_temp_root():
+    """Keep legacy tempfile.TemporaryDirectory tests off broken Windows temp roots."""
+    if sys.platform == "win32":
+        root = _WIN_TEMP_ROOT or Path(os.environ.get("YTAEDL_PYTEST_TEMPROOT") or os.environ.get("TMP") or "")
+        if not root:
+            root = (
+                Path(__file__).resolve().parents[3]
+                / "codex_tmp_test"
+                / f"ytaedl-temp-{os.getpid()}"
+            )
+        root.mkdir(parents=True, exist_ok=True)
+        os.environ["PYTEST_DEBUG_TEMPROOT"] = str(root)
+        os.environ["TMP"] = str(root)
+        os.environ["TEMP"] = str(root)
+        tempfile.tempdir = str(root)
+
+
+@pytest.fixture
+def tmp_path():
+    """Workspace-local replacement for pytest tmp_path on Windows ACL-hostile runs."""
+    yield _make_test_temp_dir("tmp_path")
+
+
 @pytest.fixture
 def temp_dir():
     """Provide a temporary directory for tests."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yield Path(tmpdir)
+    yield _make_test_temp_dir("temp_dir")
 
 
 @pytest.fixture
@@ -126,9 +198,8 @@ def capture_output():
     return _capture
 
 
-# Markers for different test types
 def pytest_configure(config):
-    """Configure pytest markers."""
+    """Configure pytest markers and temp roots."""
     config.addinivalue_line(
         "markers", "integration: marks tests as integration tests (may be slower)"
     )
