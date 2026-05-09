@@ -1085,6 +1085,7 @@ def _start_worker(
     archive_source_file: Optional[Path] = None,
     stall_seconds: int = 4,
     ytdlp_grid_config_file: Optional[Path] = None,
+    extra_canonical_roots: Optional[List[Path]] = None,
 ) -> subprocess.Popen:
     if canonical_dir_override is not None:
         canonical_dir = canonical_dir_override
@@ -1100,6 +1101,7 @@ def _start_worker(
         str(max_rate),
     ]
     cmd += ["-o", str(canonical_dir)]
+    cmd += ["-W", str(slot)]  # worker slot for meta.json tracking
     # Dedicated program log per worker to avoid cross-process contention
     log_name = Path(log_dir) / f"ytaedler-worker-{slot:02d}.log"
     cmd += ["-g", str(log_name)]
@@ -1130,6 +1132,8 @@ def _start_worker(
         cmd += ["-S", str(stall_seconds)]
     if ytdlp_grid_config_file:
         cmd += ["-G", str(ytdlp_grid_config_file)]
+    for _ecr in (extra_canonical_roots or []):
+        cmd += ["--extra-canonical-roots", str(_ecr)]
     if quiet:
         cmd.append("-q")
     # line buffered
@@ -1166,272 +1170,204 @@ def _write_worker_log(log_path: Path, counter: int, elapsed_s: float, status: st
         pass
 
 
+# ---------------------------------------------------------------------------
+# Argument group helpers — reused by make_parser() and _cli_help.py combined parsers
+# ---------------------------------------------------------------------------
+
+def _add_run_core_args(dest) -> None:
+    """Add all core run flags to *dest* (parser or argument_group)."""
+    dest.add_argument("-t", "--threads", type=int, default=2, help="Number of concurrent download workers")
+    dest.add_argument("-l", "--time-limit", type=int, default=-1,
+                      help="Max seconds a worker holds a urlfile (-1 for unlimited)")
+    dest.add_argument("-u", "--max-ndjson-rate", type=float, default=5.0,
+                      help="Max progress events/sec printed by workers (-1 unlimited)")
+    dest.add_argument("-q", "--quiet", action="store_true", help="Pass -q to workers")
+    dest.add_argument("-p", "--priority-files", action="append",
+                      help="URL files to prioritize (can be specified multiple times)")
+    dest.add_argument("-P", "--proxy-dl-location", default=None,
+                      help="Staging root for downloads (per-urlfile subfolder); duplicates checked in -L roots")
+    dest.add_argument("-s", "--stars-dir", default="./files/downloads/stars",
+                      help="Folder of yt-dlp URL files")
+    dest.add_argument("-d", "--aebn-dir", default="./files/downloads/ae-stars",
+                      help="Folder of AEBN URL files")
+    dest.add_argument("-f", "--finished-log", default="./logs/finished_urls.txt",
+                      help="Path to record completed URLs (default: <log-dir>/finished_urls.txt)")
+    dest.add_argument("-r", "--refresh-hz", type=float, default=5.0, help="UI refresh rate")
+    dest.add_argument("-e", "--exit-at-time", type=int, default=-1,
+                      help="Exit the manager after N seconds (<=0 disables)")
+    dest.add_argument("-a", "--archive", type=str, default="./archive",
+                      help="Archive folder to store per-urlfile status files")
+    dest.add_argument("-g", "--log-dir", type=str, default="./logs",
+                      help="Directory for all logs (manager, workers, watcher)")
+    dest.add_argument("-x", "--max-process-dl-speed", type=float, default=None,
+                      help="Per-worker max download speed (MiB/s)")
+    dest.add_argument("-v", "--max-resolution", choices=MAX_RESOLUTION_CHOICES, default="2k",
+                      help="Highest video resolution workers should request")
+    dest.add_argument("-z", "--max-total-dl-speed", type=float, default=None,
+                      help="Global max download speed across all workers (MiB/s)")
+    dest.add_argument("-D", "--unique-domain-dls", type=int, default=2, metavar="N",
+                      help=(
+                          "Limit concurrent workers per domain. -1 = off (unlimited). "
+                          "1 = one worker per unique domain. 2 = up to two workers per domain, etc."
+                      ))
+    dest.add_argument("-S", "--stall-seconds", type=int, default=4,
+                      help="Seconds with no yt-dlp output before a worker tries the next fallback method")
+    dest.add_argument("-H", "--domain-index-path", default="./logs/domain_index.json",
+                      help="Path to save/load the domain URL index (used by -D)")
+    dest.add_argument("-M", "--rebuild-domain-index", action="store_true",
+                      help="Force a full domain index rebuild even if a saved index exists")
+    dest.add_argument("-O", "--url-order-key", choices=urlscan.SORT_CHOICES, default="ratio",
+                      help="Metric used to prioritise URL files (ratio, remaining, name, unique, mp4, ae, stars, gb)")
+    dest.add_argument("-C", "--url-order-ascending", action="store_true",
+                      help="Sort URL priority ascending instead of descending")
+    dest.add_argument("-R", "--url-rescan-seconds", type=int, default=0,
+                      help="How often to rescan URL stats and refresh priority (<=0 disables)")
+    dest.add_argument("-I", "--url-preempt", action="store_true",
+                      help="Interrupt workers handling low-priority files after a rescan so top entries start immediately")
+    dest.add_argument("-L", "--download-root", action="append", default=None,
+                      help=(
+                          "Directory where per-urlfile MP4 folders are stored; checked for duplicate "
+                          "files before downloading.  Can be specified multiple times.  "
+                          "Defaults to ./stars when not set."
+                      ))
+    dest.add_argument("-U", "--primary-root", default=None,
+                      help=(
+                          "Directory where new downloads land when not using --proxy-dl-location (-P).  "
+                          "Defaults to the first --download-root value.  "
+                          "Also used as the watcher move-to destination."
+                      ))
+    dest.add_argument("-Z", "--url-random-order", action="store_true",
+                      help="Ignore metrics and assign URL files randomly")
+    dest.add_argument("-Q", "--url-pick-temperature", type=_parse_url_pick_temperature, default=0.0,
+                      help="Weighted-random URL assignment temperature; 0 is deterministic")
+    dest.add_argument("-A", "--prioritize-partial", default=True,
+                      action=argparse.BooleanOptionalAction,
+                      help=("Prioritize URLs with existing _partial/<hash>/ dirs (resumed downloads) "
+                            "over non-partial URLs.  On by default; use --no-prioritize-partial to disable."))
+    dest.add_argument("-c", "--cleanup-partial-on-start", action="store_true",
+                      help=("Before starting workers, scan --proxy-dl-location for stale _partial/ dirs, "
+                            "print deletion summary, prompt for confirmation, delete them, and remove archive entries."))
+
+
+def _add_watcher_args(dest, *, suppress: bool = False) -> None:
+    """Add MP4 watcher flags to *dest*.  Pass suppress=True to hide from help."""
+    H = argparse.SUPPRESS if suppress else None
+
+    def h(text: str) -> str:
+        return H if suppress else text  # type: ignore[return-value]
+
+    dest.add_argument("-w", "--enable-mp4-watcher", action="store_true",
+                      help=h("Enable MP4 watcher integration"))
+    dest.add_argument("-o", "--mp4-operation", choices=sorted(MP4_VALID_OPERATIONS), default="move",
+                      help=h("MP4 watcher operation to apply when syncing staged files"))
+    dest.add_argument("-k", "--mp4-max-files", type=int, default=None,
+                      help=h("Cap how many MP4 files the watcher processes per run (omit for unlimited)"))
+    dest.add_argument("-G", "--mp4-trigger-total-gb", type=float, default=None,
+                      help=h("Auto-trigger watcher when staged MP4 total size exceeds this GiB (off by default)"))
+    dest.add_argument("-F", "--mp4-trigger-free-gb", type=float, default=75.0,
+                      help=h("Auto-trigger watcher when staging free space drops below this GiB"))
+    dest.add_argument("-m", "--space-remaining", type=_parse_size_bytes, default=None,
+                      help=h("Min final-destination free space to preserve (examples: 1024MB, 100GB, unlimited)"))
+    dest.add_argument("-T", "--mp4-stay-at-staging", action="store_true",
+                      help=h("Keep files at staging; watcher only deduplicates, does not move"))
+
+
+def _add_grid_args(dest, *, suppress: bool = False) -> None:
+    """Add yt-dlp grid-search flags to *dest*."""
+    H = argparse.SUPPRESS if suppress else None
+
+    def h(text: str) -> str:
+        return H if suppress else text  # type: ignore[return-value]
+
+    dest.add_argument("-X", "--yt-dlp-grid-search", action="store_true",
+                      help=h("Enable adaptive grid-search trials for yt-dlp worker downloads"))
+    dest.add_argument("-B", "--yt-dlp-grid-db", default=None,
+                      help=h("SQLite grid-search database path (defaults to <log-dir>/yt-dlp-grid.db)"))
+    dest.add_argument("-V", "--yt-dlp-grid-experiment", default=yt_grid.DEFAULT_GRID_EXPERIMENT,
+                      help=h("Grid-search experiment name"))
+
+
+def _add_webview_args(dest, *, suppress: bool = False) -> None:
+    """Add web-viewer (TermDash mirror) flags to *dest*."""
+    H = argparse.SUPPRESS if suppress else None
+
+    def h(text: str) -> str:
+        return H if suppress else text  # type: ignore[return-value]
+
+    dest.add_argument("-W", "--web-view", action="store_true",
+                      help=h("Mirror the TUI to the web viewer (requires orchestrator_web_viewer)"))
+    dest.add_argument("-Y", "--web-id", default="ytaedl",
+                      help=h("Dashboard ID to register with the web viewer"))
+
+
+def _add_disable_args(dest, *, suppress: bool = False) -> None:
+    """Add feature-disable / fallback-tuning flags to *dest*."""
+    H = argparse.SUPPRESS if suppress else None
+
+    def h(text: str) -> str:
+        return H if suppress else text  # type: ignore[return-value]
+
+    dest.add_argument("-n", "--no-extdl-fallback", action="store_true",
+                      help=h("Disable the extdl static-HTML / Playwright fallback when yt-dlp fails"))
+    dest.add_argument("-j", "--extdl-max-candidates", type=int, default=5,
+                      help=h("Max fallback media candidates to try per method (0 = all)"))
+    dest.add_argument("-J", "--extdl-browser-wait", type=float, default=12.0,
+                      help=h("Seconds to collect browser network traffic in the Playwright fallback"))
+    dest.add_argument("-N", "--extdl-capture-browser", default="auto",
+                      choices=["auto", "chromium", "firefox", "webkit"],
+                      help=h("Playwright browser backend for network capture fallback"))
+    dest.add_argument("-K", "--skip-simulate-check", action="store_true",
+                      help=h("Skip the yt-dlp --simulate pre-download duplicate check"))
+
+
 def make_parser() -> argparse.ArgumentParser:
+    """
+    Build the ``ytaedl run`` argument parser.
+
+    Only core flags are shown in ``--help``.  Watcher, grid, webview, and
+    disable flags are defined (so they work when passed directly) but their
+    help text is suppressed.  Use the dedicated sub-subcommands for focused
+    help:
+
+        ytaedl run watcher --help
+        ytaedl run grid    --help
+        ytaedl run webview --help
+        ytaedl run disable --help
+    """
     p = EnforcedArgumentParser(
-        prog="dlmanager.py",
-        description="Master downloader that coordinates multiple dlscript.py workers",
+        prog="ytaedl run",
+        description=(
+            "Interactive download manager.  "
+            "Run 'ytaedl run <profile> --help' for watcher / grid / webview / disable options."
+        ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("-t", "--threads", type=int, default=2, help="Number of concurrent dlscript workers")
-    p.add_argument(
-        "-l", "--time-limit", type=int, default=-1, help="Max seconds a worker holds a urlfile (-1 for unlimited)"
-    )
-    p.add_argument(
-        "-u",
-        "--max-ndjson-rate",
-        type=float,
-        default=5.0,
-        help="Max progress events/sec printed by workers (-1 unlimited)",
-    )
-    p.add_argument("-q", "--quiet", action="store_true", help="Pass -q to workers")
-    p.add_argument(
-        "-p", "--priority-files", action="append", help="URL files to prioritize (can be specified multiple times)"
-    )
-    p.add_argument(
-        "-P",
-        "--proxy-dl-location",
-        default=None,
-        help="Download into this root (per url file subfolder) while checking duplicates in the canonical location",
-    )
-    p.add_argument("-s", "--stars-dir", default="./files/downloads/stars", help="Folder of yt-dlp url files")
-    p.add_argument("-d", "--aebn-dir", default="./files/downloads/ae-stars", help="Folder of AEBN url files")
-    p.add_argument(
-        "-f", "--finished-log", default="./logs/finished_urls.txt", help="Path to record completed URLs (default: <log-dir>/finished_urls.txt)"
-    )
-    p.add_argument("-r", "--refresh-hz", type=float, default=5.0, help="UI refresh rate")
-    p.add_argument("-e", "--exit-at-time", type=int, default=-1, help="Exit the manager after N seconds (<=0 disables)")
-    p.add_argument("-a", "--archive", type=str, default=None, help="Archive folder to store per-urlfile status files")
-    p.add_argument(
-        "-g", "--log-dir", type=str, default="./logs", help="Directory for all logs (manager, workers, watcher)"
-    )
-    p.add_argument(
-        "-x", "--max-process-dl-speed", type=float, default=None, help="Per-worker max download speed (MiB/s)"
-    )
-    p.add_argument(
-        "-v",
-        "--max-resolution",
-        choices=MAX_RESOLUTION_CHOICES,
-        default=None,
-        help="Highest video resolution workers should request",
-    )
-    p.add_argument(
-        "-z",
-        "--max-total-dl-speed",
-        type=float,
-        default=None,
-        help="Global max download speed across all workers (MiB/s)",
-    )
-    p.add_argument("-b", "--show-bars", action="store_true", help="Show an ASCII progress bar per worker")
-    p.add_argument("-w", "--enable-mp4-watcher", action="store_true", help="Enable MP4 watcher integration")
-    p.add_argument(
-        "-o",
-        "--mp4-operation",
-        choices=sorted(MP4_VALID_OPERATIONS),
-        default="move",
-        help="Default MP4 watcher operation to apply when syncing staged MP4 files",
-    )
-    p.add_argument(
-        "-k",
-        "--mp4-max-files",
-        type=int,
-        default=None,
-        help="Cap how many MP4 files the watcher processes per run (omit for unlimited)",
-    )
-    p.add_argument(
-        "-G",
-        "--mp4-trigger-total-gb",
-        type=float,
-        default=None,
-        help="Automatically trigger the watcher when total size of complete MP4 files in proxy location exceeds this GiB threshold (off by default)",
-    )
-    p.add_argument(
-        "-F",
-        "--mp4-trigger-free-gb",
-        type=float,
-        default=75.0,
-        help="Automatically trigger the watcher when staging free space drops below this GiB threshold",
-    )
-    p.add_argument(
-        "-m",
-        "--space-remaining",
-        type=_parse_size_bytes,
-        default=None,
-        help=(
-            "Minimum final destination disk space to preserve for watcher transfers "
-            "(examples: 1024MB, 100GB, unlimited)"
-        ),
-    )
-    p.add_argument(
-        "-T",
-        "--mp4-stay-at-staging",
-        action="store_true",
-        help=(
-            "Keep downloaded files at the staging/proxy location instead of moving them to the final destination. "
-            "The watcher will only scan for inferior duplicate files that exist at both locations and delete the worse copy."
-        ),
-    )
-    p.add_argument(
-        "-D",
-        "--unique-domain-dls",
-        type=int,
-        default=-1,
-        metavar="N",
-        help=(
-            "Limit concurrent workers per domain. -1 = off (unlimited). "
-            "1 = one worker per unique domain. 2 = up to two workers per domain, etc. "
-            "Workers that cannot find a qualifying domain slot stay idle until one opens."
-        ),
-    )
-    p.add_argument(
-        "-n", "--no-extdl-fallback",
-        action="store_true",
-        help="Disable the extdl static-HTML / Playwright fallback when yt-dlp fails.",
-    )
-    p.add_argument(
-        "-j", "--extdl-max-candidates",
-        type=int,
-        default=5,
-        help="Max fallback media candidates to try per method (0 = all).",
-    )
-    p.add_argument(
-        "-J", "--extdl-browser-wait",
-        type=float,
-        default=12.0,
-        help="Seconds to collect browser network traffic in the Playwright fallback.",
-    )
-    p.add_argument(
-        "-N", "--extdl-capture-browser",
-        default="auto",
-        choices=["auto", "chromium", "firefox", "webkit"],
-        help="Playwright browser backend for network capture fallback.",
-    )
-    p.add_argument(
-        "-K", "--skip-simulate-check",
-        action="store_true",
-        help="Skip the yt-dlp --simulate pre-download duplicate check.",
-    )
-    p.add_argument(
-        "-X",
-        "--yt-dlp-grid-search",
-        action="store_true",
-        help="Enable adaptive gsearch trials for yt-dlp worker downloads.",
-    )
-    p.add_argument(
-        "-B",
-        "--yt-dlp-grid-db",
-        default=None,
-        help="SQLite grid-search database path; defaults to <log-dir>/yt-dlp-grid.db when grid search is enabled.",
-    )
-    p.add_argument(
-        "-V",
-        "--yt-dlp-grid-experiment",
-        default=yt_grid.DEFAULT_GRID_EXPERIMENT,
-        help="gsearch experiment name for yt-dlp grid search.",
-    )
-    p.add_argument(
-        "-S", "--stall-seconds",
-        type=int,
-        default=4,
-        help=(
-            "Seconds with no yt-dlp output before a worker kills the attempt and tries the "
-            "next fallback method. Default 4s is tuned for the extdl fallback chain."
-        ),
-    )
-    p.add_argument(
-        "-H", "--domain-index-path",
-        default="./logs/domain_index.json",
-        help="Path to save/load the domain URL index (used by -D). Rebuilt when URL files change.",
-    )
-    p.add_argument(
-        "-M", "--rebuild-domain-index",
-        action="store_true",
-        help="Force a full domain index rebuild even if a saved index exists.",
-    )
-    p.add_argument(
-        "-O",
-        "--url-order-key",
-        choices=urlscan.SORT_CHOICES,
-        default="ratio",
-        help="Metric used to prioritise URL files (ratio, remaining, name, unique, mp4, ae, stars, gb)",
-    )
-    p.add_argument(
-        "-C",
-        "--url-order-ascending",
-        action="store_true",
-        help="Sort URL priority ascending instead of descending",
-    )
-    p.add_argument(
-        "-R",
-        "--url-rescan-seconds",
-        type=int,
-        default=0,
-        help="How often to rescan URL stats and refresh priority (<=0 disables)",
-    )
-    p.add_argument(
-        "-I",
-        "--url-preempt",
-        action="store_true",
-        help="Interrupt workers handling low-priority files after a rescan so top entries start immediately",
-    )
-    p.add_argument(
-        "-L",
-        "--download-root",
-        default="./stars",
-        help="Directory where per-urlfile MP4 folders are stored",
-    )
-    p.add_argument(
-        "-Z",
-        "--url-random-order",
-        action="store_true",
-        help="Ignore metrics and assign URL files randomly",
-    )
-    p.add_argument(
-        "-Q",
-        "--url-pick-temperature",
-        type=_parse_url_pick_temperature,
-        default=0.0,
-        help="Weighted-random URL assignment temperature; 0 is deterministic, higher values add randomness",
-    )
-    # Web viewer (TermDash mirror) options
-    p.add_argument(
-        "-W", "--web-view",
-        action="store_true",
-        help="Mirror the TUI to the web viewer (requires orchestrator_web_viewer)",
-    )
-    p.add_argument(
-        "-Y", "--web-id",
-        default="ytaedl",
-        help="Dashboard ID to register with the web viewer (default: ytaedl)",
-    )
-    p.add_argument(
-        "-A", "--prioritize-partial",
-        default=True,
-        action=argparse.BooleanOptionalAction,
-        help=(
-            "When a _partial/<hash>/ directory exists for a URL (interrupted "
-            "download), move that URL to the front of its domain queue and "
-            "schedule it before non-partial URLs.  Domain capacity limits are "
-            "always enforced first.  On by default; use --no-prioritize-partial "
-            "to disable."
-        ),
-    )
-    p.add_argument(
-        "-c", "--cleanup-partial-on-start",
-        action="store_true",
-        help=(
-            "Before starting any workers, scan --proxy-dl-location for stale "
-            "_partial/ directories, print a deletion summary (red text), prompt "
-            "for confirmation, delete them, and remove corresponding archive "
-            "entries.  Combine with --dry-run to preview without deleting."
-        ),
-    )
+    _add_run_core_args(p)
+    # Define feature-group flags with suppressed help so they work when passed
+    # directly but don't clutter the base --help output.
+    _add_watcher_args(p, suppress=True)
+    _add_grid_args(p, suppress=True)
+    _add_webview_args(p, suppress=True)
+    _add_disable_args(p, suppress=True)
     return p
 
 
-def run_main(argv: Optional[Sequence[str]] = None) -> int:
-    """Run the interactive download manager.  Called by ``ytaedl run`` via cli.py."""
-    argv_list = list(argv) if argv is not None else sys.argv[1:]
-    args = make_parser().parse_args(argv_list)
+def run_main(
+    argv: Optional[Sequence[str]] = None,
+    _ns: Optional[argparse.Namespace] = None,
+) -> int:
+    """
+    Run the interactive download manager.  Called by ``ytaedl run`` via cli.py.
+
+    When *_ns* is supplied (pre-parsed namespace from a sub-subcommand combined
+    parser), argument parsing is skipped entirely.  This lets ``ytaedl run watcher``
+    etc. inject auto-enabled flags without a second parse.
+    """
+    if _ns is not None:
+        args = _ns
+    else:
+        argv_list = list(argv) if argv is not None else sys.argv[1:]
+        args = make_parser().parse_args(argv_list)
     t0 = time.time()
     deadline = (t0 + args.exit_at_time) if (args.exit_at_time and args.exit_at_time > 0) else None
 
@@ -1456,8 +1392,20 @@ def run_main(argv: Optional[Sequence[str]] = None) -> int:
             td_dash = None
     stars_dir = Path(args.stars_dir).expanduser().resolve()
     aebn_dir = Path(args.aebn_dir).expanduser().resolve()
-    download_root = Path(args.download_root).expanduser().resolve()
+
+    # Resolve multiple download roots (-L repeatable).  Defaults to ./stars if none given.
+    _raw_roots = args.download_root or ["./stars"]
+    download_roots: List[Path] = [Path(r).expanduser().resolve() for r in _raw_roots]
+    # Primary root: where new downloads land (without proxy).  Defaults to first -L root.
+    _raw_primary = getattr(args, "primary_root", None)
+    primary_download_root: Path = (
+        Path(_raw_primary).expanduser().resolve() if _raw_primary else download_roots[0]
+    )
+    # Backwards-compatible alias: single download_root = primary for all existing code paths
+    download_root = primary_download_root
     download_root.mkdir(parents=True, exist_ok=True)
+    # Ensure all extra roots exist (don't create them — they should already exist)
+    extra_download_roots: List[Path] = [r for r in download_roots if r != download_root]
     # Logs - all logs go in log_dir with timestamps
     log_dir = Path(args.log_dir).expanduser().resolve()
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -2552,6 +2500,9 @@ def run_main(argv: Optional[Sequence[str]] = None) -> int:
                 archive_source_file=original_file,
                 stall_seconds=getattr(args, "stall_seconds", 4),
                 ytdlp_grid_config_file=ytdlp_grid_config_file,
+                extra_canonical_roots=[
+                    r / original_file.stem for r in extra_download_roots
+                ] if extra_download_roots else None,
             )
             # Create a fresh stop event so the old reader's captured reference
             # (set by _requeue) keeps firing while the new reader starts clean.
@@ -2670,6 +2621,9 @@ def run_main(argv: Optional[Sequence[str]] = None) -> int:
             extdl_capture_browser=getattr(args, "extdl_capture_browser", "auto"),
             skip_simulate_check=getattr(args, "skip_simulate_check", False),
             stall_seconds=getattr(args, "stall_seconds", 4),
+            extra_canonical_roots=[
+                r / urlfile.stem for r in extra_download_roots
+            ] if extra_download_roots else None,
         )
         # Create a fresh stop event so the old reader's captured reference
         # (set by _requeue) keeps firing while the new reader starts clean.

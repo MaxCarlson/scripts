@@ -121,6 +121,10 @@ def make_parser() -> argparse.ArgumentParser:
                    help="Skip the yt-dlp --simulate pre-download duplicate check.")
     p.add_argument("-G", "--ytdlp-grid-config-file", default=None,
                    help="JSON trial/config file with yt-dlp options selected by ytaedl grid search.")
+    p.add_argument("-W", "--worker-slot", type=int, default=0,
+                   help=argparse.SUPPRESS)  # set by manager; not user-facing
+    p.add_argument("--extra-canonical-roots", action="append", default=None,
+                   help=argparse.SUPPRESS)  # additional canonical dirs to check for dupes; set by manager
 
     return p
 
@@ -768,12 +772,13 @@ class _SimulateResult:
 
 def _simulate_check(
     url: str,
-    canonical_out_dir: Path,
+    canonical_out_dirs: "list[Path]",
     *,
     timeout_seconds: int = 15,
 ) -> _SimulateResult:
     """Run yt-dlp --simulate to predict filename/size and check for an existing duplicate.
 
+    Checks every directory in *canonical_out_dirs* (exact match then stem match).
     Returns a ``_SimulateResult`` indicating whether the file already exists.
     If yt-dlp --simulate fails (unsupported site, network error, etc.) returns
     ``is_duplicate=False`` so the caller proceeds with the normal download.
@@ -814,31 +819,33 @@ def _simulate_check(
         except (ValueError, TypeError):
             predicted_size = None
 
-        predicted_file = canonical_out_dir / predicted_name
+        # Check all canonical dirs in order
+        for canonical_out_dir in canonical_out_dirs:
+            predicted_file = canonical_out_dir / predicted_name
 
-        # Check exact filename match
-        if predicted_file.exists():
-            if predicted_size is None:
-                return _SimulateResult(is_duplicate=True, existing_path=str(predicted_file),
-                                       predicted_name=predicted_name)
-            existing_size = predicted_file.stat().st_size
-            # Allow 1% tolerance to handle minor muxing size differences
-            if predicted_size > 0 and abs(existing_size - predicted_size) / predicted_size <= 0.01:
-                return _SimulateResult(is_duplicate=True, existing_path=str(predicted_file),
-                                       predicted_name=predicted_name)
-            # File exists but sizes differ significantly — not a duplicate
-            return _SimulateResult(is_duplicate=False, predicted_name=predicted_name)
+            # Exact filename match
+            if predicted_file.exists():
+                if predicted_size is None:
+                    return _SimulateResult(is_duplicate=True, existing_path=str(predicted_file),
+                                           predicted_name=predicted_name)
+                existing_size = predicted_file.stat().st_size
+                # Allow 1% tolerance to handle minor muxing size differences
+                if predicted_size > 0 and abs(existing_size - predicted_size) / predicted_size <= 0.01:
+                    return _SimulateResult(is_duplicate=True, existing_path=str(predicted_file),
+                                           predicted_name=predicted_name)
+                # File exists but sizes differ significantly — not a duplicate in this dir
+                return _SimulateResult(is_duplicate=False, predicted_name=predicted_name)
 
-        # Stem match (same video, different container e.g. .webm vs .mp4)
-        stem_match = _find_stem_in_dir(Path(predicted_name).stem, canonical_out_dir)
-        if stem_match is not None:
-            if predicted_size is None:
-                return _SimulateResult(is_duplicate=True, existing_path=str(stem_match),
-                                       predicted_name=predicted_name)
-            existing_size = stem_match.stat().st_size
-            if predicted_size > 0 and abs(existing_size - predicted_size) / predicted_size <= 0.01:
-                return _SimulateResult(is_duplicate=True, existing_path=str(stem_match),
-                                       predicted_name=predicted_name)
+            # Stem match (same video, different container e.g. .webm vs .mp4)
+            stem_match = _find_stem_in_dir(Path(predicted_name).stem, canonical_out_dir)
+            if stem_match is not None:
+                if predicted_size is None:
+                    return _SimulateResult(is_duplicate=True, existing_path=str(stem_match),
+                                           predicted_name=predicted_name)
+                existing_size = stem_match.stat().st_size
+                if predicted_size > 0 and abs(existing_size - predicted_size) / predicted_size <= 0.01:
+                    return _SimulateResult(is_duplicate=True, existing_path=str(stem_match),
+                                           predicted_name=predicted_name)
 
         return _SimulateResult(is_duplicate=False, predicted_name=predicted_name)
 
@@ -1114,6 +1121,7 @@ def _run_one(
     dry_run: bool,
     progress_freq_s: Optional[int],
     max_ndjson_rate: float,
+    extra_canonical_dirs: Optional[List[Path]] = None,
     stall_seconds: int | None = None,
     program_deadline: float | None = None,
     max_dl_speed: Optional[float] = None,
@@ -1155,11 +1163,20 @@ def _run_one(
     # Pre-download simulate check: run yt-dlp --simulate to predict filename/size
     # and skip if the file already exists at the canonical destination.
     _canonical_resolved = canonical_out_dir.expanduser().resolve()
+    _all_canonical_dirs = [_canonical_resolved] + [d.expanduser().resolve() for d in (extra_canonical_dirs or [])]
     if not dry_run and tool == "yt-dlp" and not skip_simulate_check:
         proglog.simulate_start(url)
         _emit_json({"event": "simulate_start", "url_index": url_index, "url": url})
-        sim = _simulate_check(url, _canonical_resolved)
+        sim = _simulate_check(url, _all_canonical_dirs)
         if sim.is_duplicate:
+            # Clean up partial dir created before simulate check — it's unused for duplicates.
+            # Without this the partial dir would leak since the early return below bypasses
+            # the normal cleanup block at the end of _run_one().
+            if not dry_run and url_work_dir.exists():
+                try:
+                    shutil.rmtree(url_work_dir)
+                except Exception:
+                    pass
             proglog.simulate_skip(url, sim.existing_path)
             _emit_json({
                 "event": "simulate_result",
@@ -1293,22 +1310,26 @@ def _run_one(
                 raw_dest = evt.get("path")
                 if raw_dest:
                     candidate = Path(raw_dest).expanduser().resolve()
-                    # Resolve the canonical destination path (works in both proxy and non-proxy mode)
-                    if canonical_out_dir != out_dir:
-                        try:
-                            rel = candidate.relative_to(out_dir)
-                        except ValueError:
-                            rel = Path(candidate.name)
-                        canonical_candidate = (canonical_out_dir / rel).resolve()
-                    else:
-                        canonical_candidate = candidate
-                    # Check exact filename match, then fall back to stem match
-                    # (catches re-downloads where container extension differs, e.g. .webm vs .mp4)
+                    # Check all canonical dirs for an existing duplicate
                     existing = None
-                    if canonical_candidate.exists():
-                        existing = canonical_candidate
-                    else:
-                        existing = _find_stem_in_dir(canonical_candidate.stem, canonical_candidate.parent)
+                    for _c_dir in _all_canonical_dirs:
+                        if _c_dir != out_dir:
+                            try:
+                                rel = candidate.relative_to(out_dir)
+                            except ValueError:
+                                rel = Path(candidate.name)
+                            canonical_candidate = (_c_dir / rel).resolve()
+                        else:
+                            canonical_candidate = candidate
+                        if canonical_candidate.exists():
+                            existing = canonical_candidate
+                            break
+                        stem_found = _find_stem_in_dir(canonical_candidate.stem, canonical_candidate.parent)
+                        if stem_found is not None:
+                            existing = stem_found
+                            break
+                    # Keep canonical_out_dir reference for the proxy-cleanup block below
+                    canonical_candidate = (_all_canonical_dirs[0] / candidate.name).resolve()
                     if existing is not None:
                         already_seen = True
                         _emit_json({
@@ -1498,7 +1519,7 @@ def _run_one(
     # retry if bad — partial_root is passed through so yt-dlp resumes the same dir
     info = {"elapsed_s": elapsed_s, "downloaded": (last_progress or {}).get("downloaded"), "total": (last_progress or {}).get("total"), "already": bool(already_seen), "downloader": tool}
     if rc != 0 and retries > 0:
-        return _run_one(tool, urls, out_dir, canonical_out_dir, partial_root, raw_dir, url_index, proglog, timeout, retries - 1, quiet, dry_run, progress_freq_s, max_ndjson_rate, stall_seconds, program_deadline, max_dl_speed, max_height, complete_stall_seconds, extdl_fallback, extdl_max_candidates, extdl_browser_wait, extdl_capture_browser, skip_simulate_check=True, ytdlp_grid_config=ytdlp_grid_config, worker_slot=worker_slot, url_file_path=url_file_path, url_line_num=url_line_num)
+        return _run_one(tool, urls, out_dir, canonical_out_dir, partial_root, raw_dir, url_index, proglog, timeout, retries - 1, quiet, dry_run, progress_freq_s, max_ndjson_rate, stall_seconds, program_deadline, max_dl_speed, max_height, complete_stall_seconds, extdl_fallback, extdl_max_candidates, extdl_browser_wait, extdl_capture_browser, skip_simulate_check=True, ytdlp_grid_config=ytdlp_grid_config, worker_slot=worker_slot, url_file_path=url_file_path, url_line_num=url_line_num, extra_canonical_dirs=extra_canonical_dirs)
 
     # On final success, delete the per-URL partial directory (removes .part fragments)
     if rc == 0 and not dry_run:
@@ -1668,8 +1689,13 @@ def main() -> int:
                 extdl_capture_browser=getattr(args, "extdl_capture_browser", "auto"),
                 skip_simulate_check=getattr(args, "skip_simulate_check", False),
                 ytdlp_grid_config=ytdlp_grid_config if tool == "yt-dlp" else None,
-                url_file_path=str(urlfile.resolve()),
+                url_file_path=str(archive_source_file.resolve()),
                 url_line_num=i,
+                worker_slot=getattr(args, "worker_slot", 0),
+                extra_canonical_dirs=[
+                    Path(r).expanduser().resolve()
+                    for r in (getattr(args, "extra_canonical_roots", None) or [])
+                ],
             )
             # Update archive status (skip marking on Ctrl-C abort rc==130)
             if archive_file:

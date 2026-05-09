@@ -25,15 +25,15 @@ class TestManager:
     def test_make_parser(self):
         """Test that make_parser creates a valid ArgumentParser."""
         parser = manager.make_parser()
-        assert parser.prog == "dlmanager.py"
+        assert parser.prog == "ytaedl run"
 
         # Test parsing with defaults
         args = parser.parse_args([])
         assert args.threads == 2
         assert args.time_limit == -1
         assert args.max_ndjson_rate == 5.0
-        assert args.max_resolution is None
-        assert args.download_root == "./stars"
+        assert args.max_resolution == "2k"   # new default
+        assert args.download_root is None     # None means "use default ./stars"
         assert args.url_order_key == "ratio"
         assert args.url_order_ascending is False
         assert args.url_random_order is False
@@ -52,9 +52,6 @@ class TestManager:
 
         args_with_short = parser.parse_args(["-v", "720"])
         assert args_with_short.max_resolution == "720"
-
-        args_with_show = parser.parse_args(["-b"])
-        assert args_with_show.show_bars is True
 
         args_with_reserve = parser.parse_args(["-m", "100GB"])
         assert args_with_reserve.space_remaining == 100 * 1024**3
@@ -206,6 +203,8 @@ class TestManager:
             str(log_dir),
             "--exit-at-time",
             "1",
+            "-D",
+            "-1",   # disable domain-index so workers get whole URL files (not temp singles)
         ]
 
         dummy_process = MagicMock()
