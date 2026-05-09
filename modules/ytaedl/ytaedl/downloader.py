@@ -25,6 +25,7 @@ import datetime
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -35,17 +36,23 @@ from typing import Dict, List, Optional, Set, Tuple
 from procparsers import iter_parsed_events
 
 try:
+    from . import _partial_utils
     from . import yt_grid
 except ImportError:  # pragma: no cover - used when downloader.py is executed by file path.
     import importlib.util
 
-    _yt_grid_path = Path(__file__).with_name("yt_grid.py")
-    _yt_grid_spec = importlib.util.spec_from_file_location("ytaedl_yt_grid", _yt_grid_path)
-    if _yt_grid_spec is None or _yt_grid_spec.loader is None:
-        raise
-    yt_grid = importlib.util.module_from_spec(_yt_grid_spec)
-    sys.modules[_yt_grid_spec.name] = yt_grid
-    _yt_grid_spec.loader.exec_module(yt_grid)
+    def _load_sibling(name: str, filename: str):
+        path = Path(__file__).with_name(filename)
+        spec = importlib.util.spec_from_file_location(f"ytaedl_{name}", path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Cannot load {filename}")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+
+    _partial_utils = _load_sibling("_partial_utils", "_partial_utils.py")
+    yt_grid = _load_sibling("yt_grid", "yt_grid.py")
 
 MAX_RESOLUTION_CHOICES = ("4k", "2k", "1080", "720", "480")
 _MAX_RESOLUTION_HEIGHTS = {
@@ -114,6 +121,16 @@ def make_parser() -> argparse.ArgumentParser:
                    help="Skip the yt-dlp --simulate pre-download duplicate check.")
     p.add_argument("-G", "--ytdlp-grid-config-file", default=None,
                    help="JSON trial/config file with yt-dlp options selected by ytaedl grid search.")
+    p.add_argument(
+        "-K", "--cleanup-partial",
+        action="store_true",
+        help=(
+            "Scan --proxy-dl-location for stale _partial/ directories, print a "
+            "deletion summary, prompt for confirmation, delete them (and remove "
+            "corresponding archive entries), then exit.  Combine with --dry-run "
+            "to preview without deleting."
+        ),
+    )
 
     return p
 
@@ -1097,7 +1114,7 @@ def _run_one(
     urls: List[str],
     out_dir: Path,
     canonical_out_dir: Path,
-    work_dir: Path,
+    partial_root: Path,
     raw_dir: Path,
     url_index: int,
     proglog: ProgLogger,
@@ -1118,15 +1135,32 @@ def _run_one(
     extdl_capture_browser: str = "auto",
     skip_simulate_check: bool = False,
     ytdlp_grid_config: Optional[dict] = None,
+    worker_slot: int = 0,
+    url_file_path: str = "",
+    url_line_num: int = 0,
 ) -> tuple[int, dict]:
     """
     Returns rc (0 on success). Emits NDJSON to stdout during run.
+
+    ``partial_root`` is the ``_partial/`` directory for this channel.  A
+    per-URL subdirectory ``partial_root/<hash>/`` is created before the
+    download starts and deleted on success.
     """
-    # For aebndl we run per-URL. For yt-dlp we can batch, but to keep consistent eventing,
-    # we run one-at-a-time here too so your master gets clean URL boundaries.
     assert len(urls) == 1
     url = urls[0]
     stem = _urlfile_stem(Path(url))
+
+    # Per-URL isolated working directory for yt-dlp temp files / aebndl segments
+    url_work_dir = _partial_utils.partial_dir_for(url, partial_root)
+    if not dry_run:
+        url_work_dir.mkdir(parents=True, exist_ok=True)
+        _partial_utils.write_partial_meta(
+            url_work_dir,
+            url=url,
+            file_path=url_file_path,
+            line_num=url_line_num,
+            slot=worker_slot,
+        )
 
     # Pre-download simulate check: run yt-dlp --simulate to predict filename/size
     # and skip if the file already exists at the canonical destination.
@@ -1187,14 +1221,14 @@ def _run_one(
 
     # choose command
     if tool == "aebndl":
-        cmd = _build_aebndl_cmd(url, out_dir, work_dir, max_height)
+        cmd = _build_aebndl_cmd(url, out_dir, url_work_dir, max_height)
     else:
         cmd = _build_ytdlp_cmd(
             [url],
             out_dir,
             max_dl_speed,
             max_height,
-            temp_dir=work_dir,
+            temp_dir=url_work_dir,
             grid_config=ytdlp_grid_config,
         )
 
@@ -1231,7 +1265,7 @@ def _run_one(
         encoding="utf-8",
         errors="replace",
         bufsize=1,  # line-buffered (still handle '\r' via reader)
-        cwd=str(work_dir),  # redirect CWD so tools (e.g. aebndl) don't litter the launch directory
+        cwd=str(url_work_dir),  # redirect CWD so tools (e.g. aebndl) don't litter the launch directory
     )
 
     already_seen = False
@@ -1471,10 +1505,19 @@ def _run_one(
     })
     proglog.finish(url_index, elapsed_s, status, reason=_finish_reason)
 
-    # retry if bad
+    # retry if bad — partial_root is passed through so yt-dlp resumes the same dir
     info = {"elapsed_s": elapsed_s, "downloaded": (last_progress or {}).get("downloaded"), "total": (last_progress or {}).get("total"), "already": bool(already_seen), "downloader": tool}
     if rc != 0 and retries > 0:
-        return _run_one(tool, urls, out_dir, canonical_out_dir, work_dir, raw_dir, url_index, proglog, timeout, retries - 1, quiet, dry_run, progress_freq_s, max_ndjson_rate, stall_seconds, program_deadline, max_dl_speed, max_height, complete_stall_seconds, extdl_fallback, extdl_max_candidates, extdl_browser_wait, extdl_capture_browser, skip_simulate_check=True, ytdlp_grid_config=ytdlp_grid_config)
+        return _run_one(tool, urls, out_dir, canonical_out_dir, partial_root, raw_dir, url_index, proglog, timeout, retries - 1, quiet, dry_run, progress_freq_s, max_ndjson_rate, stall_seconds, program_deadline, max_dl_speed, max_height, complete_stall_seconds, extdl_fallback, extdl_max_candidates, extdl_browser_wait, extdl_capture_browser, skip_simulate_check=True, ytdlp_grid_config=ytdlp_grid_config, worker_slot=worker_slot, url_file_path=url_file_path, url_line_num=url_line_num)
+
+    # On final success, delete the per-URL partial directory (removes .part fragments)
+    if rc == 0 and not dry_run:
+        try:
+            if url_work_dir.exists():
+                shutil.rmtree(url_work_dir)
+        except Exception:
+            pass
+
     return rc, info
 
 def main() -> int:
@@ -1489,6 +1532,21 @@ def main() -> int:
     args = make_parser().parse_args()
     ytdlp_grid_config = yt_grid.load_trial_config(args.ytdlp_grid_config_file)
 
+    # --cleanup-partial: scan proxy location for stale _partial/ dirs and exit
+    if getattr(args, "cleanup_partial", False):
+        if not args.proxy_dl_location:
+            print("[ERROR] --cleanup-partial requires --proxy-dl-location (-P).", file=sys.stderr)
+            return 2
+        proxy_root_cp = Path(args.proxy_dl_location).expanduser().resolve()
+        archive_dir_cp = Path(args.archive_dir).expanduser().resolve() if args.archive_dir else None
+        result = _partial_utils.cleanup_partial_dirs(
+            proxy_root_cp,
+            archive_dir=archive_dir_cp,
+            dry_run=args.dry_run,
+            require_confirm=True,
+        )
+        return 0
+
     urlfile = Path(args.url_file)
     if not urlfile.exists():
         print(f"[ERROR] URL file not found: {urlfile}", file=sys.stderr)
@@ -1498,31 +1556,30 @@ def main() -> int:
     canonical_out_dir = Path(args.output_dir) if args.output_dir else _default_outdir_for(urlfile)
     canonical_out_dir = canonical_out_dir.expanduser().resolve()
 
-    work_dir_arg = Path(args.work_dir).expanduser()
     raw_dir = Path(args.raw_log_dir).expanduser().resolve()
 
-    proxy_root: Optional[Path] = None
+    proxy_location: Optional[Path] = None
     download_out_dir = canonical_out_dir
     if args.proxy_dl_location:
-        proxy_root = Path(args.proxy_dl_location).expanduser().resolve()
+        proxy_location = Path(args.proxy_dl_location).expanduser().resolve()
         # Use the canonical output dir's name (original urlfile stem) so that proxy
         # downloads land in B:\stars\upperfloor2\ even when the urlfile passed by the
         # manager is a single-URL temp file (e.g. w05_217_27.txt in domain-index mode).
         proxy_subdir = canonical_out_dir.name if canonical_out_dir.name else urlfile.stem
-        download_out_dir = (proxy_root / proxy_subdir).expanduser().resolve()
-        _ensure_dir(proxy_root)
-        if args.work_dir == './tmp':
-            work_dir = (download_out_dir / '_tmp').resolve()
-        else:
-            work_dir = work_dir_arg.resolve()
-    else:
-        work_dir = work_dir_arg.resolve()
+        download_out_dir = (proxy_location / proxy_subdir).expanduser().resolve()
+        _ensure_dir(proxy_location)
+
+    # partial_root: per-channel _partial/ directory for all temp files
+    partial_root = (download_out_dir / _partial_utils.PARTIAL_DIR_NAME).resolve()
 
     _ensure_dir(download_out_dir)
-    _ensure_dir(work_dir)
+    _ensure_dir(partial_root)
     _ensure_dir(raw_dir)
     if download_out_dir != canonical_out_dir:
         canonical_out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write/check version file for this partial root
+    _partial_utils.write_partial_version(partial_root)
 
     if not args.quiet:
         print(f"[INFO] URL file: {urlfile.resolve()}")
@@ -1537,6 +1594,13 @@ def main() -> int:
     stop_sentinel = Path(args.stop_sentinel).expanduser().resolve() if args.stop_sentinel else None
 
     urls = _read_urls(urlfile)
+
+    # Prioritize URLs that already have a _partial/<hash>/ directory (resumable)
+    if partial_root.is_dir():
+        partial_url_set = {u for u, _ in _partial_utils.scan_partial_dirs(partial_root)}
+        if partial_url_set:
+            urls = sorted(urls, key=lambda u: (0 if u in partial_url_set else 1))
+
     # Archive support
     archive_dir = Path(args.archive_dir).expanduser().resolve() if args.archive_dir else None
     archive_source_file = Path(args.archive_source_file).expanduser() if args.archive_source_file else urlfile
@@ -1606,7 +1670,7 @@ def main() -> int:
                 urls=[url],
                 out_dir=download_out_dir,
                 canonical_out_dir=canonical_out_dir,
-                work_dir=work_dir,
+                partial_root=partial_root,
                 raw_dir=raw_dir,
                 url_index=i,
                 proglog=proglog,
@@ -1627,6 +1691,8 @@ def main() -> int:
                 extdl_capture_browser=getattr(args, "extdl_capture_browser", "auto"),
                 skip_simulate_check=getattr(args, "skip_simulate_check", False),
                 ytdlp_grid_config=ytdlp_grid_config if tool == "yt-dlp" else None,
+                url_file_path=str(urlfile.resolve()),
+                url_line_num=i,
             )
             # Update archive status (skip marking on Ctrl-C abort rc==130)
             if archive_file:

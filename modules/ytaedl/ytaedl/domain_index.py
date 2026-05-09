@@ -83,6 +83,7 @@ class UrlEntry:
     file_id: int    # which file this URL belongs to
     file_path: str  # str(Path) of the original URL file
     line_num: int   # 1-indexed line in that file
+    partial: bool = False  # True when a _partial/<hash>/ dir exists for this URL
 
 
 @dataclass
@@ -113,7 +114,7 @@ class DomainIndex:
     ``build`` and ``load`` are intended for use on the main thread only.
     """
 
-    VERSION = "1.2"
+    VERSION = "1.3"
 
     def __init__(self) -> None:
         # Domain registry
@@ -305,6 +306,7 @@ class DomainIndex:
         max_per_domain: int,
         file_priority: Dict[int, int],
         scan_log: Optional[List[ScanLogEntry]] = None,
+        prefer_partial: bool = True,
     ) -> Optional[UrlEntry]:
         """
         Select the best available URL within domain-lock constraints.
@@ -316,6 +318,14 @@ class DomainIndex:
         file_priority        : file_id -> priority rank (lower number = higher priority)
         scan_log             : if provided, populated with ScanLogEntry items describing
                                each URL/file checked (written to worker's prog log by caller)
+        prefer_partial       : when True, URLs flagged as partial (via mark_partial) are
+                               selected before any non-partial URL regardless of file rank.
+                               Domain capacity limits are always enforced first.
+
+        Priority tiers (highest to lowest):
+        1. Domain capacity hard constraint — never exceed max_per_domain.
+        2. Partial tier (prefer_partial=True) — any partial URL beats all non-partial URLs.
+        3. File priority — lowest rank number wins among candidates in the same tier.
 
         Returns the selected UrlEntry (already popped from queue), or None when
         no qualifying URL exists.
@@ -328,12 +338,16 @@ class DomainIndex:
         _slog("SEARCH", f"active domains: {active_str}  max_per={max_per_domain}")
 
         with self._lock:
-            # Collect candidates: for each domain under the cap, find the
-            # highest-priority file that has a queued URL.
-            # Candidate: (priority_rank, domain, entry)
-            best_rank = None
-            best_domain = None
-            best_entry = None
+            # Two-tier candidate tracking:
+            #   partial_best — best partial entry across all available domains
+            #   normal_best  — best non-partial entry (fallback when no partials)
+            partial_best_rank: Optional[int] = None
+            partial_best_domain: Optional[str] = None
+            partial_best_entry: Optional[UrlEntry] = None
+
+            normal_best_rank: Optional[int] = None
+            normal_best_domain: Optional[str] = None
+            normal_best_entry: Optional[UrlEntry] = None
 
             for domain, q in self._url_queues.items():
                 current = active_domain_counts.get(domain, 0)
@@ -342,53 +356,74 @@ class DomainIndex:
                 if not q:
                     continue
 
-                # Find the highest-priority file within this domain's queue
-                # (lowest rank number = highest priority)
-                file_best_rank: Optional[int] = None
-                file_best_entry: Optional[UrlEntry] = None
+                # Separate available entries into partial and normal buckets,
+                # tracking the best file rank in each.
+                domain_partial_rank: Optional[int] = None
+                domain_partial_entry: Optional[UrlEntry] = None
+                domain_normal_rank: Optional[int] = None
+                domain_normal_entry: Optional[UrlEntry] = None
 
-                # Group queue entries by file_id to log per-file
-                files_checked: Dict[int, List[UrlEntry]] = {}
+                files_logged: Dict[int, int] = {}  # fid -> queued count (for SCAN log)
                 for entry in q:
                     if entry.url in self._finished or entry.url in self._in_progress:
                         continue
-                    files_checked.setdefault(entry.file_id, []).append(entry)
+                    rank = file_priority.get(entry.file_id, 999_999)
+                    files_logged[entry.file_id] = files_logged.get(entry.file_id, 0) + 1
+                    if prefer_partial and entry.partial:
+                        if domain_partial_rank is None or rank < domain_partial_rank:
+                            domain_partial_rank = rank
+                            domain_partial_entry = entry
+                    else:
+                        if domain_normal_rank is None or rank < domain_normal_rank:
+                            domain_normal_rank = rank
+                            domain_normal_entry = entry
 
-                for fid, entries in files_checked.items():
-                    rank = file_priority.get(fid, 999_999)
+                for fid, queued_count in files_logged.items():
                     fname = Path(self._file_map.get(fid, "?")).name
                     total_in_file = self._file_url_counts.get(fid, 0)
                     _slog(
                         "SCAN",
                         f"{fname} [{total_in_file} URLs]  domain={domain}  "
-                        f"queued={len(entries)}  active={current}/{max_per_domain}",
+                        f"queued={queued_count}  active={current}/{max_per_domain}",
                     )
-                    if file_best_rank is None or rank < file_best_rank:
-                        file_best_rank = rank
-                        file_best_entry = entries[0]  # first (lowest line_num)
 
-                if file_best_entry is not None and file_best_rank is not None:
-                    if best_rank is None or file_best_rank < best_rank:
-                        best_rank = file_best_rank
-                        best_domain = domain
-                        best_entry = file_best_entry
+                if domain_partial_entry is not None and domain_partial_rank is not None:
+                    if partial_best_rank is None or domain_partial_rank < partial_best_rank:
+                        partial_best_rank = domain_partial_rank
+                        partial_best_domain = domain
+                        partial_best_entry = domain_partial_entry
 
-            if best_entry is None:
+                if domain_normal_entry is not None and domain_normal_rank is not None:
+                    if normal_best_rank is None or domain_normal_rank < normal_best_rank:
+                        normal_best_rank = domain_normal_rank
+                        normal_best_domain = domain
+                        normal_best_entry = domain_normal_entry
+
+            # Prefer partial tier; fall back to normal
+            if partial_best_entry is not None:
+                best_entry = partial_best_entry
+                best_domain = partial_best_domain
+                _slog("PARTIAL", f"selected partial URL in domain {best_domain}")
+            elif normal_best_entry is not None:
+                best_entry = normal_best_entry
+                best_domain = normal_best_domain
+            else:
                 _slog("WAIT", "no URL available within domain limits")
                 return None
 
             # Pop the selected entry from the domain queue
-            domain = best_domain
-            q = self._url_queues[domain]
+            assert best_domain is not None
+            q = self._url_queues[best_domain]
             target_url = best_entry.url
             new_q = deque(e for e in q if e.url != target_url)
-            self._url_queues[domain] = new_q
+            self._url_queues[best_domain] = new_q
             self._in_progress.add(target_url)
 
             fname = Path(best_entry.file_path).name
             _slog(
                 "FOUND",
-                f"{domain} → {fname} line {best_entry.line_num}  {best_entry.url}",
+                f"{best_domain} → {fname} line {best_entry.line_num}  {best_entry.url}"
+                + ("  [PARTIAL]" if best_entry.partial else ""),
             )
             return best_entry
 
@@ -428,13 +463,21 @@ class DomainIndex:
                 q.append(entry)
 
     def mark_partial(self, url: str) -> None:
-        """Promote *url* to the front of its domain queue (partial .part.mp4 exists)."""
+        """
+        Promote *url* to the front of its domain queue and flag it as partial.
+
+        A URL is partial when a ``_partial/<hash>/`` working directory exists for
+        it, meaning a previous download attempt left resumable fragments.  Partial
+        URLs are scheduled ahead of non-partial ones when ``--prioritize-partial``
+        is active (see ``pick_url``'s ``prefer_partial`` parameter).
+        """
         with self._lock:
             if url in self._finished or url in self._in_progress:
                 return
             entry = self._url_entry_map.get(url)
             if entry is None:
                 return
+            entry.partial = True
             domain = _extract_domain(url)
             q = self._url_queues.get(domain)
             if not q:
@@ -492,7 +535,8 @@ class DomainIndex:
             ],
             "queues": {
                 domain: [
-                    {"url": e.url, "file_id": e.file_id, "line": e.line_num}
+                    {"url": e.url, "file_id": e.file_id, "line": e.line_num,
+                     **({"partial": True} if e.partial else {})}
                     for e in q
                 ]
                 for domain, q in self._url_queues.items()
@@ -551,6 +595,7 @@ class DomainIndex:
                     file_id=fid,
                     file_path=idx._file_map.get(fid, ""),
                     line_num=int(e["line"]),
+                    partial=bool(e.get("partial", False)),
                 )
                 q.append(entry)
                 idx._url_entry_map[entry.url] = entry

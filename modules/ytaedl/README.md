@@ -82,6 +82,71 @@ URL stats panel hotkeys:
 - `h` and `l`: scroll horizontally.
 - `q`: quit with confirmation.
 
+## Partial Download System
+
+When a download is interrupted (killed, stalled, or crashed), ytaedl leaves a
+per-URL working directory under the staging channel folder:
+
+```text
+B:\stars\<channel>\
+├── completed_video.mp4
+└── _partial\
+    ├── a1b2c3d4e5f6\       <- sha256(url)[:12] -- deterministic per URL
+    │   ├── meta.json        <- {"url": "...", "file_path": "...", "started_at": ...}
+    │   └── Title.mp4.part   <- yt-dlp in-progress fragment (resumable)
+    └── 9f8e7d6c5b4a\
+        └── ...
+```
+
+On the next run, ytaedl detects these directories and prioritizes those URLs
+ahead of all others (within domain capacity limits).  yt-dlp finds the `.part`
+file and resumes the download automatically.
+
+### Partial-priority flags (manager)
+
+- `-A/--prioritize-partial` *(on by default)*: scan `_partial/` at startup and
+  move resumable URLs to the front of their domain queues.  Use
+  `--no-prioritize-partial` to disable.
+- `-c/--cleanup-partial-on-start`: before launching any workers, scan for stale
+  `_partial/` directories, show a deletion summary in red, require you to type
+  `DELETE` to confirm, delete them, and remove the corresponding archive
+  entries.  Combine with `--dry-run` to preview without deleting.
+
+### Standalone cleanup (single-worker CLI)
+
+```bash
+ytaedl-download -K --cleanup-partial -P B:\stars\ --dry-run   # preview
+ytaedl-download -K --cleanup-partial -P B:\stars\             # delete with confirmation
+```
+
+### Safety rules
+
+- Finished `.mp4` files are **never** deleted by any cleanup command.
+- Only files inside `_partial/<hash>/` subdirectories are removed.
+- Any bulk deletion outside normal per-URL success cleanup prints a red summary
+  and requires the user to type `DELETE` interactively.
+
+### Partial Download System Version History
+
+| Version | Description                                                          |
+|---------|----------------------------------------------------------------------|
+| v2.0.0  | Per-URL `_partial/<hash>/` dirs with `meta.json` sentinels. Current. |
+| v1.x    | Shared `_tmp/` dir (deleted; not used by this codebase).             |
+
+#### How to bump the major version
+
+When the `_partial/` directory format changes in an incompatible way:
+
+1. Increment `PARTIAL_SYSTEM_VERSION` in
+   [`_partial_utils.py`](ytaedl/_partial_utils.py) (e.g. `"2.0.0"` → `"3.0.0"`).
+2. Add an entry to `PARTIAL_SYSTEM_CHANGELOG` keyed by the new major integer.
+3. Update the table above.
+4. Commit: `"partial: bump major version to N — <reason>"`.
+
+On next startup the manager detects the stored version mismatch, prints the
+changelog entry, shows the deletion summary, and asks the user to type `DELETE`
+before deleting old-format data.
+
 ## URL Priority
 
 The manager prioritizes URL files by ratio descending by default. The ratio is the remaining URL count divided by already downloaded MP4 count. URL files with remaining URLs and zero downloaded MP4 files have an infinite ratio, and infinite ratios are treated as higher priority than any finite ratio.

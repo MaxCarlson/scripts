@@ -42,7 +42,9 @@ except ImportError:
     EnforcedArgumentParser = argparse.ArgumentParser
     ENFORCER_AVAILABLE = False
 
-from . import archive_builder, urlscan, yt_grid
+import shutil
+
+from . import _partial_utils, archive_builder, urlscan, yt_grid
 from .domain_index import DomainIndex, ScanLogEntry, _extract_domain as _domain_of_url
 from .downloader import ARCHIVE_PROCESSED_STATUSES, MAX_RESOLUTION_CHOICES, _merge_archive_status
 from .mp4_watcher import MP4Watcher, WatcherConfig, WatcherSnapshot
@@ -979,6 +981,7 @@ class WorkerState:
     ytdlp_grid_source_urlfile: Optional[str] = None
     ytdlp_grid_stats: Optional[yt_grid.GridRuntimeStats] = None
     ytdlp_grid_recorded: bool = False
+    partial_dir: Optional[Path] = None  # _partial/<hash>/ dir for current URL assignment
 
 
 def _normalize_active_progress(
@@ -1400,6 +1403,28 @@ def make_parser() -> argparse.ArgumentParser:
         default="ytaedl",
         help="Dashboard ID to register with the web viewer (default: ytaedl)",
     )
+    p.add_argument(
+        "-A", "--prioritize-partial",
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        help=(
+            "When a _partial/<hash>/ directory exists for a URL (interrupted "
+            "download), move that URL to the front of its domain queue and "
+            "schedule it before non-partial URLs.  Domain capacity limits are "
+            "always enforced first.  On by default; use --no-prioritize-partial "
+            "to disable."
+        ),
+    )
+    p.add_argument(
+        "-c", "--cleanup-partial-on-start",
+        action="store_true",
+        help=(
+            "Before starting any workers, scan --proxy-dl-location for stale "
+            "_partial/ directories, print a deletion summary (red text), prompt "
+            "for confirmation, delete them, and remove corresponding archive "
+            "entries.  Combine with --dry-run to preview without deleting."
+        ),
+    )
     return p
 
 
@@ -1483,6 +1508,35 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         else None
     )
     proxy_root: Optional[Path] = Path(args.proxy_dl_location).expanduser().resolve() if args.proxy_dl_location else None
+
+    # --cleanup-partial-on-start: wipe all _partial/ dirs before launching workers
+    if getattr(args, "cleanup_partial_on_start", False):
+        if proxy_root is None:
+            mlog.error("--cleanup-partial-on-start requires --proxy-dl-location (-P)")
+            return 2
+        _pu_dry = getattr(args, "dry_run", False)
+        mlog.info(f"[PARTIAL] --cleanup-partial-on-start: scanning {proxy_root}")
+        _cu_result = _partial_utils.cleanup_partial_dirs(
+            proxy_root,
+            archive_dir=archive_dir,
+            dry_run=_pu_dry,
+            require_confirm=True,
+        )
+        if not _pu_dry:
+            mlog.info(
+                f"[PARTIAL] Cleanup complete: {_cu_result.deleted_dirs} dirs deleted, "
+                f"{_cu_result.archive_entries_removed} archive entries removed"
+            )
+
+    # Version-compatibility check for existing _partial/ directories
+    if proxy_root is not None:
+        _ok = _partial_utils.check_and_migrate_proxy_root(
+            proxy_root,
+            archive_dir=archive_dir,
+            dry_run=getattr(args, "dry_run", False),
+        )
+        if not _ok:
+            return 2
 
     watcher: Optional[MP4Watcher] = None
     watcher_auto_delay_until: Optional[float] = None
@@ -1637,6 +1691,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # Register save path for auto-save on updates
         domain_index.save_debounced(domain_index_path, delay_s=5.0)
         mlog.info(f"Domain index ready: {domain_index.summary_line()}")
+
+        # Partial promotion: scan _partial/ dirs and mark resumable URLs as partial
+        # so pick_url() schedules them ahead of non-partial URLs (--prioritize-partial).
+        if proxy_root is not None and getattr(args, "prioritize_partial", True):
+            _partial_pairs = _partial_utils.scan_partial_dirs(proxy_root)
+            _promoted = 0
+            for _purl, _pdir in _partial_pairs:
+                if not domain_index.is_finished(_purl) and not domain_index.is_in_progress(_purl):
+                    domain_index.mark_partial(_purl)
+                    _promoted += 1
+            if _promoted:
+                mlog.info(
+                    f"[PARTIAL] Promoted {_promoted} partial URL(s) to front of domain queues"
+                )
 
     active: set[str] = set()
     watcher_log_scroll = 0
@@ -2366,7 +2434,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 fp_map[fid] = url_rankings.get(str(Path(fpath).resolve()), 999_999)
 
             scan_log: List[ScanLogEntry] = []
-            entry = domain_index.pick_url(active_counts, _max_per, fp_map, scan_log)
+            entry = domain_index.pick_url(
+                active_counts, _max_per, fp_map, scan_log,
+                prefer_partial=getattr(args, "prioritize_partial", True),
+            )
 
             # Write scan log to worker's prog log
             for sl in scan_log:
@@ -2389,6 +2460,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
             original_file = Path(entry.file_path)
             canonical_dir = (download_root / original_file.stem).resolve()
+
+            # Track the per-URL partial dir so we can clean it up on terminal failure
+            if proxy_root is not None:
+                _channel_partial_root = (
+                    proxy_root / original_file.stem / _partial_utils.PARTIAL_DIR_NAME
+                )
+                ws.partial_dir = _partial_utils.partial_dir_for(entry.url, _channel_partial_root)
+            else:
+                ws.partial_dir = None
 
             mlog.info(
                 f"[{ws.slot:02d}] ASSIGN_URL {_domain_of_url(entry.url)} "
@@ -2660,6 +2740,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ws.canonical_dir = None
         ws.url_entry = None
         ws.original_urlfile = None
+        ws.partial_dir = None
         _clear_ytdlp_grid_state(ws)
         ws.domain_search_file = None
         ws.domain_search_progress = (0, 0)
