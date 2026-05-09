@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=69.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jellyfin-doctor"
+version = "0.1.0"
+description = "CLI for diagnosing, monitoring, backing up, and safely resetting native Windows Jellyfin installs."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Max Carlson" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Monitoring",
+    "Topic :: System :: Systems Administration",
+]
+dependencies = [
+    "psutil>=5.9",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.6.0",
+]
+
+[project.scripts]
+jellyfin-doctor = "jellyfin_doctor.cli:main"
+jfdoctor = "jellyfin_doctor.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["jellyfin_doctor"]
+namespaces = false
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = ["--strict-config", "--strict-markers", "-p", "no:cacheprovider"]
+pythonpath = ["."]
+tmp_path_retention_policy = "none"
+
+[tool.coverage.run]
+branch = true
+source = ["jellyfin_doctor"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+src = ["jellyfin_doctor"]
+
+[tool.ruff.lint]
+select = ["A", "ARG", "B", "C4", "E", "F", "I", "N", "PTH", "RET", "RUF", "SIM", "UP", "W"]
+ignore = ["PLR0912", "PLR0913", "PLR0915"]
