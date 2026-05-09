@@ -440,6 +440,93 @@ def _get_pkg_name_from_source(module_dir: Path, verbose: bool) -> str:
                 log_warning(f"[{fallback}] pyproject.toml parse problem: {type(e).__name__}: {e}")
     return fallback
 
+def _get_source_version(module_dir: Path, verbose: bool) -> tuple[int, int, int] | None:
+    """Read MAJOR.MINOR.PATCH from pyproject.toml [project].version."""
+    pyproject_file = module_dir / "pyproject.toml"
+    if not pyproject_file.is_file():
+        return None
+    try:
+        with open(pyproject_file, "rb") as f:
+            data = tomllib.load(f)
+        raw = data.get("project", {}).get("version", "")
+        parts = raw.split(".")
+        if len(parts) >= 3:
+            return int(parts[0]), int(parts[1]), int(parts[2])
+        if len(parts) == 2:
+            return int(parts[0]), int(parts[1]), 0
+        if len(parts) == 1 and parts[0]:
+            return int(parts[0]), 0, 0
+    except Exception as e:
+        if verbose:
+            log_warning(f"[{module_dir.name}] version parse error: {e}")
+    return None
+
+
+def _get_installed_version(module_dir: Path, verbose: bool) -> tuple[int, int, int] | None:
+    """Read the installed version via importlib.metadata or pip show."""
+    pkg = _get_pkg_name_from_source(module_dir, verbose)
+    try:
+        import importlib.metadata as _im
+        raw = _im.version(pkg)
+        parts = raw.split(".")
+        if len(parts) >= 3:
+            return int(parts[0]), int(parts[1]), int(parts[2])
+        if len(parts) == 2:
+            return int(parts[0]), int(parts[1]), 0
+        if len(parts) == 1 and parts[0]:
+            return int(parts[0]), 0, 0
+    except Exception:
+        pass
+    # Fallback: pip show
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "show", pkg],
+            capture_output=True, text=True, check=False, encoding="utf-8", errors="ignore"
+        )
+        for line in result.stdout.splitlines():
+            if line.lower().startswith("version:"):
+                raw = line.split(":", 1)[1].strip()
+                parts = raw.split(".")
+                if len(parts) >= 3:
+                    return int(parts[0]), int(parts[1]), int(parts[2])
+    except Exception as e:
+        if verbose:
+            log_warning(f"[{pkg}] installed version check error: {e}")
+    return None
+
+
+def _check_version_action(module_dir: Path, verbose: bool) -> str:
+    """
+    Compare source vs installed version and return the required action.
+
+    Returns one of:
+      "reinstall_full"  — MAJOR changed: entry points changed, must recreate .cmd files.
+                          Action: pip uninstall + pip install -e .
+      "reinstall_soft"  — MINOR changed: deps/metadata changed, .cmd files stay valid.
+                          Action: pip install -e .
+      "skip"            — PATCH only or equal: editable install already up to date.
+                          Action: nothing needed.
+      "unknown"         — Cannot determine versions; caller decides.
+    """
+    src = _get_source_version(module_dir, verbose)
+    installed = _get_installed_version(module_dir, verbose)
+
+    if src is None or installed is None:
+        return "unknown"
+
+    src_major, src_minor, _ = src
+    ins_major, ins_minor, _ = installed
+
+    if src_major > ins_major:
+        # Entry points likely changed → must regenerate .cmd files
+        return "reinstall_full"
+    if src_minor > ins_minor:
+        # Only deps/metadata changed → reinstall without .cmd recreation
+        return "reinstall_soft"
+    # Patch-only or equal → editable install picks up source changes automatically
+    return "skip"
+
+
 def _get_current_install_mode(module_dir: Path, verbose: bool) -> str | None:
     pkg = _get_pkg_name_from_source(module_dir, verbose)
     try:
@@ -470,13 +557,34 @@ def ensure_module_installed(module_display_name: str, install_path: Path,
                             skip_reinstall: bool, editable: bool, verbose: bool,
                             soft_fail: bool = False):
     desired_mode = "editable" if editable else "normal"
-    current_mode = _get_current_install_mode(install_path, verbose) if skip_reinstall else None
 
-    if skip_reinstall and current_mode == desired_mode:
-        status_line(f"{module_display_name}: already installed ({current_mode})", "unchanged", "skip")
-        if module_display_name == "standard_ui":
-            _try_reload_standard_ui_globally()
-        return
+    # Version-aware skip / reinstall decision (MODULE_STANDARDS.md §1)
+    if skip_reinstall:
+        version_action = _check_version_action(install_path, verbose)
+        if version_action == "skip":
+            # Patch-only: editable install already has the latest source
+            current_mode = _get_current_install_mode(install_path, verbose)
+            if current_mode == desired_mode:
+                status_line(f"{module_display_name}: already installed ({current_mode})", "unchanged", "skip")
+                if module_display_name == "standard_ui":
+                    _try_reload_standard_ui_globally()
+                return
+        elif version_action == "reinstall_full":
+            # MAJOR version bump: entry points changed → uninstall first to recreate .cmd files
+            pkg = _get_pkg_name_from_source(install_path, verbose)
+            status_line(f"{module_display_name}: MAJOR version bump — uninstalling to regenerate .cmd", "warn")
+            _run_quiet([sys.executable, "-m", "pip", "uninstall", "-y", pkg])
+        elif version_action == "reinstall_soft":
+            # MINOR version bump: deps/metadata changed → reinstall (keep .cmd files)
+            status_line(f"{module_display_name}: MINOR version bump — reinstalling", "warn")
+        # "unknown": fall through to normal install
+    else:
+        current_mode = _get_current_install_mode(install_path, verbose) if skip_reinstall else None
+        if skip_reinstall and current_mode == desired_mode:
+            status_line(f"{module_display_name}: already installed ({current_mode})", "unchanged", "skip")
+            if module_display_name == "standard_ui":
+                _try_reload_standard_ui_globally()
+            return
 
     install_cmd = [sys.executable, "-m", "pip", "install"]
     if not verbose:

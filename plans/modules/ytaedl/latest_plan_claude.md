@@ -246,4 +246,3 @@ ytaedl run -D 2 -v 2k -a ./archive -h             # new defaults visible
 
 - `ytaedl run cleanup -h` showing manager help is **expected** — "cleanup" is passed as an unknown arg to `run_main()` which shows run's help. Not a bug; the correct command is `ytaedl cleanup partial -h`.
 - Colored terminal output: confirmed feasible on PowerShell (Windows 10+) with ANSI escape codes.
-

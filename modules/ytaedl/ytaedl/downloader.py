@@ -108,22 +108,22 @@ def make_parser() -> argparse.ArgumentParser:
                    help="Highest video resolution to allow (yt-dlp uses format filters; aebndl requests nearest available <= target).")
     p.add_argument("-B", "--stop-sentinel", type=str, default=None,
                    help="If this file exists before a URL starts, exit cleanly without starting more URLs.")
-    p.add_argument("--no-extdl-fallback", action="store_true",
+    p.add_argument("-N", "--no-extdl-fallback", action="store_true",
                    help="Disable the extdl static-HTML and Playwright fallback when yt-dlp fails.")
-    p.add_argument("--extdl-max-candidates", type=int, default=5,
+    p.add_argument("-j", "--extdl-max-candidates", type=int, default=5,
                    help="Max fallback media candidates to try per method (0 = all).")
-    p.add_argument("--extdl-browser-wait", type=float, default=12.0,
+    p.add_argument("-J", "--extdl-browser-wait", type=float, default=12.0,
                    help="Seconds to collect browser network traffic in the Playwright fallback.")
-    p.add_argument("--extdl-capture-browser", default="auto",
+    p.add_argument("-Q", "--extdl-capture-browser", default="auto",
                    choices=["auto", "chromium", "firefox", "webkit"],
                    help="Playwright browser backend for the network capture fallback.")
-    p.add_argument("--skip-simulate-check", action="store_true",
+    p.add_argument("-K", "--skip-simulate-check", action="store_true",
                    help="Skip the yt-dlp --simulate pre-download duplicate check.")
     p.add_argument("-G", "--ytdlp-grid-config-file", default=None,
                    help="JSON trial/config file with yt-dlp options selected by ytaedl grid search.")
     p.add_argument("-W", "--worker-slot", type=int, default=0,
                    help=argparse.SUPPRESS)  # set by manager; not user-facing
-    p.add_argument("--extra-canonical-roots", action="append", default=None,
+    p.add_argument("-Z", "--extra-canonical-roots", action="append", default=None,
                    help=argparse.SUPPRESS)  # additional canonical dirs to check for dupes; set by manager
 
     return p
@@ -833,8 +833,9 @@ def _simulate_check(
                 if predicted_size > 0 and abs(existing_size - predicted_size) / predicted_size <= 0.01:
                     return _SimulateResult(is_duplicate=True, existing_path=str(predicted_file),
                                            predicted_name=predicted_name)
-                # File exists but sizes differ significantly — not a duplicate in this dir
-                return _SimulateResult(is_duplicate=False, predicted_name=predicted_name)
+                # File exists but sizes differ significantly in this root. Keep
+                # checking later canonical roots before declaring no duplicate.
+                continue
 
             # Stem match (same video, different container e.g. .webm vs .mp4)
             stem_match = _find_stem_in_dir(Path(predicted_name).stem, canonical_out_dir)

@@ -982,6 +982,30 @@ class WorkerState:
     ytdlp_grid_stats: Optional[yt_grid.GridRuntimeStats] = None
     ytdlp_grid_recorded: bool = False
     partial_dir: Optional[Path] = None  # _partial/<hash>/ dir for current URL assignment
+    attempt_generation: int = 0
+    attempt_phase: str = "idle"
+    progress_generation: Optional[int] = None
+
+
+def _clear_worker_progress_state(ws: WorkerState) -> None:
+    ws.percent = None
+    ws.speed_bps = None
+    ws.eta_s = None
+    ws.downloaded_bytes = None
+    ws.total_bytes = None
+    ws.progress_generation = None
+
+
+def _begin_worker_phase(ws: WorkerState, phase: str, *, clear_progress: bool = True) -> None:
+    ws.attempt_phase = phase
+    if clear_progress:
+        _clear_worker_progress_state(ws)
+
+
+def _begin_worker_assignment(ws: WorkerState) -> int:
+    ws.attempt_generation += 1
+    _begin_worker_phase(ws, "assigned", clear_progress=True)
+    return ws.attempt_generation
 
 
 def _normalize_active_progress(
@@ -1133,7 +1157,7 @@ def _start_worker(
     if ytdlp_grid_config_file:
         cmd += ["-G", str(ytdlp_grid_config_file)]
     for _ecr in (extra_canonical_roots or []):
-        cmd += ["--extra-canonical-roots", str(_ecr)]
+        cmd += ["-Z", str(_ecr)]
     if quiet:
         cmd.append("-q")
     # line buffered
@@ -1903,11 +1927,7 @@ def run_main(
     _schedule_url_scan("startup")
 
     def _clear_worker_progress(ws: WorkerState) -> None:
-        ws.percent = None
-        ws.speed_bps = None
-        ws.eta_s = None
-        ws.downloaded_bytes = None
-        ws.total_bytes = None
+        _clear_worker_progress_state(ws)
 
     def _reader(ws: WorkerState):
         f = ws.proc.stdout  # type: ignore
@@ -1918,11 +1938,12 @@ def run_main(
         # after ws.reader_stop is reassigned, and prevents ws.reader_stop.clear()
         # from silently re-enabling this thread.
         my_stop = ws.reader_stop
+        my_generation = ws.attempt_generation
         try:
             for line in f:
                 # Check BEFORE processing so stale buffered events from a
                 # just-finished download don't overwrite the freshly cleared ws state.
-                if my_stop.is_set():
+                if my_stop.is_set() or my_generation != ws.attempt_generation:
                     break
                 line = line.strip()
                 if not line:
@@ -1940,12 +1961,14 @@ def run_main(
                     continue
                 ws.last_event_time = time.time()
                 ev = evt.get("event")
+                if my_generation != ws.attempt_generation:
+                    break
                 if ev == "start":
                     ws.url_index = evt.get("url_index")
                     ws.url_current = evt.get("url")
                     ws.downloader = evt.get("downloader")
                     # Reset progress state on new URL
-                    _clear_worker_progress(ws)
+                    _begin_worker_phase(ws, "downloading", clear_progress=True)
                     ws.url_t0 = time.time()
                     if ws.ytdlp_grid_trial_id and ws.downloader == "yt-dlp":
                         ws.ytdlp_grid_stats = yt_grid.GridRuntimeStats(
@@ -1974,6 +1997,9 @@ def run_main(
                     canon = evt.get("canonical_path", "?")
                     mlog.info(f"[{ws.slot:02d}] CANONICAL_DUP dest={canon}")
                 elif ev == "simulate_start":
+                    _begin_worker_phase(ws, "simulating", clear_progress=True)
+                    ws.progress_log_started = False
+                    ws.last_progress_log_t = 0.0
                     ws.overlay_msg = "\x1b[36m[Simulating…]\x1b[0m checking for existing file at destination"
                     ws.overlay_since = time.time()
                     mlog.info(f"[{ws.slot:02d}] SIMULATE_START url={ws.url_current}")
@@ -2001,29 +2027,40 @@ def run_main(
                     ws.overlay_since = time.time()
                 elif ev == "fallback_start":
                     method = evt.get("method", "?")
+                    _begin_worker_phase(ws, "fallback", clear_progress=True)
                     ws.overlay_msg = f"\x1b[33m[Fallback:{method}]\x1b[0m Discovering media URLs…"
                     ws.overlay_since = time.time()
-                    # Clear stale download stats so the UI doesn't show the previous
-                    # download's progress (e.g. 100%) while the fallback is running.
-                    _clear_worker_progress(ws)
                     # The log will show FALLBACK_START (not START/PROGRESS) so reset
                     # progress_log_started so the next progress event writes DOWNLOAD_START.
                     ws.progress_log_started = False
                     ws.last_progress_log_t = 0.0
                     mlog.info(f"[{ws.slot:02d}] FALLBACK_START method={method} url={ws.url_current}")
-                elif ev == "fallback_attempt":
+                elif ev in ("fallback_attempt", "fallback_try"):
                     method = evt.get("method", "?")
                     attempt = evt.get("attempt", "?")
                     total = evt.get("total", "?")
                     kind = evt.get("kind", "")
+                    _begin_worker_phase(ws, "fallback", clear_progress=True)
+                    ws.progress_log_started = False
+                    ws.last_progress_log_t = 0.0
                     ws.overlay_msg = (
                         f"\x1b[33m[Fallback:{method}]\x1b[0m"
                         f" Trying candidate {attempt}/{total} ({kind})…"
                     )
                     ws.overlay_since = time.time()
                     mlog.info(f"[{ws.slot:02d}] FALLBACK_ATTEMPT method={method} {attempt}/{total} kind={kind}")
+                elif ev == "fallback_stalled":
+                    method = evt.get("method", "?")
+                    reason = evt.get("reason", "stalled")
+                    _begin_worker_phase(ws, "fallback", clear_progress=True)
+                    ws.progress_log_started = False
+                    ws.last_progress_log_t = 0.0
+                    ws.overlay_msg = f"\x1b[33m[Fallback:{method} stalled]\x1b[0m {reason}"
+                    ws.overlay_since = time.time()
+                    mlog.info(f"[{ws.slot:02d}] FALLBACK_STALLED method={method} reason={reason}")
                 elif ev == "fallback_success":
                     method = evt.get("method", "?")
+                    _begin_worker_phase(ws, "downloading", clear_progress=True)
                     ws.overlay_msg = f"\x1b[32m[Fallback:{method} OK]\x1b[0m Downloading…"
                     ws.overlay_since = time.time()
                     mlog.info(f"[{ws.slot:02d}] FALLBACK_SUCCESS method={method}")
@@ -2051,6 +2088,8 @@ def run_main(
                         eta = evt.get("eta_s")
                         pct = evt.get("percent")
                         norm_pct, norm_dl, norm_tot = _normalize_active_progress(dl, tot, pct, sp)
+                        ws.attempt_phase = "downloading"
+                        ws.progress_generation = my_generation
                         ws.percent = norm_pct
                         ws.downloaded_bytes = norm_dl
                         ws.total_bytes = norm_tot
@@ -2429,6 +2468,7 @@ def run_main(
             ws.original_urlfile = original_file
             # Pre-set url_current so domain counts are correct immediately
             ws.url_current = entry.url
+            _begin_worker_assignment(ws)
             _clear_ytdlp_grid_state(ws)
             ytdlp_grid_config_file: Optional[Path] = None
             if args.yt_dlp_grid_search and not _domain_of_url(entry.url).endswith("aebn.com"):
@@ -2459,7 +2499,6 @@ def run_main(
                         pass
                     mlog.error(f"[{ws.slot:02d}] YTDLP_GRID_CREATE_FAILED url={entry.url}: {exc}")
                     return False
-            _clear_worker_progress(ws)
             ws.url_index = None
             ws.destination = None
             ws.url_t0 = 0.0
@@ -2558,6 +2597,7 @@ def run_main(
         ws.waiting_domain_since = 0.0
         ws.url_entry = None
         ws.original_urlfile = None
+        _begin_worker_assignment(ws)
         _clear_ytdlp_grid_state(ws)
         active.add(str(urlfile.resolve()))
         ws.urlfile = urlfile
@@ -2580,7 +2620,6 @@ def run_main(
                     active.discard(str(urlfile.resolve()))
                     mlog.info(f"[{ws.slot:02d}] SKIP finished {urlfile}")
                     return _assign(ws)
-        _clear_worker_progress(ws)
         ws.url_index = None
         ws.url_current = None
         ws.destination = None
@@ -2698,6 +2737,7 @@ def run_main(
         # Clear download stats immediately so the UI doesn't show stale progress
         # (e.g. 100% bar from the just-finished download) during the next search/assign.
         _clear_worker_progress(ws)
+        ws.attempt_phase = "idle"
         ws.is_searching = False
         if finished:
             _schedule_url_scan("post-finish")

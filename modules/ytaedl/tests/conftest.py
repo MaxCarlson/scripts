@@ -1,11 +1,11 @@
 """Pytest configuration and fixtures for ytaedl tests."""
 
-import sys
 import os
-import shutil
-import pytest
+import sys
 import tempfile
 from pathlib import Path
+
+import pytest
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 if str(_PACKAGE_ROOT) not in sys.path:
@@ -26,7 +26,11 @@ if sys.platform == "win32" and "PYTEST_DEBUG_TEMPROOT" not in os.environ:
     for _local_temproot in [p for p in _candidate_temproots if p is not None]:
         try:
             _local_temproot.mkdir(parents=True, exist_ok=True)
-            os.environ["PYTEST_DEBUG_TEMPROOT"] = str(_local_temproot)
+            _root = str(_local_temproot)
+            os.environ["PYTEST_DEBUG_TEMPROOT"] = _root
+            os.environ["TMP"] = _root
+            os.environ["TEMP"] = _root
+            tempfile.tempdir = _root
             break
         except OSError:
             continue

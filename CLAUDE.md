@@ -2,6 +2,11 @@
 
 Personal automation monorepo: 50+ Python modules for cross-platform development.
 
+> **AI assistants**: read [`MODULE_STANDARDS.md`](MODULE_STANDARDS.md) for
+> versioning semantics, CLI flag conventions, subcommand guidelines, testing
+> rules, and cross-platform requirements.  Those guidelines override any
+> defaults you would otherwise apply.
+
 ## Architecture
 
 ```
