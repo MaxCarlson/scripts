@@ -5,13 +5,18 @@
 ## Commands
 
 ```bash
-ytaedl [options]
-ytaedl urls [url-scan-options]
-ytaedl archive [archive-options]
-ytaedl-download [single-worker-options]
+ytaedl run      [options]            # Interactive download manager
+ytaedl worker   [options]            # Single URL-file downloader
+ytaedl cleanup  partial [options]    # Delete stale _partial/ dirs
+ytaedl cleanup  index   [options]    # Rebuild domain URL index
+ytaedl urls     [options]            # URL file scanning and stats
+ytaedl archive  [options]            # Archive file management
 ```
 
-The main `ytaedl` command is the interactive manager. It scans URL files, starts workers, renders the downloads dashboard, and can enable the MP4 watcher.
+Run `ytaedl <subcommand> --help` for the full option list of each subcommand.
+Run `ytaedl cleanup <operation> --help` for cleanup-specific options.
+
+The `ytaedl run` command is the interactive manager. It scans URL files, starts workers, renders the downloads dashboard, and can enable the MP4 watcher.
 
 ## Common Manager Options
 

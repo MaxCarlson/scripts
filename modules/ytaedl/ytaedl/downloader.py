@@ -121,16 +121,6 @@ def make_parser() -> argparse.ArgumentParser:
                    help="Skip the yt-dlp --simulate pre-download duplicate check.")
     p.add_argument("-G", "--ytdlp-grid-config-file", default=None,
                    help="JSON trial/config file with yt-dlp options selected by ytaedl grid search.")
-    p.add_argument(
-        "-K", "--cleanup-partial",
-        action="store_true",
-        help=(
-            "Scan --proxy-dl-location for stale _partial/ directories, print a "
-            "deletion summary, prompt for confirmation, delete them (and remove "
-            "corresponding archive entries), then exit.  Combine with --dry-run "
-            "to preview without deleting."
-        ),
-    )
 
     return p
 
@@ -1532,21 +1522,6 @@ def main() -> int:
     args = make_parser().parse_args()
     ytdlp_grid_config = yt_grid.load_trial_config(args.ytdlp_grid_config_file)
 
-    # --cleanup-partial: scan proxy location for stale _partial/ dirs and exit
-    if getattr(args, "cleanup_partial", False):
-        if not args.proxy_dl_location:
-            print("[ERROR] --cleanup-partial requires --proxy-dl-location (-P).", file=sys.stderr)
-            return 2
-        proxy_root_cp = Path(args.proxy_dl_location).expanduser().resolve()
-        archive_dir_cp = Path(args.archive_dir).expanduser().resolve() if args.archive_dir else None
-        result = _partial_utils.cleanup_partial_dirs(
-            proxy_root_cp,
-            archive_dir=archive_dir_cp,
-            dry_run=args.dry_run,
-            require_confirm=True,
-        )
-        return 0
-
     urlfile = Path(args.url_file)
     if not urlfile.exists():
         print(f"[ERROR] URL file not found: {urlfile}", file=sys.stderr)
@@ -1574,6 +1549,8 @@ def main() -> int:
 
     _ensure_dir(download_out_dir)
     _ensure_dir(partial_root)
+    # Write Jellyfin .ignore so it skips the _partial/ working directory
+    _partial_utils.ensure_jellyfin_ignore(partial_root)
     _ensure_dir(raw_dir)
     if download_out_dir != canonical_out_dir:
         canonical_out_dir.mkdir(parents=True, exist_ok=True)

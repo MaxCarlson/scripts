@@ -115,7 +115,7 @@ class TestManager:
         assert formatted == raw
 
     def test_manager_urls_subcommand(self, tmp_path):
-        """Ensure `ytaedl urls` subcommand executes the scanner CLI."""
+        """Ensure `ytaedl urls` subcommand executes the scanner CLI (via cli.main)."""
         stars_dir = tmp_path / "stars"
         ae_dir = tmp_path / "ae"
         media_dir = tmp_path / "media"
@@ -136,8 +136,9 @@ class TestManager:
             "--media-dir",
             str(media_dir),
         ]
+        from ytaedl.cli import main as cli_main
         with patch("sys.stdout"):
-            result = manager.main(argv)
+            result = cli_main(argv)
         assert result == 0
 
     def test_archive_finished_urls_processed_status_wins_over_later_stall(self, tmp_path):

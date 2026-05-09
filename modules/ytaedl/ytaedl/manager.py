@@ -1428,12 +1428,9 @@ def make_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def run_main(argv: Optional[Sequence[str]] = None) -> int:
+    """Run the interactive download manager.  Called by ``ytaedl run`` via cli.py."""
     argv_list = list(argv) if argv is not None else sys.argv[1:]
-    if argv_list and argv_list[0] == "urls":
-        return urlscan.cli_main(argv_list[1:])
-    if argv_list and argv_list[0] == "archive":
-        return archive_builder.cli_main(argv_list[1:])
     args = make_parser().parse_args(argv_list)
     t0 = time.time()
     deadline = (t0 + args.exit_at_time) if (args.exit_at_time and args.exit_at_time > 0) else None
@@ -3928,9 +3925,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     return 0
 
 
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """Thin shim kept for module-level invocation (e.g. python -m ytaedl.manager)."""
+    return run_main(argv)
+
+
 if __name__ == "__main__":
     # Make Ctrl-C stop child process trees on POSIX; on Windows terminate() handles direct child
     try:
-        sys.exit(main())
+        sys.exit(run_main())
     except KeyboardInterrupt:
         sys.exit(130)

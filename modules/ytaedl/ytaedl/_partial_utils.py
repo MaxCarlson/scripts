@@ -72,6 +72,27 @@ PARTIAL_DIR_NAME = "_partial"
 VERSION_FILE_NAME = ".version"
 META_FILE_NAME = "meta.json"
 
+# Jellyfin skip-indexing sentinel.  An empty file with this name in a directory
+# tells Jellyfin not to scan or index that directory's contents.
+JELLYFIN_IGNORE_FILENAME = ".ignore"
+
+
+def ensure_jellyfin_ignore(dir_path: Path) -> None:
+    """
+    Write an empty Jellyfin ``.ignore`` sentinel in *dir_path* (idempotent).
+
+    Only call this for directories that are **one level below** the channel
+    staging folder (e.g. ``B:\\stars\\channel\\_partial\\``).  Do NOT call it
+    in the channel folder itself or in deeper subdirectories — Jellyfin needs
+    to scan the channel root to find finished MP4 files.
+    """
+    ignore = dir_path / JELLYFIN_IGNORE_FILENAME
+    if not ignore.exists():
+        try:
+            ignore.write_text("", encoding="utf-8")
+        except OSError:
+            pass
+
 # Update this when bumping MAJOR — the value is printed to the user before
 # they are asked to confirm deletion of old-format data.
 PARTIAL_SYSTEM_CHANGELOG: Dict[int, str] = {

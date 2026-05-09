@@ -18,8 +18,7 @@ ui = ["termdash>=0.5.0"]
 windows = ["psutil>=5.9.0"]
 
 [project.scripts]
-ytaedl = "ytaedl.manager:main"
-ytaedl-download = "ytaedl.downloader:main"
+ytaedl = "ytaedl.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["ytaedl"]
