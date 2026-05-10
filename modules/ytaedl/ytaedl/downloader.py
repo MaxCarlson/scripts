@@ -38,6 +38,7 @@ from procparsers import iter_parsed_events
 try:
     from . import _partial_utils
     from . import yt_grid
+    from . import __version__ as YTAEDL_VERSION
 except ImportError:  # pragma: no cover - used when downloader.py is executed by file path.
     import importlib.util
 
@@ -53,6 +54,7 @@ except ImportError:  # pragma: no cover - used when downloader.py is executed by
 
     _partial_utils = _load_sibling("_partial_utils", "_partial_utils.py")
     yt_grid = _load_sibling("yt_grid", "yt_grid.py")
+    YTAEDL_VERSION = "unknown"
 
 MAX_RESOLUTION_CHOICES = ("4k", "2k", "1080", "720", "480")
 _MAX_RESOLUTION_HEIGHTS = {
@@ -75,7 +77,7 @@ def _max_height_for_label(label: Optional[str]) -> Optional[int]:
 def make_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="ytaedler.py",
-        description="Unified downloader for yt-dlp and aebndl with live JSON events and logs.",
+        description=f"ytaedl {YTAEDL_VERSION} worker - unified downloader for yt-dlp and aebndl with live JSON events and logs.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("-f", "--url-file", required=True, help="Path to a URL file (one URL per line).")
@@ -754,6 +756,11 @@ def _emit_json(d: dict) -> None:
     sys.stdout.flush()
 
 
+def _attempt_id(worker_slot: int, url_index: int, phase: str, ordinal: int = 1) -> str:
+    slot = worker_slot if isinstance(worker_slot, int) and worker_slot > 0 else 0
+    return f"w{slot:02d}:u{url_index}:{phase}:{ordinal}"
+
+
 def _stop_sentinel_active(path: Optional[Path]) -> bool:
     if not path:
         return False
@@ -879,6 +886,7 @@ def _run_extdl_fallback(
     proglog: Optional["ProgLogger"] = None,
     first_attempt_num: int = 2,
     stall_seconds: int | None = None,
+    attempt_prefix: str = "",
 ) -> tuple[int, Optional[dict]]:
     """Try Method 2 (static HTML) then Method 3 (Playwright) for *url*.
 
@@ -902,8 +910,10 @@ def _run_extdl_fallback(
         _spec.loader.exec_module(_extdl)  # type: ignore[union-attr]
     except Exception as _load_exc:
         msg = f"extdl could not be loaded: {_load_exc}"
+        fallback_attempt_id = f"{attempt_prefix}:fallback:load" if attempt_prefix else None
         _emit_json({"event": "fallback_skip", "method": "all", "reason": msg,
-                    "url_index": url_index, "url": url})
+                    "url_index": url_index, "url": url,
+                    **({"attempt_id": fallback_attempt_id} if fallback_attempt_id else {})})
         if proglog:
             proglog.fallback_skip("all", msg)
         return 1, None
@@ -923,8 +933,14 @@ def _run_extdl_fallback(
         for idx_in_method, candidate in enumerate(limited, start=1):
             _global_attempt[0] += 1
             global_num = _global_attempt[0]
+            candidate_attempt_id = (
+                f"{attempt_prefix}:fallback:{global_num}"
+                if attempt_prefix
+                else f"fallback:{url_index}:{global_num}"
+            )
             _emit_json({
                 "event": "fallback_attempt",
+                "attempt_id": candidate_attempt_id,
                 "method": method_name,
                 "attempt": idx_in_method,
                 "total": len(limited),
@@ -954,6 +970,7 @@ def _run_extdl_fallback(
             if dry_run:
                 import shlex
                 _emit_json({"event": "fallback_dryrun", "method": method_name,
+                            "attempt_id": candidate_attempt_id,
                             "attempt": idx_in_method, "cmd": shlex.join(cmd),
                             "url_index": url_index, "url": url})
                 if proglog:
@@ -986,10 +1003,12 @@ def _run_extdl_fallback(
                         ev = evt.get("event")
                         if ev == "progress":
                             evt = _clamp_progress(evt)
+                            evt["attempt_id"] = candidate_attempt_id
                             candidate_last_progress = evt
                         _cand_activity.observe(evt, _cand_now)
                         if ev == "progress":
                             _emit_json({**evt, "downloader": "yt-dlp",
+                                        "attempt_id": candidate_attempt_id,
                                         "url_index": url_index, "url": url})
                         elif ev == "already":
                             # Candidate URL already downloaded — treat as success
@@ -1001,6 +1020,7 @@ def _run_extdl_fallback(
                             break
                         elif ev in ("destination", "finish"):
                             _emit_json({**evt, "downloader": "yt-dlp",
+                                        "attempt_id": candidate_attempt_id,
                                         "url_index": url_index, "url": url})
                         stalled = _cand_activity.stall(_cand_now)
                         if stalled is not None:
@@ -1020,6 +1040,7 @@ def _run_extdl_fallback(
                         pass
                 if _cand_stalled:
                     _emit_json({"event": "fallback_stalled", "method": method_name,
+                                "attempt_id": candidate_attempt_id,
                                 "attempt": idx_in_method, "stall_seconds": _cand_stall_s,
                                 "reason": _cand_stall_reason,
                                 "url_index": url_index, "url": url})
@@ -1034,6 +1055,7 @@ def _run_extdl_fallback(
             except Exception as exc:
                 rc = 1
                 _emit_json({"event": "fallback_failure", "method": method_name,
+                            "attempt_id": candidate_attempt_id,
                             "attempt": idx_in_method, "rc": rc, "error": str(exc),
                             "url_index": url_index, "url": url})
                 if proglog:
@@ -1043,13 +1065,17 @@ def _run_extdl_fallback(
             if proglog:
                 proglog.fallback_result(method_name, idx_in_method, len(limited), rc)
             if rc == 0:
+                if candidate_last_progress is None:
+                    candidate_last_progress = {"attempt_id": candidate_attempt_id}
                 _emit_json({"event": "fallback_success", "method": method_name,
+                            "attempt_id": candidate_attempt_id,
                             "attempt": idx_in_method, "candidate_url": candidate.url,
                             "url_index": url_index, "url": url})
                 if proglog:
                     proglog.attempt_success(global_num, f"{method_name} {candidate.kind} candidate {idx_in_method}/{len(limited)}")
                 return 0, candidate_last_progress
             _emit_json({"event": "fallback_failure", "method": method_name,
+                        "attempt_id": candidate_attempt_id,
                         "attempt": idx_in_method, "rc": rc,
                         "url_index": url_index, "url": url})
             if proglog:
@@ -1057,8 +1083,9 @@ def _run_extdl_fallback(
         return 1, None
 
     # Method 2: static HTML scan
+    static_attempt_id = f"{attempt_prefix}:fallback:static_html" if attempt_prefix else f"fallback:{url_index}:static_html"
     _emit_json({"event": "fallback_start", "method": "static_html",
-                "url_index": url_index, "url": url})
+                "attempt_id": static_attempt_id, "url_index": url_index, "url": url})
     if proglog:
         proglog.fallback_start("static_html")
     try:
@@ -1066,7 +1093,7 @@ def _run_extdl_fallback(
     except Exception as exc:
         static_candidates = []
         _emit_json({"event": "fallback_failure", "method": "static_html", "rc": -1,
-                    "error": str(exc), "url_index": url_index, "url": url})
+                    "attempt_id": static_attempt_id, "error": str(exc), "url_index": url_index, "url": url})
 
     if static_candidates:
         static_rc, static_progress = _try_candidates(static_candidates, "static_html")
@@ -1074,8 +1101,9 @@ def _run_extdl_fallback(
             return 0, static_progress
 
     # Method 3: Playwright browser capture
+    browser_attempt_id = f"{attempt_prefix}:fallback:browser" if attempt_prefix else f"fallback:{url_index}:browser"
     _emit_json({"event": "fallback_start", "method": "browser",
-                "url_index": url_index, "url": url})
+                "attempt_id": browser_attempt_id, "url_index": url_index, "url": url})
     if proglog:
         proglog.fallback_start("browser_network")
     try:
@@ -1087,13 +1115,13 @@ def _run_extdl_fallback(
     except RuntimeError as exc:
         msg = str(exc)
         _emit_json({"event": "fallback_skip", "method": "browser",
-                    "reason": msg, "url_index": url_index, "url": url})
+                    "attempt_id": browser_attempt_id, "reason": msg, "url_index": url_index, "url": url})
         if proglog:
             proglog.fallback_skip("browser_network", msg)
         browser_candidates = []
     except Exception as exc:
         _emit_json({"event": "fallback_failure", "method": "browser", "rc": -1,
-                    "error": str(exc), "url_index": url_index, "url": url})
+                    "attempt_id": browser_attempt_id, "error": str(exc), "url_index": url_index, "url": url})
         browser_candidates = []
 
     if browser_candidates:
@@ -1101,7 +1129,8 @@ def _run_extdl_fallback(
         if browser_rc == 0:
             return 0, browser_progress
 
-    _emit_json({"event": "fallback_exhausted", "url_index": url_index, "url": url})
+    exhausted_attempt_id = f"{attempt_prefix}:fallback:exhausted" if attempt_prefix else f"fallback:{url_index}:exhausted"
+    _emit_json({"event": "fallback_exhausted", "attempt_id": exhausted_attempt_id, "url_index": url_index, "url": url})
     if proglog:
         proglog.fallback_exhausted()
     return 1, None
@@ -1148,6 +1177,9 @@ def _run_one(
     assert len(urls) == 1
     url = urls[0]
     stem = _urlfile_stem(Path(url))
+    simulate_attempt_id = _attempt_id(worker_slot, url_index, "simulate", 1)
+    normal_attempt_id = _attempt_id(worker_slot, url_index, "normal", 1)
+    active_attempt_id = normal_attempt_id
 
     # Per-URL isolated working directory for yt-dlp temp files / aebndl segments
     url_work_dir = _partial_utils.partial_dir_for(url, partial_root)
@@ -1167,7 +1199,7 @@ def _run_one(
     _all_canonical_dirs = [_canonical_resolved] + [d.expanduser().resolve() for d in (extra_canonical_dirs or [])]
     if not dry_run and tool == "yt-dlp" and not skip_simulate_check:
         proglog.simulate_start(url)
-        _emit_json({"event": "simulate_start", "url_index": url_index, "url": url})
+        _emit_json({"event": "simulate_start", "attempt_id": simulate_attempt_id, "url_index": url_index, "url": url})
         sim = _simulate_check(url, _all_canonical_dirs)
         if sim.is_duplicate:
             # Clean up partial dir created before simulate check — it's unused for duplicates.
@@ -1181,6 +1213,7 @@ def _run_one(
             proglog.simulate_skip(url, sim.existing_path)
             _emit_json({
                 "event": "simulate_result",
+                "attempt_id": simulate_attempt_id,
                 "is_duplicate": True,
                 "existing_path": sim.existing_path,
                 "predicted_name": sim.predicted_name,
@@ -1189,6 +1222,7 @@ def _run_one(
             })
             _emit_json({
                 "event": "canonical_duplicate",
+                "attempt_id": simulate_attempt_id,
                 "canonical_path": sim.existing_path,
                 "url_index": url_index,
                 "url": url,
@@ -1196,6 +1230,7 @@ def _run_one(
             })
             _emit_json({
                 "event": "finish",
+                "attempt_id": simulate_attempt_id,
                 "downloader": tool,
                 "url_index": url_index,
                 "url": url,
@@ -1212,6 +1247,7 @@ def _run_one(
             proglog.simulate_ok(url, sim.predicted_name)
             _emit_json({
                 "event": "simulate_result",
+                "attempt_id": simulate_attempt_id,
                 "is_duplicate": False,
                 "predicted_name": sim.predicted_name,
                 "url_index": url_index,
@@ -1241,6 +1277,7 @@ def _run_one(
         )
 
     _emit_json({"event": "start", "downloader": tool, "url_index": url_index, "url_total": None,
+                "attempt_id": normal_attempt_id,
                 "url": url, "out_dir": str(out_dir), "cmd": None,
                 "ytdlp_grid_config": ytdlp_grid_config if tool == "yt-dlp" else None})
 
@@ -1249,6 +1286,7 @@ def _run_one(
             print("DRY RUN:", " ".join(shlex.quote(x) for x in cmd))
         _emit_json({
             "event": "finish",
+            "attempt_id": normal_attempt_id,
             "downloader": tool,
             "url_index": url_index,
             "url": url,
@@ -1335,6 +1373,7 @@ def _run_one(
                         already_seen = True
                         _emit_json({
                             "event": "canonical_duplicate",
+                            "attempt_id": active_attempt_id,
                             "canonical_path": str(existing),
                             "proxy_path": str(candidate),
                             "url_index": url_index,
@@ -1356,18 +1395,18 @@ def _run_one(
             activity.observe(evt, now)
             # Emit non-progress events immediately (except heartbeats)
             if evt.get("event") != "progress" and evt.get("event") != "heartbeat":
-                _emit_json({**evt, "downloader": tool, "url_index": url_index, "url": url})
+                _emit_json({**evt, "downloader": tool, "attempt_id": active_attempt_id, "url_index": url_index, "url": url})
             # Rate-limited progress scheduling
             if evt.get("event") == "progress":
                 pending_progress = {**evt}
             if min_progress_interval <= 0 and evt.get("event") == "progress":
                 clamped_evt = _clamp_progress(evt)
-                _emit_json({**clamped_evt, "downloader": tool, "url_index": url_index, "url": url})
+                _emit_json({**clamped_evt, "downloader": tool, "attempt_id": active_attempt_id, "url_index": url_index, "url": url})
                 last_emit_progress_t = now
                 pending_progress = None
             elif min_progress_interval > 0 and pending_progress and (now - last_emit_progress_t) >= min_progress_interval:
                 clamped_progress = _clamp_progress(pending_progress)
-                _emit_json({**clamped_progress, "downloader": tool, "url_index": url_index, "url": url})
+                _emit_json({**clamped_progress, "downloader": tool, "attempt_id": active_attempt_id, "url_index": url_index, "url": url})
                 last_emit_progress_t = now
                 pending_progress = None
             if rc is not None:
@@ -1380,7 +1419,7 @@ def _run_one(
                 except Exception:
                     pass
                 rc = 131
-                _emit_json({"event": "deadline", "url_index": url_index, "url": url})
+                _emit_json({"event": "deadline", "attempt_id": active_attempt_id, "url_index": url_index, "url": url})
                 break
             stalled = activity.stall(now)
             if stalled is not None:
@@ -1391,6 +1430,7 @@ def _run_one(
                     pass
                 rc = 124
                 _emit_json({"event": "stalled", "url_index": url_index, "url": url,
+                            "attempt_id": active_attempt_id,
                             "stall_seconds": stalled_s, "reason": stalled_reason})
                 break
             if timeout and (time.time() - t_url_start) > timeout:
@@ -1414,7 +1454,7 @@ def _run_one(
             # On heartbeat we do not print; but use it to time-slice emissions evenly
             if evt.get("event") == "heartbeat" and pending_progress and min_progress_interval > 0 and (now - last_emit_progress_t) >= min_progress_interval:
                 clamped_progress = _clamp_progress(pending_progress)
-                _emit_json({**clamped_progress, "downloader": tool, "url_index": url_index, "url": url})
+                _emit_json({**clamped_progress, "downloader": tool, "attempt_id": active_attempt_id, "url_index": url_index, "url": url})
                 last_emit_progress_t = now
                 pending_progress = None
         if rc is None:
@@ -1430,7 +1470,7 @@ def _run_one(
             proc.terminate()
         except Exception:
             pass
-        _emit_json({"event": "aborted", "reason": "keyboard_interrupt"})
+        _emit_json({"event": "aborted", "attempt_id": active_attempt_id, "reason": "keyboard_interrupt"})
         # write FORCE_EXIT line with last seen progress
         proglog.force_exit(url_index, time.time() - t_url_start, last_progress)
         # Treat as non-fatal for the file: return 130 so caller can advance to next URL
@@ -1477,11 +1517,13 @@ def _run_one(
             proglog=proglog,
             first_attempt_num=2,  # Attempt 1 was the normal yt-dlp try
             stall_seconds=stall_seconds,
+            attempt_prefix=normal_attempt_id,
         )
         if fallback_rc == 0:
             rc = 0
             if fallback_progress:
                 last_progress = fallback_progress
+                active_attempt_id = str(fallback_progress.get("attempt_id") or active_attempt_id)
 
     # classify status and build a human-readable failure reason
     status = "FINISH_SUCCESS" if rc == 0 else "FINISH_BAD"
@@ -1504,6 +1546,7 @@ def _run_one(
     elapsed_s = time.time() - t_url_start
     _emit_json({
         "event": "finish",
+        "attempt_id": active_attempt_id,
         "downloader": tool,
         "url_index": url_index,
         "url": url,
@@ -1520,7 +1563,37 @@ def _run_one(
     # retry if bad — partial_root is passed through so yt-dlp resumes the same dir
     info = {"elapsed_s": elapsed_s, "downloaded": (last_progress or {}).get("downloaded"), "total": (last_progress or {}).get("total"), "already": bool(already_seen), "downloader": tool}
     if rc != 0 and retries > 0:
-        return _run_one(tool, urls, out_dir, canonical_out_dir, partial_root, raw_dir, url_index, proglog, timeout, retries - 1, quiet, dry_run, progress_freq_s, max_ndjson_rate, stall_seconds, program_deadline, max_dl_speed, max_height, complete_stall_seconds, extdl_fallback, extdl_max_candidates, extdl_browser_wait, extdl_capture_browser, skip_simulate_check=True, ytdlp_grid_config=ytdlp_grid_config, worker_slot=worker_slot, url_file_path=url_file_path, url_line_num=url_line_num, extra_canonical_dirs=extra_canonical_dirs)
+        return _run_one(
+            tool,
+            urls,
+            out_dir,
+            canonical_out_dir,
+            partial_root,
+            raw_dir,
+            url_index,
+            proglog,
+            timeout,
+            retries - 1,
+            quiet,
+            dry_run,
+            progress_freq_s,
+            max_ndjson_rate,
+            extra_canonical_dirs=extra_canonical_dirs,
+            stall_seconds=stall_seconds,
+            program_deadline=program_deadline,
+            max_dl_speed=max_dl_speed,
+            max_height=max_height,
+            complete_stall_seconds=complete_stall_seconds,
+            extdl_fallback=extdl_fallback,
+            extdl_max_candidates=extdl_max_candidates,
+            extdl_browser_wait=extdl_browser_wait,
+            extdl_capture_browser=extdl_capture_browser,
+            skip_simulate_check=True,
+            ytdlp_grid_config=ytdlp_grid_config,
+            worker_slot=worker_slot,
+            url_file_path=url_file_path,
+            url_line_num=url_line_num,
+        )
 
     # On final success, delete the per-URL partial directory (removes .part fragments)
     if rc == 0 and not dry_run:
@@ -1532,7 +1605,7 @@ def _run_one(
 
     return rc, info
 
-def main() -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     # Ensure stdout uses UTF-8 regardless of terminal locale (avoids cp1252 UnicodeEncodeError
     # when URLs or filenames contain replacement characters from UTF-8 decode errors).
     if hasattr(sys.stdout, "reconfigure"):
@@ -1541,7 +1614,7 @@ def main() -> int:
         except Exception:
             pass
 
-    args = make_parser().parse_args()
+    args = make_parser().parse_args(argv)
     ytdlp_grid_config = yt_grid.load_trial_config(args.ytdlp_grid_config_file)
 
     urlfile = Path(args.url_file)

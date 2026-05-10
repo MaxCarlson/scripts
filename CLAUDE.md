@@ -5,6 +5,8 @@ changing any module in this repository. It is the single source of truth for
 versioning, CLI design, testing, style, and cross-platform requirements.
 
 If this file and `MODULE_STANDARDS.md` conflict, follow `MODULE_STANDARDS.md`.
+Durable plans use the taxonomy described there: `plans/modules/<module>/INDEX.md`
+plus `user/` and `ai/` folders with indexed status filenames.
 
 ## Common Commands
 

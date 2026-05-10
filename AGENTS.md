@@ -13,6 +13,7 @@ before changing modules in this repository. It is the single source of truth for
 - pytest naming and coverage expectations
 - Python style and cross-platform requirements
 - ytaedl partial/temp directory conventions
+- durable plan taxonomy under `plans/modules/<module>/INDEX.md`, `user/`, and `ai/`
 
 If this file and `MODULE_STANDARDS.md` appear to conflict, `MODULE_STANDARDS.md`
 wins.

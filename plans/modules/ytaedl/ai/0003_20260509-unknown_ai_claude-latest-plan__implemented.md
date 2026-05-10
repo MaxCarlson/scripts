@@ -1,3 +1,10 @@
+---
+plan_index: 0003
+origin: ai
+status: implemented
+source_file: latest_plan_claude.md
+---
+
 # Plan: ytaedl — Bug Fixes, Sub-subcommands, Multi-root, Defaults
 
 ## Context

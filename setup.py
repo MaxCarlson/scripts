@@ -55,6 +55,50 @@ def _ensure_pip_in_venv(py_exe: Path):
     # Even if ensurepip is a no-op, upgrade tooling
     _run_quiet([str(py_exe), "-m", "pip", "install", "-U", "pip", "setuptools", "wheel"])
 
+
+def find_invalid_aebndl_dist_leftovers(site_packages_dir: Path) -> list[Path]:
+    """Return pip leftover paths that look like broken aebndl distributions."""
+    if not site_packages_dir.exists():
+        return []
+    leftovers: list[Path] = []
+    for child in site_packages_dir.iterdir():
+        name = child.name.lower()
+        if not name.startswith("~"):
+            continue
+        if "bndl" in name or name in {"~", "~.dist-info"}:
+            leftovers.append(child)
+    return sorted(leftovers, key=lambda p: p.name.lower())
+
+
+def _venv_site_packages_candidates() -> list[Path]:
+    if IS_WINDOWS:
+        return [VENV_DIR / "Lib" / "site-packages"]
+    return sorted((VENV_DIR / "lib").glob("python*/site-packages")) if (VENV_DIR / "lib").exists() else []
+
+
+def report_or_repair_invalid_aebndl_dists(*, repair: bool = False) -> None:
+    leftovers: list[Path] = []
+    for site_packages in _venv_site_packages_candidates():
+        leftovers.extend(find_invalid_aebndl_dist_leftovers(site_packages))
+    if not leftovers:
+        return
+    action = "Removing" if repair else "Detected"
+    print(f"[BOOTSTRAP] {action} invalid aebndl pip leftover(s):")
+    for path in leftovers:
+        print(f"  - {path}")
+        if repair:
+            try:
+                if path.is_dir():
+                    import shutil
+
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+            except Exception as exc:
+                print(f"    [WARN] Could not remove: {exc}")
+    if not repair:
+        print("[BOOTSTRAP] Re-run with --repair-invalid-aebndl-dists to remove these leftovers.")
+
 def _venv_python() -> Path:
     return VENV_DIR / ("Scripts/python.exe" if IS_WINDOWS else "bin/python")
 
@@ -713,9 +757,16 @@ def main():
         default=False,
         help="Halt immediately when modules/setup.py fails (default is to continue and warn).",
     )
+    parser.add_argument(
+        "-I", "--repair-invalid-aebndl-dists",
+        action="store_true",
+        default=False,
+        help="Remove invalid ~*aebndl* pip distribution leftovers from the repo venv before setup continues.",
+    )
 
     args = parser.parse_args()
     _is_verbose = args.verbose
+    report_or_repair_invalid_aebndl_dists(repair=args.repair_invalid_aebndl_dists)
 
     if args.force_reinstall and args.skip_reinstall is True:
         parser.error("--force-reinstall conflicts with --skip-reinstall")

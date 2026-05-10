@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence, Tuple
 
+from . import __version__ as YTAEDL_VERSION
+
 from .downloader import _format_archive_line
 from .urlscan import read_url_lines
 
@@ -133,7 +135,7 @@ def build_archive_for_file(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ytaedl archive",
-        description="Rebuild archive files based on existing downloads.",
+        description=f"ytaedl {YTAEDL_VERSION} - rebuild archive files based on existing downloads.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(

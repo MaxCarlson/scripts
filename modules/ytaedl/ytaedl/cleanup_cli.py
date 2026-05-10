@@ -31,6 +31,7 @@ import textwrap
 from pathlib import Path
 from typing import List, Optional, Sequence
 
+from . import __version__ as YTAEDL_VERSION
 from . import _partial_utils
 from .domain_index import DomainIndex
 
@@ -60,6 +61,8 @@ _TOP_EPILOG = textwrap.dedent("""\
 
 def _print_top_help(prog: str = "ytaedl cleanup") -> None:
     lines = [
+        f"ytaedl {YTAEDL_VERSION}",
+        "",
         f"usage: {prog} <operation> [options]",
         "",
         "Maintenance operations — no downloads are started.",
@@ -77,7 +80,7 @@ def _make_partial_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="ytaedl cleanup partial",
         description=(
-            "Scan proxy staging directories for stale _partial/ download "
+            f"ytaedl {YTAEDL_VERSION} - scan proxy staging directories for stale _partial/ download "
             "working dirs, print a deletion summary (in red), require the "
             "user to type DELETE to confirm, then delete them.  Optionally "
             "removes the corresponding archive entries so those URLs are "
@@ -132,7 +135,7 @@ def _make_index_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="ytaedl cleanup index",
         description=(
-            "Rebuild the domain URL index from the URL files in --stars-dir "
+            f"ytaedl {YTAEDL_VERSION} - rebuild the domain URL index from the URL files in --stars-dir "
             "and --aebn-dir, then print a summary.  Does not start any "
             "download workers.  Use --dry-run to inspect what the index would "
             "contain without writing it to disk."

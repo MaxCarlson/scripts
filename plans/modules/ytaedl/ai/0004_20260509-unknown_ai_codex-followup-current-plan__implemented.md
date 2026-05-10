@@ -1,3 +1,10 @@
+---
+plan_index: 0004
+origin: ai
+status: implemented
+source_file: current_plan.md
+---
+
 # ytaedl Current Plan
 
 Status date: 2026-05-09

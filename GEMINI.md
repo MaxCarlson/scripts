@@ -6,6 +6,8 @@ and cross-platform behavior.
 
 Gemini CLI agents should read `MODULE_STANDARDS.md` before changing any module.
 If older instructions conflict with that file, follow `MODULE_STANDARDS.md`.
+Durable plans use the taxonomy described there: `plans/modules/<module>/INDEX.md`
+plus `user/` and `ai/` folders with indexed status filenames.
 
 ## Common Commands
 

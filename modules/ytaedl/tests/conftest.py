@@ -11,6 +11,7 @@ import pytest
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 if str(_PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_ROOT))
+os.chdir(_PACKAGE_ROOT)
 
 _TMP_COUNTER = count(1)
 # On Windows, the system-level pytest-of-<user> directory in %TEMP% can become

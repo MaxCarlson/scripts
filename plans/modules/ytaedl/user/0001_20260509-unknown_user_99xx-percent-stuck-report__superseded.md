@@ -1,3 +1,10 @@
+---
+plan_index: 0001
+origin: user
+status: superseded
+source_file: 99_xx_percent_stuck_plan.md
+---
+
 Same old 99.90% stuck issue:
 ```
 >[05] | upperfloor2.txt                          | URL 1/1      | Elapsed 00:05:04 | 99.90%   | 44.55MiB/s   | ETA 00:00:00 | Dom pornhits.com     | 927.84MiB  | 928.77MiB

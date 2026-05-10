@@ -17,6 +17,7 @@ import argparse
 import textwrap
 from typing import Optional
 
+from . import __version__ as YTAEDL_VERSION
 from .manager import (
     _add_disable_args,
     _add_grid_args,
@@ -74,7 +75,7 @@ def _base_combined_parser(
 ) -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog=prog,
-        description=description,
+        description=f"ytaedl {YTAEDL_VERSION}\n\n{description}",
         epilog=epilog or None,
         formatter_class=ColoredSectionHelpFormatter,
     )

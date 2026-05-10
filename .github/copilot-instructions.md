@@ -31,4 +31,6 @@ Use `tmp_path` — never write to relative paths in tests.
 ## Plans
 
 Durable implementation plans belong under `plans/`. Retain older plans there
-with dated or `superseded_` naming instead of deleting them.
+instead of deleting them. For module plans, use
+`plans/modules/<module>/INDEX.md` plus `user/` and `ai/` folders with indexed
+filenames in the format documented in `MODULE_STANDARDS.md`.

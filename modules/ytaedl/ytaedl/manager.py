@@ -44,6 +44,7 @@ except ImportError:
 
 import shutil
 
+from . import __version__ as YTAEDL_VERSION
 from . import _partial_utils, archive_builder, urlscan, yt_grid
 from .domain_index import DomainIndex, ScanLogEntry, _extract_domain as _domain_of_url
 from .downloader import ARCHIVE_PROCESSED_STATUSES, MAX_RESOLUTION_CHOICES, _merge_archive_status
@@ -984,7 +985,9 @@ class WorkerState:
     partial_dir: Optional[Path] = None  # _partial/<hash>/ dir for current URL assignment
     attempt_generation: int = 0
     attempt_phase: str = "idle"
+    active_attempt_id: Optional[str] = None
     progress_generation: Optional[int] = None
+    progress_attempt_id: Optional[str] = None
 
 
 def _clear_worker_progress_state(ws: WorkerState) -> None:
@@ -994,6 +997,7 @@ def _clear_worker_progress_state(ws: WorkerState) -> None:
     ws.downloaded_bytes = None
     ws.total_bytes = None
     ws.progress_generation = None
+    ws.progress_attempt_id = None
 
 
 def _begin_worker_phase(ws: WorkerState, phase: str, *, clear_progress: bool = True) -> None:
@@ -1002,8 +1006,31 @@ def _begin_worker_phase(ws: WorkerState, phase: str, *, clear_progress: bool = T
         _clear_worker_progress_state(ws)
 
 
+def _begin_worker_attempt(
+    ws: WorkerState,
+    phase: str,
+    attempt_id: object,
+    *,
+    clear_progress: bool = True,
+) -> None:
+    if isinstance(attempt_id, str) and attempt_id:
+        ws.active_attempt_id = attempt_id
+    _begin_worker_phase(ws, phase, clear_progress=clear_progress)
+
+
+def _event_matches_active_attempt(ws: WorkerState, evt: dict) -> bool:
+    attempt_id = evt.get("attempt_id")
+    if not attempt_id:
+        return True
+    if ws.active_attempt_id is None:
+        ws.active_attempt_id = str(attempt_id)
+        return True
+    return str(attempt_id) == ws.active_attempt_id
+
+
 def _begin_worker_assignment(ws: WorkerState) -> int:
     ws.attempt_generation += 1
+    ws.active_attempt_id = None
     _begin_worker_phase(ws, "assigned", clear_progress=True)
     return ws.attempt_generation
 
@@ -1036,6 +1063,38 @@ def _normalize_active_progress(
         pct_value = None
 
     return pct_value, dl, tot
+
+
+def _apply_worker_progress_event(ws: WorkerState, evt: dict, generation: int) -> bool:
+    """Apply progress only when the event belongs to the worker's active attempt."""
+    if not _event_matches_active_attempt(ws, evt):
+        return False
+    dl = evt.get("downloaded")
+    tot = evt.get("total")
+    sp = evt.get("speed_bps")
+    eta = evt.get("eta_s")
+    pct = evt.get("percent")
+    norm_pct, norm_dl, norm_tot = _normalize_active_progress(dl, tot, pct, sp)
+    ws.attempt_phase = "downloading"
+    ws.progress_generation = generation
+    ws.progress_attempt_id = ws.active_attempt_id
+    ws.percent = norm_pct
+    ws.downloaded_bytes = norm_dl
+    ws.total_bytes = norm_tot
+    ws.speed_bps = float(sp) if isinstance(sp, (int, float)) else ws.speed_bps
+    if isinstance(eta, (int, float)):
+        ws.eta_s = float(eta)
+    elif (
+        not isinstance(eta, (int, float))
+        and isinstance(ws.speed_bps, float)
+        and ws.speed_bps > 0
+        and isinstance(ws.total_bytes, int)
+        and isinstance(ws.downloaded_bytes, int)
+    ):
+        remaining = ws.total_bytes - ws.downloaded_bytes
+        if remaining > 0:
+            ws.eta_s = remaining / ws.speed_bps
+    return True
 
 
 class DomainDiversityAverager:
@@ -1237,7 +1296,11 @@ def _add_run_core_args(dest) -> None:
     dest.add_argument("-S", "--stall-seconds", type=int, default=4,
                       help="Seconds with no yt-dlp output before a worker tries the next fallback method")
     dest.add_argument("-H", "--domain-index-path", default="./logs/domain_index.json",
-                      help="Path to save/load the domain URL index (used by -D)")
+                      help=(
+                          "Path to save/load the domain URL index (used by -D). "
+                          "The default ./logs/domain_index.json keeps it under the log directory "
+                          "when --log-dir is left at its default."
+                      ))
     dest.add_argument("-M", "--rebuild-domain-index", action="store_true",
                       help="Force a full domain index rebuild even if a saved index exists")
     dest.add_argument("-O", "--url-order-key", choices=urlscan.SORT_CHOICES, default="ratio",
@@ -1361,7 +1424,7 @@ def make_parser() -> argparse.ArgumentParser:
     p = EnforcedArgumentParser(
         prog="ytaedl run",
         description=(
-            "Interactive download manager.  "
+            f"ytaedl {YTAEDL_VERSION} - interactive download manager.  "
             "Run 'ytaedl run <profile> --help' for watcher / grid / webview / disable options."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -1968,7 +2031,7 @@ def run_main(
                     ws.url_current = evt.get("url")
                     ws.downloader = evt.get("downloader")
                     # Reset progress state on new URL
-                    _begin_worker_phase(ws, "downloading", clear_progress=True)
+                    _begin_worker_attempt(ws, "downloading", evt.get("attempt_id"), clear_progress=True)
                     ws.url_t0 = time.time()
                     if ws.ytdlp_grid_trial_id and ws.downloader == "yt-dlp":
                         ws.ytdlp_grid_stats = yt_grid.GridRuntimeStats(
@@ -1997,13 +2060,15 @@ def run_main(
                     canon = evt.get("canonical_path", "?")
                     mlog.info(f"[{ws.slot:02d}] CANONICAL_DUP dest={canon}")
                 elif ev == "simulate_start":
-                    _begin_worker_phase(ws, "simulating", clear_progress=True)
+                    _begin_worker_attempt(ws, "simulating", evt.get("attempt_id"), clear_progress=True)
                     ws.progress_log_started = False
                     ws.last_progress_log_t = 0.0
                     ws.overlay_msg = "\x1b[36m[Simulating…]\x1b[0m checking for existing file at destination"
                     ws.overlay_since = time.time()
                     mlog.info(f"[{ws.slot:02d}] SIMULATE_START url={ws.url_current}")
                 elif ev == "simulate_result":
+                    if not _event_matches_active_attempt(ws, evt):
+                        continue
                     is_dup = evt.get("is_duplicate", False)
                     if is_dup and domain_index and ws.url_current and ws.url_current != "-":
                         try:
@@ -2027,7 +2092,7 @@ def run_main(
                     ws.overlay_since = time.time()
                 elif ev == "fallback_start":
                     method = evt.get("method", "?")
-                    _begin_worker_phase(ws, "fallback", clear_progress=True)
+                    _begin_worker_attempt(ws, "fallback", evt.get("attempt_id"), clear_progress=True)
                     ws.overlay_msg = f"\x1b[33m[Fallback:{method}]\x1b[0m Discovering media URLs…"
                     ws.overlay_since = time.time()
                     # The log will show FALLBACK_START (not START/PROGRESS) so reset
@@ -2040,7 +2105,7 @@ def run_main(
                     attempt = evt.get("attempt", "?")
                     total = evt.get("total", "?")
                     kind = evt.get("kind", "")
-                    _begin_worker_phase(ws, "fallback", clear_progress=True)
+                    _begin_worker_attempt(ws, "fallback", evt.get("attempt_id"), clear_progress=True)
                     ws.progress_log_started = False
                     ws.last_progress_log_t = 0.0
                     ws.overlay_msg = (
@@ -2050,6 +2115,8 @@ def run_main(
                     ws.overlay_since = time.time()
                     mlog.info(f"[{ws.slot:02d}] FALLBACK_ATTEMPT method={method} {attempt}/{total} kind={kind}")
                 elif ev == "fallback_stalled":
+                    if not _event_matches_active_attempt(ws, evt):
+                        continue
                     method = evt.get("method", "?")
                     reason = evt.get("reason", "stalled")
                     _begin_worker_phase(ws, "fallback", clear_progress=True)
@@ -2059,55 +2126,39 @@ def run_main(
                     ws.overlay_since = time.time()
                     mlog.info(f"[{ws.slot:02d}] FALLBACK_STALLED method={method} reason={reason}")
                 elif ev == "fallback_success":
+                    if not _event_matches_active_attempt(ws, evt):
+                        continue
                     method = evt.get("method", "?")
                     _begin_worker_phase(ws, "downloading", clear_progress=True)
                     ws.overlay_msg = f"\x1b[32m[Fallback:{method} OK]\x1b[0m Downloading…"
                     ws.overlay_since = time.time()
                     mlog.info(f"[{ws.slot:02d}] FALLBACK_SUCCESS method={method}")
                 elif ev == "fallback_failure":
+                    if not _event_matches_active_attempt(ws, evt):
+                        continue
                     method = evt.get("method", "?")
                     attempt = evt.get("attempt", "?")
                     rc_f = evt.get("rc", "?")
                     mlog.info(f"[{ws.slot:02d}] FALLBACK_FAILURE method={method} attempt={attempt} rc={rc_f}")
                 elif ev == "fallback_skip":
+                    if not _event_matches_active_attempt(ws, evt):
+                        continue
                     method = evt.get("method", "?")
                     reason = evt.get("reason", "")
                     ws.overlay_msg = f"\x1b[33m[Fallback:{method} skipped]\x1b[0m {reason}"
                     ws.overlay_since = time.time()
                     mlog.info(f"[{ws.slot:02d}] FALLBACK_SKIP method={method} reason={reason}")
                 elif ev == "fallback_exhausted":
+                    if not _event_matches_active_attempt(ws, evt):
+                        continue
                     ws.overlay_msg = "\x1b[31m[All fallbacks exhausted]\x1b[0m"
                     ws.overlay_since = time.time()
                     mlog.info(f"[{ws.slot:02d}] FALLBACK_EXHAUSTED url={ws.url_current}")
                 elif ev == "progress":
                     # Clamp and normalize to avoid >100% and >total displays
                     try:
-                        dl = evt.get("downloaded")
-                        tot = evt.get("total")
-                        sp = evt.get("speed_bps")
-                        eta = evt.get("eta_s")
-                        pct = evt.get("percent")
-                        norm_pct, norm_dl, norm_tot = _normalize_active_progress(dl, tot, pct, sp)
-                        ws.attempt_phase = "downloading"
-                        ws.progress_generation = my_generation
-                        ws.percent = norm_pct
-                        ws.downloaded_bytes = norm_dl
-                        ws.total_bytes = norm_tot
-                        ws.speed_bps = float(sp) if isinstance(sp, (int, float)) else ws.speed_bps
-                        # Only overwrite eta_s when the event actually carries one; otherwise
-                        # keep the last known value so workers with partial events don't flicker to '?'.
-                        if isinstance(eta, (int, float)):
-                            ws.eta_s = float(eta)
-                        elif (
-                            not isinstance(eta, (int, float))
-                            and isinstance(ws.speed_bps, float)
-                            and ws.speed_bps > 0
-                            and isinstance(ws.total_bytes, int)
-                            and isinstance(ws.downloaded_bytes, int)
-                        ):
-                            remaining = ws.total_bytes - ws.downloaded_bytes
-                            if remaining > 0:
-                                ws.eta_s = remaining / ws.speed_bps
+                        if not _apply_worker_progress_event(ws, evt, my_generation):
+                            continue
                         # Any progress clears overlay
                         ws.overlay_msg = None
                         ws.overlay_since = 0.0
@@ -2149,6 +2200,8 @@ def run_main(
                     except Exception:
                         pass
                 elif ev == "complete":
+                    if not _event_matches_active_attempt(ws, evt):
+                        continue
                     try:
                         file_size = evt.get("file_size")
                         if isinstance(file_size, int) and file_size > 0:
@@ -2163,6 +2216,8 @@ def run_main(
                     except Exception:
                         pass
                 elif ev == "finish":
+                    if not _event_matches_active_attempt(ws, evt):
+                        continue
                     mlog.info(f"[{ws.slot:02d}] FINISH rc={evt.get('rc')} idx={ws.url_index}")
                     try:
                         rc_v = int(evt.get("rc")) if evt.get("rc") is not None else None

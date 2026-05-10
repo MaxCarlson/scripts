@@ -1,3 +1,10 @@
+---
+plan_index: 0007
+origin: ai
+status: implemented
+source_file: status.md
+---
+
 # ytaedl Status
 
 Status date: 2026-05-09

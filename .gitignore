@@ -207,6 +207,9 @@ modules/poe2craft/**/*.json
 .pytest_run_tmp*/
 codex_tmp_test/
 logs/
+modules/ytaedl/stars/
+.codex
+NUL
 
 # Video File Stuff
 *.part*

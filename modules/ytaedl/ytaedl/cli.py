@@ -23,6 +23,8 @@ import sys
 import textwrap
 from typing import Optional, Sequence
 
+from . import __version__ as YTAEDL_VERSION
+
 # Known ``ytaedl run`` profile sub-subcommands
 _RUN_PROFILES = ("watcher", "grid", "webview", "disable")
 
@@ -52,6 +54,8 @@ _EXAMPLES = textwrap.dedent("""\
 
 def _print_top_help(prog: str = "ytaedl") -> None:
     lines = [
+        f"ytaedl {YTAEDL_VERSION}",
+        "",
         f"usage: {prog} <subcommand> [options]",
         "",
         "Subcommands:",

@@ -240,11 +240,23 @@ under the repository-level `plans/` directory. Do not leave canonical plans
 inside module subdirectories.
 
 - Use `plans/modules/<module>/` for module-specific plans.
-- Keep older plans instead of deleting them. Mark superseded plans by filename
-  or heading, for example `2026-05-09_superseded_<slug>.md` or
-  `superseded_<slug>.md`.
-- A module may keep a small current index such as `current_plan.md` and
-  `status.md`, but historical plans should remain available next to it.
+- Module plan directories should use this taxonomy when they contain more than
+  one durable plan:
+  - `INDEX.md` is the canonical registry.
+  - `user/` contains user-authored plans or raw user requests.
+  - `ai/` contains assistant interpretations, implementation plans, and status
+    notes.
+  - `ai/perma/` may contain durable reusable plan templates that are not one
+    execution instance. Keep these stable and reference them from indexed plans.
+  - Plan filenames use
+    `<index>_<yyyymmdd-HHMM|yyyymmdd-unknown>_<origin>_<slug>__<status>.md`.
+    Example: `0005_20260509-1700_ai_codex-plan-plus-1__implemented.md`.
+  - Status values are `planned`, `in_progress`, `implemented`, `partial`,
+    `superseded`, and `deferred`.
+- Keep older plans instead of deleting them. Move or rename superseded plans
+  into the taxonomy and mark the status in both filename and metadata.
+- A module may keep short status notes, but canonical current status should be
+  discoverable from `plans/modules/<module>/INDEX.md`.
 - If a plan is moved from a module-local folder, preserve the old content under
   `plans/` before removing the duplicate module-local copy.
 

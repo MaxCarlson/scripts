@@ -18,6 +18,8 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
+from . import __version__ as YTAEDL_VERSION
+
 GBYTES = 1024 ** 3
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 TERMDASH_DEFAULT = "~/Repos/scripts/termdash"
@@ -570,7 +572,7 @@ def run_interactive_ui(entries: List[UrlEntry], totals: Dict[str, int], args: ar
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ytaedl urls",
-        description="Summarize URL files vs downloaded MP4s.",
+        description=f"ytaedl {YTAEDL_VERSION} - summarize URL files vs downloaded MP4s.",
     )
     parser.add_argument("-s", "--stars-dir", default=DEFAULT_STARS_DIR,
                         help="Directory containing primary star URL files")

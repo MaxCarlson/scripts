@@ -148,18 +148,27 @@ def _pkg_name_from_source(module_dir: Path, verbose: bool) -> str:
 
 def _project_version_from_source(module_dir: Path, verbose: bool) -> str | None:
     pyproject = module_dir / "pyproject.toml"
-    if not pyproject.is_file():
-        return None
     try:
-        with open(pyproject, "rb") as f:
-            data = tomllib.load(f)
-        if "project" in data and "version" in data["project"]:
-            return str(data["project"]["version"])
-        if "tool" in data and "poetry" in data["tool"] and "version" in data["tool"]["poetry"]:
-            return str(data["tool"]["poetry"]["version"])
+        if pyproject.is_file():
+            with open(pyproject, "rb") as f:
+                data = tomllib.load(f)
+            if "project" in data and "version" in data["project"]:
+                return str(data["project"]["version"])
+            if "tool" in data and "poetry" in data["tool"] and "version" in data["tool"]["poetry"]:
+                return str(data["tool"]["poetry"]["version"])
     except Exception as e:
         if verbose:
             log_warning(f"[{module_dir.name}] pyproject.toml version parse issue: {type(e).__name__}: {e}")
+    setup_py = module_dir / "setup.py"
+    if setup_py.is_file():
+        try:
+            text = setup_py.read_text(encoding="utf-8", errors="ignore")
+            match = re.search(r"\bversion\s*=\s*['\"]([^'\"]+)['\"]", text)
+            if match:
+                return match.group(1)
+        except Exception as e:
+            if verbose:
+                log_warning(f"[{module_dir.name}] setup.py version parse issue: {type(e).__name__}: {e}")
     return None
 
 def _installed_pkg_version(pkg_name: str, verbose: bool) -> str | None:
@@ -232,6 +241,59 @@ def _run_with_log(cmd: list[str], log_path: Path, *, verbose: bool, heartbeat_ev
                     sys.stdout.flush()
                     next_tick = time.time() + heartbeat_every
                 time.sleep(0.25)
+
+
+WINERROR32_RE = re.compile(r"\[WinError 32\].*?: '([^']+)'")
+
+
+def _extract_locked_console_script(log_path: Path) -> Path | None:
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    match = WINERROR32_RE.search(text)
+    if not match:
+        return None
+    path = Path(match.group(1))
+    if path.name.lower().endswith((".exe", ".cmd", ".ps1")):
+        return path
+    return None
+
+
+def _find_likely_locking_processes(path: Path) -> list[str]:
+    try:
+        import psutil  # type: ignore
+    except Exception:
+        return []
+    wanted = str(path).lower()
+    matches: list[str] = []
+    for proc in psutil.process_iter(["pid", "name", "exe", "cmdline"]):
+        try:
+            open_files = proc.open_files() or []
+            for opened in open_files:
+                if str(opened.path).lower() == wanted:
+                    info = proc.info
+                    matches.append(f"{info.get('name') or '?'} pid={info.get('pid')}")
+                    break
+        except Exception:
+            continue
+    return matches
+
+
+def _locked_console_script_diagnostic(log_path: Path) -> list[str]:
+    locked = _extract_locked_console_script(log_path)
+    if locked is None:
+        return []
+    lines = [
+        f"locked console script: {locked}",
+        "Close any running command using this executable, then rerun bootstrap.",
+    ]
+    owners = _find_likely_locking_processes(locked)
+    if owners:
+        lines.append("likely owner(s): " + ", ".join(owners))
+    else:
+        lines.append("owning process not discoverable without psutil/open-file access")
+    return lines
 
 # ─────────────────────────────────────────────────────────
 # Requirements handling
@@ -430,6 +492,8 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
     errors_encountered: list[str] = []
     hidden_skipped: list[str] = []
     touched_pkgs: list[str] = []  # keep distribution names we installed/checked
+    locked_failed_pkgs: set[str] = set()
+    seen_pkg_sources: dict[str, Path] = {}
 
     if not modules_dir.exists() or not modules_dir.is_dir():
         status_line(f"{modules_dir}: not found — skipped", "warn")
@@ -482,11 +546,30 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
             if not has_pyproject:
                 log_warning(f"{name}: pyproject.toml not found — continuing, but modern metadata is recommended.")
 
+            pkg_name_for_entry = _pkg_name_from_source(entry, verbose)
+            previous_source = seen_pkg_sources.get(pkg_name_for_entry)
+            if previous_source is not None and previous_source.resolve() != entry.resolve():
+                status_line(
+                    f"{name}: duplicate package '{pkg_name_for_entry}' — skipped",
+                    "warn",
+                    f"already handled by {previous_source.name}",
+                )
+                continue
+            seen_pkg_sources[pkg_name_for_entry] = entry
+            if pkg_name_for_entry in locked_failed_pkgs:
+                status_line(
+                    f"{name}: skipped after locked console-script failure",
+                    "warn",
+                    "close the running executable and rerun bootstrap",
+                )
+                errors_encountered.append(name)
+                continue
+
             desired = "normal" if production else "editable"
             if skip_reinstall:
                 current = _determine_install_status(entry, verbose)
                 if current == desired:
-                    pkg_name = _pkg_name_from_source(entry, verbose)
+                    pkg_name = pkg_name_for_entry
                     source_version = _project_version_from_source(entry, verbose)
                     installed_version = _installed_pkg_version(pkg_name, verbose)
                     if pkg_name == "vdedup" and not _vdedup_gpu_requirements_installed():
@@ -543,7 +626,7 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
                 status_line(f"{name}: no requirements.txt — skipped", "unchanged")
 
             # 2) module install (one line per module in non-verbose)
-            if _pkg_name_from_source(entry, verbose) == "vdedup":
+            if pkg_name_for_entry == "vdedup":
                 gpu_rc = _install_vdedup_gpu_requirements(entry, logs_dir, verbose)
                 if gpu_rc != 0:
                     status_line(
@@ -559,10 +642,15 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
             rc = _install_module(name, entry, editable=not production, logs_dir=logs_dir, verbose=verbose)
             if rc == 0:
                 status_line(f"{name}: installed", "ok", "editable" if not production else "normal")
-                touched_pkgs.append(_pkg_name_from_source(entry, verbose))
+                touched_pkgs.append(pkg_name_for_entry)
             else:
-                status_line(f"{name}: install failed", "fail", f"log: {logs_dir / (name + '-pip.log')}")
-                failed_deps = _extract_failed_dependency_names(logs_dir / f"{name}-pip.log")
+                pip_log = logs_dir / f"{name}-pip.log"
+                status_line(f"{name}: install failed", "fail", f"log: {pip_log}")
+                locked_diagnostic = _locked_console_script_diagnostic(pip_log)
+                if locked_diagnostic:
+                    locked_failed_pkgs.add(pkg_name_for_entry)
+                    _print_dependency_failure_group(name, locked_diagnostic, "locked executable diagnostic:")
+                failed_deps = _extract_failed_dependency_names(pip_log)
                 if failed_deps:
                     _print_dependency_failure_group(name, failed_deps, "pip-reported failed dependency/install items:")
                 elif has_pyproject:
