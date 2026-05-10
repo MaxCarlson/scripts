@@ -4,8 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ytaedl"
-version = "2.0.3"
+version = "2.0.4"
 # Version history (MAJOR.MINOR.PATCH per MODULE_STANDARDS.md):
+# 2.0.4 — PATCH: keep ytaedl pytest temp roots module-local
 # 2.0.3 — PATCH: reject short fallback preview variants and clean completed .mp4.temp artifacts
 # 2.0.2 — PATCH: add attempt-id progress protection, help version text, and log audit helper
 # 2.0.1 — PATCH: harden run profiles, multi-root duplicate checks, temp tests, and stale-progress clearing
@@ -38,7 +39,6 @@ norecursedirs = [
   "__pycache__",
   ".pytest_cache",
   ".pytest_tmp_root",
-  "codex_tmp_test",
   "ytaedl_test_tmp*",
 ]
 tmp_path_retention_policy = "failed"

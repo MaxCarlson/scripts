@@ -142,6 +142,21 @@ tests/test_module.py        ❌  (old pytest style — do not use)
 Always use `tmp_path` for filesystem tests.  Never write to relative paths
 in tests (no `./stars/`, `./logs/`, etc.).
 
+### Temp roots
+
+Module tests must keep generated temp directories inside the owning module
+directory unless the user explicitly asks for another location.  On Windows,
+if pytest or `tempfile` needs a custom writable temp root, prefer:
+
+```
+modules/<module>/.pytest_tmp_root/<module>-temp-<pid>/
+```
+
+Do not create repo-root scratch folders such as `.tmp-<module>-run/`,
+`codex_tmp_test/`, or `pytest-of-<user>/` from module tests.  If a module needs
+an ignored runtime scratch directory, document it in that module and add a
+targeted ignore rule.
+
 ### Coverage expectations
 
 - Happy path + at least one error/edge case per public function

@@ -16,14 +16,14 @@ os.chdir(_PACKAGE_ROOT)
 _TMP_COUNTER = count(1)
 # On Windows, the system-level pytest-of-<user> directory in %TEMP% can become
 # inaccessible (Access Denied on os.scandir) if its mode bits get misconfigured.
-# Redirect pytest to a workspace temp root outside the ytaedl package tree so
-# pytest will not later collect its own scratch directories as tests.
+# Redirect pytest to a module-local temp root so test scratch directories do
+# not litter the repository root.
 _WIN_TEMP_ROOT: Path | None = None
 
 if sys.platform == "win32":
     _default_temp_root = (
-        Path(__file__).resolve().parents[3]
-        / "codex_tmp_test"
+        _PACKAGE_ROOT
+        / ".pytest_tmp_root"
         / f"ytaedl-temp-{os.getpid()}"
     )
     _candidate_temproots = [
@@ -93,8 +93,8 @@ def _force_writable_temp_root():
         root = _WIN_TEMP_ROOT or Path(os.environ.get("YTAEDL_PYTEST_TEMPROOT") or os.environ.get("TMP") or "")
         if not root:
             root = (
-                Path(__file__).resolve().parents[3]
-                / "codex_tmp_test"
+                _PACKAGE_ROOT
+                / ".pytest_tmp_root"
                 / f"ytaedl-temp-{os.getpid()}"
             )
         root.mkdir(parents=True, exist_ok=True)

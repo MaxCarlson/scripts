@@ -23,6 +23,8 @@ operating modes.  See `ytaedl` for the canonical example.
 
 Name test files `module_name_test.py` (suffix `_test.py`, not prefix `test_`).
 Use `tmp_path` — never write to relative paths in tests.
+Keep module test temp roots under `modules/<module>/.pytest_tmp_root/`, not in
+the repository root.
 
 ## Full guidelines
 

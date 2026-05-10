@@ -25,4 +25,5 @@ ruff check <file>
 All CLI arguments need both short and long forms. Module version bumps follow
 the repository policy in `MODULE_STANDARDS.md`: MAJOR for entry point wrapper
 changes, MINOR for package metadata/dependency reinstall changes, PATCH for
-source-only changes.
+source-only changes. Module tests must keep temp roots inside the owning module
+directory, normally `modules/<module>/.pytest_tmp_root/`.

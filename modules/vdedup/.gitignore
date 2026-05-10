@@ -1,6 +1,8 @@
 tests/media_dataset/
 tests/media_samples/
 *.mp4
+*.json
+*.jsonl
 pytest.*
 reports/
 .pytest_tmp/

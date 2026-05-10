@@ -11,6 +11,7 @@ before changing modules in this repository. It is the single source of truth for
 - module versioning semantics and setup reinstall behavior
 - CLI flag and subcommand conventions
 - pytest naming and coverage expectations
+- module-local pytest/temp directory expectations
 - Python style and cross-platform requirements
 - ytaedl partial/temp directory conventions
 - durable plan taxonomy under `plans/modules/<module>/INDEX.md`, `user/`, and `ai/`

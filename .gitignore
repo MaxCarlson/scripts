@@ -203,9 +203,11 @@ modules/poe2craft/**/*.json
 .pytest_tmp/
 .pytest_tmp*/
 **/.pytest_tmp_codex/
+**/.pytest_tmp_root/
 **/pytest-cache-files-*/
 .pytest_run_tmp*/
 codex_tmp_test/
+.tmp-*/
 logs/
 modules/ytaedl/stars/
 .codex

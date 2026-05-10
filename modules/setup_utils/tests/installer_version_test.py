@@ -39,7 +39,7 @@ def _load_pscripts_modules_setup():
 
 
 def _make_tmp_dir() -> Path:
-    root = Path(__file__).resolve().parents[3] / "codex_tmp_test" / f"setup-utils-{os.getpid()}"
+    root = Path(__file__).resolve().parents[1] / ".pytest_tmp_root" / f"setup-utils-{os.getpid()}"
     root.mkdir(parents=True, exist_ok=True)
     while True:
         path = root / f"tmp_{next(_TMP_COUNTER):04d}"
