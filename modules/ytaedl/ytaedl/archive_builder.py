@@ -49,7 +49,8 @@ def _gather_mp4_infos(stem: str, download_dirs: List[Path]) -> List[Tuple[Path, 
         if not folder.exists():
             continue
         for mp4 in sorted(folder.glob("*.mp4")):
-            if mp4.name.endswith(".part"):
+            name_lower = mp4.name.lower()
+            if name_lower.endswith(".part") or name_lower.endswith(".temp"):
                 continue
             try:
                 stat = mp4.stat()

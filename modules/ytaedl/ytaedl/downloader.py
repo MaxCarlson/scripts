@@ -24,6 +24,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -32,6 +33,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
+from urllib.parse import unquote, urlparse
 
 from procparsers import iter_parsed_events
 
@@ -598,6 +600,151 @@ def _build_ytdlp_cmd(
     return cmd
 
 
+SHORT_PREVIEW_MAX_SECONDS = 95.0
+
+
+def _probe_media_duration_s(path: Path) -> Optional[float]:
+    """Return media duration from ffprobe, or None when probing is unavailable."""
+    try:
+        if not path.exists() or path.stat().st_size <= 0:
+            return None
+    except OSError:
+        return None
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return None
+    try:
+        proc = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=12,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        return float((proc.stdout or "").strip())
+    except ValueError:
+        return None
+
+
+def _is_raw_media_variant_name(value: str) -> bool:
+    stem = Path(unquote(value)).stem.lower()
+    if not stem:
+        return False
+    if re.search(r"(?:^|[_-])(?:hq|lq|pv)$", stem):
+        return True
+    # Raw CDN media names are commonly just an opaque video id.  Human titles
+    # have spaces/punctuation and should not match this fallback guard.
+    return (
+        re.fullmatch(r"\d{4,}(?:[-_]\d+)?", stem) is not None
+        or re.fullmatch(r"[a-z0-9]{8,}", stem) is not None
+    )
+
+
+def _looks_like_preview_source(candidate_url: str, destination: Optional[Path]) -> bool:
+    lowered = candidate_url.lower()
+    parsed = urlparse(candidate_url)
+    path_name = Path(unquote(parsed.path)).name
+    query = parsed.query.lower()
+    if any(token in lowered for token in ("/preview", "/trailer", "/teaser", "/sample", "/pv/")):
+        return True
+    if "ispreview=true" in query:
+        return True
+    if _is_raw_media_variant_name(path_name):
+        return True
+    if destination is not None and _is_raw_media_variant_name(destination.name):
+        return True
+    return False
+
+
+def _temp_sibling_for_destination(destination: Path) -> Optional[Path]:
+    if destination.name.lower().endswith(".mp4.temp"):
+        return destination
+    candidate = destination.with_name(destination.name + ".temp")
+    if candidate.name.lower().endswith(".mp4.temp"):
+        return candidate
+    return None
+
+
+def _promote_finished_temp_file(temp_path: Path) -> Optional[Path]:
+    """Promote or remove a completed ``.mp4.temp`` file when it is probeable."""
+    if not temp_path.name.lower().endswith(".mp4.temp"):
+        return None
+    final_path = temp_path.with_name(temp_path.name[:-5])
+    if final_path.exists():
+        if _probe_media_duration_s(temp_path) is not None and _probe_media_duration_s(final_path) is not None:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+        return None
+    if _probe_media_duration_s(temp_path) is None:
+        return None
+    try:
+        temp_path.replace(final_path)
+        return final_path
+    except OSError:
+        return None
+
+
+def _promote_finished_temp_sibling(destination: Optional[Path]) -> Optional[Path]:
+    if destination is None:
+        return None
+    temp_path = _temp_sibling_for_destination(destination)
+    if temp_path is None or not temp_path.exists():
+        return None
+    return _promote_finished_temp_file(temp_path)
+
+
+def _promote_finished_temp_files(directory: Path) -> List[Path]:
+    promoted: List[Path] = []
+    try:
+        entries = list(directory.glob("*.mp4.temp"))
+    except OSError:
+        return promoted
+    for temp_path in entries:
+        final_path = _promote_finished_temp_file(temp_path)
+        if final_path is not None:
+            promoted.append(final_path)
+    return promoted
+
+
+def _reject_short_preview_candidate(candidate_url: str, destination: Optional[Path]) -> tuple[bool, Optional[float], Optional[Path]]:
+    """Return True for a downloaded fallback candidate that is probably a preview clip."""
+    promoted = _promote_finished_temp_sibling(destination)
+    path = promoted or destination
+    if path is None:
+        return False, None, None
+    if path.name.lower().endswith(".mp4.temp"):
+        final_path = _promote_finished_temp_file(path)
+        path = final_path or path
+    duration_s = _probe_media_duration_s(path)
+    if duration_s is None:
+        return False, None, path
+    if duration_s <= SHORT_PREVIEW_MAX_SECONDS and _looks_like_preview_source(candidate_url, path):
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError:
+            pass
+        return True, duration_s, path
+    return False, duration_s, path
+
+
 def _build_aebndl_cmd(
     url: str,
     out_dir: Path,
@@ -978,6 +1125,7 @@ def _run_extdl_fallback(
                     proglog.attempt_success(global_num, f"{method_name} {candidate.kind} candidate {idx_in_method}/{len(limited)}")
                 return 0, None
             candidate_last_progress: Optional[dict] = None
+            candidate_destination: Optional[Path] = None
             try:
                 proc = subprocess.Popen(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -1019,6 +1167,11 @@ def _run_extdl_fallback(
                                 pass
                             break
                         elif ev in ("destination", "finish"):
+                            if ev == "destination" and evt.get("path"):
+                                try:
+                                    candidate_destination = Path(str(evt.get("path"))).expanduser().resolve()
+                                except Exception:
+                                    candidate_destination = Path(str(evt.get("path"))).expanduser()
                             _emit_json({**evt, "downloader": "yt-dlp",
                                         "attempt_id": candidate_attempt_id,
                                         "url_index": url_index, "url": url})
@@ -1065,8 +1218,39 @@ def _run_extdl_fallback(
             if proglog:
                 proglog.fallback_result(method_name, idx_in_method, len(limited), rc)
             if rc == 0:
+                rejected, duration_s, rejected_path = _reject_short_preview_candidate(candidate.url, candidate_destination)
+                if rejected:
+                    _emit_json({
+                        "event": "fallback_rejected",
+                        "method": method_name,
+                        "attempt_id": candidate_attempt_id,
+                        "attempt": idx_in_method,
+                        "reason": "short_preview_duration",
+                        "duration_s": duration_s,
+                        "path": str(rejected_path) if rejected_path else None,
+                        "candidate_url": candidate.url,
+                        "url_index": url_index,
+                        "url": url,
+                    })
+                    if proglog:
+                        proglog.attempt_fail(
+                            global_num,
+                            f"{method_name} {candidate.kind} candidate {idx_in_method}/{len(limited)}",
+                            f"rejected short preview ({duration_s:.1f}s)",
+                        )
+                    continue
                 if candidate_last_progress is None:
                     candidate_last_progress = {"attempt_id": candidate_attempt_id}
+                if candidate_destination is not None:
+                    promoted_path = _promote_finished_temp_sibling(candidate_destination)
+                    if promoted_path is not None:
+                        _emit_json({
+                            "event": "temp_promoted",
+                            "attempt_id": candidate_attempt_id,
+                            "path": str(promoted_path),
+                            "url_index": url_index,
+                            "url": url,
+                        })
                 _emit_json({"event": "fallback_success", "method": method_name,
                             "attempt_id": candidate_attempt_id,
                             "attempt": idx_in_method, "candidate_url": candidate.url,
@@ -1192,6 +1376,15 @@ def _run_one(
             line_num=url_line_num,
             slot=worker_slot,
         )
+        for promoted_path in _promote_finished_temp_files(out_dir):
+            _emit_json({
+                "event": "temp_promoted",
+                "attempt_id": simulate_attempt_id,
+                "path": str(promoted_path),
+                "url_index": url_index,
+                "url": url,
+                "source": "startup",
+            })
 
     # Pre-download simulate check: run yt-dlp --simulate to predict filename/size
     # and skip if the file already exists at the canonical destination.
@@ -1323,6 +1516,7 @@ def _run_one(
     pending_progress: Optional[dict] = None
     raw_path = _raw_log_path(raw_dir, tool, url_index, stem)
     rc: Optional[int] = None
+    last_destination_path: Optional[Path] = None
 
     try:
         # internal heartbeat for scheduling; also used for stall detection
@@ -1349,6 +1543,7 @@ def _run_one(
                 raw_dest = evt.get("path")
                 if raw_dest:
                     candidate = Path(raw_dest).expanduser().resolve()
+                    last_destination_path = candidate
                     # Check all canonical dirs for an existing duplicate
                     existing = None
                     for _c_dir in _all_canonical_dirs:
@@ -1487,6 +1682,18 @@ def _run_one(
                     parent = parent.parent
         except Exception:
             pass
+
+    if rc == 0 and not dry_run:
+        promoted_path = _promote_finished_temp_sibling(last_destination_path)
+        if promoted_path is not None:
+            _emit_json({
+                "event": "temp_promoted",
+                "attempt_id": active_attempt_id,
+                "path": str(promoted_path),
+                "url_index": url_index,
+                "url": url,
+                "source": "post_run",
+            })
 
     # Log the outcome of the initial yt-dlp attempt (Attempt 1) before fallback begins
     if tool == "yt-dlp":

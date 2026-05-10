@@ -4,8 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ytaedl"
-version = "2.0.2"
+version = "2.0.3"
 # Version history (MAJOR.MINOR.PATCH per MODULE_STANDARDS.md):
+# 2.0.3 — PATCH: reject short fallback preview variants and clean completed .mp4.temp artifacts
 # 2.0.2 — PATCH: add attempt-id progress protection, help version text, and log audit helper
 # 2.0.1 — PATCH: harden run profiles, multi-root duplicate checks, temp tests, and stale-progress clearing
 # 2.0.0 — MAJOR: entry points changed (ytaedl → ytaedl.cli:main; ytaedl-download removed)

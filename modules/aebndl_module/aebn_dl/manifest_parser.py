@@ -91,7 +91,7 @@ class Manifest:
         movie_id = self.input_url.split("/")[5]
         headers = {}
         headers["content-type"] = "application/x-www-form-urlencoded"
-        data = f"movieId={movie_id}&isPreview=true&format=DASH"
+        data = f"movieId={movie_id}&isPreview=false&format=DASH"
         url = f"https://{url_content_type}.aebn.com/{url_content_type}/deliver"
         content = self.session.post(url, headers=headers, data=data).json()
         return content["url"]

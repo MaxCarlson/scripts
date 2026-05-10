@@ -75,9 +75,16 @@ def has_ignored_url_part(url: str) -> bool:
 
 
 def looks_like_preview_video(lowered_url: str) -> bool:
+    parsed = urllib.parse.urlparse(lowered_url)
+    query = urllib.parse.parse_qs(parsed.query.lower(), keep_blank_values=True)
     return (
         "/pv/" in lowered_url
         or "/preview" in lowered_url
+        or "preview" in parsed.path.lower()
+        or "trailer" in parsed.path.lower()
+        or "teaser" in parsed.path.lower()
+        or "sample" in parsed.path.lower()
+        or query.get("ispreview") == ["true"]
         or re.search(r"(^|[/_-])pv([_.-]|$)", lowered_url) is not None
     )
 
@@ -474,7 +481,7 @@ def build_yt_dlp_command_for_candidate(
     extra_args: Sequence[str] = (),
 ) -> List[str]:
     """Build a yt-dlp command to download a discovered fallback candidate URL."""
-    cmd = [yt_dlp_executable, "--newline"]
+    cmd = [yt_dlp_executable, "--newline", "--no-playlist"]
     if browser:
         cmd += ["--cookies-from-browser", browser]
     if cookie_file:
