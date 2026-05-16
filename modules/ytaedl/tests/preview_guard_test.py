@@ -20,6 +20,57 @@ def test_fallback_command_disables_playlist_for_raw_candidates(tmp_path):
     assert "--no-playlist" in cmd
 
 
+def test_fallback_command_accepts_source_page_output_template(tmp_path):
+    template = tmp_path / "real page title.%(ext)s"
+    cmd = extdl.build_yt_dlp_command_for_candidate(
+        "https://cdn.example/1080.mp4",
+        out_dir=tmp_path,
+        referer="https://example.com/watch/real-page-title",
+        origin="https://example.com",
+        output_template=template,
+    )
+
+    assert "-o" in cmd
+    assert cmd[cmd.index("-o") + 1] == str(template)
+    assert "1080.%(ext)s" not in cmd[cmd.index("-o") + 1]
+
+
+def test_fallback_output_template_uses_source_page_not_raw_candidate(tmp_path):
+    template = downloader._fallback_output_template_for_url(
+        "https://www.pornhits.com/video/29231/sloppy-ass-to-mouth-anal-sluts/",
+        tmp_path,
+    )
+
+    assert template == tmp_path / "29231 sloppy ass to mouth anal sluts.%(ext)s"
+
+
+def test_fallback_output_template_uses_query_title_when_path_is_generic(tmp_path):
+    template = downloader._fallback_output_template_for_url(
+        "https://www.pornhits.com/videos.php?p=1&q=The%20Upper%20Floor%20Slave%20Initiation",
+        tmp_path,
+    )
+
+    assert template == tmp_path / "The Upper Floor Slave Initiation.%(ext)s"
+
+
+def test_fallback_output_template_includes_video_style_identifier(tmp_path):
+    template = downloader._fallback_output_template_for_url(
+        "https://www.eporner.com/video-559lur7mPYG/stsk-088/",
+        tmp_path,
+    )
+
+    assert template == tmp_path / "559lur7mpyg stsk 088.%(ext)s"
+
+
+def test_fallback_output_template_falls_back_to_query_identifier(tmp_path):
+    template = downloader._fallback_output_template_for_url(
+        "https://www.pornhub.com/view_video.php?viewkey=6559efddb63e7",
+        tmp_path,
+    )
+
+    assert template == tmp_path / "6559efddb63e7.%(ext)s"
+
+
 def test_short_raw_variant_download_is_rejected_and_deleted(tmp_path, monkeypatch):
     output = tmp_path / "123456789_hq.mp4"
     output.write_bytes(b"not actually parsed because ffprobe is mocked")

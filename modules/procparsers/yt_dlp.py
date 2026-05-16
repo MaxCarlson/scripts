@@ -126,5 +126,11 @@ def parse_line(line: str) -> Optional[Dict]:
             "eta_s": eta_s,
         }
 
+    # Any non-empty unrecognised line still proves yt-dlp is alive and active
+    # (e.g. "[PornHub] Downloading m3u8 information", "Extracting cookies …").
+    # Return a lightweight log event so the stall detector resets its timer.
+    if s.strip():
+        return {"event": "log"}
+
     return None
 

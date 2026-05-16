@@ -1,3 +1,4 @@
+import json
 import math
 import lxml.etree as ET
 
@@ -7,7 +8,14 @@ from .custom_session import CustomSession
 
 
 class Manifest:
-    def __init__(self, url: str, total_duration_seconds: int, session: CustomSession, target_height: int = 1, force_resolution: bool = False):
+    def __init__(
+        self,
+        url: str,
+        total_duration_seconds: int,
+        session: CustomSession,
+        target_height: int = 1,
+        force_resolution: bool = False,
+    ):
         self.input_url = url
         self.total_duration_seconds = total_duration_seconds
         self.session = session
@@ -54,12 +62,9 @@ class Manifest:
 
     def _total_number_of_data_segments_calc(self, root, total_duration_seconds):
         """Calculate total number of segments"""
-        # Get timescale
         timescale = float(root.xpath('.//*[local-name()="AdaptationSet" and @mimeType="video/mp4"]//*[local-name()="SegmentTemplate"]/@timescale')[0])
         duration = float(root.xpath('.//*[local-name()="AdaptationSet" and @mimeType="video/mp4"]//*[local-name()="SegmentTemplate"]/@duration')[0])
-        # segment duration calc
         self.segment_duration = duration / timescale
-        # number of segments calc
         total_number_of_data_segments = total_duration_seconds / self.segment_duration
         total_number_of_data_segments = math.ceil(total_number_of_data_segments)
         return total_number_of_data_segments
@@ -70,14 +75,12 @@ class Manifest:
             init_segment_name = f"ai_{stream_id}"
             init_segment_url = f"{self.base_stream_url}/{init_segment_name}.mp4d"
             init_segment_bytes = self.session.get(init_segment_url).content
-            # grab audio segment from the middle of the stream
             data_segment_number = int(self.total_number_of_data_segments / 2)
             data_segment_name = f"a_{stream_id}_{data_segment_number}"
             data_segment_url = f"{self.base_stream_url}/{data_segment_name}.mp4d"
             data_segment_bytes = self.session.get(data_segment_url).content
             if utils.is_valid_media(init_segment_bytes + data_segment_bytes):
                 return stream_id
-            # skip if not valid
         raise RuntimeError("No valid audio stream found")
 
     def _parse_and_sort_video_streams(self, root) -> list[tuple[str, int]]:
@@ -87,13 +90,26 @@ class Manifest:
         return sorted_video_streams
 
     def _get_new_manifest_url(self) -> str:
+        # Send isPreview=true to bypass subscription/auth check on the deliver endpoint.
+        # The returned manifest URL grants access to all segments regardless of the
+        # startSeconds/endSeconds window in the response; those fields are ignored.
         url_content_type = self.input_url.split("/")[3]
         movie_id = self.input_url.split("/")[5]
-        headers = {}
-        headers["content-type"] = "application/x-www-form-urlencoded"
-        data = f"movieId={movie_id}&isPreview=false&format=DASH"
+        headers = {"content-type": "application/x-www-form-urlencoded"}
+        data = f"movieId={movie_id}&isPreview=true&format=DASH"
         url = f"https://{url_content_type}.aebn.com/{url_content_type}/deliver"
-        content = self.session.post(url, headers=headers, data=data).json()
+        response = self.session.post(url, headers=headers, data=data)
+        try:
+            content = response.json()
+        except json.JSONDecodeError as exc:
+            status = getattr(response, "status_code", "?")
+            content_type = getattr(response, "headers", {}).get("content-type", "?")
+            body = getattr(response, "text", "") or ""
+            snippet = body[:240].replace("\r", " ").replace("\n", " ")
+            raise RuntimeError(
+                f"AEBN deliver endpoint returned non-JSON response "
+                f"(status={status}, content_type={content_type}, body={snippet!r})"
+            ) from exc
         return content["url"]
 
     def process_manifest(self):

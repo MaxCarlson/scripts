@@ -61,6 +61,7 @@ WATCHER_LOG_STATUS_COLOURS = {
     "START": "cyan",
     "FINISH": "green",
     "FINISH_BAD": "red",
+    "FINISH_STALLED": "yellow",
     "INFO": "bright",
     "ERROR": "red",
     "DRYRUN": "yellow",
@@ -1169,9 +1170,14 @@ def _start_worker(
     stall_seconds: int = 4,
     ytdlp_grid_config_file: Optional[Path] = None,
     extra_canonical_roots: Optional[List[Path]] = None,
+    ytdlp_cookies_from_browser: Optional[str] = "firefox",
+    ytdlp_impersonate: Optional[str] = "chrome",
+    ytdlp_downloader: Optional[str] = "aria2c",
 ) -> subprocess.Popen:
     if canonical_dir_override is not None:
         canonical_dir = canonical_dir_override
+    elif archive_source_file is not None:
+        canonical_dir = (canonical_root / archive_source_file.stem).expanduser().resolve()
     else:
         canonical_dir = (canonical_root / urlfile.stem).expanduser().resolve()
     canonical_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -1217,6 +1223,12 @@ def _start_worker(
         cmd += ["-G", str(ytdlp_grid_config_file)]
     for _ecr in (extra_canonical_roots or []):
         cmd += ["-Z", str(_ecr)]
+    if ytdlp_cookies_from_browser and ytdlp_cookies_from_browser.lower() not in ("none", ""):
+        cmd += ["--ytdlp-cookies-from-browser", ytdlp_cookies_from_browser]
+    if ytdlp_impersonate and ytdlp_impersonate.lower() not in ("none", ""):
+        cmd += ["--ytdlp-impersonate", ytdlp_impersonate]
+    if ytdlp_downloader and ytdlp_downloader.lower() not in ("native", ""):
+        cmd += ["--ytdlp-downloader", ytdlp_downloader]
     if quiet:
         cmd.append("-q")
     # line buffered
@@ -1331,6 +1343,8 @@ def _add_run_core_args(dest) -> None:
                       action=argparse.BooleanOptionalAction,
                       help=("Prioritize URLs with existing _partial/<hash>/ dirs (resumed downloads) "
                             "over non-partial URLs.  On by default; use --no-prioritize-partial to disable."))
+    dest.add_argument("-E", "--domain-url-pick", choices=("first", "last", "random"), default="first",
+                      help="In domain-index mode, choose first, last, or random URL among equal-priority URLs")
     dest.add_argument("-c", "--cleanup-partial-on-start", action="store_true",
                       help=("Before starting workers, scan --proxy-dl-location for stale _partial/ dirs, "
                             "print deletion summary, prompt for confirmation, delete them, and remove archive entries."))
@@ -2258,6 +2272,8 @@ def run_main(
                         status_colored = "\x1b[32mDOWNLOADED\x1b[0m"
                     elif rc_v == 0 and was_already:
                         status_colored = "\x1b[33mDUPLICATE\x1b[0m"
+                    elif rc_v == 124:
+                        status_colored = "\x1b[33mSTALLED\x1b[0m"
                     else:
                         status_colored = "\x1b[31mBAD_URL\x1b[0m"
                     ws.last_already = False
@@ -2502,6 +2518,7 @@ def run_main(
                 prefer_partial=getattr(args, "prioritize_partial", True),
                 prefer_domains=prefer_domains,
                 exclude_file_ids=exclude_file_ids,
+                url_pick_mode=getattr(args, "domain_url_pick", "first"),
             )
 
             # Write scan log to worker's prog log
@@ -2623,6 +2640,9 @@ def run_main(
                 extra_canonical_roots=[
                     r / original_file.stem for r in extra_download_roots
                 ] if extra_download_roots else None,
+                ytdlp_cookies_from_browser=getattr(args, "ytdlp_cookies_from_browser", "firefox"),
+                ytdlp_impersonate=getattr(args, "ytdlp_impersonate", "chrome"),
+                ytdlp_downloader=getattr(args, "ytdlp_downloader", "aria2c"),
             )
             # Create a fresh stop event so the old reader's captured reference
             # (set by _requeue) keeps firing while the new reader starts clean.
@@ -2753,25 +2773,6 @@ def run_main(
         return True
 
     def _requeue(ws: WorkerState, finished: bool, reason: str):
-        # Domain-index cleanup: if URL didn't get a finish event, requeue it
-        if domain_index and ws.url_entry:
-            url = ws.url_current or ws.url_entry.url
-            if domain_index.is_in_progress(url):
-                # Determine if we should requeue or mark failed
-                rc = ws.proc.poll() if ws.proc else None
-                if rc in (130, 131):
-                    # User abort or deadline — return to queue for next session
-                    domain_index.requeue_url(url)
-                elif not finished:
-                    # Stall, bad URL, etc. — also requeue (let simulate/retries handle it)
-                    domain_index.requeue_url(url)
-        # Delete temp single-URL file if present
-        if ws.urlfile and ws.urlfile.parent.name == "tmp_urls":
-            try:
-                ws.urlfile.unlink(missing_ok=True)
-            except Exception:
-                pass
-        # Cleanup process
         if ws.proc and ws.proc.poll() is None:
             # Resume if paused before terminating
             if ws.is_paused:
@@ -2785,10 +2786,36 @@ def run_main(
                 ws.proc.wait(timeout=2)
             except Exception:
                 pass
-        ws.reader_stop.set()
-        if ws.reader:
+
+        reader_thread = ws.reader
+        if reader_thread:
             try:
-                ws.reader.join(timeout=1)
+                reader_thread.join(timeout=5)
+            except Exception:
+                pass
+
+        ws.reader_stop.set()
+        ws.reader = None
+
+        # Domain-index cleanup: if URL didn't get a finish event, requeue it.
+        if domain_index and ws.url_entry:
+            url = ws.url_current or ws.url_entry.url
+            if domain_index.is_in_progress(url):
+                rc = ws.proc.poll() if ws.proc else None
+                if rc in (130, 131):
+                    # User abort or deadline: return to queue for a future session.
+                    domain_index.requeue_url(url)
+                elif rc == 124:
+                    # Stall: do not spin on the same URL in this session.
+                    domain_index.mark_finished(url, "failed")
+                elif not finished:
+                    # Unexpected process death with no finish event: retry later.
+                    domain_index.requeue_url(url)
+
+        # Delete temp single-URL file if present
+        if ws.urlfile and ws.urlfile.parent.name == "tmp_urls":
+            try:
+                ws.urlfile.unlink(missing_ok=True)
             except Exception:
                 pass
         if ws.urlfile is not None:
@@ -3049,8 +3076,9 @@ def run_main(
             def _colorize_log(s: str) -> str:
                 pairs = [
                     ("FINISH_BAD", "\x1b[31m"),
+                    ("FINISH_STALLED", "\x1b[33m"),
                     ("BAD", "\x1b[31m"),
-                    ("STALLED", "\x1b[31m"),
+                    ("STALLED", "\x1b[33m"),
                     ("DEADLINE", "\x1b[35m"),
                     ("FORCE_EXIT", "\x1b[35m"),
                     ("DUPLICATE", "\x1b[33m"),

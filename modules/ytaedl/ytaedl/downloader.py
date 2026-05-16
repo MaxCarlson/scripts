@@ -33,7 +33,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from procparsers import iter_parsed_events
 
@@ -125,6 +125,12 @@ def make_parser() -> argparse.ArgumentParser:
                    help="Skip the yt-dlp --simulate pre-download duplicate check.")
     p.add_argument("-G", "--ytdlp-grid-config-file", default=None,
                    help="JSON trial/config file with yt-dlp options selected by ytaedl grid search.")
+    p.add_argument("-b", "--ytdlp-cookies-from-browser", default="firefox",
+                   help="Browser to read cookies from for yt-dlp (firefox, chrome, etc.). Use 'none' to disable.")
+    p.add_argument("-i", "--ytdlp-impersonate", default="chrome",
+                   help="Browser to impersonate for yt-dlp TLS/UA fingerprint. Use 'none' to disable.")
+    p.add_argument("-d", "--ytdlp-downloader", default="aria2c",
+                   help="External downloader for yt-dlp (e.g. aria2c). Use 'native' or '' for the built-in downloader.")
     p.add_argument("-W", "--worker-slot", type=int, default=0,
                    help=argparse.SUPPRESS)  # set by manager; not user-facing
     p.add_argument("-Z", "--extra-canonical-roots", action="append", default=None,
@@ -474,7 +480,7 @@ def _format_archive_line(status: str, elapsed_s: float, when: str, downloaded_mi
     ])
 
 
-ARCHIVE_PROCESSED_STATUSES = {"downloaded", "already", "preexisting", "bad-url", "stalled"}
+ARCHIVE_PROCESSED_STATUSES = {"downloaded", "already", "preexisting"}
 
 
 def _archive_status_rank(status: str) -> int:
@@ -573,6 +579,28 @@ def _locked_append_line(path: Path, line: str) -> None:
                 pass
 
 
+def _ytdlp_exe() -> List[str]:
+    """Return the yt-dlp command prefix that uses the same Python env as ytaedl.
+
+    Using sys.executable ensures the venv's yt-dlp is always invoked, even
+    when the shell PATH resolves to a different (global) yt-dlp binary.
+    """
+    return [sys.executable, "-m", "yt_dlp"]
+
+
+def _ytdlp_auth_args(
+    cookies_from_browser: Optional[str] = "firefox",
+    impersonate: Optional[str] = "chrome",
+) -> List[str]:
+    """Return yt-dlp args for cookie/TLS auth that bypass bot-detection."""
+    args: List[str] = []
+    if cookies_from_browser and cookies_from_browser.lower() not in ("none", ""):
+        args += ["--cookies-from-browser", cookies_from_browser]
+    if impersonate and impersonate.lower() not in ("none", ""):
+        args += ["--impersonate", impersonate]
+    return args
+
+
 def _build_ytdlp_cmd(
     urls: List[str],
     out_dir: Path,
@@ -580,13 +608,21 @@ def _build_ytdlp_cmd(
     max_height: Optional[int] = None,
     temp_dir: Optional[Path] = None,
     grid_config: Optional[dict] = None,
+    cookies_from_browser: Optional[str] = "firefox",
+    impersonate: Optional[str] = "chrome",
+    ytdlp_downloader: Optional[str] = "aria2c",
 ) -> List[str]:
     # no --print; --newline ensures line-terminated progress
     cmd = [
-        "yt-dlp",
+        *_ytdlp_exe(),
         "--newline",
         "-o", str(out_dir / "%(title)s.%(ext)s"),
     ]
+    cmd += _ytdlp_auth_args(cookies_from_browser, impersonate)
+    # grid_config can override the downloader; only apply default if grid doesn't specify one
+    _grid_overrides_downloader = grid_config and grid_config.get("downloader")
+    if not _grid_overrides_downloader and ytdlp_downloader and ytdlp_downloader.lower() not in ("native", ""):
+        cmd += ["--downloader", ytdlp_downloader]
     if isinstance(max_mibs, (int, float)) and max_mibs and max_mibs > 0:
         rate_arg = f"{max_mibs:.2f}M"
         cmd += ["--limit-rate", rate_arg]
@@ -653,6 +689,57 @@ def _is_raw_media_variant_name(value: str) -> bool:
         re.fullmatch(r"\d{4,}(?:[-_]\d+)?", stem) is not None
         or re.fullmatch(r"[a-z0-9]{8,}", stem) is not None
     )
+
+
+def _safe_fallback_filename_stem(value: str) -> str:
+    stem = unquote(value).strip()
+    stem = re.sub(r"[<>:\"/\\|?*\x00-\x1f]+", " ", stem)
+    stem = re.sub(r"[\s._-]+", " ", stem).strip(" ._-")
+    return stem[:140].strip() or "download"
+
+
+def _identifier_from_path_part(part: str) -> str:
+    lowered = part.lower()
+    if re.fullmatch(r"\d{3,}", lowered):
+        return part
+    match = re.fullmatch(r"(?:video|watch|movie|movies|hdporn)[-_]?([a-z0-9]{5,})", lowered)
+    if match:
+        return match.group(1)
+    return ""
+
+
+def _fallback_filename_stem_for_url(url: str) -> str:
+    parsed = urlparse(url)
+    path_parts = [part for part in parsed.path.split("/") if part]
+    generic_parts = {"video", "videos", "watch", "embed", "player", "view_video.php", "index.php"}
+
+    for idx in range(len(path_parts) - 1, -1, -1):
+        part = path_parts[idx]
+        lowered = part.lower()
+        if lowered in generic_parts:
+            continue
+        if re.fullmatch(r"\d+", lowered):
+            continue
+        if "." in lowered and lowered.rsplit(".", 1)[-1] in {"php", "html", "htm", "aspx"}:
+            continue
+        prefix = ""
+        if idx > 0:
+            identifier = _identifier_from_path_part(path_parts[idx - 1])
+            if identifier and not lowered.startswith(identifier.lower()):
+                prefix = f"{identifier} "
+        return _safe_fallback_filename_stem(prefix + part)
+
+    query = dict((k.lower(), v[-1]) for k, v in parse_qs(parsed.query).items() if v)
+    for key in ("q", "search", "query", "viewkey", "v", "id"):
+        if query.get(key):
+            return _safe_fallback_filename_stem(query[key])
+
+    host = parsed.netloc.lower().removeprefix("www.")
+    return _safe_fallback_filename_stem(f"{host} {parsed.path or parsed.query or 'download'}")
+
+
+def _fallback_output_template_for_url(url: str, out_dir: Path) -> Path:
+    return out_dir / f"{_fallback_filename_stem_for_url(url)}.%(ext)s"
 
 
 def _looks_like_preview_source(candidate_url: str, destination: Optional[Path]) -> bool:
@@ -781,6 +868,13 @@ def _active_stall_seconds(stall_seconds: int | None) -> Optional[int]:
     return max(30, int(stall_seconds) * 5)
 
 
+def _aebn_pre_transfer_stall_seconds(stall_seconds: int | None) -> Optional[int]:
+    if not stall_seconds or stall_seconds <= 0:
+        return None
+    return max(120, int(stall_seconds) * 30)
+
+
+
 def _clamp_progress(evt: dict, *, terminal: bool = False) -> dict:
     """Normalize progress values without trusting impossible in-flight totals."""
     if evt.get("event") != "progress":
@@ -832,6 +926,7 @@ class _ProgressActivity:
     complete_stall_seconds: int
     started_at: float
     last_real_event_t: float
+    pre_transfer_stall_seconds: Optional[int] = None
     last_progress_event_t: Optional[float] = None
     last_progress_growth_t: Optional[float] = None
     last_progress_bytes: Optional[int] = None
@@ -888,8 +983,9 @@ class _ProgressActivity:
             return None
 
         if not self.active_started:
-            if (now - self.last_real_event_t) > self.stall_seconds:
-                return int(self.stall_seconds), "pre_transfer_no_output"
+            pre_transfer_stall_s = self.pre_transfer_stall_seconds or int(self.stall_seconds)
+            if (now - self.last_real_event_t) > pre_transfer_stall_s:
+                return int(pre_transfer_stall_s), "pre_transfer_no_output"
             return None
 
         active_stall_s = self.active_stall_seconds
@@ -929,6 +1025,8 @@ def _simulate_check(
     canonical_out_dirs: "list[Path]",
     *,
     timeout_seconds: int = 15,
+    cookies_from_browser: Optional[str] = "firefox",
+    impersonate: Optional[str] = "chrome",
 ) -> _SimulateResult:
     """Run yt-dlp --simulate to predict filename/size and check for an existing duplicate.
 
@@ -940,10 +1038,11 @@ def _simulate_check(
     try:
         proc = subprocess.Popen(
             [
-                "yt-dlp",
+                *_ytdlp_exe(),
                 "--simulate",
                 "--print", "%(title)s.%(ext)s",
                 "--print", "%(filesize,filesize_approx)s",
+                *_ytdlp_auth_args(cookies_from_browser, impersonate),
                 url,
             ],
             stdout=subprocess.PIPE,
@@ -1026,7 +1125,7 @@ def _run_extdl_fallback(
     extdl_max_candidates: int = 5,
     extdl_browser_wait: float = 12.0,
     extdl_capture_browser: str = "auto",
-    yt_dlp_executable: str = "yt-dlp",
+    yt_dlp_executable: Optional[List[str]] = None,
     max_dl_speed: Optional[float] = None,
     max_height: Optional[int] = None,
     dry_run: bool = False,
@@ -1045,6 +1144,7 @@ def _run_extdl_fallback(
     # standalone script (subprocess mode) or imported as part of the package.
     # A plain `from . import extdl` fails in standalone mode because there is
     # no parent package context.
+    _yt_exe = yt_dlp_executable if yt_dlp_executable is not None else _ytdlp_exe()
     try:
         import importlib.util as _ilu
         _extdl_path = Path(__file__).parent / "extdl.py"
@@ -1074,6 +1174,7 @@ def _run_extdl_fallback(
     # Running attempt counter across all methods, starting from first_attempt_num
     # so the log mirrors ytdlp-extdl.py's "Attempt 1 / Attempt 2 / …" framing.
     _global_attempt = [first_attempt_num - 1]
+    output_template = _fallback_output_template_for_url(url, out_dir)
 
     def _try_candidates(candidates, method_name: str) -> tuple[int, Optional[dict]]:
         limited = candidates[:extdl_max_candidates] if extdl_max_candidates > 0 else candidates
@@ -1110,9 +1211,10 @@ def _run_extdl_fallback(
                 out_dir=out_dir,
                 referer=referer,
                 origin=origin,
-                yt_dlp_executable=yt_dlp_executable,
+                yt_dlp_executable=_yt_exe,
                 max_dl_speed=max_dl_speed,
                 max_height=max_height,
+                output_template=output_template,
             )
             if dry_run:
                 import shlex
@@ -1350,6 +1452,9 @@ def _run_one(
     worker_slot: int = 0,
     url_file_path: str = "",
     url_line_num: int = 0,
+    ytdlp_cookies_from_browser: Optional[str] = "firefox",
+    ytdlp_impersonate: Optional[str] = "chrome",
+    ytdlp_downloader: Optional[str] = "aria2c",
 ) -> tuple[int, dict]:
     """
     Returns rc (0 on success). Emits NDJSON to stdout during run.
@@ -1393,7 +1498,9 @@ def _run_one(
     if not dry_run and tool == "yt-dlp" and not skip_simulate_check:
         proglog.simulate_start(url)
         _emit_json({"event": "simulate_start", "attempt_id": simulate_attempt_id, "url_index": url_index, "url": url})
-        sim = _simulate_check(url, _all_canonical_dirs)
+        sim = _simulate_check(url, _all_canonical_dirs,
+                              cookies_from_browser=ytdlp_cookies_from_browser,
+                              impersonate=ytdlp_impersonate)
         if sim.is_duplicate:
             # Clean up partial dir created before simulate check — it's unused for duplicates.
             # Without this the partial dir would leak since the early return below bypasses
@@ -1467,6 +1574,9 @@ def _run_one(
             max_height,
             temp_dir=url_work_dir,
             grid_config=ytdlp_grid_config,
+            cookies_from_browser=ytdlp_cookies_from_browser,
+            impersonate=ytdlp_impersonate,
+            ytdlp_downloader=ytdlp_downloader,
         )
 
     _emit_json({"event": "start", "downloader": tool, "url_index": url_index, "url_total": None,
@@ -1517,6 +1627,8 @@ def _run_one(
     raw_path = _raw_log_path(raw_dir, tool, url_index, stem)
     rc: Optional[int] = None
     last_destination_path: Optional[Path] = None
+    last_error_event: Optional[dict] = None
+    complete_event: Optional[dict] = None
 
     try:
         # internal heartbeat for scheduling; also used for stall detection
@@ -1527,18 +1639,31 @@ def _run_one(
             complete_stall_seconds=complete_stall_seconds,
             started_at=activity_start,
             last_real_event_t=activity_start,
+            pre_transfer_stall_seconds=(
+                _aebn_pre_transfer_stall_seconds(stall_seconds)
+                if tool == "aebndl"
+                else None
+            ),
         )
         for evt in iter_parsed_events(tool, proc.stdout, raw_log_path=raw_path, heartbeat_secs=hb):
             # track 'already' to classify FINISH_DUPLICATE later for yt-dlp
             if evt.get("event") == "already":
                 already_seen = True
-                # For yt-dlp, short-circuit this URL: terminate process and proceed to next URL
+                # Short-circuit this URL: file already exists at destination
                 try:
                     proc.terminate()
                 except Exception:
                     pass
                 rc = 0
                 # still emit the event below for downstream
+            if evt.get("event") == "preview_fallback" and tool == "aebndl":
+                # aebndl is about to download a preview clip instead of the full movie.
+                # Reject it: kill the process and treat as a non-retryable access failure.
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                rc = 77  # "preview_only" — full delivery not available
             if evt.get("event") == "destination":
                 raw_dest = evt.get("path")
                 if raw_dest:
@@ -1586,10 +1711,15 @@ def _run_one(
             if evt.get("event") == "progress":
                 evt = _clamp_progress(evt)
                 last_progress = evt
+            if evt.get("event") == "complete":
+                complete_event = dict(evt)
+            if evt.get("event") in {"error", "manifest_error"}:
+                last_error_event = dict(evt)
             now = time.time()
             activity.observe(evt, now)
-            # Emit non-progress events immediately (except heartbeats)
-            if evt.get("event") != "progress" and evt.get("event") != "heartbeat":
+            # Emit non-progress events immediately (except heartbeats and log noise)
+            _ev = evt.get("event")
+            if _ev not in ("progress", "heartbeat", "log"):
                 _emit_json({**evt, "downloader": tool, "attempt_id": active_attempt_id, "url_index": url_index, "url": url})
             # Rate-limited progress scheduling
             if evt.get("event") == "progress":
@@ -1733,13 +1863,22 @@ def _run_one(
                 active_attempt_id = str(fallback_progress.get("attempt_id") or active_attempt_id)
 
     # classify status and build a human-readable failure reason
-    status = "FINISH_SUCCESS" if rc == 0 else "FINISH_BAD"
-    if rc == 0 and tool == "yt-dlp" and already_seen:
+    if rc == 0:
+        status = "FINISH_DUPLICATE" if (tool == "yt-dlp" and already_seen) else "FINISH_SUCCESS"
+    elif rc == 77:
+        status = "FINISH_PREVIEW_ONLY"
+    elif rc == 124:
+        status = "FINISH_STALLED"
+    else:
+        status = "FINISH_BAD"
+    if rc == 0 and already_seen and tool == "aebndl":
         status = "FINISH_DUPLICATE"
 
     _finish_reason = ""
-    if status == "FINISH_BAD":
-        if rc == 124:
+    if status in {"FINISH_BAD", "FINISH_STALLED", "FINISH_PREVIEW_ONLY"}:
+        if rc == 77:
+            _finish_reason = "aebndl preview-only access; full delivery not available"
+        elif rc == 124:
             _finish_reason = "stalled / download timed out"
         elif rc == 130:
             _finish_reason = "user interrupt (Ctrl-C)"
@@ -1748,7 +1887,7 @@ def _run_one(
         elif _fallback_tried:
             _finish_reason = f"yt-dlp failed (rc={rc}) and all extdl fallback methods also exhausted"
         else:
-            _finish_reason = f"yt-dlp exited with code {rc} (no fallback attempted)"
+            _finish_reason = f"{tool} exited with code {rc} (no fallback attempted)"
 
     elapsed_s = time.time() - t_url_start
     _emit_json({
@@ -1760,15 +1899,25 @@ def _run_one(
         "rc": rc,
         "reason": _finish_reason,
         "elapsed_s": elapsed_s,
-        "downloaded": (last_progress or {}).get("downloaded"),
-        "total": (last_progress or {}).get("total"),
+        "downloaded": (complete_event or {}).get("file_size") or (last_progress or {}).get("downloaded"),
+        "total": (complete_event or {}).get("file_size") or (last_progress or {}).get("total"),
         "already": bool(already_seen),
         "raw_log_path": str(raw_path),
+        "error_type": (last_error_event or {}).get("error_type"),
+        "error_message": (last_error_event or {}).get("message"),
     })
     proglog.finish(url_index, elapsed_s, status, reason=_finish_reason)
 
     # retry if bad — partial_root is passed through so yt-dlp resumes the same dir
-    info = {"elapsed_s": elapsed_s, "downloaded": (last_progress or {}).get("downloaded"), "total": (last_progress or {}).get("total"), "already": bool(already_seen), "downloader": tool}
+    info = {
+        "elapsed_s": elapsed_s,
+        "downloaded": (complete_event or {}).get("file_size") or (last_progress or {}).get("downloaded"),
+        "total": (complete_event or {}).get("file_size") or (last_progress or {}).get("total"),
+        "already": bool(already_seen),
+        "downloader": tool,
+        "error_type": (last_error_event or {}).get("error_type"),
+        "error_message": (last_error_event or {}).get("message"),
+    }
     if rc != 0 and retries > 0:
         return _run_one(
             tool,
@@ -1800,6 +1949,9 @@ def _run_one(
             worker_slot=worker_slot,
             url_file_path=url_file_path,
             url_line_num=url_line_num,
+            ytdlp_cookies_from_browser=ytdlp_cookies_from_browser,
+            ytdlp_impersonate=ytdlp_impersonate,
+            ytdlp_downloader=ytdlp_downloader,
         )
 
     # On final success, delete the per-URL partial directory (removes .part fragments)
@@ -1829,8 +1981,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"[ERROR] URL file not found: {urlfile}", file=sys.stderr)
         return 2
 
+    archive_source_file = Path(args.archive_source_file).expanduser() if args.archive_source_file else urlfile
+    archive_source_file = archive_source_file.resolve()
+
     # Canonical output (where files normally live)
-    canonical_out_dir = Path(args.output_dir) if args.output_dir else _default_outdir_for(urlfile)
+    canonical_out_dir = Path(args.output_dir) if args.output_dir else _default_outdir_for(archive_source_file)
     canonical_out_dir = canonical_out_dir.expanduser().resolve()
 
     raw_dir = Path(args.raw_log_dir).expanduser().resolve()
@@ -1842,7 +1997,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         # Use the canonical output dir's name (original urlfile stem) so that proxy
         # downloads land in B:\stars\upperfloor2\ even when the urlfile passed by the
         # manager is a single-URL temp file (e.g. w05_217_27.txt in domain-index mode).
-        proxy_subdir = canonical_out_dir.name if canonical_out_dir.name else urlfile.stem
+        proxy_subdir = archive_source_file.stem or canonical_out_dir.name or urlfile.stem
         download_out_dir = (proxy_location / proxy_subdir).expanduser().resolve()
         _ensure_dir(proxy_location)
 
@@ -1882,8 +2037,6 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Archive support
     archive_dir = Path(args.archive_dir).expanduser().resolve() if args.archive_dir else None
-    archive_source_file = Path(args.archive_source_file).expanduser() if args.archive_source_file else urlfile
-    archive_source_file = archive_source_file.resolve()
     archive_file: Optional[Path] = None
     archive_statuses: Dict[str, str] = {}
     archive_processed_urls: Set[str] = set()
@@ -1977,11 +2130,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                     Path(r).expanduser().resolve()
                     for r in (getattr(args, "extra_canonical_roots", None) or [])
                 ],
+                ytdlp_cookies_from_browser=getattr(args, "ytdlp_cookies_from_browser", "firefox"),
+                ytdlp_impersonate=getattr(args, "ytdlp_impersonate", "chrome"),
+                ytdlp_downloader=getattr(args, "ytdlp_downloader", "aria2c"),
             )
             # Update archive status (skip marking on Ctrl-C abort rc==130)
             if archive_file:
                 if rc == 0:
                     status = 'already' if info.get('already') else 'downloaded'
+                elif rc == 77:
+                    status = 'preview-only'
                 elif rc == 124:
                     status = 'stalled'
                 elif rc in (130, 131):

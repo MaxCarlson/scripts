@@ -57,10 +57,22 @@ def test_progress_in_form_100pct():
     assert d["downloaded"] == 25 * 1000 * 1000
     assert d["eta_s"] == 0  # treat 'in 00:30' as completion
 
-def test_noise_lines_return_none():
-    assert parse_line("[Merger] Merging formats into \"title.mp4\"") is None
-    assert parse_line("WARNING: something something") is None
-    assert parse_line("[subtitle] Downloading") is None
+def test_noise_lines_return_log_event():
+    # Unrecognised lines now return {"event": "log"} so the stall detector resets
+    # its timer on any yt-dlp output, including info/cookie/warning lines.
+    for line in (
+        "[Merger] Merging formats into \"title.mp4\"",
+        "WARNING: something something",
+        "[subtitle] Downloading",
+        "[PornHub] 64ea0d6ce46e4: Downloading m3u8 information",
+        "Extracting cookies from firefox",
+    ):
+        d = parse_line(line)
+        assert d == {"event": "log"}, f"Expected log event for: {line!r}"
+
+def test_empty_line_returns_none():
+    assert parse_line("") is None
+    assert parse_line("   ") is None
 
 def test_ansi_stripping_before_match():
     # include ANSI color codes around a valid destination line

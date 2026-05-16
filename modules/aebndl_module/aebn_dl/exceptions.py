@@ -10,5 +10,9 @@ class Forbidden(CustomException):
     pass
 
 
+class DeliveryAccessError(CustomException):
+    pass
+
+
 class FFmpegError(CustomException):
     pass

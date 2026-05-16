@@ -1,13 +1,15 @@
 import datetime
 import email.utils as eut
+import glob as _glob
 import logging
+import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock, Event, Thread
 
 import os
 import time
 import signal
-from typing import Literal
+from typing import Literal, Optional
 
 from tqdm.auto import tqdm
 
@@ -292,12 +294,25 @@ class Downloader:
         try:
             # Mark download as potentially interrupted
             self.download_interrupted = True
+            self._json_log("startup", url=self.input_url)
 
             self._initialize_download()
             scraped_movie = self._scrape_movie_info()
+            if not self.overwrite_existing_files:
+                existing = self._find_existing_output(scraped_movie)
+                if existing is not None:
+                    self._json_log("destination", path=existing)
+                    self._json_log("already", path=existing)
+                    self.download_interrupted = False
+                    return
             self._process_manifest(scraped_movie)
             output_file_name = self._generate_output_name(scraped_movie)
-            self._json_log("destination", path=os.path.join(self.output_dir, output_file_name))
+            output_path = os.path.join(self.output_dir, output_file_name)
+            self._json_log("destination", path=output_path)
+            if not self.overwrite_existing_files and os.path.exists(output_path):
+                self._json_log("already", path=output_path)
+                self.download_interrupted = False
+                return
             self._create_dirs(scraped_movie.movie_id)
 
             # Initialize .part file tracking
@@ -310,7 +325,6 @@ class Downloader:
             self._set_stream_paths()
             if self.download_covers:
                 self._download_movie_covers(scraped_movie)
-            output_path = os.path.join(self.output_dir, output_file_name)
             self.logger.info(f"Output file name: {output_file_name}")
             self._download_streams(scraped_movie)
             self._process_streams(output_path)
@@ -324,7 +338,8 @@ class Downloader:
             self.logger.info("Download interrupted by user")
             self._save_part_file(force=True)
             raise
-        except Exception:
+        except Exception as exc:
+            self._json_log("error", error_type=type(exc).__name__, message=str(exc))
             self._save_part_file(force=True)
             raise
 
@@ -395,6 +410,33 @@ class Downloader:
         if self.target_stream != "audio":
             output_file_name.append(f"{self.manifest.video_stream.height}p")
         return " ".join(filter(None, output_file_name)) + ".mp4"
+
+    def _find_existing_output(self, scraped_movie: Movie) -> Optional[str]:
+        """Return an already-downloaded output path for this movie, or None.
+
+        Runs before manifest processing so the session does not need delivery
+        access.  Matches any resolution variant (e.g. 1080p, 1440p) and only
+        accepts files > 50 MiB to exclude leftover preview clips (~25 MiB).
+        """
+        parts = []
+        if self.target_stream:
+            parts.append(f"[{self.target_stream}]")
+        if scraped_movie.studio_name:
+            parts.append(scraped_movie.studio_name)
+        parts.append("-")
+        if scraped_movie.title:
+            parts.append(scraped_movie.title)
+        if self.scene_n:
+            parts.append(f"Scene {self.scene_n}")
+        base = " ".join(filter(None, parts))
+        pattern = os.path.join(self.output_dir, f"{_glob.escape(base)}*p.mp4")
+        for path in _glob.glob(pattern):
+            try:
+                if os.path.getsize(path) > 50 * 1024 * 1024:
+                    return path
+            except OSError:
+                continue
+        return None
 
     def _cleanup(self) -> None:
         """Cleans up the work directory and potentially deletes logs."""
@@ -476,6 +518,7 @@ class Downloader:
     def _process_manifest(self, scraped_movie: Movie) -> None:
         """Processes the movie manifest."""
         self.logger.info("Processing manifest")
+        self._json_log("manifest_start", url=self.input_url)
         self.manifest = Manifest(
             self.input_url,
             scraped_movie.total_duration_seconds,
@@ -483,19 +526,48 @@ class Downloader:
             target_height=self.target_height,
             force_resolution=self.force_resolution,
         )
-        self.manifest.process_manifest()
+        try:
+            self.manifest.process_manifest()
+        except Exception as exc:
+            self._json_log("manifest_error", error_type=type(exc).__name__, message=str(exc))
+            raise
+        self._json_log("manifest_ready", url=self.input_url)
         scraped_movie.calculate_scenes_boundaries(self.manifest.segment_duration)
 
     def _scrape_movie_info(self) -> Movie:
         """Scrapes movie information from the input URL."""
         self.logger.info("Scraping movie info")
-        return Movie(self.input_url, self.session)
+        self._json_log("metadata_start", url=self.input_url)
+        result: list[Movie | None] = [None]
+        error: list[BaseException | None] = [None]
+
+        def scrape() -> None:
+            try:
+                result[0] = Movie(self.input_url, self.session)
+            except BaseException as exc:
+                error[0] = exc
+
+        thread = Thread(target=scrape, daemon=True)
+        thread.start()
+        while thread.is_alive():
+            thread.join(timeout=1.0)
+            if thread.is_alive():
+                self._json_log("metadata_fetch", url=self.input_url)
+        if error[0] is not None:
+            raise error[0]
+        if result[0] is None:
+            raise RuntimeError("AEBN metadata fetch produced no movie data")
+        return result[0]
 
     def _initialize_download(self) -> None:
         """Initializes the download process, checks for ffmpeg, and initializes a new session."""
+        self._json_log("init_start", url=self.input_url)
         self._log_init_state()
         utils.ffmpeg_check()
+        self._json_log("ffmpeg_ready", url=self.input_url)
+        self._json_log("session_start", url=self.input_url)
         self._init_new_session()
+        self._json_log("session_ready", url=self.input_url)
 
     def _download_cover(self, movie_title: str, cover_url: str | None, front: bool) -> None:
         """Save cover image to disk with server timestamp"""

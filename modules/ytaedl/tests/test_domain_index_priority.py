@@ -81,6 +81,45 @@ class TestPickUrlBasic:
         assert entry is not None
         assert entry.url == URL_B
 
+    def test_url_pick_last_selects_last_equal_priority_url(self):
+        idx = _build_index([
+            ("https://site-a.com/video/1", 1, "file1.txt", 1),
+            ("https://site-a.com/video/2", 1, "file1.txt", 2),
+            ("https://site-a.com/video/3", 1, "file1.txt", 3),
+        ])
+
+        entry = idx.pick_url({}, 2, {1: 0}, url_pick_mode="last")
+
+        assert entry is not None
+        assert entry.url == "https://site-a.com/video/3"
+
+    def test_url_pick_random_selects_from_equal_priority_urls(self):
+        class LastChoice:
+            def choice(self, seq):
+                return seq[-1]
+
+        idx = _build_index([
+            ("https://site-a.com/video/1", 1, "file1.txt", 1),
+            ("https://site-a.com/video/2", 1, "file1.txt", 2),
+            ("https://site-a.com/video/3", 1, "file1.txt", 3),
+        ])
+
+        entry = idx.pick_url({}, 2, {1: 0}, url_pick_mode="random", rng=LastChoice())
+
+        assert entry is not None
+        assert entry.url == "https://site-a.com/video/3"
+
+    def test_url_pick_mode_does_not_override_file_priority(self):
+        idx = _build_index([
+            (URL_A, 1, "file1.txt", 1),  # rank 0
+            (URL_B, 2, "file2.txt", 1),  # rank 9
+        ])
+
+        entry = idx.pick_url({}, 2, {1: 0, 2: 9}, url_pick_mode="last")
+
+        assert entry is not None
+        assert entry.url == URL_A
+
 
 # ---------------------------------------------------------------------------
 # Two-tier partial prioritization

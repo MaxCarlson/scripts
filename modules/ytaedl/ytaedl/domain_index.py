@@ -17,6 +17,7 @@ Lifecycle
 from __future__ import annotations
 
 import json
+import random
 import threading
 import time
 import urllib.parse
@@ -309,6 +310,8 @@ class DomainIndex:
         prefer_partial: bool = True,
         prefer_domains: Optional[Set[str]] = None,
         exclude_file_ids: Optional[Set[int]] = None,
+        url_pick_mode: str = "first",
+        rng: Optional[random.Random] = None,
     ) -> Optional[UrlEntry]:
         """
         Select the best available URL within domain-lock constraints.
@@ -325,6 +328,8 @@ class DomainIndex:
                                Domain capacity limits are always enforced first.
         prefer_domains       : set of domains to grant a massive priority boost so they
                                are picked before other domains (subject to capacity limits).
+        url_pick_mode        : tie-breaker among otherwise equivalent URLs: first, last,
+                               or random. File/domain/partial priorities still apply first.
 
         Priority tiers (highest to lowest):
         1. Domain capacity hard constraint — never exceed max_per_domain.
@@ -345,6 +350,8 @@ class DomainIndex:
             best_rank: Optional[int] = None
             best_domain: Optional[str] = None
             best_entry: Optional[UrlEntry] = None
+            mode = url_pick_mode if url_pick_mode in {"first", "last", "random"} else "first"
+            pick_rng = rng or random
 
             for domain, q in self._url_queues.items():
                 current = active_domain_counts.get(domain, 0)
@@ -354,7 +361,7 @@ class DomainIndex:
                     continue
 
                 domain_best_rank: Optional[int] = None
-                domain_best_entry: Optional[UrlEntry] = None
+                domain_best_entries: List[UrlEntry] = []
 
                 files_logged: Dict[int, int] = {}  # fid -> queued count (for SCAN log)
                 for entry in q:
@@ -372,7 +379,9 @@ class DomainIndex:
                     
                     if domain_best_rank is None or rank < domain_best_rank:
                         domain_best_rank = rank
-                        domain_best_entry = entry
+                        domain_best_entries = [entry]
+                    elif rank == domain_best_rank:
+                        domain_best_entries.append(entry)
 
                 for fid, queued_count in files_logged.items():
                     fname = Path(self._file_map.get(fid, "?")).name
@@ -383,11 +392,16 @@ class DomainIndex:
                         f"queued={queued_count}  active={current}/{max_per_domain}",
                     )
 
-                if domain_best_entry is not None and domain_best_rank is not None:
+                if domain_best_entries and domain_best_rank is not None:
                     if best_rank is None or domain_best_rank < best_rank:
                         best_rank = domain_best_rank
                         best_domain = domain
-                        best_entry = domain_best_entry
+                        if mode == "last":
+                            best_entry = domain_best_entries[-1]
+                        elif mode == "random":
+                            best_entry = pick_rng.choice(domain_best_entries)
+                        else:
+                            best_entry = domain_best_entries[0]
 
             if best_entry is None:
                 _slog("WAIT", "no URL available within domain limits")

@@ -89,6 +89,8 @@ def iter_parsed_events(
             try:
                 chunk = q.get(timeout=heartbeat_secs)
             except queue.Empty:
+                if not t.is_alive() and q.empty():
+                    break
                 # no new chunk -> heartbeat
                 now = time.monotonic()
                 if now - last_event_time >= heartbeat_secs:

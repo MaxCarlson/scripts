@@ -2,10 +2,43 @@
 # -*- coding: utf-8 -*-
 from procparsers.aebndl import parse_line
 
+
 def test_aebn_destination():
     d = parse_line("Destination: /videos/scene-001.mp4")
     assert d and d["event"] == "destination"
     assert d["path"].endswith("scene-001.mp4")
+
+
+def test_aebn_json_progress_passthrough():
+    d = parse_line('{"event":"progress","percent":42.5,"downloaded":1234,"total":5678,"speed_bps":9000}')
+    assert d and d["event"] == "progress"
+    assert d["percent"] == 42.5
+    assert d["downloaded"] == 1234
+    assert d["total"] == 5678
+    assert d["speed_bps"] == 9000
+
+
+def test_aebn_json_preview_fallback_passthrough():
+    d = parse_line(
+        '{"event":"preview_fallback","movie_id":"183004","scene_id":"865807",'
+        '"start_seconds":3367,"end_seconds":3397,"format":"DASH"}'
+    )
+    assert d and d["event"] == "preview_fallback"
+    assert d["movie_id"] == "183004"
+    assert d["scene_id"] == "865807"
+    assert d["start_seconds"] == 3367
+    assert d["end_seconds"] == 3397
+
+
+def test_aebn_json_manifest_error_passthrough():
+    d = parse_line(
+        '{"event":"manifest_error","error_type":"DeliveryAccessError",'
+        '"message":"AEBN full delivery is not available"}'
+    )
+    assert d and d["event"] == "manifest_error"
+    assert d["error_type"] == "DeliveryAccessError"
+    assert "full delivery" in d["message"]
+
 
 def test_aebn_progress_hh_mm():
     # Expect HH:MM semantics: 00:35 -> 35 minutes

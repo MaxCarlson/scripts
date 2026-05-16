@@ -197,7 +197,7 @@ class TestDownloader:
         assert changed is False
         assert statuses[url] == "downloaded"
 
-    def test_archive_stalled_is_processed(self, tmp_path):
+    def test_archive_stalled_only_remains_retryable(self, tmp_path):
         archive_file = tmp_path / "yt-alpha.txt"
         url = "https://example.com/video"
         archive_file.write_text(
@@ -208,7 +208,7 @@ class TestDownloader:
         statuses, _lines, _changed = downloader._read_archive_statuses(archive_file, [url])
 
         assert statuses[url] == "stalled"
-        assert statuses[url] in downloader.ARCHIVE_PROCESSED_STATUSES
+        assert statuses[url] not in downloader.ARCHIVE_PROCESSED_STATUSES
 
     def test_progress_activity_pre_transfer_stalls_on_short_window(self):
         activity = downloader._ProgressActivity(
@@ -220,6 +220,19 @@ class TestDownloader:
         activity.observe({"event": "heartbeat"}, 5.0)
 
         assert activity.stall(5.0) == (4, "pre_transfer_no_output")
+
+    def test_progress_activity_can_extend_pre_transfer_stall_window(self):
+        activity = downloader._ProgressActivity(
+            stall_seconds=4,
+            complete_stall_seconds=300,
+            started_at=0.0,
+            last_real_event_t=0.0,
+            pre_transfer_stall_seconds=120,
+        )
+        activity.observe({"event": "heartbeat"}, 5.0)
+
+        assert activity.stall(5.0) is None
+        assert activity.stall(121.0) == (120, "pre_transfer_no_output")
 
     def test_progress_activity_active_transfer_uses_longer_window(self):
         activity = downloader._ProgressActivity(
@@ -354,6 +367,97 @@ class TestDownloader:
         assert stalled_events
         assert stalled_events[-1]["reason"] == "pre_transfer_no_output"
 
+    def test_run_one_aebndl_does_not_use_yt_dlp_pre_transfer_stall_window(self, monkeypatch):
+        current_time = [0.0]
+
+        def fake_time():
+            return current_time[0]
+
+        def fake_iter(tool, stdout, raw_log_path=None, heartbeat_secs=None):
+            current_time[0] = 5.0
+            yield {"event": "heartbeat"}
+
+        emitted = []
+        monkeypatch.setattr(downloader.time, "time", fake_time)
+        monkeypatch.setattr(downloader, "iter_parsed_events", fake_iter)
+        monkeypatch.setattr(downloader, "_emit_json", emitted.append)
+        monkeypatch.setattr(downloader.subprocess, "Popen", lambda *a, **k: self._FakeProc(rc=0))
+
+        rc, _info = downloader._run_one(
+            tool="aebndl",
+            urls=["https://straight.aebn.com/straight/movies/190977/example#scene-900595"],
+            out_dir=Path("."),
+            canonical_out_dir=Path("."),
+            partial_root=Path("."),
+            raw_dir=Path("."),
+            url_index=1,
+            proglog=self._NoopProgLogger(),
+            timeout=None,
+            retries=0,
+            quiet=True,
+            dry_run=False,
+            progress_freq_s=None,
+            max_ndjson_rate=-1,
+            stall_seconds=4,
+            program_deadline=None,
+            max_dl_speed=None,
+            max_height=None,
+            extdl_fallback=False,
+            skip_simulate_check=True,
+        )
+
+        assert rc == 0
+        assert not any(evt.get("event") == "stalled" for evt in emitted)
+
+    def test_run_one_aebndl_complete_event_reports_finished_size(self, monkeypatch):
+        current_time = [0.0]
+
+        def fake_time():
+            return current_time[0]
+
+        def fake_iter(tool, stdout, raw_log_path=None, heartbeat_secs=None):
+            current_time[0] = 1.0
+            yield {"event": "destination", "path": str(Path("scene.mp4").resolve())}
+            current_time[0] = 2.0
+            yield {"event": "complete", "path": str(Path("scene.mp4").resolve()), "file_size": 12345}
+
+        emitted = []
+        proc = self._FakeProc(rc=0)
+        monkeypatch.setattr(downloader.time, "time", fake_time)
+        monkeypatch.setattr(downloader, "iter_parsed_events", fake_iter)
+        monkeypatch.setattr(downloader, "_emit_json", emitted.append)
+        monkeypatch.setattr(downloader.subprocess, "Popen", lambda *a, **k: proc)
+
+        rc, info = downloader._run_one(
+            tool="aebndl",
+            urls=["https://straight.aebn.com/straight/movies/183004/i-share-my-boyfriend#scene-865807"],
+            out_dir=Path("."),
+            canonical_out_dir=Path("."),
+            partial_root=Path("."),
+            raw_dir=Path("."),
+            url_index=1,
+            proglog=self._NoopProgLogger(),
+            timeout=None,
+            retries=0,
+            quiet=True,
+            dry_run=False,
+            progress_freq_s=None,
+            max_ndjson_rate=-1,
+            stall_seconds=4,
+            program_deadline=None,
+            max_dl_speed=None,
+            max_height=None,
+            extdl_fallback=False,
+            skip_simulate_check=True,
+        )
+
+        assert rc == 0
+        assert info["downloaded"] == 12345
+        assert info["total"] == 12345
+        assert not proc.terminated
+        assert any(evt.get("event") == "complete" for evt in emitted)
+        assert not any(evt.get("event") == "stalled" for evt in emitted)
+
     def test_run_one_successful_fallback_uses_fallback_progress(self, monkeypatch):
         current_time = [0.0]
 
@@ -430,7 +534,9 @@ class TestDownloader:
         out_dir = Path("/tmp/output")
 
         cmd = downloader._build_ytdlp_cmd(urls, out_dir)
-        assert cmd[0] == "yt-dlp"
+        # Command now uses sys.executable -m yt_dlp (always picks the venv yt-dlp)
+        assert "-m" in cmd
+        assert "yt_dlp" in cmd
         assert "--newline" in cmd
         assert "-o" in cmd
         assert str(out_dir / "%(title)s.%(ext)s") in cmd
@@ -904,7 +1010,47 @@ class TestIntegration:
         assert (archive_dir / "yt-sofi_li.txt").exists()
         assert not (archive_dir / "yt-w03_166_14.txt").exists()
 
-    def test_main_archive_skips_failed_statuses(self, tmp_path):
+    def test_main_proxy_location_uses_archive_source_stem_for_temp_urlfile(self, tmp_path):
+        tmp_urlfile = tmp_path / "logs" / "tmp_urls" / "w03_166_14.txt"
+        tmp_urlfile.parent.mkdir(parents=True)
+        tmp_urlfile.write_text("https://example.com/video2\n", encoding="utf-8")
+        source_file = tmp_path / "files" / "downloads" / "stars" / "sofi_li.txt"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("https://example.com/video2\n", encoding="utf-8")
+        archive_dir = tmp_path / "archive"
+        proxy_root = tmp_path / "proxy"
+
+        argv = [
+            "ytaedl",
+            "-f",
+            str(tmp_urlfile),
+            "--archive-dir",
+            str(archive_dir),
+            "-O",
+            str(source_file),
+            "-P",
+            str(proxy_root),
+        ]
+        with patch("sys.argv", argv):
+            with patch("ytaedl.downloader._run_one") as mock_run:
+                mock_run.return_value = (
+                    0,
+                    {
+                        "elapsed_s": 0.5,
+                        "downloaded": 150,
+                        "total": 150,
+                        "already": False,
+                        "downloader": "yt-dlp",
+                    },
+                )
+                result = downloader.main()
+
+        assert result == 0
+        assert mock_run.call_count == 1
+        assert mock_run.call_args.kwargs["out_dir"] == (proxy_root / "sofi_li").resolve()
+        assert mock_run.call_args.kwargs["out_dir"].name != tmp_urlfile.stem
+
+    def test_main_archive_retries_failed_statuses(self, tmp_path):
         urlfile = tmp_path / "urls.txt"
         urlfile.write_text("https://example.com/video1\n", encoding="utf-8")
         archive_dir = tmp_path / "archive"
@@ -939,7 +1085,8 @@ class TestIntegration:
                 result = downloader.main()
 
         assert result == 0
-        assert mock_run.call_count == 0
+        assert mock_run.call_count == 1
+        assert mock_run.call_args.kwargs["urls"] == ["https://example.com/video1"]
 
     def test_main_archive_records_stalled_url(self):
         """Stalled downloads are recorded in the archive."""

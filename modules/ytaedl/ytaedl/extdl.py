@@ -161,7 +161,10 @@ def make_candidate(
     content_type: str = "",
     score_adjustment: int = 0,
 ) -> Optional[MediaCandidate]:
-    cleaned_url = html.unescape(url.strip().strip('"').strip("'"))
+    cleaned_url = html.unescape(url.strip().strip('"').strip("'")).replace("\\/", "/")
+    # Promote protocol-relative URLs (//cdn.example.com/...) to https://
+    if cleaned_url.startswith("//"):
+        cleaned_url = "https:" + cleaned_url
     if not cleaned_url.startswith(("http://", "https://")):
         return None
     kind, score, note = infer_candidate_kind(cleaned_url, content_type)
@@ -224,7 +227,12 @@ def infer_origin(url: str) -> str:
 
 
 def absolutize_url(raw_url: str, base_url: str) -> str:
-    return urllib.parse.urljoin(base_url, html.unescape(raw_url))
+    # Unescape HTML entities first, then normalise JS-escaped slashes
+    # (e.g. "\/\/cdn.example.com\/..." → "//cdn.example.com/...").
+    # urljoin treats leading backslash as a relative path component instead of
+    # recognising the protocol-relative URL, so we must clean it first.
+    unescaped = html.unescape(raw_url).replace("\\/", "/")
+    return urllib.parse.urljoin(base_url, unescaped)
 
 
 def fetch_page_html(
@@ -469,7 +477,7 @@ def build_yt_dlp_command_for_candidate(
     out_dir: Path,
     referer: str,
     origin: str,
-    yt_dlp_executable: str = "yt-dlp",
+    yt_dlp_executable: "str | list[str]" = "yt-dlp",
     user_agent: str = DEFAULT_USER_AGENT,
     browser: Optional[str] = None,
     cookie_file: Optional[str] = None,
@@ -478,10 +486,12 @@ def build_yt_dlp_command_for_candidate(
     ffmpeg_location: Optional[str] = None,
     max_dl_speed: Optional[float] = None,
     max_height: Optional[int] = None,
+    output_template: Optional[Path] = None,
     extra_args: Sequence[str] = (),
 ) -> List[str]:
     """Build a yt-dlp command to download a discovered fallback candidate URL."""
-    cmd = [yt_dlp_executable, "--newline", "--no-playlist"]
+    exe = list(yt_dlp_executable) if isinstance(yt_dlp_executable, (list, tuple)) else [yt_dlp_executable]
+    cmd = [*exe, "--newline", "--no-playlist"]
     if browser:
         cmd += ["--cookies-from-browser", browser]
     if cookie_file:
@@ -500,7 +510,7 @@ def build_yt_dlp_command_for_candidate(
     if max_height and max_height > 0:
         fmt = f"bestvideo[height<={max_height}]+bestaudio/best[height<={max_height}]/best"
         cmd += ["--format", fmt]
-    cmd += ["-o", str(out_dir / "%(title)s.%(ext)s")]
+    cmd += ["-o", str(output_template or (out_dir / "%(title)s.%(ext)s"))]
     cmd += list(extra_args)
     cmd.append(candidate_url)
     return cmd

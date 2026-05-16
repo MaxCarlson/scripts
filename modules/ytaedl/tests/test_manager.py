@@ -38,6 +38,7 @@ class TestManager:
         assert args.url_order_ascending is False
         assert args.url_random_order is False
         assert args.url_pick_temperature == 0.0
+        assert args.domain_url_pick == "first"
 
         assert args.proxy_dl_location is None
 
@@ -67,6 +68,12 @@ class TestManager:
 
         with pytest.raises(SystemExit):
             parser.parse_args(["--url-pick-temperature", "-1"])
+
+        args_with_domain_last = parser.parse_args(["-E", "last"])
+        assert args_with_domain_last.domain_url_pick == "last"
+
+        args_with_domain_random = parser.parse_args(["--domain-url-pick", "random"])
+        assert args_with_domain_random.domain_url_pick == "random"
 
         args_with_grid = parser.parse_args([
             "-X",
@@ -153,7 +160,7 @@ class TestManager:
 
         assert manager._load_archive_finished_urls(archive_dir) == {url: "downloaded"}
 
-    def test_archive_finished_urls_includes_stalled_only_records(self, tmp_path):
+    def test_archive_finished_urls_ignores_stalled_only_records(self, tmp_path):
         archive_dir = tmp_path / "archives"
         archive_dir.mkdir()
         url = "https://example.com/video"
@@ -162,7 +169,7 @@ class TestManager:
             encoding="utf-8",
         )
 
-        assert manager._load_archive_finished_urls(archive_dir) == {url: "stalled"}
+        assert manager._load_archive_finished_urls(archive_dir) == {}
 
     def test_manager_skips_completed_urlfiles(self, tmp_path):
         """Workers should not be assigned URL files that have zero remaining downloads."""
@@ -831,6 +838,9 @@ class TestStartWorker:
         cmd = mock_popen.call_args.args[0]
         assert "-O" in cmd
         assert cmd[cmd.index("-O") + 1] == str(source_file)
+        assert "-o" in cmd
+        assert Path(cmd[cmd.index("-o") + 1]).name == "adele_booty"
+        assert Path(cmd[cmd.index("-o") + 1]).name != tmp_urlfile.stem
 
     def test_start_worker_omits_archive_source_file_by_default(self, tmp_path):
         urlfile = tmp_path / "url.txt"
@@ -858,7 +868,7 @@ class TestStartWorker:
         assert "-a" in cmd
         assert "-O" not in cmd
 
-    def test_load_archive_finished_urls_only_returns_processed_statuses(self, tmp_path):
+    def test_load_archive_finished_urls_only_returns_terminal_success_statuses(self, tmp_path):
         archive_dir = tmp_path / "archive"
         archive_dir.mkdir()
         archive_file = archive_dir / "yt-star.txt"
@@ -884,8 +894,6 @@ class TestStartWorker:
         assert finished == {
             "https://example.com/done": "downloaded",
             "https://example.com/already": "already",
-            "https://example.com/retry": "bad-url",
-            "https://example.com/stalled": "stalled",
         }
 
 
