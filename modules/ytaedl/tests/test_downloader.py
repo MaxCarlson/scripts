@@ -197,7 +197,7 @@ class TestDownloader:
         assert changed is False
         assert statuses[url] == "downloaded"
 
-    def test_archive_stalled_only_remains_retryable(self, tmp_path):
+    def test_archive_stalled_is_processed(self, tmp_path):
         archive_file = tmp_path / "yt-alpha.txt"
         url = "https://example.com/video"
         archive_file.write_text(
@@ -208,7 +208,7 @@ class TestDownloader:
         statuses, _lines, _changed = downloader._read_archive_statuses(archive_file, [url])
 
         assert statuses[url] == "stalled"
-        assert statuses[url] not in downloader.ARCHIVE_PROCESSED_STATUSES
+        assert statuses[url] in downloader.ARCHIVE_PROCESSED_STATUSES
 
     def test_progress_activity_pre_transfer_stalls_on_short_window(self):
         activity = downloader._ProgressActivity(
@@ -904,7 +904,7 @@ class TestIntegration:
         assert (archive_dir / "yt-sofi_li.txt").exists()
         assert not (archive_dir / "yt-w03_166_14.txt").exists()
 
-    def test_main_archive_does_not_skip_failed_statuses(self, tmp_path):
+    def test_main_archive_skips_failed_statuses(self, tmp_path):
         urlfile = tmp_path / "urls.txt"
         urlfile.write_text("https://example.com/video1\n", encoding="utf-8")
         archive_dir = tmp_path / "archive"
@@ -939,7 +939,7 @@ class TestIntegration:
                 result = downloader.main()
 
         assert result == 0
-        assert mock_run.call_count == 1
+        assert mock_run.call_count == 0
 
     def test_main_archive_records_stalled_url(self):
         """Stalled downloads are recorded in the archive."""

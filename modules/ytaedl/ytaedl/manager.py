@@ -1334,6 +1334,9 @@ def _add_run_core_args(dest) -> None:
     dest.add_argument("-c", "--cleanup-partial-on-start", action="store_true",
                       help=("Before starting workers, scan --proxy-dl-location for stale _partial/ dirs, "
                             "print deletion summary, prompt for confirmation, delete them, and remove archive entries."))
+    dest.add_argument("-y", "--exclusive-urlfiles", default=True,
+                      action=argparse.BooleanOptionalAction,
+                      help="Ensure each worker downloads from a unique URL file (on by default)")
 
 
 def _add_watcher_args(dest, *, suppress: bool = False) -> None:
@@ -2460,7 +2463,7 @@ def run_main(
             # download; counting those would incorrectly block new assignments.
             active_counts: Dict[str, int] = {}
             for w in workers:
-                if not w.proc:
+                if not w.proc or w == ws or w.rc is not None:
                     continue  # finished or waiting — does not occupy a domain slot
                 url = w.url_current
                 if url and url != "-":
@@ -2473,10 +2476,32 @@ def run_main(
             for fid, fpath in domain_index._file_map.items():
                 fp_map[fid] = url_rankings.get(str(Path(fpath).resolve()), 999_999)
 
+            prefer_domains: Optional[set[str]] = None
+            if _max_per > 0:
+                aebn_target = min(_max_per, max(1, args.threads // 2))
+                aebn_workers = sum(count for d, count in active_counts.items() if "aebn.com" in d)
+                if aebn_workers < aebn_target:
+                    prefer_domains = {d for d in domain_index._url_queues.keys() if "aebn.com" in d}
+
+            exclusive_urlfiles = getattr(args, "exclusive_urlfiles", True)
+            exclude_file_ids: Optional[set[int]] = set() if exclusive_urlfiles else None
+            if exclude_file_ids is not None:
+                active_paths = set()
+                for w in workers:
+                    if w == ws or w.rc is not None or (w.proc and w.proc.poll() is not None):
+                        continue
+                    if w.proc and not w.is_paused and w.url_entry:
+                        active_paths.add(str(Path(w.url_entry.file_path).resolve()))
+                for fid, fpath in domain_index._file_map.items():
+                    if str(Path(fpath).resolve()) in active_paths:
+                        exclude_file_ids.add(fid)
+
             scan_log: List[ScanLogEntry] = []
             entry = domain_index.pick_url(
                 active_counts, _max_per, fp_map, scan_log,
                 prefer_partial=getattr(args, "prioritize_partial", True),
+                prefer_domains=prefer_domains,
+                exclude_file_ids=exclude_file_ids,
             )
 
             # Write scan log to worker's prog log

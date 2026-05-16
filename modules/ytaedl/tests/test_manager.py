@@ -153,7 +153,7 @@ class TestManager:
 
         assert manager._load_archive_finished_urls(archive_dir) == {url: "downloaded"}
 
-    def test_archive_finished_urls_ignores_stalled_only_records(self, tmp_path):
+    def test_archive_finished_urls_includes_stalled_only_records(self, tmp_path):
         archive_dir = tmp_path / "archives"
         archive_dir.mkdir()
         url = "https://example.com/video"
@@ -162,7 +162,7 @@ class TestManager:
             encoding="utf-8",
         )
 
-        assert manager._load_archive_finished_urls(archive_dir) == {}
+        assert manager._load_archive_finished_urls(archive_dir) == {url: "stalled"}
 
     def test_manager_skips_completed_urlfiles(self, tmp_path):
         """Workers should not be assigned URL files that have zero remaining downloads."""
@@ -884,6 +884,8 @@ class TestStartWorker:
         assert finished == {
             "https://example.com/done": "downloaded",
             "https://example.com/already": "already",
+            "https://example.com/retry": "bad-url",
+            "https://example.com/stalled": "stalled",
         }
 
 

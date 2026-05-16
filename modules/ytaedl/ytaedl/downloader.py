@@ -474,7 +474,7 @@ def _format_archive_line(status: str, elapsed_s: float, when: str, downloaded_mi
     ])
 
 
-ARCHIVE_PROCESSED_STATUSES = {"downloaded", "already", "preexisting"}
+ARCHIVE_PROCESSED_STATUSES = {"downloaded", "already", "preexisting", "bad-url", "stalled"}
 
 
 def _archive_status_rank(status: str) -> int:
