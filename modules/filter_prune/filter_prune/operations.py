@@ -12,8 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from filter_prune.models import FilterTrace, OperationStats, SafePruneError, TargetInfo, TargetSummary
-from filter_prune.util import (
+from .models import FilterTrace, OperationStats, SafePruneError, TargetInfo, TargetSummary
+from .util import (
     colorize,
     extension_key,
     format_bytes,

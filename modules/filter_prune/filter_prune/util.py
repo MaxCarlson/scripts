@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
-from filter_prune.models import SafePruneError, TargetInfo, ToolConfig
+from .models import SafePruneError, TargetInfo, ToolConfig
 
 
 def normalize_extension(extension: str) -> str:

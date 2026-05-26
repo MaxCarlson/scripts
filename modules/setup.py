@@ -670,6 +670,50 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
     return errors_encountered, touched_pkgs
 
 # ─────────────────────────────────────────────────────────
+# Editable-finder priority patch
+# ─────────────────────────────────────────────────────────
+def patch_editable_finders(verbose: bool = False) -> None:
+    """Rewrite all __editable__*_finder.py files so the finder inserts at
+    position 0 in sys.meta_path instead of appending.
+
+    Without this, PathFinder finds a module's wrapper directory (e.g.
+    modules/filter_prune/) as a namespace package when 'modules/' is on
+    PYTHONPATH, and the editable finder never gets a chance to map it to the
+    real inner package (modules/filter_prune/filter_prune/).
+    """
+    try:
+        import site as _site
+        site_pkgs = [Path(p) for p in _site.getsitepackages() if Path(p).is_dir()]
+        user_site = Path(_site.getusersitepackages()) if hasattr(_site, "getusersitepackages") else None
+        if user_site and user_site.is_dir():
+            site_pkgs.append(user_site)
+    except Exception:
+        site_pkgs = []
+
+    patched = 0
+    for sp in site_pkgs:
+        for finder_file in sp.glob("__editable__*_finder.py"):
+            try:
+                text = finder_file.read_text(encoding="utf-8")
+                if "sys.meta_path.append(_EditableFinder)" in text:
+                    new_text = text.replace(
+                        "sys.meta_path.append(_EditableFinder)",
+                        "sys.meta_path.insert(0, _EditableFinder)",
+                    )
+                    finder_file.write_text(new_text, encoding="utf-8")
+                    patched += 1
+                    if verbose:
+                        log_info(f"Patched editable finder: {finder_file.name}")
+            except Exception as exc:
+                log_warning(f"Could not patch {finder_file.name}: {exc}")
+
+    if patched:
+        status_line(f"Patched {patched} editable finder(s) for meta_path priority", "ok")
+    elif verbose:
+        log_info("All editable finders already use insert(0, ...) or none found")
+
+
+# ─────────────────────────────────────────────────────────
 # PYTHONPATH configuration
 # ─────────────────────────────────────────────────────────
 def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path, verbose: bool = False):
@@ -936,6 +980,7 @@ def main():
         log_warning(f"Console proxy generation encountered an issue: {e}")
 
     ensure_pythonpath(args.scripts_dir / "modules", args.dotfiles_dir, args.verbose)
+    patch_editable_finders(verbose=args.verbose)
 
     if all_errors:
         log_warning(f"Completed with {len(all_errors)} error(s) in module installation.")

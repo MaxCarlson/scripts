@@ -6,11 +6,11 @@ import argparse
 import sys
 from typing import Optional, Sequence
 
-from filter_prune import __version__
-from filter_prune.models import ParsedCli, SafePruneError
-from filter_prune.operations import apply_targets, print_stats
-from filter_prune.search import apply_limit, collect_combined_targets, collect_fd_targets, collect_rg_targets
-from filter_prune.util import deduplicate_targets, resolve_roots, resolve_tool_config
+from . import __version__
+from .models import ParsedCli, SafePruneError
+from .operations import apply_targets, print_stats
+from .search import apply_limit, collect_combined_targets, collect_fd_targets, collect_rg_targets
+from .util import deduplicate_targets, resolve_roots, resolve_tool_config
 
 
 PROGRAM_NAME = "filter-prune"

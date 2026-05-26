@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 from typing import Optional
 
-from filter_prune.models import FilterTrace, ParsedCli, SafePruneError, TargetInfo, ToolConfig
-from filter_prune.util import (
+from .models import FilterTrace, ParsedCli, SafePruneError, TargetInfo, ToolConfig
+from .util import (
     deduplicate_targets,
     ensure_tool_available,
     normalize_extensions,
