@@ -43,6 +43,7 @@ python scripts/git_revview.py -d -n 3
 # Patch of a specific commit, filtered to paths (works across renames):
 python scripts/git_revview.py -d -n 2 -c aebndl_dlpn.py
 """
+__version__ = "0.1.0"
 
 from __future__ import annotations
 

@@ -9,6 +9,7 @@ Usage:
     python migrate_repo_paths.py --target ~/repos --dry-run
     python migrate_repo_paths.py --target ~/repos --backup --apply
 """
+__version__ = "0.1.0"
 
 from __future__ import annotations
 

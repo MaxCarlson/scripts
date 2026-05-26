@@ -1,3 +1,4 @@
+<!-- version: 0.1.0 -->
 # Parallel Runner - Concurrent Process Execution and Monitoring
 
 `parallel_runner` is a Python module designed to efficiently execute and monitor multiple subprocesses concurrently. It leverages `asyncio` for asynchronous operations and `rich` for creating an interactive and visually informative terminal user interface, complete with real-time progress updates and aggregated statistics.

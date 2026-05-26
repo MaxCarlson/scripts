@@ -1,3 +1,4 @@
+<!-- version: 1.0.0 -->
 # Tmux Manager
 
 Advanced tmux session and window management toolkit with an intuitive CLI.

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "filter-prune"
+version = "3.0.0"
+description = "Dry-run-first fd/rg filtered file operations for delete, move, quarantine, script, and cat workflows."
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+filter-prune = "filter_prune.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["filter_prune*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["*_test.py"]

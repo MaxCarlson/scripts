@@ -1,3 +1,4 @@
+<!-- version: 0.1.0 -->
 # Tool Install Manager (tim)
 
 This module helps answer: "Is a tool installed? Where? Which package manager owns it?" and provides guidance for safe installs, avoiding shadowed duplicates.

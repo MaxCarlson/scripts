@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Find-and-replace helper with ripgrep integration and safe dry-run previews."""
+__version__ = "0.1.0"
 
 from __future__ import annotations
 

@@ -10,6 +10,7 @@ Currently used for:
 Designed so other shells (e.g., PowerShell) can reuse it later by pointing
 to a different ignore file and shell_type.
 """
+__version__ = "0.1.0"
 
 import argparse
 import fnmatch

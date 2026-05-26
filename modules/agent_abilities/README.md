@@ -1,3 +1,4 @@
+<!-- version: 0.3.0 -->
 # Agent Abilities
 
 Universal resource manager for AI coding agents (Claude Code, Codex CLI, Cursor, Gemini CLI).

@@ -1,3 +1,4 @@
+<!-- version: 0.3.0 -->
 # system_manager Module
 
 A comprehensive cross-platform system management CLI that exposes and extends the functionality of the `cross_platform` module.

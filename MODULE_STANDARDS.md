@@ -277,17 +277,97 @@ inside module subdirectories.
 
 ---
 
+## 10. pyscript Versioning  `MAJOR.MINOR.PATCH`
+
+Standalone scripts in `pyscripts/` embed a `__version__` string directly in
+the file.  This is the single source of truth for pyscript versions.
+
+### Placement
+
+Place `__version__` immediately **after the module docstring** (or after the
+shebang / coding declaration if there is no docstring), before the first
+`import` statement:
+
+```python
+#!/usr/bin/env python3
+"""
+my_script.py — one-line description.
+"""
+
+__version__ = "0.1.0"
+
+import argparse
+import sys
+```
+
+If a coding declaration is present it stays on line 2; `__version__` still
+goes after the docstring:
+
+```python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Module docstring."""
+
+__version__ = "0.1.0"
+
+import sys
+```
+
+### Bump rules for pyscripts
+
+pyscripts have no `pyproject.toml`, so the entry-point / dep rules from §1
+do not apply.  Use this simpler scheme:
+
+| Changed | Level | Example |
+|---------|-------|---------|
+| Breaking: renamed/removed flag, incompatible output format | **MAJOR** | `1.0.0 → 2.0.0` |
+| New feature, new flag, new subcommand, significant behavior addition | **MINOR** | `0.1.0 → 0.2.0` |
+| Bug fix, refactoring, doc update, minor improvement | **PATCH** | `0.1.0 → 0.1.1` |
+
+### Reading a pyscript's version
+
+```python
+import re
+text = open("pyscripts/my_script.py").read(2000)
+m = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
+version = m.group(1) if m else None
+```
+
+### Commit convention
+
+```
+bump: my_script.py 0.1.0 → 0.2.0  (MINOR: added --output-dir flag)
+bump: my_script.py 0.1.0 → 0.1.1  (PATCH: fixed edge case in path handling)
+```
+
+---
+
 ## AI Assistant Usage Notes
 
 When an AI coding assistant (Claude Code, Copilot, Cursor, Codex, Gemini)
-proposes changes to a module in this repository, it should:
+proposes changes to this repository, it should:
 
+**For modules (`modules/`):**
 1. Check whether `[project.scripts]` is changing → if yes, bump MAJOR
 2. Check whether `pyproject.toml` is changing (non-scripts) → if yes, bump MINOR
 3. Check whether only `.py` files are changing → bump PATCH
-4. Ensure every new argument has both short and long forms
-5. Prefer subcommands over flat flags when > 7 arguments
-6. Never add a flag without both `-X` and `--full-name` forms
-7. Use `tests/*_test.py` naming for new test files
-8. Put all durable plans under `plans/` and retain superseded plans there
-9. Run `pytest` and `ruff check` before reporting a task complete
+4. Update the version in `pyproject.toml` AND in `__init__.py` (if it has one)
+
+**For pyscripts (`pyscripts/`):**
+5. Every new pyscript must include `__version__ = "0.1.0"` after the docstring
+6. Every modification must bump `__version__` following the rules in §10
+7. Breaking flag/output changes → MAJOR; new features/flags → MINOR; fixes → PATCH
+
+**For all code:**
+8. Ensure every new argument has both short and long forms
+9. Prefer subcommands over flat flags when > 7 arguments
+10. Never add a flag without both `-X` and `--full-name` forms
+11. Use `tests/*_test.py` naming for new test files
+12. Put all durable plans under `plans/` and retain superseded plans there
+13. Run `pytest` and `ruff check` before reporting a task complete
+
+**Help registry (`modules/scripts_help`):**
+14. After adding a new pyscript or module-with-CLI, add an entry to
+    `modules/scripts_help/scripts_help/registry/registry.py`
+15. If updating an existing entry's description, update the `"version"` field
+    to match the current live version so the staleness check stays quiet

@@ -1,3 +1,4 @@
+<!-- version: 0.1.0 -->
 # .clip_tools Module
 
 The `.clip_tools` module provides a unified command-line interface (CLI) for various clipboard-related workflows and system interactions. It aims to streamline common tasks involving clipboard content, file manipulation, and command execution within a terminal environment, particularly for users leveraging `tmux`.

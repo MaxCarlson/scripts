@@ -2,6 +2,7 @@
 """
 run_installers.py — Auto-installer for Inno Setup EXEs with clean exit logic
 """
+__version__ = "0.1.0"
 
 import argparse
 import time

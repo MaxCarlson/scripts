@@ -1,3 +1,4 @@
+<!-- version: 1.0.0 -->
 # clipboard_utils Module
 
 The `clipboard_utils` module provides a set of functions for interacting with the system clipboard in a cross-platform manner. It serves as an abstraction layer, primarily forwarding clipboard operations to a more centralized `cross_platform.clipboard_utils` implementation. The `old.clipboard_utils.py` file within this module contains the direct platform-specific logic, which is useful for understanding the underlying mechanisms or as a fallback.

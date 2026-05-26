@@ -1,3 +1,4 @@
+<!-- version: 0.5.0 -->
 # cross_platform Module
 
 The `cross_platform` module is a comprehensive collection of Python utilities designed to abstract and standardize interactions with the underlying operating system. Its primary goal is to provide a unified API for common system-level tasks, allowing higher-level scripts to function consistently across different environments like Windows, Linux, macOS, Termux, and WSL2, without needing to implement OS-specific logic for each operation.

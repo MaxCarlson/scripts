@@ -10,6 +10,7 @@ Exit codes:
   0 -> Success (clipboard printed)
   1 -> Error (clipboard unavailable, empty/whitespace-only, or unexpected error)
 """
+__version__ = "0.1.0"
 
 from __future__ import annotations
 

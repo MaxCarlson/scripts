@@ -1,3 +1,4 @@
+<!-- version: 0.1.0 -->
 # Script Manager
 
 A Python utility module for managing Python scripts and modules. It helps automate tasks like creating Python modules, making scripts executable, and managing dependencies.

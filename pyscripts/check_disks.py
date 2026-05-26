@@ -7,6 +7,7 @@ and Unix-like systems (Linux, macOS, Termux) using df.
 
 Supports a concise output mode for Unix-like systems.
 """
+__version__ = "0.1.0"
 
 import argparse
 import json

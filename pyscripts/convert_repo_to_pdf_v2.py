@@ -17,6 +17,8 @@ Prerequisites:
 - Tectonic or TeX Live (for pdflatex/xelatex)
 - tqdm (`pip install tqdm`)
 """
+__version__ = "0.1.0"
+
 import argparse
 import os
 import re

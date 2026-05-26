@@ -47,6 +47,7 @@ The module also exposes:
 - compute_filtered_dir_sizes, render_size_tree
 - DEFAULT_EXCLUDE_DIRS/EXTS/FILES, PRESETS
 """
+__version__ = "0.1.0"
 
 from __future__ import annotations
 

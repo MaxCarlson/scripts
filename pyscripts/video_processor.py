@@ -3,6 +3,8 @@
 Multi-threaded video processing & analysis with a real-time dashboard.
 Now with compact (stacked) UI for small terminals and robust logging.
 """
+__version__ = "0.1.0"
+
 import argparse
 import atexit
 import concurrent.futures

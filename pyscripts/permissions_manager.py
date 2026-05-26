@@ -50,6 +50,7 @@ Examples
     python tools/perm_manager.py export -s ./src_perm -o ./templates/src_perm.json
     python tools/perm_manager.py import-apply -i ./templates/src_perm.json -t ./dst -n
 """
+__version__ = "0.1.0"
 
 from __future__ import annotations
 

@@ -1,3 +1,5 @@
+__version__ = "0.1.0"
+
 # File: scripts/pyscripts/unify_shell.py
 #!/usr/bin/env python3
 """

@@ -19,6 +19,32 @@ before changing modules in this repository. It is the single source of truth for
 If this file and `MODULE_STANDARDS.md` appear to conflict, `MODULE_STANDARDS.md`
 wins.
 
+## Versioning — read before editing any file
+
+**Modules (`modules/`)** use `pyproject.toml` + optional `__init__.py`:
+- MAJOR bump → `[project.scripts]` entry points changed (requires full reinstall + `.cmd` regeneration)
+- MINOR bump → other `pyproject.toml` changes (deps, metadata)
+- PATCH bump → source-only changes
+
+**pyscripts (`pyscripts/`)** embed `__version__` directly in the file, after the docstring:
+```python
+"""My script."""
+
+__version__ = "0.1.0"
+
+import sys
+```
+- MAJOR → breaking change (renamed/removed flag, incompatible output)
+- MINOR → new feature, new flag, new subcommand
+- PATCH → bug fix, refactor, minor improvement
+
+**Always bump** the relevant version when modifying any script or module.  Full
+rules in [`MODULE_STANDARDS.md §1`](MODULE_STANDARDS.md) (modules) and
+[`§10`](MODULE_STANDARDS.md) (pyscripts).
+
+**Help registry:** after adding a new pyscript or module-with-CLI, add an entry
+to `modules/scripts_help/scripts_help/registry/registry.py`.
+
 ## Quick Commands
 
 ```bash

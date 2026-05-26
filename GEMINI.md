@@ -9,6 +9,30 @@ If older instructions conflict with that file, follow `MODULE_STANDARDS.md`.
 Durable plans use the taxonomy described there: `plans/modules/<module>/INDEX.md`
 plus `user/` and `ai/` folders with indexed status filenames.
 
+## Versioning — read before editing any file
+
+**Modules (`modules/`)** — bump version in `pyproject.toml` (and `__init__.py` if present):
+- MAJOR → `[project.scripts]` entry points changed
+- MINOR → other `pyproject.toml` changes (deps, metadata)
+- PATCH → source-only changes
+
+**pyscripts (`pyscripts/`)** — bump `__version__` embedded at the top of the file:
+```python
+"""Docstring."""
+
+__version__ = "0.1.0"   # place after docstring, before imports
+
+import sys
+```
+- MAJOR → breaking interface change (renamed/removed flag, incompatible output)
+- MINOR → new feature, flag, or subcommand
+- PATCH → bug fix, refactor, minor improvement
+
+Full rules: [`MODULE_STANDARDS.md §1`](MODULE_STANDARDS.md) (modules) and `§10` (pyscripts).
+
+**Help registry:** add new scripts/modules to
+`modules/scripts_help/scripts_help/registry/registry.py`.
+
 ## Common Commands
 
 ```bash

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "scripts_help"
+version = "0.3.0"
+# Version history (MAJOR.MINOR.PATCH per MODULE_STANDARDS.md):
+# 0.1.0 — initial release: interactive help browser, version-staleness checks
+# 0.2.0 — added: AI drift-update offer in cli + post-install hook; glow/README viewer in program info
+# 0.3.0 — subcommands (browse/drift/sync); README version tracking; pyscripts/readme/ convention
+description = "Interactive help browser for the scripts repository."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+scripts-help = "scripts_help.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["scripts_help"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+python_files = ["*_test.py"]
+norecursedirs = [".*", "__pycache__", ".pytest_tmp_root"]
+tmp_path_retention_policy = "failed"

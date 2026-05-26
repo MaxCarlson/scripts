@@ -1,3 +1,4 @@
+<!-- version: 0.1.0 -->
 # diff_utils Module
 
 The `diff_utils` module provides a suite of tools for comparing files and directories, with specialized functionalities for Python code analysis and general directory synchronization. It aims to offer robust and flexible comparison capabilities for various use cases.

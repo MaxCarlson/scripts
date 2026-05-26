@@ -1,3 +1,4 @@
+<!-- version: 0.1.0 -->
 # Standard UI - Rich-based Console UI Framework
 
 `standard_ui` is a Python module that provides a standardized and visually appealing framework for console output, built upon the powerful `rich` library. It aims to offer consistent logging, progress reporting, and structured output across various scripts and modules, enhancing user experience and readability.

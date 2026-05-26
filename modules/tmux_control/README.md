@@ -1,3 +1,4 @@
+<!-- version: 0.1.0 -->
 # tmux-control - Tmux Session Automation and Control
 
 `tmux-control` is a Python utility designed to enhance your tmux workflow by providing a background daemon and a command-line interface (CLI) for automating session interactions. It enables features like displaying visual banners based on command completion status and scheduling reminders that appear directly within your tmux panes.

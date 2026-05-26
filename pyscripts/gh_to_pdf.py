@@ -33,6 +33,7 @@ Notes & References
 
 CLI Flags follow single-letter + long-form convention.
 """
+__version__ = "0.1.0"
 
 from __future__ import annotations
 

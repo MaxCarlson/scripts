@@ -1,3 +1,4 @@
+<!-- version: 0.1.0 -->
 # CLI Duo
 
 Coordinate two AI CLIs working in the same repository without stepping on each other.

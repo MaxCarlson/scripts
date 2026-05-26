@@ -1,3 +1,4 @@
+<!-- version: 0.1.0 -->
 # Jellyfin Doctor
 
 `jellyfin-doctor` is a Windows-oriented Jellyfin recovery and monitoring CLI.

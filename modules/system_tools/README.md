@@ -1,3 +1,4 @@
+<!-- version: 0.1.0 -->
 # System Tools - Cross-Platform System Utilities
 
 `system_tools` is a comprehensive Python module designed to provide a unified, cross-platform interface for various operating system interactions. It encapsulates common system-level functionalities, making it easier to write scripts that behave consistently across Windows, Linux, macOS, and Termux environments.

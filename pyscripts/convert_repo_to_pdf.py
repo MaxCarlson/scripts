@@ -25,6 +25,7 @@ Prerequisites:
 - Tectonic installed (`pkg install tectonic`)
 - A CJK font installed in Termux (`~/.termux/font.ttf`)
 """
+__version__ = "0.1.0"
 
 import argparse
 import os

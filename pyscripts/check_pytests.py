@@ -6,6 +6,7 @@ New options:
   -d, --depth    Max folder depth to scan (0 = root only; 1 = one level deep; -1 = infinite [default])
   -x, --exclude  Space-separated list of files or folders (relative to script- or test-dir) to skip
 """
+__version__ = "0.1.0"
 
 import sys
 import re

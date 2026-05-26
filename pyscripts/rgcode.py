@@ -13,6 +13,7 @@ Supports:
 
 The matched search term is highlighted. Falls back to context if extraction fails.
 """
+__version__ = "0.1.0"
 
 import subprocess
 import json

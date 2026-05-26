@@ -1,3 +1,4 @@
+<!-- version: 0.1.0 -->
 # llm-models
 
 Utility helpers for selecting and downloading quantized coding models that run comfortably on a workstation-class GPU (e.g., RTX 5090).  The package exposes a small registry describing a curated list of Hugging Face releases and includes helpers that:

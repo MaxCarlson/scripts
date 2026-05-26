@@ -19,6 +19,7 @@ Examples:
     python remove_leading_number_prefix.py -i input.txt -b
     python remove_leading_number_prefix.py -i input.txt -n -v
 """
+__version__ = "0.1.0"
 
 from __future__ import annotations
 

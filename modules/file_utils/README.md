@@ -1,3 +1,4 @@
+<!-- version: 1.4.0 -->
 # file_utils Module
 
 The `file_utils` module provides a comprehensive set of Python utilities for managing files and directories. It offers functionalities for identifying and handling duplicate files, organizing files based on various criteria, and merging the contents of multiple files with advanced filtering and transformation options.

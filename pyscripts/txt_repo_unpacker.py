@@ -13,6 +13,7 @@ Notes:
 - Files are created relative to the output directory.
 - Existing files are not overwritten unless --force is used.
 """
+__version__ = "0.1.0"
 
 from __future__ import annotations
 import argparse

@@ -1,3 +1,4 @@
+<!-- version: 0.1.0 -->
 # Web AI Automator
 
 This module automates interactions with web-based AI platforms using Selenium and provides a Flask API for control.

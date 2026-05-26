@@ -1,3 +1,4 @@
+<!-- version: 0.2.0 -->
 # Orchestrator Web Viewer
 
 Web-based monitoring interface for AI Orchestrator, Knowledge Manager, and TermDash UIs

@@ -1,3 +1,4 @@
+<!-- version: 0.1 -->
 # edit_commands Module
 
 The `edit_commands` module provides a powerful command-line utility to retrieve, modify, and re-execute previous shell commands. It offers flexible ways to transform historical commands using various pattern matching and replacement techniques, and provides control over how these modified commands are executed.

@@ -1,3 +1,4 @@
+<!-- version: 0.2.0 -->
 # RRBackup – Restic + Rclone Backup System
 
 **Cross-platform backup solution using Restic for encrypted, deduplicated snapshots and Rclone for remote storage connectivity.**

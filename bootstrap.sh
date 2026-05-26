@@ -20,6 +20,10 @@ while [ "$#" -gt 0 ]; do
             SETUP_ARGS+=("--no-skip-reinstall")
             shift
             ;;
+        -U|--no-update-help)
+            SETUP_ARGS+=("--no-update-help")
+            shift
+            ;;
         --)
             shift
             while [ "$#" -gt 0 ]; do

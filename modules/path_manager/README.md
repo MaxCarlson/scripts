@@ -1,3 +1,4 @@
+<!-- version: 0.1.6 -->
 # Path Manager
 
 Cross-platform PATH utilities with Windows registry support.

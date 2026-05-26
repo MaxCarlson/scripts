@@ -2,6 +2,8 @@ param(
   [Alias('s')]
   [switch]$SkipReinstall,
   [switch]$NoSkipReinstall,
+  [Alias('U')]
+  [switch]$NoUpdateHelp,
   [Parameter(ValueFromRemainingArguments=$true)]
   [string[]]$Args
 )
@@ -96,6 +98,9 @@ if ($SkipReinstall) {
 }
 if ($NoSkipReinstall) {
     $SetupArgs += "--no-skip-reinstall"
+}
+if ($NoUpdateHelp) {
+    $SetupArgs += "--no-update-help"
 }
 $SetupArgs += $Args
 & $VenvPython (Join-Path $Root 'setup.py') @SetupArgs

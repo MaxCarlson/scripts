@@ -15,6 +15,7 @@ Key points:
 - NEW: 'df' command: per-drive/mount free/used/total + %used (cross-platform), CSV/JSON export.
 - Console output shows filenames by default; full paths when --absolute or --output.
 """
+__version__ = "0.1.0"
 
 from __future__ import annotations
 

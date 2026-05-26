@@ -18,6 +18,7 @@ Arguments:
     --verbose / -v    : Enable verbose output.
     --confirm / -c    : Enable interactive confirmation for ambiguous file blocks.
 """
+__version__ = "0.1.0"
 
 import os
 import re

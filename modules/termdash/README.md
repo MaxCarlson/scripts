@@ -1,3 +1,4 @@
+<!-- version: 0.4.0 -->
 # TermDash - Terminal Dashboard Library
 
 TermDash is a robust, thread-safe Python library designed for creating persistent, multi-line, in-place terminal dashboards. It allows for dynamic display of information with a co-existing scrolling log region, making it ideal for monitoring long-running processes or real-time data.

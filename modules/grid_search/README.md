@@ -1,3 +1,4 @@
+<!-- version: 0.1.1 -->
 # gsearch
 
 `gsearch` is a durable, generic, adaptive grid-search manager for discrete parameter optimization.

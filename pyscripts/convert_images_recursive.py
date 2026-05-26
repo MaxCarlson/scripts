@@ -13,6 +13,7 @@ Examples:
     python convert_images_recursive.py -i ./media -m to-jpg -o ./converted
     python convert_images_recursive.py -i ./media -m to-jpg -x -b "#FFFFFF"
 """
+__version__ = "0.1.0"
 
 from __future__ import annotations
 

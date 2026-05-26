@@ -1,3 +1,4 @@
+<!-- version: 0.3.3 -->
 # Web Docs Processor
 
 Build retrieval-friendly Markdown, JSON, and PDF source packs from documentation

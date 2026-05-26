@@ -1,3 +1,4 @@
+<!-- version: 0.2.0 -->
 # clipboard_tools
 
 Clipboard command suite with multi-buffer storage, stats, and tmux → Windows clipboard bridging.

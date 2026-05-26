@@ -1,0 +1,521 @@
+# Registry of user-facing scripts and modules with CLIs.
+#
+# Structure:
+#   category -> { "desc": str, "items": [...] }            # ≤10 items → shown directly
+#   category -> { "desc": str, "subcategories": {...} }    # >10 items → subcategory menu
+#
+# Each item:
+#   "name"     - display name
+#   "path"     - relative to repo root; used by the unregistered-program checker
+#   "desc"     - one-line description shown in the menu
+#   "help_cmd" - command list to run for --help output (python resolved at runtime)
+#   "version"  - (modules only) version recorded when this entry was written;
+#                if the live module's major or minor number is higher, a warning
+#                is shown at startup so you know to update the description.
+#                Omit for pyscripts (they carry no version number).
+
+REGISTRY: dict = {
+    "Clipboard Tools": {
+        "desc": "Copy, paste, diff, and modify clipboard contents",
+        "items": [
+            {
+                "name": "clip_tools (module)",
+                "path": "modules/clip_tools",
+                "desc": "Unified CLI for all clipboard ops: append, diff, replace-block, copy, paste, run",
+                "help_cmd": ["python", "-m", "clip_tools", "--help"],
+                "version": "0.1.0",
+            },
+            {
+                "name": "output_to_clipboard.py",
+                "path": "pyscripts/output_to_clipboard.py",
+                "desc": "Run a command and capture its output directly to the clipboard",
+                "help_cmd": ["python", "pyscripts/output_to_clipboard.py", "--help"],
+            },
+            {
+                "name": "append_clipboard.py",
+                "path": "pyscripts/append_clipboard.py",
+                "desc": "Append clipboard contents to the end of a file",
+                "help_cmd": ["python", "pyscripts/append_clipboard.py", "--help"],
+            },
+            {
+                "name": "clipboard_diff.py",
+                "path": "pyscripts/clipboard_diff.py",
+                "desc": "Diff current clipboard against a file with colored unified diff output",
+                "help_cmd": ["python", "pyscripts/clipboard_diff.py", "--help"],
+            },
+            {
+                "name": "clipboard_replace.py",
+                "path": "pyscripts/clipboard_replace.py",
+                "desc": "Replace a Python function/class block in a file with clipboard content",
+                "help_cmd": ["python", "pyscripts/clipboard_replace.py", "--help"],
+            },
+            {
+                "name": "copy_to_clipboard.py",
+                "path": "pyscripts/copy_to_clipboard.py",
+                "desc": "Copy file contents to clipboard with optional wrapping",
+                "help_cmd": ["python", "pyscripts/copy_to_clipboard.py", "--help"],
+            },
+            {
+                "name": "copy_log_to_clipboard.py",
+                "path": "pyscripts/copy_log_to_clipboard.py",
+                "desc": "Copy the last N lines from a shell session log to clipboard",
+                "help_cmd": ["python", "pyscripts/copy_log_to_clipboard.py", "--help"],
+            },
+            {
+                "name": "copy_buffer_to_clipboard.py",
+                "path": "pyscripts/copy_buffer_to_clipboard.py",
+                "desc": "Copy a named clipboard buffer to the system clipboard",
+                "help_cmd": ["python", "pyscripts/copy_buffer_to_clipboard.py", "--help"],
+            },
+            {
+                "name": "print_clipboard.py",
+                "path": "pyscripts/print_clipboard.py",
+                "desc": "Echo clipboard contents with optional colorization and stats",
+                "help_cmd": ["python", "pyscripts/print_clipboard.py", "--help"],
+            },
+            {
+                "name": "replace_with_clipboard.py",
+                "path": "pyscripts/replace_with_clipboard.py",
+                "desc": "Replace text in a file with clipboard content",
+                "help_cmd": ["python", "pyscripts/replace_with_clipboard.py", "--help"],
+            },
+            {
+                "name": "set_clipboard_text.py",
+                "path": "pyscripts/set_clipboard_text.py",
+                "desc": "Set the clipboard from a provided string or stdin",
+                "help_cmd": ["python", "pyscripts/set_clipboard_text.py", "--help"],
+            },
+        ],
+    },
+
+    "File Management": {
+        "desc": "Manage, analyze, and transform files and directories",
+        "subcategories": {
+            "File Operations": {
+                "desc": "Delete, filter, replace, convert, and batch-process files",
+                "items": [
+                    {
+                        "name": "filter-prune.py",
+                        "path": "pyscripts/filter-prune.py",
+                        "desc": "Safe deletion using fd/ripgrep path + content matching; dry-run by default",
+                        "help_cmd": ["python", "pyscripts/filter-prune.py", "--help"],
+                    },
+                    {
+                        "name": "replacer.py",
+                        "path": "pyscripts/replacer.py",
+                        "desc": "Find-and-replace with ripgrep integration and safe dry-run previews",
+                        "help_cmd": ["python", "pyscripts/replacer.py", "--help"],
+                    },
+                    {
+                        "name": "delete_files.py",
+                        "path": "pyscripts/delete_files.py",
+                        "desc": "Find and delete files matching a glob pattern with dry-run safety",
+                        "help_cmd": ["python", "pyscripts/delete_files.py", "--help"],
+                    },
+                    {
+                        "name": "run_pattern.py",
+                        "path": "pyscripts/run_pattern.py",
+                        "desc": "Execute a command on all files matching a pattern (fd/find fallback)",
+                        "help_cmd": ["python", "pyscripts/run_pattern.py", "--help"],
+                    },
+                    {
+                        "name": "space_converter.py",
+                        "path": "pyscripts/space_converter.py",
+                        "desc": "Convert tabs/spaces in files with git status checking and analysis",
+                        "help_cmd": ["python", "pyscripts/space_converter.py", "--help"],
+                    },
+                    {
+                        "name": "rm_leading_prefix.py",
+                        "path": "pyscripts/rm_leading_prefix.py",
+                        "desc": "Remove leading numeric prefixes (e.g. '1211. ') from each line in a file",
+                        "help_cmd": ["python", "pyscripts/rm_leading_prefix.py", "--help"],
+                    },
+                    {
+                        "name": "txt_repo_unpacker.py",
+                        "path": "pyscripts/txt_repo_unpacker.py",
+                        "desc": "Unpack a text bundle (-- FILE: markers) into real files on disk",
+                        "help_cmd": ["python", "pyscripts/txt_repo_unpacker.py", "--help"],
+                    },
+                    {
+                        "name": "permissions_manager.py",
+                        "path": "pyscripts/permissions_manager.py",
+                        "desc": "Cross-platform permissions manager: view, diff, copy, audit, set",
+                        "help_cmd": ["python", "pyscripts/permissions_manager.py", "--help"],
+                    },
+                ],
+            },
+            "File Analysis": {
+                "desc": "Analyze disk usage, find duplicates, compare folders",
+                "items": [
+                    {
+                        "name": "file_kit.py",
+                        "path": "pyscripts/file_kit.py",
+                        "desc": "Multi-purpose file utility: du, largest, df, similar, duplicates subcommands",
+                        "help_cmd": ["python", "pyscripts/file_kit.py", "--help"],
+                    },
+                    {
+                        "name": "file_utils (module)",
+                        "path": "modules/file_utils",
+                        "desc": "File utilities: path ops, disk space, WSL tools, interactive file lister",
+                        "help_cmd": ["python", "-m", "file_utils", "--help"],
+                        "version": "1.4.0",
+                    },
+                    {
+                        "name": "folder_stats.py",
+                        "path": "pyscripts/folder_stats.py",
+                        "desc": "Analyze disk usage by file extension with real-time progress dashboard",
+                        "help_cmd": ["python", "pyscripts/folder_stats.py", "--help"],
+                    },
+                    {
+                        "name": "folder_similarity.py",
+                        "path": "pyscripts/folder_similarity.py",
+                        "desc": "Compute folder hashes and compare folder contents for similarity",
+                        "help_cmd": ["python", "pyscripts/folder_similarity.py", "--help"],
+                    },
+                    {
+                        "name": "folder_matcher.py",
+                        "path": "pyscripts/folder_matcher.py",
+                        "desc": "Match files with a specific extension between two folders by size",
+                        "help_cmd": ["python", "pyscripts/folder_matcher.py", "--help"],
+                    },
+                    {
+                        "name": "deduplicator.py",
+                        "path": "pyscripts/deduplicator.py",
+                        "desc": "Find and manage duplicate files using hash-based detection",
+                        "help_cmd": ["python", "pyscripts/deduplicator.py", "--help"],
+                    },
+                    {
+                        "name": "lssts.py",
+                        "path": "pyscripts/lssts.py",
+                        "desc": "Interactive curses file browser with filter/sort by date, size, or name",
+                        "help_cmd": ["python", "pyscripts/lssts.py", "--help"],
+                    },
+                ],
+            },
+        },
+    },
+
+    "Git & GitHub": {
+        "desc": "Git operations, history review, diffs, and GitHub repository tools",
+        "items": [
+            {
+                "name": "apply_git_diffs.py",
+                "path": "pyscripts/apply_git_diffs.py",
+                "desc": "Apply git diffs from clipboard to files",
+                "help_cmd": ["python", "pyscripts/apply_git_diffs.py", "--help"],
+            },
+            {
+                "name": "git_review.py",
+                "path": "pyscripts/git_review.py",
+                "desc": "View historical file contents and diffs from N commits ago with rename tracking",
+                "help_cmd": ["python", "pyscripts/git_review.py", "--help"],
+            },
+            {
+                "name": "git_sync.py",
+                "path": "pyscripts/git_sync.py",
+                "desc": "Git synchronization with logging and status tracking",
+                "help_cmd": ["python", "pyscripts/git_sync.py", "--help"],
+            },
+            {
+                "name": "github_repos_info.py",
+                "path": "pyscripts/github_repos_info.py",
+                "desc": "Gather GitHub repo statistics interactively with a curses UI",
+                "help_cmd": ["python", "pyscripts/github_repos_info.py", "--help"],
+            },
+            {
+                "name": "get_file_type_from_releases.py",
+                "path": "pyscripts/get_file_type_from_releases.py",
+                "desc": "Find files in GitHub releases using gh CLI with glob pattern matching",
+                "help_cmd": ["python", "pyscripts/get_file_type_from_releases.py", "--help"],
+            },
+            {
+                "name": "migrate_repo_paths.py",
+                "path": "pyscripts/migrate_repo_paths.py",
+                "desc": "Update path references in files when moving or renaming repositories",
+                "help_cmd": ["python", "pyscripts/migrate_repo_paths.py", "--help"],
+            },
+        ],
+    },
+
+    "LLM & AI Tools": {
+        "desc": "Package repos for LLMs, apply AI patches, download datasets, automate AI web UIs",
+        "items": [
+            {
+                "name": "zip_for_llms.py",
+                "path": "pyscripts/zip_for_llms.py",
+                "desc": "Package repo for LLM: Gemini analysis, presets, size reporting",
+                "help_cmd": ["python", "pyscripts/zip_for_llms.py", "--help"],
+            },
+            {
+                "name": "repo_processor.py",
+                "path": "pyscripts/repo_processor.py",
+                "desc": "Package repo for LLM consumption as zip and/or consolidated text file",
+                "help_cmd": ["python", "pyscripts/repo_processor.py", "--help"],
+            },
+            {
+                "name": "llm_project_parser.py",
+                "path": "pyscripts/llm_project_parser.py",
+                "desc": "Parse LLM output with file definitions and code blocks into a folder structure",
+                "help_cmd": ["python", "pyscripts/llm_project_parser.py", "--help"],
+            },
+            {
+                "name": "llm-context-link.py",
+                "path": "pyscripts/llm-context-link.py",
+                "desc": "Link LLM context files (AGENTS.md, GEMINI.md) from dotfiles to target directory",
+                "help_cmd": ["python", "pyscripts/llm-context-link.py", "--help"],
+            },
+            {
+                "name": "dl-hf-dataset.py",
+                "path": "pyscripts/dl-hf-dataset.py",
+                "desc": "Download datasets from HuggingFace Hub to a local directory",
+                "help_cmd": ["python", "pyscripts/dl-hf-dataset.py", "--help"],
+            },
+            {
+                "name": "download_dataset.py",
+                "path": "pyscripts/download_dataset.py",
+                "desc": "Download HuggingFace datasets to a local directory (simpler variant)",
+                "help_cmd": ["python", "pyscripts/download_dataset.py", "--help"],
+            },
+            {
+                "name": "llm-patcher (module)",
+                "path": "modules/llm-patcher",
+                "desc": "Apply LEP/v1 LLM Edit Protocol patches from file, stdin, or clipboard",
+                "help_cmd": ["python", "modules/llm-patcher/cli.py", "--help"],
+                "version": "0.1.0",
+            },
+            {
+                "name": "web_ai_automator (module)",
+                "path": "modules/web_ai_automator",
+                "desc": "Automate interaction with web-based AI platforms via Chrome/Firefox",
+                "help_cmd": ["python", "-m", "web_ai_automator", "--help"],
+                "version": "0.1.0",
+            },
+        ],
+    },
+
+    "Documentation & PDFs": {
+        "desc": "Convert repositories, web pages, and Markdown files to PDF",
+        "items": [
+            {
+                "name": "web_to_pdf.py",
+                "path": "pyscripts/web_to_pdf.py",
+                "desc": "Download linked pages as PDFs from a listing URL (full JS rendering via Playwright)",
+                "help_cmd": ["python", "pyscripts/web_to_pdf.py", "--help"],
+            },
+            {
+                "name": "gh_to_pdf.py",
+                "path": "pyscripts/gh_to_pdf.py",
+                "desc": "Combine GitHub repo Markdown docs into a single PDF (optionally with Wiki/Pages)",
+                "help_cmd": ["python", "pyscripts/gh_to_pdf.py", "--help"],
+            },
+            {
+                "name": "convert_repo_to_pdf.py",
+                "path": "pyscripts/convert_repo_to_pdf.py",
+                "desc": "Convert MDX repo to PDF using Pandoc with CJK font support (xelatex/Tectonic)",
+                "help_cmd": ["python", "pyscripts/convert_repo_to_pdf.py", "--help"],
+            },
+            {
+                "name": "convert_repo_to_pdf_v2.py",
+                "path": "pyscripts/convert_repo_to_pdf_v2.py",
+                "desc": "Convert MDX repo to PDF via Pandoc with real-time progress (simpler v2)",
+                "help_cmd": ["python", "pyscripts/convert_repo_to_pdf_v2.py", "--help"],
+            },
+        ],
+    },
+
+    "Media Processing": {
+        "desc": "Process video and image files; clean up download fragments",
+        "items": [
+            {
+                "name": "edit_video_file.py",
+                "path": "pyscripts/edit_video_file.py",
+                "desc": "Edit video files (trim, concat) using FFmpeg",
+                "help_cmd": ["python", "pyscripts/edit_video_file.py", "--help"],
+            },
+            {
+                "name": "video_processor.py",
+                "path": "pyscripts/video_processor.py",
+                "desc": "Multi-threaded video processing with real-time dashboard and file analysis",
+                "help_cmd": ["python", "pyscripts/video_processor.py", "--help"],
+            },
+            {
+                "name": "convert_images_recursive.py",
+                "path": "pyscripts/convert_images_recursive.py",
+                "desc": "Recursively convert images to WebP or WebP to JPG with quality options",
+                "help_cmd": ["python", "pyscripts/convert_images_recursive.py", "--help"],
+            },
+            {
+                "name": "ytdlp_cleanup.py",
+                "path": "pyscripts/ytdlp_cleanup.py",
+                "desc": "Clean up partial/fragment yt-dlp download files with smart base-name detection",
+                "help_cmd": ["python", "pyscripts/ytdlp_cleanup.py", "--help"],
+            },
+        ],
+    },
+
+    "Shell & History": {
+        "desc": "Manage shell history, aliases, autocorrect, and cross-shell configs",
+        "items": [
+            {
+                "name": "edit_commands (module)",
+                "path": "modules/edit_commands",
+                "desc": "Modify and re-run previous shell commands with vim/glob/regex substitution",
+                "help_cmd": ["python", "-m", "edit_commands", "--help"],
+                "version": "0.1",
+            },
+            {
+                "name": "run_history_process.py",
+                "path": "pyscripts/run_history_process.py",
+                "desc": "Extract file/dir paths from Atuin shell history and run commands on them",
+                "help_cmd": ["python", "pyscripts/run_history_process.py", "--help"],
+            },
+            {
+                "name": "run_with_history.py",
+                "path": "pyscripts/run_with_history.py",
+                "desc": "Run a command with the Nth most recent file/dir path from shell history",
+                "help_cmd": ["python", "pyscripts/run_with_history.py", "--help"],
+            },
+            {
+                "name": "autocorrect_ignore.py",
+                "path": "pyscripts/autocorrect_ignore.py",
+                "desc": "Manage ignore-lists for shell autocorrect (Zsh, PowerShell, others)",
+                "help_cmd": ["python", "pyscripts/autocorrect_ignore.py", "--help"],
+            },
+            {
+                "name": "unify_shell.py",
+                "path": "pyscripts/unify_shell.py",
+                "desc": "Unified alias/function framework: YAML definitions -> Zsh/PowerShell shims",
+                "help_cmd": ["python", "pyscripts/unify_shell.py", "--help"],
+            },
+        ],
+    },
+
+    "System & Monitoring": {
+        "desc": "Monitor resources, manage processes/services, SSH hosts, terminal dashboards",
+        "items": [
+            {
+                "name": "monitor-disks.py",
+                "path": "pyscripts/monitor-disks.py",
+                "desc": "Real-time disk usage monitoring with interactive Rich terminal UI",
+                "help_cmd": ["python", "pyscripts/monitor-disks.py", "--help"],
+            },
+            {
+                "name": "check_disks.py",
+                "path": "pyscripts/check_disks.py",
+                "desc": "One-shot cross-platform disk usage snapshot (Windows/Linux/macOS/Termux)",
+                "help_cmd": ["python", "pyscripts/check_disks.py", "--help"],
+            },
+            {
+                "name": "proc_stats.py",
+                "path": "pyscripts/proc_stats.py",
+                "desc": "Interactive process stats viewer with Rich UI; sort by CPU/memory/disk",
+                "help_cmd": ["python", "pyscripts/proc_stats.py", "--help"],
+            },
+            {
+                "name": "system_manager (module)",
+                "path": "modules/system_manager",
+                "desc": "Manage system services, processes, and scheduled tasks cross-platform",
+                "help_cmd": ["python", "-m", "system_manager", "--help"],
+                "version": "0.3.0",
+            },
+            {
+                "name": "system_tools (module)",
+                "path": "modules/system_tools",
+                "desc": "Display extensive hardware/software system info with OS detection",
+                "help_cmd": ["python", "-m", "system_tools", "--help"],
+                "version": "0.1.0",
+            },
+            {
+                "name": "termdash (module)",
+                "path": "modules/termdash",
+                "desc": "Real-time terminal dashboard for system stats and process monitoring",
+                "help_cmd": ["python", "-m", "termdash", "--help"],
+                "version": "0.4.0",
+            },
+            {
+                "name": "sshmanager (module)",
+                "path": "modules/sshmanager",
+                "desc": "Manage encrypted SSH host definitions and make connections",
+                "help_cmd": ["python", "-m", "sshmanager", "--help"],
+                "version": "0.1.0",
+            },
+        ],
+    },
+
+    "Code Analysis": {
+        "desc": "Analyze code structure, test coverage, syntax, and search patterns",
+        "items": [
+            {
+                "name": "check_pytests.py",
+                "path": "pyscripts/check_pytests.py",
+                "desc": "Compare scripts vs pytest-style tests, summarize coverage, suggest fixes",
+                "help_cmd": ["python", "pyscripts/check_pytests.py", "--help"],
+            },
+            {
+                "name": "rgcode.py",
+                "path": "pyscripts/rgcode.py",
+                "desc": "Show enclosing code blocks for ripgrep matches (Python/C/JS/JSON/YAML/etc.)",
+                "help_cmd": ["python", "pyscripts/rgcode.py", "--help"],
+            },
+            {
+                "name": "unpaired_finder.py",
+                "path": "pyscripts/unpaired_finder.py",
+                "desc": "Scan a file for unpaired braces/brackets and report line numbers",
+                "help_cmd": ["python", "pyscripts/unpaired_finder.py", "--help"],
+            },
+            {
+                "name": "argparse_enforcer (module)",
+                "path": "modules/argparse_enforcer",
+                "desc": "EnforcedArgumentParser with argcomplete integration and setup instructions",
+                "help_cmd": ["python", "-m", "argparse_enforcer", "--help"],
+                "version": "0.1.0",
+            },
+        ],
+    },
+
+    "Setup & Install": {
+        "desc": "Install and manage tools, packages, and development environments",
+        "items": [
+            {
+                "name": "xinstall (module)",
+                "path": "modules/xinstall",
+                "desc": "Cross-platform installer: detect winget/pipx/uv/dpkg/brew, safely install/upgrade",
+                "help_cmd": ["python", "-m", "xinstall", "--help"],
+                "version": "0.1.0",
+            },
+            {
+                "name": "run_installers.py",
+                "path": "pyscripts/run_installers.py",
+                "desc": "Auto-run Inno Setup EXEs with clean exit logic and log monitoring",
+                "help_cmd": ["python", "pyscripts/run_installers.py", "--help"],
+            },
+        ],
+    },
+
+    "Knowledge & Project Management": {
+        "desc": "Manage projects, tasks, backups, and tmux sessions",
+        "items": [
+            {
+                "name": "knowledge_manager (module)",
+                "path": "modules/knowledge_manager",
+                "desc": "Manage projects, tasks, and LLM assets with local files and interactive TUI",
+                "help_cmd": ["python", "-m", "knowledge_manager", "--help"],
+                "version": "0.5.1",
+            },
+            {
+                "name": "backup_module (module)",
+                "path": "modules/backup_module",
+                "desc": "Manage restic backups: config, scheduling, snapshots, restore",
+                "help_cmd": ["python", "-m", "backup_module", "--help"],
+                "version": "0.1.0",
+            },
+            {
+                "name": "tmux_manager (module)",
+                "path": "modules/tmux_manager",
+                "desc": "Advanced tmux session/window ops: close, move, spawn, jump, fzf integration",
+                "help_cmd": ["python", "-m", "tmux_manager", "--help"],
+                "version": "1.0.0",
+            },
+        ],
+    },
+}

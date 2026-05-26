@@ -21,6 +21,7 @@ Usage:
     python web_to_pdf.py -u https://transformer-circuits.pub/ -p 3,10 --newest-first
     python web_to_pdf.py -u https://transformer-circuits.pub/ --headed  # debug mode
 """
+__version__ = "0.1.0"
 
 import argparse
 import asyncio

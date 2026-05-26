@@ -1,3 +1,4 @@
+<!-- version: 0.1.0 -->
 # History Watcher
 
 `history_watcher` is a Python module designed to monitor a Zsh history file in real-time, applying custom, pluggable rules to new commands as they are executed. It provides a framework for creating interactive reminders or suggestions based on command-line usage patterns.

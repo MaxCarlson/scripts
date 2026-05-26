@@ -1,3 +1,4 @@
+<!-- version: 0.1.0 -->
 # Agent Skills
 
 Universal skill manager for AI coding assistants (Codex CLI, Claude Code, Cursor, Gemini CLI).

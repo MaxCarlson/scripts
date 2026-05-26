@@ -1,3 +1,4 @@
+<!-- version: 0.4.3 -->
 # GitPulse (`gk`)
 
 GitPulse is a convenience CLI that bundles common multi-step git workflows into a single short command. It is designed for fast keyboard-driven work inside any repository across Windows, WSL2, and Termux.

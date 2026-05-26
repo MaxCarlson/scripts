@@ -13,6 +13,7 @@ Examples:
     llm-context-link.py ~/my-project       # Link to specific directory
     llm-context-link.py -o ~/my-project    # Overwrite existing links
 """
+__version__ = "0.1.0"
 
 from __future__ import annotations
 

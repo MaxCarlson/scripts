@@ -1,3 +1,4 @@
+<!-- version: 0.1.0 -->
 # argparse-enforcer
 
 Lightweight argparse wrapper that enforces strict argument naming conventions.

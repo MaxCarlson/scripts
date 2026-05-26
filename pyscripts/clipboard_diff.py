@@ -9,6 +9,7 @@ State directory resolution (in order):
   - macOS: ~/Library/Application Support/clipboard_tools
   - Windows: %LOCALAPPDATA%\\clipboard_tools
 """
+__version__ = "0.1.0"
 
 from __future__ import annotations
 

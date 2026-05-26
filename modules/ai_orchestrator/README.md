@@ -1,3 +1,4 @@
+<!-- version: 0.1.0 -->
 # AI Orchestrator
 
 Unified orchestration layer for managing CLI tools, AI models, and knowledge database.

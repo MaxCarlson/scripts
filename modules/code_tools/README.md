@@ -1,3 +1,4 @@
+<!-- version: 0.2.0 -->
 # code_tools Module
 
 The `code_tools` module provides a suite of utilities designed to enhance code manipulation, analysis, and search workflows. It offers language-aware functionalities for extracting, replacing, and validating code blocks, and integrates with external tools like `ripgrep` for powerful code exploration.

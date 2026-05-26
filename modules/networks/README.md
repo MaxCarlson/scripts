@@ -1,3 +1,4 @@
+<!-- version: 0.3.0 -->
 # Networks Module
 
 Cross-platform networking utilities with automatic WSL2 port forwarding, firewall management, LAN accessibility, and browser automation for AI agents.

@@ -1,3 +1,4 @@
+<!-- version: 0.3.14 -->
 # Video Dataset Tools
 
 Generate reproducible video datasets with deterministic and randomized variants, truth manifests, and optional live terminal dashboards.

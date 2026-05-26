@@ -20,10 +20,31 @@ black --line-length 120 <file>
 ruff check <file>
 ```
 
-## Key Reminder
+## Key Reminders
 
-All CLI arguments need both short and long forms. Module version bumps follow
-the repository policy in `MODULE_STANDARDS.md`: MAJOR for entry point wrapper
-changes, MINOR for package metadata/dependency reinstall changes, PATCH for
-source-only changes. Module tests must keep temp roots inside the owning module
-directory, normally `modules/<module>/.pytest_tmp_root/`.
+All CLI arguments need both short and long forms.
+
+**Module versioning** (`modules/` — `pyproject.toml` + optional `__init__.py`):
+- MAJOR → `[project.scripts]` entry points changed
+- MINOR → other `pyproject.toml` changes (deps, metadata)
+- PATCH → source-only changes
+
+**pyscript versioning** (`pyscripts/` — `__version__` embedded in the file):
+```python
+"""Docstring."""
+
+__version__ = "0.1.0"   # after docstring, before imports
+
+import sys
+```
+- MAJOR → breaking interface change
+- MINOR → new feature, flag, or subcommand
+- PATCH → bug fix or minor improvement
+
+Always bump `__version__` when modifying a pyscript. Full rules: `MODULE_STANDARDS.md §10`.
+
+Module tests must keep temp roots inside the owning module directory,
+normally `modules/<module>/.pytest_tmp_root/`.
+
+**Help registry:** after adding a new pyscript or module-with-CLI, register it in
+`modules/scripts_help/scripts_help/registry/registry.py`.

@@ -718,6 +718,107 @@ def run_setup(script_path: Path, *args, soft_fail_modules: bool = False):
         write_error_log_detail(f"Setup {resolved.name}", None, out, "")
 
 # ─────────────────────────────────────────────────────────
+# Post-install help registry drift check
+# ─────────────────────────────────────────────────────────
+
+def _offer_registry_update_via_ai(drift: dict, build_prompt) -> None:
+    import shutil as _shutil
+    ai_tools = []
+    if _shutil.which("claude"):
+        ai_tools.append(("Claude Code", "claude"))
+    if _shutil.which("codex"):
+        ai_tools.append(("Codex", "codex"))
+
+    if not ai_tools:
+        log_warning("Neither 'claude' nor 'codex' found on PATH. Update registry manually with: scripts-help")
+        return
+
+    print()
+    print("  An AI assistant can update the help registry automatically.")
+    print("  Options:\n")
+    for i, (label, _) in enumerate(ai_tools, 1):
+        print(f"    {i}. Launch {label}")
+    print(f"    {len(ai_tools) + 1}. Skip — I'll update the registry later")
+
+    while True:
+        try:
+            raw = input(f"\n  [1-{len(ai_tools) + 1}] > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        try:
+            choice = int(raw)
+        except ValueError:
+            continue
+        if 1 <= choice <= len(ai_tools):
+            cmd = ai_tools[choice - 1][1]
+            prompt = build_prompt(drift)
+            log_info(f"Launching {cmd} with registry update instructions...")
+            try:
+                os.chdir(str(SCRIPTS_DIR))
+                subprocess.run([cmd, prompt])
+            except Exception as exc:
+                log_warning(f"Failed to launch {cmd}: {exc}")
+            return
+        if choice == len(ai_tools) + 1:
+            return
+
+
+def _run_post_install_drift_check(no_update_help: bool) -> None:
+    if no_update_help:
+        status_line("Help registry drift check skipped (--no-update-help)", "unchanged")
+        return
+    try:
+        import importlib as _il
+        _il.invalidate_caches()
+        # Ensure the module directory is importable even before pip installs it
+        _sh_path = str(MODULES_DIR / "scripts_help")
+        if _sh_path not in sys.path:
+            sys.path.insert(0, _sh_path)
+        from scripts_help.cli import collect_drift, _build_update_prompt  # type: ignore
+    except ImportError:
+        status_line("scripts_help not installed; skipping drift check", "unchanged")
+        return
+    except Exception as exc:
+        log_warning(f"Help registry import failed: {exc}")
+        return
+
+    try:
+        drift = collect_drift()
+    except Exception as exc:
+        log_warning(f"Help registry drift check failed: {exc}")
+        return
+
+    readme_issues = [r for r in drift.get("readme", []) if r["issue"] != "missing"]
+    has_registry_drift = bool(drift["new"] or drift["stale"] or drift["deleted"])
+    has_readme_drift   = bool(readme_issues)
+
+    if not has_registry_drift and not has_readme_drift:
+        status_line("Help registry and READMEs are up to date", "ok")
+        return
+
+    if has_registry_drift:
+        parts = []
+        if drift["new"]:     parts.append(f"{len(drift['new'])} new")
+        if drift["stale"]:   parts.append(f"{len(drift['stale'])} stale")
+        if drift["deleted"]: parts.append(f"{len(drift['deleted'])} deleted")
+        log_warning(f"Registry drift: {', '.join(parts)}")
+
+    if has_readme_drift:
+        rd: dict[str, int] = {}
+        for r in readme_issues:
+            rd[r["issue"]] = rd.get(r["issue"], 0) + 1
+        readme_summary = ", ".join(f"{v} {k.replace('_', ' ')}" for k, v in rd.items())
+        log_warning(f"README drift: {readme_summary}")
+
+    missing_count = sum(1 for r in drift.get("readme", []) if r["issue"] == "missing")
+    if missing_count:
+        log_info(f"  ({missing_count} programs have no README yet — run: scripts-help sync -r)")
+
+    _offer_registry_update_via_ai(drift, _build_update_prompt)
+
+
+# ─────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────
 def main():
@@ -762,6 +863,12 @@ def main():
         action="store_true",
         default=False,
         help="Remove invalid ~*aebndl* pip distribution leftovers from the repo venv before setup continues.",
+    )
+    parser.add_argument(
+        "-U", "--no-update-help",
+        action="store_true",
+        default=False,
+        help="Skip the post-install help registry drift check and AI update offer.",
     )
 
     args = parser.parse_args()
@@ -914,6 +1021,9 @@ def main():
         print_global_elapsed()
     except Exception:
         pass
+
+    with sui_section("Help Registry Drift Check", level="major"):
+        _run_post_install_drift_check(args.no_update_help)
 
     if errors:
         if not ERROR_LOG.exists():

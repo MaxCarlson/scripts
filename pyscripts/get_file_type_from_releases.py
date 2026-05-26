@@ -1,3 +1,5 @@
+__version__ = "0.1.0"
+
 # file: get_file_type_from_releases.py
 #!/usr/bin/env python3
 import sys

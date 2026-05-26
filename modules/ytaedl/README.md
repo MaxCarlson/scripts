@@ -1,3 +1,4 @@
+<!-- version: 2.0.4 -->
 # ytaedl
 
 `ytaedl` is a batch download manager for URL text files. It coordinates multiple worker processes, tracks progress from `yt-dlp` and AEBN downloaders, and can optionally move completed MP4 files from a staging/proxy disk to the final media destination.
@@ -44,6 +45,23 @@ Important options:
 - `-Z/--url-random-order`: ignore URL priority metrics and pick URL files fully at random.
 
 All CLI arguments have short and long forms.
+
+## yt-dlp Worker Defaults
+
+For yt-dlp URLs, the manager-launched worker defaults to Firefox cookies,
+Chrome impersonation, and the `aria2c` external downloader. The direct worker
+command exposes controls for these defaults:
+
+- `-b/--ytdlp-cookies-from-browser`: browser profile used for cookies; use
+  `none` to disable cookie extraction.
+- `-i/--ytdlp-impersonate`: browser TLS/user-agent impersonation target; use
+  `none` to disable it.
+- `-d/--ytdlp-downloader`: external downloader; use `native` to use yt-dlp's
+  built-in downloader.
+
+```bash
+ytaedl worker -b none -i none -d native <url-file>
+```
 
 ## Interactive Panels
 
