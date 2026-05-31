@@ -21,6 +21,7 @@ from pathlib import Path
 import time
 import re
 import shutil
+import sysconfig
 from datetime import datetime
 from threading import Thread, Lock
 
@@ -276,7 +277,7 @@ class CompactGroup:
 
     def observe_status(self, label: str, state: str | None, detail: str | None) -> None:
         if not self.modules:
-            if state in {"fail", "warn"}:
+            if state == "fail":
                 self.failures.append(label)
             self.progress(label)
 
@@ -733,6 +734,59 @@ def _get_source_version(module_dir: Path, verbose: bool) -> tuple[int, int, int]
     return None
 
 
+def _format_version_tuple(version: tuple[int, int, int] | None) -> str | None:
+    if version is None:
+        return None
+    return ".".join(str(part) for part in version)
+
+
+def _normalize_dist_token(name: str) -> str:
+    return re.sub(r"[-_.]+", "_", name).lower()
+
+
+def _remove_stale_metadata_path(path: Path, *, verbose: bool) -> bool:
+    try:
+        shutil.rmtree(path) if path.is_dir() else path.unlink()
+        if verbose:
+            log_info(f"Removed stale editable metadata: {path}")
+        return True
+    except FileNotFoundError:
+        return False
+    except Exception as exc:
+        if verbose:
+            log_warning(f"Could not remove stale editable metadata {path}: {exc}")
+        return False
+
+
+def _prune_stale_editable_metadata(pkg_name: str, keep_version: str | None, verbose: bool) -> int:
+    """Remove old editable metadata so metadata.version(pkg_name) resolves to the installed version."""
+    if not keep_version:
+        return 0
+
+    normalized_pkg = _normalize_dist_token(pkg_name)
+    keep_finder_marker = "_" + keep_version.replace(".", "_").replace("-", "_") + "_finder_py"
+    removed = 0
+    site_roots = {
+        path.resolve()
+        for raw in (sysconfig.get_path("purelib"), sysconfig.get_path("platlib"))
+        for path in ([Path(raw)] if raw else [])
+        if path.exists()
+    }
+    site_roots.update(path.resolve() for path in _venv_site_packages_candidates() if path.exists())
+
+    for site_packages in site_roots:
+        patterns = ("*.dist-info", "__editable__.*.pth", "__editable__*_finder.py")
+        for path in (candidate for pattern in patterns for candidate in site_packages.glob(pattern)):
+            normalized_name = _normalize_dist_token(path.name)
+            if normalized_pkg not in normalized_name or keep_version in path.name or keep_finder_marker in normalized_name:
+                continue
+            removed += int(_remove_stale_metadata_path(path, verbose=verbose))
+
+    if removed:
+        _log_append(f"[OK] Removed {removed} stale editable metadata file(s) for {pkg_name}")
+    return removed
+
+
 def _get_installed_version(module_dir: Path, verbose: bool) -> tuple[int, int, int] | None:
     """Read the installed version via importlib.metadata or pip show."""
     pkg = _get_pkg_name_from_source(module_dir, verbose)
@@ -865,6 +919,9 @@ def ensure_module_installed(module_display_name: str, install_path: Path,
     install_cmd.append(str(install_path.resolve()))
     rc, out, err = _popen_stream_and_log(install_cmd, cwd=None, tag=f"pip-install:{module_display_name}")
     if rc == 0:
+        pkg = _get_pkg_name_from_source(install_path, verbose)
+        source_version = _format_version_tuple(_get_source_version(install_path, verbose))
+        _prune_stale_editable_metadata(pkg, source_version, verbose)
         status_line(f"{module_display_name}: installed", "ok", "editable" if editable else "normal")
         if module_display_name == "standard_ui":
             _try_reload_standard_ui_globally()
@@ -895,11 +952,9 @@ def run_setup(script_path: Path, *args, soft_fail_modules: bool = False):
 
     env = os.environ.copy()
     python_path_parts = [str(SCRIPTS_DIR.resolve()), str((SCRIPTS_DIR / "modules").resolve())]
-    existing_pp = env.get("PYTHONPATH")
-    if existing_pp:
-        python_path_parts.extend(existing_pp.split(os.pathsep))
     env["PYTHONPATH"] = os.pathsep.join(list(dict.fromkeys(p for p in python_path_parts if p)))
     env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONNOUSERSITE"] = "1"
 
     rc, out, _ = _popen_stream_and_log(cmd, env=env, tag=f"sub-setup:{resolved.name}")
 

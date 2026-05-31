@@ -30,6 +30,7 @@ if ($SkipReinstall -and $NoSkipReinstall) {
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $VenvDir = Join-Path $Root '.venv'
 $VenvPython = Join-Path $VenvDir 'Scripts\python.exe'
+$RepoPythonPath = "$Root$([IO.Path]::PathSeparator)$(Join-Path $Root 'modules')"
 
 function Ensure-PscriptsSubmodule {
     $pscriptsDir = Join-Path $Root 'pscripts'
@@ -152,6 +153,10 @@ if (-not (Get-Command pipx -ErrorAction SilentlyContinue)) {
 
 # 2) Ensure pip is available in venv
 Write-BootstrapDetail "[BOOTSTRAP] Ensuring pip is available in venv..." Cyan
+$PreviousPythonPath = $env:PYTHONPATH
+$PreviousPythonNoUserSite = $env:PYTHONNOUSERSITE
+$env:PYTHONNOUSERSITE = '1'
+Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
 if ($VerboseSetup) {
     & $VenvPython -m ensurepip --upgrade 2>$null
     & $VenvPython -m pip install --quiet --upgrade pip setuptools wheel
@@ -159,12 +164,20 @@ if ($VerboseSetup) {
     & $VenvPython -m ensurepip --upgrade *> $null
     & $VenvPython -m pip install --quiet --upgrade pip setuptools wheel *> $null
 }
+if ($null -ne $PreviousPythonPath) { $env:PYTHONPATH = $PreviousPythonPath } else { Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue }
+if ($null -ne $PreviousPythonNoUserSite) { $env:PYTHONNOUSERSITE = $PreviousPythonNoUserSite } else { Remove-Item Env:PYTHONNOUSERSITE -ErrorAction SilentlyContinue }
 
 # 3) Install tomli if needed (for setup.py TOML parsing on Python < 3.11)
 $PythonVersion = & $VenvPython -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
 if ([float]$PythonVersion -lt 3.11) {
     Write-BootstrapDetail "[BOOTSTRAP] Installing tomli for Python $PythonVersion..." Yellow
+    $PreviousPythonPath = $env:PYTHONPATH
+    $PreviousPythonNoUserSite = $env:PYTHONNOUSERSITE
+    $env:PYTHONNOUSERSITE = '1'
+    Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
     if ($VerboseSetup) { & $VenvPython -m pip install --quiet tomli } else { & $VenvPython -m pip install --quiet tomli *> $null }
+    if ($null -ne $PreviousPythonPath) { $env:PYTHONPATH = $PreviousPythonPath } else { Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue }
+    if ($null -ne $PreviousPythonNoUserSite) { $env:PYTHONNOUSERSITE = $PreviousPythonNoUserSite } else { Remove-Item Env:PYTHONNOUSERSITE -ErrorAction SilentlyContinue }
 }
 
 # 4) Execute repo setup (installs core modules, wires bin wrappers)
@@ -180,5 +193,7 @@ if ($NoUpdateHelp) {
     $SetupArgs += "--no-update-help"
 }
 $SetupArgs += $Args
+$env:PYTHONNOUSERSITE = '1'
+$env:PYTHONPATH = $RepoPythonPath
 & $VenvPython (Join-Path $Root 'setup.py') @SetupArgs
 exit $LASTEXITCODE

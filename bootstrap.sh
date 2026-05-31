@@ -122,16 +122,18 @@ fi
 
 # 2) Ensure pip is available in venv
 echo "[BOOTSTRAP] Ensuring pip is available in venv..."
-"$VENV_PYTHON" -m ensurepip --upgrade 2>/dev/null || true
-"$VENV_PYTHON" -m pip install --quiet --upgrade pip setuptools wheel
+env -u PYTHONPATH PYTHONNOUSERSITE=1 "$VENV_PYTHON" -m ensurepip --upgrade 2>/dev/null || true
+env -u PYTHONPATH PYTHONNOUSERSITE=1 "$VENV_PYTHON" -m pip install --quiet --upgrade pip setuptools wheel
 
 # 3) Install tomli if needed (for setup.py TOML parsing on Python < 3.11)
 PYTHON_VERSION=$("$VENV_PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 if (( $(echo "$PYTHON_VERSION < 3.11" | bc -l) )); then
     echo "[BOOTSTRAP] Installing tomli for Python $PYTHON_VERSION..."
-    "$VENV_PYTHON" -m pip install --quiet tomli
+    env -u PYTHONPATH PYTHONNOUSERSITE=1 "$VENV_PYTHON" -m pip install --quiet tomli
 fi
 
 # 4) Execute repo setup (installs core modules, wires bin wrappers)
 echo "[BOOTSTRAP] Running setup.py with venv Python..."
+export PYTHONNOUSERSITE=1
+export PYTHONPATH="$ROOT_DIR:$ROOT_DIR/modules"
 exec "$VENV_PYTHON" "$ROOT_DIR/setup.py" "${SETUP_ARGS[@]}"
