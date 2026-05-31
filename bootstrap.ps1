@@ -38,6 +38,7 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $VenvDir = Join-Path $Root '.venv'
 $VenvPython = Join-Path $VenvDir 'Scripts\python.exe'
 $VenvPip = Join-Path $VenvDir 'Scripts\pip.exe'
+$RepoPythonPath = "$Root$([IO.Path]::PathSeparator)$(Join-Path $Root 'modules')"
 
 function Ensure-PscriptsSubmodule {
     $pscriptsDir = Join-Path $Root 'pscripts'
@@ -175,29 +176,48 @@ if (-not (Get-Command pipx -ErrorAction SilentlyContinue)) {
     }
 }
 
-# ── Pip bootstrap (only needed for a fresh venv or missing pip) ───────────────
-# We skip the upgrade network round-trip on every run — pip was already
-# upgraded the last time the venv was created or explicitly re-bootstrapped.
-# Pass -NoPipUpgrade to suppress even on a fresh venv.
+# ── Pip bootstrap (only on fresh venv or missing pip) ────────────────────────
+# Isolate pip operations from the user's PYTHONPATH/site-packages so the venv
+# pip doesn't pick up conflicting packages.  Skip the upgrade network call on
+# every run — it was already done the last time the venv was created.
+function Invoke-IsolatedPip {
+    param([scriptblock]$Block)
+    $savedPath    = $env:PYTHONPATH
+    $savedNoUser  = $env:PYTHONNOUSERSITE
+    $env:PYTHONNOUSERSITE = '1'
+    Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+    try { & $Block }
+    finally {
+        if ($null -ne $savedPath)   { $env:PYTHONPATH = $savedPath }           else { Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue }
+        if ($null -ne $savedNoUser) { $env:PYTHONNOUSERSITE = $savedNoUser }   else { Remove-Item Env:PYTHONNOUSERSITE -ErrorAction SilentlyContinue }
+    }
+}
+
 $pipMissing = -not (Test-Path $VenvPip)
 if ($pipMissing) {
     Write-BootstrapStep "[BOOTSTRAP] pip not found in venv — running ensurepip..." Yellow
-    if ($VerboseSetup) { & $VenvPython -m ensurepip --upgrade 2>$null }
-    else { & $VenvPython -m ensurepip --upgrade *> $null }
+    Invoke-IsolatedPip {
+        if ($VerboseSetup) { & $VenvPython -m ensurepip --upgrade 2>$null }
+        else { & $VenvPython -m ensurepip --upgrade *> $null }
+    }
 }
 
 if (($venvWasCreated -or $pipMissing) -and -not $NoPipUpgrade) {
     Write-BootstrapStep "[BOOTSTRAP] Upgrading pip/setuptools/wheel in fresh venv..." Yellow
-    if ($VerboseSetup) { & $VenvPython -m pip install --quiet --upgrade pip setuptools wheel }
-    else { & $VenvPython -m pip install --quiet --upgrade pip setuptools wheel *> $null }
+    Invoke-IsolatedPip {
+        if ($VerboseSetup) { & $VenvPython -m pip install --quiet --upgrade pip setuptools wheel }
+        else { & $VenvPython -m pip install --quiet --upgrade pip setuptools wheel *> $null }
+    }
 }
 
 # ── Tomli (Python < 3.11 only) ────────────────────────────────────────────────
 $PythonVersion = & $VenvPython -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
 if ([float]$PythonVersion -lt 3.11) {
     Write-BootstrapDetail "[BOOTSTRAP] Installing tomli for Python $PythonVersion..." Yellow
-    if ($VerboseSetup) { & $VenvPython -m pip install --quiet tomli }
-    else { & $VenvPython -m pip install --quiet tomli *> $null }
+    Invoke-IsolatedPip {
+        if ($VerboseSetup) { & $VenvPython -m pip install --quiet tomli }
+        else { & $VenvPython -m pip install --quiet tomli *> $null }
+    }
 }
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
@@ -207,5 +227,7 @@ if ($SkipReinstall)   { $SetupArgs += "--skip-reinstall" }
 if ($NoSkipReinstall) { $SetupArgs += "--no-skip-reinstall" }
 if ($NoUpdateHelp)    { $SetupArgs += "--no-update-help" }
 $SetupArgs += $Args
+$env:PYTHONNOUSERSITE = '1'
+$env:PYTHONPATH = $RepoPythonPath
 & $VenvPython (Join-Path $Root 'setup.py') @SetupArgs
 exit $LASTEXITCODE

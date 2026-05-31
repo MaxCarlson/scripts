@@ -7,6 +7,8 @@ import argparse
 import subprocess
 from pathlib import Path
 import re
+import shutil
+import sysconfig
 import time
 from importlib import metadata
 
@@ -190,6 +192,51 @@ def _installed_pkg_version(pkg_name: str, verbose: bool) -> str | None:
         if verbose:
             log_warning(f"metadata.version error for '{pkg_name}': {type(e).__name__}: {e}")
         return None
+
+
+def _normalize_dist_token(name: str) -> str:
+    return re.sub(r"[-_.]+", "_", name).lower()
+
+
+def _remove_stale_metadata_path(path: Path, *, verbose: bool) -> bool:
+    try:
+        shutil.rmtree(path) if path.is_dir() else path.unlink()
+        if verbose:
+            log_info(f"Removed stale editable metadata: {path}")
+        return True
+    except FileNotFoundError:
+        return False
+    except Exception as exc:
+        if verbose:
+            log_warning(f"Could not remove stale editable metadata {path}: {exc}")
+        return False
+
+
+def _prune_stale_editable_metadata(pkg_name: str, keep_version: str | None, verbose: bool) -> int:
+    if not keep_version:
+        return 0
+
+    normalized_pkg = _normalize_dist_token(pkg_name)
+    keep_finder_marker = "_" + keep_version.replace(".", "_").replace("-", "_") + "_finder_py"
+    removed = 0
+    site_roots = {
+        Path(path).resolve()
+        for path in (sysconfig.get_path("purelib"), sysconfig.get_path("platlib"))
+        if path and Path(path).exists()
+    }
+
+    for site_packages in site_roots:
+        patterns = ("*.dist-info", "__editable__.*.pth", "__editable__*_finder.py")
+        for path in (candidate for pattern in patterns for candidate in site_packages.glob(pattern)):
+            normalized_name = _normalize_dist_token(path.name)
+            if normalized_pkg not in normalized_name or keep_version in path.name or keep_finder_marker in normalized_name:
+                continue
+            removed += int(_remove_stale_metadata_path(path, verbose=verbose))
+
+    if removed:
+        log_info(f"Removed {removed} stale editable metadata file(s) for {pkg_name}")
+    return removed
+
 
 def _determine_install_status(module_dir: Path, verbose: bool) -> str | None:
     pkg = _pkg_name_from_source(module_dir, verbose)
@@ -493,7 +540,10 @@ def _install_module(module_name: str, module_dir: Path, *, editable: bool, logs_
     if editable:
         cmd.append("-e")
     cmd.append(str(module_dir.resolve()))
-    return _run_with_log(cmd, log_file, verbose=verbose)
+    rc = _run_with_log(cmd, log_file, verbose=verbose)
+    if rc == 0:
+        _prune_stale_editable_metadata(_pkg_name_from_source(module_dir, verbose), _project_version_from_source(module_dir, verbose), verbose)
+    return rc
 
 def _console_scripts_from_source(module_dir: Path) -> list[str]:
     """Return declared console script names from pyproject.toml or setup.py."""
@@ -1076,4 +1126,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

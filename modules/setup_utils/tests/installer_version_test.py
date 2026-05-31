@@ -153,6 +153,20 @@ def test_compact_module_group_tracks_install_skip_and_failure(monkeypatch, capsy
     assert "gamma" in output
 
 
+def test_compact_non_module_group_warn_is_not_terminal_failure(monkeypatch, capsys):
+    setup = _load_root_setup()
+    monkeypatch.setattr(setup, "_is_verbose", False)
+    monkeypatch.setattr(setup, "_supports_color", lambda: False)
+
+    with setup.CompactGroup("Core Modules", 1) as group:
+        group.observe_status("cross_platform: MINOR version bump - reinstalling", "warn", None)
+        group.observe_status("cross_platform: installed", "ok", "editable")
+
+    output = capsys.readouterr().out
+    assert "X 0/1 processed" not in output
+    assert "1/1 processed" in output
+
+
 def test_compact_group_uses_short_elapsed_prefix_and_summary_fields(monkeypatch, capsys):
     setup = _load_root_setup()
     monkeypatch.setattr(setup, "_is_verbose", False)
@@ -187,6 +201,37 @@ def test_help_update_counts_include_registry_and_actionable_readme_drift():
     ]
 
     assert setup._help_update_counts(drift, registered) == (2, 2, 1, 2)
+
+
+def test_root_setup_prunes_stale_editable_metadata(monkeypatch):
+    tmp_path = _make_tmp_dir()
+    site_packages = tmp_path / "site-packages"
+    site_packages.mkdir()
+    stale_dist = site_packages / "cross_platform-0.4.0.dist-info"
+    current_dist = site_packages / "cross_platform-0.5.0.dist-info"
+    stale_dist.mkdir()
+    current_dist.mkdir()
+    stale_pth = site_packages / "__editable__.cross_platform-0.4.0.pth"
+    current_pth = site_packages / "__editable__.cross_platform-0.5.0.pth"
+    stale_pth.write_text("", encoding="utf-8")
+    current_pth.write_text("", encoding="utf-8")
+    stale_finder = site_packages / "__editable___cross_platform_0_4_0_finder.py"
+    current_finder = site_packages / "__editable___cross_platform_0_5_0_finder.py"
+    stale_finder.write_text("", encoding="utf-8")
+    current_finder.write_text("", encoding="utf-8")
+    setup = _load_root_setup()
+    monkeypatch.setattr(setup.sysconfig, "get_path", lambda key: str(site_packages))
+    monkeypatch.setattr(setup, "_venv_site_packages_candidates", lambda: [])
+
+    removed = setup._prune_stale_editable_metadata("cross_platform", "0.5.0", verbose=False)
+
+    assert removed == 3
+    assert not stale_dist.exists()
+    assert current_dist.exists()
+    assert not stale_pth.exists()
+    assert current_pth.exists()
+    assert not stale_finder.exists()
+    assert current_finder.exists()
 
 
 def test_pscripts_duplicate_aebndl_skips_when_canonical_module_exists():
