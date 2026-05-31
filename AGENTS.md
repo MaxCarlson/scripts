@@ -60,6 +60,21 @@ black --line-length 120 <file>
 ruff check <file>
 ```
 
+## Token Conservation — Browser LLM Offloading
+
+The user has hard token limits on Claude Code, Codex, and Gemini CLI. Hitting the limit triggers a 5-hour lockout. Switching between Claude → Codex → Gemini CLI as limits are hit is the fallback strategy.
+
+**Always watch for token-intensive tasks that don't require local file access** and flag them for offloading to a browser-based LLM (Claude.ai, ChatGPT, Gemini web).
+
+Good offload candidates: writing implementation plans, drafting design docs, writing summaries/reports, reviewing specs for gaps, brainstorming approaches.
+
+Must stay local: running tests, editing files, executing commands, anything needing live repo access.
+
+**When offloading:**
+1. Write a self-contained Markdown handoff document with all context the browser LLM needs (specs, existing plans, relevant code excerpts, clear instructions for what to produce)
+2. Tell the user which files/folders/repos to attach when opening the browser LLM session
+3. Keep the handoff doc concise — the browser LLM doesn't need the full conversation history
+
 ## Repository Shape
 
 ```text
