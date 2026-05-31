@@ -38,10 +38,50 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
+_ensure_pscripts_submodule() {
+    if ! command -v git >/dev/null 2>&1; then
+        if [ ! -f "$ROOT_DIR/pscripts/setup.py" ]; then
+            echo "[ERROR] pscripts submodule is missing, and git is not available to initialize it." >&2
+            exit 1
+        fi
+        return
+    fi
+
+    local expected=""
+    expected="$(git -C "$ROOT_DIR" ls-tree HEAD pscripts 2>/dev/null | awk '{print $3}')"
+    if [ -z "$expected" ]; then
+        return
+    fi
+
+    local actual=""
+    if [ -d "$ROOT_DIR/pscripts/.git" ] || [ -f "$ROOT_DIR/pscripts/.git" ]; then
+        actual="$(git -C "$ROOT_DIR/pscripts" rev-parse HEAD 2>/dev/null || true)"
+    fi
+
+    if [ -f "$ROOT_DIR/pscripts/setup.py" ] && [ "$actual" = "$expected" ]; then
+        return
+    fi
+
+    echo "[BOOTSTRAP] Ensuring pscripts submodule..."
+    git -C "$ROOT_DIR" submodule sync -- pscripts >/dev/null 2>&1 || true
+    if ! git -C "$ROOT_DIR" submodule update --init --recursive -- pscripts; then
+        echo "[ERROR] Failed to initialize/update pscripts submodule." >&2
+        echo "[ERROR] Check GitHub auth/network access, then rerun bootstrap." >&2
+        exit 1
+    fi
+
+    if [ ! -f "$ROOT_DIR/pscripts/setup.py" ]; then
+        echo "[ERROR] pscripts submodule initialized, but pscripts/setup.py is still missing." >&2
+        exit 1
+    fi
+}
+
 if [ "$SKIP_REINSTALL_SEEN" -eq 1 ] && [ "$NO_SKIP_REINSTALL_SEEN" -eq 1 ]; then
     echo "[ERROR] Use either --skip-reinstall or --no-skip-reinstall, not both." >&2
     exit 2
 fi
+
+_ensure_pscripts_submodule
 
 echo "[BOOTSTRAP] Ensuring Python virtual environment..."
 
@@ -95,4 +135,3 @@ fi
 # 4) Execute repo setup (installs core modules, wires bin wrappers)
 echo "[BOOTSTRAP] Running setup.py with venv Python..."
 exec "$VENV_PYTHON" "$ROOT_DIR/setup.py" "${SETUP_ARGS[@]}"
-

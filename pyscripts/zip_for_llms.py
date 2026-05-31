@@ -47,8 +47,6 @@ The module also exposes:
 - compute_filtered_dir_sizes, render_size_tree
 - DEFAULT_EXCLUDE_DIRS/EXTS/FILES, PRESETS
 """
-__version__ = "0.1.0"
-
 from __future__ import annotations
 
 import argparse
@@ -65,6 +63,8 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Dict, Iterable, List, Optional, Set, Tuple
+
+__version__ = "0.1.0"
 
 
 # =====================================================================================
