@@ -18,8 +18,9 @@ dev = [
     "mypy>=1.10",
 ]
 
-[tool.setuptools]
-packages = ["llm_local"]
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["llm_local*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
