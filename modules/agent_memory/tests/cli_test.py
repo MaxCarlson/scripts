@@ -116,3 +116,60 @@ def test_note_create_project_required_kind_with_project_succeeds(tmp_path: Path)
     assert result.returncode == 0, result.stderr
     md_files = list(tmp_path.rglob("*.md"))
     assert len(md_files) == 1
+
+
+def _create_test_note(
+    tmp_path: Path,
+    kind: str = "constraint",
+    title: str = "Test note",
+    project: str | None = None,
+    tags: str = "",
+) -> subprocess.CompletedProcess[str]:
+    args = ["-r", str(tmp_path), "note", "create", "-k", kind, "-t", title]
+    if project:
+        args += ["-p", project]
+    if tags:
+        args += ["--tags", tags]
+    return run_cli(*args)
+
+
+def test_note_list_empty_root_shows_empty(tmp_path: Path) -> None:
+    result = run_cli("-r", str(tmp_path), "note", "list")
+    assert result.returncode == 0
+    assert "0" in result.stdout or result.stdout.strip() == "" or "no notes" in result.stdout.lower()
+
+
+def test_note_list_shows_created_notes(tmp_path: Path) -> None:
+    _create_test_note(tmp_path, kind="constraint", title="Note A")
+    _create_test_note(tmp_path, kind="preference", title="Note B")
+    result = run_cli("-r", str(tmp_path), "note", "list")
+    assert result.returncode == 0
+    assert "Note A" in result.stdout
+    assert "Note B" in result.stdout
+
+
+def test_note_list_filter_by_kind(tmp_path: Path) -> None:
+    _create_test_note(tmp_path, kind="constraint", title="Constraint note")
+    _create_test_note(tmp_path, kind="preference", title="Preference note")
+    result = run_cli("-r", str(tmp_path), "note", "list", "-k", "constraint")
+    assert result.returncode == 0
+    assert "Constraint note" in result.stdout
+    assert "Preference note" not in result.stdout
+
+
+def test_note_list_filter_by_project(tmp_path: Path) -> None:
+    _create_test_note(tmp_path, kind="decision", title="Project note", project="my-proj")
+    _create_test_note(tmp_path, kind="constraint", title="Global note")
+    result = run_cli("-r", str(tmp_path), "note", "list", "-p", "my-proj")
+    assert result.returncode == 0
+    assert "Project note" in result.stdout
+    assert "Global note" not in result.stdout
+
+
+def test_note_list_limit(tmp_path: Path) -> None:
+    for i in range(5):
+        _create_test_note(tmp_path, kind="constraint", title=f"Note {i}")
+    result = run_cli("-r", str(tmp_path), "note", "list", "--limit", "2")
+    assert result.returncode == 0
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    assert len(lines) <= 4  # 2 notes + possible header/footer lines

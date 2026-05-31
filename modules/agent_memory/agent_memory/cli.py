@@ -106,8 +106,7 @@ def _handle_note(args: argparse.Namespace, store: NoteStore) -> None:
     if args.note_command == "create":
         _cmd_note_create(args, store)
     elif args.note_command == "list":
-        print("[note list] not yet implemented", file=sys.stderr)
-        sys.exit(1)
+        _cmd_note_list(args, store)
     elif args.note_command == "show":
         print("[note show] not yet implemented", file=sys.stderr)
         sys.exit(1)
@@ -163,6 +162,23 @@ def _cmd_note_create(args: argparse.Namespace, store: NoteStore) -> None:
         print(write_frontmatter(meta, note.body))
     else:
         print(f"Created: {note.id}  ({note.path})")
+
+
+def _cmd_note_list(args: argparse.Namespace, store: NoteStore) -> None:
+    """Handle the 'note list' subcommand."""
+    tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
+    notes = store.list_notes(
+        project=args.project,
+        kind=args.kind,
+        tags=tags,
+        limit=args.limit,
+    )
+    if not notes:
+        print("0 notes found.")
+        return
+    for note in notes:
+        tag_str = f"  [{', '.join(note.tags)}]" if note.tags else ""
+        print(f"{note.id}  {note.kind:12s}  {note.project:20s}  {note.title}{tag_str}")
 
 
 def _handle_search(args: argparse.Namespace, store: NoteStore) -> None:
