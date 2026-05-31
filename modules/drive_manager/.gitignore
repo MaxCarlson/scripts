@@ -1,0 +1,6 @@
+.pytest_tmp_root/
+__pycache__/
+*.egg-info/
+dist/
+build/
+.ruff_cache/

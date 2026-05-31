@@ -289,3 +289,198 @@ def test_cmd_usb_rescan():
     b = _backend()
     b.rescan.return_value = _ok_result("Rescan done.")
     assert _run(["usb", "rescan"], b) == 0
+
+
+# ── image write (bootable USB) ────────────────────────────────────────────────
+
+def test_image_write_parses_url():
+    args = build_parser().parse_args(["image", "write", "-d", "6", "-u", "https://example.com/ubuntu.iso"])
+    assert args.image_url == "https://example.com/ubuntu.iso"
+    assert args.disk_id == "6"
+    assert args.image_path is None
+
+
+def test_image_write_parses_checksum():
+    args = build_parser().parse_args(["image", "write", "-d", "6", "-i", "x.img", "-H", "sha256:abc123"])
+    assert args.checksum == "sha256:abc123"
+
+
+def test_image_write_parses_all_flags():
+    args = build_parser().parse_args([
+        "image", "write", "-d", "6",
+        "-u", "https://example.com/fedora.iso",
+        "-H", "sha256:deadbeef",
+        "-V", "-x", "-y", "-L", "-U", "-F",
+    ])
+    assert args.image_url == "https://example.com/fedora.iso"
+    assert args.checksum == "sha256:deadbeef"
+    assert args.verify is True
+    assert args.execute is True
+    assert args.yes is True
+    assert args.allow_large_disk is True
+    assert args.allow_non_usb is True
+    assert args.force_unmount is True
+
+
+def test_cmd_image_write_dry_run_returns_0(tmp_path):
+    """Without -x the operation is a dry run: returns 0 and does not write."""
+    img = tmp_path / "ubuntu.iso"
+    img.write_bytes(b"\x00" * 512)
+    b = _backend()
+    b.get_disk.return_value = _usb()
+    b.raw_device_path.return_value = tmp_path / "fake_disk"
+    with patch("drive_manager.cli.write_image_to_disk") as mock_write:
+        rc = _run(["image", "write", "-d", "6", "-i", str(img)], b)
+    assert rc == 0
+    mock_write.assert_not_called()
+
+
+def test_cmd_image_write_execute_local_path(tmp_path):
+    """With -x and a local image path, write_image_to_disk is called."""
+    img = tmp_path / "ubuntu.iso"
+    img.write_bytes(b"\xAB" * 512)
+    b = _backend()
+    b.get_disk.return_value = _usb()
+    b.raw_device_path.return_value = tmp_path / "fake_disk"
+    with (
+        patch("drive_manager.cli.PrivilegesManager") as mock_pm,
+        patch("drive_manager.cli.write_image_to_disk") as mock_write,
+    ):
+        mock_pm.return_value.require_admin.return_value = None
+        mock_write.return_value = _ok_result("Wrote 512 bytes.")
+        rc = _run(["image", "write", "-d", "6", "-i", str(img), "-x"], b)
+    assert rc == 0
+    mock_write.assert_called_once()
+    _, kwargs = mock_write.call_args
+    assert kwargs.get("verify") is False
+
+
+def test_cmd_image_write_execute_with_url(tmp_path):
+    """With -x and -u URL, resolve_image_path downloads it then write_image_to_disk is called."""
+    img = tmp_path / "ubuntu.iso"
+    img.write_bytes(b"\xAB" * 512)
+    b = _backend()
+    b.get_disk.return_value = _usb()
+    b.raw_device_path.return_value = tmp_path / "fake_disk"
+    with (
+        patch("drive_manager.cli.PrivilegesManager") as mock_pm,
+        patch("drive_manager.cli.resolve_image_path", return_value=img) as mock_resolve,
+        patch("drive_manager.cli.write_image_to_disk") as mock_write,
+    ):
+        mock_pm.return_value.require_admin.return_value = None
+        mock_write.return_value = _ok_result("Wrote 512 bytes.")
+        rc = _run(["image", "write", "-d", "6", "-u", "https://example.com/ubuntu.iso", "-x"], b)
+    assert rc == 0
+    mock_resolve.assert_called_once()
+    call_args = mock_resolve.call_args
+    assert call_args[0][1] == "https://example.com/ubuntu.iso"
+    mock_write.assert_called_once()
+
+
+def test_cmd_image_write_passes_verify_flag(tmp_path):
+    """--verify / -V is forwarded to write_image_to_disk as verify=True."""
+    img = tmp_path / "ubuntu.iso"
+    img.write_bytes(b"\xAB" * 512)
+    b = _backend()
+    b.get_disk.return_value = _usb()
+    b.raw_device_path.return_value = tmp_path / "fake_disk"
+    with (
+        patch("drive_manager.cli.PrivilegesManager") as mock_pm,
+        patch("drive_manager.cli.write_image_to_disk") as mock_write,
+    ):
+        mock_pm.return_value.require_admin.return_value = None
+        mock_write.return_value = _ok_result("Wrote and verified.")
+        _run(["image", "write", "-d", "6", "-i", str(img), "-x", "-V"], b)
+    _, kwargs = mock_write.call_args
+    assert kwargs.get("verify") is True
+
+
+def test_cmd_image_write_checksum_forwarded(tmp_path):
+    """--checksum / -H is forwarded to resolve_image_path."""
+    img = tmp_path / "ubuntu.iso"
+    img.write_bytes(b"\xAB" * 512)
+    b = _backend()
+    b.get_disk.return_value = _usb()
+    b.raw_device_path.return_value = tmp_path / "fake_disk"
+    with (
+        patch("drive_manager.cli.PrivilegesManager") as mock_pm,
+        patch("drive_manager.cli.resolve_image_path", return_value=img) as mock_resolve,
+        patch("drive_manager.cli.write_image_to_disk") as mock_write,
+    ):
+        mock_pm.return_value.require_admin.return_value = None
+        mock_write.return_value = _ok_result("Wrote.")
+        _run(["image", "write", "-d", "6", "-i", str(img), "-x", "-H", "sha256:aabbcc"], b)
+    call_args = mock_resolve.call_args
+    assert call_args[0][2] == "sha256:aabbcc"
+
+
+def test_cmd_image_write_refused_on_system_disk(tmp_path):
+    """Writing to a system/OS disk is always refused (rc=3 = SafetyRefusalError)."""
+    b = _backend()
+    b.get_disk.return_value = _nvme()  # is_system_disk=True
+    b.raw_device_path.return_value = tmp_path / "fake_nvme"
+    rc = _run(["image", "write", "-d", "3", "-i", "x.img", "-x"], b)
+    assert rc == 3
+
+
+def test_cmd_image_write_refused_on_large_non_usb_without_flag(tmp_path):
+    """Large NVMe without -L and -U is refused (rc=3)."""
+    b = _backend()
+    b.get_disk.return_value = _nvme()
+    b.raw_device_path.return_value = tmp_path / "fake_nvme"
+    rc = _run(["image", "write", "-d", "3", "-i", "x.img", "-x", "-U"], b)
+    assert rc == 3  # still refused because is_system_disk
+
+
+def test_cmd_image_write_result_failure_returns_1(tmp_path):
+    """If write_image_to_disk returns ok=False, rc=1."""
+    img = tmp_path / "ubuntu.iso"
+    img.write_bytes(b"\xAB" * 512)
+    b = _backend()
+    b.get_disk.return_value = _usb()
+    b.raw_device_path.return_value = tmp_path / "fake_disk"
+    with (
+        patch("drive_manager.cli.PrivilegesManager") as mock_pm,
+        patch("drive_manager.cli.write_image_to_disk") as mock_write,
+    ):
+        mock_pm.return_value.require_admin.return_value = None
+        mock_write.return_value = OperationResult(ok=False, dry_run=False, message="Disk I/O error.")
+        rc = _run(["image", "write", "-d", "6", "-i", str(img), "-x"], b)
+    assert rc == 1
+
+
+# ── image mount — URL and drive letter flows ──────────────────────────────────
+
+def test_cmd_image_mount_with_url_downloads_and_mounts(tmp_path):
+    """When -u URL is given, the image is downloaded then mounted."""
+    img = tmp_path / "ubuntu.iso"
+    img.write_bytes(b"\x00" * 512)
+    b = _backend()
+    b.mount_image.return_value = _ok_result("Mounted.")
+    with patch("drive_manager.cli.resolve_image_path", return_value=img) as mock_resolve:
+        rc = _run(["image", "mount", "-i", str(img), "-u", "https://example.com/ubuntu.iso"], b)
+    assert rc == 0
+    mock_resolve.assert_called_once()
+    b.mount_image.assert_called_once()
+
+
+def test_cmd_image_mount_drive_letter_passed_to_backend(tmp_path):
+    """--drive-letter / -l is forwarded to backend.mount_image."""
+    img = tmp_path / "ubuntu.iso"
+    img.write_bytes(b"\x00" * 512)
+    b = _backend()
+    b.mount_image.return_value = _ok_result("Mounted as Z:.")
+    rc = _run(["image", "mount", "-i", str(img), "-l", "Z"], b)
+    assert rc == 0
+    b.mount_image.assert_called_once_with(img.resolve(), "Z")
+
+
+def test_cmd_image_mount_no_letter_passes_none(tmp_path):
+    """Omitting -l passes drive_letter=None to backend."""
+    img = tmp_path / "ubuntu.iso"
+    img.write_bytes(b"\x00" * 512)
+    b = _backend()
+    b.mount_image.return_value = _ok_result("Mounted.")
+    rc = _run(["image", "mount", "-i", str(img)], b)
+    assert rc == 0
+    b.mount_image.assert_called_once_with(img.resolve(), None)

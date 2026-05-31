@@ -275,13 +275,23 @@ Get-Disk -Number $diskNumber | ConvertTo-Json -Depth 6
         return OperationResult(True, False, "Disk cleared.", [script], {"output": output})
 
     def unmount_disk(self, disk: DiskInfo) -> OperationResult:
-        letters = disk.drive_letters
-        steps: list[str] = []
-        for letter in letters:
-            steps.append(f"Dismount-Volume -DriveLetter {letter} -Force -Confirm:$false")
-        if not steps:
-            return OperationResult(True, False, "No mounted volumes found.", [])
-        script = "\n".join(steps)
+        disk_id = int(disk.disk_id)
+        # Remove all access paths (drive letters + mount points) from every
+        # partition on the disk so Windows releases its handles before a raw
+        # write.  Remove-PartitionAccessPath is available since Windows 8.
+        script = f"""
+$partitions = Get-Partition -DiskNumber {disk_id} -ErrorAction SilentlyContinue
+if ($partitions) {{
+    foreach ($p in $partitions) {{
+        foreach ($ap in $p.AccessPaths) {{
+            if ($ap -match '^[A-Za-z]:\\\\$') {{
+                Remove-PartitionAccessPath -DiskNumber {disk_id} -PartitionNumber $p.PartitionNumber -AccessPath $ap -ErrorAction SilentlyContinue
+            }}
+        }}
+    }}
+}}
+"""
+        steps = [f"Remove-PartitionAccessPath -DiskNumber {disk_id} (all access paths)"]
         output = self._run_ps(script, timeout_seconds=120)
         return OperationResult(True, False, "Volumes unmounted.", steps, {"output": output})
 

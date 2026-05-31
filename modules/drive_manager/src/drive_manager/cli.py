@@ -438,7 +438,7 @@ def cmd_image_write(args: argparse.Namespace) -> int:
     image_path = resolve_image_path(image_path_for_plan, args.image_url, args.checksum)
     result = write_image_to_disk(backend, disk, image_path, verify=args.verify)
     print_operation_result(result)
-    return 0
+    return 0 if result.ok else 1
 
 
 def cmd_image_mount(args: argparse.Namespace) -> int:

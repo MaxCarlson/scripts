@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "drive-manager"
-version = "0.2.0"
+version = "0.3.8"
 description = "Cross-platform disk and USB inspection, diagnosis, formatting, and bootable image writing tools with strict dry-run safety."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -50,7 +50,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["*_test.py", "test_*.py"]
-addopts = "-q"
+addopts = "-q --basetemp=.pytest_tmp_root"
 
 [tool.ruff]
 line-length = 120
