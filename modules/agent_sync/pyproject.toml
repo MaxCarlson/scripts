@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-sync"
+version = "0.1.0"
+description = "Multi-agent coordination: sequential and parallel handoffs across Claude, Codex, and Gemini CLI"
+authors = [{name = "mcarls"}]
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "black>=24.0",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+agent-sync = "agent_sync.cli:main"
+
+[tool.setuptools]
+packages = ["agent_sync"]
+
+[tool.setuptools.package-data]
+agent_sync = ["shell/*.sh", "docs/plans/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.black]
+line-length = 120
+
+[tool.ruff]
+line-length = 120
