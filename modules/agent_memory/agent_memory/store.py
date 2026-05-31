@@ -5,15 +5,11 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+from agent_memory.classify import determine_project
 from agent_memory.frontmatter import parse_frontmatter, validate_frontmatter, write_frontmatter
 from agent_memory.index import NoteIndex
 from agent_memory.naming import make_filename, make_note_id
-from agent_memory.note import (
-    GLOBAL_DEFAULT_KINDS,
-    PROJECT_REQUIRED_KINDS,
-    VALID_KINDS,
-    Note,
-)
+from agent_memory.note import VALID_KINDS, Note
 
 logger = logging.getLogger(__name__)
 
@@ -58,30 +54,6 @@ class NoteStore:
             schema_version=int(meta.get("schema_version", 1)),
         )
 
-    def _resolve_project(self, kind: str, project: str | None, auto_classify: bool) -> str:
-        if project is not None:
-            return project
-        if kind in GLOBAL_DEFAULT_KINDS:
-            return "global"
-        if kind in PROJECT_REQUIRED_KINDS:
-            raise ValueError(
-                f"Kind '{kind}' requires an explicit project. "
-                "Pass project='<slug>' or project='global'."
-            )
-        # LLM_CLASSIFY_KINDS: decision, code_note, session
-        if auto_classify:
-            from agent_memory.classify import classify_placement
-            result = classify_placement(
-                kind=kind,
-                title="",
-                body="",
-                known_projects=self._known_projects(),
-            )
-            if result:
-                logger.info("Classified as: %s (via local LLM)", result)
-                return result
-        return "global"
-
     def _known_projects(self) -> list[str]:
         projects_dir = self._root / "projects"
         if not projects_dir.exists():
@@ -119,7 +91,14 @@ class NoteStore:
         if kind not in VALID_KINDS:
             raise ValueError(f"Invalid kind '{kind}'. Valid kinds: {sorted(VALID_KINDS)}")
 
-        resolved_project = self._resolve_project(kind, project, auto_classify)
+        resolved_project = determine_project(
+            kind=kind,
+            project=project,
+            title=title,
+            auto_classify=auto_classify,
+            interactive=True,
+            body=body,
+        )
         note_id = make_note_id()
         created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         resolved_tags = tags or []
@@ -276,10 +255,7 @@ class NoteStore:
                 if not errors:
                     path_kind = md_file.parent.name
                     if meta.get("kind") and meta["kind"] != path_kind:
-                        errors.append(
-                            f"{md_file}: frontmatter kind='{meta['kind']}' "
-                            f"but directory says '{path_kind}'"
-                        )
+                        errors.append(f"{md_file}: frontmatter kind='{meta['kind']}' but directory says '{path_kind}'")
             except Exception as exc:
                 errors.append(f"{md_file}: parse error: {exc}")
         return errors

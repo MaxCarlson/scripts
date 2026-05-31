@@ -1,7 +1,11 @@
 # tests/store_test.py
 from __future__ import annotations
 from pathlib import Path
+from unittest.mock import patch
+
 import pytest
+
+from agent_memory.classify import PlacementError
 from agent_memory.store import NoteStore
 
 
@@ -49,7 +53,7 @@ def test_create_note_global_project(tmp_path: Path) -> None:
 
 def test_create_note_project_required_kind_raises(tmp_path: Path) -> None:
     store = NoteStore(root=tmp_path)
-    with pytest.raises(ValueError, match="requires an explicit"):
+    with pytest.raises(ValueError, match="requires a project"):
         store.create_note(
             kind="handoff",
             project=None,
@@ -97,6 +101,7 @@ def test_create_note_file_has_valid_frontmatter(tmp_path: Path) -> None:
         tags=["repro"],
     )
     from agent_memory.frontmatter import parse_frontmatter, validate_frontmatter
+
     text = note.path.read_text(encoding="utf-8")
     meta, _ = parse_frontmatter(text)
     errors = validate_frontmatter(meta)
@@ -246,3 +251,46 @@ def test_verify_flags_kind_mismatch(tmp_path: Path) -> None:
     errors = store.verify()
     assert len(errors) == 1
     assert "invalid_kind" in errors[0]
+
+
+def test_create_note_auto_classify_calls_determine_project(tmp_path: Path) -> None:
+    store = NoteStore(root=tmp_path)
+    with patch("agent_memory.store.determine_project", return_value="global") as mock_classify:
+        note = store.create_note(
+            kind="decision",
+            project=None,
+            title="Auto classify me",
+            body="## Summary\n\nDetails.",
+            created_by="test",
+            auto_classify=True,
+        )
+    mock_classify.assert_called_once()
+    assert note.project == "global"
+
+
+def test_create_note_no_auto_classify_passes_false_to_determine_project(tmp_path: Path) -> None:
+    store = NoteStore(root=tmp_path)
+    with patch("agent_memory.store.determine_project", return_value="global") as mock_classify:
+        note = store.create_note(
+            kind="decision",
+            project=None,
+            title="No classify",
+            body="## Summary\n\nContent.",
+            created_by="test",
+            auto_classify=False,
+        )
+    call_kwargs = mock_classify.call_args.kwargs
+    assert call_kwargs["auto_classify"] is False
+    assert note.project == "global"
+
+
+def test_create_note_project_required_kind_raises_placement_error(tmp_path: Path) -> None:
+    store = NoteStore(root=tmp_path)
+    with pytest.raises(PlacementError):
+        store.create_note(
+            kind="handoff",
+            project=None,
+            title="Missing project",
+            body="",
+            created_by="test",
+        )

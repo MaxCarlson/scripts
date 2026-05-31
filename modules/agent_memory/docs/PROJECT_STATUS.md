@@ -36,13 +36,20 @@ NoteStore class, file I/O, frontmatter parsing, SQLite index, rebuild command.
 
 `agent-memory note create/list/show/edit`, `search`, `index rebuild/status`.
 
-### Phase 4 — `agent_sync` integration ⏳ NOT STARTED
+### Phase 4 — LLM placement classification ✅ COMPLETE
 
-**Plan:** `docs/plans/PLAN-4-INTEGRATION.md`
+**Plan:** `docs/plans/PLAN-4-CLASSIFY.md`
+
+`agent_memory.classify.determine_project()` handles static placement rules,
+local LLM placement for ambiguous note kinds, interactive fallback, and
+non-interactive fallback to `global`.
+
+### Phase 5 — `agent_sync` integration ⏳ NOT STARTED
+
+**Plan:** not yet written
 
 Wire `agent-sync memory sync` command (Phase 3 of agent_sync) to use
-`agent_memory.NoteStore`. Also wire `llm_local` into `agent_memory` for
-placement classification.
+`agent_memory.NoteStore`.
 
 ---
 
