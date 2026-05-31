@@ -42,10 +42,8 @@ except ImportError:
     EnforcedArgumentParser = argparse.ArgumentParser
     ENFORCER_AVAILABLE = False
 
-import shutil
-
 from . import __version__ as YTAEDL_VERSION
-from . import _partial_utils, archive_builder, urlscan, yt_grid
+from . import _partial_utils, urlscan, yt_grid
 from .domain_index import DomainIndex, ScanLogEntry, _extract_domain as _domain_of_url
 from .downloader import ARCHIVE_PROCESSED_STATUSES, MAX_RESOLUTION_CHOICES, _merge_archive_status
 from .mp4_watcher import MP4Watcher, WatcherConfig, WatcherSnapshot
@@ -1285,8 +1283,6 @@ def _add_run_core_args(dest) -> None:
                       help="Folder of yt-dlp URL files")
     dest.add_argument("-d", "--aebn-dir", default="./files/downloads/ae-stars",
                       help="Folder of AEBN URL files")
-    dest.add_argument("-f", "--finished-log", default="./logs/finished_urls.txt",
-                      help="Path to record completed URLs (default: <log-dir>/finished_urls.txt)")
     dest.add_argument("-r", "--refresh-hz", type=float, default=5.0, help="UI refresh rate")
     dest.add_argument("-e", "--exit-at-time", type=int, default=-1,
                       help="Exit the manager after N seconds (<=0 disables)")
@@ -1538,12 +1534,7 @@ def run_main(
     archive_dir: Optional[Path] = Path(args.archive).expanduser().resolve() if args.archive else None
     if archive_dir:
         archive_dir.mkdir(parents=True, exist_ok=True)
-    # Mirror finished_log into log_dir when using the default path
-    _fl_arg = args.finished_log
-    if _fl_arg == "./logs/finished_urls.txt":
-        finished_log = log_dir / "finished_urls.txt"
-    else:
-        finished_log = Path(_fl_arg).expanduser().resolve()
+    finished_log = log_dir / "finished_urls.txt"
     finished_log.parent.mkdir(parents=True, exist_ok=True)
 
     mp4_trigger_total_bytes = (

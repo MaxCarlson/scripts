@@ -189,7 +189,6 @@ class TestManager:
         pending_file = stars_dir / "pending.txt"
         pending_file.write_text("https://example.com/todo\n", encoding="utf-8")
 
-        finished_log = tmp_path / "finished.txt"
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
 
@@ -204,8 +203,6 @@ class TestManager:
             str(ae_dir),
             "--download-root",
             str(media_dir),
-            "--finished-log",
-            str(finished_log),
             "--log-dir",
             str(log_dir),
             "--exit-at-time",
@@ -901,6 +898,11 @@ class TestStartWorker:
 class TestMainFunction:
     """Integration tests for the main function."""
 
+    def test_finished_log_flag_removed(self):
+        parser = manager.make_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["-f", "finished.txt"])
+
     def test_main_no_files(self):
         """Test main function when no URL files are found."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -919,8 +921,6 @@ class TestMainFunction:
                 str(stars_dir),
                 "--aebn-dir",
                 str(aebn_dir),
-                "--finished-log",
-                str(Path(tmpdir) / "finished.txt"),
                 "--log-dir",
                 str(tmpdir),
                 "--refresh-hz",
@@ -953,8 +953,6 @@ class TestMainFunction:
                 str(stars_dir),
                 "--aebn-dir",
                 str(Path(tmpdir) / "aebn"),
-                "--finished-log",
-                str(Path(tmpdir) / "finished.txt"),
                 "--log-dir",
                 str(tmpdir),
                 "--refresh-hz",
@@ -984,8 +982,6 @@ class TestMainFunction:
                 str(Path(tmpdir) / "stars"),
                 "--aebn-dir",
                 str(Path(tmpdir) / "aebn"),
-                "--finished-log",
-                str(Path(tmpdir) / "finished.txt"),
                 "--log-dir",
                 str(tmpdir),
                 "--exit-at-time",
@@ -1042,8 +1038,6 @@ class TestMainFunction:
             str(stars_dir),
             "--aebn-dir",
             str(aebn_dir),
-            "--finished-log",
-            str(tmp_path / "finished.txt"),
             "--log-dir",
             str(log_dir),
             "--refresh-hz",

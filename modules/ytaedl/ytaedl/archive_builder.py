@@ -136,9 +136,32 @@ def build_archive_for_file(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ytaedl archive",
-        description=f"ytaedl {YTAEDL_VERSION} - rebuild archive files based on existing downloads.",
+        description=f"ytaedl {YTAEDL_VERSION} - archive file management.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    subparsers = parser.add_subparsers(dest="archive_command")
+    rebuild = subparsers.add_parser(
+        "rebuild",
+        help="Rebuild archive files based on existing downloads.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    validate = subparsers.add_parser(
+        "validate",
+        help="Validate archive/domain_index state against current URL reality.",
+    )
+    validate.add_argument("args", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
+    apply_plan = subparsers.add_parser(
+        "apply-plan",
+        help="Apply a JSON change plan produced by archive validate.",
+    )
+    apply_plan.add_argument("args", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
+
+    _add_rebuild_args(parser)
+    _add_rebuild_args(rebuild)
+    return parser
+
+
+def _add_rebuild_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "-u",
         "--url-dir",
@@ -165,11 +188,29 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Overwrite existing archive files instead of writing .rebuild copies.",
     )
-    return parser
 
 
 def cli_main(argv: Optional[Sequence[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
+    argv_list = list(argv) if argv is not None else None
+    if argv_list and argv_list[0] == "validate":
+        from .archive_validator import cli_main as validate_main
+
+        return validate_main(argv_list[1:])
+    if argv_list and argv_list[0] == "apply-plan":
+        from .archive_validator import apply_main
+
+        return apply_main(argv_list[1:])
+
+    args = build_parser().parse_args(argv_list)
+    if getattr(args, "archive_command", None) == "validate":
+        from .archive_validator import cli_main as validate_main
+
+        return validate_main(getattr(args, "args", []))
+    if getattr(args, "archive_command", None) == "apply-plan":
+        from .archive_validator import apply_main
+
+        return apply_main(getattr(args, "args", []))
+
     url_dirs = [Path(p).expanduser().resolve() for p in (args.url_dirs or DEFAULT_URL_DIRS)]
     download_dirs = [Path(p).expanduser().resolve() for p in (args.download_dirs or DEFAULT_DOWNLOAD_DIRS)]
     archive_dir = Path(args.archive_dir).expanduser().resolve()

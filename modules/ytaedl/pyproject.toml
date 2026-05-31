@@ -4,8 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ytaedl"
-version = "2.0.5"
+version = "2.1.0"
 # Version history (MAJOR.MINOR.PATCH per MODULE_STANDARDS.md):
+# 2.1.0 — MINOR: add archive validation/apply-plan workflow and remove run finished-log override
 # 2.0.5 — PATCH: fix finish event rejected after extdl fallbacks update active_attempt_id
 # 2.0.4 — PATCH: keep ytaedl pytest temp roots module-local
 # 2.0.3 — PATCH: reject short fallback preview variants and clean completed .mp4.temp artifacts

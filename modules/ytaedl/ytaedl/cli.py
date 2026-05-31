@@ -12,6 +12,8 @@ Usage
   ytaedl cleanup partial|index ...     Maintenance (clean partial dirs / rebuild index)
   ytaedl urls              [options]   URL file scanning and stats
   ytaedl archive           [options]   Archive file management
+  ytaedl archive validate  [options]   Validate archive/domain_index state
+  ytaedl archive apply-plan -p plan.json
 
 Run ``ytaedl <subcommand> --help`` for the full option list of each subcommand.
 Run ``ytaedl run <profile> --help`` for coloured, focused help on a run profile.
@@ -34,7 +36,7 @@ _SUBCOMMAND_HELP = {
     "worker":  "Single URL-file downloader",
     "cleanup": "Maintenance: delete partial dirs or rebuild the domain index",
     "urls":    "URL file scanning, statistics, and ranking",
-    "archive": "Archive file management (rebuild, inspect, repair)",
+    "archive": "Archive file management (rebuild, validate, apply-plan)",
 }
 
 _EXAMPLES = textwrap.dedent("""\
@@ -49,6 +51,8 @@ _EXAMPLES = textwrap.dedent("""\
       ytaedl cleanup index --stars-dir ./files/downloads/stars
       ytaedl urls --help
       ytaedl archive --help
+      ytaedl archive validate -a ./archive -g ./logs -L ./stars
+      ytaedl archive apply-plan -p archive-fixes.json
 """)
 
 

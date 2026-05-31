@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
-
-from ytaedl.cli import main, _print_top_help
+from ytaedl.cli import main
 
 
 class TestTopLevelHelp:
@@ -41,29 +38,34 @@ class TestTopLevelHelp:
 class TestSubcommandDispatch:
     def test_run_dispatches_to_run_main(self):
         with patch("ytaedl.manager.run_main", return_value=0) as mock_run:
-            rc = main(["run", "--help"])
+            main(["run", "--help"])
         # run_main is called (even with --help, it's forwarded)
         mock_run.assert_called_once()
 
     def test_worker_dispatches_to_downloader_main(self):
         with patch("ytaedl.downloader.main", return_value=0) as mock_dl:
-            rc = main(["worker", "--help"])
+            main(["worker", "--help"])
         mock_dl.assert_called_once()
 
     def test_cleanup_dispatches_to_cleanup_main(self):
         with patch("ytaedl.cleanup_cli.main", return_value=0) as mock_cu:
-            rc = main(["cleanup"])
+            main(["cleanup"])
         mock_cu.assert_called_once_with([])
 
     def test_urls_dispatches_to_urlscan(self):
         with patch("ytaedl.urlscan.cli_main", return_value=0) as mock_urls:
-            rc = main(["urls", "--help"])
+            main(["urls", "--help"])
         mock_urls.assert_called_once_with(["--help"])
 
     def test_archive_dispatches_to_archive_builder(self):
         with patch("ytaedl.archive_builder.cli_main", return_value=0) as mock_arch:
-            rc = main(["archive", "--help"])
+            main(["archive", "--help"])
         mock_arch.assert_called_once_with(["--help"])
+
+    def test_archive_validate_dispatches_through_archive_builder(self):
+        with patch("ytaedl.archive_builder.cli_main", return_value=0) as mock_arch:
+            main(["archive", "validate", "--no-ui"])
+        mock_arch.assert_called_once_with(["validate", "--no-ui"])
 
     def test_remaining_args_forwarded_to_subcommand(self):
         with patch("ytaedl.cleanup_cli.main", return_value=0) as mock_cu:
