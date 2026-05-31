@@ -47,9 +47,9 @@ The module also exposes:
 - compute_filtered_dir_sizes, render_size_tree
 - DEFAULT_EXCLUDE_DIRS/EXTS/FILES, PRESETS
 """
-__version__ = "0.1.0"
-
 from __future__ import annotations
+
+__version__ = "0.2.0"
 
 import argparse
 import fnmatch
@@ -984,7 +984,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         run_zip_mode = True  # default
 
     # Output naming
-    output_base = args.output or (source_dir.name)
+    _raw_output = args.output
+    _is_dir_target = _raw_output is not None and (
+        _raw_output.endswith("/") or _raw_output.endswith("\\")
+        or Path(_raw_output).is_dir()
+    )
+    if _raw_output is None:
+        output_base = source_dir.name
+    elif _is_dir_target:
+        output_base = str(Path(_raw_output) / source_dir.name)
+    else:
+        output_base = _raw_output
+
     output_path = Path(output_base)
     output_dir = output_path.parent if output_path.parent != Path("") else Path.cwd()
     output_dir.mkdir(parents=True, exist_ok=True)

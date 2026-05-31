@@ -3,7 +3,7 @@
 Multi-threaded video processing & analysis with a real-time dashboard.
 Now with compact (stacked) UI for small terminals and robust logging.
 """
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 import argparse
 import atexit
@@ -32,10 +32,12 @@ sys.path.insert(0, str(script_dir.parent))
 try:
     from modules.termdash import (Line, Stat, TermDash, bytes_to_mib,
                                   clip_ellipsis, fmt_hms, format_bytes)
-except ImportError:
-    print("Error: Could not import the 'termdash' library.", file=sys.stderr)
-    print("Please ensure the 'modules' directory is in the correct location.", file=sys.stderr)
-    sys.exit(1)
+except ImportError as _termdash_err:
+    if __name__ == "__main__":
+        print("Error: Could not import the 'termdash' library.", file=sys.stderr)
+        print("Please ensure the 'modules' directory is in the correct location.", file=sys.stderr)
+        sys.exit(1)
+    raise
 
 # --- Constants ---
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm"}

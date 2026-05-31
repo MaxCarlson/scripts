@@ -271,11 +271,18 @@ REGISTRY: dict = {
         "desc": "Package repos for LLMs, apply AI patches, download datasets, automate AI web UIs",
         "items": [
             {
+                "name": "run_tests.py",
+                "path": "pyscripts/run_tests.py",
+                "desc": "Interactive pytest runner: verbosity + scope menus, or use CLI flags",
+                "help_cmd": ["python", "pyscripts/run_tests.py", "--help"],
+                "version": "0.1.0",
+            },
+            {
                 "name": "zip_for_llms.py",
                 "path": "pyscripts/zip_for_llms.py",
                 "desc": "Package repo for LLM: Gemini analysis, presets, size reporting",
                 "help_cmd": ["python", "pyscripts/zip_for_llms.py", "--help"],
-            "version": "0.1.0",
+                "version": "0.2.0",
             },
             {
                 "name": "repo_processor.py",

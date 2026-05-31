@@ -1,4 +1,4 @@
-<!-- version: 0.1.0 -->
+<!-- version: 0.2.0 -->
 # zip_for_llms.py
 
 Package a repository for LLM analysis with presets and size reporting.

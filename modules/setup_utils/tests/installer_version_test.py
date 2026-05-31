@@ -4,6 +4,7 @@ import importlib.util
 import os
 from itertools import count
 from pathlib import Path
+from unittest.mock import patch
 
 _TMP_COUNTER = count(1)
 
@@ -108,7 +109,9 @@ def test_locked_console_script_failure_is_classified():
     setup = _load_modules_setup()
 
     assert setup._extract_locked_console_script(log_path) == locked
-    diagnostic = setup._locked_console_script_diagnostic(log_path)
+    # mock psutil scan to avoid Windows access-violation crash on process_iter + open_files
+    with patch.object(setup, "_find_likely_locking_processes", return_value=[]):
+        diagnostic = setup._locked_console_script_diagnostic(log_path)
     assert any("locked console script" in line for line in diagnostic)
 
 
