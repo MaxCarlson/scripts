@@ -1,6 +1,8 @@
 """agent_memory CLI — entry point for the agent-memory command."""
 import argparse
 import os
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -46,16 +48,16 @@ def _make_parser() -> argparse.ArgumentParser:
     create_p.add_argument("-p", "--project", default=None, help="Project slug or 'global'.")
     create_p.add_argument("-t", "--title", required=True, help="Note title.")
     create_p.add_argument("-b", "--body", default="", help="Note body text.")
-    create_p.add_argument("--tags", default="", help="Comma-separated tags.")
-    create_p.add_argument("--no-llm", action="store_true", help="Disable LLM auto-classification.")
+    create_p.add_argument("-g", "--tags", default="", help="Comma-separated tags.")
+    create_p.add_argument("-L", "--no-llm", action="store_true", help="Disable LLM auto-classification.")
     create_p.add_argument("-n", "--dry-run", action="store_true", help="Print note without writing.")
 
     # note list
     list_p = note_sub.add_parser("list", help="List notes.")
     list_p.add_argument("-p", "--project", default=None, help="Filter by project slug.")
     list_p.add_argument("-k", "--kind", default=None, help="Filter by kind.")
-    list_p.add_argument("--tags", default="", help="Comma-separated tags to filter by.")
-    list_p.add_argument("--limit", type=int, default=20, metavar="N", help="Maximum results (default: 20).")
+    list_p.add_argument("-g", "--tags", default="", help="Comma-separated tags to filter by.")
+    list_p.add_argument("-l", "--limit", type=int, default=20, metavar="N", help="Maximum results (default: 20).")
 
     # note show
     show_p = note_sub.add_parser("show", help="Show a note's full content.")
@@ -72,7 +74,7 @@ def _make_parser() -> argparse.ArgumentParser:
     search_p.add_argument("-k", "--kind", default=None, help="Limit to kind.")
 
     # --- index subcommand ---
-    index_p = sub.add_parser("index", help="Manage the SQLite index.", parents=[root_parent])
+    index_p = sub.add_parser("index", help="Manage the SQLite index.")
     index_sub = index_p.add_subparsers(dest="index_command", metavar="ACTION")
     index_sub.add_parser("rebuild", help="Rebuild the SQLite index from Markdown files.")
     index_sub.add_parser("status", help="Show index statistics.")
@@ -108,11 +110,9 @@ def _handle_note(args: argparse.Namespace, store: NoteStore) -> None:
     elif args.note_command == "list":
         _cmd_note_list(args, store)
     elif args.note_command == "show":
-        print("[note show] not yet implemented", file=sys.stderr)
-        sys.exit(1)
+        _cmd_note_show(args, store)
     elif args.note_command == "edit":
-        print("[note edit] not yet implemented", file=sys.stderr)
-        sys.exit(1)
+        _cmd_note_edit(args, store)
     else:
         print(f"Unknown note action: {args.note_command}", file=sys.stderr)
         sys.exit(1)
@@ -181,17 +181,66 @@ def _cmd_note_list(args: argparse.Namespace, store: NoteStore) -> None:
         print(f"{note.id}  {note.kind:12s}  {note.project:20s}  {note.title}{tag_str}")
 
 
+def _cmd_note_show(args: argparse.Namespace, store: NoteStore) -> None:
+    """Handle the 'note show' subcommand."""
+    note = store.get_note(args.note_id)
+    if note is None:
+        print(f"Error: Note '{args.note_id}' not found.", file=sys.stderr)
+        sys.exit(1)
+    print(note.path.read_text(encoding="utf-8"))
+
+
+def _cmd_note_edit(args: argparse.Namespace, store: NoteStore) -> None:
+    """Handle the 'note edit' subcommand."""
+    note = store.get_note(args.note_id)
+    if note is None:
+        print(f"Error: Note '{args.note_id}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or ""
+    if not editor:
+        print("Error: $EDITOR or $VISUAL must be set to edit notes.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        result = subprocess.run([*shlex.split(editor), str(note.path)], check=False)
+    except FileNotFoundError as exc:
+        print(f"Error: editor command not found: {exc.filename}", file=sys.stderr)
+        sys.exit(1)
+    if result.returncode != 0:
+        sys.exit(result.returncode)
+
+
 def _handle_search(args: argparse.Namespace, store: NoteStore) -> None:
-    print("[search] not yet implemented", file=sys.stderr)
-    sys.exit(1)
+    notes = store.search(
+        query=args.query,
+        project=args.project,
+        kind=args.kind,
+    )
+    if not notes:
+        print("0 results.")
+        return
+    for note in notes:
+        print(f"{note.id}  {note.kind:12s}  {note.project:20s}  {note.title}")
 
 
 def _handle_index(args: argparse.Namespace, store: NoteStore) -> None:
     if args.index_command is None:
         print("usage: agent-memory index <rebuild|status>", file=sys.stderr)
         sys.exit(1)
-    print(f"[index {args.index_command}] not yet implemented", file=sys.stderr)
-    sys.exit(1)
+    if args.index_command == "rebuild":
+        count = store.rebuild_index()
+        print(f"Rebuild complete. Indexed {count} note(s).")
+    elif args.index_command == "status":
+        notes = store.list_notes(limit=10_000)
+        errors = store.verify()
+        print(f"Notes: {len(notes)}")
+        print(f"Index errors: {len(errors)}")
+        for err in errors:
+            print(f"  - {err}")
+    else:
+        print(f"Unknown index action: {args.index_command}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

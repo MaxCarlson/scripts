@@ -24,13 +24,13 @@ Two modules being created in this work session:
 
 Dependency: none. Must be built before `agent_memory` (which imports it).
 
-### Phase 2 — `agent_memory` core ⏳ NOT STARTED
+### Phase 2 — `agent_memory` core ✅ COMPLETE
 
 **Plan:** `docs/plans/PLAN-2-CORE.md`
 
 NoteStore class, file I/O, frontmatter parsing, SQLite index, rebuild command.
 
-### Phase 3 — `agent_memory` CLI ⏳ NOT STARTED
+### Phase 3 — `agent_memory` CLI ✅ COMPLETE
 
 **Plan:** `docs/plans/PLAN-3-CLI.md`
 

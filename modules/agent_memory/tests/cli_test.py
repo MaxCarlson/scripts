@@ -133,6 +133,12 @@ def _create_test_note(
     return run_cli(*args)
 
 
+def _get_note_id(create_result: subprocess.CompletedProcess[str]) -> str:
+    """Extract note ID from 'Created: <id>  (<path>)' output."""
+    line = create_result.stdout.strip()
+    return line.split("Created:")[1].strip().split()[0]
+
+
 def test_note_list_empty_root_shows_empty(tmp_path: Path) -> None:
     result = run_cli("-r", str(tmp_path), "note", "list")
     assert result.returncode == 0
@@ -173,3 +179,97 @@ def test_note_list_limit(tmp_path: Path) -> None:
     assert result.returncode == 0
     lines = [line for line in result.stdout.splitlines() if line.strip()]
     assert len(lines) <= 4  # 2 notes + possible header/footer lines
+
+
+def test_note_show_displays_full_content(tmp_path: Path) -> None:
+    result = _create_test_note(tmp_path, kind="constraint", title="Show me")
+    note_id = _get_note_id(result)
+    show_result = run_cli("-r", str(tmp_path), "note", "show", "-i", note_id)
+    assert show_result.returncode == 0
+    assert "Show me" in show_result.stdout
+
+
+def test_note_show_nonexistent_id_exits_nonzero(tmp_path: Path) -> None:
+    result = run_cli("-r", str(tmp_path), "note", "show", "-i", "99999999T000000Z_ffffffff")
+    assert result.returncode != 0
+    assert "not found" in result.stderr.lower() or "error" in result.stderr.lower()
+
+
+def test_note_edit_missing_editor_exits_gracefully(tmp_path: Path) -> None:
+    result = _create_test_note(tmp_path, kind="preference", title="Edit me")
+    note_id = _get_note_id(result)
+    edit_result = run_cli(
+        "-r",
+        str(tmp_path),
+        "note",
+        "edit",
+        "-i",
+        note_id,
+        env={"EDITOR": "", "VISUAL": ""},
+    )
+    assert edit_result.returncode != 0
+    assert "editor" in edit_result.stderr.lower() or "EDITOR" in edit_result.stderr
+
+
+def test_search_finds_note_by_title_word(tmp_path: Path) -> None:
+    _create_test_note(tmp_path, kind="constraint", title="Always use pathlib")
+    _create_test_note(tmp_path, kind="preference", title="Prefer f-strings")
+    result = run_cli("-r", str(tmp_path), "search", "-q", "pathlib")
+    assert result.returncode == 0
+    assert "pathlib" in result.stdout.lower()
+    assert "f-strings" not in result.stdout.lower()
+
+
+def test_search_no_results_exits_zero(tmp_path: Path) -> None:
+    _create_test_note(tmp_path, kind="constraint", title="Unrelated note")
+    result = run_cli("-r", str(tmp_path), "search", "-q", "xyzxyzxyz")
+    assert result.returncode == 0
+    assert "0" in result.stdout or "no results" in result.stdout.lower()
+
+
+def test_search_filter_by_kind(tmp_path: Path) -> None:
+    _create_test_note(tmp_path, kind="constraint", title="Constraint with sqlite")
+    _create_test_note(tmp_path, kind="preference", title="Preference with sqlite")
+    result = run_cli("-r", str(tmp_path), "search", "-q", "sqlite", "-k", "constraint")
+    assert result.returncode == 0
+    assert "Constraint with sqlite" in result.stdout
+    assert "Preference with sqlite" not in result.stdout
+
+
+def test_search_requires_query_flag(tmp_path: Path) -> None:
+    result = run_cli("-r", str(tmp_path), "search")
+    assert result.returncode != 0
+
+
+def test_index_rebuild_exits_zero(tmp_path: Path) -> None:
+    _create_test_note(tmp_path, kind="constraint", title="Rebuild me")
+    result = run_cli("-r", str(tmp_path), "index", "rebuild")
+    assert result.returncode == 0
+    assert "rebuild" in result.stdout.lower() or "indexed" in result.stdout.lower()
+
+
+def test_index_rebuild_reports_count(tmp_path: Path) -> None:
+    _create_test_note(tmp_path, kind="constraint", title="Note 1")
+    _create_test_note(tmp_path, kind="preference", title="Note 2")
+    result = run_cli("-r", str(tmp_path), "index", "rebuild")
+    assert result.returncode == 0
+    assert "2" in result.stdout
+
+
+def test_index_status_exits_zero(tmp_path: Path) -> None:
+    _create_test_note(tmp_path, kind="constraint", title="Status test")
+    result = run_cli("-r", str(tmp_path), "index", "status")
+    assert result.returncode == 0
+
+
+def test_index_status_shows_note_count(tmp_path: Path) -> None:
+    _create_test_note(tmp_path, kind="constraint", title="Count me")
+    result = run_cli("-r", str(tmp_path), "index", "status")
+    assert result.returncode == 0
+    assert "1" in result.stdout
+
+
+def test_index_status_empty_root(tmp_path: Path) -> None:
+    result = run_cli("-r", str(tmp_path), "index", "status")
+    assert result.returncode == 0
+    assert "0" in result.stdout or "empty" in result.stdout.lower()
