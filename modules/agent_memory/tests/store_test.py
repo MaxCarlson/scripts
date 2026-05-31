@@ -203,7 +203,7 @@ def test_rebuild_index_reindexes_all_files(tmp_path: Path) -> None:
     )
     # Delete the SQLite index so a fresh store starts empty
     db_path = tmp_path / ".index" / "notes.sqlite3"
-    db_path.unlink()
+    db_path.unlink(missing_ok=True)
     fresh_store = NoteStore(root=tmp_path)
     count = fresh_store.rebuild_index()
     assert count == 2
@@ -241,6 +241,7 @@ def test_verify_flags_kind_mismatch(tmp_path: Path) -> None:
     # Corrupt the frontmatter kind field in the file
     text = note.path.read_text(encoding="utf-8")
     corrupted = text.replace("kind: preference", "kind: invalid_kind", 1)
+    assert "kind: invalid_kind" in corrupted  # guard: replace must have matched
     note.path.write_text(corrupted, encoding="utf-8")
     errors = store.verify()
     assert len(errors) == 1
