@@ -30,9 +30,10 @@ def test_project_required_kind_without_project_raises() -> None:
         determine_project(kind="handoff", project=None, title="handoff", auto_classify=False)
 
 
-def test_project_required_kind_task_without_project_raises() -> None:
+def test_project_required_kind_task_state_without_project_raises() -> None:
+    # 'task' is deprecated; 'task_state' is the active project-required successor
     with pytest.raises(PlacementError, match="requires a project"):
-        determine_project(kind="task", project=None, title="my task", auto_classify=False)
+        determine_project(kind="task_state", project=None, title="my task state", auto_classify=False)
 
 
 def test_project_required_kind_bug_without_project_raises() -> None:
@@ -63,9 +64,10 @@ def test_auto_classify_returns_global_when_llm_says_global() -> None:
 
 
 def test_auto_classify_strips_quotes_from_llm_response() -> None:
+    # 'reflection' is an LLM_CLASSIFY_KIND (ambiguous); 'session' is deprecated
     with patch("agent_memory.classify._llm_complete", return_value="'my-project'"):
         result = determine_project(
-            kind="session", project=None, title="Session summary", auto_classify=True, interactive=False
+            kind="reflection", project=None, title="Session summary", auto_classify=True, interactive=False
         )
     assert result == "my-project"
 
@@ -126,9 +128,10 @@ def test_interactive_fallback_project_choice(monkeypatch: pytest.MonkeyPatch) ->
     inputs = iter(["p", "my-project"])
     monkeypatch.setattr("builtins.input", lambda _: next(inputs))
 
+    # 'decision' is LLM_CLASSIFY (ambiguous); 'session' is deprecated and short-circuits to global
     with patch("agent_memory.classify._llm_complete", return_value=None), patch("sys.stdin.isatty", return_value=True):
         result = determine_project(
-            kind="session",
+            kind="decision",
             project=None,
             title="Session end",
             auto_classify=True,

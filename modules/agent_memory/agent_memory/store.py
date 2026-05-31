@@ -6,10 +6,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from agent_memory.classify import determine_project
-from agent_memory.frontmatter import parse_frontmatter, validate_frontmatter, write_frontmatter
+from agent_memory.frontmatter import (
+    CURRENT_SCHEMA_VERSION,
+    parse_frontmatter,
+    validate_frontmatter,
+    write_frontmatter,
+)
 from agent_memory.index import NoteIndex
 from agent_memory.naming import make_filename, make_note_id
-from agent_memory.note import VALID_KINDS, Note
+from agent_memory.note import (
+    ACTIVE_KINDS,
+    DEFAULT_LAYER_BY_KIND,
+    DEFAULT_STATUS,
+    DEPRECATED_KINDS,
+    Note,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,22 +47,42 @@ class NoteStore:
     def _read_note_file(self, path: Path) -> Note:
         text = path.read_text(encoding="utf-8")
         meta, body = parse_frontmatter(text)
-        title = ""
-        for line in body.splitlines():
-            if line.startswith("# "):
-                title = line[2:].strip()
-                break
+        # Title: prefer frontmatter field (V2), fall back to first H1 in body.
+        title = str(meta.get("title", ""))
+        if not title:
+            for line in body.splitlines():
+                if line.startswith("# "):
+                    title = line[2:].strip()
+                    break
+        if not title:
+            title = str(meta.get("id", ""))
         return Note(
             id=str(meta["id"]),
             path=path,
             kind=str(meta["kind"]),
             project=str(meta["project"]),
-            title=title or str(meta.get("id", "")),
+            title=title,
             body=body,
             created_at=str(meta["created_at"]),
             created_by=str(meta["created_by"]),
             tags=list(meta.get("tags") or []),
             schema_version=int(meta.get("schema_version", 1)),
+            # V2 optional fields — degrade gracefully when absent
+            updated_at=str(meta.get("updated_at", "")),
+            updated_by=str(meta.get("updated_by", "")),
+            status=str(meta.get("status", DEFAULT_STATUS)),
+            layer=str(meta.get("layer", "")),
+            source_agent=meta.get("source_agent") or None,
+            session_id=meta.get("session_id") or None,
+            confidence=_float_or_none(meta.get("confidence")),
+            review_required=bool(meta.get("review_required", False)),
+            classification_reason=meta.get("classification_reason") or None,
+            classification_method=meta.get("classification_method") or None,
+            related=list(meta.get("related") or []),
+            supersedes=list(meta.get("supersedes") or []),
+            superseded_by=list(meta.get("superseded_by") or []),
+            evidence_for=list(meta.get("evidence_for") or []),
+            files=list(meta.get("files") or []),
         )
 
     def _known_projects(self) -> list[str]:
@@ -71,11 +102,22 @@ class NoteStore:
         tags: list[str] | None = None,
         auto_classify: bool = False,
         dry_run: bool = False,
+        # V2 optional metadata
+        source_agent: str | None = None,
+        session_id: str | None = None,
+        review_required: bool = False,
+        classification_reason: str | None = None,
+        classification_method: str | None = None,
+        related: list[str] | None = None,
+        supersedes: list[str] | None = None,
+        superseded_by: list[str] | None = None,
+        evidence_for: list[str] | None = None,
+        files: list[str] | None = None,
     ) -> Note:
-        """Create a new memory note.
+        """Create a new memory note (always writes V2 frontmatter).
 
         Args:
-            kind: Note kind (must be in VALID_KINDS).
+            kind: Note kind — must be in ACTIVE_KINDS (deprecated kinds rejected).
             project: Project slug, "global", or None (triggers auto-placement).
             title: Human-readable note title.
             body: Markdown body text.
@@ -83,13 +125,28 @@ class NoteStore:
             tags: Optional list of tag strings.
             auto_classify: If True and project is None, call llm_local to classify.
             dry_run: If True, return the Note without writing any files.
+            source_agent: Agent that produced this note (optional).
+            session_id: Session/conversation identifier (optional).
+            review_required: Flag for human review (default False).
+            classification_reason: Reason code from classifier (optional).
+            classification_method: How placement was decided (optional).
+            related / supersedes / superseded_by / evidence_for: Relationship IDs.
+            files: File paths relevant to this note.
 
         Returns:
             The created Note. If dry_run, path will be the expected path but file
             will not exist.
+
+        Raises:
+            ValueError: For unknown or deprecated kinds.
         """
-        if kind not in VALID_KINDS:
-            raise ValueError(f"Invalid kind '{kind}'. Valid kinds: {sorted(VALID_KINDS)}")
+        if kind in DEPRECATED_KINDS:
+            raise ValueError(
+                f"Kind '{kind}' is deprecated and cannot be created. "
+                f"Use one of: {sorted(ACTIVE_KINDS)}"
+            )
+        if kind not in ACTIVE_KINDS:
+            raise ValueError(f"Invalid kind '{kind}'. Valid kinds: {sorted(ACTIVE_KINDS)}")
 
         resolved_project = determine_project(
             kind=kind,
@@ -100,18 +157,45 @@ class NoteStore:
             body=body,
         )
         note_id = make_note_id()
-        created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         resolved_tags = tags or []
+        layer = DEFAULT_LAYER_BY_KIND.get(kind, "archival")
 
         meta: dict[str, object] = {
             "id": note_id,
-            "schema_version": 1,
+            "schema_version": CURRENT_SCHEMA_VERSION,
             "kind": kind,
             "project": resolved_project,
-            "created_at": created_at,
+            "title": title,
+            "created_at": now,
             "created_by": created_by,
+            "updated_at": now,
+            "updated_by": created_by,
+            "status": DEFAULT_STATUS,
+            "layer": layer,
             "tags": resolved_tags,
         }
+        # Optional V2 fields — include only when non-empty/non-None.
+        if source_agent:
+            meta["source_agent"] = source_agent
+        if session_id:
+            meta["session_id"] = session_id
+        if review_required:
+            meta["review_required"] = True
+        if classification_reason:
+            meta["classification_reason"] = classification_reason
+        if classification_method:
+            meta["classification_method"] = classification_method
+        for field_name, value in [
+            ("related", related),
+            ("supersedes", supersedes),
+            ("superseded_by", superseded_by),
+            ("evidence_for", evidence_for),
+            ("files", files),
+        ]:
+            if value:
+                meta[field_name] = value
+
         full_body = f"# {title}\n\n{body}"
         content = write_frontmatter(meta, full_body)
 
@@ -126,9 +210,24 @@ class NoteStore:
             project=resolved_project,
             title=title,
             body=full_body,
-            created_at=created_at,
+            created_at=now,
             created_by=created_by,
             tags=resolved_tags,
+            schema_version=CURRENT_SCHEMA_VERSION,
+            updated_at=now,
+            updated_by=created_by,
+            status=DEFAULT_STATUS,
+            layer=layer,
+            source_agent=source_agent,
+            session_id=session_id,
+            review_required=review_required,
+            classification_reason=classification_reason,
+            classification_method=classification_method,
+            related=related or [],
+            supersedes=supersedes or [],
+            superseded_by=superseded_by or [],
+            evidence_for=evidence_for or [],
+            files=files or [],
         )
 
         if dry_run:
@@ -146,10 +245,24 @@ class NoteStore:
             kind=kind,
             title=title,
             body=full_body,
-            created_at=created_at,
+            created_at=now,
             created_by=created_by,
             tags=resolved_tags,
             full_content=content,
+            schema_version=CURRENT_SCHEMA_VERSION,
+            updated_at=now,
+            updated_by=created_by,
+            status=DEFAULT_STATUS,
+            layer=layer,
+            source_agent=source_agent,
+            session_id=session_id,
+            review_required=review_required,
+            classification_reason=classification_reason,
+            classification_method=classification_method,
+            related=related or [],
+            supersedes=supersedes or [],
+            superseded_by=superseded_by or [],
+            evidence_for=evidence_for or [],
         )
         return note
 
@@ -169,9 +282,14 @@ class NoteStore:
         kind: str | None = None,
         tags: list[str] | None = None,
         limit: int = 20,
+        status: str | None = None,
+        layer: str | None = None,
     ) -> list[Note]:
         """Return notes matching filters, newest first."""
-        records = self._index.list_notes(project=project, kind=kind, tags=tags, limit=limit)
+        records = self._index.list_notes(
+            project=project, kind=kind, tags=tags, limit=limit,
+            status=status, layer=layer,
+        )
         notes: list[Note] = []
         for rec in records:
             path = Path(rec["path"])
@@ -215,22 +333,40 @@ class NoteStore:
                 meta, body = parse_frontmatter(text)
                 if not meta.get("id"):
                     continue
-                title = ""
-                for line in body.splitlines():
-                    if line.startswith("# "):
-                        title = line[2:].strip()
-                        break
+                # Title: frontmatter preferred (V2), then H1.
+                fm_title = str(meta.get("title", ""))
+                if not fm_title:
+                    for line in body.splitlines():
+                        if line.startswith("# "):
+                            fm_title = line[2:].strip()
+                            break
+                layer = str(meta.get("layer", DEFAULT_LAYER_BY_KIND.get(str(meta.get("kind", "")), "")))
                 self._index.upsert(
                     note_id=str(meta["id"]),
                     path=str(md_file),
                     project=str(meta.get("project", "global")),
                     kind=str(meta.get("kind", "")),
-                    title=title,
+                    title=fm_title,
                     body=body,
                     created_at=str(meta.get("created_at", "")),
                     created_by=str(meta.get("created_by", "")),
                     tags=list(meta.get("tags") or []),
                     full_content=text,
+                    schema_version=int(meta.get("schema_version", 1)),
+                    updated_at=str(meta.get("updated_at", "")),
+                    updated_by=str(meta.get("updated_by", "")),
+                    status=str(meta.get("status", DEFAULT_STATUS)),
+                    layer=layer,
+                    source_agent=meta.get("source_agent") or None,
+                    session_id=meta.get("session_id") or None,
+                    confidence=_float_or_none(meta.get("confidence")),
+                    review_required=bool(meta.get("review_required", False)),
+                    classification_reason=meta.get("classification_reason") or None,
+                    classification_method=meta.get("classification_method") or None,
+                    related=list(meta.get("related") or []),
+                    supersedes=list(meta.get("supersedes") or []),
+                    superseded_by=list(meta.get("superseded_by") or []),
+                    evidence_for=list(meta.get("evidence_for") or []),
                 )
                 count += 1
             except Exception as exc:
@@ -255,7 +391,18 @@ class NoteStore:
                 if not errors:
                     path_kind = md_file.parent.name
                     if meta.get("kind") and meta["kind"] != path_kind:
-                        errors.append(f"{md_file}: frontmatter kind='{meta['kind']}' but directory says '{path_kind}'")
+                        errors.append(
+                            f"{md_file}: frontmatter kind='{meta['kind']}' but directory says '{path_kind}'"
+                        )
             except Exception as exc:
                 errors.append(f"{md_file}: parse error: {exc}")
         return errors
+
+
+def _float_or_none(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

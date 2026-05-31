@@ -4,7 +4,12 @@ import logging
 import re
 import sys
 
-from agent_memory.note import GLOBAL_DEFAULT_KINDS, LLM_CLASSIFY_KINDS, PROJECT_REQUIRED_KINDS
+from agent_memory.note import (
+    DEPRECATED_KINDS,
+    GLOBAL_DEFAULT_KINDS,
+    LLM_CLASSIFY_KINDS,
+    PROJECT_REQUIRED_KINDS,
+)
 
 try:
     from llm_local import complete as _llm_complete
@@ -30,6 +35,11 @@ def determine_project(
     """Return the project slug or 'global' for a note."""
     if project is not None:
         return project
+
+    if kind in DEPRECATED_KINDS:
+        # Deprecated kinds should not be created; raise before reaching this
+        # code. Defensively default to global for index/readback paths.
+        return "global"
 
     if kind in GLOBAL_DEFAULT_KINDS:
         return "global"
@@ -57,6 +67,58 @@ def classify_placement(*, kind: str, title: str, body: str, known_projects: list
     del known_projects
     return _classify_via_llm(kind=kind, title=title, body=body)
 
+
+def _classify_via_llm(*, kind: str, title: str, body: str) -> str | None:
+    if _llm_complete is None:
+        logger.debug("llm_local not installed; skipping LLM classification")
+        return None
+
+    prompt = (
+        "A memory note is being saved. Determine whether it belongs in the 'global' "
+        "scope (cross-project, always applicable) or a specific project (only relevant "
+        "to one project).\n\n"
+        f"Kind: {kind}\n"
+        f"Title: {title}\n"
+        f"Body excerpt: {body[:300]}\n\n"
+        "Respond with only one of:\n"
+        "- 'global' if this note applies across all projects\n"
+        "- '<project-slug>' if this note is specific to one project\n\n"
+        "Response:"
+    )
+
+    raw = _llm_complete(prompt, timeout=5.0)
+    if raw is None:
+        return None
+
+    cleaned = raw.strip().lower().strip("'\"")
+    if not cleaned or len(cleaned) > 80 or not _is_valid_project_slug(cleaned):
+        logger.debug("LLM returned unusable placement: %r", raw)
+        return None
+
+    return cleaned
+
+
+def _is_valid_project_slug(value: str) -> bool:
+    return value == "global" or bool(re.fullmatch(r"[a-z0-9][a-z0-9_-]*", value))
+
+
+def _classify_interactively(*, kind: str, title: str) -> str:
+    print(f"\nCannot auto-classify '{kind}' note: '{title}'")
+    print("Where should this note live?")
+    print("  [g] global  (cross-project, always applicable)")
+    print("  [p] project (enter project slug)")
+
+    while True:
+        choice = input("Choice [g/p]: ").strip().lower()
+        if choice in ("g", "global"):
+            return "global"
+        if choice in ("p", "project"):
+            slug = input("Project slug: ").strip()
+            if slug:
+                return slug
+            print("Project slug cannot be empty.")
+        else:
+            print("Please enter 'g' or 'p'.")
 
 def _classify_via_llm(*, kind: str, title: str, body: str) -> str | None:
     if _llm_complete is None:

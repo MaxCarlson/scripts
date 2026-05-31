@@ -51,6 +51,12 @@ def _make_parser() -> argparse.ArgumentParser:
     create_p.add_argument("-g", "--tags", default="", help="Comma-separated tags.")
     create_p.add_argument("-L", "--no-llm", action="store_true", help="Disable LLM auto-classification.")
     create_p.add_argument("-n", "--dry-run", action="store_true", help="Print note without writing.")
+    create_p.add_argument("-A", "--source-agent", default=None, metavar="AGENT",
+                          help="Agent identifier that produced this note (optional).")
+    create_p.add_argument("-S", "--session-id", default=None, metavar="ID",
+                          help="Session or conversation ID to attach to this note (optional).")
+    create_p.add_argument("-F", "--file", action="append", default=[], dest="files", metavar="PATH",
+                          help="File path relevant to this note (repeatable).")
 
     # note list
     list_p = note_sub.add_parser("list", help="List notes.")
@@ -58,6 +64,10 @@ def _make_parser() -> argparse.ArgumentParser:
     list_p.add_argument("-k", "--kind", default=None, help="Filter by kind.")
     list_p.add_argument("-g", "--tags", default="", help="Comma-separated tags to filter by.")
     list_p.add_argument("-l", "--limit", type=int, default=20, metavar="N", help="Maximum results (default: 20).")
+    list_p.add_argument("-s", "--status", default=None,
+                        help="Filter by lifecycle status (active, superseded, archived, draft).")
+    list_p.add_argument("-y", "--layer", default=None,
+                        help="Filter by memory layer (core, working, archival, reflective).")
 
     # note show
     show_p = note_sub.add_parser("show", help="Show a note's full content.")
@@ -131,6 +141,7 @@ def _cmd_note_create(args: argparse.Namespace, store: NoteStore) -> None:
 
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
     auto_classify = not args.no_llm
+    files = list(args.files) if args.files else []
 
     try:
         note = store.create_note(
@@ -142,6 +153,9 @@ def _cmd_note_create(args: argparse.Namespace, store: NoteStore) -> None:
             tags=tags,
             auto_classify=auto_classify,
             dry_run=args.dry_run,
+            source_agent=args.source_agent or None,
+            session_id=args.session_id or None,
+            files=files or None,
         )
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -150,13 +164,18 @@ def _cmd_note_create(args: argparse.Namespace, store: NoteStore) -> None:
     if args.dry_run:
         from agent_memory.frontmatter import write_frontmatter
 
-        meta = {
+        meta: dict[str, object] = {
             "id": note.id,
             "schema_version": note.schema_version,
             "kind": note.kind,
             "project": note.project,
+            "title": note.title,
             "created_at": note.created_at,
             "created_by": note.created_by,
+            "updated_at": note.updated_at,
+            "updated_by": note.updated_by,
+            "status": note.status,
+            "layer": note.layer,
             "tags": note.tags,
         }
         print(write_frontmatter(meta, note.body))
@@ -172,6 +191,8 @@ def _cmd_note_list(args: argparse.Namespace, store: NoteStore) -> None:
         kind=args.kind,
         tags=tags,
         limit=args.limit,
+        status=args.status or None,
+        layer=args.layer or None,
     )
     if not notes:
         print("0 notes found.")
