@@ -294,3 +294,251 @@ def test_create_note_project_required_kind_raises_placement_error(tmp_path: Path
             body="",
             created_by="test",
         )
+
+
+# ---------------------------------------------------------------------------
+# V2 schema tests
+# ---------------------------------------------------------------------------
+
+def test_create_note_writes_schema_version_2(tmp_path: Path) -> None:
+    store = NoteStore(root=tmp_path)
+    note = store.create_note(
+        kind="constraint",
+        project=None,
+        title="V2 note",
+        body="Body.",
+        created_by="test",
+    )
+    assert note.schema_version == 2
+    from agent_memory.frontmatter import parse_frontmatter
+    meta, _ = parse_frontmatter(note.path.read_text(encoding="utf-8"))
+    assert meta["schema_version"] == 2
+
+
+def test_create_note_v2_includes_title_in_frontmatter(tmp_path: Path) -> None:
+    store = NoteStore(root=tmp_path)
+    note = store.create_note(
+        kind="preference",
+        project=None,
+        title="Always use pathlib",
+        body="Body.",
+        created_by="test",
+    )
+    from agent_memory.frontmatter import parse_frontmatter
+    meta, _ = parse_frontmatter(note.path.read_text(encoding="utf-8"))
+    assert meta["title"] == "Always use pathlib"
+
+
+def test_create_note_v2_has_lifecycle_fields(tmp_path: Path) -> None:
+    store = NoteStore(root=tmp_path)
+    note = store.create_note(
+        kind="environment",
+        project=None,
+        title="Python version",
+        body="Python 3.11.",
+        created_by="test",
+    )
+    assert note.updated_at != ""
+    assert note.updated_by == "test"
+    assert note.status == "active"
+    assert note.layer == "core"
+
+
+def test_create_note_v2_default_layer_matches_kind(tmp_path: Path) -> None:
+    store = NoteStore(root=tmp_path)
+    for kind, expected_layer in [
+        ("constraint", "core"),
+        ("procedure", "core"),
+        ("reflection", "reflective"),
+    ]:
+        project = None if kind not in ("handoff", "bug", "task_state", "evidence") else "proj"
+        note = store.create_note(
+            kind=kind,
+            project=project,
+            title=f"Test {kind}",
+            body="Body.",
+            created_by="test",
+        )
+        assert note.layer == expected_layer, f"Expected layer '{expected_layer}' for kind '{kind}'"
+
+
+def test_create_note_v2_optional_provenance_fields(tmp_path: Path) -> None:
+    store = NoteStore(root=tmp_path)
+    note = store.create_note(
+        kind="decision",
+        project="my-project",
+        title="Use SQLite",
+        body="Body.",
+        created_by="test",
+        source_agent="gemini",
+        session_id="sess-xyz",
+        review_required=True,
+    )
+    assert note.source_agent == "gemini"
+    assert note.session_id == "sess-xyz"
+    assert note.review_required is True
+    from agent_memory.frontmatter import parse_frontmatter
+    meta, _ = parse_frontmatter(note.path.read_text(encoding="utf-8"))
+    assert meta["source_agent"] == "gemini"
+    assert meta["session_id"] == "sess-xyz"
+    assert meta["review_required"] is True
+
+
+def test_create_note_v2_relationship_fields(tmp_path: Path) -> None:
+    store = NoteStore(root=tmp_path)
+    note = store.create_note(
+        kind="reflection",
+        project=None,
+        title="Reflection",
+        body="Body.",
+        created_by="test",
+        related=["id-1"],
+        supersedes=["old-id"],
+        evidence_for=["dec-id"],
+        files=["src/main.py"],
+    )
+    assert note.related == ["id-1"]
+    assert note.supersedes == ["old-id"]
+    assert note.evidence_for == ["dec-id"]
+    assert note.files == ["src/main.py"]
+
+
+def test_create_deprecated_task_kind_raises(tmp_path: Path) -> None:
+    store = NoteStore(root=tmp_path)
+    with pytest.raises(ValueError, match="deprecated"):
+        store.create_note(
+            kind="task",
+            project="proj",
+            title="Old task",
+            body="Body.",
+            created_by="test",
+        )
+
+
+def test_create_deprecated_session_kind_raises(tmp_path: Path) -> None:
+    store = NoteStore(root=tmp_path)
+    with pytest.raises(ValueError, match="deprecated"):
+        store.create_note(
+            kind="session",
+            project=None,
+            title="Old session",
+            body="Body.",
+            created_by="test",
+        )
+
+
+def test_v1_note_readable_from_disk(tmp_path: Path) -> None:
+    """A manually written V1 note must parse, index, and be retrievable."""
+    import yaml
+    v1_meta = {
+        "id": "v1-legacy-note",
+        "schema_version": 1,
+        "kind": "decision",
+        "project": "my-project",
+        "created_at": "2026-01-01T00:00:00Z",
+        "created_by": "human",
+        "tags": ["legacy"],
+    }
+    fm = yaml.dump(v1_meta, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    body = "# Old Decision\n\nThis is a V1 note."
+    content = f"---\n{fm}---\n\n{body}"
+    note_dir = tmp_path / "projects" / "my-project" / "decision"
+    note_dir.mkdir(parents=True)
+    note_path = note_dir / "v1-legacy-note_old-decision.md"
+    note_path.write_text(content, encoding="utf-8")
+
+    store = NoteStore(root=tmp_path)
+    count = store.rebuild_index()
+    assert count == 1
+
+    fetched = store.get_note("v1-legacy-note")
+    assert fetched is not None
+    assert fetched.schema_version == 1
+    assert fetched.title == "Old Decision"
+    assert fetched.status == "active"  # default
+    assert fetched.tags == ["legacy"]
+
+
+def test_list_notes_filter_by_status(tmp_path: Path) -> None:
+    store = NoteStore(root=tmp_path)
+    store.create_note(
+        kind="constraint",
+        project=None,
+        title="Active note",
+        body="Body.",
+        created_by="test",
+    )
+    # Inject a second note with superseded status via raw write + rebuild
+    import yaml
+    v2_meta = {
+        "id": "superseded-note-1",
+        "schema_version": 2,
+        "kind": "constraint",
+        "project": "global",
+        "title": "Old constraint",
+        "created_at": "2026-01-01T00:00:00Z",
+        "created_by": "test",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "updated_by": "test",
+        "status": "superseded",
+        "tags": [],
+    }
+    fm = yaml.dump(v2_meta, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    note_dir = tmp_path / "global" / "constraint"
+    note_dir.mkdir(parents=True, exist_ok=True)
+    note_path = note_dir / "superseded-note-1_old-constraint.md"
+    note_path.write_text(f"---\n{fm}---\n\n# Old constraint\n\nOld.", encoding="utf-8")
+    store.rebuild_index()
+
+    active_notes = store.list_notes(status="active")
+    assert all(n.status == "active" for n in active_notes)
+    assert not any(n.id == "superseded-note-1" for n in active_notes)
+
+    superseded_notes = store.list_notes(status="superseded")
+    assert any(n.id == "superseded-note-1" for n in superseded_notes)
+
+
+def test_list_notes_filter_by_layer(tmp_path: Path) -> None:
+    store = NoteStore(root=tmp_path)
+    store.create_note(
+        kind="constraint",
+        project=None,
+        title="Core note",
+        body="Body.",
+        created_by="test",
+    )
+    store.create_note(
+        kind="decision",
+        project="proj",
+        title="Archival note",
+        body="Body.",
+        created_by="test",
+    )
+    core_notes = store.list_notes(layer="core")
+    assert len(core_notes) == 1
+    assert core_notes[0].layer == "core"
+
+    archival_notes = store.list_notes(layer="archival")
+    assert len(archival_notes) == 1
+    assert archival_notes[0].layer == "archival"
+
+
+def test_new_active_kinds_can_be_created(tmp_path: Path) -> None:
+    store = NoteStore(root=tmp_path)
+    for kind, project in [
+        ("environment", None),
+        ("procedure", None),
+        ("evidence", "proj"),
+        ("task_state", "proj"),
+        ("task_lesson", "proj"),
+        ("reflection", None),
+    ]:
+        note = store.create_note(
+            kind=kind,
+            project=project,
+            title=f"Test {kind}",
+            body="Body.",
+            created_by="test",
+        )
+        assert note.kind == kind
+        assert note.schema_version == 2
