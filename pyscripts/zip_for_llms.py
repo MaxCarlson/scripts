@@ -66,6 +66,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
+__version__ = "0.1.0"
+
 
 # =====================================================================================
 # ANSI color helpers (auto-disable for non-TTY or NO_COLOR)

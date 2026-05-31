@@ -30,6 +30,67 @@ if ($SkipReinstall -and $NoSkipReinstall) {
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $VenvDir = Join-Path $Root '.venv'
 $VenvPython = Join-Path $VenvDir 'Scripts\python.exe'
+
+function Ensure-PscriptsSubmodule {
+    $pscriptsDir = Join-Path $Root 'pscripts'
+    $pscriptsSetup = Join-Path $pscriptsDir 'setup.py'
+    $gitCommand = Get-Command git -ErrorAction SilentlyContinue
+
+    if (-not $gitCommand) {
+        if (-not (Test-Path $pscriptsSetup)) {
+            Write-Host "[ERROR] pscripts submodule is missing, and git is not available to initialize it." -ForegroundColor Red
+            exit 1
+        }
+        return
+    }
+
+    $expected = ''
+    try {
+        $treeLine = (& git -C $Root ls-tree HEAD pscripts 2>$null)
+        if ($treeLine) {
+            $parts = $treeLine -split '\s+'
+            if ($parts.Count -ge 3) {
+                $expected = $parts[2]
+            }
+        }
+    } catch {
+        $expected = ''
+    }
+    if (-not $expected) {
+        return
+    }
+
+    $actual = ''
+    $submoduleGitDir = Join-Path $pscriptsDir '.git'
+    if (Test-Path $submoduleGitDir) {
+        try {
+            $actual = (& git -C $pscriptsDir rev-parse HEAD 2>$null)
+        } catch {
+            $actual = ''
+        }
+    }
+
+    if ((Test-Path $pscriptsSetup) -and ($actual -eq $expected)) {
+        return
+    }
+
+    Write-BootstrapDetail "[BOOTSTRAP] Ensuring pscripts submodule..." Cyan
+    & git -C $Root submodule sync -- pscripts *> $null
+    & git -C $Root submodule update --init --recursive -- pscripts
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[ERROR] Failed to initialize/update pscripts submodule." -ForegroundColor Red
+        Write-Host "[ERROR] Check GitHub auth/network access, then rerun bootstrap." -ForegroundColor Red
+        exit 1
+    }
+
+    if (-not (Test-Path $pscriptsSetup)) {
+        Write-Host "[ERROR] pscripts submodule initialized, but pscripts/setup.py is still missing." -ForegroundColor Red
+        exit 1
+    }
+}
+
+Ensure-PscriptsSubmodule
+
 $repoHelperPath = Join-Path $Root "pwsh\ResolveRepoPaths.ps1"
 if (Test-Path $repoHelperPath) {
     try {
@@ -121,4 +182,3 @@ if ($NoUpdateHelp) {
 $SetupArgs += $Args
 & $VenvPython (Join-Path $Root 'setup.py') @SetupArgs
 exit $LASTEXITCODE
-
