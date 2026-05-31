@@ -495,6 +495,47 @@ def _install_module(module_name: str, module_dir: Path, *, editable: bool, logs_
     cmd.append(str(module_dir.resolve()))
     return _run_with_log(cmd, log_file, verbose=verbose)
 
+def _console_scripts_from_source(module_dir: Path) -> list[str]:
+    """Return declared console script names from pyproject.toml or setup.py."""
+    pyproject = module_dir / "pyproject.toml"
+    if pyproject.is_file():
+        try:
+            with open(pyproject, "rb") as f:
+                data = tomllib.load(f)
+            return list(data.get("project", {}).get("scripts", {}).keys())
+        except Exception:
+            pass
+    setup_py = module_dir / "setup.py"
+    if setup_py.is_file():
+        try:
+            text = setup_py.read_text(encoding="utf-8", errors="ignore")
+            m = re.search(r"console_scripts['\"]?\s*:\s*\[([^\]]+)\]", text)
+            if m:
+                return re.findall(r"['\"](\w[\w-]*)\s*=", m.group(1))
+        except Exception:
+            pass
+    return []
+
+
+def _check_console_script_lock(module_dir: Path) -> tuple[bool, str | None]:
+    """Return (True, locked_path) if any existing console script .exe is locked.
+
+    Performs an open-for-write probe instead of a full pip install attempt,
+    so we fail in milliseconds rather than waiting 60+ seconds for pip.
+    """
+    venv_scripts = Path(sys.executable).parent  # e.g. .venv/Scripts
+    for script_name in _console_scripts_from_source(module_dir):
+        exe_path = venv_scripts / f"{script_name}.exe"
+        if exe_path.exists():
+            try:
+                with open(exe_path, "r+b"):
+                    pass
+            except OSError as exc:
+                if getattr(exc, "winerror", None) == 32:
+                    return True, str(exe_path)
+    return False, None
+
+
 # ─────────────────────────────────────────────────────────
 # Scan + install modules (and remember names for proxy generation)
 # ─────────────────────────────────────────────────────────
@@ -517,15 +558,24 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
                 sys.path.insert(0, str(setup_utils_dir))
                 from dependency_resolver import resolve_module_order
                 ordered_names = resolve_module_order(modules_dir)
-                entries = [modules_dir / name for name in ordered_names if (modules_dir / name).exists()]
+                entries = [
+                    modules_dir / name for name in ordered_names
+                    if (modules_dir / name).is_dir()
+                ]
                 if verbose:
                     log_info(f"Using dependency-aware installation order: {', '.join(ordered_names)}")
             else:
-                entries = sorted(modules_dir.iterdir(), key=lambda p: p.name.lower())
+                entries = sorted(
+                    (p for p in modules_dir.iterdir() if p.is_dir()),
+                    key=lambda p: p.name.lower(),
+                )
         except Exception as e:
             if verbose:
                 log_warning(f"Dependency resolver failed ({e}), using alphabetical order")
-            entries = sorted(modules_dir.iterdir(), key=lambda p: p.name.lower())
+            entries = sorted(
+                (p for p in modules_dir.iterdir() if p.is_dir()),
+                key=lambda p: p.name.lower(),
+            )
 
         print(f"[•] Found {len(entries)} module(s) to process") if not _ASCII_UI else print(f"[-] Found {len(entries)} module(s) to process")
 
@@ -646,6 +696,20 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
                     )
                     errors_encountered.append(name)
                     continue
+
+            # Pre-check: if a console script exe is already locked by another
+            # process, skip immediately instead of waiting 60+ s for pip to fail.
+            is_locked, locked_exe = _check_console_script_lock(entry)
+            if is_locked:
+                exe_name = Path(locked_exe).name if locked_exe else "console script"
+                status_line(
+                    f"{name}: install skipped — {exe_name} is locked by another process",
+                    "warn",
+                    "close the process using this executable, then rerun bootstrap",
+                )
+                locked_failed_pkgs.add(pkg_name_for_entry)
+                errors_encountered.append(name)
+                continue
 
             mode = "editable" if not production else "normal"
             print(f"[•] {name}: pip installing ({mode})" if not _ASCII_UI else f"[-] {name}: pip installing ({mode})")

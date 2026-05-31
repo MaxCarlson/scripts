@@ -79,15 +79,10 @@ function Resolve-RepoPath {
         return $null
     }
 
-    try {
-        $match = Get-ChildItem -LiteralPath $driveRoot -Directory -Filter $RepoName -Recurse -Depth 4 -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -ieq $RepoName } |
-            Select-Object -First 1
-        return $match.FullName
-    } catch {
-        Write-Verbose ("Failed repo search for {0}: {1}" -f $RepoName, $_)
-        return $null
-    }
+    # Drive-root recursive scan removed — it was scanning C:\ to depth 4 which
+    # takes 60+ seconds. If the repo isn't in any candidate location, return null.
+    Write-Verbose ("Repo '{0}' not found in any candidate location; skipping drive scan." -f $RepoName)
+    return $null
 }
 
 function Resolve-RepoEnvironment {

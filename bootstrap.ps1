@@ -104,23 +104,35 @@ Ensure-PscriptsSubmodule
 # ── Repo path environment ─────────────────────────────────────────────────────
 $repoHelperPath = Join-Path $Root "pwsh\ResolveRepoPaths.ps1"
 if (Test-Path $repoHelperPath) {
-    Write-BootstrapStep "[BOOTSTRAP] Synchronizing repo paths..." DarkGray
-    try {
-        . $repoHelperPath
-        if ($VerboseSetup) {
-            $repoEnv = Initialize-RepoEnvironment -AnchorPath $Root -AnchorRepoName 'scripts' -PersistScopes @('User')
-        } else {
-            $repoEnv = Initialize-RepoEnvironment -AnchorPath $Root -AnchorRepoName 'scripts' -PersistScopes @('User') 6>$null
+    # Skip the expensive path-sync if SCRIPTS already points here and PWSH_REPO/DOTFILES resolve.
+    # Initialize-RepoEnvironment's drive-root fallback scanned C:\ to depth 4 (60+ s); we avoid
+    # that by only running when env vars are missing or stale.
+    $scriptsOk  = $env:SCRIPTS -and ($env:SCRIPTS -eq $Root -or $env:SCRIPTS_REPO -eq $Root)
+    $pwshOk     = $env:PWSH_REPO -and (Test-Path $env:PWSH_REPO -PathType Container)
+    $dotfilesOk = $env:DOTFILES  -and (Test-Path $env:DOTFILES  -PathType Container)
+
+    if ($scriptsOk -and $pwshOk -and $dotfilesOk -and -not $VerboseSetup) {
+        Write-BootstrapStep "[BOOTSTRAP] Repo paths already set — skipping sync." DarkGray
+        if ($env:SCRIPTS) { $global:SCRIPTS_REPO = $env:SCRIPTS }
+    } else {
+        Write-BootstrapStep "[BOOTSTRAP] Synchronizing repo paths..." DarkGray
+        try {
+            . $repoHelperPath
+            if ($VerboseSetup) {
+                $repoEnv = Initialize-RepoEnvironment -AnchorPath $Root -AnchorRepoName 'scripts' -PersistScopes @('User')
+            } else {
+                $repoEnv = Initialize-RepoEnvironment -AnchorPath $Root -AnchorRepoName 'scripts' -PersistScopes @('User') 6>$null
+            }
+            if ($repoEnv.SCRIPTS) { $global:SCRIPTS_REPO = $repoEnv.SCRIPTS }
+            $summary = @()
+            foreach ($key in 'PWSH_REPO','SCRIPTS','DOTFILES') {
+                $value = if ($repoEnv[$key]) { $repoEnv[$key] } else { '<missing>' }
+                $summary += "${key}=$value"
+            }
+            Write-BootstrapDetail "[BOOTSTRAP] Repo env synchronized: $($summary -join ' | ')"
+        } catch {
+            Write-Warning "[BOOTSTRAP] Repo env initialization failed: $_"
         }
-        if ($repoEnv.SCRIPTS) { $global:SCRIPTS_REPO = $repoEnv.SCRIPTS }
-        $summary = @()
-        foreach ($key in 'PWSH_REPO','SCRIPTS','DOTFILES') {
-            $value = if ($repoEnv[$key]) { $repoEnv[$key] } else { '<missing>' }
-            $summary += "${key}=$value"
-        }
-        Write-BootstrapDetail "[BOOTSTRAP] Repo env synchronized: $($summary -join ' | ')"
-    } catch {
-        Write-Warning "[BOOTSTRAP] Repo env initialization failed: $_"
     }
 } else {
     Write-Warning "[BOOTSTRAP] Repo resolver missing at $repoHelperPath"

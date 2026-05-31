@@ -1213,7 +1213,7 @@ def main():
         except ValueError:
             title_rel_path = full_script_path.name
         is_modules = full_script_path == MODULES_DIR / "setup.py"
-        total = len(list(MODULES_DIR.iterdir())) if is_modules and MODULES_DIR.exists() else 1
+        total = sum(1 for p in MODULES_DIR.iterdir() if p.is_dir()) if is_modules and MODULES_DIR.exists() else 1
         title = "Python Modules" if is_modules else f"Sub-setup: {title_rel_path}"
         with setup_group(title, total, modules=is_modules):
             run_setup(full_script_path, *(common_setup_args + extra_args), soft_fail_modules=soft_fail_modules)
