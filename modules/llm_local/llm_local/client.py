@@ -5,7 +5,6 @@ import logging
 import os
 import urllib.error
 import urllib.request
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -15,11 +14,11 @@ _DEFAULT_URL = "http://localhost:1234/v1"
 def complete(
     prompt: str,
     *,
-    model: Optional[str] = None,
-    url: Optional[str] = None,
+    model: str | None = None,
+    url: str | None = None,
     timeout: float = 5.0,
-    system: Optional[str] = None,
-) -> Optional[str]:
+    system: str | None = None,
+) -> str | None:
     """Call local LM Studio inference endpoint.
 
     Returns the model's reply string, or None if the server is unreachable
@@ -32,16 +31,20 @@ def complete(
             http://localhost:1234/v1.
         timeout: HTTP timeout in seconds.
         system: Optional system message prepended to the conversation.
+
+    Returns:
+        The model's reply string, or None if the server is unreachable
+        or returns an unexpected response.
     """
     base_url = (url or os.environ.get("LM_STUDIO_URL", _DEFAULT_URL)).rstrip("/")
     endpoint = f"{base_url}/chat/completions"
 
-    messages: list[dict] = []
+    messages: list[dict[str, str]] = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
-    payload: dict = {"messages": messages, "stream": False}
+    payload: dict[str, object] = {"messages": messages, "stream": False}
     if model:
         payload["model"] = model
 
