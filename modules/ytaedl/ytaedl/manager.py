@@ -2233,7 +2233,17 @@ def run_main(
                     except Exception:
                         pass
                 elif ev == "finish":
-                    if not _event_matches_active_attempt(ws, evt):
+                    # A 'finish' event carries the root attempt_id (e.g. "w03:u1:normal:1").
+                    # Fallback sub-attempts update ws.active_attempt_id to a child id such as
+                    # "w03:u1:normal:1:fallback:4", causing strict equality to fail.  Accept
+                    # the event when the active attempt is any sub-attempt of this finish.
+                    _finish_eid = evt.get("attempt_id")
+                    if _finish_eid and ws.active_attempt_id is not None:
+                        _eid = str(_finish_eid)
+                        _aid = ws.active_attempt_id
+                        if _aid != _eid and not _aid.startswith(_eid + ":"):
+                            continue
+                    elif not _event_matches_active_attempt(ws, evt):
                         continue
                     mlog.info(f"[{ws.slot:02d}] FINISH rc={evt.get('rc')} idx={ws.url_index}")
                     try:
