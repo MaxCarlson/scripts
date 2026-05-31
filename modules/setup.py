@@ -570,19 +570,32 @@ def _console_scripts_from_source(module_dir: Path) -> list[str]:
 def _check_console_script_lock(module_dir: Path) -> tuple[bool, str | None]:
     """Return (True, locked_path) if any existing console script .exe is locked.
 
-    Performs an open-for-write probe instead of a full pip install attempt,
-    so we fail in milliseconds rather than waiting 60+ seconds for pip.
+    Windows allows open() on a running exe but refuses rename/delete — exactly
+    what pip does when replacing entry-point scripts.  We probe with a rename
+    so we fail in milliseconds rather than waiting 10-60 s for pip to discover
+    the same thing at install time.
     """
     venv_scripts = Path(sys.executable).parent  # e.g. .venv/Scripts
     for script_name in _console_scripts_from_source(module_dir):
         exe_path = venv_scripts / f"{script_name}.exe"
-        if exe_path.exists():
-            try:
-                with open(exe_path, "r+b"):
+        if not exe_path.exists():
+            continue
+        probe = exe_path.with_suffix(".exe._locktest")
+        renamed = False
+        try:
+            exe_path.rename(probe)
+            renamed = True
+            probe.rename(exe_path)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) in (5, 32):  # ACCESS_DENIED or SHARING_VIOLATION
+                return True, str(exe_path)
+        finally:
+            # Restore exe if we renamed it but couldn't rename back
+            if renamed and probe.exists() and not exe_path.exists():
+                try:
+                    probe.rename(exe_path)
+                except OSError:
                     pass
-            except OSError as exc:
-                if getattr(exc, "winerror", None) == 32:
-                    return True, str(exe_path)
     return False, None
 
 

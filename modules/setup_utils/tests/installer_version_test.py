@@ -115,6 +115,58 @@ def test_locked_console_script_failure_is_classified():
     assert any("locked console script" in line for line in diagnostic)
 
 
+def test_console_script_lock_check_returns_false_when_not_locked(tmp_path):
+    setup = _load_modules_setup()
+    module_dir = tmp_path / "mymodule"
+    module_dir.mkdir()
+    (module_dir / "pyproject.toml").write_text(
+        "[project]\nname = 'mymodule'\n[project.scripts]\nmyscript = 'mymodule.cli:main'\n",
+        encoding="utf-8",
+    )
+    # No exe in venv/Scripts for this fake module — should return not-locked
+    is_locked, path = setup._check_console_script_lock(module_dir)
+    assert not is_locked
+    assert path is None
+
+
+def test_console_script_lock_check_detects_rename_failure(tmp_path, monkeypatch):
+    import os
+
+    setup = _load_modules_setup()
+    module_dir = tmp_path / "mymodule"
+    module_dir.mkdir()
+    (module_dir / "pyproject.toml").write_text(
+        "[project]\nname = 'mymodule'\n[project.scripts]\nmyscript = 'mymodule.cli:main'\n",
+        encoding="utf-8",
+    )
+    # Fake venv scripts dir with a locked exe
+    fake_scripts = tmp_path / "Scripts"
+    fake_scripts.mkdir()
+    fake_exe = fake_scripts / "myscript.exe"
+    fake_exe.write_bytes(b"stub")
+
+    # Make sys.executable point into our fake venv/Scripts
+    fake_python = fake_scripts / "python.exe"
+    fake_python.write_bytes(b"stub")
+    monkeypatch.setattr(setup.sys, "executable", str(fake_python))
+
+    # Simulate WinError 32 on rename by patching Path.rename
+    original_rename = Path.rename
+
+    def mock_rename(self, target):
+        if self == fake_exe:
+            err = OSError("locked")
+            err.winerror = 32
+            raise err
+        return original_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", mock_rename)
+
+    is_locked, locked_path = setup._check_console_script_lock(module_dir)
+    assert is_locked
+    assert locked_path == str(fake_exe)
+
+
 def test_invalid_aebndl_leftovers_detected_but_not_deleted_by_default():
     tmp_path = _make_tmp_dir()
     site_packages = tmp_path / "site-packages"
