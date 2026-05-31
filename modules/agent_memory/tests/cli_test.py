@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import os
 import subprocess
 import sys
@@ -8,7 +6,7 @@ from pathlib import Path
 import pytest
 
 
-def run_cli(*args: str, env: dict | None = None, cwd: str | None = None) -> subprocess.CompletedProcess:
+def run_cli(*args: str, env: dict | None = None, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     """Run agent-memory CLI and return CompletedProcess."""
     return subprocess.run(
         [sys.executable, "-m", "agent_memory.cli", *args],
@@ -38,7 +36,7 @@ def test_unknown_command_exits_nonzero() -> None:
 def test_root_flag_sets_notes_root(tmp_path: Path) -> None:
     """--root should be accepted and used (even if directory doesn't exist yet)."""
     root = tmp_path / "custom_notes"
-    result = run_cli("index", "status", "-r", str(root))
+    result = run_cli("-r", str(root), "index", "status")
     # Status command should accept the --root flag without crashing
     assert result.returncode in (0, 1)  # may fail if dir empty, but must not crash
 
@@ -50,5 +48,5 @@ def test_env_var_root_accepted(tmp_path: Path) -> None:
 
 
 def test_short_root_flag(tmp_path: Path) -> None:
-    result = run_cli("index", "status", "-r", str(tmp_path))
+    result = run_cli("-r", str(tmp_path), "index", "status")
     assert result.returncode in (0, 1)

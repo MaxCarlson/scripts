@@ -1,6 +1,4 @@
 """agent_memory CLI — entry point for the agent-memory command."""
-from __future__ import annotations
-
 import argparse
 import os
 import sys
@@ -76,8 +74,8 @@ def _make_parser() -> argparse.ArgumentParser:
     # --- index subcommand ---
     index_p = sub.add_parser("index", help="Manage the SQLite index.", parents=[root_parent])
     index_sub = index_p.add_subparsers(dest="index_command", metavar="ACTION")
-    index_sub.add_parser("rebuild", help="Rebuild the SQLite index from Markdown files.", parents=[root_parent])
-    index_sub.add_parser("status", help="Show index statistics.", parents=[root_parent])
+    index_sub.add_parser("rebuild", help="Rebuild the SQLite index from Markdown files.")
+    index_sub.add_parser("status", help="Show index statistics.")
 
     return parser
 
@@ -99,9 +97,6 @@ def main() -> None:
         _handle_search(args, store)
     elif args.command == "index":
         _handle_index(args, store)
-    else:
-        parser.print_help()
-        sys.exit(1)
 
 
 def _handle_note(args: argparse.Namespace, store: NoteStore) -> None:
