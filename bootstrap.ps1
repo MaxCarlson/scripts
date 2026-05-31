@@ -4,6 +4,7 @@ param(
   [switch]$NoSkipReinstall,
   [Alias('U')]
   [switch]$NoUpdateHelp,
+  [switch]$NoPipUpgrade,
   [Parameter(ValueFromRemainingArguments=$true)]
   [string[]]$Args
 )
@@ -16,10 +17,16 @@ $ErrorActionPreference = 'Stop'
 $env:PYTHONIOENCODING = "utf-8"
 $VerboseSetup = ($Args -contains '--verbose') -or ($Args -contains '-v')
 
+Write-Host "[BOOTSTRAP] Starting..." -ForegroundColor Cyan
+
 function Write-BootstrapDetail([string]$Message, [ConsoleColor]$Color = [ConsoleColor]::DarkGray) {
     if ($VerboseSetup) {
         Write-Host $Message -ForegroundColor $Color
     }
+}
+
+function Write-BootstrapStep([string]$Message, [ConsoleColor]$Color = [ConsoleColor]::DarkGray) {
+    Write-Host $Message -ForegroundColor $Color
 }
 
 if ($SkipReinstall -and $NoSkipReinstall) {
@@ -30,6 +37,7 @@ if ($SkipReinstall -and $NoSkipReinstall) {
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $VenvDir = Join-Path $Root '.venv'
 $VenvPython = Join-Path $VenvDir 'Scripts\python.exe'
+$VenvPip = Join-Path $VenvDir 'Scripts\pip.exe'
 
 function Ensure-PscriptsSubmodule {
     $pscriptsDir = Join-Path $Root 'pscripts'
@@ -74,7 +82,7 @@ function Ensure-PscriptsSubmodule {
         return
     }
 
-    Write-BootstrapDetail "[BOOTSTRAP] Ensuring pscripts submodule..." Cyan
+    Write-BootstrapStep "[BOOTSTRAP] Updating pscripts submodule..." Cyan
     & git -C $Root submodule sync -- pscripts *> $null
     & git -C $Root submodule update --init --recursive -- pscripts
     if ($LASTEXITCODE -ne 0) {
@@ -89,10 +97,14 @@ function Ensure-PscriptsSubmodule {
     }
 }
 
+# ── Pscripts submodule ────────────────────────────────────────────────────────
+Write-BootstrapStep "[BOOTSTRAP] Checking pscripts submodule..." DarkGray
 Ensure-PscriptsSubmodule
 
+# ── Repo path environment ─────────────────────────────────────────────────────
 $repoHelperPath = Join-Path $Root "pwsh\ResolveRepoPaths.ps1"
 if (Test-Path $repoHelperPath) {
+    Write-BootstrapStep "[BOOTSTRAP] Synchronizing repo paths..." DarkGray
     try {
         . $repoHelperPath
         if ($VerboseSetup) {
@@ -114,14 +126,12 @@ if (Test-Path $repoHelperPath) {
     Write-Warning "[BOOTSTRAP] Repo resolver missing at $repoHelperPath"
 }
 
-
-Write-BootstrapDetail "[BOOTSTRAP] Ensuring Python virtual environment..." Cyan
-
-# 1) Create .venv if it doesn't exist
+# ── Virtual environment ───────────────────────────────────────────────────────
+$venvWasCreated = $false
 if (-not (Test-Path $VenvPython)) {
-    Write-BootstrapDetail "[BOOTSTRAP] Creating .venv using system Python..." Yellow
+    Write-BootstrapStep "[BOOTSTRAP] Creating .venv..." Yellow
+    $venvWasCreated = $true
 
-    # Try uv first (faster), fallback to python -m venv
     $UvPath = Get-Command uv -ErrorAction SilentlyContinue
     if ($UvPath) {
         Write-BootstrapDetail "[BOOTSTRAP] Using uv to create venv..." Green
@@ -132,53 +142,58 @@ if (-not (Test-Path $VenvPython)) {
     }
 
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "[ERROR] Failed to create virtual environment" -ForegroundColor Red
+        Write-Host "[ERROR] Failed to create virtual environment." -ForegroundColor Red
         exit 1
     }
+} else {
+    Write-BootstrapDetail "[BOOTSTRAP] Venv already exists, skipping creation." DarkGray
 }
 
-# Ensure pipx is installed (user scope) and on PATH for global CLIs
+# ── Pipx ──────────────────────────────────────────────────────────────────────
 if (-not (Get-Command pipx -ErrorAction SilentlyContinue)) {
+    Write-BootstrapStep "[BOOTSTRAP] Installing pipx (user)..." Yellow
     $systemPy = Get-Command "C:\Users\mcarls\AppData\Local\Programs\Python\Python312\python.exe" -ErrorAction SilentlyContinue
     if (-not $systemPy) { $systemPy = Get-Command py -ErrorAction SilentlyContinue }
     if (-not $systemPy) { $systemPy = Get-Command python -ErrorAction SilentlyContinue }
     if ($systemPy) {
-        Write-BootstrapDetail "[BOOTSTRAP] Installing pipx (user) via $($systemPy.Source)..." Yellow
-        if ($VerboseSetup) { & $systemPy.Source -m pip install --user pipx } else { & $systemPy.Source -m pip install --quiet --user pipx *> $null }
+        if ($VerboseSetup) { & $systemPy.Source -m pip install --user pipx }
+        else { & $systemPy.Source -m pip install --quiet --user pipx *> $null }
     } else {
         Write-Warning "[BOOTSTRAP] Could not find a system Python to install pipx."
     }
 }
 
-# 2) Ensure pip is available in venv
-Write-BootstrapDetail "[BOOTSTRAP] Ensuring pip is available in venv..." Cyan
-if ($VerboseSetup) {
-    & $VenvPython -m ensurepip --upgrade 2>$null
-    & $VenvPython -m pip install --quiet --upgrade pip setuptools wheel
-} else {
-    & $VenvPython -m ensurepip --upgrade *> $null
-    & $VenvPython -m pip install --quiet --upgrade pip setuptools wheel *> $null
+# ── Pip bootstrap (only needed for a fresh venv or missing pip) ───────────────
+# We skip the upgrade network round-trip on every run — pip was already
+# upgraded the last time the venv was created or explicitly re-bootstrapped.
+# Pass -NoPipUpgrade to suppress even on a fresh venv.
+$pipMissing = -not (Test-Path $VenvPip)
+if ($pipMissing) {
+    Write-BootstrapStep "[BOOTSTRAP] pip not found in venv — running ensurepip..." Yellow
+    if ($VerboseSetup) { & $VenvPython -m ensurepip --upgrade 2>$null }
+    else { & $VenvPython -m ensurepip --upgrade *> $null }
 }
 
-# 3) Install tomli if needed (for setup.py TOML parsing on Python < 3.11)
+if (($venvWasCreated -or $pipMissing) -and -not $NoPipUpgrade) {
+    Write-BootstrapStep "[BOOTSTRAP] Upgrading pip/setuptools/wheel in fresh venv..." Yellow
+    if ($VerboseSetup) { & $VenvPython -m pip install --quiet --upgrade pip setuptools wheel }
+    else { & $VenvPython -m pip install --quiet --upgrade pip setuptools wheel *> $null }
+}
+
+# ── Tomli (Python < 3.11 only) ────────────────────────────────────────────────
 $PythonVersion = & $VenvPython -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
 if ([float]$PythonVersion -lt 3.11) {
     Write-BootstrapDetail "[BOOTSTRAP] Installing tomli for Python $PythonVersion..." Yellow
-    if ($VerboseSetup) { & $VenvPython -m pip install --quiet tomli } else { & $VenvPython -m pip install --quiet tomli *> $null }
+    if ($VerboseSetup) { & $VenvPython -m pip install --quiet tomli }
+    else { & $VenvPython -m pip install --quiet tomli *> $null }
 }
 
-# 4) Execute repo setup (installs core modules, wires bin wrappers)
-Write-BootstrapDetail "[BOOTSTRAP] Running setup.py with venv Python..." Cyan
+# ── Setup ─────────────────────────────────────────────────────────────────────
+Write-BootstrapDetail "[BOOTSTRAP] Launching setup.py..." Cyan
 $SetupArgs = @()
-if ($SkipReinstall) {
-    $SetupArgs += "--skip-reinstall"
-}
-if ($NoSkipReinstall) {
-    $SetupArgs += "--no-skip-reinstall"
-}
-if ($NoUpdateHelp) {
-    $SetupArgs += "--no-update-help"
-}
+if ($SkipReinstall)   { $SetupArgs += "--skip-reinstall" }
+if ($NoSkipReinstall) { $SetupArgs += "--no-skip-reinstall" }
+if ($NoUpdateHelp)    { $SetupArgs += "--no-update-help" }
 $SetupArgs += $Args
 & $VenvPython (Join-Path $Root 'setup.py') @SetupArgs
 exit $LASTEXITCODE

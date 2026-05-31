@@ -109,7 +109,7 @@ REGISTRY: dict = {
                         "path": "modules/filter_prune",
                         "desc": "Dry-run-first fd/rg operations for delete, move, quarantine, script, and cat workflows",
                         "help_cmd": ["filter-prune", "--help"],
-                    "version": "3.0.0",
+                    "version": "3.1.0",
                     },
                     {
                         "name": "replacer.py",

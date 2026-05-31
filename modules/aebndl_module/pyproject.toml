@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aebndl"
+version = "0.7.6"
+description = "AEBN video downloader."
+requires-python = ">=3.9"
+dependencies = [
+    "lxml",
+    "curl_cffi",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+dev = ["lxml-stubs"]
+
+[project.scripts]
+aebndl = "aebn_dl.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["aebn_dl*"]
