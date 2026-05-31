@@ -20,6 +20,7 @@ import subprocess
 from pathlib import Path
 import time
 import re
+import shutil
 from datetime import datetime
 from threading import Thread, Lock
 
@@ -76,16 +77,21 @@ def _venv_site_packages_candidates() -> list[Path]:
     return sorted((VENV_DIR / "lib").glob("python*/site-packages")) if (VENV_DIR / "lib").exists() else []
 
 
-def report_or_repair_invalid_aebndl_dists(*, repair: bool = False) -> None:
+def report_or_repair_invalid_aebndl_dists(*, repair: bool = False) -> int:
     leftovers: list[Path] = []
     for site_packages in _venv_site_packages_candidates():
         leftovers.extend(find_invalid_aebndl_dist_leftovers(site_packages))
     if not leftovers:
-        return
+        return 0
     action = "Removing" if repair else "Detected"
-    print(f"[BOOTSTRAP] {action} invalid aebndl pip leftover(s):")
+    message = f"[BOOTSTRAP] {action} {len(leftovers)} invalid aebndl pip leftover(s)"
+    _log_append(message)
+    if _is_verbose:
+        print(message + ":")
     for path in leftovers:
-        print(f"  - {path}")
+        _log_append(f"  - {path}")
+        if _is_verbose:
+            print(f"  - {path}")
         if repair:
             try:
                 if path.is_dir():
@@ -95,9 +101,15 @@ def report_or_repair_invalid_aebndl_dists(*, repair: bool = False) -> None:
                 else:
                     path.unlink()
             except Exception as exc:
-                print(f"    [WARN] Could not remove: {exc}")
+                _log_append(f"    [WARN] Could not remove: {exc}")
+                if _is_verbose:
+                    print(f"    [WARN] Could not remove: {exc}")
     if not repair:
-        print("[BOOTSTRAP] Re-run with --repair-invalid-aebndl-dists to remove these leftovers.")
+        guidance = "[BOOTSTRAP] Re-run with --repair-invalid-aebndl-dists to remove these leftovers."
+        _log_append(guidance)
+        if _is_verbose:
+            print(guidance)
+    return len(leftovers)
 
 def _venv_python() -> Path:
     return VENV_DIR / ("Scripts/python.exe" if IS_WINDOWS else "bin/python")
@@ -184,7 +196,7 @@ PYTHON_SETUP_DIR = MODULES_DIR / "python_setup"
 SCRIPTS_SETUP_PACKAGE_DIR = SCRIPTS_DIR / "scripts_setup"
 
 ERROR_LOG = SCRIPTS_DIR / "setup_errors.log"
-GLOBAL_LOG = SCRIPTS_DIR / "setup.log"
+GLOBAL_LOG = SCRIPTS_DIR / "setup_log.log"
 
 def _log_init():
     try:
@@ -207,6 +219,137 @@ def _log_append(text: str):
 # Fallback UI + ASCII/Unicode handling
 # ─────────────────────────────────────────────────────────
 _is_verbose = ("--verbose" in sys.argv) or ("-v" in sys.argv)
+_setup_started_at = time.time()
+_active_group = None
+
+
+def _supports_color() -> bool:
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("FORCE_COLOR"):
+        return True
+    return bool(getattr(sys.stdout, "isatty", lambda: False)())
+
+
+def _color(text: str, code: str) -> str:
+    return f"\033[{code}m{text}\033[0m" if _supports_color() else text
+
+
+def _format_elapsed(seconds: float) -> str:
+    return f"{seconds:.2f}s"
+
+
+class CompactGroup:
+    """Two-line non-verbose group renderer with optional per-module accounting."""
+
+    def __init__(self, title: str, total: int | None = None, *, modules: bool = False):
+        self.title = title
+        self.total = total
+        self.modules = modules
+        self.started = 0.0
+        self.states: dict[str, str] = {}
+        self.failures: list[str] = []
+        self.summary_fields: list[tuple[str, str | None]] = []
+        self._line_open = False
+
+    def __enter__(self):
+        global _active_group
+        self.started = time.time()
+        _active_group = self
+        count = f" ({self.total} items)" if self.total is not None else ""
+        print(_color(f"{self.title}{count}", "1;36"))
+        self.progress("starting")
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        global _active_group
+        if exc_value is not None:
+            self.failures.append(str(exc_value))
+        self.finish()
+        _active_group = None
+        return False
+
+    def progress(self, item: str) -> None:
+        line = f"  Processing: {item}"
+        print(f"\r\033[2K{line}", end="", flush=True)
+        self._line_open = True
+
+    def observe_status(self, label: str, state: str | None, detail: str | None) -> None:
+        if not self.modules:
+            if state in {"fail", "warn"}:
+                self.failures.append(label)
+            self.progress(label)
+
+    def observe_child_line(self, line: str) -> None:
+        if not self.modules:
+            return
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+        found = re.search(r"Found\s+(\d+)\s+module\(s\)\s+to process", plain)
+        if found:
+            self.total = int(found.group(1))
+            return
+        match = re.match(r"^\[[^\]]+\]\s+([^:]+):\s+(.*)$", plain)
+        if not match:
+            return
+        name, detail = match.groups()
+        if name in {"ERROR", "WARNING", "SUCCESS", "INFO"}:
+            return
+        lowered = detail.lower()
+        if "install failed" in lowered or "failure" in lowered:
+            state = "failed"
+        elif "installed" in lowered and "requirements" not in lowered:
+            state = "installed"
+        elif any(word in lowered for word in ("skip", "ignored", "not a directory", "no installer", "runtime ready")):
+            state = "skipped"
+        else:
+            self.progress(name)
+            return
+        self.states[name] = state
+        if state == "failed" and name not in self.failures:
+            self.failures.append(name)
+        self.progress(name)
+
+    def mark_result(self, item: str, state: str) -> None:
+        self.states[item] = state
+        if state == "failed" and item not in self.failures:
+            self.failures.append(item)
+        self.progress(item)
+
+    def add_summary_field(self, text: str, color: str | None = None) -> None:
+        self.summary_fields.append((text, color))
+
+    def end_progress_line(self) -> None:
+        if self._line_open:
+            print()
+            self._line_open = False
+
+    def finish(self) -> None:
+        delta = time.time() - self.started
+        total_delta = time.time() - _setup_started_at
+        total = self.total if self.total is not None else max(len(self.states), 1)
+        failed = sum(state == "failed" for state in self.states.values())
+        done = max(total - failed, 0) if self.modules else (0 if self.failures else total)
+        icon = "X" if self.failures or failed else ("OK" if _ASCII_UI else "✓")
+        status_text = f"{icon} {done}/{total} processed"
+        style = "1;31" if self.failures or failed else "1;32"
+        fields = [_color(status_text, style)]
+        if self.modules:
+            installed = sum(state == "installed" for state in self.states.values())
+            skipped = sum(state == "skipped" for state in self.states.values())
+            fields.extend([_color(f"{installed} installed", "1;32"), _color(f"{skipped} skipped", "1;33"), f"{total} total"])
+        fields.extend(_color(text, color) if color else text for text, color in self.summary_fields)
+        final = f"[{_format_elapsed(total_delta)}][{_format_elapsed(delta)}] " + ", ".join(fields)
+        print(f"\r\033[2K{final}")
+        for failure in self.failures[:3]:
+            print(_color(f"    - {failure}", "31"))
+        if len(self.failures) > 3:
+            print(_color("    - ...", "31"))
+
+
+def setup_group(title: str, total: int | None = None, *, modules: bool = False):
+    if _is_verbose:
+        return sui_section(title, level="major")
+    return CompactGroup(title, total, modules=modules)
 
 def _needs_ascii_ui() -> bool:
     if os.environ.get("FORCE_ASCII_UI") == "1":
@@ -257,15 +400,24 @@ def _fb_status_line(label: str, state: str | None = None, detail: str | None = N
     _log_append(line)
 
 # defaults (may be overridden by standard_ui)
-init_timer = lambda: None
-print_global_elapsed = lambda: None
+def init_timer():
+    return None
+
+
+def print_global_elapsed():
+    return None
+
+
 log_info, log_success, log_warning, log_error = _fb_log_info, _fb_log_success, _fb_log_warning, _fb_log_error
 _section_impl = _FBSection
 _status_impl = _fb_status_line
 
 try:
     if not _ASCII_UI:
-        import standard_ui.standard_ui as _sui
+        try:
+            import standard_ui.standard_ui as _sui
+        except ModuleNotFoundError:
+            import standard_ui as _sui
         init_timer           = getattr(_sui, "init_timer", init_timer)
         print_global_elapsed = getattr(_sui, "print_global_elapsed", print_global_elapsed)
         log_info             = getattr(_sui, "log_info", log_info)
@@ -281,6 +433,45 @@ try:
 except Exception:
     if _is_verbose:
         _fb_log_warning("standard_ui not available. Using fallback logging.")
+
+
+_raw_log_info = log_info
+_raw_log_success = log_success
+_raw_log_warning = log_warning
+_raw_log_error = log_error
+
+
+def log_info(message: str):
+    _log_append(f"[INFO] {message}")
+    if _is_verbose:
+        _raw_log_info(message)
+
+
+def log_success(message: str):
+    _log_append(f"[SUCCESS] {message}")
+    if _is_verbose or _active_group is None:
+        _raw_log_success(message)
+    elif _active_group is not None:
+        _active_group.progress(message)
+
+
+def log_warning(message: str):
+    _log_append(f"[WARNING] {message}")
+    if _is_verbose or _active_group is None:
+        _raw_log_warning(message)
+    elif _active_group is not None:
+        _active_group.progress(message)
+
+
+def log_error(message: str):
+    _log_append(f"[ERROR] {message}")
+    if _is_verbose or _active_group is None:
+        _raw_log_error(message)
+    elif _active_group is not None:
+        if message not in _active_group.failures:
+            _active_group.failures.append(message)
+        _active_group.progress(message)
+
 
 def sui_section(title: str, **kwargs):
     """Context-manager wrapper: tolerate unknown kwargs (e.g. level=...). Also logs to GLOBAL_LOG."""
@@ -300,6 +491,10 @@ def status_line(label: str, state: str | None = None, detail: str | None = None)
         line_for_log += (" - " if _ASCII_UI else " — ") + detail
     _log_append(line_for_log)
 
+    if not _is_verbose and _active_group is not None:
+        _active_group.observe_status(label, state, detail)
+        return None
+
     if impl is _fb_status_line:
         return impl(label, state, detail)
     try:
@@ -317,16 +512,19 @@ def status_line(label: str, state: str | None = None, detail: str | None = None)
 
 def _try_reload_standard_ui_globally():
     """If standard_ui gets installed during this run, adopt its functions."""
-    global init_timer, print_global_elapsed, log_info, log_success, log_warning, log_error, _section_impl, _status_impl
+    global init_timer, print_global_elapsed, _raw_log_info, _raw_log_success, _raw_log_warning, _raw_log_error, _section_impl, _status_impl
     try:
         importlib.invalidate_caches()
-        import standard_ui.standard_ui as _sui2
+        try:
+            import standard_ui.standard_ui as _sui2
+        except ModuleNotFoundError:
+            import standard_ui as _sui2
         init_timer           = getattr(_sui2, "init_timer", init_timer)
         print_global_elapsed = getattr(_sui2, "print_global_elapsed", print_global_elapsed)
-        log_info             = getattr(_sui2, "log_info", log_info)
-        log_success          = getattr(_sui2, "log_success", log_success)
-        log_warning          = getattr(_sui2, "log_warning", log_warning)
-        log_error            = getattr(_sui2, "log_error", log_error)
+        _raw_log_info        = getattr(_sui2, "log_info", _raw_log_info)
+        _raw_log_success     = getattr(_sui2, "log_success", _raw_log_success)
+        _raw_log_warning     = getattr(_sui2, "log_warning", _raw_log_warning)
+        _raw_log_error       = getattr(_sui2, "log_error", _raw_log_error)
         _section_impl        = getattr(_sui2, "section", _section_impl)
         _status_impl         = getattr(_sui2, "status_line", _status_impl)
         log_success("Switched to standard_ui logging dynamically.")
@@ -341,10 +539,6 @@ def _append_unique(bucket: list[str], item: str):
         bucket.append(item)
 
 def write_error_log_detail(title: str, proc: subprocess.CompletedProcess | None, stdout: str = "", stderr: str = ""):
-    try:
-        ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
-    except Exception as e_mkdir:
-        log_warning(f"Could not create parent directory for error log {ERROR_LOG.parent}: {e_mkdir}")
     msg_lines = [f"=== {title} ==="]
     if proc is not None:
         msg_lines += [
@@ -357,17 +551,13 @@ def write_error_log_detail(title: str, proc: subprocess.CompletedProcess | None,
         ]
     else:
         msg_lines += ["--- STDOUT ---", stdout or "<none>", "--- STDERR ---", stderr or "<none>", ""]
-    try:
-        with open(ERROR_LOG, "a", encoding="utf-8") as f:
-            f.write("\n".join(msg_lines) + "\n")
-    except Exception as e:
-        log_error(f"Critical error: could not write detailed error to {ERROR_LOG}: {e}")
+    _log_append("\n".join(msg_lines))
 
 # ─────────────────────────────────────────────────────────
-# Child process runner with stall detection (unchanged)
+# Child process runner with stall detection
 # ─────────────────────────────────────────────────────────
-STALL_NOTICE_AFTER = int(os.environ.get("SETUP_STALL_NOTICE_SEC", "10"))
-STALL_AUTO_CONFIRM_AFTER = int(os.environ.get("SETUP_STALL_AUTOCONFIRM_SEC", "15"))
+STALL_NOTICE_AFTER = int(os.environ.get("SETUP_STALL_NOTICE_SEC", "30"))
+STALL_AUTO_CONFIRM_AFTER = int(os.environ.get("SETUP_STALL_AUTOCONFIRM_SEC", "45"))
 AUTO_CONFIRM = os.environ.get("SETUP_AUTO_CONFIRM", "1") not in ("0", "false", "False")
 
 def _popen_stream_and_log(cmd, cwd=None, env=None, tag: str = ""):
@@ -398,11 +588,14 @@ def _popen_stream_and_log(cmd, cwd=None, env=None, tag: str = ""):
                 with out_lock:
                     collected_lines.append(line)
                     last_out = time.time()
-                try:
-                    sys.stdout.write(line)
-                except Exception:
-                    pass
                 _log_append(line.rstrip("\n"))
+                if _is_verbose:
+                    try:
+                        sys.stdout.write(line)
+                    except Exception:
+                        pass
+                elif _active_group is not None:
+                    _active_group.observe_child_line(line)
         finally:
             try:
                 if proc.stdout:
@@ -425,8 +618,11 @@ def _popen_stream_and_log(cmd, cwd=None, env=None, tag: str = ""):
                     "If you're on PowerShell, a hidden confirmation prompt may be waiting (Y/N).\n"
                     "      We'll try to auto-confirm shortly. To disable this behavior, set SETUP_AUTO_CONFIRM=0.\n"
                 )
-                print(hint, end="")
                 _log_append(hint.rstrip("\n"))
+                if _is_verbose:
+                    print(hint, end="")
+                elif _active_group is not None:
+                    _active_group.progress("waiting for child output")
                 notice_printed = True
 
             if (
@@ -438,8 +634,11 @@ def _popen_stream_and_log(cmd, cwd=None, env=None, tag: str = ""):
             ):
                 try:
                     msg = "[ACTION] Auto-sending 'Y<Enter>' to child process (Windows stall heuristic)."
-                    print(msg)
                     _log_append(msg)
+                    if _is_verbose:
+                        print(msg)
+                    elif _active_group is not None:
+                        _active_group.progress("confirming stalled child prompt")
                     proc.stdin.write("Y\n")
                     proc.stdin.flush()
                     autoyes_sent = True
@@ -688,6 +887,8 @@ def run_setup(script_path: Path, *args, soft_fail_modules: bool = False):
         log_warning(msg + "; skipping.")
         _log_append("WARN: " + msg)
         _append_unique(warnings, msg)
+        if not _is_verbose and _active_group is not None:
+            _active_group.mark_result(resolved.name, "failed")
         return
 
     cmd = [sys.executable, str(resolved), *args]
@@ -715,6 +916,8 @@ def run_setup(script_path: Path, *args, soft_fail_modules: bool = False):
         else:
             status_line(f"{resolved.name} {hint}", "fail", f"see {ERROR_LOG}")
             _append_unique(errors, f"{resolved.name} {hint}")
+        if not _is_verbose and _active_group is not None and _active_group.modules and not failed:
+            _active_group.mark_result(resolved.name, "failed")
         write_error_log_detail(f"Setup {resolved.name}", None, out, "")
 
 # ─────────────────────────────────────────────────────────
@@ -764,6 +967,23 @@ def _offer_registry_update_via_ai(drift: dict, build_prompt) -> None:
             return
 
 
+def _help_update_counts(drift: dict, registered_items: list[dict]) -> tuple[int, int, int, int]:
+    registered_paths = {item["path"] for item in registered_items}
+    known_paths = registered_paths | set(drift["new"])
+    readme_issues = [item for item in drift.get("readme", []) if item["issue"] != "missing"]
+    update_paths = (
+        {item["path"] for item in readme_issues}
+        | set(drift["new"])
+        | {item["path"] for item in drift["stale"]}
+        | {item["path"] for item in drift["deleted"]}
+    )
+    module_total = sum(path.startswith("modules/") for path in known_paths)
+    script_total = sum(path.startswith("pyscripts/") for path in known_paths)
+    module_updates = sum(path.startswith("modules/") for path in update_paths)
+    script_updates = sum(path.startswith("pyscripts/") for path in update_paths)
+    return module_updates, module_total, script_updates, script_total
+
+
 def _run_post_install_drift_check(no_update_help: bool) -> None:
     if no_update_help:
         status_line("Help registry drift check skipped (--no-update-help)", "unchanged")
@@ -775,7 +995,7 @@ def _run_post_install_drift_check(no_update_help: bool) -> None:
         _sh_path = str(MODULES_DIR / "scripts_help")
         if _sh_path not in sys.path:
             sys.path.insert(0, _sh_path)
-        from scripts_help.cli import collect_drift, _build_update_prompt  # type: ignore
+        from scripts_help.cli import _build_update_prompt, _collect_registered_items, collect_drift  # type: ignore
     except ImportError:
         status_line("scripts_help not installed; skipping drift check", "unchanged")
         return
@@ -792,6 +1012,18 @@ def _run_post_install_drift_check(no_update_help: bool) -> None:
     readme_issues = [r for r in drift.get("readme", []) if r["issue"] != "missing"]
     has_registry_drift = bool(drift["new"] or drift["stale"] or drift["deleted"])
     has_readme_drift   = bool(readme_issues)
+    module_updates, module_total, script_updates, script_total = _help_update_counts(drift, _collect_registered_items())
+    help_counts = f"modules {module_updates}/{module_total} need help updates, scripts {script_updates}/{script_total} need help updates"
+    log_info(f"Help sync: {help_counts}")
+    if not _is_verbose and _active_group is not None:
+        _active_group.add_summary_field(
+            f"modules {module_updates}/{module_total} help updates",
+            "1;31" if module_updates else "1;32",
+        )
+        _active_group.add_summary_field(
+            f"scripts {script_updates}/{script_total} help updates",
+            "1;31" if script_updates else "1;32",
+        )
 
     if not has_registry_drift and not has_readme_drift:
         status_line("Help registry and READMEs are up to date", "ok")
@@ -799,9 +1031,12 @@ def _run_post_install_drift_check(no_update_help: bool) -> None:
 
     if has_registry_drift:
         parts = []
-        if drift["new"]:     parts.append(f"{len(drift['new'])} new")
-        if drift["stale"]:   parts.append(f"{len(drift['stale'])} stale")
-        if drift["deleted"]: parts.append(f"{len(drift['deleted'])} deleted")
+        if drift["new"]:
+            parts.append(f"{len(drift['new'])} new")
+        if drift["stale"]:
+            parts.append(f"{len(drift['stale'])} stale")
+        if drift["deleted"]:
+            parts.append(f"{len(drift['deleted'])} deleted")
         log_warning(f"Registry drift: {', '.join(parts)}")
 
     if has_readme_drift:
@@ -815,6 +1050,8 @@ def _run_post_install_drift_check(no_update_help: bool) -> None:
     if missing_count:
         log_info(f"  ({missing_count} programs have no README yet — run: scripts-help sync -r)")
 
+    if not _is_verbose and _active_group is not None:
+        _active_group.end_progress_line()
     _offer_registry_update_via_ai(drift, _build_update_prompt)
 
 
@@ -873,7 +1110,10 @@ def main():
 
     args = parser.parse_args()
     _is_verbose = args.verbose
-    report_or_repair_invalid_aebndl_dists(repair=args.repair_invalid_aebndl_dists)
+    with setup_group("Environment Checks", 1):
+        leftover_count = report_or_repair_invalid_aebndl_dists(repair=args.repair_invalid_aebndl_dists)
+        detail = "clean" if not leftover_count else f"{leftover_count} pip leftover(s) noted in setup_log.log"
+        status_line("aebndl pip distribution health", "unchanged", detail)
 
     if args.force_reinstall and args.skip_reinstall is True:
         parser.error("--force-reinstall conflicts with --skip-reinstall")
@@ -914,18 +1154,9 @@ def main():
     except Exception:
         pass
 
-    # Clear previous error log
-    if ERROR_LOG.exists():
-        try:
-            ERROR_LOG.unlink()
-            if _is_verbose:
-                log_info(f"Cleared previous error log: {ERROR_LOG}")
-        except OSError as e:
-            log_warning(f"Could not clear previous error log {ERROR_LOG}: {e}")
-
     # Core modules — now safe because we're under ./.venv
     # Order matters: cross_platform must be installed before python_setup (dependency)
-    with sui_section("Core Module Installation", level="major"):
+    with setup_group("Core Modules", 4):
         for name, path in [
             ("standard_ui", STANDARD_UI_SETUP_DIR),
             ("cross_platform", CROSS_PLATFORM_DIR),
@@ -949,10 +1180,11 @@ def main():
     except Exception:
         rel = ""
     if "microsoft" in rel.lower() and "WSL" in rel.upper():
-        with sui_section("WSL2 Specific Setup", level="medium"):
-            run_setup(SCRIPTS_SETUP_PACKAGE_DIR / "setup_wsl2.py", *([] if not args.verbose else ["--verbose"]))
+        with setup_group("WSL2 Integration", 1):
+            run_setup(SCRIPTS_SETUP_PACKAGE_DIR / "setup_wsl2.py", "--verbose")
     else:
-        status_line("Not WSL2; skipping win32yank setup.", "unchanged")
+        with setup_group("WSL2 Integration", 1):
+            status_line("win32yank setup skipped: not WSL2", "unchanged")
 
     # Sub-setups
     common_setup_args = [
@@ -960,12 +1192,14 @@ def main():
         "--dotfiles-dir", str(dotfiles_dir),
         "--bin-dir", str(bin_dir),
     ]
-    if args.verbose:        common_setup_args.append("--verbose")
+    # Child output is always verbose in setup_log.log; compact terminal mode hides the stream.
+    common_setup_args.append("--verbose")
     if skip_reinstall:
         common_setup_args.append("--skip-reinstall")
     else:
         common_setup_args.append("--no-skip-reinstall")
-    if args.production:     common_setup_args.append("--production")
+    if args.production:
+        common_setup_args.append("--production")
 
     sub_setups = [
         (SCRIPTS_DIR / "pyscripts" / "setup.py", []),
@@ -978,30 +1212,32 @@ def main():
             title_rel_path = full_script_path.relative_to(SCRIPTS_DIR)
         except ValueError:
             title_rel_path = full_script_path.name
-        with sui_section(f"Running sub-setup: {title_rel_path}", level="medium"):
+        is_modules = full_script_path == MODULES_DIR / "setup.py"
+        total = len(list(MODULES_DIR.iterdir())) if is_modules and MODULES_DIR.exists() else 1
+        title = "Python Modules" if is_modules else f"Sub-setup: {title_rel_path}"
+        with setup_group(title, total, modules=is_modules):
             run_setup(full_script_path, *(common_setup_args + extra_args), soft_fail_modules=soft_fail_modules)
 
-    with sui_section("Shell PATH Configuration (setup_path.py)", level="major"):
+    with setup_group("Shell PATH Configuration", 1):
         setup_path_script = SCRIPTS_SETUP_PACKAGE_DIR / "setup_path.py"
         path_args = ["--bin-dir", str(bin_dir), "--dotfiles-dir", str(dotfiles_dir)]
-        if args.verbose: path_args.append("--verbose")
+        path_args.append("--verbose")
         run_setup(setup_path_script, *path_args)
 
     # Optional: wire PowerShell profile if on Windows/WSL
-    with sui_section("PowerShell profile wiring", level="major"):
+    with setup_group("PowerShell Profile Wiring", 1):
         run_setup(SCRIPTS_SETUP_PACKAGE_DIR / "setup_pwsh_profile.py",
                   "--scripts-dir", str(scripts_dir),
-                  "--dotfiles-dir", str(dotfiles_dir))
+                  "--dotfiles-dir", str(dotfiles_dir),
+                  "--verbose")
 
     # Discover and symlink SKILL.md-based skills to CLI directories
-    with sui_section("Agent skill symlinks (setup_skills.py)", level="major"):
-        skill_args = []
-        if args.verbose:
-            skill_args.append("--verbose")
+    with setup_group("Agent Skill Symlinks", 1):
+        skill_args = ["--verbose"]
         run_setup(SCRIPTS_SETUP_PACKAGE_DIR / "setup_skills.py", *skill_args)
 
     # Setup automatic venv activation
-    with sui_section("Virtual environment auto-activation setup", level="major"):
+    with setup_group("Virtual Environment Auto-Activation", 1):
         try:
             from python_setup.venv_activation import setup_auto_activation
             ps_changed, bash_changed = setup_auto_activation(dotfiles_dir, verbose=args.verbose)
@@ -1017,35 +1253,33 @@ def main():
             log_warning(f"Could not setup venv auto-activation: {e}")
             log_info("You can manually run: setup-venv-activation -D /path/to/dotfiles")
 
-    try:
-        print_global_elapsed()
-    except Exception:
-        pass
+    if args.verbose:
+        try:
+            print_global_elapsed()
+        except Exception:
+            pass
 
-    with sui_section("Help Registry Drift Check", level="major"):
+    with setup_group("Help Registry Drift Check", 1):
         _run_post_install_drift_check(args.no_update_help)
 
+    failure_messages = [message for message in warnings if "failed" in message.lower()]
+    run_failed = bool(errors or failure_messages)
     if errors:
-        if not ERROR_LOG.exists():
-            try:
-                ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
-                with open(ERROR_LOG, "w", encoding="utf-8") as f:
-                    f.write("=== Summary of Errors Encountered During Setup ===\n")
-                    for i, err_msg in enumerate(errors):
-                        f.write(f"{i+1}. {err_msg}\n")
-            except Exception as e_log_write:
-                log_error(f"Failed to write error summary to '{ERROR_LOG}': {e_log_write}")
         if warnings:
             log_warning(f"Setup completed with {len(errors)} error(s) and {len(warnings)} warning(s). See {ERROR_LOG}.")
         else:
             log_error(f"Setup completed with {len(errors)} error(s). See {ERROR_LOG}.")
-        sys.exit(1)
     elif warnings:
-        log_warning(f"Setup completed with {len(warnings)} warning(s). See {ERROR_LOG}.")
-        sys.exit(0)
+        suffix = f" See {ERROR_LOG}." if run_failed else ""
+        log_warning(f"Setup completed with {len(warnings)} warning(s).{suffix}")
     else:
         log_success("All setup steps completed successfully.")
-        sys.exit(0)
+    if run_failed:
+        try:
+            shutil.copyfile(GLOBAL_LOG, ERROR_LOG)
+        except OSError as exc:
+            log_error(f"Failed to copy verbose setup log to '{ERROR_LOG}': {exc}")
+    sys.exit(1 if errors else 0)
 
 if __name__ == "__main__":
     main()

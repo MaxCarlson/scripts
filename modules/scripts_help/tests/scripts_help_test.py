@@ -13,20 +13,20 @@ _MOD_ROOT = Path(__file__).resolve().parents[2] / "scripts_help"
 if str(_MOD_ROOT.parent) not in sys.path:
     sys.path.insert(0, str(_MOD_ROOT.parent))
 
-from scripts_help.registry.readme_sync import (
+from scripts_help.registry.readme_sync import (  # noqa: E402
     find_readme,
     read_readme_version,
     collect_readme_drift,
 )
-from scripts_help.registry.versions import is_stale, read_live_version
-from scripts_help.cli import (
+from scripts_help.registry.versions import is_stale  # noqa: E402
+from scripts_help.cli import (  # noqa: E402
     _collect_registered_paths,
     _collect_registered_items,
     _build_update_prompt,
     _build_parser,
     collect_drift,
 )
-from scripts_help.registry import REGISTRY
+from scripts_help.registry import REGISTRY  # noqa: E402
 
 
 # ── readme_sync: find_readme ──────────────────────────────────────────────────
@@ -152,6 +152,19 @@ def test_collect_readme_drift_version_mismatch(tmp_path: Path) -> None:
     assert results[0]["issue"] == "version_mismatch"
     assert results[0]["readme_version"] == "0.9.0"
     assert results[0]["program_version"] == "1.0.0"
+
+
+def test_collect_readme_drift_ignores_patch_only_mismatch(tmp_path: Path) -> None:
+    item = {"name": "foo", "path": "pyscripts/foo.py", "version": "1.0.0"}
+    readme = tmp_path / "pyscripts" / "readme" / "foo.md"
+    readme.parent.mkdir(parents=True)
+    readme.write_text("<!-- version: 3.0.0 -->\n# foo\n", encoding="utf-8")
+    registry = _make_registry(item)
+
+    with patch("scripts_help.registry.readme_sync.find_repo_root", return_value=tmp_path):
+        results = collect_readme_drift(registry, lambda _path: "3.0.2")
+
+    assert results == []
 
 
 def test_collect_readme_drift_in_sync(tmp_path: Path) -> None:

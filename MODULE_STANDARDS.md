@@ -10,17 +10,24 @@ should treat these guidelines as binding conventions.
 
 ```
  X  .  Y  .  Z Z Z
- │     │     └── PATCH — Python source changes only (bug fixes, features)
- │     └──────── MINOR — pyproject.toml changes OTHER than entry points
- └────────────── MAJOR — [project.scripts] entry points changed
+ │     │     └── PATCH — fixes/refactors/docs/tests; no new user-facing feature
+ │     └──────── MINOR — backward-compatible feature or install metadata change
+ └────────────── MAJOR — breaking change, plus entry-point regeneration rule below
 ```
+
+This repository follows standard semantic-version intent: `Z` is the PATCH
+number and must not be used for new functionality. A backward-compatible new
+feature is a MINOR (`Y`) change even when the implementation touches only
+Python source. One repository-specific operational exception remains: any
+change to published entry points is treated as MAJOR so setup recreates command
+wrappers reliably.
 
 ### What each level means for setup/reinstall
 
 | Changed | Level | `setup.py` / `bootstrap` action required |
 |---------|-------|------------------------------------------|
-| `.py` files only | PATCH | **Nothing** — editable install picks up changes automatically |
-| `pyproject.toml` deps or metadata (not scripts) | MINOR | `pip install -e .` — existing `.cmd` files stay valid |
+| Bug fix, refactor, docs, or tests only | PATCH | **Nothing** — editable install picks up source changes automatically |
+| Backward-compatible feature addition, or `pyproject.toml` deps/metadata change | MINOR | `pip install -e .` — existing `.cmd` files stay valid |
 | `[project.scripts]` entry points added, removed, or renamed | MAJOR | `pip uninstall <pkg> && pip install -e .` — `.cmd` files in `bin/` must be regenerated |
 
 ### Decision rule for `setup.py` / `bootstrap.ps1` / `bootstrap.sh`
@@ -44,14 +51,16 @@ elif source_minor > installed_minor:
 - `[project.scripts]` — entry added, removed, or renamed
 - `[project.entry-points]` — any plugin/console entry point
 
-**Bump MINOR** when any of these change in `pyproject.toml` (but not scripts):
+**Bump MINOR** for backward-compatible user-facing functionality and for these
+`pyproject.toml` changes (when entry points are unchanged):
+- new feature, new option, new subcommand, or meaningful behavior addition
 - `[project.dependencies]` — new or removed package
 - `[project.optional-dependencies]` — new extras
 - `requires-python` version
 - `[tool.*]` build-system changes that affect installation
 
 **Bump PATCH** for everything else:
-- Bug fixes, new features, refactoring in `.py` files
+- Bug fixes and refactoring that do not add user-facing functionality
 - Test changes
 - Documentation updates
 - Internal restructuring that doesn't affect the public CLI surface
@@ -322,7 +331,7 @@ do not apply.  Use this simpler scheme:
 |---------|-------|---------|
 | Breaking: renamed/removed flag, incompatible output format | **MAJOR** | `1.0.0 → 2.0.0` |
 | New feature, new flag, new subcommand, significant behavior addition | **MINOR** | `0.1.0 → 0.2.0` |
-| Bug fix, refactoring, doc update, minor improvement | **PATCH** | `0.1.0 → 0.1.1` |
+| Bug fix, refactoring, doc update, internal improvement with no new feature | **PATCH** | `0.1.0 → 0.1.1` |
 
 ### Reading a pyscript's version
 
@@ -349,14 +358,15 @@ proposes changes to this repository, it should:
 
 **For modules (`modules/`):**
 1. Check whether `[project.scripts]` is changing → if yes, bump MAJOR
-2. Check whether `pyproject.toml` is changing (non-scripts) → if yes, bump MINOR
-3. Check whether only `.py` files are changing → bump PATCH
+2. Check whether there is a backward-compatible new feature or a non-scripts
+   `pyproject.toml` change → if yes, bump MINOR
+3. For fixes/refactors/docs/tests only, with no new user-facing feature → bump PATCH
 4. Update the version in `pyproject.toml` AND in `__init__.py` (if it has one)
 
 **For pyscripts (`pyscripts/`):**
 5. Every new pyscript must include `__version__ = "0.1.0"` after the docstring
 6. Every modification must bump `__version__` following the rules in §10
-7. Breaking flag/output changes → MAJOR; new features/flags → MINOR; fixes → PATCH
+7. Breaking flag/output changes → MAJOR; new features/flags → MINOR; fixes/refactors/docs only → PATCH
 
 **For all code:**
 8. Ensure every new argument has both short and long forms

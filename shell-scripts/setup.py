@@ -4,7 +4,10 @@ import sys
 from pathlib import Path
 from scripts_setup.definition_utils import parse_definitions_file, write_definitions
 from scripts_setup.setup_utils import process_symlinks 
-from standard_ui.standard_ui import log_info, log_warning, log_success, log_error, section
+try:
+    from standard_ui.standard_ui import log_error, log_info, log_success, log_warning, section
+except ModuleNotFoundError:
+    from standard_ui import log_error, log_info, log_success, log_warning, section
 
 def ensure_shell_script_symlinks(scripts_dir: Path, bin_dir: Path, verbose: bool) -> None:
     """Ensures shell scripts from shell-scripts/ are symlinked into bin_dir."""

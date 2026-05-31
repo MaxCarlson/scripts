@@ -126,6 +126,66 @@ def test_invalid_aebndl_leftovers_detected_but_not_deleted_by_default():
     assert leftover.exists()
 
 
+def test_root_setup_stall_heuristic_defaults_are_less_aggressive():
+    setup = _load_root_setup()
+
+    assert setup.STALL_NOTICE_AFTER == 30
+    assert setup.STALL_AUTO_CONFIRM_AFTER == 45
+
+
+def test_compact_module_group_tracks_install_skip_and_failure(monkeypatch, capsys):
+    setup = _load_root_setup()
+    monkeypatch.setattr(setup, "_is_verbose", False)
+    monkeypatch.setattr(setup, "_supports_color", lambda: False)
+
+    with setup.CompactGroup("Python Modules", 3, modules=True) as group:
+        group.observe_child_line("[OK] alpha: installed - editable")
+        group.observe_child_line("[•] beta: already (editable) - skip")
+        group.observe_child_line("[X] gamma: install failed - log")
+
+    output = capsys.readouterr().out
+    assert "1 installed" in output
+    assert "1 skipped" in output
+    assert "3 total" in output
+    assert "gamma" in output
+
+
+def test_compact_group_uses_short_elapsed_prefix_and_summary_fields(monkeypatch, capsys):
+    setup = _load_root_setup()
+    monkeypatch.setattr(setup, "_is_verbose", False)
+    monkeypatch.setattr(setup, "_supports_color", lambda: False)
+
+    with setup.CompactGroup("Help Registry Drift Check", 1) as group:
+        group.add_summary_field("modules 0/12 help updates")
+        group.add_summary_field("scripts 1/34 help updates")
+
+    output = capsys.readouterr().out
+    assert "[total:" not in output
+    assert "[group:" not in output
+    assert "modules 0/12 help updates" in output
+    assert "scripts 1/34 help updates" in output
+
+
+def test_help_update_counts_include_registry_and_actionable_readme_drift():
+    setup = _load_root_setup()
+    drift = {
+        "new": ["pyscripts/new.py"],
+        "stale": [{"path": "modules/stale"}],
+        "deleted": [],
+        "readme": [
+            {"path": "modules/readme", "issue": "version_mismatch"},
+            {"path": "pyscripts/missing.py", "issue": "missing"},
+        ],
+    }
+    registered = [
+        {"path": "modules/stale"},
+        {"path": "modules/readme"},
+        {"path": "pyscripts/missing.py"},
+    ]
+
+    assert setup._help_update_counts(drift, registered) == (2, 2, 1, 2)
+
+
 def test_pscripts_duplicate_aebndl_skips_when_canonical_module_exists():
     tmp_path = _make_tmp_dir()
     scripts_dir = tmp_path / "scripts"

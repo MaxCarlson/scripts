@@ -13,8 +13,11 @@ plus `user/` and `ai/` folders with indexed status filenames.
 
 **Modules (`modules/`)** — bump version in `pyproject.toml` (and `__init__.py` if present):
 - MAJOR → `[project.scripts]` entry points changed
-- MINOR → other `pyproject.toml` changes (deps, metadata)
-- PATCH → source-only changes
+- MINOR → backward-compatible feature addition, or other `pyproject.toml` changes (deps, metadata)
+- PATCH → bug fix, refactor, docs, or tests only; no new user-facing feature
+
+`X.Y.Z` follows semantic-version intent: `Z` is PATCH and never represents a
+new feature.
 
 **pyscripts (`pyscripts/`)** — bump `__version__` embedded at the top of the file:
 ```python
@@ -26,7 +29,7 @@ import sys
 ```
 - MAJOR → breaking interface change (renamed/removed flag, incompatible output)
 - MINOR → new feature, flag, or subcommand
-- PATCH → bug fix, refactor, minor improvement
+- PATCH → bug fix, refactor, or documentation/internal improvement with no new feature
 
 Full rules: [`MODULE_STANDARDS.md §1`](MODULE_STANDARDS.md) (modules) and `§10` (pyscripts).
 
@@ -49,6 +52,6 @@ ruff check <file>
 
 All CLI arguments need both short and long forms. Module version bumps follow
 the repository policy in `MODULE_STANDARDS.md`: MAJOR for entry point wrapper
-changes, MINOR for package metadata/dependency reinstall changes, PATCH for
-source-only changes. Module tests must keep temp roots inside the owning module
+changes, MINOR for backward-compatible features or package metadata/dependency
+changes, and PATCH only for fixes/refactors/docs/tests with no new feature. Module tests must keep temp roots inside the owning module
 directory, normally `modules/<module>/.pytest_tmp_root/`.

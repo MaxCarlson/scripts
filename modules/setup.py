@@ -88,14 +88,24 @@ _status_impl = _fb_status
 
 try:
     if not _ASCII_UI:
-        from standard_ui.standard_ui import (
-            log_info as _s_log_info,
-            log_success as _s_log_success,
-            log_warning as _s_log_warning,
-            log_error as _s_log_error,
-            section as _s_section,
-            status_line as _s_status_line
-        )
+        try:
+            from standard_ui.standard_ui import (
+                log_info as _s_log_info,
+                log_success as _s_log_success,
+                log_warning as _s_log_warning,
+                log_error as _s_log_error,
+                section as _s_section,
+                status_line as _s_status_line,
+            )
+        except ModuleNotFoundError:
+            from standard_ui import (
+                log_info as _s_log_info,
+                log_success as _s_log_success,
+                log_warning as _s_log_warning,
+                log_error as _s_log_error,
+                section as _s_section,
+                status_line as _s_status_line,
+            )
         log_info, log_success, log_warning, log_error, section = (
             _s_log_info, _s_log_success, _s_log_warning, _s_log_error, _s_section
         )
@@ -734,9 +744,12 @@ def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path, verbose: bool = Fal
                         regex_pattern = r"^\s*PYTHONPATH\s+REG_(?:EXPAND_)?SZ\s+(.*)$"
                         for line in completed_process.stdout.splitlines():
                             match = re.search(regex_pattern, line.strip(), re.IGNORECASE)
-                            if match: current_user_pythonpath = match.group(1).strip(); break
+                            if match:
+                                current_user_pythonpath = match.group(1).strip()
+                                break
 
-                    if verbose: log_info(f"Current User PYTHONPATH from registry: '{current_user_pythonpath}'")
+                    if verbose:
+                        log_info(f"Current User PYTHONPATH from registry: '{current_user_pythonpath}'")
 
                     current_paths_list = list(dict.fromkeys([p for p in current_user_pythonpath.split(path_separator) if p]))
 
@@ -752,7 +765,8 @@ def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path, verbose: bool = Fal
                         pwshell = subprocess.run(["where", "powershell"], capture_output=True, shell=True)
                         have_ps = bool(pwsh.stdout or pwshell.stdout)
                         if have_ps:
-                            if verbose: log_info("Using PowerShell to update User PYTHONPATH.")
+                            if verbose:
+                                log_info("Using PowerShell to update User PYTHONPATH.")
                             ps_cmd = " ".join(
                                 [
                                     '$envName = "User";',
@@ -778,7 +792,8 @@ def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path, verbose: bool = Fal
                             if verbose and ps_proc.stderr.strip():
                                 log_warning(f"PowerShell stderr: {ps_proc.stderr.strip()}")
                         else:
-                            if verbose: log_info("PowerShell not found, attempting 'setx' for PYTHONPATH.")
+                            if verbose:
+                                log_info("PowerShell not found, attempting 'setx' for PYTHONPATH.")
                             subprocess.run(['setx', 'PYTHONPATH', new_pythonpath_value], check=True)
                             log_success("Requested update for User PYTHONPATH using 'setx'.")
                         log_warning("PYTHONPATH change will apply to new terminal sessions or after a restart/re-login.")
@@ -793,8 +808,10 @@ def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path, verbose: bool = Fal
 
                 current_config_content = ""
                 if pythonpath_config_file.exists():
-                    try: current_config_content = pythonpath_config_file.read_text(encoding="utf-8")
-                    except Exception as e_read: log_warning(f"Could not read {pythonpath_config_file}: {e_read}")
+                    try:
+                        current_config_content = pythonpath_config_file.read_text(encoding="utf-8")
+                    except Exception as e_read:
+                        log_warning(f"Could not read {pythonpath_config_file}: {e_read}")
 
                 is_already_configured = False
                 for line_in_file in current_config_content.splitlines():
@@ -816,7 +833,8 @@ def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path, verbose: bool = Fal
 
                         try:
                             source_cmd = f"source '{pythonpath_config_file.resolve()}' && echo $PYTHONPATH"
-                            if _is_verbose: log_info(f"Attempting to have Zsh sub-shell source: {source_cmd}")
+                            if _is_verbose:
+                                log_info(f"Attempting to have Zsh sub-shell source: {source_cmd}")
                             result = subprocess.run(
                                 ["zsh", "-c", source_cmd], timeout=5,
                                 check=True, capture_output=True, text=True, encoding='utf-8', errors='ignore'
@@ -871,8 +889,6 @@ def generate_console_proxies(installed_pkg_names: list[str]) -> None:
 
     scripts_dir = Path(__file__).resolve().parents[1]
     bin_dir = scripts_dir / "bin"
-    venv_dir = scripts_dir / ".venv"
-    venv_bin = venv_dir / ("Scripts" if os.name == "nt" else "bin")
     bin_dir.mkdir(parents=True, exist_ok=True)
 
     # If no packages were explicitly provided, generate for all installed packages
@@ -918,8 +934,10 @@ def generate_console_proxies(installed_pkg_names: list[str]) -> None:
                 f"{script_name} %*\r\n"
             )
             changed = _write_text_if_changed(wrapper, content=content, verbose=_is_verbose, crlf=True)
-            if changed: created += 1
-            else: unchanged += 1
+            if changed:
+                created += 1
+            else:
+                unchanged += 1
         else:
             wrapper = bin_dir / script_name
             content = f"""#!/usr/bin/env bash
@@ -935,8 +953,10 @@ exec "{script_name}" "$@"
                 wrapper.chmod(0o755)
             except Exception:
                 pass
-            if changed: created += 1
-            else: unchanged += 1
+            if changed:
+                created += 1
+            else:
+                unchanged += 1
 
     status_line(f"Console proxies: {created} created/updated, {unchanged} unchanged", "ok")
 

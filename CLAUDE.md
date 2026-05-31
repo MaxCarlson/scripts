@@ -26,8 +26,11 @@ All CLI arguments need both short and long forms.
 
 **Module versioning** (`modules/` — `pyproject.toml` + optional `__init__.py`):
 - MAJOR → `[project.scripts]` entry points changed
-- MINOR → other `pyproject.toml` changes (deps, metadata)
-- PATCH → source-only changes
+- MINOR → backward-compatible feature addition, or other `pyproject.toml` changes (deps, metadata)
+- PATCH → bug fix, refactor, docs, or tests only; no new user-facing feature
+
+`X.Y.Z` follows semantic-version intent: `Z` is PATCH and does not introduce
+new functionality.
 
 **pyscript versioning** (`pyscripts/` — `__version__` embedded in the file):
 ```python
@@ -39,7 +42,7 @@ import sys
 ```
 - MAJOR → breaking interface change
 - MINOR → new feature, flag, or subcommand
-- PATCH → bug fix or minor improvement
+- PATCH → bug fix or internal/documentation improvement with no new feature
 
 Always bump `__version__` when modifying a pyscript. Full rules: `MODULE_STANDARDS.md §10`.
 

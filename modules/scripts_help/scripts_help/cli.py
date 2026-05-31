@@ -211,14 +211,11 @@ def _print_warnings(drift: dict) -> None:
 
 def _print_drift_report(drift: dict, *, show_registry: bool = True,
                          show_readme: bool = True, verbose: bool = False) -> None:
-    any_output = False
-
     if show_registry:
         reg_clean = not drift["new"] and not drift["stale"] and not drift["deleted"]
         if reg_clean:
             print("REGISTRY  clean")
         else:
-            any_output = True
             print("REGISTRY DRIFT")
             print(_DIVIDER)
             if drift["new"]:
@@ -250,7 +247,6 @@ def _print_drift_report(drift: dict, *, show_registry: bool = True,
                 msg += f"  ({len(missing)} items have no README yet — run with -v to list)"
             print(msg)
         else:
-            any_output = True
             print("README DRIFT")
             print(_DIVIDER)
             if mismatch:
@@ -514,9 +510,12 @@ def _run_sync_menu(drift: dict, *, registry: bool = True, readme: bool = True,
     parts = []
     if has_registry_drift:
         reg_parts = []
-        if drift["new"]:     reg_parts.append(f"{len(drift['new'])} new")
-        if drift["stale"]:   reg_parts.append(f"{len(drift['stale'])} stale")
-        if drift["deleted"]: reg_parts.append(f"{len(drift['deleted'])} deleted")
+        if drift["new"]:
+            reg_parts.append(f"{len(drift['new'])} new")
+        if drift["stale"]:
+            reg_parts.append(f"{len(drift['stale'])} stale")
+        if drift["deleted"]:
+            reg_parts.append(f"{len(drift['deleted'])} deleted")
         parts.append("Registry: " + ", ".join(reg_parts))
     if has_readme_drift:
         rd_parts: dict[str, int] = {}
@@ -744,18 +743,21 @@ def _main_menu(drift: dict) -> None:
             print(f"        {REGISTRY[name]['desc']}")
         print()
         print(f"  {OVERLAP_OPT:2}.  Refactoring / Overlap Notes")
-        print(f"        Programs with significant overlap — candidates for consolidation")
+        print("        Programs with significant overlap — candidates for consolidation")
 
         if UPDATE_OPT:
             drift_parts = []
-            if drift["new"]:     drift_parts.append(f"{len(drift['new'])} new")
-            if drift["stale"]:   drift_parts.append(f"{len(drift['stale'])} stale")
-            if drift["deleted"]: drift_parts.append(f"{len(drift['deleted'])} deleted")
+            if drift["new"]:
+                drift_parts.append(f"{len(drift['new'])} new")
+            if drift["stale"]:
+                drift_parts.append(f"{len(drift['stale'])} stale")
+            if drift["deleted"]:
+                drift_parts.append(f"{len(drift['deleted'])} deleted")
             rd = [r for r in drift["readme"] if r["issue"] != "missing"]
             if rd:
                 drift_parts.append(f"{len(rd)} readme")
             print(f"  {UPDATE_OPT:2}.  Sync Registry / READMEs via AI  [{', '.join(drift_parts)}]")
-            print(f"        Launch Claude or Codex to fix detected drift")
+            print("        Launch Claude or Codex to fix detected drift")
 
         choice = _prompt(max_opt)
 

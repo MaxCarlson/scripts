@@ -9,16 +9,16 @@ from scripts_setup.definition_utils import (
     write_definitions,
     write_definitions_powershell,  # NEW: emit PS1 aliases/functions too
 )
-from scripts_setup.setup_utils import (
-    process_symlinks,  # kept for reference, not used for final wrappers
-)
-from standard_ui.standard_ui import (
-    log_info,
-    log_success,
-    log_warning,
-    log_error,
-    section,
-)
+try:
+    from standard_ui.standard_ui import (
+        log_info,
+        log_success,
+        log_warning,
+        log_error,
+        section,
+    )
+except ModuleNotFoundError:
+    from standard_ui import log_error, log_info, log_success, log_warning, section
 
 
 def _write_text_if_changed(path: Path, content: str, verbose: bool) -> bool:

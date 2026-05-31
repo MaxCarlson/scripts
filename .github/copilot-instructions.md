@@ -9,8 +9,11 @@ points.
 ### Modules (`modules/`)
 `MAJOR.MINOR.PATCH` in `pyproject.toml` (and `__init__.py` if present):
 - **MAJOR** — `[project.scripts]` entry points changed (`.cmd` recreation required)
-- **MINOR** — other `pyproject.toml` changes (deps, metadata)
-- **PATCH** — source-only changes
+- **MINOR** — backward-compatible feature addition, or other `pyproject.toml` changes (deps, metadata)
+- **PATCH** — bug fix, refactor, docs, or tests only; no new user-facing feature
+
+`X.Y.Z` follows semantic-version intent: `Z` is PATCH and must not carry a
+feature addition.
 
 ### pyscripts (`pyscripts/`)
 Embed `__version__` directly in the file, **after the module docstring**, before imports:
@@ -23,7 +26,7 @@ import argparse
 ```
 - **MAJOR** — breaking: renamed/removed flag, incompatible output format
 - **MINOR** — new feature, new flag or subcommand, significant behavior addition
-- **PATCH** — bug fix, refactor, doc update, minor improvement
+- **PATCH** — bug fix, refactor, doc update, or internal improvement with no new feature
 
 Always bump `__version__` when modifying a pyscript.  Full rules in
 [`MODULE_STANDARDS.md §10`](../MODULE_STANDARDS.md).

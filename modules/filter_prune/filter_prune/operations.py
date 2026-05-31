@@ -127,6 +127,19 @@ def resolve_operation_target_dir(args: argparse.Namespace) -> Optional[Path]:
     raise SafePruneError(f"Unsupported operation: {operation}")
 
 
+def raw_operation_destination(target: TargetInfo, args: argparse.Namespace) -> Optional[Path]:
+    """Return the base destination path before collision-avoidance renaming."""
+    target_dir = resolve_operation_target_dir(args)
+    if target_dir is None:
+        return None
+    relative = target.path.resolve(strict=False).relative_to(target.root.resolve(strict=False))
+    root_label = safe_root_label(target.root)
+    if args.operation == "quarantine":
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        return target_dir / timestamp / root_label / relative
+    return target_dir / root_label / relative
+
+
 def operation_destination(target: TargetInfo, args: argparse.Namespace) -> Optional[Path]:
     """Return destination path for move/quarantine operations."""
     target_dir = resolve_operation_target_dir(args)
@@ -457,15 +470,43 @@ def print_stats_text(stats: OperationStats, args: argparse.Namespace) -> None:
     print(colorize(f"Mode: {'dry-run' if stats.dry_run else 'execute'}", Ansi.YELLOW if stats.dry_run else operation_color(stats), args))
     print(f"Operation: {operation_text_colored}")
 
+    if stats.operation in ("move", "quarantine"):
+        try:
+            op_target_dir = resolve_operation_target_dir(args)
+            if op_target_dir is not None:
+                print(f"Destination: {op_target_dir}")
+        except Exception:
+            pass
+
     print("Roots:")
     for root in stats.roots:
         print(f"  {root}")
 
     print(f"Matched: {stats.matched_count}")
 
+    collision_count = 0
+
     if stats.dry_run:
         for target in stats.would_be_affected:
-            print(f"{colorize('DRY-RUN:', Ansi.YELLOW, args)} {target.path}")
+            if stats.operation in ("move", "quarantine"):
+                try:
+                    raw_dest = raw_operation_destination(target, args)
+                    dest = operation_destination(target, args)
+                    is_collision = raw_dest is not None and raw_dest.exists()
+                    if is_collision:
+                        collision_count += 1
+                    dest_str = str(dest) if dest is not None else "?"
+                    if is_collision:
+                        print(
+                            f"{colorize('DRY-RUN:', Ansi.YELLOW, args)} {target.path}"
+                            f"  ->  {dest_str}  {colorize('[COLLISION]', Ansi.RED, args)}"
+                        )
+                    else:
+                        print(f"{colorize('DRY-RUN:', Ansi.YELLOW, args)} {target.path}  ->  {dest_str}")
+                except Exception:
+                    print(f"{colorize('DRY-RUN:', Ansi.YELLOW, args)} {target.path}")
+            else:
+                print(f"{colorize('DRY-RUN:', Ansi.YELLOW, args)} {target.path}")
     else:
         for target in stats.affected:
             print(f"{operation_text_colored}: {target.path}")
@@ -482,6 +523,8 @@ def print_stats_text(stats: OperationStats, args: argparse.Namespace) -> None:
 
     if stats.dry_run:
         print(colorize(f"Would be affected: {stats.would_be_affected_count}", Ansi.YELLOW, args))
+        if collision_count:
+            print(colorize(f"Collisions: {collision_count}", Ansi.RED, args))
     else:
         print(colorize(f"Affected: {stats.affected_count}", operation_color(stats), args))
 

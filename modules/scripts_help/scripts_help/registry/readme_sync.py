@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from scripts_help._repo_root import find_repo_root
+from scripts_help.registry.versions import is_stale
 
 # README version tag — must appear within the first 15 lines:
 #   <!-- version: X.Y.Z -->
@@ -57,7 +58,7 @@ def collect_readme_drift(registry: dict, read_live_version_fn) -> list[dict]:
     issue values:
       "missing"          — no README found at canonical location
       "no_version_tag"   — README exists but has no <!-- version: X.Y.Z --> tag
-      "version_mismatch" — README version != live program version
+      "version_mismatch" — README major/minor version is behind live program version
     """
     repo = find_repo_root()
     results: list[dict] = []
@@ -86,7 +87,7 @@ def collect_readme_drift(registry: dict, read_live_version_fn) -> list[dict]:
                     "readme_version": None,
                     "issue": "no_version_tag",
                 })
-            elif live_ver and readme_ver != live_ver:
+            elif live_ver and is_stale(readme_ver, live_ver):
                 results.append({
                     "name": item["name"],
                     "path": item["path"],

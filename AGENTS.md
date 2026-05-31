@@ -23,8 +23,11 @@ wins.
 
 **Modules (`modules/`)** use `pyproject.toml` + optional `__init__.py`:
 - MAJOR bump → `[project.scripts]` entry points changed (requires full reinstall + `.cmd` regeneration)
-- MINOR bump → other `pyproject.toml` changes (deps, metadata)
-- PATCH bump → source-only changes
+- MINOR bump → backward-compatible feature addition, or other `pyproject.toml` changes (deps, metadata)
+- PATCH bump → bug fix, refactor, docs, or tests only; no new user-facing feature
+
+`X.Y.Z` follows semantic-version intent: `Z` is PATCH, not "minor", and must
+not be used for feature additions.
 
 **pyscripts (`pyscripts/`)** embed `__version__` directly in the file, after the docstring:
 ```python
@@ -36,7 +39,7 @@ import sys
 ```
 - MAJOR → breaking change (renamed/removed flag, incompatible output)
 - MINOR → new feature, new flag, new subcommand
-- PATCH → bug fix, refactor, minor improvement
+- PATCH → bug fix, refactor, or documentation/internal improvement with no new feature
 
 **Always bump** the relevant version when modifying any script or module.  Full
 rules in [`MODULE_STANDARDS.md §1`](MODULE_STANDARDS.md) (modules) and

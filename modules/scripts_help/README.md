@@ -1,4 +1,4 @@
-<!-- version: 0.3.0 -->
+<!-- version: 0.4.0 -->
 # scripts-help
 
 Interactive help browser and registry/README sync for the scripts repository.
@@ -89,8 +89,10 @@ Every README must include a version tag within its first 15 lines:
 <!-- version: X.Y.Z -->
 ```
 
-The version must match the program's current version. `scripts-help drift -r`
-detects mismatches; `scripts-help sync -r` offers AI-assisted fixes.
+The version records the documented major/minor feature level. `scripts-help
+drift -r` flags a version mismatch only when a program has advanced to a new
+major or minor version; patch-only source changes do not request README work.
+`scripts-help sync -r` offers AI-assisted fixes for actionable drift.
 
 **Canonical README locations:**
 
