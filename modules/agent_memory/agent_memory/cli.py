@@ -103,8 +103,66 @@ def _handle_note(args: argparse.Namespace, store: NoteStore) -> None:
     if args.note_command is None:
         print("usage: agent-memory note <create|list|show|edit>", file=sys.stderr)
         sys.exit(1)
-    print(f"[note {args.note_command}] not yet implemented", file=sys.stderr)
-    sys.exit(1)
+    if args.note_command == "create":
+        _cmd_note_create(args, store)
+    elif args.note_command == "list":
+        print("[note list] not yet implemented", file=sys.stderr)
+        sys.exit(1)
+    elif args.note_command == "show":
+        print("[note show] not yet implemented", file=sys.stderr)
+        sys.exit(1)
+    elif args.note_command == "edit":
+        print("[note edit] not yet implemented", file=sys.stderr)
+        sys.exit(1)
+    else:
+        print(f"Unknown note action: {args.note_command}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _cmd_note_create(args: argparse.Namespace, store: NoteStore) -> None:
+    """Handle the 'note create' subcommand."""
+    from agent_memory.note import PROJECT_REQUIRED_KINDS
+
+    if args.kind in PROJECT_REQUIRED_KINDS and not args.project:
+        print(
+            f"Error: --project is required for kind '{args.kind}'.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
+    auto_classify = not args.no_llm
+
+    try:
+        note = store.create_note(
+            kind=args.kind,
+            project=args.project,
+            title=args.title,
+            body=args.body,
+            created_by="agent-memory-cli",
+            tags=tags,
+            auto_classify=auto_classify,
+            dry_run=args.dry_run,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.dry_run:
+        from agent_memory.frontmatter import write_frontmatter
+
+        meta = {
+            "id": note.id,
+            "schema_version": note.schema_version,
+            "kind": note.kind,
+            "project": note.project,
+            "created_at": note.created_at,
+            "created_by": note.created_by,
+            "tags": note.tags,
+        }
+        print(write_frontmatter(meta, note.body))
+    else:
+        print(f"Created: {note.id}  ({note.path})")
 
 
 def _handle_search(args: argparse.Namespace, store: NoteStore) -> None:

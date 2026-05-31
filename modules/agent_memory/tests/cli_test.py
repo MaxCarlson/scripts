@@ -50,3 +50,69 @@ def test_env_var_root_accepted(tmp_path: Path) -> None:
 def test_short_root_flag(tmp_path: Path) -> None:
     result = run_cli("-r", str(tmp_path), "index", "status")
     assert result.returncode in (0, 1)
+
+
+def test_note_create_writes_file(tmp_path: Path) -> None:
+    result = run_cli(
+        "-r", str(tmp_path),
+        "note", "create",
+        "-k", "constraint",
+        "-t", "Always use pathlib",
+        "-b", "## Summary\n\nUse pathlib.Path.",
+        "--tags", "python,style",
+    )
+    assert result.returncode == 0, result.stderr
+    md_files = list(tmp_path.rglob("*.md"))
+    assert len(md_files) == 1
+    content = md_files[0].read_text(encoding="utf-8")
+    assert "Always use pathlib" in content
+    assert "constraint" in content
+
+
+def test_note_create_prints_note_id(tmp_path: Path) -> None:
+    result = run_cli(
+        "-r", str(tmp_path),
+        "note", "create",
+        "-k", "preference",
+        "-t", "Use f-strings",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Created:" in result.stdout or len(result.stdout.strip()) > 0
+
+
+def test_note_create_dry_run_prints_but_does_not_write(tmp_path: Path) -> None:
+    result = run_cli(
+        "-r", str(tmp_path),
+        "note", "create",
+        "-k", "constraint",
+        "-t", "Dry run note",
+        "--dry-run",
+    )
+    assert result.returncode == 0, result.stderr
+    md_files = list(tmp_path.rglob("*.md"))
+    assert len(md_files) == 0
+    assert "constraint" in result.stdout or "Dry run note" in result.stdout
+
+
+def test_note_create_project_required_kind_without_project_fails(tmp_path: Path) -> None:
+    result = run_cli(
+        "-r", str(tmp_path),
+        "note", "create",
+        "-k", "handoff",
+        "-t", "Some handoff",
+    )
+    assert result.returncode != 0
+    assert "project" in result.stderr.lower() or "required" in result.stderr.lower()
+
+
+def test_note_create_project_required_kind_with_project_succeeds(tmp_path: Path) -> None:
+    result = run_cli(
+        "-r", str(tmp_path),
+        "note", "create",
+        "-k", "handoff",
+        "-p", "my-project",
+        "-t", "Handoff summary",
+    )
+    assert result.returncode == 0, result.stderr
+    md_files = list(tmp_path.rglob("*.md"))
+    assert len(md_files) == 1
