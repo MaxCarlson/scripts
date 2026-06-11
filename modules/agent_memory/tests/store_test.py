@@ -230,11 +230,14 @@ def test_verify_returns_empty_for_valid_notes(tmp_path: Path) -> None:
         body="Body.",
         created_by="test",
     )
-    errors = store.verify()
+    issues = store.verify()
+    errors = [i for i in issues if i.severity == "error"]
     assert errors == []
 
 
 def test_verify_flags_kind_mismatch(tmp_path: Path) -> None:
+    from agent_memory.frontmatter import CODE_KIND_PATH_MISMATCH, CODE_UNKNOWN_KIND
+
     store = NoteStore(root=tmp_path)
     note = store.create_note(
         kind="preference",
@@ -248,9 +251,11 @@ def test_verify_flags_kind_mismatch(tmp_path: Path) -> None:
     corrupted = text.replace("kind: preference", "kind: invalid_kind", 1)
     assert "kind: invalid_kind" in corrupted  # guard: replace must have matched
     note.path.write_text(corrupted, encoding="utf-8")
-    errors = store.verify()
-    assert len(errors) == 1
-    assert "invalid_kind" in errors[0]
+    issues = store.verify()
+    codes = {i.code for i in issues}
+    # At minimum: UNKNOWN_KIND (invalid_kind not in taxonomy) + KIND_PATH_MISMATCH
+    assert CODE_UNKNOWN_KIND in codes or CODE_KIND_PATH_MISMATCH in codes
+    assert any("invalid_kind" in i.message for i in issues)
 
 
 def test_create_note_auto_classify_calls_determine_project(tmp_path: Path) -> None:
@@ -542,3 +547,131 @@ def test_new_active_kinds_can_be_created(tmp_path: Path) -> None:
         )
         assert note.kind == kind
         assert note.schema_version == 2
+
+
+# ---------------------------------------------------------------------------
+# Plan 6: Layout resolver, verify(), duplicate IDs, rebuild
+# ---------------------------------------------------------------------------
+
+def test_resolve_note_path_metadata_global(tmp_path: Path) -> None:
+    from agent_memory.store import resolve_note_path_metadata
+
+    path = tmp_path / "global" / "decision" / "some-note.md"
+    meta = resolve_note_path_metadata(path, tmp_path)
+    assert meta.scope == "global"
+    assert meta.project == "global"
+    assert meta.kind == "decision"
+    assert meta.layout == "v1"
+
+
+def test_resolve_note_path_metadata_project(tmp_path: Path) -> None:
+    from agent_memory.store import resolve_note_path_metadata
+
+    path = tmp_path / "projects" / "my-proj" / "bug" / "some-note.md"
+    meta = resolve_note_path_metadata(path, tmp_path)
+    assert meta.scope == "project"
+    assert meta.project == "my-proj"
+    assert meta.kind == "bug"
+    assert meta.layout == "v1"
+
+
+def test_resolve_note_path_metadata_unknown(tmp_path: Path) -> None:
+    from agent_memory.store import resolve_note_path_metadata
+
+    path = tmp_path / "random" / "file.md"
+    meta = resolve_note_path_metadata(path, tmp_path)
+    assert meta.scope == "unknown"
+    assert meta.layout == "unknown"
+
+
+def test_verify_returns_list_of_validation_issues(tmp_path: Path) -> None:
+    from agent_memory.frontmatter import ValidationIssue
+
+    store = NoteStore(root=tmp_path)
+    issues = store.verify()
+    assert isinstance(issues, list)
+    assert all(isinstance(i, ValidationIssue) for i in issues)
+
+
+def test_verify_project_path_mismatch(tmp_path: Path) -> None:
+    from agent_memory.frontmatter import CODE_PROJECT_PATH_MISMATCH
+
+    store = NoteStore(root=tmp_path)
+    note = store.create_note(
+        kind="decision",
+        project="project-alpha",
+        title="Mismatch project",
+        body="Body.",
+        created_by="test",
+    )
+    # Corrupt the frontmatter project field.
+    text = note.path.read_text(encoding="utf-8")
+    corrupted = text.replace("project: project-alpha", "project: project-beta", 1)
+    note.path.write_text(corrupted, encoding="utf-8")
+
+    issues = store.verify()
+    assert any(i.code == CODE_PROJECT_PATH_MISMATCH for i in issues)
+
+
+def test_verify_detects_duplicate_ids(tmp_path: Path) -> None:
+    from agent_memory.frontmatter import CODE_DUPLICATE_ID
+
+    store = NoteStore(root=tmp_path)
+    note = store.create_note(
+        kind="constraint",
+        project=None,
+        title="Original",
+        body="Body.",
+        created_by="test",
+    )
+    # Create a copy of the same note file with a different filename.
+    text = note.path.read_text(encoding="utf-8")
+    copy_path = note.path.parent / "copy-of-original.md"
+    copy_path.write_text(text, encoding="utf-8")
+
+    issues = store.verify()
+    assert any(i.code == CODE_DUPLICATE_ID for i in issues)
+
+
+def test_verify_each_file_checked_independently(tmp_path: Path) -> None:
+    """An invalid file must not suppress checks for subsequent files."""
+    store = NoteStore(root=tmp_path)
+    good = store.create_note(
+        kind="preference",
+        project=None,
+        title="Good note",
+        body="Body.",
+        created_by="test",
+    )
+    # Write a bad note alongside the good one.
+    bad_path = good.path.parent / "bad-note.md"
+    bad_path.write_text("---\nid: bad\nkind: not-a-kind\n---\n\nBody.", encoding="utf-8")
+
+    issues = store.verify()
+    paths = {i.path for i in issues}
+    # The bad note must be individually flagged.
+    assert bad_path in paths
+
+
+def test_rebuild_index_aborts_on_duplicate_ids(tmp_path: Path) -> None:
+    from agent_memory.store import DuplicateNoteIDError
+
+    store = NoteStore(root=tmp_path)
+    note = store.create_note(
+        kind="constraint",
+        project=None,
+        title="Original",
+        body="Body.",
+        created_by="test",
+    )
+    # Duplicate the file with same ID.
+    text = note.path.read_text(encoding="utf-8")
+    (note.path.parent / "duplicate.md").write_text(text, encoding="utf-8")
+
+    with pytest.raises(DuplicateNoteIDError) as exc_info:
+        store.rebuild_index()
+
+    err = exc_info.value
+    assert err.duplicates
+    assert note.id in err.duplicates
+    assert err.issues

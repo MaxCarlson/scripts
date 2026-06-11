@@ -89,6 +89,16 @@ def _make_parser() -> argparse.ArgumentParser:
     index_sub.add_parser("rebuild", help="Rebuild the SQLite index from Markdown files.")
     index_sub.add_parser("status", help="Show index statistics.")
 
+    # --- verify subcommand ---
+    verify_p = sub.add_parser("verify", help="Validate all notes for frontmatter and path consistency.")
+    verify_p.add_argument(
+        "-j", "--json", action="store_true", dest="json_output", help="Output issues as JSON."
+    )
+    verify_p.add_argument(
+        "-W", "--warnings-as-errors", action="store_true",
+        help="Treat warnings as errors (exit nonzero if any warnings are present).",
+    )
+
     return parser
 
 
@@ -109,6 +119,8 @@ def main() -> None:
         _handle_search(args, store)
     elif args.command == "index":
         _handle_index(args, store)
+    elif args.command == "verify":
+        _handle_verify(args, store)
 
 
 def _handle_note(args: argparse.Namespace, store: NoteStore) -> None:
@@ -250,17 +262,66 @@ def _handle_index(args: argparse.Namespace, store: NoteStore) -> None:
         print("usage: agent-memory index <rebuild|status>", file=sys.stderr)
         sys.exit(1)
     if args.index_command == "rebuild":
-        count = store.rebuild_index()
-        print(f"Rebuild complete. Indexed {count} note(s).")
+        from agent_memory.store import DuplicateNoteIDError
+
+        try:
+            count = store.rebuild_index()
+            print(f"Rebuild complete. Indexed {count} note(s).")
+        except DuplicateNoteIDError as exc:
+            print("Error: Rebuild aborted — duplicate note IDs detected.", file=sys.stderr)
+            for issue in exc.issues:
+                print(f"  {issue.code}: {issue.path}  {issue.message}", file=sys.stderr)
+            sys.exit(1)
     elif args.index_command == "status":
         notes = store.list_notes(limit=10_000)
-        errors = store.verify()
+        issues = store.verify()
+        errors = [i for i in issues if i.severity == "error"]
+        warnings = [i for i in issues if i.severity == "warning"]
         print(f"Notes: {len(notes)}")
-        print(f"Index errors: {len(errors)}")
-        for err in errors:
-            print(f"  - {err}")
+        print(f"Errors: {len(errors)}  Warnings: {len(warnings)}")
+        for issue in errors + warnings:
+            label = "ERR " if issue.severity == "error" else "WARN"
+            path_str = str(issue.path) if issue.path else ""
+            field_part = f" [{issue.field}]" if issue.field else ""
+            print(f"  [{label}] {path_str}{field_part} ({issue.code}) {issue.message}")
     else:
         print(f"Unknown index action: {args.index_command}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _handle_verify(args: argparse.Namespace, store: NoteStore) -> None:
+    """Handle the 'verify' subcommand."""
+    issues = store.verify()
+    errors = [i for i in issues if i.severity == "error"]
+    warnings = [i for i in issues if i.severity == "warning"]
+
+    if getattr(args, "json_output", False):
+        import json
+
+        data = [
+            {
+                "path": str(i.path) if i.path else None,
+                "field": i.field,
+                "code": i.code,
+                "message": i.message,
+                "severity": i.severity,
+            }
+            for i in issues
+        ]
+        print(json.dumps(data, indent=2))
+    else:
+        if not issues:
+            print("All notes valid. No issues found.")
+        else:
+            for issue in issues:
+                label = "ERR " if issue.severity == "error" else "WARN"
+                path_str = str(issue.path) if issue.path else ""
+                field_part = f" [{issue.field}]" if issue.field else ""
+                print(f"[{label}] {path_str}{field_part} ({issue.code}) {issue.message}")
+            print(f"\n{len(errors)} error(s), {len(warnings)} warning(s).")
+
+    warnings_as_errors = getattr(args, "warnings_as_errors", False)
+    if errors or (warnings_as_errors and warnings):
         sys.exit(1)
 
 

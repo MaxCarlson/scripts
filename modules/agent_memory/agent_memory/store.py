@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 from agent_memory.classify import determine_project
 from agent_memory.frontmatter import (
+    CODE_DUPLICATE_ID,
+    CODE_KIND_PATH_MISMATCH,
+    CODE_PROJECT_PATH_MISMATCH,
+    CODE_UNKNOWN_LAYOUT,
     CURRENT_SCHEMA_VERSION,
+    ValidationIssue,
     parse_frontmatter,
-    validate_frontmatter,
+    parse_frontmatter_safe,
     write_frontmatter,
 )
 from agent_memory.index import NoteIndex
@@ -30,6 +37,71 @@ _DEFAULT_ROOT = Path.home() / "scripts" / "modules" / "agent_memory" / "notes"
 def _get_default_root() -> Path:
     env = os.environ.get("AGENT_MEMORY_ROOT")
     return Path(env) if env else _DEFAULT_ROOT
+
+
+# ---------------------------------------------------------------------------
+# Path layout resolver
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class NotePathMetadata:
+    """Decoded layout information for a note file path."""
+
+    scope: Literal["global", "project", "unknown"]
+    project: str | None
+    kind: str | None
+    layout: Literal["v1", "sharded", "unknown"]
+
+
+def resolve_note_path_metadata(path: Path, root: Path) -> NotePathMetadata:
+    """Decode scope, project, kind, and layout from a note's filesystem path.
+
+    Supported layouts::
+
+        <root>/global/<kind>/<file>.md          → scope=global, layout=v1
+        <root>/projects/<project>/<kind>/<file>.md → scope=project, layout=v1
+
+    Any other structure is reported as ``scope=unknown, layout=unknown``.
+    """
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return NotePathMetadata(scope="unknown", project=None, kind=None, layout="unknown")
+
+    parts = rel.parts  # e.g. ("global", "decision", "file.md")
+
+    if len(parts) >= 3 and parts[0] == "global":
+        return NotePathMetadata(scope="global", project="global", kind=parts[1], layout="v1")
+
+    if len(parts) >= 4 and parts[0] == "projects":
+        return NotePathMetadata(scope="project", project=parts[1], kind=parts[2], layout="v1")
+
+    # Possible future sharding: <root>/s/<shard>/<kind>/<file>.md
+    if len(parts) >= 4 and parts[0] == "s":
+        return NotePathMetadata(scope="unknown", project=None, kind=parts[2], layout="sharded")
+
+    return NotePathMetadata(scope="unknown", project=None, kind=None, layout="unknown")
+
+
+# ---------------------------------------------------------------------------
+# Duplicate-ID exception
+# ---------------------------------------------------------------------------
+
+
+class DuplicateNoteIDError(Exception):
+    """Raised by rebuild_index() when duplicate note IDs are detected.
+
+    Attributes:
+        issues: List of ValidationIssue objects describing each duplicate.
+        duplicates: Mapping of note_id → list of conflicting paths (str).
+    """
+
+    def __init__(self, issues: list[ValidationIssue], duplicates: dict[str, list[str]]) -> None:
+        self.issues = issues
+        self.duplicates = duplicates
+        pairs = "; ".join(f"{nid}: {paths}" for nid, paths in duplicates.items())
+        super().__init__(f"Duplicate note IDs detected: {pairs}")
 
 
 class NoteStore:
@@ -321,9 +393,50 @@ class NoteStore:
     def rebuild_index(self) -> int:
         """Scan all .md files under notes root and rebuild SQLite index.
 
+        Pre-scans files for duplicate note IDs and aborts with
+        ``DuplicateNoteIDError`` before any upserts if any are found.
+
         Returns:
             Number of notes indexed.
+
+        Raises:
+            DuplicateNoteIDError: If two or more files share the same note ID.
         """
+        # --- Phase 1: collect all (id, path) pairs and check for duplicates ---
+        file_ids: list[tuple[str, Path]] = []
+        for md_file in sorted(self._root.rglob("*.md")):
+            if ".index" in md_file.parts:
+                continue
+            try:
+                text = md_file.read_text(encoding="utf-8")
+                meta, _ = parse_frontmatter(text)
+                note_id = meta.get("id")
+                if isinstance(note_id, str) and note_id:
+                    file_ids.append((note_id, md_file))
+            except Exception:
+                pass
+
+        seen: dict[str, list[str]] = {}
+        for note_id, path in file_ids:
+            seen.setdefault(note_id, []).append(str(path))
+
+        duplicates = {nid: paths for nid, paths in seen.items() if len(paths) > 1}
+        if duplicates:
+            dup_issues: list[ValidationIssue] = []
+            for note_id, paths in duplicates.items():
+                for p in paths:
+                    dup_issues.append(
+                        ValidationIssue(
+                            path=Path(p),
+                            field="id",
+                            code=CODE_DUPLICATE_ID,
+                            message=f"Note ID '{note_id}' appears in multiple files: " + ", ".join(paths),
+                            severity="error",
+                        )
+                    )
+            raise DuplicateNoteIDError(dup_issues, duplicates)
+
+        # --- Phase 2: upsert all valid notes ---
         count = 0
         for md_file in sorted(self._root.rglob("*.md")):
             if ".index" in md_file.parts:
@@ -373,30 +486,112 @@ class NoteStore:
                 logger.warning("Skipping %s: %s", md_file, exc)
         return count
 
-    def verify(self) -> list[str]:
-        """Check all notes for validation errors.
+    def verify(self) -> list[ValidationIssue]:
+        """Check all notes for validation errors and path/frontmatter consistency.
+
+        Uses ``parse_frontmatter_safe()`` so every file is checked independently
+        regardless of whether earlier files have issues.  Also detects duplicate
+        note IDs across the vault.
 
         Returns:
-            List of error strings. Empty means all notes are valid.
+            List of ``ValidationIssue`` objects. Empty means all notes are valid.
         """
-        errors: list[str] = []
+        issues: list[ValidationIssue] = []
+        seen_ids: dict[str, list[str]] = {}  # id → list[path strings]
+
         for md_file in sorted(self._root.rglob("*.md")):
             if ".index" in md_file.parts:
                 continue
             try:
                 text = md_file.read_text(encoding="utf-8")
-                meta, _ = parse_frontmatter(text)
-                for err in validate_frontmatter(meta):
-                    errors.append(f"{md_file}: {err}")
-                if not errors:
-                    path_kind = md_file.parent.name
-                    if meta.get("kind") and meta["kind"] != path_kind:
-                        errors.append(
-                            f"{md_file}: frontmatter kind='{meta['kind']}' but directory says '{path_kind}'"
+            except OSError as exc:
+                issues.append(
+                    ValidationIssue(
+                        path=md_file,
+                        field=None,
+                        code="FILE_READ_ERROR",
+                        message=f"Cannot read file: {exc}",
+                        severity="error",
+                    )
+                )
+                continue
+
+            result = parse_frontmatter_safe(text, path=md_file)
+            issues.extend(result.issues)
+
+            if not result.has_frontmatter or not result.metadata:
+                continue
+
+            meta = result.metadata
+            note_id = meta.get("id")
+
+            # Track IDs for duplicate detection.
+            if isinstance(note_id, str) and note_id:
+                seen_ids.setdefault(note_id, []).append(str(md_file))
+
+            # Path layout cross-checks (only when layout is known).
+            path_meta = resolve_note_path_metadata(md_file, self._root)
+            if path_meta.layout == "unknown":
+                issues.append(
+                    ValidationIssue(
+                        path=md_file,
+                        field=None,
+                        code=CODE_UNKNOWN_LAYOUT,
+                        message=(
+                            "File is not under a recognised layout directory "
+                            "(global/<kind>/ or projects/<project>/<kind>/)."
+                        ),
+                        severity="warning",
+                    )
+                )
+            else:
+                fm_kind = meta.get("kind") if isinstance(meta.get("kind"), str) else None
+                if fm_kind and path_meta.kind and fm_kind != path_meta.kind:
+                    issues.append(
+                        ValidationIssue(
+                            path=md_file,
+                            field="kind",
+                            code=CODE_KIND_PATH_MISMATCH,
+                            message=(
+                                f"Frontmatter kind='{fm_kind}' does not match "
+                                f"directory kind='{path_meta.kind}'."
+                            ),
+                            severity="error",
                         )
-            except Exception as exc:
-                errors.append(f"{md_file}: parse error: {exc}")
-        return errors
+                    )
+                fm_project = meta.get("project") if isinstance(meta.get("project"), str) else None
+                if fm_project and path_meta.project and fm_project != path_meta.project:
+                    issues.append(
+                        ValidationIssue(
+                            path=md_file,
+                            field="project",
+                            code=CODE_PROJECT_PATH_MISMATCH,
+                            message=(
+                                f"Frontmatter project='{fm_project}' does not match "
+                                f"path project='{path_meta.project}'."
+                            ),
+                            severity="error",
+                        )
+                    )
+
+        # Report duplicate IDs.
+        for note_id, paths in seen_ids.items():
+            if len(paths) > 1:
+                for p in paths:
+                    issues.append(
+                        ValidationIssue(
+                            path=Path(p),
+                            field="id",
+                            code=CODE_DUPLICATE_ID,
+                            message=(
+                                f"Note ID '{note_id}' appears in multiple files: "
+                                + ", ".join(paths)
+                            ),
+                            severity="error",
+                        )
+                    )
+
+        return issues
 
 
 def _float_or_none(value: object) -> float | None:

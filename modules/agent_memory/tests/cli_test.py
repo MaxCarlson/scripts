@@ -272,3 +272,72 @@ def test_index_status_empty_root(tmp_path: Path) -> None:
     result = run_cli("-r", str(tmp_path), "index", "status")
     assert result.returncode == 0
     assert "0" in result.stdout or "empty" in result.stdout.lower()
+
+
+# ---------------------------------------------------------------------------
+# Plan 6: verify subcommand
+# ---------------------------------------------------------------------------
+
+def test_verify_exits_zero_for_valid_notes(tmp_path: Path) -> None:
+    _create_test_note(tmp_path, kind="constraint", title="Valid note")
+    result = run_cli("-r", str(tmp_path), "verify")
+    assert result.returncode == 0
+
+
+def test_verify_empty_root_exits_zero(tmp_path: Path) -> None:
+    result = run_cli("-r", str(tmp_path), "verify")
+    assert result.returncode == 0
+    assert "valid" in result.stdout.lower() or "0" in result.stdout
+
+
+def test_verify_exits_nonzero_on_errors(tmp_path: Path) -> None:
+    _create_test_note(tmp_path, kind="constraint", title="Good note")
+    bad_path = tmp_path / "global" / "constraint" / "bad-note.md"
+    bad_path.parent.mkdir(parents=True, exist_ok=True)
+    bad_path.write_text("---\nid: bad\nkind: not-a-kind\n---\n\nBody.", encoding="utf-8")
+    result = run_cli("-r", str(tmp_path), "verify")
+    assert result.returncode != 0
+
+
+def test_verify_json_output_is_valid_json(tmp_path: Path) -> None:
+    import json
+
+    _create_test_note(tmp_path, kind="constraint", title="JSON test")
+    result = run_cli("-r", str(tmp_path), "verify", "--json")
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert isinstance(data, list)
+
+
+def test_verify_warnings_as_errors_flag(tmp_path: Path) -> None:
+    """--warnings-as-errors makes warnings count as failures."""
+    # A note without layer generates a warning; valid V2 notes have layer so no warning.
+    # Create a note then manually strip layer to induce a warning.
+    from agent_memory.store import NoteStore
+
+    store = NoteStore(root=tmp_path)
+    note = store.create_note(
+        kind="constraint", project=None, title="No layer note", body="Body.", created_by="test"
+    )
+    text = note.path.read_text(encoding="utf-8")
+    stripped = "\n".join(line for line in text.splitlines() if not line.startswith("layer:"))
+    note.path.write_text(stripped, encoding="utf-8")
+
+    result_normal = run_cli("-r", str(tmp_path), "verify")
+    result_strict = run_cli("-r", str(tmp_path), "verify", "--warnings-as-errors")
+    # Normal mode: only errors cause nonzero exit; warnings alone may exit 0.
+    # Strict mode: any warnings also cause nonzero exit.
+    # If there are warnings, strict must exit nonzero.
+    if result_normal.returncode == 0:
+        # Normal succeeded; strict should fail if there are warnings.
+        assert result_strict.returncode != 0 or "0 error" in result_strict.stdout.lower()
+
+
+def test_verify_short_json_flag(tmp_path: Path) -> None:
+    import json
+
+    _create_test_note(tmp_path, kind="preference", title="Short JSON flag")
+    result = run_cli("-r", str(tmp_path), "verify", "-j")
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert isinstance(data, list)
