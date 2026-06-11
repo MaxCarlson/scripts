@@ -1,33 +1,52 @@
-from __future__ import annotations
+"""Base worker adapter interfaces."""
 
-import abc
 from dataclasses import dataclass
 from pathlib import Path
 
+from agent_sync.config import WorkerSpec
+
+
+@dataclass(frozen=True)
+class WorkerResult:
+    """Result of invoking a worker."""
+
+    worker: str
+    output: str
+    exit_code: int | None
+    duration_seconds: float
+    status: str
+    error: str | None = None
+
 
 @dataclass
-class AgentAdapter(abc.ABC):
-    """Abstract base for provider-specific agent launchers."""
+class AgentAdapter:
+    """Base adapter for provider-specific worker launchers."""
 
     repo_root: Path
+    spec: WorkerSpec
 
     @property
-    @abc.abstractmethod
     def agent_name(self) -> str:
-        """Short provider identifier: 'claude', 'codex', 'gemini', 'local'."""
+        """Return the short provider identifier."""
+        return self.spec.name
 
-    @abc.abstractmethod
+    def run(self, prompt: str, *, task_type: str, context_level: str) -> WorkerResult:
+        """Run the worker and return output."""
+        raise NotImplementedError
+
     def launch_args(self, *, prompt: str, task_id: str) -> list[str]:
-        """Return argv list to launch the agent non-interactively."""
+        """Compatibility hook for older agent_sync plans."""
+        del prompt, task_id
+        return list(self.spec.command)
 
-    @abc.abstractmethod
     def hook_env(self) -> dict[str, str]:
-        """Return env vars the shell wrappers need to locate the repo root."""
+        """Return environment variables used by shell hook wrappers."""
+        return {"AGENT_SYNC_REPO_ROOT": str(self.repo_root)}
 
-    @abc.abstractmethod
     def config_files(self) -> list[Path]:
-        """Return paths to provider config files written by agent-sync init."""
+        """Return provider config files managed by agent_sync init."""
+        return []
 
     def instruction_file(self) -> Path | None:
-        """Return the provider's instruction file (CLAUDE.md / AGENTS.md / GEMINI.md)."""
+        """Return the provider instruction file path, if any."""
         return None

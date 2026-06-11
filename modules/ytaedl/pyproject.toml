@@ -4,8 +4,24 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ytaedl"
-version = "2.1.0"
+version = "2.10.1"
 # Version history (MAJOR.MINOR.PATCH per MODULE_STANDARDS.md):
+# 2.10.1 — PATCH: STARS_DIR/AESTARS_DIR env vars used as defaults for -s/-d across all subcommands (manager, validate, status, cleanup index, urls); -j/--json-plan default fixed to literal path (was None, showing confusing double-default in help)
+# 2.10.0 — MINOR: compact 2-line worker UI (8 workers + header visible on one screen); simulate timeout → UNKNOWN_STATUS for yt-dlp downloaded entries (genuine failure still BAD_STATUS); set last_transition/tool/url in worker view
+# 2.9.1 — PATCH: archive status: deduplicate archive by URL (best status wins, collapse retry lines); domain index total = queued+inprog+finished (not total_urls which is queued-only after load); AEBN/yt-dlp split scans all known URL sets
+# 2.9.0 — MINOR: archive status -s/--stars-dir -d/--aebn-dir URL file coverage (total, never-attempted, per-file remaining); clearer domain index output (Done/Remaining labels)
+# 2.8.0 — MINOR: archive status subcommand (fast no-network count table); worker file pool interleaving (each worker owns one file, alternating ae/yt); aebndl test cwd=temp keeps log files out of workspace
+# 2.7.3 — PATCH: repair plan always written; defaults to validator_logs/archive_repair_plan.json; apply-plan -p defaults to same path
+# 2.7.2 — MINOR: -r/--sample PCT random-sampling mode with extrapolated totals in summary; % shown in all summary columns for both sampled and full runs
+# 2.7.1 — PATCH: validator_logs/ default to ./validator_logs (CWD); y/n/c prompt before overwriting old logs; human-readable per-worker logs (worker-NN.log) with file-transition headers and verdict columns; run header/footer in all logs
+# 2.7.0 — MINOR: archive validate -F/--fast filesystem-only check; auto-active for "already" entries; ArchiveUrl.archive_size_mib; _check_dir_has_video; AEBN "done but missing" → GOOD_STATUS re-queue
+# 2.6.1 — PATCH: replace proc.terminate() with _kill_process_tree() in all shutdown paths (finally block, requeue, throttle/unthrottle); prevents orphaned aebndl/yt-dlp/ffmpeg children on exit
+# 2.6.0 — MINOR: auto-resolve AEBN scene ordinal from URL fragment (#scene-XXXXXXXX) via aebn_dl page scrape; pass -s N to aebndl so scene URLs download only the scene
+# 2.5.0 — MINOR: mux stall detection is now liveness-based (heartbeat resets timer, no hard wall-clock cap); complete_stall_seconds now means inactivity window (default 120s)
+# 2.4.0 — MINOR: archive validate uses real yt-dlp download test for stalled/bad yt-dlp entries (shared _build_ytdlp_cmd); domain_index.json moved to archive folder with auto-migration
+# 2.3.0 — MINOR: archive validate runs real aebndl download test for stalled/bad AEBN entries; fix _build_aebndl_cmd max_height=0 for lowest quality
+# 2.2.0 — MINOR: add -f/--complete-stall-seconds to manager (default 1800s) to prevent mux-phase kills on large files
+# 2.1.1 — PATCH: fix stall-detector killing aebndl during concat/mux via segments_complete event
 # 2.1.0 — MINOR: add archive validation/apply-plan workflow and remove run finished-log override
 # 2.0.5 — PATCH: fix finish event rejected after extdl fallbacks update active_attempt_id
 # 2.0.4 — PATCH: keep ytaedl pytest temp roots module-local

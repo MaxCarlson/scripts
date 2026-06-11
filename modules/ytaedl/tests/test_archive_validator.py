@@ -33,11 +33,13 @@ def test_load_archive_urls_parses_status_url_and_ignores_rebuild(tmp_path):
     assert entries[0].archive_line == 1
 
 
-def test_validate_records_bad_to_viable_mismatch_and_json_plan(tmp_path):
+def test_validate_records_downloaded_to_viable_mismatch_and_json_plan(tmp_path):
     archive_dir = tmp_path / "archive"
     log_dir = tmp_path / "logs"
     url = "https://example.com/watch?v=1"
-    _write_archive_line(archive_dir / "yt-alpha.txt", "bad-url", url)
+    # Use "downloaded" (not "bad-url") so inspect_url() goes through _simulate_check,
+    # not _test_ytdlp_url_download which would run a real subprocess.
+    _write_archive_line(archive_dir / "yt-alpha.txt", "downloaded", url)
 
     with patch("ytaedl.archive_validator._simulate_check") as simulate:
         simulate.return_value.is_duplicate = False
@@ -62,11 +64,11 @@ def test_validate_records_bad_to_viable_mismatch_and_json_plan(tmp_path):
         )
 
     assert summary.processed == 1
-    assert summary.mismatches[0].transition == "bad-url -> viable"
+    assert summary.mismatches[0].transition == "downloaded -> viable"
 
     plan = archive_validator.build_change_plan(summary, archive_dir=archive_dir, log_dir=log_dir)
     assert plan["changes"][0]["action"] == "remove_archive_entry"
-    assert plan["changes"][0]["domain_index_action"] == "remove_finished"
+    assert plan["changes"][0]["domain_index_action"] == "requeue_url"
 
 
 def test_apply_change_plan_removes_viable_archive_entry(tmp_path):
@@ -141,23 +143,31 @@ def test_aebn_folder_mp4_does_not_mark_every_url_preexisting(tmp_path):
     download_dir.mkdir(parents=True)
     (download_dir / "unrelated completed video.mp4").write_bytes(b"mp4")
 
-    summary = archive_validator.validate_archive(
-        archive_dir=archive_dir,
-        log_dir=tmp_path / "logs",
-        validation_log_dir=tmp_path / "validation-logs",
-        download_roots=[tmp_path / "stars"],
-        workers=1,
-        order="url-file",
-        max_seconds=None,
-        max_count=None,
-        ratio=None,
-        count_partials=False,
-        simulate_timeout=1,
-        cookies_from_browser=None,
-        impersonate=None,
-        verify_aebn_metadata=False,
-        realtime=False,
+    # bad-url AEBN entries call _test_aebn_url_download; mock it so the test doesn't
+    # spawn a real aebndl process (which would return GOOD_STATUS on a live system).
+    mock_unknown = archive_validator.UrlReality(
+        status=archive_validator.UNKNOWN_STATUS,
+        downloader="aebndl",
+        reason="test-mocked: no download confirmation",
     )
+    with patch("ytaedl.archive_validator._test_aebn_url_download", return_value=mock_unknown):
+        summary = archive_validator.validate_archive(
+            archive_dir=archive_dir,
+            log_dir=tmp_path / "logs",
+            validation_log_dir=tmp_path / "validation-logs",
+            download_roots=[tmp_path / "stars"],
+            workers=1,
+            order="url-file",
+            max_seconds=None,
+            max_count=None,
+            ratio=None,
+            count_partials=False,
+            simulate_timeout=1,
+            cookies_from_browser=None,
+            impersonate=None,
+            verify_aebn_metadata=False,
+            realtime=False,
+        )
 
     assert summary.processed == 1
     assert summary.unknown_count == 1
@@ -165,10 +175,39 @@ def test_aebn_folder_mp4_does_not_mark_every_url_preexisting(tmp_path):
     assert summary.status_counts["unknown"] == 1
 
 
+def test_aebn_done_but_file_missing_returns_viable(tmp_path):
+    """AEBN URL marked 'downloaded' in archive but no file on disk → GOOD_STATUS (re-queue)."""
+    entry = archive_validator.ArchiveUrl(
+        url="https://straight.aebn.com/straight/movies/266837/stepmoms-teach-sex-20#scene-1150674",
+        archive_status="downloaded",
+        archive_file=tmp_path / "archive" / "ae-katie_kush.txt",
+        archive_line=1,
+        archive_text="",
+        source_group="ae-katie_kush",
+    )
+    # Download root exists but no matching file inside it
+    (tmp_path / "stars" / "katie_kush").mkdir(parents=True)
+
+    result = archive_validator.inspect_url(
+        entry,
+        download_roots=[tmp_path / "stars"],
+        count_partials=False,
+        simulate_timeout=1,
+        cookies_from_browser=None,
+        impersonate=None,
+        verify_aebn_metadata=False,
+        validation_log_dir=tmp_path / "validation-logs",
+    )
+
+    assert result.status == archive_validator.GOOD_STATUS
+    assert result.downloader == "aebndl"
+    assert "finished" in result.reason.lower() or "file" in result.reason.lower()
+
+
 def test_aebn_metadata_check_uses_aebndl_existing_output(monkeypatch, tmp_path):
     entry = archive_validator.ArchiveUrl(
         url="https://straight.aebn.com/straight/movies/266837/stepmoms-teach-sex-20#scene-1150674",
-        archive_status="bad-url",
+        archive_status="downloaded",  # not in _URL_TEST_STATUSES → reaches verify_aebn_metadata branch
         archive_file=tmp_path / "archive" / "ae-katie_kush.txt",
         archive_line=1,
         archive_text="",

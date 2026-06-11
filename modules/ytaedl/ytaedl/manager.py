@@ -857,6 +857,32 @@ def _prompt_text(prompt: str) -> Optional[str]:
         return None
 
 
+def _kill_process_tree(proc: subprocess.Popen) -> None:
+    """Kill a worker process and all its descendants (aebndl, yt-dlp, ffmpeg, etc.).
+
+    On Windows, proc.terminate() only kills the direct worker — aebndl/yt-dlp children
+    become orphans.  psutil.kill() on the full tree prevents that.
+    Falls back to proc.kill() when psutil is unavailable.
+    """
+    try:
+        import psutil
+        parent = psutil.Process(proc.pid)
+        children = parent.children(recursive=True)
+        for child in children:
+            try:
+                child.kill()
+            except psutil.NoSuchProcess:
+                pass
+        parent.kill()
+        return
+    except Exception:
+        pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
+
+
 def _pause_process(proc: subprocess.Popen) -> bool:
     """Pause a process. Returns True if successful."""
     if not proc or proc.poll() is not None:
@@ -1166,6 +1192,7 @@ def _start_worker(
     canonical_dir_override: Optional[Path] = None,
     archive_source_file: Optional[Path] = None,
     stall_seconds: int = 4,
+    complete_stall_seconds: int = 120,
     ytdlp_grid_config_file: Optional[Path] = None,
     extra_canonical_roots: Optional[List[Path]] = None,
     ytdlp_cookies_from_browser: Optional[str] = "firefox",
@@ -1217,6 +1244,8 @@ def _start_worker(
         cmd.append("--skip-simulate-check")
     if stall_seconds and stall_seconds != 4:
         cmd += ["-S", str(stall_seconds)]
+    if complete_stall_seconds != 120:
+        cmd += ["-C", str(complete_stall_seconds)]
     if ytdlp_grid_config_file:
         cmd += ["-G", str(ytdlp_grid_config_file)]
     for _ecr in (extra_canonical_roots or []):
@@ -1279,10 +1308,12 @@ def _add_run_core_args(dest) -> None:
                       help="URL files to prioritize (can be specified multiple times)")
     dest.add_argument("-P", "--proxy-dl-location", default=None,
                       help="Staging root for downloads (per-urlfile subfolder); duplicates checked in -L roots")
-    dest.add_argument("-s", "--stars-dir", default="./files/downloads/stars",
-                      help="Folder of yt-dlp URL files")
-    dest.add_argument("-d", "--aebn-dir", default="./files/downloads/ae-stars",
-                      help="Folder of AEBN URL files")
+    dest.add_argument("-s", "--stars-dir",
+                      default=os.environ.get("STARS_DIR", "./files/downloads/stars"),
+                      help="Folder of yt-dlp URL files ($STARS_DIR).")
+    dest.add_argument("-d", "--aebn-dir",
+                      default=os.environ.get("AESTARS_DIR", "./files/downloads/ae-stars"),
+                      help="Folder of AEBN URL files ($AESTARS_DIR).")
     dest.add_argument("-r", "--refresh-hz", type=float, default=5.0, help="UI refresh rate")
     dest.add_argument("-e", "--exit-at-time", type=int, default=-1,
                       help="Exit the manager after N seconds (<=0 disables)")
@@ -1303,12 +1334,16 @@ def _add_run_core_args(dest) -> None:
                       ))
     dest.add_argument("-S", "--stall-seconds", type=int, default=4,
                       help="Seconds with no yt-dlp output before a worker tries the next fallback method")
-    dest.add_argument("-H", "--domain-index-path", default="./logs/domain_index.json",
+    dest.add_argument("-f", "--complete-stall-seconds", type=int, default=120,
                       help=(
-                          "Path to save/load the domain URL index (used by -D). "
-                          "The default ./logs/domain_index.json keeps it under the log directory "
-                          "when --log-dir is left at its default."
+                          "Seconds without any process activity (heartbeat or output) allowed "
+                          "during the mux phase before the worker is killed. "
+                          "Because heartbeats fire every 0.5 s while aebndl is alive, this "
+                          "measures true inactivity/death rather than total mux wall time, "
+                          "so large files mux freely as long as aebndl keeps running. "
+                          "(default 120)"
                       ))
+    # domain_index.json always lives in the archive folder; path is not user-configurable
     dest.add_argument("-M", "--rebuild-domain-index", action="store_true",
                       help="Force a full domain index rebuild even if a saved index exists")
     dest.add_argument("-O", "--url-order-key", choices=urlscan.SORT_CHOICES, default="ratio",
@@ -1680,12 +1715,17 @@ def run_main(
             if root.exists():
                 _all_url_files.extend(sorted(root.rglob("*.txt")))
 
-        # Resolve index path: default to same directory as other logs
-        _idx_arg = getattr(args, "domain_index_path", "./logs/domain_index.json")
-        if _idx_arg == "./logs/domain_index.json":
-            domain_index_path = log_dir / "domain_index.json"
-        else:
-            domain_index_path = Path(_idx_arg).expanduser().resolve()
+        # domain_index.json always lives alongside the archive files
+        domain_index_path = archive_dir / "domain_index.json"
+        # Auto-migrate from old ./logs/ location on first run after upgrade
+        _old_idx = log_dir / "domain_index.json"
+        if not domain_index_path.exists() and _old_idx.exists():
+            try:
+                import shutil as _shutil
+                _shutil.copy2(str(_old_idx), str(domain_index_path))
+                mlog.info(f"Migrated domain index from {_old_idx} to {domain_index_path}")
+            except Exception as _mig_err:
+                mlog.warning(f"Could not auto-migrate domain index: {_mig_err}")
         domain_index_lock = DomainIndexFileLock(domain_index_path)
         try:
             domain_index_lock.acquire()
@@ -2637,6 +2677,7 @@ def run_main(
                 canonical_dir_override=canonical_dir,
                 archive_source_file=original_file,
                 stall_seconds=getattr(args, "stall_seconds", 4),
+                complete_stall_seconds=getattr(args, "complete_stall_seconds", 120),
                 ytdlp_grid_config_file=ytdlp_grid_config_file,
                 extra_canonical_roots=[
                     r / original_file.stem for r in extra_download_roots
@@ -2762,6 +2803,7 @@ def run_main(
             extdl_capture_browser=getattr(args, "extdl_capture_browser", "auto"),
             skip_simulate_check=getattr(args, "skip_simulate_check", False),
             stall_seconds=getattr(args, "stall_seconds", 4),
+            complete_stall_seconds=getattr(args, "complete_stall_seconds", 120),
             extra_canonical_roots=[
                 r / urlfile.stem for r in extra_download_roots
             ] if extra_download_roots else None,
@@ -2775,14 +2817,10 @@ def run_main(
 
     def _requeue(ws: WorkerState, finished: bool, reason: str):
         if ws.proc and ws.proc.poll() is None:
-            # Resume if paused before terminating
             if ws.is_paused:
                 _resume_process(ws.proc)
                 ws.is_paused = False
-            try:
-                ws.proc.terminate()
-            except Exception:
-                pass
+            _kill_process_tree(ws.proc)
             try:
                 ws.proc.wait(timeout=2)
             except Exception:
@@ -3215,12 +3253,12 @@ def run_main(
                             mlog.info(
                                 f"[{w.slot:02d}] THROTTLE total={total_mib:.2f}MiB/s -> cap {tgt:.2f}MiB/s (budget {budget:.2f})"
                             )
-                            try:
-                                if w.proc and w.proc.poll() is None:
-                                    w.proc.terminate()
+                            if w.proc and w.proc.poll() is None:
+                                _kill_process_tree(w.proc)
+                                try:
                                     w.proc.wait(timeout=2)
-                            except Exception:
-                                pass
+                                except Exception:
+                                    pass
                             if w.urlfile:
                                 w.cap_mibs = max(0.25, tgt)
                                 w.reader_stop.set()
@@ -3268,12 +3306,12 @@ def run_main(
                                 mlog.info(
                                     f"[{w.slot:02d}] UNTHROTTLE total={total_mib:.2f}MiB/s -> cap {new_cap:.2f}MiB/s"
                                 )
-                                try:
-                                    if w.proc and w.proc.poll() is None:
-                                        w.proc.terminate()
+                                if w.proc and w.proc.poll() is None:
+                                    _kill_process_tree(w.proc)
+                                    try:
                                         w.proc.wait(timeout=2)
-                                except Exception:
-                                    pass
+                                    except Exception:
+                                        pass
                                 if w.urlfile:
                                     w.cap_mibs = new_cap
                                     w.reader_stop.set()
@@ -3994,14 +4032,11 @@ def run_main(
         # Cleanup
         for ws in workers:
             if ws.proc and ws.proc.poll() is None:
-                # Resume if paused before terminating
+                # Resume if paused before killing
                 if ws.is_paused:
                     _resume_process(ws.proc)
                     ws.is_paused = False
-                try:
-                    ws.proc.terminate()
-                except Exception:
-                    pass
+                _kill_process_tree(ws.proc)
                 try:
                     ws.proc.wait(timeout=2)
                 except Exception:

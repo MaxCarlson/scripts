@@ -461,6 +461,28 @@ class DomainIndex:
             if not any(e.url == url for e in q):
                 q.append(entry)
 
+    def unfinish_and_requeue_url(self, url: str) -> bool:
+        """Remove *url* from the finished set and return it to its domain queue.
+
+        Used by archive-validator apply-plan to restore a URL that was incorrectly
+        marked finished (e.g. archive said 'done' but no output file exists on disk).
+        Unlike ``requeue_url``, this method explicitly clears the finished record first.
+
+        Returns True if the URL is known to this index (regardless of whether it
+        was in finished) so the caller can count the change.
+        """
+        with self._lock:
+            self._in_progress.discard(url)
+            self._finished.pop(url, None)
+            entry = self._url_entry_map.get(url)
+            if entry is None:
+                return False
+            domain = _extract_domain(url)
+            q = self._url_queues.setdefault(domain, deque())
+            if not any(e.url == url for e in q):
+                q.append(entry)
+            return True
+
     def mark_partial(self, url: str) -> None:
         """
         Promote *url* to the front of its domain queue and flag it as partial.

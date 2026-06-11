@@ -832,16 +832,68 @@ def _reject_short_preview_candidate(candidate_url: str, destination: Optional[Pa
     return False, duration_s, path
 
 
+def _extract_aebn_scene_id(url: str) -> str:
+    """Return the AEBN scene ID from a URL fragment like #scene-1310191, or empty string."""
+    try:
+        from urllib.parse import urlparse
+        frag = urlparse(url).fragment or ""
+        if "scene-" in frag:
+            return frag.split("scene-")[1].strip()
+    except Exception:
+        pass
+    return ""
+
+
+# Movie-level scene-list cache: {movie_url_without_fragment: [(ordinal, scene_id), ...]}
+_aebn_scene_list_cache: dict[str, list[tuple[int, str]]] = {}
+
+
+def _aebn_scene_ordinal(url: str) -> Optional[int]:
+    """Resolve an AEBN scene URL fragment (#scene-XXXXXXXX) to its 1-based ordinal position.
+
+    Makes one HTTP request per unique movie URL (cached for the process lifetime).
+    Returns None if the URL has no scene fragment, the lookup fails, or the scene is not found.
+    """
+    scene_id = _extract_aebn_scene_id(url)
+    if not scene_id:
+        return None
+    movie_url = url.split("#")[0]
+    scenes = _aebn_scene_list_cache.get(movie_url)
+    if scenes is None:
+        try:
+            from aebn_dl.custom_session import CustomSession as _AEBNSession
+            from lxml import html as _lhtml
+            _s = _AEBNSession(impersonate="chrome")
+            _s.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+            })
+            _s.cookies.update({"ageGated": "true", "terms": "true"})
+            _resp = _s.get(movie_url, timeout=15)
+            _content = _lhtml.fromstring(_resp.content)
+            _sections = _content.xpath('//section[@id[starts-with(., "scene-")]]')
+            scenes = [(i, sec.get("id", "").replace("scene-", "", 1)) for i, sec in enumerate(_sections, start=1)]
+        except Exception:
+            scenes = []
+        _aebn_scene_list_cache[movie_url] = scenes
+    for ordinal, sid in scenes:
+        if sid == scene_id:
+            return ordinal
+    return None
+
+
 def _build_aebndl_cmd(
     url: str,
     out_dir: Path,
     work_dir: Path,
     max_height: Optional[int] = None,
+    scene: Optional[int] = None,
 ) -> List[str]:
     # Keep default logging level (INFO) to have progress; do NOT pass -c by default
     cmd = ["aebndl", "--json", "-o", str(out_dir), "-w", str(work_dir)]
-    if isinstance(max_height, int) and max_height > 0:
+    if isinstance(max_height, int) and max_height >= 0:
         cmd += ["-r", str(max_height)]
+    if isinstance(scene, int) and scene >= 1:
+        cmd += ["-s", str(scene)]
     cmd.append(url)
     return cmd
 def _coerce_progress_number(value):
@@ -932,6 +984,7 @@ class _ProgressActivity:
     last_progress_bytes: Optional[int] = None
     active_started: bool = False
     near_complete_since: Optional[float] = None
+    last_mux_activity_t: Optional[float] = None
 
     @property
     def active_stall_seconds(self) -> Optional[int]:
@@ -941,6 +994,29 @@ class _ProgressActivity:
         ev = evt.get("event")
         if ev != "heartbeat":
             self.last_real_event_t = now
+
+        # aebndl emits segments_complete when all segment downloads finish and
+        # concat/mux is about to begin. Switch to mux-liveness tracking:
+        # last_mux_activity_t is updated by every event and heartbeat from here on,
+        # so complete_stall_seconds measures inactivity (process silent/dead) rather
+        # than total mux wall time.
+        if ev == "segments_complete":
+            self.last_progress_growth_t = now
+            if self.near_complete_since is None:
+                self.near_complete_since = now
+            self.last_mux_activity_t = now
+            return
+
+        # During mux phase, any sign of process life (including heartbeats, which
+        # stream.py emits every 0.5 s while the subprocess stdout is open) resets
+        # the inactivity timer.  This lets mux run indefinitely as long as aebndl
+        # is alive, and only fires complete_stall_seconds after true process death
+        # or a genuine hang where stdout closes.
+        if self.near_complete_since is not None:
+            self.last_mux_activity_t = now
+            if ev == "heartbeat":
+                return
+
         if ev != "progress":
             return
 
@@ -972,12 +1048,13 @@ class _ProgressActivity:
             self.near_complete_since = None
 
     def stall(self, now: float) -> Optional[tuple[int, str]]:
-        if (
-            self.near_complete_since is not None
-            and self.complete_stall_seconds > 0
-            and (now - self.near_complete_since) > self.complete_stall_seconds
-        ):
-            return self.complete_stall_seconds, "near_complete_stall"
+        if self.near_complete_since is not None and self.complete_stall_seconds > 0:
+            # Use last_mux_activity_t (liveness-based: reset on every heartbeat/event
+            # while muxing) when available; fall back to near_complete_since for
+            # downloads that entered near-complete before this field existed.
+            mux_ref = self.last_mux_activity_t if self.last_mux_activity_t is not None else self.near_complete_since
+            if (now - mux_ref) > self.complete_stall_seconds:
+                return self.complete_stall_seconds, "near_complete_stall"
 
         if not self.stall_seconds or self.stall_seconds <= 0:
             return None
@@ -1018,6 +1095,7 @@ class _SimulateResult:
     is_duplicate: bool
     existing_path: Optional[str] = None
     predicted_name: Optional[str] = None
+    timed_out: bool = False
 
 
 def _simulate_check(
@@ -1056,7 +1134,7 @@ def _simulate_check(
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.communicate()
-            return _SimulateResult(is_duplicate=False)
+            return _SimulateResult(is_duplicate=False, timed_out=True)
 
         if proc.returncode != 0:
             return _SimulateResult(is_duplicate=False)
@@ -1240,7 +1318,7 @@ def _run_extdl_fallback(
                     _cand_now = time.time()
                     _cand_activity = _ProgressActivity(
                         stall_seconds=stall_seconds,
-                        complete_stall_seconds=300,
+                        complete_stall_seconds=120,
                         started_at=_cand_now,
                         last_real_event_t=_cand_now,
                     )
@@ -1565,7 +1643,8 @@ def _run_one(
 
     # choose command
     if tool == "aebndl":
-        cmd = _build_aebndl_cmd(url, out_dir, url_work_dir, max_height)
+        _scene_n = _aebn_scene_ordinal(url)
+        cmd = _build_aebndl_cmd(url, out_dir, url_work_dir, max_height, scene=_scene_n)
     else:
         cmd = _build_ytdlp_cmd(
             [url],

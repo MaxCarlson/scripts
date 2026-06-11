@@ -1,0 +1,5 @@
+.pytest_cache/
+.pytest_tmp_root/
+.ruff_cache/
+__pycache__/
+*.py[cod]

@@ -26,6 +26,7 @@ Examples
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import textwrap
 from pathlib import Path
@@ -150,13 +151,13 @@ def _make_index_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "-s", "--stars-dir",
-        default="./files/downloads/stars",
-        help="Directory of yt-dlp URL files.",
+        default=os.environ.get("STARS_DIR", "./files/downloads/stars"),
+        help="Directory of yt-dlp URL files ($STARS_DIR).",
     )
     p.add_argument(
         "-d", "--aebn-dir",
-        default="./files/downloads/ae-stars",
-        help="Directory of AEBN URL files.",
+        default=os.environ.get("AESTARS_DIR", "./files/downloads/ae-stars"),
+        help="Directory of AEBN URL files ($AESTARS_DIR).",
     )
     p.add_argument(
         "-H", "--domain-index-path",
@@ -190,6 +191,8 @@ def _run_index_rebuild(args: argparse.Namespace) -> int:
 
     if args.domain_index_path:
         index_path = Path(args.domain_index_path).expanduser().resolve()
+    elif archive_dir:
+        index_path = archive_dir / "domain_index.json"
     else:
         index_path = log_dir / "domain_index.json"
 

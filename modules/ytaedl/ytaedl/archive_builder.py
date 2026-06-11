@@ -155,6 +155,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Apply a JSON change plan produced by archive validate.",
     )
     apply_plan.add_argument("args", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
+    status_sp = subparsers.add_parser(
+        "status",
+        help="Fast status overview: count archive entries by type and status (no network required).",
+    )
+    status_sp.add_argument("args", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
 
     _add_rebuild_args(parser)
     _add_rebuild_args(rebuild)
@@ -200,6 +205,10 @@ def cli_main(argv: Optional[Sequence[str]] = None) -> int:
         from .archive_validator import apply_main
 
         return apply_main(argv_list[1:])
+    if argv_list and argv_list[0] == "status":
+        from .archive_validator import status_main
+
+        return status_main(argv_list[1:])
 
     args = build_parser().parse_args(argv_list)
     if getattr(args, "archive_command", None) == "validate":
@@ -210,6 +219,10 @@ def cli_main(argv: Optional[Sequence[str]] = None) -> int:
         from .archive_validator import apply_main
 
         return apply_main(getattr(args, "args", []))
+    if getattr(args, "archive_command", None) == "status":
+        from .archive_validator import status_main
+
+        return status_main(getattr(args, "args", []))
 
     url_dirs = [Path(p).expanduser().resolve() for p in (args.url_dirs or DEFAULT_URL_DIRS)]
     download_dirs = [Path(p).expanduser().resolve() for p in (args.download_dirs or DEFAULT_DOWNLOAD_DIRS)]

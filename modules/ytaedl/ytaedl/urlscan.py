@@ -11,6 +11,7 @@ import argparse
 import importlib
 import json
 import math
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -23,8 +24,8 @@ from . import __version__ as YTAEDL_VERSION
 GBYTES = 1024 ** 3
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 TERMDASH_DEFAULT = "~/Repos/scripts/termdash"
-DEFAULT_STARS_DIR = "files/downloads/stars"
-DEFAULT_AE_DIR = "files/downloads/ae-stars"
+DEFAULT_STARS_DIR = os.environ.get("STARS_DIR", "files/downloads/stars")
+DEFAULT_AE_DIR = os.environ.get("AESTARS_DIR", "files/downloads/ae-stars")
 DEFAULT_MEDIA_DIR = "stars"
 
 INTERACTIVE_COLUMN_LAYOUT: List[Tuple[str, int, str]] = [
@@ -575,9 +576,9 @@ def build_parser() -> argparse.ArgumentParser:
         description=f"ytaedl {YTAEDL_VERSION} - summarize URL files vs downloaded MP4s.",
     )
     parser.add_argument("-s", "--stars-dir", default=DEFAULT_STARS_DIR,
-                        help="Directory containing primary star URL files")
+                        help="Directory containing primary star URL files ($STARS_DIR).")
     parser.add_argument("-a", "--ae-dir", default=DEFAULT_AE_DIR,
-                        help="Directory containing AE star URL files")
+                        help="Directory containing AE star URL files ($AESTARS_DIR).")
     parser.add_argument("-m", "--media-dir", default=DEFAULT_MEDIA_DIR,
                         help="Directory containing per-star folders with MP4 files")
     parser.add_argument("-k", "--sort-key", choices=SORT_CHOICES,

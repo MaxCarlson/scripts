@@ -118,7 +118,10 @@ def audit_logs(log_dir: Path, archive_dir: Path) -> LogAuditSummary:
         except OSError:
             continue
 
-    domain_present, domain_summary = _audit_domain_index(log_dir / "domain_index.json")
+    _idx_path = archive_dir / "domain_index.json"
+    if not _idx_path.exists():
+        _idx_path = log_dir / "domain_index.json"
+    domain_present, domain_summary = _audit_domain_index(_idx_path)
     summary = LogAuditSummary(
         log_dir=str(log_dir),
         archive_dir=str(archive_dir),
@@ -146,7 +149,7 @@ def audit_logs(log_dir: Path, archive_dir: Path) -> LogAuditSummary:
     if not archive_files:
         summary.warnings.append("No archive files found.")
     if not domain_present:
-        summary.warnings.append("No domain_index.json found under log dir.")
+        summary.warnings.append("No domain_index.json found in archive or log dir.")
     return summary
 
 

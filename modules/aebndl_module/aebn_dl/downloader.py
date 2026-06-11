@@ -804,7 +804,13 @@ class Downloader:
                 except Exception as e:
                     self.logger.error(f"Failed to download {stream.human_name} stream: {str(e)}")
                     raise
-        
+
+        # Signal that all segments are downloaded and muxing is about to begin.
+        # Without this, the ytaedl stall detector kills the process during concat/mux
+        # (which produces no progress events for 30+ seconds on large files).
+        total_dl = sum(s.downloaded_bytes for s in streams)
+        self._json_log("segments_complete", downloaded=total_dl, elapsed_s=round(time.time() - t0, 3))
+
         stop_monitoring.release()
         monitor_thread.shutdown()
 

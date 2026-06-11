@@ -1,37 +1,64 @@
 [build-system]
-requires = ["setuptools>=65.0", "wheel"]
+requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-sync"
-version = "0.1.0"
-description = "Multi-agent coordination: sequential and parallel handoffs across Claude, Codex, and Gemini CLI"
-authors = [{name = "mcarls"}]
+version = "0.2.0"
+description = "Repo-local multi-agent coordination, handoff, delegation, review, and verification across Claude, Codex, Gemini, Copilot, and local LLM workers."
+readme = "README.md"
 requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "mcarls" }
+]
+keywords = ["agents", "llm", "claude", "codex", "gemini", "copilot", "lmstudio", "delegation", "handoff"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows :: Windows 11",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+    "Topic :: Utilities"
+]
 dependencies = []
 
 [project.optional-dependencies]
+local = ["llm-local"]
+models = ["llm-models"]
 dev = [
-    "pytest>=7.0",
-    "black>=24.0",
-    "ruff>=0.4",
-    "mypy>=1.10",
+    "pytest>=8.0",
+    "ruff>=0.6",
 ]
 
 [project.scripts]
 agent-sync = "agent_sync.cli:main"
 
 [tool.setuptools]
-packages = ["agent_sync"]
+package-dir = { "" = "." }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agent_sync*"]
 
 [tool.setuptools.package-data]
 agent_sync = ["shell/*.sh", "docs/plans/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
-[tool.black]
-line-length = 120
+python_files = ["*_test.py", "test_*.py"]
+addopts = "-q --basetemp=.pytest_tmp_root"
 
 [tool.ruff]
 line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
