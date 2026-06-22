@@ -279,7 +279,7 @@ REGISTRY: dict = {
                 "path": "pyscripts/zip_for_llms.py",
                 "desc": "Package repo for LLM: Gemini analysis, presets, size reporting",
                 "help_cmd": ["python", "pyscripts/zip_for_llms.py", "--help"],
-                "version": "0.4.8",
+                "version": "0.7.0",
             },
             {
                 "name": "repo_processor.py",
@@ -488,7 +488,7 @@ REGISTRY: dict = {
                 "path": "modules/runmux",
                 "desc": "Managed process runner with shared list, view, interact, restart, and duplicate controls",
                 "help_cmd": ["python", "-m", "runmux", "--help"],
-                "version": "0.2.0",
+                "version": "0.7.1",
             },
             {
                 "name": "sshmanager (module)",
