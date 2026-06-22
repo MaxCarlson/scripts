@@ -686,7 +686,17 @@ def _describe_storage(
 
 def _render_screen(lines: List[str]) -> None:
     sys.stdout.write("\x1b[0m\x1b[2J\x1b[H")
-    sys.stdout.write("\n".join(lines) + "\n")
+    content = "\n".join(lines) + "\n"
+    try:
+        sys.stdout.write(content)
+    except UnicodeEncodeError:
+        safe_content = content.replace("→", "->").replace("–", "-")
+        try:
+            sys.stdout.write(safe_content)
+        except UnicodeEncodeError:
+            encoding = sys.stdout.encoding or "utf-8"
+            fallback = safe_content.encode(encoding, errors="replace").decode(encoding)
+            sys.stdout.write(fallback)
     sys.stdout.flush()
 
 
@@ -1526,6 +1536,100 @@ def make_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _prune_instance_stats(stats_dir: Path) -> None:
+    try:
+        stats_archive_dir = stats_dir / "stats_archive"
+        active_files = list(stats_dir.glob("active_manager_*.json"))
+        archived_files = list(stats_archive_dir.glob("ended_*.json"))
+        total_files_count = len(active_files) + len(archived_files)
+        
+        if total_files_count > 50:
+            archived_files.sort(key=lambda p: p.name)
+            to_delete_count = total_files_count - 50
+            for i in range(min(to_delete_count, len(archived_files))):
+                try:
+                    archived_files[i].unlink()
+                except OSError:
+                    pass
+    except Exception:
+        pass
+
+
+def _write_instance_stats(
+    stats_dir: Path,
+    t0: float,
+    workers: List[WorkerState],
+    total_completed_urls: int,
+    avg_speed_bps: float,
+    total_speed_bps: float,
+) -> None:
+    try:
+        stats_dir.mkdir(parents=True, exist_ok=True)
+        active_file = stats_dir / f"active_manager_{os.getpid()}.json"
+        
+        now = time.time()
+        
+        locks_held = []
+        for ws in workers:
+            if ws.proc and ws.proc.poll() is None and ws.urlfile and not ws.is_waiting_urlfile_lock:
+                locks_held.append({
+                    "file_path": str(ws.urlfile.resolve()),
+                    "time_held_seconds": now - ws.assign_t0,
+                })
+        
+        payload = {
+            "pid": os.getpid(),
+            "start_time": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(t0)),
+            "last_updated": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now)),
+            "runtime_seconds": now - t0,
+            "workers_count": len(workers),
+            "active_workers_count": sum(1 for w in workers if w.proc and w.proc.poll() is None and not w.is_paused and not w.is_waiting_urlfile_lock),
+            "finished_count": total_completed_urls,
+            "average_speed_bps": avg_speed_bps,
+            "avg_url_speed_bps": avg_speed_bps / max(1, len(workers)),
+            "current_speed_bps": total_speed_bps,
+            "locks_held": locks_held,
+        }
+        
+        temp_file = active_file.with_name(f"{active_file.name}.tmp")
+        temp_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        temp_file.replace(active_file)
+    except Exception:
+        pass
+
+
+def _archive_instance_stats(stats_dir: Path, t0: float) -> None:
+    try:
+        active_file = stats_dir / f"active_manager_{os.getpid()}.json"
+        if not active_file.exists():
+            return
+            
+        now = time.time()
+        
+        ended_str = time.strftime("%Y%m%d_%H%M%S", time.localtime(now))
+        started_str = time.strftime("%Y%m%d_%H%M%S", time.localtime(t0))
+        archive_name = f"ended_{ended_str}_started_{started_str}_{os.getpid()}.json"
+        
+        stats_archive_dir = stats_dir / "stats_archive"
+        stats_archive_dir.mkdir(parents=True, exist_ok=True)
+        dest_file = stats_archive_dir / archive_name
+        
+        try:
+            data = json.loads(active_file.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+            
+        data["pid"] = os.getpid()
+        data["start_time"] = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(t0))
+        data["last_updated"] = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now))
+        data["runtime_seconds"] = now - t0
+        
+        dest_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        active_file.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def run_main(
     argv: Optional[Sequence[str]] = None,
     _ns: Optional[argparse.Namespace] = None,
@@ -1627,7 +1731,12 @@ def run_main(
     archive_dir: Optional[Path] = Path(args.archive).expanduser().resolve() if args.archive else None
     if archive_dir:
         archive_dir.mkdir(parents=True, exist_ok=True)
-    url_file_lock_dir = ((archive_dir or Path("./archive").resolve()) / "locks").resolve()
+    resolved_archive_dir = archive_dir or Path("./archive").resolve()
+    url_file_lock_dir = (resolved_archive_dir / "locks").resolve()
+    stats_dir = (resolved_archive_dir / "instance_stats").resolve()
+    stats_dir.mkdir(parents=True, exist_ok=True)
+    (stats_dir / "stats_archive").mkdir(parents=True, exist_ok=True)
+    _prune_instance_stats(stats_dir)
     finished_log = log_dir / "finished_urls.txt"
     finished_log.parent.mkdir(parents=True, exist_ok=True)
 
@@ -3271,6 +3380,7 @@ def run_main(
                 out.append(_colorize_log(ln)[:cols])
         return out
 
+    last_stats_write_t = 0.0
     try:
         while not stop.is_set():
             if deadline and time.time() >= deadline:
@@ -3540,6 +3650,18 @@ def run_main(
             agg_bytes = total_completed_bytes + inprog_bytes
             avg_mib_s = (agg_bytes / max(1.0, (time.time() - t0))) / (1024 * 1024)
             avg_speed_bps = avg_mib_s * (1024 * 1024)
+
+            # Write instance stats every ~1 second
+            if now - last_stats_write_t >= 1.0:
+                last_stats_write_t = now
+                _write_instance_stats(
+                    stats_dir,
+                    t0,
+                    workers,
+                    total_completed_urls,
+                    avg_speed_bps,
+                    total_speed_bps,
+                )
             active_domain_values = sorted(_active_domains())
             active_domain_count = len(active_domain_values)
             avg_domain_count = domain_diversity_avg.update(active_domain_count)
@@ -4256,6 +4378,12 @@ def run_main(
                 pass
         if domain_index_lock:
             domain_index_lock.release()
+        
+        # Archive instance stats on exit
+        try:
+            _archive_instance_stats(stats_dir, t0)
+        except Exception:
+            pass
         # Leave cursor below
     return 0
 

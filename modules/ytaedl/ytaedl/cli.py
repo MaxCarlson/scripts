@@ -37,6 +37,7 @@ _SUBCOMMAND_HELP = {
     "cleanup": "Maintenance: delete partial dirs or rebuild the domain index",
     "urls":    "URL file scanning, statistics, and ranking",
     "archive": "Archive file management (rebuild, validate, apply-plan)",
+    "summary": "Display real-time statistics and active locks across ytaedl instances",
 }
 
 _EXAMPLES = textwrap.dedent("""\
@@ -144,6 +145,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if subcommand == "archive":
         from . import archive_builder
         return archive_builder.cli_main(rest)
+
+    if subcommand == "summary":
+        from .summary import main as summary_main
+        return summary_main(rest)
 
     # Unknown subcommand
     print(f"ytaedl: unknown subcommand '{subcommand}'", file=sys.stderr)

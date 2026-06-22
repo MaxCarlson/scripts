@@ -1,4 +1,4 @@
-<!-- version: 2.12.0 -->
+<!-- version: 2.13.0 -->
 # ytaedl
 
 `ytaedl` is a batch download manager for URL text files. It coordinates multiple worker processes, tracks progress from `yt-dlp` and AEBN downloaders, and can optionally move completed MP4 files from a staging/proxy disk to the final media destination.
@@ -12,6 +12,7 @@ ytaedl cleanup  partial [options]    # Delete stale _partial/ dirs
 ytaedl cleanup  index   [options]    # Rebuild domain URL index
 ytaedl urls     [options]            # URL file scanning and stats
 ytaedl archive  [options]            # Archive file management
+ytaedl summary  [options]            # Display active instance stats and locks
 ```
 
 Run `ytaedl <subcommand> --help` for the full option list of each subcommand.
@@ -90,9 +91,19 @@ when the worker exits, receives Ctrl+C, or is forcibly terminated. Standalone
 `ytaedl worker` commands use the same lock and refuse to process an already
 locked URL file.
 
-Versions before `2.12.0` placed sidecars beside URL files as
-`<url-file>.ytaedl.lock`. Those old sibling sidecars are no longer used and may
-be deleted after confirming no pre-`2.12.0` worker is still running.
+## Real-Time Summary Mode
+
+Use `ytaedl summary` to see real-time statistics and active locks across all currently running `ytaedl` manager instances:
+
+```bash
+ytaedl summary
+```
+
+Each manager instance periodically writes its runtime, active workers count, completed downloads count, average and current speeds, and held locks to `archive/instance_stats/active_manager_<pid>.json`. On normal or abnormal exit, the file is archived to `archive/instance_stats/stats_archive/` and renamed to include start and end times.
+
+The `summary` command reads these files, automatically archives any stale files from dead or unresponsive managers, and displays a color-coded, aligned grid showing each active manager instance and its held locks grouped by parent directory.
+
+Total stats files (active + archived) are capped at 50, automatically deleting the oldest archived files on startup.
 
 ## yt-dlp Worker Defaults
 
