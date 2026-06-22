@@ -9,13 +9,14 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from runmux.constants import STATUS_PENDING, TERMINAL_STATUSES
+from runmux.constants import DEFAULT_STARTUP_TIMEOUT_SECONDS, STATUS_PENDING, TERMINAL_STATUSES
 from runmux.history import mark_saved_command_run, record_run_started, save_record_command
 from runmux.ipc import IpcError, request_json
 from runmux.models import RunRecord
@@ -134,6 +135,11 @@ def create_managed_run(
     record_run_started(record)
     supervisor = start_supervisor(record.id, state_dir=store.state_dir)
     record = store.update_run(record.id, supervisor_pid=supervisor.pid)
+    record = wait_for_supervisor_ready(
+        store,
+        run_id=record.id,
+        supervisor=supervisor,
+    )
     return StartedRun(record=record, supervisor_pid=supervisor.pid)
 
 
@@ -163,6 +169,73 @@ def start_supervisor(run_id: str, *, state_dir: Path | None = None) -> subproces
     else:
         kwargs["start_new_session"] = True
     return subprocess.Popen(command, **kwargs)
+
+
+def wait_for_supervisor_ready(
+    store: RunStore,
+    *,
+    run_id: str,
+    supervisor: subprocess.Popen[Any],
+    timeout_seconds: float = DEFAULT_STARTUP_TIMEOUT_SECONDS,
+    poll_seconds: float = 0.05,
+) -> RunRecord:
+    """Wait until a new supervisor publishes a responsive IPC endpoint."""
+
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    last_ipc_error: IpcError | None = None
+    while time.monotonic() < deadline:
+        record = store.get_run(run_id)
+        if record.status in TERMINAL_STATUSES:
+            raise startup_failure(record)
+        if record.port is not None:
+            try:
+                request_json(record, op="status", timeout=min(0.5, poll_seconds * 4))
+                return store.get_run(run_id)
+            except IpcError as error:
+                last_ipc_error = error
+        poll = getattr(supervisor, "poll", None)
+        if callable(poll) and poll() is not None:
+            record = store.get_run(run_id)
+            if record.status in TERMINAL_STATUSES:
+                raise startup_failure(record)
+            raise RunnerError(
+                f"Supervisor exited before run '{record.numeric_id}' became ready. "
+                f"Try: runmux view -i {record.numeric_id}"
+            )
+        time.sleep(max(0.01, poll_seconds))
+
+    record = store.get_run(run_id)
+    detail = f" Last IPC error: {last_ipc_error}" if last_ipc_error is not None else ""
+    raise RunnerError(
+        f"Run '{record.numeric_id}' did not become ready within {timeout_seconds:.1f}s.{detail} "
+        f"The run was left registered; inspect it with: runmux view -i {record.numeric_id}"
+    )
+
+
+def startup_failure(record: RunRecord) -> RunnerError:
+    """Build an actionable startup failure with a short managed-log tail."""
+
+    exit_text = "--" if record.exit_code is None else str(record.exit_code)
+    tail = read_log_tail(record.log_file)
+    message = f"Run '{record.numeric_id}' exited during startup " f"(status={record.status}, exit_code={exit_text})."
+    if tail:
+        message += f"\nLast output:\n{tail}"
+    return RunnerError(message)
+
+
+def read_log_tail(path: Path, *, max_bytes: int = 4096, max_lines: int = 12) -> str:
+    """Return a short UTF-8-safe tail from a managed output log."""
+
+    try:
+        with path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            size = stream.tell()
+            stream.seek(max(0, size - max_bytes))
+            data = stream.read()
+    except OSError:
+        return ""
+    text = data.decode("utf-8", errors="replace")
+    return "\n".join(text.splitlines()[-max_lines:]).strip()
 
 
 def windows_supervisor_creation_flags() -> int:

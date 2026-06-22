@@ -602,6 +602,10 @@ def test_run_defaults_rows_columns_to_terminal_size(tmp_path: Path) -> None:
     with (
         patch("runmux.runner.shutil.get_terminal_size", return_value=terminal_size),
         patch("runmux.runner.start_supervisor", return_value=Mock(pid=1234)),
+        patch(
+            "runmux.runner.wait_for_supervisor_ready",
+            side_effect=lambda store, run_id, supervisor: store.get_run(run_id),
+        ),
     ):
         started = create_managed_run(
             RunStore(tmp_path),

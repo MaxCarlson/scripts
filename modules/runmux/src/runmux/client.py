@@ -458,21 +458,23 @@ def interact_run(
         )
         tail_thread.start()
 
-        with open_input_socket(record) as sock:
-            try:
+        try:
+            with open_input_socket(record) as sock:
                 set_terminal_title(f"runmux interact {record.numeric_id} - prefix {DEFAULT_CONTROL_PREFIX_NAME}")
-                command = forward_input_loop(
-                    sock,
-                    control_prefix=control_prefix,
-                    on_command=make_command_handler(record, store, mode="interact"),
-                    output_pause_event=output_pause_event,
-                )
-            finally:
-                set_terminal_title(None)
-                stop_event.set()
-                with suppress(OSError):
-                    sock.shutdown(socket.SHUT_WR)
-                tail_thread.join()
+                try:
+                    command = forward_input_loop(
+                        sock,
+                        control_prefix=control_prefix,
+                        on_command=make_command_handler(record, store, mode="interact"),
+                        output_pause_event=output_pause_event,
+                    )
+                finally:
+                    with suppress(OSError):
+                        sock.shutdown(socket.SHUT_WR)
+        finally:
+            set_terminal_title(None)
+            stop_event.set()
+            tail_thread.join()
 
         if command is None or command.action == "detach":
             return 0
