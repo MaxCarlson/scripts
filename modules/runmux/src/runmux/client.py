@@ -70,10 +70,13 @@ class RawTerminal:
 class AttachmentRenderer:
     """Render child output inside a terminal region with runmux status rows."""
 
-    def __init__(self, store: RunStore, record: RunRecord, *, mode: str) -> None:
+    def __init__(self, store: RunStore, record: RunRecord, *, mode: str, separator: bool | None = None) -> None:
         self.store = store
         self.record = record
         self.mode = mode
+        if separator is None:
+            separator = os.environ.get("RUNMUX_SEPARATOR", "").lower() in ("1", "true", "yes", "on") or os.environ.get("RUNMUX_DIVIDER", "").lower() in ("1", "true", "yes", "on")
+        self.separator = separator
         self._write_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._size = shutil.get_terminal_size(fallback=(80, 24))
@@ -118,14 +121,13 @@ class AttachmentRenderer:
             current_size = shutil.get_terminal_size(fallback=(80, 24))
             if current_size != self._size:
                 self._size = current_size
-                send_resize(self.record, reserve_rows=ATTACH_RESERVED_ROWS)
+                send_resize(self.record, reserve_rows=3 if self.separator else 2)
             with self._write_lock:
                 self._apply_frame_locked()
 
     def _apply_frame_locked(self) -> None:
         lines = max(3, self._size.lines)
         columns = max(1, self._size.columns)
-        child_bottom = max(2, lines - 1)
         try:
             latest = self.store.get_run(self.record.id)
             summary = self.store.attachment_summary(self.record.id)
@@ -134,11 +136,24 @@ class AttachmentRenderer:
             summary = None
         top = format_attachment_top_status(latest, mode=self.mode, width=columns)
         bottom = format_attachment_bottom_status(summary, width=columns)
-        sequence = (
-            f"\x1b[?6l\x1b[2;{child_bottom}r\x1b[?6h"
-            f"\x1b7\x1b[?6l\x1b[1;1H\x1b[2K{top}"
-            f"\x1b[{lines};1H\x1b[2K{bottom}\x1b[?6h\x1b8"
-        )
+        if self.separator:
+            child_top = 3
+            child_bottom = max(3, lines - 1)
+            divider = "\x1b[38;5;242m" + ("-" * columns) + "\x1b[0m"
+            sequence = (
+                f"\x1b[?6l\x1b[{child_top};{child_bottom}r\x1b[?6h"
+                f"\x1b7\x1b[?6l\x1b[1;1H\x1b[2K{top}"
+                f"\x1b[2;1H\x1b[2K{divider}"
+                f"\x1b[{lines};1H\x1b[2K{bottom}\x1b[?6h\x1b8"
+            )
+        else:
+            child_top = 2
+            child_bottom = max(2, lines - 1)
+            sequence = (
+                f"\x1b[?6l\x1b[{child_top};{child_bottom}r\x1b[?6h"
+                f"\x1b7\x1b[?6l\x1b[1;1H\x1b[2K{top}"
+                f"\x1b[{lines};1H\x1b[2K{bottom}\x1b[?6h\x1b8"
+            )
         self._write_bytes(sequence.encode("utf-8", errors="replace"))
 
     @staticmethod
@@ -542,6 +557,7 @@ def view_run(
     follow: bool,
     from_end: bool,
     tail_lines: int | None,
+    separator: bool | None = None,
 ) -> int:
     """View a run's output log, preserving ANSI bytes."""
 
@@ -562,6 +578,7 @@ def view_run(
                 record=record,
                 from_end=current_from_end or tail_lines is None,
                 tail_lines=tail_lines,
+                separator=separator,
             )
         if command is None or command.action == "detach":
             return 0
@@ -570,7 +587,7 @@ def view_run(
             current_from_end = True
             continue
         if command.action == "interact":
-            return interact_run(store, run_id=record.id, tail_lines=None)
+            return interact_run(store, run_id=record.id, tail_lines=None, separator=separator)
         return 0
     return 0
 
@@ -582,8 +599,12 @@ def follow_view_run(
     from_end: bool,
     tail_lines: int | None,
     control_prefix: bytes = DEFAULT_CONTROL_PREFIX,
+    separator: bool | None = None,
 ) -> AttachCommand | None:
     """Follow output in realtime while only listening for runmux prefix commands."""
+
+    if separator is None:
+        separator = os.environ.get("RUNMUX_SEPARATOR", "").lower() in ("1", "true", "yes", "on") or os.environ.get("RUNMUX_DIVIDER", "").lower() in ("1", "true", "yes", "on")
 
     session_id = uuid.uuid4().hex
     request_json(
@@ -591,8 +612,8 @@ def follow_view_run(
         op="attach",
         payload={"session_id": session_id, "mode": "view"},
     )
-    send_resize(record, reserve_rows=ATTACH_RESERVED_ROWS)
-    renderer = AttachmentRenderer(store, record, mode="view")
+    send_resize(record, reserve_rows=3 if separator else 2)
+    renderer = AttachmentRenderer(store, record, mode="view", separator=separator)
     renderer.start()
     stop_event = threading.Event()
     heartbeat_stop = threading.Event()
@@ -647,17 +668,21 @@ def interact_run(
     run_id: str,
     tail_lines: int | None,
     control_prefix: bytes = DEFAULT_CONTROL_PREFIX,
+    separator: bool | None = None,
 ) -> int:
     """Attach an interactive input channel while tailing the program output."""
 
     current_run_id = run_id
+    if separator is None:
+        separator = os.environ.get("RUNMUX_SEPARATOR", "").lower() in ("1", "true", "yes", "on") or os.environ.get("RUNMUX_DIVIDER", "").lower() in ("1", "true", "yes", "on")
+
     while True:
         record = store.get_run(current_run_id)
         if record.status in TERMINAL_STATUSES:
             raise ClientError(f"Run '{record.id}' is not active; status is {record.status}.")
 
-        send_resize(record, reserve_rows=ATTACH_RESERVED_ROWS)
-        renderer = AttachmentRenderer(store, record, mode="interact")
+        send_resize(record, reserve_rows=3 if separator else 2)
+        renderer = AttachmentRenderer(store, record, mode="interact", separator=separator)
         renderer.start()
         session_id = uuid.uuid4().hex
         stop_event = threading.Event()

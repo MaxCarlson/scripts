@@ -487,7 +487,7 @@ def test_follow_view_run_tails_realtime_from_end(tmp_path: Path) -> None:
         command = follow_view_run(store, record=record, from_end=True, tail_lines=None)
 
     assert command == AttachCommand("detach")
-    send_resize_mock.assert_called_once_with(record, reserve_rows=1)
+    send_resize_mock.assert_called_once_with(record, reserve_rows=2)
     assert tail_kwargs["from_end"] is True
     assert tail_kwargs["follow"] is True
     assert callable(tail_kwargs["output_paused"])

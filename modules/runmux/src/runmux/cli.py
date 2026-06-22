@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Override the runmux state directory for this invocation.",
+    )
+    parser.add_argument(
+        "--separator",
+        action="store_true",
+        help="Draw a divider line below the top status bar.",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -362,6 +368,8 @@ def handle_run(args: argparse.Namespace) -> int:
         return handle_run_saved_command(args, program_args[1:])
 
     store = get_store(args)
+    has_separator = getattr(args, "separator", False) or os.environ.get("RUNMUX_SEPARATOR", "").lower() in ("1", "true", "yes", "on") or os.environ.get("RUNMUX_DIVIDER", "").lower() in ("1", "true", "yes", "on")
+    reserve_rows = 0 if args.detach else (3 if has_separator else ATTACH_RESERVED_ROWS)
     started = create_managed_run(
         store,
         program_args=program_args,
@@ -370,7 +378,7 @@ def handle_run(args: argparse.Namespace) -> int:
         force_color=not args.no_force_color,
         rows=args.rows,
         columns=args.columns,
-        reserve_rows=0 if args.detach else ATTACH_RESERVED_ROWS,
+        reserve_rows=reserve_rows,
     )
     if args.save_command:
         save_command(
@@ -381,11 +389,11 @@ def handle_run(args: argparse.Namespace) -> int:
         mark_saved_command_run(started.record.command_line)
     print(f"Started {started.record.id}: {started.record.command_line}")
     if args.attach:
-        return view_run(store, run_id=started.record.id, follow=True, from_end=False, tail_lines=None)
+        return view_run(store, run_id=started.record.id, follow=True, from_end=False, tail_lines=None, separator=has_separator)
     if args.detach:
         return 0
     if args.interact or not args.detach:
-        return interact_run(store, run_id=started.record.id, tail_lines=None)
+        return interact_run(store, run_id=started.record.id, tail_lines=None, separator=has_separator)
     return 0
 
 
@@ -397,6 +405,8 @@ def handle_run_saved_command(args: argparse.Namespace, selector_args: list[str])
     if selected is None:
         return 0
     store = get_store(args)
+    has_separator = getattr(args, "separator", False) or os.environ.get("RUNMUX_SEPARATOR", "").lower() in ("1", "true", "yes", "on") or os.environ.get("RUNMUX_DIVIDER", "").lower() in ("1", "true", "yes", "on")
+    reserve_rows = 0 if selector.detach else (3 if has_separator else ATTACH_RESERVED_ROWS)
     started = create_managed_run(
         store,
         program_args=selected.argv,
@@ -405,7 +415,7 @@ def handle_run_saved_command(args: argparse.Namespace, selector_args: list[str])
         force_color=not args.no_force_color,
         rows=args.rows,
         columns=args.columns,
-        reserve_rows=0 if selector.detach else ATTACH_RESERVED_ROWS,
+        reserve_rows=reserve_rows,
     )
     mark_saved_command_run(started.record.command_line)
     print(f"Started {started.record.id}: {started.record.command_line}")
@@ -416,11 +426,12 @@ def handle_run_saved_command(args: argparse.Namespace, selector_args: list[str])
             follow=True,
             from_end=False,
             tail_lines=None,
+            separator=has_separator,
         )
     if selector.detach:
         return 0
     if selector.interact or not selector.detach:
-        return interact_run(store, run_id=started.record.id, tail_lines=None)
+        return interact_run(store, run_id=started.record.id, tail_lines=None, separator=has_separator)
     return 0
 
 
@@ -469,13 +480,14 @@ def handle_view(args: argparse.Namespace) -> int:
         follow=not args.no_follow,
         from_end=args.from_end,
         tail_lines=args.tail_lines,
+        separator=getattr(args, "separator", False),
     )
 
 
 def handle_interact(args: argparse.Namespace) -> int:
     """Handle ``runmux interact``."""
 
-    return interact_run(get_store(args), run_id=args.id, tail_lines=args.tail_lines)
+    return interact_run(get_store(args), run_id=args.id, tail_lines=args.tail_lines, separator=getattr(args, "separator", False))
 
 
 def handle_kill(args: argparse.Namespace) -> int:
@@ -507,10 +519,11 @@ def handle_duplicate(args: argparse.Namespace) -> int:
 def attach_after_clone(args: argparse.Namespace, store: RunStore, run_id: str) -> int:
     """Attach after restart/duplicate when requested."""
 
+    has_separator = getattr(args, "separator", False) or os.environ.get("RUNMUX_SEPARATOR", "").lower() in ("1", "true", "yes", "on") or os.environ.get("RUNMUX_DIVIDER", "").lower() in ("1", "true", "yes", "on")
     if args.interact:
-        return interact_run(store, run_id=run_id, tail_lines=None)
+        return interact_run(store, run_id=run_id, tail_lines=None, separator=has_separator)
     if args.attach:
-        return view_run(store, run_id=run_id, follow=True, from_end=False, tail_lines=None)
+        return view_run(store, run_id=run_id, follow=True, from_end=False, tail_lines=None, separator=has_separator)
     return 0
 
 
