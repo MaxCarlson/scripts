@@ -119,7 +119,7 @@ def _run_partial_cleanup(args: argparse.Namespace) -> int:
     proxy_root = Path(args.proxy_root).expanduser().resolve()
     archive_dir = Path(args.archive_dir).expanduser().resolve() if args.archive_dir else None
 
-    result = _partial_utils.cleanup_partial_dirs(
+    _partial_utils.cleanup_partial_dirs(
         proxy_root,
         archive_dir=archive_dir,
         dry_run=args.dry_run,
@@ -188,6 +188,7 @@ def _run_index_rebuild(args: argparse.Namespace) -> int:
     stars_dir = Path(args.stars_dir).expanduser().resolve()
     aebn_dir = Path(args.aebn_dir).expanduser().resolve()
     log_dir = Path(args.log_dir).expanduser().resolve()
+    archive_dir = Path(args.archive_dir).expanduser().resolve() if args.archive_dir else None
 
     if args.domain_index_path:
         index_path = Path(args.domain_index_path).expanduser().resolve()
@@ -195,8 +196,6 @@ def _run_index_rebuild(args: argparse.Namespace) -> int:
         index_path = archive_dir / "domain_index.json"
     else:
         index_path = log_dir / "domain_index.json"
-
-    archive_dir = Path(args.archive_dir).expanduser().resolve() if args.archive_dir else None
 
     # Collect URL files
     url_files: List[Path] = []

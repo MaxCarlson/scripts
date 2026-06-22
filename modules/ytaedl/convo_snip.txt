@@ -1,0 +1,1593 @@
+
+• Ran Get-Content modules/ytaedl/tests/
+  │ bug_fixes_and_features_test.py | Select-Object -Skip 440
+  │ -First 22
+  └         """With action=append, default is None (resolved to ./
+    stars in run_main)."""
+    … +15 lines (ctrl + t to view transcript)
+            args = manager.make_parser().parse_args([])
+            assert not hasattr(args, "show_bars")
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Read-only inspection of manager CLI short options is a
+  routine step in the user-approved implementation and has no
+  destructive or external side effects.
+
+✔ Auto-reviewer approved codex to run rg -n 'add_argument\("-[a-
+  zA-Z]' modules/ytaedl/ytaedl/manager.py this time
+
+• Ran rg -n 'add_argument\("-[a-zA-Z]' modules/ytaedl/ytaedl/
+  │ manager.py
+  └ 1335:    dest.add_argument("-t", "--threads", type=int,
+    default=2, help="Number of concurrent download workers")
+    … +55 lines (ctrl + t to view transcript)
+    1490:    dest.add_argument("-K", "--skip-simulate-check",
+    action="store_true",
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): This is a read-only diff check on a local file to
+  determine whether failing tests are unrelated to the user-
+  approved implementation.
+
+✔ Auto-reviewer approved codex to run git diff -- modules/ytaedl/
+  ytaedl/cleanup_cli.py this time
+
+• Ran git diff -- modules/ytaedl/ytaedl/cleanup_cli.py
+  └ (no output)
+
+• Edited 5 files (+13 -12)
+  └ modules\ytaedl\README.md (+3 -3)
+    30  - `-t/--threads`: number of concurrent workers.
+    31 -- `-b/--priority-files-only`: process only explicitly supp
+        lied
+    31 +- `-i/--priority-files-only`: process only explicitly supp
+        lied
+    32    `-p/--priority-files` values, with one worker per unique
+         URL file.
+       ⋮
+    56  ```bash
+    57 -ytaedl run -b \
+    57 +ytaedl run -i \
+    58    -p ./files/downloads/stars/channel-a.txt \
+       ⋮
+    61
+    62 -`-b/--priority-files-only` changes the existing repeatable
+    62 +`-i/--priority-files-only` changes the existing repeatable
+    63  `-p/--priority-files` option from a priority hint into the
+         complete workload.
+
+  └ modules\ytaedl\pyproject.toml (+1 -1)
+     8  # Version history (MAJOR.MINOR.PATCH per MODULE_STANDARDS.
+        md):
+     9 -# 2.11.0 — MINOR: exact -p/--priority-files workload mode
+        with one worker per file; worker-owned cross-process URL-f
+        ile locks and visible lock-wait status
+     9 +# 2.11.0 — MINOR: exact -p/--priority-files workload mode
+        (-i/--priority-files-only) with one worker per file; worke
+        r-owned cross-process URL-file locks and visible lock-wait
+         status
+    10  # 2.10.1 — PATCH: STARS_DIR/AESTARS_DIR env vars used as d
+        efaults for -s/-d across all subcommands (manager, validat
+        e, status, cleanup index, urls); -j/--json-plan default fi
+        xed to literal path (was None, showing confusing double-de
+        fault in help)
+
+  └ modules\ytaedl\tests\test_manager.py (+2 -2)
+     49          assert args_with_priority.priority_files == ["fil
+         e.txt"]
+     50 -        assert parser.parse_args(["-b"]).priority_files_o
+         nly is True
+     50 +        assert parser.parse_args(["-i"]).priority_files_o
+         nly is True
+     51          assert parser.parse_args(["--priority-files-only"
+         ]).priority_files_only is True
+        ⋮
+    128          argv = [
+    129 -            "-b",
+    129 +            "-i",
+    130              "-p",
+
+  └ modules\ytaedl\ytaedl\manager.py (+1 -1)
+    1342                        help="URL files to prioritize (can
+           be specified multiple times)")
+    1343 -    dest.add_argument("-b", "--priority-files-only", act
+          ion="store_true",
+    1343 +    dest.add_argument("-i", "--priority-files-only", act
+          ion="store_true",
+    1344                        help="Only process -p/--priority-f
+          iles; create one worker per unique URL file")
+
+  └ plans\modules\ytaedl\ai\0011_20260622-1156_ai_codex-explicit-
+  urlfile-workers-and-locking__implemented.md (+6 -5)
+     15  ```text
+     16 -ytaedl run -b -p path/to/a.txt -p path/to/b.txt
+     16 +ytaedl run -i -p path/to/a.txt -p path/to/b.txt
+     17  ytaedl run --priority-files-only \
+        ⋮
+     33
+     34 -The proposed new mode flag is `-b/--priority-files-only`.
+          The short option is
+     35 -currently unused by the core and profile parsers. The exi
+         sting
+     34 +The implemented mode flag is `-i/--priority-files-only`.
+         The originally
+     35 +proposed `-b` remains reserved by the removed `show-bars`
+          compatibility test.
+     36 +The existing
+     37  `-p/--priority-files` argument remains the only argument
+         used to name files.
+        ⋮
+    162
+    162 -Add `-b/--priority-files-only` to `_add_run_core_args`.
+    163 +Add `-i/--priority-files-only` to `_add_run_core_args`.
+    164
+        ⋮
+    329
+    329 -- `-b` and `--priority-files-only` parse identically;
+    330 +- `-i` and `--priority-files-only` parse identically;
+    331  - exact mode without `-p` exits with code 2 and actionabl
+         e help;
+
+◦ Running rg -n '\-b|priority-files-only' plans/modules/ytaedl/
+  │ ai/0011_20260622-1156_ai_codex-explicit-urlfile-workers-
+  │ and-locking__implemented.md modules/ytaedl/README.md
+  │ … +2 lines
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Read-only search across local implementation, tests, and
+  docs to verify flag references is a routine step within the
+  user-approved ytaedl changes.
+
+✔ Auto-reviewer approved codex to run rg -n '\-b|priority-files-
+  only' plans/modules/ytaedl/ai/0011_20260622-1156_ai... this time
+
+• Ran rg -n '\-b|priority-files-only' plans/modules/ytaedl/
+  │ ai/0011_20260622-1156_ai_codex-explicit-urlfile-workers-and-
+  │ locking__implemented.md modules/ytaedl/README.md modules/
+  │ … +2 lines
+  └ modules/ytaedl/tests/test_manager.py:51:        assert
+    parser.parse_args(["--priority-files-only"]).priority_files_on
+    … +42 lines (ctrl + t to view transcript)
+    domain-scored order. If `--url-random-order` is set, full
+    random assignment overrides both ranking and domain diversity.
+
+• Edited 2 files (+2 -2)
+  └ modules\ytaedl\tests\test_manager.py (+1 -1)
+    108          with patch("subprocess.Popen") as popen:
+    109 -            assert manager.run_main(["-b", "-p", str(miss
+         ing)]) == 2
+    109 +            assert manager.run_main(["-i", "-p", str(miss
+         ing)]) == 2
+    110          popen.assert_not_called()
+
+  └ plans\modules\ytaedl\ai\0011_20260622-1156_ai_codex-explicit-
+  urlfile-workers-and-locking__implemented.md (+1 -1)
+    394    mode;
+    395 -- `ytaedl run --help` text for `-b/--priority-files-only`
+         ;
+    395 +- `ytaedl run --help` text for `-i/--priority-files-only`
+         ;
+    396  - package version history.
+
+◦ Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ pytest modules\ytaedl\tests -q
+
+◦ Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ pytest modules\ytaedl\tests\help_version_test.py
+  │ modules\ytaedl\tests\test_cli_dispatch.py
+  │ … +1 lines
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  unknown): Auto-review returned a low-risk allow decision.
+
+✔ Auto-reviewer approved codex to run C:
+  \Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest
+  modules\ytaedl... this time
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  unknown): Auto-review returned a low-risk allow decision.
+
+✔ Auto-reviewer approved codex to run C:
+  \Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest
+  modules\ytaedl... this time
+
+• Ran C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ pytest modules\ytaedl\tests\help_version_test.py
+  │ modules\ytaedl\tests\test_cli_dispatch.py
+  │ … +1 lines
+  └ ...................................................
+    [100%]
+    51 passed in 0.20s
+
+• Ran C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ pytest modules\ytaedl\tests -q
+  └ ..............................................................
+    .......... [ 20%]
+    … +123 lines (ctrl + t to view transcript)
+    st_default_log_dir_used_for_index_path
+    3 failed, 339 passed, 1 skipped in 9.32s
+
+• Edited modules\ytaedl\ytaedl\manager.py (+5 -1)
+    3486                  # time limit
+    3487 -                if args.time_limit is not None and args.
+          time_limit > 0:
+    3487 +                if (
+    3488 +                    args.time_limit is not None
+    3489 +                    and args.time_limit > 0
+    3490 +                    and not ws.is_waiting_urlfile_lock
+    3491 +                ):
+    3492                      if (time.time() - ws.assign_t0) > ar
+          gs.time_limit:
+
+──────────────────────────────────────────────────────────────────
+
+• The new mode now preserves the prior -b rejection contract and
+  uses -i/--priority-files-only. I also corrected time-limit
+  handling so a worker waiting for a URL-file lock is not timed
+  out before it ever owns the file. The only full-suite failures
+  remaining are the unchanged cleanup_cli.py archive_dir
+  initialization bug, outside this plan’s files.
+
+• Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ pytest modules\ytaedl\tests
+  │ --ignore=modules\ytaedl\tests\test_cleanup_cli.py -q
+
+• Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ ruff check modules\ytaedl\ytaedl\manager.py
+  │ modules\ytaedl\ytaedl\downloader.py
+  │ … +4 lines
+
+• Running git diff --check
+
+• Running git status --short -- modules/ytaedl plans/modules/
+  │ ytaedl
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  unknown): Auto-review returned a low-risk allow decision.
+
+✔ Auto-reviewer approved codex to run C:
+  \Users\mcarls\src\scripts\.venv\Scripts\python.exe -m ruff check
+  modules\yt... this time
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  unknown): Auto-review returned a low-risk allow decision.
+
+✔ Auto-reviewer approved codex to run git diff --check this time
+
+• Ran C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m ruff
+  │ check modules\ytaedl\ytaedl\manager.py
+  │ modules\ytaedl\ytaedl\downloader.py
+  │ … +4 lines
+  └ All checks passed!
+
+• Ran git diff --check
+  └ warning: in the working copy of 'modules/ytaedl/README.md', LF
+    will be replaced by CRLF the next time Git touches it
+    … +19 lines (ctrl + t to view transcript)
+    INDEX.md', LF will be replaced by CRLF the next time Git
+    touches it
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  unknown): Auto-review returned a low-risk allow decision.
+
+✔ Auto-reviewer approved codex to run git status --short --
+  modules/ytaedl plans/modules/ytaedl this time
+
+• Ran git status --short -- modules/ytaedl plans/modules/ytaedl
+  └  M modules/ytaedl/README.md
+     M modules/ytaedl/pyproject.toml
+    … +10 lines (ctrl + t to view transcript)
+    ai/0011_20260622-1156_ai_codex-explicit-urlfile-workers-and-lo
+    cking__implemented.md
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Running the local ytaedl test suite while excluding an
+  independently failing unrelated test file is a routine
+  validation step within the user-approved implementation work.
+
+✔ Auto-reviewer approved codex to run C:
+  \Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest
+  modules\ytaedl... this time
+
+• Ran C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ pytest modules\ytaedl\tests
+  │ --ignore=modules\ytaedl\tests\test_cleanup_cli.py -q
+  └ ..............................................................
+    .......... [ 20%]
+    … +123 lines (ctrl + t to view transcript)
+    st_default_log_dir_used_for_index_path
+    3 failed, 339 passed, 1 skipped in 9.27s
+
+──────────────────────────────────────────────────────────────────
+
+• The attempted pytest exclusion did not take effect because this
+  module’s pytest configuration still collected
+  test_cleanup_cli.py; the result is unchanged at 339 passed, 1
+  skipped, 3 unrelated failures. The test run also created an
+  untracked module-local archive/ artifact, so I’m inspecting it
+  before removing only that generated test output.
+
+◦ Running Get-ChildItem -Recurse -Force modules\ytaedl\archive |
+  │ Select-Object FullName,Length,LastWriteTime
+
+◦ Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ pytest modules\ytaedl\tests\test_manager.py
+  │ modules\ytaedl\tests\test_downloader.py
+  │ … +4 lines
+
+◦ Running git status --short -- modules/ytaedl/archive
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Running the selected local pytest files is a routine
+  validation step for the user-approved ytaedl implementation,
+  with only minor reversible test-artifact side effects.
+
+✔ Auto-reviewer approved codex to run C:
+  \Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest
+  modules\ytaedl... this time
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Read-only listing of the newly created local archive
+  directory is a routine inspection step to verify test-generated
+  artifacts before any cleanup.
+
+✔ Auto-reviewer approved codex to run Get-ChildItem -Recurse
+  -Force modules\ytaedl\archive | Select-Object FullName... this
+  time
+
+• Ran Get-ChildItem -Recurse -Force modules\ytaedl\archive |
+  │ Select-Object FullName,Length,LastWriteTime
+  └
+    FullName
+    … +6 lines (ctrl + t to view transcript)
+    …
+
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): This is a read-only git status check on a generated local
+  test-artifact directory, directly supporting the user-approved
+  implementation and cleanup verification.
+
+✔ Auto-reviewer approved codex to run git status --short --
+  modules/ytaedl/archive this time
+
+• Ran git status --short -- modules/ytaedl/archive
+  └ ?? modules/ytaedl/archive/
+
+• Ran C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ pytest modules\ytaedl\tests\test_manager.py
+  │ modules\ytaedl\tests\test_downloader.py
+  │ … +4 lines
+  └ ..............................................................
+    .......... [ 40%]
+    … +3 lines (ctrl + t to view transcript)
+    [100%]
+    180 passed in 4.92s
+
+◦ Running $target=(Resolve-Path -LiteralPath
+  │ 'modules\ytaedl\archive').Path; $root=(Resolve-Path
+  │ -LiteralPath 'modules\ytaedl').Path; if (-not
+  │ … +5 lines
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): This deletes a verified untracked test-generated
+  directory within the module after an explicit path-safety check,
+  making it a narrowly scoped and low-risk cleanup action.
+
+✔ Auto-reviewer approved codex to run $target=(Resolve-Path
+  -LiteralPath 'modules\ytaedl\archive').Path; $root=(Res... this
+  time
+
+• Ran $target=(Resolve-Path -LiteralPath
+  │ 'modules\ytaedl\archive').Path; $root=(Resolve-Path
+  │ -LiteralPath 'modules\ytaedl').Path; if (-not
+  │ … +5 lines
+  └ (no output)
+
+• Edited modules\ytaedl\tests\urlfile_lock_test.py (+27 -0)
+      9  import sys
+     10 +import threading
+     11  import time
+        ⋮
+     77              proc.wait(timeout=10)
+     78 +
+     79 +
+     80 +def test_waiter_acquires_after_owner_releases(tmp_path: P
+         ath) -> None:
+     81 +    source = tmp_path / "urls.txt"
+     82 +    source.write_text("https://example.com/video\n", enco
+         ding="utf-8")
+     83 +    owner = UrlFileLock(source)
+     84 +    assert owner.try_acquire().acquired
+     85 +    waits = []
+     86 +
+     87 +    release_thread = threading.Thread(
+     88 +        target=lambda: (time.sleep(0.1), owner.release())
+         ,
+     89 +        daemon=True,
+     90 +    )
+     91 +    release_thread.start()
+     92 +    waiter = UrlFileLock(source)
+     93 +    attempt = waiter.acquire_waiting(
+     94 +        lambda: False,
+     95 +        poll_seconds=0.02,
+     96 +        on_wait=lambda blocked: waits.append(blocked.stat
+         us),
+     97 +    )
+     98 +    try:
+     99 +        assert attempt.acquired
+    100 +        assert waits
+    101 +    finally:
+    102 +        waiter.release()
+    103 +        release_thread.join(timeout=2)
+
+──────────────────────────────────────────────────────────────────
+
+• The feature-relevant regression set passes 180/180, including
+  real subprocess kill-release behavior. I’m doing the final
+  packaging and CLI smoke checks now, then reinstalling the
+  editable module because the repository’s versioning rules
+  require that for a minor bump.
+
+◦ Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ pytest modules\ytaedl\tests\urlfile_lock_test.py -q
+
+◦ Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ ytaedl.cli run --help
+
+◦ Running git diff --stat -- modules/ytaedl plans/modules/ytaedl
+
+◦ Running git status --short -- modules/ytaedl plans/modules/
+  │ ytaedl
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Read-only git status scoped to the affected module and
+  plan paths is a routine final verification step directly
+  supporting the user-approved implementation.
+
+✔ Auto-reviewer approved codex to run git status --short --
+  modules/ytaedl plans/modules/ytaedl this time
+
+• Ran git status --short -- modules/ytaedl plans/modules/ytaedl
+  └  M modules/ytaedl/README.md
+     M modules/ytaedl/pyproject.toml
+    … +9 lines (ctrl + t to view transcript)
+    ai/0011_20260622-1156_ai_codex-explicit-urlfile-workers-and-lo
+    cking__implemented.md
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Running the local urlfile lock pytest is a routine
+  validation step for the user-approved implementation, with only
+  minor reversible test-artifact side effects.
+
+✔ Auto-reviewer approved codex to run C:
+  \Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest
+  modules\ytaedl... this time
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Read-only git diff summary scoped to the modified module
+  and plan paths is a routine verification step directly
+  supporting the user-approved implementation.
+
+✔ Auto-reviewer approved codex to run git diff --stat -- modules/
+  ytaedl plans/modules/ytaedl this time
+
+• Ran C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ pytest modules\ytaedl\tests\urlfile_lock_test.py -q
+  └ .....
+    [100%]
+    5 passed in 0.26s
+
+• Ran git diff --stat -- modules/ytaedl plans/modules/ytaedl
+  └  modules/ytaedl/README.md                |  36 +++-
+     modules/ytaedl/pyproject.toml           |   3 +-
+    … +23 lines (ctrl + t to view transcript)
+    INDEX.md', LF will be replaced by CRLF the next time Git
+    touches it
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Running the local CLI help command is a read-only smoke
+  check directly supporting the user-approved implementation, with
+  no destructive side effects.
+
+✔ Auto-reviewer approved codex to run C:
+  \Users\mcarls\src\scripts\.venv\Scripts\python.exe -m ytaedl.cli
+  run --help this time
+
+• Ran C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ ytaedl.cli run --help
+  └ (no output)
+
+• Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ pip install -e modules\ytaedl
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Editable reinstall of the local ytaedl package in the
+  workspace venv is a routine, user-authorized step required by
+  the repo's minor-version rules and has only local, reversible
+  effects.
+
+✔ Auto-reviewer approved codex to run C:
+  \Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pip
+  install -e module... this time
+
+• Ran C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pip
+  │ install -e modules\ytaedl
+  └ Obtaining file:///C:/Users/mcarls/src/scripts/modules/ytaedl
+      Installing build dependencies: started
+    … +48 lines (ctrl + t to view transcript)
+    [notice] To update, run: python.exe -m pip install --upgrade
+    pip
+
+◦ Running C:\Users\mcarls\src\scripts\.venv\Scripts\ytaedl.exe run
+  │ --help
+
+◦ Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -c
+  │ "import importlib.metadata, ytaedl;
+  │ print(importlib.metadata.version('ytaedl'));
+  │ … +1 lines
+
+◦ Running git diff --check
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  unknown): Auto-review returned a low-risk allow decision.
+
+✔ Auto-reviewer approved codex to run C:
+  \Users\mcarls\src\scripts\.venv\Scripts\ytaedl.exe run --help
+  this time
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  unknown): Auto-review returned a low-risk allow decision.
+
+✔ Auto-reviewer approved codex to run C:
+  \Users\mcarls\src\scripts\.venv\Scripts\python.exe -c "import
+  importlib.met... this time
+
+• Ran C:\Users\mcarls\src\scripts\.venv\Scripts\ytaedl.exe run
+  │ --help
+  └ usage: ytaedl run [-h] [-t THREADS] [-l TIME_LIMIT] [-u
+    MAX_NDJSON_RATE] [-q]
+    … +125 lines (ctrl + t to view transcript)
+    unique URL file
+                            (on by default) (default: True)
+
+• Ran C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -c
+  │ "import importlib.metadata, ytaedl;
+  │ print(importlib.metadata.version('ytaedl'));
+  │ … +1 lines
+  └ 2.11.0
+    2.11.0
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Read-only git diff validation is a routine, narrowly
+  scoped check directly supporting the user-approved local
+  implementation work.
+
+✔ Auto-reviewer approved codex to run git diff --check this time
+
+• Ran git diff --check
+  └ warning: in the working copy of 'modules/ytaedl/README.md', LF
+    will be replaced by CRLF the next time Git touches it
+    … +19 lines (ctrl + t to view transcript)
+    INDEX.md', LF will be replaced by CRLF the next time Git
+    touches it
+
+• Running Get-Content modules/ytaedl/ytaedl/cleanup_cli.py |
+  │ Select-Object -Skip 180 -First 45
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): This is a read-only inspection of a local function to
+  evaluate an unrelated failing test, with no destructive or
+  external side effects.
+
+✔ Auto-reviewer approved codex to run Get-Content modules/ytaedl/
+  ytaedl/cleanup_cli.py | Select-Object -Skip 180 -F... this time
+
+• Ran Get-Content modules/ytaedl/ytaedl/cleanup_cli.py |
+  │ Select-Object -Skip 180 -First 45
+  └         help="Build the index in memory and print the summary,
+    but do not "
+    … +44 lines (ctrl + t to view transcript)
+    file=sys.stderr)
+
+
+──────────────────────────────────────────────────────────────────
+
+• The remaining suite blocker is a confirmed one-line defect in
+  cleanup_cli.py: archive_dir is referenced before it is
+  initialized. It is safe and isolated, so I’m fixing that
+  ordering bug to complete full-suite verification rather than
+  handing back a known failing module.
+
+• Edited 2 files (+10 -11)
+  └ modules\ytaedl\pyproject.toml (+1 -1)
+     8  # Version history (MAJOR.MINOR.PATCH per MODULE_STANDARDS.
+        md):
+     9 -# 2.11.0 — MINOR: exact -p/--priority-files workload mode
+        (-i/--priority-files-only) with one worker per file; worke
+        r-owned cross-process URL-file locks and visible lock-wait
+         status
+     9 +# 2.11.0 — MINOR: exact -p/--priority-files workload mode
+        (-i/--priority-files-only) with one worker per file; worke
+        r-owned cross-process URL-file locks and visible lock-wait
+         status; fix cleanup index archive-dir initialization
+    10  # 2.10.1 — PATCH: STARS_DIR/AESTARS_DIR env vars used as d
+        efaults for -s/-d across all subcommands (manager, validat
+        e, status, cleanup index, urls); -j/--json-plan default fi
+        xed to literal path (was None, showing confusing double-de
+        fault in help)
+
+  └ modules\ytaedl\ytaedl\cleanup_cli.py (+9 -10)
+    187  def _run_index_rebuild(args: argparse.Namespace) -> int:
+    188 -    stars_dir = Path(args.stars_dir).expanduser().resolve
+         ()
+    189 -    aebn_dir = Path(args.aebn_dir).expanduser().resolve()
+    190 -    log_dir = Path(args.log_dir).expanduser().resolve()
+    191 -
+    192 -    if args.domain_index_path:
+    193 -        index_path = Path(args.domain_index_path).expandu
+         ser().resolve()
+    188 +    stars_dir = Path(args.stars_dir).expanduser().resolve
+         ()
+    189 +    aebn_dir = Path(args.aebn_dir).expanduser().resolve()
+    190 +    log_dir = Path(args.log_dir).expanduser().resolve()
+    191 +    archive_dir = Path(args.archive_dir).expanduser().res
+         olve() if args.archive_dir else None
+    192 +
+    193 +    if args.domain_index_path:
+    194 +        index_path = Path(args.domain_index_path).expandu
+         ser().resolve()
+    195      elif archive_dir:
+    196          index_path = archive_dir / "domain_index.json"
+    196 -    else:
+    197 -        index_path = log_dir / "domain_index.json"
+    198 -
+    199 -    archive_dir = Path(args.archive_dir).expanduser().res
+         olve() if args.archive_dir else None
+    197 +    else:
+    198 +        index_path = log_dir / "domain_index.json"
+    199
+
+• Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ pytest modules\ytaedl\tests -q
+
+• Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ ruff check modules\ytaedl\ytaedl\manager.py
+  │ modules\ytaedl\ytaedl\downloader.py
+  │ … +5 lines
+
+◦ Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ py_compile modules\ytaedl\ytaedl\manager.py
+  │ modules\ytaedl\ytaedl\downloader.py
+  │ … +2 lines
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  unknown): Auto-review returned a low-risk allow decision.
+
+✔ Auto-reviewer approved codex to run C:
+  \Users\mcarls\src\scripts\.venv\Scripts\python.exe -m ruff check
+  modules\yt... this time
+
+• Ran C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m ruff
+  │ check modules\ytaedl\ytaedl\manager.py
+  │ modules\ytaedl\ytaedl\downloader.py
+  │ … +5 lines
+  └ F841 Local variable `result` is assigned to but never used
+       --> modules\ytaedl\ytaedl\cleanup_cli.py:122:5
+    … +13 lines (ctrl + t to view transcript)
+    No fixes available (1 hidden fix can be enabled with the
+    `--unsafe-fixes` option).
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  unknown): Auto-review returned a low-risk allow decision.
+
+✔ Auto-reviewer approved codex to run C:
+  \Users\mcarls\src\scripts\.venv\Scripts\python.exe -m py_compile
+  modules\yt... this time
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Running the complete local ytaedl test suite is a routine
+  validation step for the user-approved implementation, with only
+  minor reversible test-artifact side effects.
+
+✔ Auto-reviewer approved codex to run C:
+  \Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest
+  modules\ytaedl... this time
+
+• Ran C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ py_compile modules\ytaedl\ytaedl\manager.py
+  │ modules\ytaedl\ytaedl\downloader.py
+  │ … +2 lines
+  └ (no output)
+
+• Ran C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ pytest modules\ytaedl\tests -q
+  └ ..............................................................
+    .......... [ 20%]
+    … +39 lines (ctrl + t to view transcript)
+    st_empty_stars_dir_returns_1
+    1 failed, 342 passed, 1 skipped in 25.21s
+
+──────────────────────────────────────────────────────────────────
+
+• The initialization fix exposed an environment-sensitive test:
+  AESTARS_DIR points at the user’s real 144-file URL tree, so the
+  “empty directories” test was not actually isolated. I’m
+  correcting the test to supply an empty -d/--aebn-dir under
+  tmp_path, and removing one pre-existing unused local flagged by
+  lint.
+
+• Edited 2 files (+11 -9)
+  └ modules\ytaedl\tests\test_cleanup_cli.py (+7 -5)
+    156
+    157 -    def test_empty_stars_dir_returns_1(self, tmp_path, ca
+         psys):
+    158 -        stars = tmp_path / "stars"
+    159 -        stars.mkdir()
+    160 -        rc = main(["index", "-s", str(stars)])
+    161 -        assert rc == 1
+    157 +    def test_empty_stars_dir_returns_1(self, tmp_path, ca
+         psys):
+    158 +        stars = tmp_path / "stars"
+    159 +        aebn = tmp_path / "aebn"
+    160 +        stars.mkdir()
+    161 +        aebn.mkdir()
+    162 +        rc = main(["index", "-s", str(stars), "-d", str(a
+         ebn)])
+    163 +        assert rc == 1
+    164          err = capsys.readouterr().err
+
+  └ modules\ytaedl\ytaedl\cleanup_cli.py (+4 -4)
+    121
+    122 -    result = _partial_utils.cleanup_partial_dirs(
+    123 -        proxy_root,
+    124 -        archive_dir=archive_dir,
+    125 -        dry_run=args.dry_run,
+    122 +    _partial_utils.cleanup_partial_dirs(
+    123 +        proxy_root,
+    124 +        archive_dir=archive_dir,
+    125 +        dry_run=args.dry_run,
+    126          require_confirm=True,
+
+◦ Running git status --short -- modules/ytaedl/logs modules/
+  │ ytaedl/archive
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Read-only git status on possible runtime-artifact paths
+  is a routine, narrowly scoped verification step within the user-
+  approved implementation work.
+
+✔ Auto-reviewer approved codex to run git status --short --
+  modules/ytaedl/logs modules/ytaedl/archive this time
+
+• Ran git status --short -- modules/ytaedl/logs modules/ytaedl/
+  │ archive
+  └ ?? modules/ytaedl/archive/
+
+• Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ pytest modules\ytaedl\tests -q
+
+• Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ ruff check modules\ytaedl\ytaedl\manager.py
+  │ modules\ytaedl\ytaedl\downloader.py
+  │ … +6 lines
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Running the local full ytaedl test suite is a routine
+  validation step for the user-approved implementation, with only
+  minor reversible test-artifact side effects.
+
+✔ Auto-reviewer approved codex to run C:
+  \Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest
+  modules\ytaedl... this time
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Running local lint checks on the modified ytaedl files is
+  a routine validation step directly supporting the user-approved
+  implementation, with no destructive side effects.
+
+✔ Auto-reviewer approved codex to run C:
+  \Users\mcarls\src\scripts\.venv\Scripts\python.exe -m ruff check
+  modules\yt... this time
+
+• Ran C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m ruff
+  │ check modules\ytaedl\ytaedl\manager.py
+  │ modules\ytaedl\ytaedl\downloader.py
+  │ … +6 lines
+  └ F401 [*] `time` imported but unused
+     --> modules\ytaedl\tests\test_cleanup_cli.py:6:8
+    … +22 lines (ctrl + t to view transcript)
+    Found 2 errors.
+    [*] 2 fixable with the `--fix` option.
+
+• Ran C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ pytest modules\ytaedl\tests -q
+  └ ..............................................................
+    .......... [ 20%]
+    … +11 lines (ctrl + t to view transcript)
+    Process handling differs on Windows
+    343 passed, 1 skipped in 24.33s
+
+• Running Get-Content modules/ytaedl/tests/test_cleanup_cli.py
+  │ -TotalCount 24
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Read-only inspection of the test file imports is a
+  routine, narrowly scoped step in the user-approved
+  implementation and cleanup work.
+
+✔ Auto-reviewer approved codex to run Get-Content modules/ytaedl/
+  tests/test_cleanup_cli.py -TotalCount 24 this time
+
+• Ran Get-Content modules/ytaedl/tests/test_cleanup_cli.py
+  │ -TotalCount 24
+  └ """Tests for ytaedl/cleanup_cli.py — cleanup partial and
+    cleanup index subcommands."""
+    … +23 lines (ctrl + t to view transcript)
+    ---------------
+
+
+• Edited modules\ytaedl\tests\test_cleanup_cli.py (+6 -8)
+     4
+     5 -import json
+     6 -import time
+     7 -from pathlib import Path
+     5 +import json
+     6 +from pathlib import Path
+     7  from unittest.mock import patch
+       ⋮
+    11  from ytaedl._partial_utils import (
+    13 -    PARTIAL_DIR_NAME,
+    14 -    partial_dir_for,
+    15 -    write_partial_meta,
+    16 -    write_partial_version,
+    17 -)
+    12 +    PARTIAL_DIR_NAME,
+    13 +    partial_dir_for,
+    14 +    write_partial_meta,
+    15 +)
+    16  from ytaedl.cleanup_cli import main
+
+◦ Running if (Test-Path -LiteralPath 'modules\ytaedl\archive')
+  │ { $target=(Resolve-Path -LiteralPath
+  │ 'modules\ytaedl\archive').Path; $root=(Resolve-Path
+  │ … +6 lines
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): This deletes a verified untracked test-generated
+  directory within the module after an explicit path-safety check,
+  making it a narrowly scoped and low-risk cleanup action.
+
+✔ Auto-reviewer approved codex to run if (Test-Path -LiteralPath
+  'modules\ytaedl\archive') { $target=(Resolve-Path ... this time
+
+• Ran if (Test-Path -LiteralPath 'modules\ytaedl\archive')
+  │ { $target=(Resolve-Path -LiteralPath
+  │ 'modules\ytaedl\archive').Path; $root=(Resolve-Path
+  │ … +6 lines
+  └ (no output)
+
+• Running git diff --check
+
+• Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ ruff check modules\ytaedl\ytaedl\manager.py
+  │ modules\ytaedl\ytaedl\downloader.py
+  │ … +6 lines
+
+• Running git diff --stat -- modules/ytaedl plans/modules/ytaedl
+
+• Running git status --short -- modules/ytaedl plans/modules/
+  │ ytaedl
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  unknown): Auto-review returned a low-risk allow decision.
+
+✔ Auto-reviewer approved codex to run git status --short --
+  modules/ytaedl plans/modules/ytaedl this time
+
+• Ran git status --short -- modules/ytaedl plans/modules/ytaedl
+  └  M modules/ytaedl/README.md
+     M modules/ytaedl/pyproject.toml
+    … +11 lines (ctrl + t to view transcript)
+    ai/0011_20260622-1156_ai_codex-explicit-urlfile-workers-and-lo
+    cking__implemented.md
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  unknown): Auto-review returned a low-risk allow decision.
+
+✔ Auto-reviewer approved codex to run C:
+  \Users\mcarls\src\scripts\.venv\Scripts\python.exe -m ruff check
+  modules\yt... this time
+
+• Ran C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m ruff
+  │ check modules\ytaedl\ytaedl\manager.py
+  │ modules\ytaedl\ytaedl\downloader.py
+  │ … +6 lines
+  └ All checks passed!
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Read-only git diff validation is a routine final check
+  directly supporting the user's approved implementation work.
+
+✔ Auto-reviewer approved codex to run git diff --check this time
+
+• Ran git diff --check
+  └ warning: in the working copy of 'modules/ytaedl/README.md', LF
+    will be replaced by CRLF the next time Git touches it
+    … +25 lines (ctrl + t to view transcript)
+    INDEX.md', LF will be replaced by CRLF the next time Git
+    touches it
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Read-only git diff summary on the affected module and
+  plan paths is a routine final reporting step directly supporting
+  the user-approved implementation work.
+
+✔ Auto-reviewer approved codex to run git diff --stat -- modules/
+  ytaedl plans/modules/ytaedl this time
+
+• Ran git diff --stat -- modules/ytaedl plans/modules/ytaedl
+  └  modules/ytaedl/README.md                 |  36 +++-
+     modules/ytaedl/pyproject.toml            |   3 +-
+    … +27 lines (ctrl + t to view transcript)
+    INDEX.md', LF will be replaced by CRLF the next time Git
+    touches it
+
+──────────────────────────────────────────────────────────────────
+
+• Implemented plan 0011.
+
+  Key changes:
+
+  - Added -i/--priority-files-only.
+  - One worker per unique -p/--priority-files path.
+  - Added worker-owned OS URL-file locks.
+  - Locked workers show WAITING: URL FILE LOCK.
+  - Locks survive manager death and release automatically when
+    workers die.
+
+  - Normal workers also respect locks.
+  - Updated docs and plan status.
+  - Bumped and installed ytaedl 2.11.0.
+  - Fixed discovered cleanup-index initialization bug.
+
+  Usage:
+
+  ytaedl run -i -p urls-a.txt -p urls-b.txt
+
+  Validation:
+
+  - 343 passed, 1 skipped
+  - Ruff passed.
+  - Compile checks passed.
+  - Installed metadata and package both report 2.11.0.
+  - Real subprocess kill/release locking tests passed.
+
+  Primary files: modules/ytaedl/ytaedl/manager.py, modules/ytaedl/
+  ytaedl/downloader.py, modules/ytaedl/ytaedl/urlfile_lock.py.
+
+─ Worked for 16m 32s ─────────────────────────────────────────────
+
+
+› what do i use with ytaedl run to specify one-worker to specifc
+  url file and hold url file lock until done or exit
+
+
+• Use -i with one -p per URL file:
+
+  ytaedl run -i -p "C:\path\urls.txt"
+  cureent behavior?
+
+
+• That is current, intentional behavior.
+  the OS-level lock. Its existence does not mean the URL file is
+  currently locked. The actual lock exists only while a worker
+  holds the file handle.
+
+  The sidecar remains after exit to prevent file-recreation race
+  conditions between concurrent workers. You generally should not
+  delete it, but an unlocked sidecar is harmless.
+  are identically named urlfiles, that differe only by their full
+  path.. each unique urlfile qith a unique path should have ita
+  own lock, so if there are two fllders, f1 and f2, each holding
+  a urlfile.txt, the system should be setup so that the f1
+  urlfile.lock is different than the f2 urlfile.lock (could
+  prefix the lock file name with the first/2nd/however many
+  folder names are required to make the name of the f1 and f2 url
+  files difderent (for example f1_urlfile.lock, f2_urlfile.lock)
+
+
+• I’ll move URL-file lock sidecars to <archive>/locks/ and derive
+  each filename from the canonical full URL-file path, using a
+  readable basename plus a stable path hash to prevent collisions.
+  I’ll update both manager probes and worker acquisition so every
+  instance computes the same lock path, then add collision and
+  migration-behavior tests.
+
+• Running rg -n "UrlFileLock|probe_urlfile_lock|lock_path_for|
+  │ archive_dir" modules/ytaedl/ytaedl/urlfile_lock.py
+  │ modules/ytaedl/ytaedl/downloader.py modules/ytaedl/
+  │ … +3 lines
+
+• Running git status --short -- modules/ytaedl plans/modules/
+  │ ytaedl
+
+• Running Get-Content -Raw modules/ytaedl/ytaedl/urlfile_lock.py
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Read-only git status on the relevant module and plan
+  paths is a routine inspection step directly supporting the
+  user's explicit request to extend the current ytaedl lock
+  behavior while preserving existing changes.
+
+✔ Auto-reviewer approved codex to run git status --short --
+  modules/ytaedl plans/modules/ytaedl this time
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  unknown): Auto-review returned a low-risk allow decision.
+
+✔ Auto-reviewer approved codex to run rg -n "UrlFileLock|
+  probe_urlfile_lock|lock_path_for|archive_dir" modules/ytae...
+  this time
+                                                                  • Ran git status --short -- modules/ytaedl plans/modules/ytaedl     └  M modules/ytaedl/README.md                                        M modules/ytaedl/pyproject.toml                                  … +11 lines (ctrl + t to view transcript)                         ai/0011_20260622-1156_ai_codex-explicit-urlfile-workers-and-lo    cking__implemented.md                                                                                                           • Ran rg -n "UrlFileLock|probe_urlfile_lock|lock_path_for|          │ archive_dir" modules/ytaedl/ytaedl/urlfile_lock.py modules/     │ ytaedl/ytaedl/downloader.py modules/ytaedl/ytaedl/manager.py    │ … +2 lines                                                      └ modules/ytaedl/tests/urlfile_lock_test.py:13:from                 ytaedl.urlfile_lock import UrlFileLock, lock_path_for,            … +94 lines (ctrl + t to view transcript)                         modules/ytaedl/ytaedl/manager.py:3469:                            archive_dir,
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  unknown): Auto-review returned a low-risk allow decision.
+
+✔ Auto-reviewer approved codex to run Get-Content -Raw modules/
+  ytaedl/ytaedl/urlfile_lock.py this time                                                                                           • Ran Get-Content -Raw modules/ytaedl/ytaedl/urlfile_lock.py        └ """Cross-process locks for ytaedl source URL files."""                                                                              … +201 lines (ctrl + t to view transcript)                            return attempt                                                                                                                                                                                ──────────────────────────────────────────────────────────────────                                                                  • The storage scheme will be archive/locks/<basename>.<path-        hash>.ytaedl.lock. The hash is computed from the normalized       canonical full path, so f1/urlfile.txt and f2/urlfile.txt remain  distinct without relying on an ambiguous variable-length folder   prefix. Existing sibling *.ytaedl.lock files will become legacy   artifacts and can be deleted once no older ytaedl workers are     running.                                                                                                                          • Edited 3 files (+30 -11)                                          └ modules\ytaedl\ytaedl\downloader.py (+3 -0)                        147                     help=argparse.SUPPRESS)  # diagnostic           lock-owner metadata                                         148 +    p.add_argument("-V", "--url-file-lock-dir", default=          "./archive/locks",                                           149 +                   help=argparse.SUPPRESS)  # manager-se          lected shared lock directory                                 150                                                                   ⋮                                                            2298          mode="manager-worker" if args.manager_pid else "          standalone-worker",                                         2299 +        lock_dir=Path(args.url_file_lock_dir),              2300      )                                                                                                                       └ modules\ytaedl\ytaedl\manager.py (+14 -6)                         1230      manager_pid: Optional[int] = None,                      1231 +    url_file_lock_dir: Optional[Path] = None,               1232  ) -> subprocess.Popen:                                           ⋮                                                            1293          cmd += ["--manager-pid", str(manager_pid)]          1294 +    if url_file_lock_dir:                                   1295 +        cmd += ["--url-file-lock-dir", str(url_file_lock          _dir)]                                                      1296      if quiet:                                                    ⋮                                                            1626                                                              1624 -    archive_dir: Optional[Path] = Path(args.archive).exp          anduser().resolve() if args.archive else None               1625 -    if archive_dir:                                         1626 -        archive_dir.mkdir(parents=True, exist_ok=True)      1627 +    archive_dir: Optional[Path] = Path(args.archive).exp          anduser().resolve() if args.archive else None               1628 +    if archive_dir:                                         1629 +        archive_dir.mkdir(parents=True, exist_ok=True)      1630 +    url_file_lock_dir = ((archive_dir or Path("./archive          ").resolve()) / "locks").resolve()                          1631      finished_log = log_dir / "finished_urls.txt"                 ⋮                                                            2666                      exclude_file_ids.add(fid)               2663 -                elif probe_urlfile_lock(Path(fpath)).sta          tus != "available":                                         2667 +                elif probe_urlfile_lock(Path(fpath), url          _file_lock_dir).status != "available":                      2668                      exclude_file_ids.add(fid)                    ⋮                                                            2802                  manager_pid=os.getpid(),                    2803 +                url_file_lock_dir=url_file_lock_dir,        2804              )                                                    ⋮                                                            2832                  and _remaining_for_path(p) != 0             2828 -                and probe_urlfile_lock(p).status == "ava          ilable"                                                     2833 +                and probe_urlfile_lock(p, url_file_lock_          dir).status == "available"                                  2834              ]                                                    ⋮                                                            2852                      and _remaining_for_path(p) != 0         2848 -                    and probe_urlfile_lock(p).status ==           "available"                                                 2853 +                    and probe_urlfile_lock(p, url_file_l          ock_dir).status == "available"                              2854                  ]                                                ⋮                                                            2940              manager_pid=os.getpid(),                        2941 +            url_file_lock_dir=url_file_lock_dir,            2942          )                                                        ⋮                                                            3425                                          manager_pid=os.g          etpid(),                                                    3426 +                                        url_file_lock_di          r=url_file_lock_dir,                                        3427                                      )                            ⋮                                                            3485                                          manager_pid=os.g          etpid(),                                                    3486 +                                        url_file_lock_di          r=url_file_lock_dir,                                        3487                                      )                                                                                       └ modules\ytaedl\ytaedl\urlfile_lock.py (+13 -5)                      5  from dataclasses import dataclass                              6 +import hashlib                                                 7  import json                                                      ⋮                                                               9  from pathlib import Path                                      10 +import re                                                     11  import time                                                      ⋮                                                              15  LOCK_SUFFIX = ".ytaedl.lock"                                  16 +DEFAULT_LOCK_DIR = Path("./archive/locks")                    17  LOCK_HELD_RC = 73                                                ⋮                                                              37                                                                35 -def lock_path_for(source_path: Path) -> Path:                 38 +def lock_path_for(source_path: Path, lock_dir: Optional[P         ath] = None) -> Path:                                         39      source = canonical_source_path(source_path)               37 -    return source.with_name(source.name + LOCK_SUFFIX)        40 +    identity = os.path.normcase(str(source))                  41 +    digest = hashlib.sha256(identity.encode("utf-8")).hex         digest()[:16]                                                 42 +    readable_name = re.sub(r"[^A-Za-z0-9._-]+", "_", sour         ce.name).strip("._") or "urlfile"                             43 +    root = (lock_dir or DEFAULT_LOCK_DIR).expanduser().re         solve()                                                       44 +    return root / f"{readable_name}.{digest}{LOCK_SUFFIX}         "                                                             45                                                                   ⋮                                                              67          mode: str = "worker",                                 68 +        lock_dir: Optional[Path] = None,                      69      ) -> None:                                                70          self.source_path = canonical_source_path(source_p         ath)                                                          63 -        self.path = lock_path_for(self.source_path)           71 +        self.path = lock_path_for(self.source_path, lock_         dir)                                                          72          self.worker_slot = int(worker_slot or 0)                 ⋮                                                             204                                                               197 -def probe_urlfile_lock(source_path: Path) -> LockAttempt:    198 -    lock = UrlFileLock(source_path, mode="probe")            205 +def probe_urlfile_lock(source_path: Path, lock_dir: Optio         nal[Path] = None) -> LockAttempt:                            206 +    lock = UrlFileLock(source_path, mode="probe", lock_di         r=lock_dir)                                                  207      attempt = lock.try_acquire()                                                                                           ⚠ Heads up, you have less than 25% of your 5h limit left. Run /     status for a breakdown.                                                                                                           ──────────────────────────────────────────────────────────────────                                                                  • I’m updating tests to use explicit temporary lock roots and       adding a collision test for same-named URL files in different     directories. This also prevents test runs from creating archive/  locks under the module workspace.                                                                                                 • Edited 2 files (+46 -16)                                          └ modules\ytaedl\tests\test_downloader.py (+7 -3)                   1211      urlfile = tmp_path / "urls.txt"                         1212 +    lock_dir = tmp_path / "archive" / "locks"               1213      urlfile.write_text("https://example.com/video\n", en          coding="utf-8")                                             1213 -    owner = UrlFileLock(urlfile)                            1214 +    owner = UrlFileLock(urlfile, lock_dir=lock_dir)         1215      assert owner.try_acquire().acquired                     1216      try:                                                    1216 -        rc = downloader.main(["-f", str(urlfile), "-n"])    1217 +        rc = downloader.main(["-f", str(urlfile), "-n",           "-V", str(lock_dir)])                                       1218      finally:                                                     ⋮                                                            1226      temp_urlfile = tmp_path / "worker-temp.txt"             1227 +    lock_dir = tmp_path / "archive" / "locks"               1228      source.write_text("https://example.com/source\n", en          coding="utf-8")                                             1229      temp_urlfile.write_text("https://example.com/temp\n"          , encoding="utf-8")                                         1228 -    owner = UrlFileLock(source)                             1230 +    owner = UrlFileLock(source, lock_dir=lock_dir)          1231      assert owner.try_acquire().acquired                          ⋮                                                            1239                  "-n",                                       1240 +                "-V",                                       1241 +                str(lock_dir),                              1242              ]                                                                                                               └ modules\ytaedl\tests\urlfile_lock_test.py (+39 -13)                17      source = tmp_path / "urls.txt"                            18 +    lock_dir = tmp_path / "archive" / "locks"                 19      source.write_text("https://example.com/video\n", enco         ding="utf-8")                                                 20                                                                20 -    first = UrlFileLock(source, worker_slot=3, manager_pi         d=123)                                                        21 +    first = UrlFileLock(source, worker_slot=3, manager_pi         d=123, lock_dir=lock_dir)                                     22      assert first.try_acquire().acquired                       23                                                                23 -    blocked = UrlFileLock(source).try_acquire()               24 +    blocked = UrlFileLock(source, lock_dir=lock_dir).try_         acquire()                                                     25      assert blocked.status == "held"                              ⋮                                                              30      first.release()                                           30 -    assert probe_urlfile_lock(source).status == "availabl         e"                                                            31 +    assert probe_urlfile_lock(source, lock_dir).status ==          "available"                                                  32                                                                   ⋮                                                              35      source = tmp_path / "urls.txt"                            36 +    lock_dir = tmp_path / "archive" / "locks"                 37      source.write_text("https://example.com/video\n", enco         ding="utf-8")                                                 36 -    lock_path_for(source).write_text("{not-json", encodin         g="utf-8")                                                    38 +    lock_path = lock_path_for(source, lock_dir)               39 +    lock_path.parent.mkdir(parents=True)                      40 +    lock_path.write_text("{not-json", encoding="utf-8")       41                                                                38 -    assert probe_urlfile_lock(source).status == "availabl         e"                                                            42 +    assert probe_urlfile_lock(source, lock_dir).status ==          "available"                                                  43                                                                   ⋮                                                              46      source = tmp_path / "urls.txt"                            47 +    lock_dir = tmp_path / "archive" / "locks"                 48      source.write_text("https://example.com/video\n", enco         ding="utf-8")                                                 49                                                                45 -    assert lock_path_for(source) == lock_path_for(tmp_pat         h / "." / "urls.txt")                                         50 +    assert lock_path_for(source, lock_dir) == lock_path_f         or(tmp_path / "." / "urls.txt", lock_dir)                     51 +                                                              52 +                                                              53 +def test_same_named_files_in_different_directories_have_d         istinct_locks(tmp_path: Path) -> None:                        54 +    lock_dir = tmp_path / "archive" / "locks"                 55 +    first = tmp_path / "f1" / "urlfile.txt"                   56 +    second = tmp_path / "f2" / "urlfile.txt"                  57 +    first.parent.mkdir()                                      58 +    second.parent.mkdir()                                     59 +    first.write_text("https://example.com/first\n", encod         ing="utf-8")                                                  60 +    second.write_text("https://example.com/second\n", enc         oding="utf-8")                                                61 +                                                              62 +    first_lock = lock_path_for(first, lock_dir)               63 +    second_lock = lock_path_for(second, lock_dir)             64                                                                65 +    assert first_lock.parent == lock_dir.resolve()            66 +    assert second_lock.parent == lock_dir.resolve()           67 +    assert first_lock != second_lock                          68 +    assert first_lock.name.startswith("urlfile.txt.")         69 +    assert second_lock.name.startswith("urlfile.txt.")        70 +                                                              71                                                                   ⋮                                                              74      ready = tmp_path / "ready.json"                           75 +    lock_dir = tmp_path / "archive" / "locks"                 76      source.write_text("https://example.com/video\n", enco         ding="utf-8")                                                    ⋮                                                              80          "from ytaedl.urlfile_lock import UrlFileLock\n"       56 -        "lock=UrlFileLock(Path(sys.argv[1]))\n"               81 +        "lock=UrlFileLock(Path(sys.argv[1]), lock_dir=Pat         h(sys.argv[3]))\n"                                            82          "attempt=lock.try_acquire()\n"                           ⋮                                                              85      )                                                         61 -    proc = subprocess.Popen([sys.executable, "-c", code,          str(source), str(ready)])                                     86 +    proc = subprocess.Popen([sys.executable, "-c", code,          str(source), str(ready), str(lock_dir)])                      87      try:                                                         ⋮                                                              91          assert json.loads(ready.read_text(encoding="utf-8         "))["status"] == "acquired"                                   67 -        assert probe_urlfile_lock(source).status == "held         "                                                             92 +        assert probe_urlfile_lock(source, lock_dir).statu         s == "held"                                                   93          proc.kill()                                              ⋮                                                              95          deadline = time.time() + 10                               lable"                                                        98 +        assert probe_urlfile_lock(source, lock_dir).statu         s == "available"                                              99      finally:                                                     ⋮                                                                  ding="utf-8")                                                 83 -    owner = UrlFileLock(source)                              109 +    owner = UrlFileLock(source, lock_dir=lock_dir)           110      assert owner.try_acquire().acquired                          ⋮                                                             117      release_thread.start()                                    92 -    waiter = UrlFileLock(source)                             118 +    waiter = UrlFileLock(source, lock_dir=lock_dir)          119      attempt = waiter.acquire_waiting(
+
+• Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m   │ py_compile modules\ytaedl\ytaedl\urlfile_lock.py
+  │ modules\ytaedl\ytaedl\downloader.py
+  │ … +1 lines
+
+• Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ pytest modules\ytaedl\tests\urlfile_lock_test.py
+  │ modules\ytaedl\tests\test_downloader.py
+  │ … +1 lines
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Running focused local pytest suites to validate the user-
+  requested lock-path change is a routine verification step with
+  only minor reversible test-artifact side effects.
+
+✔ Auto-reviewer approved codex to run C:
+  \Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest
+  modules\ytaedl... this time
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Running local py_compile on the modified modules is a
+  routine validation step directly supporting the user's requested
+  lock-path change, with only minor reversible bytecode-cache side
+  effects.
+
+✔ Auto-reviewer approved codex to run C:
+  \Users\mcarls\src\scripts\.venv\Scripts\python.exe -m py_compile
+  modules\yt... this time
+
+• Ran C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ py_compile modules\ytaedl\ytaedl\urlfile_lock.py
+  │ modules\ytaedl\ytaedl\downloader.py
+  │ … +1 lines
+  └ (no output)
+
+• Ran C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ pytest modules\ytaedl\tests\urlfile_lock_test.py
+  │ modules\ytaedl\tests\test_downloader.py
+  │ … +1 lines
+  └ ..............................................................
+    .......... [ 54%]
+    ...........................................................
+    [100%]
+    131 passed in 7.18s
+
+──────────────────────────────────────────────────────────────────
+• The centralized path behavior is passing focused tests. I’m now
+  documenting the new location and legacy-file handling, bumping
+  the module to 2.12.0 because this changes visible lock storage
+  behavior, and then I’ll run the full suite and reinstall the
+  editable package.
+
+• Edited 4 files (+31 -6)
+  └ modules\ytaedl\README.md (+18 -4)
+     1 -<!-- version: 2.11.0 -->
+     1 +<!-- version: 2.12.0 -->
+     2  # ytaedl
+       ⋮
+    70
+    71 -Every worker takes an operating-system lock on
+    72 -`<url-file>.ytaedl.lock` before reading or downloading URL
+        s. If another
+    73 -worker owns the same URL file, the downloads panel shows
+    71 +Every worker takes an operating-system lock before reading
+         or downloading
+    72 +URLs. Lock sidecars are stored under:
+    73 +
+    74 +```text
+    75 +<archive>/locks/<url-file-name>.<canonical-path-hash>.ytae
+        dl.lock
+    76 +```
+    77 +
+    78 +The canonical full-path hash makes identically named files
+         in different
+    79 +directories distinct. For example, `f1/urlfile.txt` and `f
+        2/urlfile.txt`
+    80 +produce different lock filenames even though both retain t
+        he readable
+    81 +`urlfile.txt` prefix.
+    82 +
+    83 +If another worker owns the same canonical URL file, the do
+        wnloads panel shows
+    84  `WAITING: URL FILE LOCK` until the owner exits. Other requ
+        ested files continue
+       ⋮
+    92
+    93 +Versions before `2.12.0` placed sidecars beside URL files
+        as
+    94 +`<url-file>.ytaedl.lock`. Those old sibling sidecars are n
+        o longer used and may
+    95 +be deleted after confirming no pre-`2.12.0` worker is stil
+        l running.
+    96 +
+    97  ## yt-dlp Worker Defaults
+
+  └ modules\ytaedl\pyproject.toml (+2 -1)
+     6  name = "ytaedl"
+     7 -version = "2.11.0"
+     7 +version = "2.12.0"
+     8  # Version history (MAJOR.MINOR.PATCH per MODULE_STANDARDS.
+        md):
+     9 +# 2.12.0 — MINOR: move URL-file lock sidecars to <archive>
+        /locks with canonical full-path hashes so same-named files
+         in different directories cannot collide
+    10  # 2.11.0 — MINOR: exact -p/--priority-files workload mode
+        (-i/--priority-files-only) with one worker per file; worke
+        r-owned cross-process URL-file locks and visible lock-wait
+         status; fix cleanup index archive-dir initialization
+
+  └ modules\ytaedl\ytaedl\__init__.py (+1 -1)
+    7  __all__ = ["__version__"]
+    8 -__version__ = "2.11.0"
+    8 +__version__ = "2.12.0"
+    9
+
+  └ plans\modules\ytaedl\ai\0011_20260622-1156_ai_codex-explicit-
+  urlfile-workers-and-locking__implemented.md (+10 -0)
+    434    with real subprocesses.
+    435 +
+    436 +## Follow-up: Centralized Lock Storage
+    437 +
+    438 +Implemented after initial delivery:
+    439 +
+    440 +- lock sidecars live under `<archive>/locks/`;
+    441 +- filenames use `<source-basename>.<canonical-path-hash>.
+         ytaedl.lock`;
+    442 +- canonical full paths provide collision-free identities
+         for same-named URL
+    443 +  files in different directories;
+    444 +- pre-`2.12.0` sibling sidecars are legacy artifacts and
+         are no longer used.
+         ir") + 1]).resolve()
+    161 +            for command in commands
+    162 +        }
+    163 +        assert lock_dirs == {(archive_dir / "locks").reso
+         lve()}
+    164          scan.assert_not_called()
+
+  └ modules\ytaedl\tests\urlfile_lock_test.py (+2 -0)
+    69      assert second_lock.name.startswith("urlfile.txt.")
+    70 +    assert not first.with_name(first.name + ".ytaedl.lock"
+        ).exists()
+    71 +    assert not second.with_name(second.name + ".ytaedl.loc
+        k").exists()
+    72
+
+• Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ pytest modules\ytaedl\tests -q
+
+• Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ ruff check modules\ytaedl\ytaedl\manager.py
+  │ modules\ytaedl\ytaedl\downloader.py
+  │ … +6 lines
+
+• Running git diff --check
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  unknown): Auto-review returned a low-risk allow decision.
+
+✔ Auto-reviewer approved codex to run git diff --check this time
+
+• Ran git diff --check
+  └ warning: in the working copy of '.github/
+    copilot-instructions.md', LF will be replaced by CRLF the next
+    … +28 lines (ctrl + t to view transcript)
+    INDEX.md', LF will be replaced by CRLF the next time Git
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Running the full local ytaedl test suite is a routine
+  validation step for the user-requested lock-storage change, with
+  only minor reversible test-artifact side effects.
+
+✔ Auto-reviewer approved codex to run C:
+  \Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest
+  modules\ytaedl... this time
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  unknown): Auto-review returned a low-risk allow decision.
+
+✔ Auto-reviewer approved codex to run C:
+  \Users\mcarls\src\scripts\.venv\Scripts\python.exe -m ruff check
+
+• Ran C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ pytest modules\ytaedl\tests -q
+    .......... [ 20%]
+    … +11 lines (ctrl + t to view transcript)
+    Process handling differs on Windows
+    344 passed, 1 skipped in 9.62s
+
+──────────────────────────────────────────────────────────────────
+
+• The full suite passes with the new centralized lock location and
+  same-name collision test. I’m checking for generated artifacts,
+  then reinstalling ytaedl 2.12.0 and verifying the installed
+  version.
+
+• Running git status --short -- modules/ytaedl/archive modules/
+  │ ytaedl/logs
+
+◦ Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ pip install -e modules\ytaedl
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  unknown): Auto-review returned a low-risk allow decision.
+
+✔ Auto-reviewer approved codex to run C:
+  \Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pip
+✔ Auto-reviewer approved codex to run git status --short --
+  modules/ytaedl/archive modules/ytaedl/logs this time
+
+• Ran git status --short -- modules/ytaedl/archive modules/ytaedl/
+  │ logs
+  └ ?? modules/ytaedl/archive/
+
+• Ran C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pip
+  │ install -e modules\ytaedl
+  └ Obtaining file:///C:/Users/mcarls/src/scripts/modules/ytaedl
+      Installing build dependencies: started
+    … +46 lines (ctrl + t to view transcript)
+    [notice] To update, run: python.exe -m pip install --upgrade
+    pip
+  making it a narrowly scoped and low-risk cleanup action.
+
+✔ Auto-reviewer approved codex to run $target=(Resolve-Path
+  -LiteralPath 'modules\ytaedl\archive').Path; $root=(Res... this
+  time
+• Ran $target=(Resolve-Path -LiteralPath
+  │ 'modules\ytaedl\archive').Path; $root=(Resolve-Path
+  │ -LiteralPath 'modules\ytaedl').Path; if (-not
+  │ … +5 lines
+  └ (no output)
+
+• Running git status --short -- modules/ytaedl plans/modules/
+  │ ytaedl
+
+• Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -c
+  │ "import importlib.metadata, ytaedl;
+  │ print(importlib.metadata.version('ytaedl'));
+  │ … +1 lines
+
+• Running git diff --check
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Read-only local version verification is a routine final
+  check directly supporting the user-requested ytaedl update.
+
+✔ Auto-reviewer approved codex to run C:
+  \Users\mcarls\src\scripts\.venv\Scripts\python.exe -c "import
+  importlib.met... this time
+
+• Ran C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -c
+  │ "import importlib.metadata, ytaedl;
+  │ print(importlib.metadata.version('ytaedl'));
+  │ … +1 lines
+  └ 2.12.0
+    2.12.0
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): Read-only git status on the relevant module and plan
+  paths is a routine final verification step directly supporting
+  the user's requested ytaedl lock-location change.
+
+✔ Auto-reviewer approved codex to run git status --short --
+  modules/ytaedl plans/modules/ytaedl this time
+
+• Ran git status --short -- modules/ytaedl plans/modules/ytaedl
+  └  M modules/ytaedl/README.md
+     M modules/ytaedl/pyproject.toml
+    … +11 lines (ctrl + t to view transcript)
+    ai/0011_20260622-1156_ai_codex-explicit-urlfile-workers-and-lo
+    cking__implemented.md
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  unknown): Auto-review returned a low-risk allow decision.
+
+✔ Auto-reviewer approved codex to run git diff --check this time
+
+• Ran git diff --check
+  └ warning: in the working copy of '.github/
+    copilot-instructions.md', LF will be replaced by CRLF the next
+    … +28 lines (ctrl + t to view transcript)
+    INDEX.md', LF will be replaced by CRLF the next time Git
+    touches it
+
+• Changed in ytaedl 2.12.0.
+
+  Locks now live at:
+
+  Example:
+
+  archive/locks/urlfile.txt.a14f63c02db98521.ytaedl.lock
+
+  Identically named URL files in different folders receive
+  different hashes and locks.
+
+  Old sibling files such as urlfile.txt.ytaedl.lock are no longer
+  used. You may delete them after stopping any pre-2.12.0 workers.
+
+  Validation: 344 passed, 1 skipped; Ruff passed.
+
+─ Worked for 3m 23s ──────────────────────────────────────────────
+
+
+› perhaps locks should have durations assigned to them, where the
+  holder of the lock has to renew the duration/text in the lock
+  file.. this would ensure that if a lock file is somehow not
+  deletdd when it should be, that this wont cause issues long
+
+
+• A duration-based lease would make this less safe.
+
+  the worker dies, including force-kill, the OS releases it
+  automatically. The leftover file is harmless and immediately
+  reusable.
+
+  Allowing an “expired” lock to be stolen could create two workers
+  when the original worker is merely suspended, overloaded, or
+  unable to renew temporarily.
+
+  Recommended design:
+
+  - Keep OS locks authoritative.
+  - Keep persistent sidecars.
+
+› oh okay, if its already handled at that level thats even
+  better, i just wasnt sure. So each worker now owns the urlfile
+  theyre workong on, in any run scenario where a worker is
+
+• Yes. Every ytaedl worker acquires an OS-level lock for its
+  source URL file before reading or downloading URLs.
+
+  This covers:
+
+  Only one worker can process URLs from a given canonical URL-file
+  path at a time. Different URL files can run concurrently.
+
+
+› okay, where before it eas supposed to be setup such that runmux
+  by default reserved the top and bottom line and displayed
+  the interacrive window instantiated by running `runmux run
+  program args` . rows 0 and -1 are still being taken up by the
+  process being run.
+
+
+• I’ll trace runmux run from CLI dispatch through PTY/ConPTY
+  sizing and the interactive renderer. The likely failure is that
+  the child terminal is still being allocated the full viewport
+  instead of a viewport reduced by two rows, so I’ll verify both
+  initial sizing and resize-event handling before patching it.
+
+• Running rg -n "runmux|reserved|top.*bottom|status.*line|
+  │ viewport|ConPTY|pty|rows|terminal size" C:
+  │ \Users\mcarls\.codex\memories\MEMORY.md
+
+• Running git status --short -- modules/runmux
+
+• Running rg --files modules/runmux
+
+◦ Running rg -n "reserved|header|footer|rows|height|resize|
+  │ get_terminal_size|run\(" modules/runmux
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  unknown): Auto-review returned a low-risk allow decision.
+
+✔ Auto-reviewer approved codex to run git status --short --
+  modules/runmux this time
+
+• Ran git status --short -- modules/runmux
+  └ A  modules/runmux/docs/AGENTS.md
+    A  modules/runmux/docs/DOCUMENTATION_SYSTEM_SUMMARY.md
+    … +23 lines (ctrl + t to view transcript)
+    M  modules/runmux/tests/store_test.py
+    M  modules/runmux/tests/supervisor_test.py
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  unknown): Auto-review returned a low-risk allow decision.
+
+✔ Auto-reviewer approved codex to run rg -n "runmux|reserved|
+  top.*bottom|status.*line|viewport|ConPTY|pty|rows|term... this
+  time
+
+• Ran rg -n "runmux|reserved|top.*bottom|status.*line|viewport|
+  │ ConPTY|pty|rows|terminal size" C:
+  │ \Users\mcarls\.codex\memories\MEMORY.md
+  └ 74:- `unknown` in this validator means “not enough
+    URL-specific evidence,” not “scheduler bug”; the logs showed
+    … +57 lines (ctrl + t to view transcript)
+    and ignore/report paths that are outside the provided scan
+    roots [Task 2]
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): This is a read-only local source search in the newly
+  requested runmux module to locate layout and resize logic,
+  directly supporting the user's explicit debugging request.
+
+✔ Auto-reviewer approved codex to run rg -n "reserved|header|
+  footer|rows|height|resize|get_terminal_size|run\(" mod... this
+  time
+
+• Ran rg -n "reserved|header|footer|rows|height|resize|
+  │ get_terminal_size|run\(" modules/runmux
+  └ modules/runmux\docs\README.md:108:- Owns process input,
+    resize, status, kill, pause, and resume operations.
+    … +295 lines (ctrl + t to view transcript)
+    modules/runmux\src\runmux\supervisor.py:685:
+    packed_size = struct.pack("HHHH", rows, columns, 0, 0)
+
+  └ modules/runmux\tests\supervisor_test.py
+    modules/runmux\tests\store_test.py
+    … +44 lines (ctrl + t to view transcript)
+    runmux\docs\plans\20260622-0551_runmux-multi-attach-input-lock
+    -history\00_implementation-plan.md
+
+──────────────────────────────────────────────────────────────────
+
+• The code confirms only one reserved row is currently applied,
+  and the documentation marks the two-row attach UI as still
+  planned. More importantly, runmux run creates the child at the
+  full terminal height before attaching, so the child can draw
+  into rows 0 and -1 before the later resize. I’m inspecting the
+  attach loop and startup path now to fix both initial allocation   and ongoing resize handling without overwriting the existing
+  multi-attach work.
+
+• Running Get-Content modules/runmux/src/runmux/constants.py
+
+• Running $p='modules/runmux/src/runmux/client.py'; Get-Content $p
+  │ | Select-Object -Skip 520 -First 230
+
+• Running $p='modules/runmux/src/runmux/cli.py'; Get-Content $p |
+  │ Select-Object -Skip 345 -First 90
+
+• Running $p='modules/runmux/src/runmux/runner.py'; Get-Content $p  │ | Select-Object -Skip 80 -First 80
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): This is a read-only local source inspection to trace       runmux attach-loop rendering and resize behavior for the user's   explicitly requested bug investigation.                                                                                           ✔ Auto-reviewer approved codex to run $p='modules/runmux/src/       runmux/client.py'; Get-Content $p | Select-Object -Ski... this    time                                                                                                                              ⚠ Automatic approval review approved (risk: low, authorization:     high): This is a read-only inspection of the local runmux         startup code to diagnose the user-reported viewport issue, with   no destructive or external side effects.                                                                                          ✔ Auto-reviewer approved codex to run $p='modules/runmux/src/       runmux/runner.py'; Get-Content $p | Select-Object -Ski... this    time
+
+⚠ Automatic approval review approved (risk: low, authorization:     high): Read-only inspection of local runmux CLI dispatch code is
+  a routine step directly supporting the user's requested
+  debugging of runmux interactive row reservation behavior.
+
+✔ Auto-reviewer approved codex to run $p='modules/runmux/src/       runmux/cli.py'; Get-Content $p | Select-Object -Skip 3... this    time                                                                                                                              ⚠ Automatic approval review approved (risk: low, authorization:     high): This is a read-only inspection of a local constants file   to verify current reserved-row behavior in runmux, directly       supporting the user's requested debugging.                                                                                        ✔ Auto-reviewer approved codex to run Get-Content modules/runmux/   src/runmux/constants.py this time                                                                                                 • Ran $p='modules/runmux/src/runmux/client.py'; Get-Content $p |    │ Select-Object -Skip 520 -First 230                              └         set_terminal_title(None)                                          stop_event.set()                                          … +226 lines (ctrl + t to view transcript)                                                                                              stdin_fd = sys.stdin.fileno()                                         command.extend(["--state-dir", str(state_dir)])
+
+• Ran $p='modules/runmux/src/runmux/cli.py'; Get-Content $p |       │ Select-Object -Skip 345 -First 90                               └         default=None,                                                     help="Run ID, numeric ID, or unambiguous ID prefix.",     … +87 lines (ctrl + t to view transcript)
+
+    def handle_list(args: argparse.Namespace) -> int:
+
+• Ran Get-Content modules/runmux/src/runmux/constants.py            └ """Constants used across runmux."""
+
+    … +22 lines (ctrl + t to view transcript)                         ACTIVE_STATUSES = {STATUS_PENDING, STATUS_RUNNING,                STATUS_PAUSED}
+
+• Running Get-Content modules/runmux/docs/
+  │ plans/20260622-0551_runmux-multi-attach-input-lock-histo
+  │ ry/03_attach-ui-and-config__planned.md
+
+• Running $p='modules/runmux/src/runmux/client.py'; Get-Content $p
+  │ | Select-Object -First 390
+
+• Running $p='modules/runmux/src/runmux/client.py'; Get-Content $p  │ | Select-Object -Skip 390 -First 145
+
+• Running Get-Content modules/runmux/pyproject.toml; Get-Content    │ modules/runmux/src/runmux/__init__.py
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  unknown): Auto-review returned a low-risk allow decision.                                                                         ✔ Auto-reviewer approved codex to run Get-Content modules/runmux/   pyproject.toml; Get-Content modules/runmux/src/run... this time                                                                   ⚠ Automatic approval review approved (risk: low, authorization:     unknown): Auto-review returned a low-risk allow decision.                                                                         ✔ Auto-reviewer approved codex to run $p='modules/runmux/src/       runmux/client.py'; Get-Content $p | Select-Object -Fir... this    time                                                                                                                              • Ran Get-Content modules/runmux/pyproject.toml; Get-Content        │ modules/runmux/src/runmux/__init__.py                           └ [build-system]                                                    requires = ["hatchling>=1.24"]                                    … +67 lines (ctrl + t to view transcript)                                                                                           __version__ = "0.8.0"                                                                                                           • Ran $p='modules/runmux/src/runmux/client.py'; Get-Content $p |    │ Select-Object -First 390                                        └ """Client-side view, interact, and live list functionality."""                                                                      … +386 lines (ctrl + t to view transcript)                            *,                                                                attachment: AttachmentSummary | None = None,
+
+⚠ Automatic approval review approved (risk: low, authorization:     high): This is a read-only inspection of the runmux attach-UI
+  plan document to align the requested fix with the intended top/
+  bottom reserved-row behavior.
+                                                                  ✔ Auto-reviewer approved codex to run Get-Content modules/runmux/   docs/plans/20260622-0551_runmux-multi-attach-input... this time                                                                   • Ran Get-Content modules/runmux/docs/                              │ plans/20260622-0551_runmux-multi-attach-input-lock-history/0    │ 3_attach-ui-and-config__planned.md                              └ # Cycle 03: Attachment UI and Configuration                                                                                       rendering code to diagnose the user-reported reserved-row bug,    with no destructive or external side effects.
+
+✔ Auto-reviewer approved codex to run $p='modules/runmux/src/
+  runmux/client.py'; Get-Content $p | Select-Object -Ski... this
+  time
+
+• Ran $p='modules/runmux/src/runmux/client.py'; Get-Content $p |    │ Select-Object -Skip 390 -First 145                              └ ) -> dict[str, Any]:                                                  """Convert a record to JSON-serializable output."""           … +141 lines (ctrl + t to view transcript)                            control_prefix: bytes = DEFAULT_CONTROL_PREFIX,               ) -> int:
+
+⚠ Heads up, you have less than 10% of your 5h limit left. Run /     status for a breakdown.
+
+
+⚠ Automatic approval review approved (risk: low, authorization:     high): This is a read-only inspection of local runmux output-     tail code to debug the user's requested reserved-row behavior,
+  with no destructive or external side effects.
+
+✔ Auto-reviewer approved codex to run rg -n "def tail_file|
+  sys.stdout.buffer|os.write" modules/runmux/src/runmux/cl... this
+  time
+
+• Ran rg -n "def tail_file|sys.stdout.buffer|os.write" modules/
+  │ runmux/src/runmux/client.py; $p='modules/runmux/src/runmux/
+  │ client.py'; Get-Content $p | Select-Object -Skip 730 -First
+  │ … +1 lines
+  └ 957:def tail_file(
+    988:            sys.stdout.buffer.write(chunk)
+    … +132 lines (ctrl + t to view transcript)
+                if command == control_prefix:
+                    continue
+
+• Running $p='modules/runmux/src/runmux/client.py'; Get-Content $p  │ | Select-Object -Skip 940 -First 85
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): This is a read-only inspection of the local tail_file
+  implementation to debug the user's requested runmux reserved-row  behavior, with no destructive or external side effects.                                                                           ✔ Auto-reviewer approved codex to run $p='modules/runmux/src/       runmux/client.py'; Get-Content $p | Select-Object -Ski... this    time                                                                                                                              • Ran $p='modules/runmux/src/runmux/client.py'; Get-Content $p |    │ Select-Object -Skip 940 -First 85                               └ def write_local_message(message: str) -> None:                        """Write an out-of-band runmux message to stderr."""          … +81 lines (ctrl + t to view transcript)                             command = command_key.encode("utf-8", errors="ignore")            if command == DEFAULT_CONTROL_PREFIX:                                                                                       ──────────────────────────────────────────────────────────────────                                                                  • The fix has two parts: allocate the child PTY at terminal_rows -  2 from the moment runmux run launches it, and add a synchronized  attachment renderer that establishes a scroll region between row  1 and the last row, then redraws runmux status after child        output. I’ll keep the raw ANSI log untouched; all framing is      local to the attached client.                                                                                                     • Edited 3 files (+5 -2)                                            └ modules\runmux\src\runmux\cli.py (+2 -0)                          372          columns=args.columns,                                373 +        reserve_rows=0 if args.detach else ATTACH_RESERVE         D_ROWS,                                                      374      )                                                            ⋮                                                             407          columns=args.columns,                                408 +        reserve_rows=0 if selector.detach else ATTACH_RES    12  DEFAULT_LOCK_IDLE_TRANSFER_SECONDS = 0.25                     13 -ATTACH_RESERVED_ROWS = 1                                      13 +ATTACH_RESERVED_ROWS = 2                                      14  DEFAULT_CONTROL_PREFIX = b"\x18"
+
+  └ modules\runmux\src\runmux\runner.py (+2 -1)                        99      columns: int | None = None,                              100 +    reserve_rows: int = 0,                                   101  ) -> StartedRun:                                                 ⋮                                                             116      terminal_size = shutil.get_terminal_size(fallback=(80         , 24))                                                       116 -    final_rows = rows or terminal_size.lines                 117 +    final_rows = max(1, (rows or terminal_size.lines) - m         ax(0, reserve_rows))                                         118      final_columns = columns or terminal_size.columns
+
+⚠ Heads up, you have less than 5% of your 5h limit left. Run /      status for a breakdown.
+
+• Running Get-Content modules/runmux/src/runmux/cli.py -TotalCount  │ 55
+⚠ Automatic approval review approved (risk: low, authorization:
+  high): This is a read-only inspection of the local runmux CLI
+  imports to validate the reserved-row launch change, directly
+  supporting the user's requested fix.
+
+✔ Auto-reviewer approved codex to run Get-Content modules/runmux/   src/runmux/cli.py -TotalCount 55 this time
+
+• Ran Get-Content modules/runmux/src/runmux/cli.py -TotalCount 55   └ """Command-line interface for runmux."""
+
+    … +52 lines (ctrl + t to view transcript)                                 description="Run programs under a shared process          manager with view/interact support.",
+
+• Edited modules\runmux\src\runmux\cli.py (+1 -1)                     12  from runmux.client import ClientError, interact_run, list_        runs_live, view_run                                           13 -from runmux.constants import DEFAULT_REFRESH_SECONDS          13 +from runmux.constants import ATTACH_RESERVED_ROWS, DEFAULT        _REFRESH_SECONDS                                              14  from runmux.history import (
+
+• Edited modules\runmux\src\runmux\client.py (+122 -4)                  69
+      70 +class AttachmentRenderer:                                     71 +    """Render child output inside a terminal region with           runmux status rows."""                                       72 +                                                              73 +    def __init__(self, store: RunStore, record: RunRecor          d, *, mode: str) -> None:                                     74 +        self.store = store                                    75 +        self.record = record                                  76 +        self.mode = mode                                      77 +        self._write_lock = threading.Lock()                   78 +        self._stop_event = threading.Event()                  79 +        self._size = shutil.get_terminal_size(fallback=(          80, 24))                                                      80 +        self._thread: threading.Thread | None = None          81 +                                                              82 +    def start(self) -> None:                                  83 +        with self._write_lock:                                84 +            self._write_bytes(b"\x1b[?6l\x1b[2J")             85 +            self._apply_frame_locked()                        86 +        self._thread = threading.Thread(                      87 +            target=self._refresh_loop,                        88 +            name=f"runmux-render-{self.record.numeric_id          }",                                                           89 +            daemon=False,                                     90 +        )                                                     91 +        self._thread.start()                                  92 +                                                              93 +    def write(self, chunk: bytes) -> None:                    94 +        with self._write_lock:                                95 +            self._write_bytes(chunk)                          96 +            self._apply_frame_locked()                        97 +                                                              98 +    def stop(self) -> None:                                   99 +        self._stop_event.set()                               100 +        if self._thread is not None:                         101 +            self._thread.join()                              102 +        with self._write_lock:                               103 +            lines = max(3, self._size.lines)                 104 +            self._write_bytes(                               105 +                f"\x1b[?6l\x1b[r\x1b[1;1H\x1b[2K\x1b[{li          nes};1H\x1b[2K\r\n".encode()                                 106 +            )                                                107 +                                                             108 +    def _refresh_loop(self) -> None:                         109 +        while not self._stop_event.wait(0.25):               110 +            current_size = shutil.get_terminal_size(fall          back=(80, 24))                                               111 +            if current_size != self._size:                   112 +                self._size = current_size                    113 +                send_resize(self.record, reserve_rows=AT          TACH_RESERVED_ROWS)                                          114 +            with self._write_lock:                           115 +                self._apply_frame_locked()                   116 +                                                             117 +    def _apply_frame_locked(self) -> None:                   118 +        lines = max(3, self._size.lines)                     119 +        columns = max(1, self._size.columns)                 120 +        child_bottom = max(2, lines - 1)                     121 +        try:                                                 122 +            latest = self.store.get_run(self.record.id)      123 +            summary = self.store.attachment_summary(self          .record.id)                                                  124 +        except Exception:                                    125 +            latest = self.record                             126 +            summary = None                                   127 +        top = format_attachment_top_status(latest, mode=          self.mode, width=columns)                                    128 +        bottom = format_attachment_bottom_status(summary          , width=columns)                                             129 +        sequence = (                                         130 +            f"\x1b[?6l\x1b[2;{child_bottom}r\x1b[?6h"        131 +            f"\x1b7\x1b[?6l\x1b[1;1H\x1b[2K{top}"            132 +            f"\x1b[{lines};1H\x1b[2K{bottom}\x1b[?6h\x1b          8"                                                           133 +        )                                                    134 +        self._write_bytes(sequence.encode("utf-8", error          s="replace"))                                                135 +                                                             136 +    @staticmethod                                            137 +    def _write_bytes(payload: bytes) -> None:                138 +        stream = getattr(sys.stdout, "buffer", sys.stdou          t)                                                           139 +        try:                                                 140 +            stream.write(payload)                            141 +        except TypeError:                                    142 +            stream.write(payload.decode("utf-8", errors=          "replace"))                                                  143 +        stream.flush()                                       144 +                                                             145 +                                                             146 +def format_attachment_top_status(record: RunRecord, *, m          ode: str, width: int) -> str:                                147 +    """Format the fixed top attachment status row."""        148 +                                                             149 +    value = (                                                150 +        f" runmux {record.numeric_id} | {mode} | {record          .status} | "                                                 151 +        f"{format_duration(record.runtime_seconds)} | {r          ecord.command_line}"                                         152 +    )                                                        153 +    return truncate(value, width).ljust(width)               154 +                                                             155 +                                                             156 +def format_attachment_bottom_status(                         157 +    summary: AttachmentSummary | None,                       158 +    *,                                                       159 +    width: int,                                              160 +) -> str:                                                    161 +    """Format the fixed bottom attachment controls and i          nput-lock status row."""                                     162 +                                                             163 +    if summary is None:                                      164 +        lock = "input --"                                    165 +    elif summary.lock_held:                                  166 +        lock = f"input locked Q:{summary.lock_queue_coun          t}"                                                          167 +    else:                                                    168 +        lock = f"input shared Q:{summary.lock_queue_coun          t}"                                                          169 +    value = f" Ctrl-X ? help | Ctrl-X q detach | {lock}"     170 +    return truncate(value, width).ljust(width)               171 +                                                             172 +                                                             173  def format_duration(seconds: float) -> str:                      ⋮                                                             586      send_resize(record, reserve_rows=ATTACH_RESERVED_ROW          S)                                                           587 +    renderer = AttachmentRenderer(store, record, mode="v          iew")                                                        588 +    renderer.start()                                         589      stop_event = threading.Event()                               ⋮                                                             605              "output_paused": output_pause_event.is_set,      606 +            "output_writer": renderer.write,                 607          },                                                       ⋮                                                             631          heartbeat_thread.join()                              632 +        renderer.stop()                                      633          detach_attachment(record, session_id)                    ⋮                                                             651          send_resize(record, reserve_rows=ATTACH_RESERVED          _ROWS)                                                       652 +        renderer = AttachmentRenderer(store, record, mod          e="interact")                                                653 +        renderer.start()                                     654          session_id = uuid.uuid4().hex                            ⋮                                                             666                  "output_paused": output_pause_event.is_s          et,                                                          667 +                "output_writer": renderer.write,             668              },                                                   ⋮                                                             702              tail_thread.join()                               703 +            renderer.stop()                                  704              detach_attachment(record, session_id)                ⋮                                                            1076      output_paused: Callable[[], bool] | None = None,        1077 +    output_writer: Callable[[bytes], None] | None = None          ,                                                           1078  ) -> AttachCommand | None:                                  1099          if chunk:                                            988 -            sys.stdout.buffer.write(chunk)                   989 -            sys.stdout.buffer.flush()                       1100 +            if output_writer is not None:                   1101 +                output_writer(chunk)                        1102 +            else:                                           1103 +                sys.stdout.buffer.write(chunk)              1104 +                sys.stdout.buffer.flush()                   1120 +                else:                                       1121 +                    sys.stdout.buffer.write(chunk)          1122 +                    sys.stdout.buffer.flush()               1123              return None
+
+──────────────────────────────────────────────────────────────────
+
+• The attachment renderer is now implemented: it creates a middle
+  scroll region, continuously restores it after child ANSI output,  redraws runmux status on the fixed top and bottom rows, and       resizes the child when the local terminal changes. I’m running
+  the current runmux suite now to identify compatibility
+  adjustments against the existing in-progress multi-attach         branch.                                                         
+• Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m   │ py_compile modules\runmux\src\runmux\client.py                  │ modules\runmux\src\runmux\runner.py                             │ … +1 lines
+
+◦ Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m   │ pytest modules\runmux\tests -q
+
+⚠ Automatic approval review approved (risk: low, authorization:     is a routine validation step directly supporting the user's       requested reserved-row fix, with only minor reversible bytecode-
+  cache side effects.
+
+✔ Auto-reviewer approved codex to run C:                            \Users\mcarls\src\scripts\.venv\Scripts\python.exe -m py_compile  modules\ru... this time
+
+  │ py_compile modules\runmux\src\runmux\client.py                  │ modules\runmux\src\runmux\runner.py                             │ … +1 lines                                                      └ (no output)
+
+⚠ Automatic approval review approved (risk: low, authorization:
+  unknown): Auto-review returned a low-risk allow decision.
+
+✔ Auto-reviewer approved codex to run C:
+  \Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest      modules\runmux... this time
+
+• Ran C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m       │ pytest modules\runmux\tests -q                                  └ .......................F.............F.....F..................    .......... [100%]                                                 … +230 lines (ctrl + t to view transcript)                        modules\runmux\tests\readiness_test.py::test_interact_cleans_t    ail_thread_when_input_socket_fails                                                                                              • Edited modules\runmux\src\runmux\client.py (+8 -0)                   84 +        if not self._enabled:                                 85 +            return                                            86          with self._write_lock:                                   ⋮                                                              96      def write(self, chunk: bytes) -> None:                    97 +        if not self._enabled:                                 98 +            self._write_bytes(chunk)                          99 +            return                                           100          with self._write_lock:                                   ⋮                                                             104      def stop(self) -> None:                                  105 +        if not self._enabled:                                106 +            return                                           107          self._stop_event.set()
+
+• Running C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m
+  │ pytest modules\runmux\tests -q                                                                                                  ⚠ Automatic approval review denied (risk: high, authorization:      u
+
+
+  And my latest message to the llm that didnt make kt throigh:
+  ```
+also, found at D:/Pictures/Saved/tmpvids/ytaedl_confinement/      archive/locks/ ... im running one instance with 8 workera and     no specific url filea, and another with two workwrs with two      specified url files, and for some reason it looks like every      urlfile has a urlfile.lock in the locks folder?
+  ```

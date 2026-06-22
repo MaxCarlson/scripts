@@ -4,8 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ytaedl"
-version = "2.10.1"
+version = "2.12.0"
 # Version history (MAJOR.MINOR.PATCH per MODULE_STANDARDS.md):
+# 2.12.0 — MINOR: move URL-file lock sidecars to <archive>/locks with canonical full-path hashes so same-named files in different directories cannot collide
+# 2.11.0 — MINOR: exact -p/--priority-files workload mode (-i/--priority-files-only) with one worker per file; worker-owned cross-process URL-file locks and visible lock-wait status; fix cleanup index archive-dir initialization
 # 2.10.1 — PATCH: STARS_DIR/AESTARS_DIR env vars used as defaults for -s/-d across all subcommands (manager, validate, status, cleanup index, urls); -j/--json-plan default fixed to literal path (was None, showing confusing double-default in help)
 # 2.10.0 — MINOR: compact 2-line worker UI (8 workers + header visible on one screen); simulate timeout → UNKNOWN_STATUS for yt-dlp downloaded entries (genuine failure still BAD_STATUS); set last_transition/tool/url in worker view
 # 2.9.1 — PATCH: archive status: deduplicate archive by URL (best status wins, collapse retry lines); domain index total = queued+inprog+finished (not total_urls which is queued-only after load); AEBN/yt-dlp split scans all known URL sets

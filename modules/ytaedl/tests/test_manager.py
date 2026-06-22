@@ -47,6 +47,8 @@ class TestManager:
 
         args_with_priority = parser.parse_args(["-p", "file.txt"])
         assert args_with_priority.priority_files == ["file.txt"]
+        assert parser.parse_args(["-i"]).priority_files_only is True
+        assert parser.parse_args(["--priority-files-only"]).priority_files_only is True
 
         args_with_res = parser.parse_args(["--max-resolution", "1080"])
         assert args_with_res.max_resolution == "1080"
@@ -85,6 +87,81 @@ class TestManager:
         assert args_with_grid.yt_dlp_grid_search is True
         assert args_with_grid.yt_dlp_grid_db == "grid.db"
         assert args_with_grid.yt_dlp_grid_experiment == "yt-speed"
+
+    def test_resolve_explicit_urlfiles_deduplicates_canonical_paths(self, tmp_path):
+        urlfile = tmp_path / "urls.txt"
+        urlfile.write_text("https://example.com/video\n", encoding="utf-8")
+
+        resolved = manager._resolve_explicit_urlfiles(
+            [str(urlfile), str(tmp_path / "." / "urls.txt")]
+        )
+
+        assert resolved == [urlfile.resolve()]
+
+    def test_priority_files_only_requires_priority_file(self):
+        with patch("subprocess.Popen") as popen:
+            assert manager.run_main(["--priority-files-only"]) == 2
+        popen.assert_not_called()
+
+    def test_priority_files_only_rejects_missing_file(self, tmp_path):
+        missing = tmp_path / "missing.txt"
+        with patch("subprocess.Popen") as popen:
+            assert manager.run_main(["-i", "-p", str(missing)]) == 2
+        popen.assert_not_called()
+
+    def test_priority_files_only_launches_one_worker_per_unique_file(self, tmp_path):
+        first = tmp_path / "first.txt"
+        second = tmp_path / "second.txt"
+        first.write_text("https://example.com/first\n", encoding="utf-8")
+        second.write_text("https://example.com/second\n", encoding="utf-8")
+        log_dir = tmp_path / "logs"
+        archive_dir = tmp_path / "archive"
+        media_dir = tmp_path / "media"
+
+        def make_process(*args, **kwargs):
+            process = MagicMock()
+            process.poll.return_value = 0
+            process.stdout = iter([])
+            process.wait.return_value = 0
+            return process
+
+        argv = [
+            "-i",
+            "-p",
+            str(first),
+            "-p",
+            str(second),
+            "-p",
+            str(first),
+            "-t",
+            "9",
+            "-g",
+            str(log_dir),
+            "-a",
+            str(archive_dir),
+            "-L",
+            str(media_dir),
+        ]
+        with patch("subprocess.Popen", side_effect=make_process) as popen:
+            with patch("ytaedl.manager.urlscan.scan_url_stats") as scan:
+                with patch("os.get_terminal_size", return_value=MagicMock(columns=100, lines=30)):
+                    with patch("sys.stdout"):
+                        with patch("time.sleep", side_effect=lambda _: None):
+                            assert manager.run_main(argv) == 0
+
+        assert popen.call_count == 2
+        commands = [call.args[0] for call in popen.call_args_list]
+        assigned = {Path(command[command.index("-f") + 1]).resolve() for command in commands}
+        assert assigned == {first.resolve(), second.resolve()}
+        assert all("--wait-for-url-file-lock" in command for command in commands)
+        assert all("--manager-pid" in command for command in commands)
+        assert all("--url-file-lock-dir" in command for command in commands)
+        lock_dirs = {
+            Path(command[command.index("--url-file-lock-dir") + 1]).resolve()
+            for command in commands
+        }
+        assert lock_dirs == {(archive_dir / "locks").resolve()}
+        scan.assert_not_called()
 
     def test_prepare_log_window(self):
         logs = [f"line {i}" for i in range(6)]

@@ -1,4 +1,4 @@
-<!-- version: 2.0.4 -->
+<!-- version: 2.12.0 -->
 # ytaedl
 
 `ytaedl` is a batch download manager for URL text files. It coordinates multiple worker processes, tracks progress from `yt-dlp` and AEBN downloaders, and can optionally move completed MP4 files from a staging/proxy disk to the final media destination.
@@ -28,6 +28,8 @@ ytaedl -t 12 -L /media/stars -s ./files/downloads/stars -d ./files/downloads/ae-
 Important options:
 
 - `-t/--threads`: number of concurrent workers.
+- `-i/--priority-files-only`: process only explicitly supplied
+  `-p/--priority-files` values, with one worker per unique URL file.
 - `-L/--download-root`: final destination root for per-URL-file folders.
 - `-P/--proxy-dl-location`: staging root for worker downloads.
 - `-w/--enable-mp4-watcher`: enable the MP4 watcher panel and automatic sync.
@@ -45,6 +47,52 @@ Important options:
 - `-Z/--url-random-order`: ignore URL priority metrics and pick URL files fully at random.
 
 All CLI arguments have short and long forms.
+
+## Exact URL-File Mode
+
+Use exact mode when multiple `ytaedl` manager instances should process
+different, manually selected URL files concurrently:
+
+```bash
+ytaedl run -i \
+  -p ./files/downloads/stars/channel-a.txt \
+  -p ./files/downloads/stars/channel-b.txt
+```
+
+`-i/--priority-files-only` changes the existing repeatable
+`-p/--priority-files` option from a priority hint into the complete workload.
+The manager:
+
+- creates one worker per unique canonical URL-file path;
+- ignores `-t/--threads` for worker count;
+- does not scan the normal URL roots or use domain-index scheduling;
+- never assigns another URL file to those worker slots.
+
+Every worker takes an operating-system lock before reading or downloading
+URLs. Lock sidecars are stored under:
+
+```text
+<archive>/locks/<url-file-name>.<canonical-path-hash>.ytaedl.lock
+```
+
+The canonical full-path hash makes identically named files in different
+directories distinct. For example, `f1/urlfile.txt` and `f2/urlfile.txt`
+produce different lock filenames even though both retain the readable
+`urlfile.txt` prefix.
+
+If another worker owns the same canonical URL file, the downloads panel shows
+`WAITING: URL FILE LOCK` until the owner exits. Other requested files continue
+running normally.
+
+The sidecar file remains on disk, but its existence does not mean the URL file
+is locked. The held OS lock is authoritative and is automatically released
+when the worker exits, receives Ctrl+C, or is forcibly terminated. Standalone
+`ytaedl worker` commands use the same lock and refuse to process an already
+locked URL file.
+
+Versions before `2.12.0` placed sidecars beside URL files as
+`<url-file>.ytaedl.lock`. Those old sibling sidecars are no longer used and may
+be deleted after confirming no pre-`2.12.0` worker is still running.
 
 ## yt-dlp Worker Defaults
 

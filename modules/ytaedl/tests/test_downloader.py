@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import ytaedl.downloader as downloader
+from ytaedl.urlfile_lock import LOCK_HELD_RC, UrlFileLock
 
 
 class TestDownloader:
@@ -1204,3 +1205,43 @@ class TestEmitJsonEncoding:
         parsed = json.loads(line)
         assert parsed["event"] == "start"
         assert "�" in parsed["url"]
+
+
+def test_worker_refuses_urlfile_locked_by_another_process(tmp_path):
+    urlfile = tmp_path / "urls.txt"
+    lock_dir = tmp_path / "archive" / "locks"
+    urlfile.write_text("https://example.com/video\n", encoding="utf-8")
+    owner = UrlFileLock(urlfile, lock_dir=lock_dir)
+    assert owner.try_acquire().acquired
+    try:
+        rc = downloader.main(["-f", str(urlfile), "-n", "-V", str(lock_dir)])
+    finally:
+        owner.release()
+
+    assert rc == LOCK_HELD_RC
+
+
+def test_worker_locks_archive_source_instead_of_temp_urlfile(tmp_path):
+    source = tmp_path / "source.txt"
+    temp_urlfile = tmp_path / "worker-temp.txt"
+    lock_dir = tmp_path / "archive" / "locks"
+    source.write_text("https://example.com/source\n", encoding="utf-8")
+    temp_urlfile.write_text("https://example.com/temp\n", encoding="utf-8")
+    owner = UrlFileLock(source, lock_dir=lock_dir)
+    assert owner.try_acquire().acquired
+    try:
+        rc = downloader.main(
+            [
+                "-f",
+                str(temp_urlfile),
+                "-O",
+                str(source),
+                "-n",
+                "-V",
+                str(lock_dir),
+            ]
+        )
+    finally:
+        owner.release()
+
+    assert rc == LOCK_HELD_RC

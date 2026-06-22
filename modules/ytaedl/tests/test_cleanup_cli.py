@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,7 +12,6 @@ from ytaedl._partial_utils import (
     PARTIAL_DIR_NAME,
     partial_dir_for,
     write_partial_meta,
-    write_partial_version,
 )
 from ytaedl.cleanup_cli import main
 
@@ -156,8 +154,10 @@ class TestCleanupIndex:
 
     def test_empty_stars_dir_returns_1(self, tmp_path, capsys):
         stars = tmp_path / "stars"
+        aebn = tmp_path / "aebn"
         stars.mkdir()
-        rc = main(["index", "-s", str(stars)])
+        aebn.mkdir()
+        rc = main(["index", "-s", str(stars), "-d", str(aebn)])
         assert rc == 1
         err = capsys.readouterr().err
         assert "No URL files" in err

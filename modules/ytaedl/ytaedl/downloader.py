@@ -41,6 +41,7 @@ try:
     from . import _partial_utils
     from . import yt_grid
     from . import __version__ as YTAEDL_VERSION
+    from .urlfile_lock import LOCK_ERROR_RC, LOCK_HELD_RC, LockAttempt, UrlFileLock
 except ImportError:  # pragma: no cover - used when downloader.py is executed by file path.
     import importlib.util
 
@@ -56,6 +57,11 @@ except ImportError:  # pragma: no cover - used when downloader.py is executed by
 
     _partial_utils = _load_sibling("_partial_utils", "_partial_utils.py")
     yt_grid = _load_sibling("yt_grid", "yt_grid.py")
+    _urlfile_lock = _load_sibling("urlfile_lock", "urlfile_lock.py")
+    LOCK_ERROR_RC = _urlfile_lock.LOCK_ERROR_RC
+    LOCK_HELD_RC = _urlfile_lock.LOCK_HELD_RC
+    LockAttempt = _urlfile_lock.LockAttempt
+    UrlFileLock = _urlfile_lock.UrlFileLock
     YTAEDL_VERSION = "unknown"
 
 MAX_RESOLUTION_CHOICES = ("4k", "2k", "1080", "720", "480")
@@ -135,6 +141,12 @@ def make_parser() -> argparse.ArgumentParser:
                    help=argparse.SUPPRESS)  # set by manager; not user-facing
     p.add_argument("-Z", "--extra-canonical-roots", action="append", default=None,
                    help=argparse.SUPPRESS)  # additional canonical dirs to check for dupes; set by manager
+    p.add_argument("-F", "--wait-for-url-file-lock", action="store_true",
+                   help=argparse.SUPPRESS)  # exact-file manager workers wait instead of exiting
+    p.add_argument("-c", "--manager-pid", type=int, default=None,
+                   help=argparse.SUPPRESS)  # diagnostic lock-owner metadata
+    p.add_argument("-V", "--url-file-lock-dir", default="./archive/locks",
+                   help=argparse.SUPPRESS)  # manager-selected shared lock directory
 
     return p
 
@@ -2043,7 +2055,7 @@ def _run_one(
 
     return rc, info
 
-def main(argv: Optional[List[str]] = None) -> int:
+def _main_with_urlfile_lock_held(argv: Optional[List[str]] = None) -> int:
     # Ensure stdout uses UTF-8 regardless of terminal locale (avoids cp1252 UnicodeEncodeError
     # when URLs or filenames contain replacement characters from UTF-8 decode errors).
     if hasattr(sys.stdout, "reconfigure"):
@@ -2255,6 +2267,86 @@ def main(argv: Optional[List[str]] = None) -> int:
         except Exception:
             pass
         raise
+
+
+def _lock_owner_payload(attempt: LockAttempt) -> Dict[str, object]:
+    payload: Dict[str, object] = {
+        "lock_path": str(attempt.lock_path),
+        "source_path": str(attempt.source_path),
+    }
+    if attempt.owner:
+        payload["owner"] = attempt.owner
+    if attempt.error:
+        payload["error"] = attempt.error
+    return payload
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    args = make_parser().parse_args(argv)
+    urlfile = Path(args.url_file).expanduser()
+    if not urlfile.exists():
+        print(f"[ERROR] URL file not found: {urlfile}", file=sys.stderr)
+        return 2
+
+    source_file = Path(args.archive_source_file).expanduser() if args.archive_source_file else urlfile
+    source_file = source_file.resolve()
+    stop_sentinel = Path(args.stop_sentinel).expanduser().resolve() if args.stop_sentinel else None
+    lock = UrlFileLock(
+        source_file,
+        worker_slot=args.worker_slot,
+        manager_pid=args.manager_pid,
+        mode="manager-worker" if args.manager_pid else "standalone-worker",
+        lock_dir=Path(args.url_file_lock_dir),
+    )
+    wait_emitted = False
+
+    def stop_requested() -> bool:
+        return _stop_sentinel_active(stop_sentinel)
+
+    def on_wait(attempt: LockAttempt) -> None:
+        nonlocal wait_emitted
+        if wait_emitted:
+            return
+        _emit_json({"event": "urlfile_lock_wait", **_lock_owner_payload(attempt)})
+        wait_emitted = True
+
+    if args.wait_for_url_file_lock:
+        attempt = lock.acquire_waiting(stop_requested, on_wait=on_wait)
+    else:
+        attempt = lock.try_acquire()
+
+    if attempt.status == "stopped":
+        _emit_json({"event": "controlled_stop", "reason": "urlfile_lock_wait"})
+        return 0
+    if not attempt.acquired:
+        payload = _lock_owner_payload(attempt)
+        _emit_json({"event": "urlfile_lock_failed", "status": attempt.status, **payload})
+        owner_pid = (attempt.owner or {}).get("pid")
+        owner_text = f" by pid {owner_pid}" if owner_pid else ""
+        print(
+            f"[WARNING] URL file lock unavailable{owner_text}: {source_file}",
+            file=sys.stderr,
+        )
+        return LOCK_HELD_RC if attempt.status == "held" else LOCK_ERROR_RC
+
+    _emit_json(
+        {
+            "event": "urlfile_lock_acquired",
+            "lock_path": str(attempt.lock_path),
+            "source_path": str(source_file),
+        }
+    )
+    try:
+        return _main_with_urlfile_lock_held(argv)
+    finally:
+        lock.release()
+        _emit_json(
+            {
+                "event": "urlfile_lock_released",
+                "lock_path": str(attempt.lock_path),
+                "source_path": str(source_file),
+            }
+        )
 
 if __name__ == "__main__":
     try:

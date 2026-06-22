@@ -47,6 +47,7 @@ from . import _partial_utils, urlscan, yt_grid
 from .domain_index import DomainIndex, ScanLogEntry, _extract_domain as _domain_of_url
 from .downloader import ARCHIVE_PROCESSED_STATUSES, MAX_RESOLUTION_CHOICES, _merge_archive_status
 from .mp4_watcher import MP4Watcher, WatcherConfig, WatcherSnapshot
+from .urlfile_lock import probe_urlfile_lock
 from termdash import utils as td_utils
 
 MP4_VALID_OPERATIONS = ("copy", "move")
@@ -132,6 +133,10 @@ class ManagerLogger:
     def error(self, msg: str) -> None:
         t = time.strftime("%H:%M:%S")
         self._write(f"{t}|ERROR|{msg}")
+
+    def warning(self, msg: str) -> None:
+        t = time.strftime("%H:%M:%S")
+        self._write(f"{t}|WARNING|{msg}")
 
 
 class DomainIndexFileLock:
@@ -1013,6 +1018,12 @@ class WorkerState:
     active_attempt_id: Optional[str] = None
     progress_generation: Optional[int] = None
     progress_attempt_id: Optional[str] = None
+    requested_urlfile: Optional[Path] = None
+    is_waiting_urlfile_lock: bool = False
+    urlfile_lock_since: float = 0.0
+    urlfile_lock_owner: Optional[dict] = None
+    urlfile_lock_path: Optional[str] = None
+    assignment_terminal: bool = False
 
 
 def _clear_worker_progress_state(ws: WorkerState) -> None:
@@ -1172,6 +1183,23 @@ def _gather_from_roots(
     return regular_pool, priority_paths
 
 
+def _resolve_explicit_urlfiles(values: Optional[Sequence[str]]) -> List[Path]:
+    resolved: List[Path] = []
+    seen: set[str] = set()
+    for value in values or []:
+        path = Path(value).expanduser().resolve()
+        key = str(path)
+        if key in seen:
+            continue
+        if not path.exists():
+            raise ValueError(f"URL file not found: {path}")
+        if not path.is_file():
+            raise ValueError(f"URL file is not a regular file: {path}")
+        seen.add(key)
+        resolved.append(path)
+    return resolved
+
+
 def _start_worker(
     slot: int,
     urlfile: Path,
@@ -1198,6 +1226,9 @@ def _start_worker(
     ytdlp_cookies_from_browser: Optional[str] = "firefox",
     ytdlp_impersonate: Optional[str] = "chrome",
     ytdlp_downloader: Optional[str] = "aria2c",
+    wait_for_url_file_lock: bool = False,
+    manager_pid: Optional[int] = None,
+    url_file_lock_dir: Optional[Path] = None,
 ) -> subprocess.Popen:
     if canonical_dir_override is not None:
         canonical_dir = canonical_dir_override
@@ -1256,6 +1287,12 @@ def _start_worker(
         cmd += ["--ytdlp-impersonate", ytdlp_impersonate]
     if ytdlp_downloader and ytdlp_downloader.lower() not in ("native", ""):
         cmd += ["--ytdlp-downloader", ytdlp_downloader]
+    if wait_for_url_file_lock:
+        cmd.append("--wait-for-url-file-lock")
+    if manager_pid:
+        cmd += ["--manager-pid", str(manager_pid)]
+    if url_file_lock_dir:
+        cmd += ["--url-file-lock-dir", str(url_file_lock_dir)]
     if quiet:
         cmd.append("-q")
     # line buffered
@@ -1306,6 +1343,8 @@ def _add_run_core_args(dest) -> None:
     dest.add_argument("-q", "--quiet", action="store_true", help="Pass -q to workers")
     dest.add_argument("-p", "--priority-files", action="append",
                       help="URL files to prioritize (can be specified multiple times)")
+    dest.add_argument("-i", "--priority-files-only", action="store_true",
+                      help="Only process -p/--priority-files; create one worker per unique URL file")
     dest.add_argument("-P", "--proxy-dl-location", default=None,
                       help="Staging root for downloads (per-urlfile subfolder); duplicates checked in -L roots")
     dest.add_argument("-s", "--stars-dir",
@@ -1503,6 +1542,25 @@ def run_main(
     else:
         argv_list = list(argv) if argv is not None else sys.argv[1:]
         args = make_parser().parse_args(argv_list)
+    exact_file_mode = bool(getattr(args, "priority_files_only", False))
+    exact_urlfiles: List[Path] = []
+    if exact_file_mode:
+        if not args.priority_files:
+            print(
+                "[ERROR] --priority-files-only requires at least one -p/--priority-files value",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            exact_urlfiles = _resolve_explicit_urlfiles(args.priority_files)
+        except ValueError as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            return 2
+        if not exact_urlfiles:
+            print("[ERROR] No unique URL files were specified", file=sys.stderr)
+            return 2
+        requested_threads = args.threads
+        args.threads = len(exact_urlfiles)
     t0 = time.time()
     deadline = (t0 + args.exit_at_time) if (args.exit_at_time and args.exit_at_time > 0) else None
 
@@ -1569,6 +1627,7 @@ def run_main(
     archive_dir: Optional[Path] = Path(args.archive).expanduser().resolve() if args.archive else None
     if archive_dir:
         archive_dir.mkdir(parents=True, exist_ok=True)
+    url_file_lock_dir = ((archive_dir or Path("./archive").resolve()) / "locks").resolve()
     finished_log = log_dir / "finished_urls.txt"
     finished_log.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1690,8 +1749,11 @@ def run_main(
         mlog.info("MP4 watcher configuration ignored because --enable-mp4-watcher was not set")
 
     roots: List[Path] = [stars_dir, aebn_dir]
-    pool, priority_pool = _gather_from_roots(roots, finished_log, args.priority_files)
-    if not pool and not priority_pool:
+    if exact_file_mode:
+        pool, priority_pool = [], list(exact_urlfiles)
+    else:
+        pool, priority_pool = _gather_from_roots(roots, finished_log, args.priority_files)
+    if not exact_file_mode and not pool and not priority_pool:
         # Fallback to test dirs if primary roots are empty
         repo_root = Path(__file__).resolve().parent.parent
         test_stars = (repo_root / "test" / "files" / "downloads" / "stars").resolve()
@@ -1704,7 +1766,7 @@ def run_main(
     domain_index_path: Optional[Path] = None
     domain_index_lock: Optional[DomainIndexFileLock] = None
 
-    _udl_active = (
+    _udl_active = not exact_file_mode and (
         (isinstance(getattr(args, "unique_domain_dls", -1), int) and args.unique_domain_dls >= 1)
         or bool(args.yt_dlp_grid_search)
     )
@@ -1795,6 +1857,9 @@ def run_main(
     auto_block_reason: Optional[str] = None
 
     workers: List[WorkerState] = [WorkerState(slot=i) for i in range(1, args.threads + 1)]
+    if exact_file_mode:
+        for worker, urlfile in zip(workers, exact_urlfiles):
+            worker.requested_urlfile = urlfile
     stop = threading.Event()
     mlog.info(
         f"Start manager threads={args.threads} time_limit={args.time_limit} refresh_hz={args.refresh_hz} exit_at_time={args.exit_at_time} archive_dir={archive_dir}"
@@ -1802,6 +1867,13 @@ def run_main(
     mlog.info(f"Log dir: {log_dir} | Manager log: {manager_log_path}")
     if args.priority_files:
         mlog.info(f"Priority files: {len(priority_pool)} files specified: {[str(p) for p in priority_pool]}")
+    if exact_file_mode:
+        if requested_threads != len(exact_urlfiles):
+            mlog.info(
+                f"Exact URL-file mode overrides threads={requested_threads}; "
+                f"creating {len(exact_urlfiles)} worker(s)"
+            )
+        mlog.info("Exact URL-file mode enabled; root scans and domain-index scheduling are disabled")
     mlog.info(f"Regular pool: {len(pool)} files | Priority pool: {len(priority_pool)} files")
 
     url_rankings: Dict[str, int] = {}
@@ -1879,6 +1951,9 @@ def run_main(
 
     def _schedule_url_scan(trigger: str) -> None:
         nonlocal url_scan_thread, url_scan_pending_trigger, url_scan_status
+        if exact_file_mode:
+            url_scan_status = "disabled (exact URL-file mode)"
+            return
 
         def _launch(trigger_to_run: str) -> None:
             nonlocal url_scan_thread, url_scan_pending_trigger, url_scan_status
@@ -1909,6 +1984,8 @@ def run_main(
 
     def _refresh_url_scan(trigger: str) -> bool:
         """Refresh URL scan synchronously (used by UI refresh hooks)."""
+        if exact_file_mode:
+            return False
         return _refresh_url_scan_sync(trigger)
 
     def _path_remaining(path: Path) -> Optional[int]:
@@ -2074,7 +2151,40 @@ def run_main(
                 ev = evt.get("event")
                 if my_generation != ws.attempt_generation:
                     break
-                if ev == "start":
+                if ev == "urlfile_lock_wait":
+                    if not ws.is_waiting_urlfile_lock:
+                        ws.is_waiting_urlfile_lock = True
+                        ws.urlfile_lock_since = time.time()
+                        ws.urlfile_lock_owner = evt.get("owner") if isinstance(evt.get("owner"), dict) else None
+                        ws.urlfile_lock_path = str(evt.get("lock_path") or "")
+                        _clear_worker_progress(ws)
+                        owner_pid = (ws.urlfile_lock_owner or {}).get("pid")
+                        owner_text = f" by pid {owner_pid}" if owner_pid else ""
+                        source = evt.get("source_path") or ws.requested_urlfile or ws.urlfile
+                        mlog.warning(
+                            f"[{ws.slot:02d}] URL file locked{owner_text}: {source}; waiting"
+                        )
+                        _wlog(ws, "URLFILE_WAIT", f"locked{owner_text}: {source}")
+                elif ev == "urlfile_lock_acquired":
+                    ws.is_waiting_urlfile_lock = False
+                    ws.urlfile_lock_since = 0.0
+                    ws.urlfile_lock_owner = None
+                    ws.urlfile_lock_path = str(evt.get("lock_path") or "")
+                    mlog.info(f"[{ws.slot:02d}] URLFILE_LOCK_ACQUIRED {evt.get('source_path')}")
+                elif ev == "urlfile_lock_released":
+                    ws.is_waiting_urlfile_lock = False
+                    ws.urlfile_lock_owner = None
+                    ws.urlfile_lock_path = str(evt.get("lock_path") or "")
+                elif ev == "urlfile_lock_failed":
+                    ws.is_waiting_urlfile_lock = False
+                    ws.urlfile_lock_owner = evt.get("owner") if isinstance(evt.get("owner"), dict) else None
+                    ws.urlfile_lock_path = str(evt.get("lock_path") or "")
+                    _clear_worker_progress(ws)
+                    mlog.warning(
+                        f"[{ws.slot:02d}] URLFILE_LOCK_FAILED status={evt.get('status')} "
+                        f"source={evt.get('source_path')}"
+                    )
+                elif ev == "start":
                     ws.url_index = evt.get("url_index")
                     ws.url_current = evt.get("url")
                     ws.downloader = evt.get("downloader")
@@ -2500,7 +2610,7 @@ def run_main(
 
     def _assign(ws: WorkerState) -> bool:
         nonlocal pool, priority_pool
-        if controlled_quit:
+        if controlled_quit or ws.assignment_terminal:
             return False
 
         _max_per = getattr(args, "unique_domain_dls", -1)
@@ -2541,17 +2651,21 @@ def run_main(
                     prefer_domains = {d for d in domain_index._url_queues.keys() if "aebn.com" in d}
 
             exclusive_urlfiles = getattr(args, "exclusive_urlfiles", True)
-            exclude_file_ids: Optional[set[int]] = set() if exclusive_urlfiles else None
-            if exclude_file_ids is not None:
+            exclude_file_ids: set[int] = set()
+            if exclusive_urlfiles:
                 active_paths = set()
                 for w in workers:
                     if w == ws or w.rc is not None or (w.proc and w.proc.poll() is not None):
                         continue
                     if w.proc and not w.is_paused and w.url_entry:
                         active_paths.add(str(Path(w.url_entry.file_path).resolve()))
-                for fid, fpath in domain_index._file_map.items():
-                    if str(Path(fpath).resolve()) in active_paths:
-                        exclude_file_ids.add(fid)
+            else:
+                active_paths = set()
+            for fid, fpath in domain_index._file_map.items():
+                if str(Path(fpath).resolve()) in active_paths:
+                    exclude_file_ids.add(fid)
+                elif probe_urlfile_lock(Path(fpath), url_file_lock_dir).status != "available":
+                    exclude_file_ids.add(fid)
 
             scan_log: List[ScanLogEntry] = []
             entry = domain_index.pick_url(
@@ -2685,6 +2799,8 @@ def run_main(
                 ytdlp_cookies_from_browser=getattr(args, "ytdlp_cookies_from_browser", "firefox"),
                 ytdlp_impersonate=getattr(args, "ytdlp_impersonate", "chrome"),
                 ytdlp_downloader=getattr(args, "ytdlp_downloader", "aria2c"),
+                manager_pid=os.getpid(),
+                url_file_lock_dir=url_file_lock_dir,
             )
             # Create a fresh stop event so the old reader's captured reference
             # (set by _requeue) keeps firing while the new reader starts clean.
@@ -2701,40 +2817,53 @@ def run_main(
             except Exception:
                 finished = set()
 
-        priority_avail = [
-            p
-            for p in priority_pool
-            if str(p.resolve()) not in active and str(p.resolve()) not in finished and _remaining_for_path(p) != 0
-        ]
-        if priority_avail:
-            selected = _select_priority(priority_avail)
-            if selected is None:
-                if not ws.is_waiting_domain:
-                    ws.is_waiting_domain = True
-                    ws.waiting_domain_since = time.time()
-                    mlog.info(f"[{ws.slot:02d}] ASSIGN DEFERRED (priority) – domain slots full")
+        if exact_file_mode:
+            if ws.requested_urlfile is None:
+                ws.assignment_terminal = True
                 return False
-            urlfile = selected
-            priority_pool = [p for p in priority_pool if p != urlfile]
-            mlog.info(f"[{ws.slot:02d}] ASSIGN PRIORITY {urlfile}")
+            urlfile = ws.requested_urlfile
+            mlog.info(f"[{ws.slot:02d}] ASSIGN EXACT {urlfile}")
         else:
-            avail = [
+            priority_avail = [
                 p
-                for p in pool
-                if str(p.resolve()) not in active and str(p.resolve()) not in finished and _remaining_for_path(p) != 0
+                for p in priority_pool
+                if str(p.resolve()) not in active
+                and str(p.resolve()) not in finished
+                and _remaining_for_path(p) != 0
+                and probe_urlfile_lock(p, url_file_lock_dir).status == "available"
             ]
-            if not avail:
-                ws.is_waiting_domain = False
-                ws.waiting_domain_since = 0.0
-                return False
-            urlfile = _select_best(avail)
-            if urlfile is None:
-                if not ws.is_waiting_domain:
-                    ws.is_waiting_domain = True
-                    ws.waiting_domain_since = time.time()
-                    mlog.info(f"[{ws.slot:02d}] ASSIGN DEFERRED – domain slots full (max={_max_per})")
-                return False
-            mlog.info(f"[{ws.slot:02d}] ASSIGN {urlfile}")
+            if priority_avail:
+                selected = _select_priority(priority_avail)
+                if selected is None:
+                    if not ws.is_waiting_domain:
+                        ws.is_waiting_domain = True
+                        ws.waiting_domain_since = time.time()
+                        mlog.info(f"[{ws.slot:02d}] ASSIGN DEFERRED (priority) – domain slots full")
+                    return False
+                urlfile = selected
+                priority_pool = [p for p in priority_pool if p != urlfile]
+                mlog.info(f"[{ws.slot:02d}] ASSIGN PRIORITY {urlfile}")
+            else:
+                avail = [
+                    p
+                    for p in pool
+                    if str(p.resolve()) not in active
+                    and str(p.resolve()) not in finished
+                    and _remaining_for_path(p) != 0
+                    and probe_urlfile_lock(p, url_file_lock_dir).status == "available"
+                ]
+                if not avail:
+                    ws.is_waiting_domain = False
+                    ws.waiting_domain_since = 0.0
+                    return False
+                urlfile = _select_best(avail)
+                if urlfile is None:
+                    if not ws.is_waiting_domain:
+                        ws.is_waiting_domain = True
+                        ws.waiting_domain_since = time.time()
+                        mlog.info(f"[{ws.slot:02d}] ASSIGN DEFERRED – domain slots full (max={_max_per})")
+                    return False
+                mlog.info(f"[{ws.slot:02d}] ASSIGN {urlfile}")
 
         ws.is_waiting_domain = False
         ws.waiting_domain_since = 0.0
@@ -2745,7 +2874,7 @@ def run_main(
         active.add(str(urlfile.resolve()))
         ws.urlfile = urlfile
         ws.url_count = len(_read_urls(urlfile))
-        if archive_dir and ws.url_count > 0:
+        if not exact_file_mode and archive_dir and ws.url_count > 0:
             prefix = "ae" if ("ae-stars" in str(urlfile.parent)) else "yt"
             arch = archive_dir / f"{prefix}-{urlfile.stem}.txt"
             if arch.exists():
@@ -2807,6 +2936,9 @@ def run_main(
             extra_canonical_roots=[
                 r / urlfile.stem for r in extra_download_roots
             ] if extra_download_roots else None,
+            wait_for_url_file_lock=exact_file_mode,
+            manager_pid=os.getpid(),
+            url_file_lock_dir=url_file_lock_dir,
         )
         # Create a fresh stop event so the old reader's captured reference
         # (set by _requeue) keeps firing while the new reader starts clean.
@@ -2886,6 +3018,9 @@ def run_main(
         _clear_worker_progress(ws)
         ws.attempt_phase = "idle"
         ws.is_searching = False
+        ws.is_waiting_urlfile_lock = False
+        ws.urlfile_lock_since = 0.0
+        ws.urlfile_lock_owner = None
         if finished:
             _schedule_url_scan("post-finish")
             if args.url_preempt:
@@ -2960,7 +3095,7 @@ def run_main(
 
     # Initial fill
     start_gap = 0.0
-    if args.time_limit and args.time_limit > 0 and args.threads > 1:
+    if not exact_file_mode and args.time_limit and args.time_limit > 0 and args.threads > 1:
         start_gap = min(10.0, max(1.0, args.time_limit / max(2, args.threads)))
 
     for idx, ws in enumerate(workers):
@@ -3284,6 +3419,11 @@ def run_main(
                                         args.proxy_dl_location,
                                         args.max_resolution,
                                         controlled_quit_sentinel,
+                                        canonical_dir_override=w.canonical_dir,
+                                        archive_source_file=w.original_urlfile,
+                                        wait_for_url_file_lock=exact_file_mode,
+                                        manager_pid=os.getpid(),
+                                        url_file_lock_dir=url_file_lock_dir,
                                     )
                                 w.reader = threading.Thread(target=_reader, args=(w,), daemon=True)
                                 w.reader.start()
@@ -3339,6 +3479,11 @@ def run_main(
                                         args.proxy_dl_location,
                                         args.max_resolution,
                                         controlled_quit_sentinel,
+                                        canonical_dir_override=w.canonical_dir,
+                                        archive_source_file=w.original_urlfile,
+                                        wait_for_url_file_lock=exact_file_mode,
+                                        manager_pid=os.getpid(),
+                                        url_file_lock_dir=url_file_lock_dir,
                                     )
                                     w.reader = threading.Thread(target=_reader, args=(w,), daemon=True)
                                     w.reader.start()
@@ -3347,11 +3492,17 @@ def run_main(
                 if not ws.proc:
                     continue
                 # time limit
-                if args.time_limit is not None and args.time_limit > 0:
+                if (
+                    args.time_limit is not None
+                    and args.time_limit > 0
+                    and not ws.is_waiting_urlfile_lock
+                ):
                     if (time.time() - ws.assign_t0) > args.time_limit:
                         _requeue(ws, finished=False, reason="time_limit")
+                        if exact_file_mode:
+                            ws.assignment_terminal = True
                         _refresh_url_scan("time_limit")
-                        if not paused and not controlled_quit:
+                        if not exact_file_mode and not paused and not controlled_quit:
                             _assign(ws)
                         continue
                 # exit
@@ -3360,8 +3511,10 @@ def run_main(
                     ws.rc = rc
                     finished = rc == 0 and not ws.controlled_stopped
                     _requeue(ws, finished=finished, reason=f"exit rc={rc}")
+                    if exact_file_mode:
+                        ws.assignment_terminal = True
                     # Assign a new one if available (only if not paused)
-                    if not paused and not controlled_quit:
+                    if not exact_file_mode and not paused and not controlled_quit:
                         _assign(ws)
 
             # Build frame lines and redraw whole screen
@@ -3438,10 +3591,27 @@ def run_main(
                         # Update workers
                         now = time.time()
                         for ws in workers:
-                            name = ws.urlfile.name if (ws.urlfile) else "idle"
+                            display_file = ws.original_urlfile or ws.urlfile or ws.requested_urlfile
+                            name = display_file.name if display_file else "idle"
                             url_idx = f"URL {ws.url_index or 0}/{ws.url_count or 0}"
                             elapsed = _hms(now - ws.assign_t0) if ws.urlfile else "00:00:00"
                             pct = f"{ws.percent:.2f}%" if isinstance(ws.percent, (int, float)) else "?%"
+                            if ws.is_waiting_urlfile_lock:
+                                owner_pid = (ws.urlfile_lock_owner or {}).get("pid")
+                                url_idx = "WAITING: URL FILE LOCK"
+                                elapsed = _hms(now - ws.urlfile_lock_since) if ws.urlfile_lock_since else "00:00:00"
+                                pct = ""
+                                sp = f"PID {owner_pid}" if owner_pid else "LOCKED"
+                                eta_txt = ""
+                                sizes = ""
+                                td_dash.update_stat(f"worker_{ws.slot}", "name", name)
+                                td_dash.update_stat(f"worker_{ws.slot}", "url", url_idx)
+                                td_dash.update_stat(f"worker_{ws.slot}", "elapsed", elapsed)
+                                td_dash.update_stat(f"worker_{ws.slot}", "pct", pct)
+                                td_dash.update_stat(f"worker_{ws.slot}", "speed", sp)
+                                td_dash.update_stat(f"worker_{ws.slot}", "eta", eta_txt)
+                                td_dash.update_stat(f"worker_{ws.slot}", "sizes", sizes)
+                                continue
                             if ws.is_paused:
                                 sp = "PAUSED"
                             else:
@@ -3565,10 +3735,17 @@ def run_main(
             else:
                 # Downloads panel
                 active_workers = sum(1 for w in workers if w.proc)
-                current_regular, current_priority = _gather_from_roots(roots, finished_log, args.priority_files)
-                total_available = len([p for p in current_regular if str(p.resolve()) not in active]) + len(
-                    [p for p in current_priority if str(p.resolve()) not in active]
-                )
+                if exact_file_mode:
+                    total_available = sum(
+                        1 for worker in workers if not worker.assignment_terminal and worker.proc is None
+                    )
+                else:
+                    current_regular, current_priority = _gather_from_roots(
+                        roots, finished_log, args.priority_files
+                    )
+                    total_available = len(
+                        [p for p in current_regular if str(p.resolve()) not in active]
+                    ) + len([p for p in current_priority if str(p.resolve()) not in active])
                 if controlled_quit:
                     controlled_label = td_utils.color_text("CONTROLLED QUIT", "red")
                     lines.append(f"{controlled_label} eta {_controlled_quit_eta_label(workers)}"[:cols])
@@ -3678,6 +3855,20 @@ def run_main(
                         return "[" + ("=" * filled) + ("." * (inner - filled)) + "]"
 
                 for ws in workers:
+                    if ws.is_waiting_urlfile_lock:
+                        wait_elapsed = _hms(now - ws.urlfile_lock_since) if ws.urlfile_lock_since else "?"
+                        sel_marker = ">" if ws.slot == selected_worker_slot else " "
+                        display_file = ws.requested_urlfile or ws.original_urlfile or ws.urlfile
+                        name = display_file.name if display_file else "unknown"
+                        owner_pid = (ws.urlfile_lock_owner or {}).get("pid")
+                        owner_text = f"  holder pid {owner_pid}" if owner_pid else ""
+                        wait_line = (
+                            f"{sel_marker}[{ws.slot:02d}] {name}  "
+                            + td_utils.color_text("WAITING: URL FILE LOCK", "yellow")
+                            + f"{owner_text}  {wait_elapsed}"
+                        )
+                        lines.append(wait_line[:cols])
+                        continue
                     # Workers blocked on the domain cap show a distinct waiting row
                     if ws.is_waiting_domain and not ws.proc:
                         wait_elapsed = _hms(now - ws.waiting_domain_since) if ws.waiting_domain_since else "?"
@@ -3702,6 +3893,8 @@ def run_main(
                         name = ws.original_urlfile.name
                     elif ws.urlfile:
                         name = ws.urlfile.name
+                    elif ws.requested_urlfile:
+                        name = ws.requested_urlfile.name
                     else:
                         name = "searching..."
                     # Show a → marker in the URL index when between individual URLs
@@ -4015,8 +4208,11 @@ def run_main(
             if _controlled_quit_complete(controlled_quit, workers):
                 break
 
+            if exact_file_mode and all(worker.assignment_terminal for worker in workers):
+                break
+
             # If all workers idle and both pools empty, stop
-            if all(w.proc is None for w in workers):
+            if not exact_file_mode and all(w.proc is None for w in workers):
                 current_regular, current_priority = _gather_from_roots(roots, finished_log, args.priority_files)
                 if not current_regular and not current_priority:
                     break
