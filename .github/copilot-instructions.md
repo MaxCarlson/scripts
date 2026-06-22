@@ -1,63 +1,11 @@
-# GitHub Copilot Instructions — scripts repository
+# GitHub Copilot Repository Instructions
 
-See [`MODULE_STANDARDS.md`](../MODULE_STANDARDS.md) at the repository root for
-the full coding guidelines.  The summary below covers the most common decision
-points.
+Read and follow the repository `AGENTS.md` first.
 
-## Versioning
+Also read:
 
-### Modules (`modules/`)
-`MAJOR.MINOR.PATCH` in `pyproject.toml` (and `__init__.py` if present):
-- **MAJOR** — `[project.scripts]` entry points changed (`.cmd` recreation required)
-- **MINOR** — backward-compatible feature addition, or other `pyproject.toml` changes (deps, metadata)
-- **PATCH** — bug fix, refactor, docs, or tests only; no new user-facing feature
+- `REPO_LLM_INSTRUCTIONS.md` for repo-specific instructions.
+- `docs/agent/README.md` for standards routing.
+- `docs/HANDOFF.md` and `docs/plans/HANDOFF.md` when present.
 
-`X.Y.Z` follows semantic-version intent: `Z` is PATCH and must not carry a
-feature addition.
-
-### pyscripts (`pyscripts/`)
-Embed `__version__` directly in the file, **after the module docstring**, before imports:
-```python
-"""My script — one-line description."""
-
-__version__ = "0.1.0"
-
-import argparse
-```
-- **MAJOR** — breaking: renamed/removed flag, incompatible output format
-- **MINOR** — new feature, new flag or subcommand, significant behavior addition
-- **PATCH** — bug fix, refactor, doc update, or internal improvement with no new feature
-
-Always bump `__version__` when modifying a pyscript.  Full rules in
-[`MODULE_STANDARDS.md §10`](../MODULE_STANDARDS.md).
-
-### Help registry
-After adding a new pyscript or module-with-CLI, register it in
-`modules/scripts_help/scripts_help/registry/registry.py`.
-
-## CLI flags
-
-**All flags must have both `--full-long-name` and `-X` short forms.**  No exceptions.
-
-## Subcommands
-
-Use argparse subcommands when a module has > 7 flags or multiple distinct
-operating modes.  See `ytaedl` for the canonical example.
-
-## Tests
-
-Name test files `module_name_test.py` (suffix `_test.py`, not prefix `test_`).
-Use `tmp_path` — never write to relative paths in tests.
-Keep module test temp roots under `modules/<module>/.pytest_tmp_root/`, not in
-the repository root.
-
-## Full guidelines
-
-→ [`MODULE_STANDARDS.md`](../MODULE_STANDARDS.md)
-
-## Plans
-
-Durable implementation plans belong under `plans/`. Retain older plans there
-instead of deleting them. For module plans, use
-`plans/modules/<module>/INDEX.md` plus `user/` and `ai/` folders with indexed
-filenames in the format documented in `MODULE_STANDARDS.md`.
+Preserve unrelated changes. Do not commit unless explicitly approved. For substantial work, use the standard `project_root/docs/` planning and handoff system.

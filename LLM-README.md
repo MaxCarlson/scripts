@@ -1,53 +1,27 @@
 # LLM Onboarding Guide
 
-A concise playbook for agents working in this repo. Read once, then follow for every task.
+This file is kept as a compatibility pointer for agents or humans that already look for `LLM-README.md`.
 
-## Core Principles
-- Work from the plans: read module-specific plan/todo/guide markdowns before coding; update them after changes.
-- Small, verifiable steps: implement in bite-sized increments, keep UI logic reusable (prefer termdash widgets over ad-hoc printing).
-- Tests are mandatory for code changes: add/adjust tests, run affected suites, fix failures before handing off.
-- Preserve user state: never stage/commit unless explicitly asked; never touch files outside this repo.
+Canonical instructions now live in:
 
-## Task Log Template
-Maintain a running markdown log (per module or feature) with these sections:
-- **Context**: short description of the feature/bug and related plan doc links.
-- **Checklist**: checkbox items (`- [ ]` / `- [x]`) for subtasks, kept ordered by priority.
-- **Decisions**: bullet list of key choices and rationale.
-- **Notes/Risks**: edge cases, blockers, follow-ups.
-- **Testing**: commands run and outcomes.
+- `AGENTS.md` — repo-level agent entrypoint.
+- `REPO_LLM_INSTRUCTIONS.md` — scripts-repo-specific instructions.
+- `MODULE_STANDARDS.md` — compatibility entrypoint for split standards.
+- `docs/agent/` — reusable Python standards, scripts-specific standards, and legacy planning migration.
+- `project_root/docs/` — live project handoff and planning state.
 
-Example block:
-```
-## Feature: Lister size caching
-- [x] Show item counts on collapsed dirs
-- [ ] Cache folder sizes across toggles
-- [ ] Expose size-calc API via termdash widget
-Decisions: reuse calculate_folder_size; avoid global threads
-Testing: pytest modules/file_utils/tests -q (pass)
-```
+## Core Working Loop
 
-## Working Loop
-1) **Understand**: scan relevant PLAN/todo docs; inspect code/tests before editing.  
-2) **Plan**: define 2–5 concrete subtasks; execute one at a time.  
-3) **Implement**: keep UI bits portable—if a widget is useful elsewhere, build it inside `modules/termdash` and consume it from callers.  
-4) **Test**: run targeted pytest suites; add tests for new behaviors; fix all failures.  
-5) **Document**: update the module’s plan/backlog with what changed and what’s next.  
-6) **Review Handoff**: summarize changes, list tests, and remind the user to stage/commit if desired.
+1. Read the relevant instruction files.
+2. Run `git status`.
+3. Identify `project_root`.
+4. For substantial work, read or create the standard `docs/` handoff/planning files.
+5. Implement in small, verifiable stages.
+6. Run targeted tests and broader checks as warranted.
+7. Update handoff/status/checklist docs.
+8. Stage only intended files.
+9. Do not commit without explicit approval.
 
-## Testing Expectations
-- Add unit tests for every new feature/branch edge; prefer isolated tests over integration when possible.
-- Run the narrowest relevant suites (e.g., `pytest modules/file_utils/tests -q`), then broader if warranted.
-- If tests can’t be run, say why and how to run them.
+## Legacy Note
 
-## Versioning & CLI Flags
-- Follow SemVer in `pyproject.toml`/`setup.py` whenever code changes.  
-- All new CLI args must be `-x/--long` with sensible defaults; keep compatibility.
-
-## UI/UX Reuse (termdash-first)
-- Build reusable widgets/components in `modules/termdash`; avoid one-off UI code in downstream modules.
-- Keep color/status conventions consistent across dashboards (logs, progress, hotkeys).
-
-## Communication
-- Be concise; include file paths when describing changes.  
-- After delivering, prompt the user to stage/commit if they want.  
-- If unexpected repo state appears, stop and ask before altering anything.
+The old task-log and `plans/modules/<module>/...` planning style is historical for new work. Use `project_root/docs/plans/` for new substantial work.

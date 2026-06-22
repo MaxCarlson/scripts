@@ -25,6 +25,7 @@ Statuses: `planned`, `in_progress`, `implemented`, `partial`, `superseded`,
 | 0008 | ai | partial | `ai/0008_20260509-1653_ai_codex-plan-session-note__partial.md` | `5_9_2025_16_53_plan.md` | Later user note about possible ffmpeg metadata/duration use; retained as future investigation. |
 | 0009 | ai | planned | `ai/0009_20260509-1745_ai_codex-run-clean-start-flags__planned.md` | user request 2026-05-09 | Future explicit log-dir reset flag near `-M`; must not touch archive or `_partial/` resume state. |
 | 0010 | ai | implemented | `ai/0010_20260509-1756_ai_codex-log-archive-ui-test-execution__implemented.md` | copied runtime artifacts 2026-05-09 | Executed the permanent log/archive/UI manual testing template against this run. |
+| 0011 | ai | implemented | `ai/0011_20260622-1156_ai_codex-explicit-urlfile-workers-and-locking__implemented.md` | user request 2026-06-22 | Exact `-p/--priority-files` workload mode, one worker per file, and worker-owned cross-process URL-file locks. |
 
 ## Permanent Templates
 

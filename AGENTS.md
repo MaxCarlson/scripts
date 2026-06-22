@@ -1,88 +1,71 @@
-# Scripts Repository
+# Repository Agent Instructions
 
-Personal automation scripts and utilities for cross-platform development
-(Windows 11, Termux, WSL2).
+## Scope
 
-## Required Reference
+This file is the repository-level `AGENTS.md`. It is intentionally short and reusable across repositories.
 
-All AI coding assistants must read and follow [`MODULE_STANDARDS.md`](MODULE_STANDARDS.md)
-before changing modules in this repository. It is the single source of truth for:
+It extends global instructions with repo-local routing. Put repo-specific details in `REPO_LLM_INSTRUCTIONS.md` and standards documents instead of making this file long.
 
-- module versioning semantics and setup reinstall behavior
-- CLI flag and subcommand conventions
-- pytest naming and coverage expectations
-- module-local pytest/temp directory expectations
-- Python style and cross-platform requirements
-- ytaedl partial/temp directory conventions
-- durable plan taxonomy under `plans/modules/<module>/INDEX.md`, `user/`, and `ai/`
+## Required Reading
 
-If this file and `MODULE_STANDARDS.md` appear to conflict, `MODULE_STANDARDS.md`
-wins.
+Before changing this repository:
 
-## Versioning — read before editing any file
+1. Read this file.
+2. Read `REPO_LLM_INSTRUCTIONS.md` if present.
+3. Read `docs/agent/README.md` if present.
+4. Read `docs/agent/PYTHON_REPO_STANDARDS.md` for Python work when present.
+5. Read repo-specific standards such as `MODULE_STANDARDS.md`, `CONTRIBUTING.md`, or equivalent files when present.
+6. Identify `project_root`.
+7. If `project_root/docs/` exists, read `docs/README.md`, `docs/HANDOFF.md`, and `docs/plans/HANDOFF.md`.
+8. Run `git status` before editing.
 
-**Modules (`modules/`)** use `pyproject.toml` + optional `__init__.py`:
-- MAJOR bump → `[project.scripts]` entry points changed (requires full reinstall + `.cmd` regeneration)
-- MINOR bump → backward-compatible feature addition, or other `pyproject.toml` changes (deps, metadata)
-- PATCH bump → bug fix, refactor, docs, or tests only; no new user-facing feature
+## Repo-Specific Instructions
 
-`X.Y.Z` follows semantic-version intent: `Z` is PATCH, not "minor", and must
-not be used for feature additions.
-
-**pyscripts (`pyscripts/`)** embed `__version__` directly in the file, after the docstring:
-```python
-"""My script."""
-
-__version__ = "0.1.0"
-
-import sys
-```
-- MAJOR → breaking change (renamed/removed flag, incompatible output)
-- MINOR → new feature, new flag, new subcommand
-- PATCH → bug fix, refactor, or documentation/internal improvement with no new feature
-
-**Always bump** the relevant version when modifying any script or module.  Full
-rules in [`MODULE_STANDARDS.md §1`](MODULE_STANDARDS.md) (modules) and
-[`§10`](MODULE_STANDARDS.md) (pyscripts).
-
-**Help registry:** after adding a new pyscript or module-with-CLI, add an entry
-to `modules/scripts_help/scripts_help/registry/registry.py`.
-
-## Quick Commands
-
-```bash
-python setup.py -v
-python setup.py -f -v
-python setup.py -p
-pytest tests/ -v
-pytest tests/<module>_test.py -v
-black --line-length 120 <file>
-ruff check <file>
-```
-
-## Token Conservation — Browser LLM Offloading
-
-The user has hard token limits on Claude Code, Codex, and Gemini CLI. Hitting the limit triggers a 5-hour lockout. Switching between Claude → Codex → Gemini CLI as limits are hit is the fallback strategy.
-
-**Always watch for token-intensive tasks that don't require local file access** and flag them for offloading to a browser-based LLM (Claude.ai, ChatGPT, Gemini web).
-
-Good offload candidates: writing implementation plans, drafting design docs, writing summaries/reports, reviewing specs for gaps, brainstorming approaches.
-
-Must stay local: running tests, editing files, executing commands, anything needing live repo access.
-
-**When offloading:**
-1. Write a self-contained Markdown handoff document with all context the browser LLM needs (specs, existing plans, relevant code excerpts, clear instructions for what to produce)
-2. Tell the user which files/folders/repos to attach when opening the browser LLM session
-3. Keep the handoff doc concise — the browser LLM doesn't need the full conversation history
-
-## Repository Shape
+Repo-specific instructions belong in:
 
 ```text
-scripts/
-├── modules/
-├── pscripts/
-├── bin/
-├── setup.py
-├── MODULE_STANDARDS.md
-└── AGENTS.md
+REPO_LLM_INSTRUCTIONS.md
 ```
+
+That file should contain durable facts about this repository: setup commands, validation commands, package layout, project-specific constraints, important modules, and any local conventions that should not be global.
+
+Keep this `AGENTS.md` generic enough to copy into every repo.
+
+## Project Root Selection
+
+If this repository is the whole project, treat the repository root as `project_root`.
+
+If the task targets a nested module/application with its own package boundary, `AGENTS.md`, or `docs/HANDOFF.md`, treat that nested directory as `project_root`.
+
+Nested `AGENTS.md` files are optional. A normal single-project repo needs only this root file.
+
+## Planning System
+
+For small localized edits, do not create planning folders.
+
+For substantial work, use:
+
+```text
+project_root/docs/
+├── README.md
+├── HANDOFF.md
+└── plans/
+    ├── HANDOFF.md
+    └── YYYYMMDD-HHMM_descriptive-plan-name/
+        ├── 00_implementation-plan.md
+        ├── 01_stage-name__planned.md
+        ├── HANDOFF.md
+        ├── STATUS.md
+        └── checklist.md
+```
+
+Use `stage` as the canonical term. Do not use older repo-specific planning taxonomies for new work unless `REPO_LLM_INSTRUCTIONS.md` explicitly says they remain canonical.
+
+## Verification and Commits
+
+- Preserve unrelated user changes.
+- Run targeted tests for code changes.
+- Run broader tests when the change affects shared behavior.
+- Record exact commands and results in the handoff/status docs for substantial work.
+- Stage only intended files.
+- Do not commit unless the user explicitly approves.
