@@ -51,6 +51,8 @@ class RunRecord:
     duplicate_of: str | None
     rows: int | None
     columns: int | None
+    lifetime_view_count: int = 0
+    lifetime_interact_count: int = 0
 
     @classmethod
     def from_row(cls, row: Any) -> RunRecord:
@@ -80,6 +82,8 @@ class RunRecord:
             duplicate_of=row["duplicate_of"],
             rows=row["rows"],
             columns=row["columns"],
+            lifetime_view_count=row["lifetime_view_count"],
+            lifetime_interact_count=row["lifetime_interact_count"],
         )
 
     @property
@@ -113,3 +117,21 @@ class RunRecord:
         """Return the user-provided name or program name."""
 
         return self.name or self.program
+
+
+@dataclass(frozen=True)
+class AttachmentSummary:
+    """Current and lifetime attachment state for one managed run."""
+
+    current_viewers: int
+    current_interactors: int
+    lifetime_viewers: int
+    lifetime_interactors: int
+    lock_held: bool
+    lock_queue_count: int
+
+    @property
+    def lifetime_connections(self) -> int:
+        """Return total view and interact attachments over the run lifetime."""
+
+        return self.lifetime_viewers + self.lifetime_interactors

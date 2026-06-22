@@ -129,3 +129,52 @@ def test_store_updates_runtime_status(tmp_path: Path) -> None:
     assert finished.status == "finished"
     assert finished.exit_code == 0
     assert finished.runtime_seconds >= 0
+
+
+def test_store_tracks_current_and_lifetime_attachments(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    create_test_run(store, "20260611-010101-abcdef", ["python", "-V"])
+
+    store.register_attachment(
+        run_id="20260611-010101-abcdef",
+        session_id="view-1",
+        mode="view",
+    )
+    store.register_attachment(
+        run_id="20260611-010101-abcdef",
+        session_id="interact-1",
+        mode="interact",
+    )
+    store.set_attachment_lock_state(
+        run_id="20260611-010101-abcdef",
+        holder_id="interact-1",
+        queued_ids=[],
+    )
+
+    attached = store.attachment_summary("20260611-010101-abcdef")
+    store.disconnect_attachment("view-1")
+    detached = store.attachment_summary("20260611-010101-abcdef")
+
+    assert attached.current_viewers == 1
+    assert attached.current_interactors == 1
+    assert attached.lifetime_connections == 2
+    assert attached.lock_held is True
+    assert detached.current_viewers == 0
+    assert detached.lifetime_viewers == 1
+
+
+def test_store_does_not_double_count_repeated_session_registration(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    create_test_run(store, "20260611-010101-abcdef", ["python", "-V"])
+
+    for _ in range(2):
+        store.register_attachment(
+            run_id="20260611-010101-abcdef",
+            session_id="view-1",
+            mode="view",
+        )
+
+    summary = store.attachment_summary("20260611-010101-abcdef")
+
+    assert summary.current_viewers == 1
+    assert summary.lifetime_viewers == 1

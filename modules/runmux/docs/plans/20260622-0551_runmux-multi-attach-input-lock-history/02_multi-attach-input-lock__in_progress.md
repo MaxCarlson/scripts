@@ -21,3 +21,14 @@ Status: in progress
 - Holder disconnect and lease expiry.
 - Rejected input from non-holders.
 - Current/lifetime list counts.
+
+## Automated Verification
+
+- 72 tests passed.
+- Ruff, Black check, compileall, and coverage passed.
+- Real supervisor IPC smoke confirmed two interactors, one viewer, a held lock,
+  one queued requester, and matching list/JSON counts.
+
+Status remains in progress until user manual testing is approved.
+
+Last edited: 2026-06-22 06:09:10 -07:00

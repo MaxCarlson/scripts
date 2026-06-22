@@ -31,12 +31,13 @@ from runmux.client import (
     forward_input_loop,
     interact_run,
     make_command_handler,
+    record_to_json,
     refresh_active_statuses,
     send_resize,
     tail_file,
     view_input_loop,
 )
-from runmux.models import RunRecord
+from runmux.models import AttachmentSummary, RunRecord
 from runmux.runner import (
     build_env_overrides,
     command_line_for_display,
@@ -477,6 +478,8 @@ def test_follow_view_run_tails_realtime_from_end(tmp_path: Path) -> None:
 
     with (
         patch("runmux.client.send_resize") as send_resize_mock,
+        patch("runmux.client.request_json", return_value={"ok": True}),
+        patch("runmux.client.start_attachment_heartbeat", return_value=Mock(join=lambda: None)),
         patch("runmux.client.threading.Thread", ImmediateThread),
         patch("runmux.client.view_input_loop", return_value=AttachCommand("detach")) as input_loop,
         patch("runmux.client.set_terminal_title"),
@@ -489,6 +492,54 @@ def test_follow_view_run_tails_realtime_from_end(tmp_path: Path) -> None:
     assert tail_kwargs["follow"] is True
     assert callable(tail_kwargs["output_paused"])
     input_loop.assert_called_once()
+
+
+def test_interact_prefix_requests_input_lock(tmp_path: Path) -> None:
+    record = RunRecord(
+        id="20260611-010101-abcdef",
+        numeric_id=3,
+        name=None,
+        status="running",
+        created_at="2026-06-11T00:00:00+00:00",
+        updated_at="2026-06-11T00:00:00+00:00",
+        started_at="2026-06-11T00:00:00+00:00",
+        ended_at=None,
+        exit_code=None,
+        pid=123,
+        supervisor_pid=456,
+        program="python",
+        argv_json="[]",
+        cwd=str(tmp_path),
+        env_overrides_json="{}",
+        port=999,
+        auth_token="token",
+        log_path=str(tmp_path / "output.ansi"),
+        command_line="python -c print('hello')",
+        restart_of=None,
+        duplicate_of=None,
+        rows=24,
+        columns=80,
+    )
+    store = Mock()
+    store.get_run.return_value = record
+
+    with patch(
+        "runmux.client.request_json",
+        return_value={"ok": True, "session_holds_lock": False, "session_queue_position": 2},
+    ) as request:
+        command = make_command_handler(
+            record,
+            store,
+            mode="interact",
+            session_id="session-2",
+        )(b"l")
+
+    assert command is None
+    request.assert_called_once_with(
+        record,
+        op="lock",
+        payload={"session_id": "session-2"},
+    )
 
 
 def test_view_input_loop_ignores_non_prefix_keys_and_handles_prefix(monkeypatch) -> None:
@@ -593,6 +644,54 @@ def test_list_rows_can_colorize_status_and_selection() -> None:
     assert "\x1b[1;37mID" in rendered
     assert "\x1b[32mrunning  " in rendered
     assert "\x1b[7m" in rendered
+
+
+def test_list_rows_include_attachment_and_lock_counts() -> None:
+    record = RunRecord(
+        id="20260611-010101-abcdef",
+        numeric_id=3,
+        name=None,
+        status="running",
+        created_at="2026-06-11T00:00:00+00:00",
+        updated_at="2026-06-11T00:00:00+00:00",
+        started_at="2026-06-11T00:00:00+00:00",
+        ended_at=None,
+        exit_code=None,
+        pid=123,
+        supervisor_pid=456,
+        program="python",
+        argv_json="[]",
+        cwd=str(Path.cwd()),
+        env_overrides_json="{}",
+        port=999,
+        auth_token="token",
+        log_path=str(Path.cwd() / "output.ansi"),
+        command_line="python busy.py",
+        restart_of=None,
+        duplicate_of=None,
+        rows=24,
+        columns=80,
+    )
+    summary = AttachmentSummary(
+        current_viewers=1,
+        current_interactors=2,
+        lifetime_viewers=3,
+        lifetime_interactors=4,
+        lock_held=True,
+        lock_queue_count=1,
+    )
+
+    rows = build_list_rows(
+        [record],
+        width=120,
+        attachment_summaries={record.id: summary},
+    )
+
+    assert any("I:2 V:1 T:7 L:1 Q:1" in row for row in rows)
+    payload = record_to_json(record, attachment=summary)
+    assert payload["current_interactors"] == 2
+    assert payload["lifetime_connections"] == 7
+    assert payload["input_lock_queue_count"] == 1
 
 
 def test_run_defaults_rows_columns_to_terminal_size(tmp_path: Path) -> None:

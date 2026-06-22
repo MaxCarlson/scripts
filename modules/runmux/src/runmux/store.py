@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterable
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from runmux.constants import STATUS_FINISHED, TERMINAL_STATUSES
-from runmux.models import RunRecord, utc_now_iso
+from runmux.constants import DEFAULT_LEASE_TIMEOUT_SECONDS, STATUS_FINISHED, TERMINAL_STATUSES
+from runmux.models import AttachmentSummary, RunRecord, utc_now_iso
 from runmux.platform_paths import ensure_state_tree, get_state_dir
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class RegistryError(RuntimeError):
@@ -86,7 +87,22 @@ class RunStore:
                     restart_of TEXT,
                     duplicate_of TEXT,
                     rows INTEGER,
-                    columns INTEGER
+                    columns INTEGER,
+                    lifetime_view_count INTEGER NOT NULL DEFAULT 0,
+                    lifetime_interact_count INTEGER NOT NULL DEFAULT 0
+                )
+                """)
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS attachment_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    mode TEXT NOT NULL CHECK(mode IN ('view', 'interact')),
+                    connected_at TEXT NOT NULL,
+                    last_heartbeat TEXT NOT NULL,
+                    disconnected_at TEXT,
+                    holds_lock INTEGER NOT NULL DEFAULT 0,
+                    lock_requested_at TEXT,
+                    FOREIGN KEY(run_id) REFERENCES runs(id) ON DELETE CASCADE
                 )
                 """)
             self.migrate_db(connection)
@@ -111,7 +127,12 @@ class RunStore:
                     "UPDATE runs SET numeric_id = ? WHERE id = ?",
                     (numeric_id, str(row["id"])),
                 )
+        if "lifetime_view_count" not in columns:
+            connection.execute("ALTER TABLE runs ADD COLUMN lifetime_view_count INTEGER NOT NULL DEFAULT 0")
+        if "lifetime_interact_count" not in columns:
+            connection.execute("ALTER TABLE runs ADD COLUMN lifetime_interact_count INTEGER NOT NULL DEFAULT 0")
         connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_numeric_id ON runs(numeric_id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_attachment_sessions_run_id ON attachment_sessions(run_id)")
 
     def create_run(
         self,
@@ -167,6 +188,144 @@ class RunStore:
                 ),
             )
         return self.get_run(run_id)
+
+    def register_attachment(self, *, run_id: str, session_id: str, mode: str) -> None:
+        """Register a new view or interact attachment and increment lifetime counts."""
+
+        if mode not in {"view", "interact"}:
+            raise RegistryError(f"Unsupported attachment mode: {mode}")
+        now = utc_now_iso()
+        counter = "lifetime_view_count" if mode == "view" else "lifetime_interact_count"
+        with self.connect() as connection:
+            existing = connection.execute(
+                "SELECT session_id FROM attachment_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if existing is not None:
+                connection.execute(
+                    """
+                    UPDATE attachment_sessions
+                    SET last_heartbeat = ?, disconnected_at = NULL
+                    WHERE session_id = ?
+                    """,
+                    (now, session_id),
+                )
+                return
+            connection.execute(
+                """
+                INSERT INTO attachment_sessions(
+                    session_id, run_id, mode, connected_at, last_heartbeat
+                )
+                VALUES(?, ?, ?, ?, ?)
+                """,
+                (session_id, run_id, mode, now, now),
+            )
+            connection.execute(
+                f"UPDATE runs SET {counter} = {counter} + 1, updated_at = ? WHERE id = ?",
+                (now, run_id),
+            )
+
+    def heartbeat_attachment(self, session_id: str) -> None:
+        """Refresh an attachment lease."""
+
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE attachment_sessions
+                SET last_heartbeat = ?
+                WHERE session_id = ? AND disconnected_at IS NULL
+                """,
+                (utc_now_iso(), session_id),
+            )
+
+    def disconnect_attachment(self, session_id: str) -> None:
+        """Mark an attachment disconnected."""
+
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE attachment_sessions
+                SET disconnected_at = ?, holds_lock = 0, lock_requested_at = NULL
+                WHERE session_id = ? AND disconnected_at IS NULL
+                """,
+                (utc_now_iso(), session_id),
+            )
+
+    def set_attachment_lock_state(
+        self,
+        *,
+        run_id: str,
+        holder_id: str | None,
+        queued_ids: list[str],
+    ) -> None:
+        """Persist lock ownership and queue membership for list/status readers."""
+
+        now = utc_now_iso()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE attachment_sessions
+                SET holds_lock = 0, lock_requested_at = NULL
+                WHERE run_id = ? AND disconnected_at IS NULL
+                """,
+                (run_id,),
+            )
+            if holder_id is not None:
+                connection.execute(
+                    "UPDATE attachment_sessions SET holds_lock = 1 WHERE session_id = ?",
+                    (holder_id,),
+                )
+            for session_id in queued_ids:
+                connection.execute(
+                    "UPDATE attachment_sessions SET lock_requested_at = ? WHERE session_id = ?",
+                    (now, session_id),
+                )
+
+    def attachment_summary(
+        self,
+        run_id: str,
+        *,
+        lease_timeout_seconds: float = DEFAULT_LEASE_TIMEOUT_SECONDS,
+    ) -> AttachmentSummary:
+        """Return current lease-filtered and lifetime attachment counts."""
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max(0.0, lease_timeout_seconds))).isoformat(
+            timespec="seconds"
+        )
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN mode = 'view' AND disconnected_at IS NULL
+                             AND last_heartbeat >= ? THEN 1 ELSE 0 END) AS current_viewers,
+                    SUM(CASE WHEN mode = 'interact' AND disconnected_at IS NULL
+                             AND last_heartbeat >= ? THEN 1 ELSE 0 END) AS current_interactors,
+                    SUM(CASE WHEN holds_lock = 1 AND disconnected_at IS NULL
+                             AND last_heartbeat >= ? THEN 1 ELSE 0 END) AS lock_holders,
+                    SUM(CASE WHEN lock_requested_at IS NOT NULL AND disconnected_at IS NULL
+                             AND last_heartbeat >= ? THEN 1 ELSE 0 END) AS lock_queue
+                FROM attachment_sessions
+                WHERE run_id = ?
+                """,
+                (cutoff, cutoff, cutoff, cutoff, run_id),
+            ).fetchone()
+            run = connection.execute(
+                """
+                SELECT lifetime_view_count, lifetime_interact_count
+                FROM runs WHERE id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+        if run is None:
+            raise RunNotFoundError(f"No run found with ID '{run_id}'.")
+        return AttachmentSummary(
+            current_viewers=int(row["current_viewers"] or 0),
+            current_interactors=int(row["current_interactors"] or 0),
+            lifetime_viewers=int(run["lifetime_view_count"] or 0),
+            lifetime_interactors=int(run["lifetime_interact_count"] or 0),
+            lock_held=bool(row["lock_holders"]),
+            lock_queue_count=int(row["lock_queue"] or 0),
+        )
 
     def next_numeric_id(self, connection: sqlite3.Connection) -> int:
         """Return the lowest available user-facing numeric run ID."""

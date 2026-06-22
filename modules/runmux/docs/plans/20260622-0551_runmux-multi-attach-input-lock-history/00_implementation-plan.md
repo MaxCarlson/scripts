@@ -1,6 +1,9 @@
-# Runmux Multi-Attach, Input Lock, Status UI, and History
+# Runmux Multi-Attach, Input Lock, Status UI, and History Implementation Plan
 
-This is the parent implementation roadmap for four ordered runmux cycles.
+This is the parent implementation plan for one related set of runmux features,
+implemented through four ordered cycles. It is not the final end-state roadmap
+for the entire runmux program; other independent feature sets may have their own
+dated implementation plans.
 
 ## Goals
 
@@ -66,5 +69,10 @@ For every numbered cycle:
 4. Add focused tests and run old and new tests together.
 5. Run Ruff, Black check, compileall, and coverage.
 6. Review the diff and update plan status.
-7. Stage and commit the verified cycle.
-8. Refine and begin the next cycle plan.
+7. Stage the verified cycle without committing.
+8. Stop for user manual testing and explicit approval.
+9. Fix and reverify any manually discovered issue.
+10. Commit only after the user's all-clear.
+11. Refine and begin the next cycle plan.
+
+Last edited: 2026-06-22 06:44:27 -07:00

@@ -75,7 +75,12 @@ def request_json(
     return response
 
 
-def open_input_socket(record: RunRecord, *, timeout: float = DEFAULT_SOCKET_TIMEOUT_SECONDS) -> socket.socket:
+def open_input_socket(
+    record: RunRecord,
+    *,
+    session_id: str,
+    timeout: float = DEFAULT_SOCKET_TIMEOUT_SECONDS,
+) -> socket.socket:
     """Open an authenticated raw input socket to a running supervisor."""
 
     if record.port is None:
@@ -83,7 +88,15 @@ def open_input_socket(record: RunRecord, *, timeout: float = DEFAULT_SOCKET_TIME
 
     try:
         sock = socket.create_connection(("127.0.0.1", record.port), timeout=timeout)
-        sock.sendall(encode_request({"token": record.auth_token, "op": "input"}))
+        sock.sendall(
+            encode_request(
+                {
+                    "token": record.auth_token,
+                    "op": "input",
+                    "session_id": session_id,
+                }
+            )
+        )
         response = read_json_line(sock)
     except OSError as error:
         raise IpcError(f"Could not open input channel for run '{record.id}': {error}") from error

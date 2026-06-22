@@ -14,13 +14,23 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from collections.abc import Sequence
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 from typing import Any
 
-from runmux.constants import STATUS_FAILED, STATUS_FINISHED, STATUS_KILLED, STATUS_PAUSED
+from runmux.constants import (
+    DEFAULT_LEASE_TIMEOUT_SECONDS,
+    DEFAULT_LOCK_IDLE_TRANSFER_SECONDS,
+    DEFAULT_LOCK_MINIMUM_TENURE_SECONDS,
+    STATUS_FAILED,
+    STATUS_FINISHED,
+    STATUS_KILLED,
+    STATUS_PAUSED,
+)
 from runmux.history import record_run_finished
 from runmux.ipc import encode_request
 from runmux.models import RunRecord
@@ -30,6 +40,93 @@ if sys.platform != "win32":
     import fcntl
     import pty
     import termios
+
+
+@dataclass
+class AttachmentSession:
+    """Supervisor-local state for one attached client."""
+
+    session_id: str
+    mode: str
+    connected_at: float
+    last_heartbeat: float
+
+
+class InputLockCoordinator:
+    """Coordinate FIFO ownership of managed-program input."""
+
+    def __init__(
+        self,
+        *,
+        minimum_tenure_seconds: float = DEFAULT_LOCK_MINIMUM_TENURE_SECONDS,
+        idle_transfer_seconds: float = DEFAULT_LOCK_IDLE_TRANSFER_SECONDS,
+    ) -> None:
+        self.minimum_tenure_seconds = minimum_tenure_seconds
+        self.idle_transfer_seconds = idle_transfer_seconds
+        self.holder_id: str | None = None
+        self.holder_since = 0.0
+        self.last_input_at = 0.0
+        self.queue: deque[str] = deque()
+
+    def add_interactor(self, session_id: str, *, now: float) -> None:
+        """Give the first interactor initial ownership."""
+
+        if self.holder_id is None:
+            self.holder_id = session_id
+            self.holder_since = now
+            self.last_input_at = now
+
+    def request(self, session_id: str, *, now: float) -> None:
+        """Queue an ownership request once."""
+
+        if session_id == self.holder_id or session_id in self.queue:
+            return
+        self.queue.append(session_id)
+        self.maybe_transfer(now=now)
+
+    def remove(self, session_id: str, *, now: float) -> None:
+        """Remove a disconnected session and hand off if it held ownership."""
+
+        self.queue = deque(item for item in self.queue if item != session_id)
+        if self.holder_id == session_id:
+            self.holder_id = None
+            self._assign_next(now=now)
+
+    def note_input_complete(self, session_id: str, *, now: float) -> None:
+        """Record completion of an accepted holder input write."""
+
+        if session_id == self.holder_id:
+            self.last_input_at = now
+
+    def maybe_transfer(self, *, now: float) -> bool:
+        """Transfer ownership when tenure and input-idle requirements are met."""
+
+        if self.holder_id is None:
+            return self._assign_next(now=now)
+        if not self.queue:
+            return False
+        tenure_elapsed = now - self.holder_since >= self.minimum_tenure_seconds
+        idle_elapsed = now - self.last_input_at >= self.idle_transfer_seconds
+        if not tenure_elapsed or not idle_elapsed:
+            return False
+        self.holder_id = None
+        return self._assign_next(now=now)
+
+    def queue_position(self, session_id: str) -> int | None:
+        """Return a one-based FIFO queue position."""
+
+        try:
+            return list(self.queue).index(session_id) + 1
+        except ValueError:
+            return None
+
+    def _assign_next(self, *, now: float) -> bool:
+        if not self.queue:
+            return False
+        self.holder_id = self.queue.popleft()
+        self.holder_since = now
+        self.last_input_at = now
+        return True
 
 
 class SupervisorState:
@@ -44,8 +141,12 @@ class SupervisorState:
         self.log_file = Path(record.log_path)
         self.stop_requested = threading.Event()
         self.io_lock = threading.Lock()
-        self.input_session_lock = threading.Lock()
         self.status_lock = threading.Lock()
+        self.sessions: dict[str, AttachmentSession] = {}
+        self.session_lock = threading.RLock()
+        self.input_lock = InputLockCoordinator()
+        self.attachment_event_sequence = 0
+        self.latest_attachment_event: dict[str, Any] | None = None
 
     def refresh_record(self) -> RunRecord:
         """Reload the record from the store."""
@@ -82,6 +183,142 @@ class SupervisorState:
                     os.write(self.master_fd, data)
                 except OSError:
                     return
+
+    def register_attachment(self, session_id: str, mode: str) -> dict[str, Any]:
+        """Register an attached client and return its current session state."""
+
+        if not session_id:
+            raise RuntimeError("Attachment session ID is required.")
+        if mode not in {"view", "interact"}:
+            raise RuntimeError(f"Unsupported attachment mode: {mode}")
+        now = time.monotonic()
+        with self.session_lock:
+            if session_id not in self.sessions:
+                self.sessions[session_id] = AttachmentSession(
+                    session_id=session_id,
+                    mode=mode,
+                    connected_at=now,
+                    last_heartbeat=now,
+                )
+                self.store.register_attachment(
+                    run_id=self.record.id,
+                    session_id=session_id,
+                    mode=mode,
+                )
+                if mode == "interact":
+                    self.input_lock.add_interactor(session_id, now=now)
+                self.attachment_event_sequence += 1
+                self.latest_attachment_event = {
+                    "sequence": self.attachment_event_sequence,
+                    "session_id": session_id,
+                    "mode": mode,
+                    "event": "connected",
+                }
+                self._persist_lock_state()
+            else:
+                self.sessions[session_id].last_heartbeat = now
+                self.store.heartbeat_attachment(session_id)
+            return self.session_status(session_id, now=now)
+
+    def heartbeat_attachment(self, session_id: str) -> dict[str, Any]:
+        """Refresh a client lease and advance pending lock transfers."""
+
+        now = time.monotonic()
+        with self.session_lock:
+            self.expire_stale_sessions(now=now)
+            session = self.sessions.get(session_id)
+            if session is None:
+                raise RuntimeError("Attachment session is no longer active.")
+            session.last_heartbeat = now
+            self.store.heartbeat_attachment(session_id)
+            if self.input_lock.maybe_transfer(now=now):
+                self._persist_lock_state()
+            return self.session_status(session_id, now=now)
+
+    def request_input_lock(self, session_id: str) -> dict[str, Any]:
+        """Queue an interact client for program-input ownership."""
+
+        now = time.monotonic()
+        with self.session_lock:
+            session = self.sessions.get(session_id)
+            if session is None or session.mode != "interact":
+                raise RuntimeError("Only an active interact session can request the input lock.")
+            self.input_lock.request(session_id, now=now)
+            self._persist_lock_state()
+            return self.session_status(session_id, now=now)
+
+    def disconnect_attachment(self, session_id: str) -> None:
+        """Remove an attached client and update lock ownership."""
+
+        now = time.monotonic()
+        with self.session_lock:
+            session = self.sessions.pop(session_id, None)
+            if session is None:
+                return
+            self.input_lock.remove(session_id, now=now)
+            self.store.disconnect_attachment(session_id)
+            self.attachment_event_sequence += 1
+            self.latest_attachment_event = {
+                "sequence": self.attachment_event_sequence,
+                "session_id": session_id,
+                "mode": session.mode,
+                "event": "disconnected",
+            }
+            self._persist_lock_state()
+
+    def write_session_input(self, session_id: str, data: bytes) -> bool:
+        """Write input only when the requesting session owns the lock."""
+
+        with self.session_lock:
+            if self.input_lock.holder_id != session_id:
+                return False
+            self.write_input(data)
+            self.input_lock.note_input_complete(session_id, now=time.monotonic())
+            return True
+
+    def expire_stale_sessions(self, *, now: float | None = None) -> None:
+        """Disconnect clients whose heartbeats have expired."""
+
+        current = time.monotonic() if now is None else now
+        stale_ids = [
+            session_id
+            for session_id, session in self.sessions.items()
+            if current - session.last_heartbeat > DEFAULT_LEASE_TIMEOUT_SECONDS
+        ]
+        for session_id in stale_ids:
+            self.disconnect_attachment(session_id)
+
+    def session_status(self, session_id: str | None, *, now: float | None = None) -> dict[str, Any]:
+        """Return attachment and lock state, optionally for one session."""
+
+        current = time.monotonic() if now is None else now
+        with self.session_lock:
+            self.expire_stale_sessions(now=current)
+            if self.input_lock.maybe_transfer(now=current):
+                self._persist_lock_state()
+            current_viewers = sum(session.mode == "view" for session in self.sessions.values())
+            current_interactors = sum(session.mode == "interact" for session in self.sessions.values())
+            summary = self.store.attachment_summary(self.record.id)
+            return {
+                "current_viewers": current_viewers,
+                "current_interactors": current_interactors,
+                "lifetime_viewers": summary.lifetime_viewers,
+                "lifetime_interactors": summary.lifetime_interactors,
+                "lifetime_connections": summary.lifetime_connections,
+                "lock_holder": self.input_lock.holder_id,
+                "lock_queue_count": len(self.input_lock.queue),
+                "session_holds_lock": session_id == self.input_lock.holder_id,
+                "session_queue_position": (None if session_id is None else self.input_lock.queue_position(session_id)),
+                "attachment_event_sequence": self.attachment_event_sequence,
+                "latest_attachment_event": self.latest_attachment_event,
+            }
+
+    def _persist_lock_state(self) -> None:
+        self.store.set_attachment_lock_state(
+            run_id=self.record.id,
+            holder_id=self.input_lock.holder_id,
+            queued_ids=list(self.input_lock.queue),
+        )
 
     def terminate(self, *, force: bool = False) -> None:
         """Terminate the managed process."""
@@ -156,7 +393,22 @@ def make_handler(state: SupervisorState) -> type[socketserver.BaseRequestHandler
                     return
                 op = request.get("op")
                 if op == "status":
-                    self._send_status()
+                    self._send_status(request.get("session_id"))
+                elif op == "attach":
+                    attachment = state.register_attachment(
+                        str(request.get("session_id") or ""),
+                        str(request.get("mode") or ""),
+                    )
+                    self._send_json({"ok": True, **attachment})
+                elif op == "heartbeat":
+                    attachment = state.heartbeat_attachment(str(request.get("session_id") or ""))
+                    self._send_json({"ok": True, **attachment})
+                elif op == "detach":
+                    state.disconnect_attachment(str(request.get("session_id") or ""))
+                    self._send_json({"ok": True})
+                elif op == "lock":
+                    attachment = state.request_input_lock(str(request.get("session_id") or ""))
+                    self._send_json({"ok": True, **attachment})
                 elif op == "kill":
                     state.terminate(force=bool(request.get("force", False)))
                     self._send_json({"ok": True})
@@ -172,19 +424,13 @@ def make_handler(state: SupervisorState) -> type[socketserver.BaseRequestHandler
                     state.resize(rows, columns)
                     self._send_json({"ok": True})
                 elif op == "input":
-                    if not state.input_session_lock.acquire(blocking=False):
-                        self._send_json(
-                            {
-                                "ok": False,
-                                "error": "Run already has an active interact session.",
-                            }
-                        )
-                        return
-                    self._send_json({"ok": True})
+                    session_id = str(request.get("session_id") or "")
+                    attachment = state.register_attachment(session_id, "interact")
+                    self._send_json({"ok": True, **attachment})
                     try:
-                        self._input_loop()
+                        self._input_loop(session_id)
                     finally:
-                        state.input_session_lock.release()
+                        state.disconnect_attachment(session_id)
                 else:
                     self._send_json({"ok": False, "error": f"Unsupported operation: {op!r}."})
             except Exception as error:  # noqa: BLE001 - supervisor must not crash on bad client input.
@@ -210,25 +456,27 @@ def make_handler(state: SupervisorState) -> type[socketserver.BaseRequestHandler
         def _send_json(self, value: dict[str, Any]) -> None:
             self.request.sendall(encode_request(value))
 
-        def _send_status(self) -> None:
+        def _send_status(self, session_id: Any = None) -> None:
             process = state.process
             exit_code = get_process_exit_code(process, windows_pty=state.windows_pty)
             record = state.refresh_record()
+            attachment = state.session_status(str(session_id) if isinstance(session_id, str) else None)
             self._send_json(
                 {
                     "ok": True,
                     "status": record.status,
                     "pid": None if process is None else process.pid,
                     "exit_code": exit_code,
+                    **attachment,
                 }
             )
 
-        def _input_loop(self) -> None:
+        def _input_loop(self, session_id: str) -> None:
             while not state.stop_requested.is_set():
                 chunk = self.request.recv(4096)
                 if not chunk:
                     return
-                state.write_input(chunk)
+                state.write_session_input(session_id, chunk)
 
     return Handler
 

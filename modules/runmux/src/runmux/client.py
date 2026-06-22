@@ -10,6 +10,7 @@ import socket
 import sys
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -20,11 +21,12 @@ from runmux.constants import (
     ATTACH_RESERVED_ROWS,
     DEFAULT_CONTROL_PREFIX,
     DEFAULT_CONTROL_PREFIX_NAME,
+    DEFAULT_HEARTBEAT_SECONDS,
     STATUS_LOST,
     TERMINAL_STATUSES,
 )
 from runmux.ipc import IpcError, open_input_socket, request_json
-from runmux.models import RunRecord
+from runmux.models import AttachmentSummary, RunRecord
 from runmux.store import RunStore
 
 if sys.platform == "win32":
@@ -63,6 +65,117 @@ class RawTerminal:
         if sys.platform != "win32" and self.original_attrs is not None:
             termios.tcsetattr(self.fd, termios.TCSADRAIN, self.original_attrs)
         return False
+
+
+class AttachmentRenderer:
+    """Render child output inside a terminal region with runmux status rows."""
+
+    def __init__(self, store: RunStore, record: RunRecord, *, mode: str) -> None:
+        self.store = store
+        self.record = record
+        self.mode = mode
+        self._write_lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._size = shutil.get_terminal_size(fallback=(80, 24))
+        self._thread: threading.Thread | None = None
+        self._enabled = bool(getattr(sys.stdout, "isatty", lambda: False)())
+
+    def start(self) -> None:
+        if not self._enabled:
+            return
+        with self._write_lock:
+            self._write_bytes(b"\x1b[?6l\x1b[2J")
+            self._apply_frame_locked()
+        self._thread = threading.Thread(
+            target=self._refresh_loop,
+            name=f"runmux-render-{self.record.numeric_id}",
+            daemon=False,
+        )
+        self._thread.start()
+
+    def write(self, chunk: bytes) -> None:
+        if not self._enabled:
+            self._write_bytes(chunk)
+            return
+        with self._write_lock:
+            self._write_bytes(chunk)
+            self._apply_frame_locked()
+
+    def stop(self) -> None:
+        if not self._enabled:
+            return
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join()
+        with self._write_lock:
+            lines = max(3, self._size.lines)
+            self._write_bytes(
+                f"\x1b[?6l\x1b[r\x1b[1;1H\x1b[2K\x1b[{lines};1H\x1b[2K\r\n".encode()
+            )
+
+    def _refresh_loop(self) -> None:
+        while not self._stop_event.wait(0.25):
+            current_size = shutil.get_terminal_size(fallback=(80, 24))
+            if current_size != self._size:
+                self._size = current_size
+                send_resize(self.record, reserve_rows=ATTACH_RESERVED_ROWS)
+            with self._write_lock:
+                self._apply_frame_locked()
+
+    def _apply_frame_locked(self) -> None:
+        lines = max(3, self._size.lines)
+        columns = max(1, self._size.columns)
+        child_bottom = max(2, lines - 1)
+        try:
+            latest = self.store.get_run(self.record.id)
+            summary = self.store.attachment_summary(self.record.id)
+        except Exception:
+            latest = self.record
+            summary = None
+        top = format_attachment_top_status(latest, mode=self.mode, width=columns)
+        bottom = format_attachment_bottom_status(summary, width=columns)
+        sequence = (
+            f"\x1b[?6l\x1b[2;{child_bottom}r\x1b[?6h"
+            f"\x1b7\x1b[?6l\x1b[1;1H\x1b[2K{top}"
+            f"\x1b[{lines};1H\x1b[2K{bottom}\x1b[?6h\x1b8"
+        )
+        self._write_bytes(sequence.encode("utf-8", errors="replace"))
+
+    @staticmethod
+    def _write_bytes(payload: bytes) -> None:
+        stream = getattr(sys.stdout, "buffer", sys.stdout)
+        try:
+            stream.write(payload)
+        except TypeError:
+            stream.write(payload.decode("utf-8", errors="replace"))
+        stream.flush()
+
+
+def format_attachment_top_status(record: RunRecord, *, mode: str, width: int) -> str:
+    """Format the fixed top attachment status row."""
+
+    value = (
+        f" runmux {record.numeric_id} | {mode} | {record.status} | "
+        f"{format_duration(record.runtime_seconds)} | {record.command_line}"
+    )
+    return truncate(value, width).ljust(width)
+
+
+def format_attachment_bottom_status(
+    summary: AttachmentSummary | None,
+    *,
+    width: int,
+) -> str:
+    """Format the fixed bottom attachment controls and input-lock status row."""
+
+    if summary is None:
+        lock = "input --"
+    elif summary.lock_held:
+        lock = f"input locked Q:{summary.lock_queue_count}"
+    else:
+        lock = f"input shared Q:{summary.lock_queue_count}"
+    value = f" Ctrl-X ? help | Ctrl-X q detach | {lock}"
+    return truncate(value, width).ljust(width)
 
 
 def format_duration(seconds: float) -> str:
@@ -116,6 +229,7 @@ def build_list_rows(
     width: int,
     selected_index: int | None = None,
     color: bool = False,
+    attachment_summaries: dict[str, AttachmentSummary] | None = None,
 ) -> list[str]:
     """Build display rows for the live list table."""
 
@@ -123,17 +237,19 @@ def build_list_rows(
     status_width = 9
     runtime_width = 8
     pid_width = 8
-    fixed = id_width + status_width + runtime_width + pid_width + 10
+    attach_width = 22
+    fixed = id_width + status_width + runtime_width + pid_width + attach_width + 11
     command_width = max(20, width - fixed)
     rows = [
         colorize(
             f"{'ID':<{id_width}} {'STATUS':<{status_width}} {'RUNTIME':>{runtime_width}} "
-            f"{'PID':>{pid_width}} COMMAND",
+            f"{'PID':>{pid_width}} {'ATTACH':<{attach_width}} COMMAND",
             "1;37",
             enabled=color,
         ),
         colorize(
-            f"{'-' * id_width} {'-' * status_width} {'-' * runtime_width} " f"{'-' * pid_width} {'-' * command_width}",
+            f"{'-' * id_width} {'-' * status_width} {'-' * runtime_width} "
+            f"{'-' * pid_width} {'-' * attach_width} {'-' * command_width}",
             "2",
             enabled=color,
         ),
@@ -151,7 +267,16 @@ def build_list_rows(
             enabled=color,
         )
         command = colorize(truncate(record.command_line, command_width), "97", enabled=color)
-        row = f"{str(record.numeric_id):<{id_width}} " f"{status} " f"{runtime} " f"{pid:>{pid_width}} " f"{command}"
+        summary = (attachment_summaries or {}).get(record.id)
+        attach = format_attachment_summary(summary, width=attach_width, color=color)
+        row = (
+            f"{str(record.numeric_id):<{id_width}} "
+            f"{status} "
+            f"{runtime} "
+            f"{pid:>{pid_width}} "
+            f"{attach} "
+            f"{command}"
+        )
         if selected_index == index:
             row = f"\x1b[7m{row}\x1b[0m"
         rows.append(row)
@@ -160,6 +285,44 @@ def build_list_rows(
         rows.append("")
         rows.append(f"Selected {selected.numeric_id}: i=interact  v=view  q=quit")
     return rows
+
+
+def format_attachment_summary(
+    summary: AttachmentSummary | None,
+    *,
+    width: int,
+    color: bool,
+) -> str:
+    """Format current, lifetime, and input-lock attachment counts."""
+
+    if summary is None:
+        return f"{'--':<{width}}"
+    parts = [
+        colorize(f"I:{summary.current_interactors}", "32", enabled=color),
+        colorize(f"V:{summary.current_viewers}", "36", enabled=color),
+        colorize(f"T:{summary.lifetime_connections}", "35", enabled=color),
+        colorize(f"L:{int(summary.lock_held)}", "33", enabled=color),
+        colorize(f"Q:{summary.lock_queue_count}", "34", enabled=color),
+    ]
+    rendered = " ".join(parts)
+    return rendered + (" " * max(0, width - visible_length(rendered)))
+
+
+def visible_length(value: str) -> int:
+    """Return display length for text containing runmux SGR colors."""
+
+    import re
+
+    return len(re.sub(r"\x1b\[[0-9;]*m", "", value))
+
+
+def attachment_summaries_for(
+    store: RunStore,
+    records: list[RunRecord],
+) -> dict[str, AttachmentSummary]:
+    """Load attachment summaries for displayed records."""
+
+    return {record.id: store.attachment_summary(record.id) for record in records}
 
 
 def list_runs_live(
@@ -175,14 +338,24 @@ def list_runs_live(
 
     if output_json:
         records = refresh_active_statuses(store.list_runs(include_all=include_all, limit=limit), store)
-        payload = [record_to_json(record) for record in records]
+        summaries = attachment_summaries_for(store, records)
+        payload = [record_to_json(record, attachment=summaries[record.id]) for record in records]
         print(json.dumps(payload, indent=2))
         return 0
 
     if once:
         width = shutil.get_terminal_size(fallback=(120, 30)).columns
         records = refresh_active_statuses(store.list_runs(include_all=include_all, limit=limit), store)
-        print("\n".join(build_list_rows(records, width=width)))
+        summaries = attachment_summaries_for(store, records)
+        print(
+            "\n".join(
+                build_list_rows(
+                    records,
+                    width=width,
+                    attachment_summaries=summaries,
+                )
+            )
+        )
         return 0
 
     selected_index = 0
@@ -191,12 +364,14 @@ def list_runs_live(
         while True:
             width = shutil.get_terminal_size(fallback=(120, 30)).columns
             records = refresh_active_statuses(store.list_runs(include_all=include_all, limit=limit), store)
+            summaries = attachment_summaries_for(store, records)
             selected_index = max(0, min(selected_index, len(records) - 1)) if records else 0
             rows = build_list_rows(
                 records,
                 width=width,
                 selected_index=selected_index if records else None,
                 color=sys.stdout.isatty(),
+                attachment_summaries=summaries,
             )
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
             header = f"runmux live list - {timestamp} - Up/Down select, i interact, v view, q quit"
@@ -320,10 +495,14 @@ def is_pid_alive(pid: int) -> bool:
     return True
 
 
-def record_to_json(record: RunRecord) -> dict[str, Any]:
+def record_to_json(
+    record: RunRecord,
+    *,
+    attachment: AttachmentSummary | None = None,
+) -> dict[str, Any]:
     """Convert a record to JSON-serializable output."""
 
-    return {
+    payload = {
         "id": record.id,
         "numeric_id": record.numeric_id,
         "name": record.name,
@@ -341,6 +520,19 @@ def record_to_json(record: RunRecord) -> dict[str, Any]:
         "restart_of": record.restart_of,
         "duplicate_of": record.duplicate_of,
     }
+    if attachment is not None:
+        payload.update(
+            {
+                "current_viewers": attachment.current_viewers,
+                "current_interactors": attachment.current_interactors,
+                "lifetime_viewers": attachment.lifetime_viewers,
+                "lifetime_interactors": attachment.lifetime_interactors,
+                "lifetime_connections": attachment.lifetime_connections,
+                "input_lock_held": attachment.lock_held,
+                "input_lock_queue_count": attachment.lock_queue_count,
+            }
+        )
+    return payload
 
 
 def view_run(
@@ -393,9 +585,23 @@ def follow_view_run(
 ) -> AttachCommand | None:
     """Follow output in realtime while only listening for runmux prefix commands."""
 
+    session_id = uuid.uuid4().hex
+    request_json(
+        record,
+        op="attach",
+        payload={"session_id": session_id, "mode": "view"},
+    )
     send_resize(record, reserve_rows=ATTACH_RESERVED_ROWS)
+    renderer = AttachmentRenderer(store, record, mode="view")
+    renderer.start()
     stop_event = threading.Event()
+    heartbeat_stop = threading.Event()
     output_pause_event = threading.Event()
+    heartbeat_thread = start_attachment_heartbeat(
+        record,
+        session_id=session_id,
+        stop_event=heartbeat_stop,
+    )
     tail_thread = threading.Thread(
         target=tail_file,
         kwargs={
@@ -405,6 +611,7 @@ def follow_view_run(
             "tail_lines": tail_lines,
             "should_stop": stop_event.is_set,
             "output_paused": output_pause_event.is_set,
+            "output_writer": renderer.write,
         },
         name="runmux-tail",
         daemon=False,
@@ -415,14 +622,23 @@ def follow_view_run(
         set_terminal_title(f"runmux view {record.numeric_id} - prefix {DEFAULT_CONTROL_PREFIX_NAME}")
         return view_input_loop(
             control_prefix=control_prefix,
-            on_command=make_command_handler(record, store, mode="view"),
+            on_command=make_command_handler(
+                record,
+                store,
+                mode="view",
+                session_id=session_id,
+            ),
             output_pause_event=output_pause_event,
             should_stop=lambda: store.get_run(record.id).status in TERMINAL_STATUSES,
         )
     finally:
         set_terminal_title(None)
         stop_event.set()
+        heartbeat_stop.set()
         tail_thread.join()
+        heartbeat_thread.join()
+        renderer.stop()
+        detach_attachment(record, session_id)
 
 
 def interact_run(
@@ -441,7 +657,11 @@ def interact_run(
             raise ClientError(f"Run '{record.id}' is not active; status is {record.status}.")
 
         send_resize(record, reserve_rows=ATTACH_RESERVED_ROWS)
+        renderer = AttachmentRenderer(store, record, mode="interact")
+        renderer.start()
+        session_id = uuid.uuid4().hex
         stop_event = threading.Event()
+        heartbeat_stop = threading.Event()
         output_pause_event = threading.Event()
         tail_thread = threading.Thread(
             target=tail_file,
@@ -452,6 +672,7 @@ def interact_run(
                 "tail_lines": tail_lines,
                 "should_stop": stop_event.is_set,
                 "output_paused": output_pause_event.is_set,
+                "output_writer": renderer.write,
             },
             name="runmux-tail",
             daemon=False,
@@ -459,22 +680,36 @@ def interact_run(
         tail_thread.start()
 
         try:
-            with open_input_socket(record) as sock:
+            with open_input_socket(record, session_id=session_id) as sock:
+                heartbeat_thread = start_attachment_heartbeat(
+                    record,
+                    session_id=session_id,
+                    stop_event=heartbeat_stop,
+                )
                 set_terminal_title(f"runmux interact {record.numeric_id} - prefix {DEFAULT_CONTROL_PREFIX_NAME}")
                 try:
                     command = forward_input_loop(
                         sock,
                         control_prefix=control_prefix,
-                        on_command=make_command_handler(record, store, mode="interact"),
+                        on_command=make_command_handler(
+                            record,
+                            store,
+                            mode="interact",
+                            session_id=session_id,
+                        ),
                         output_pause_event=output_pause_event,
                     )
                 finally:
+                    heartbeat_stop.set()
+                    heartbeat_thread.join()
                     with suppress(OSError):
                         sock.shutdown(socket.SHUT_WR)
         finally:
             set_terminal_title(None)
             stop_event.set()
             tail_thread.join()
+            renderer.stop()
+            detach_attachment(record, session_id)
 
         if command is None or command.action == "detach":
             return 0
@@ -504,7 +739,65 @@ def send_resize(record: RunRecord, *, reserve_rows: int = 0) -> None:
         return
 
 
-def make_command_handler(record: RunRecord, store: RunStore, *, mode: str) -> Callable[[bytes], AttachCommand | None]:
+def start_attachment_heartbeat(
+    record: RunRecord,
+    *,
+    session_id: str,
+    stop_event: threading.Event,
+) -> threading.Thread:
+    """Start a heartbeat thread for one registered attachment."""
+
+    thread = threading.Thread(
+        target=attachment_heartbeat_loop,
+        kwargs={
+            "record": record,
+            "session_id": session_id,
+            "stop_event": stop_event,
+        },
+        name=f"runmux-heartbeat-{session_id[:8]}",
+        daemon=False,
+    )
+    thread.start()
+    return thread
+
+
+def attachment_heartbeat_loop(
+    *,
+    record: RunRecord,
+    session_id: str,
+    stop_event: threading.Event,
+) -> None:
+    """Maintain an attachment lease until stopped or disconnected."""
+
+    while not stop_event.wait(DEFAULT_HEARTBEAT_SECONDS):
+        try:
+            request_json(
+                record,
+                op="heartbeat",
+                payload={"session_id": session_id},
+            )
+        except IpcError:
+            return
+
+
+def detach_attachment(record: RunRecord, session_id: str) -> None:
+    """Best-effort detach notification for a registered session."""
+
+    with suppress(IpcError):
+        request_json(
+            record,
+            op="detach",
+            payload={"session_id": session_id},
+        )
+
+
+def make_command_handler(
+    record: RunRecord,
+    store: RunStore,
+    *,
+    mode: str,
+    session_id: str | None = None,
+) -> Callable[[bytes], AttachCommand | None]:
     """Create a handler for interact prefix commands.
 
     The handler returns None when attachment should continue, or an AttachCommand
@@ -537,6 +830,19 @@ def make_command_handler(record: RunRecord, store: RunStore, *, mode: str) -> Ca
             latest = store.get_run(record.id)
             request_json(latest, op="kill", payload={"force": False})
             write_local_message("\r\n[runmux kill requested]\r\n")
+            return None
+        if command == b"l" and mode == "interact" and session_id is not None:
+            latest = store.get_run(record.id)
+            response = request_json(
+                latest,
+                op="lock",
+                payload={"session_id": session_id},
+            )
+            if response.get("session_holds_lock"):
+                write_local_message("\r\n[runmux input lock acquired]\r\n")
+            else:
+                position = response.get("session_queue_position")
+                write_local_message(f"\r\n[runmux input lock requested; queue {position or '--'}]\r\n")
             return None
         return None
 
@@ -703,7 +1009,7 @@ def show_prefix_menu() -> None:
     write_local_message(
         f"\x1b[s\x1b[999;1H\x1b[2K[runmux {DEFAULT_CONTROL_PREFIX_NAME}: "
         f"q detach | j jump | v view | "
-        f"i interact | k kill | ? help | "
+        f"i interact | l input lock | k kill | ? help | "
         f"{DEFAULT_CONTROL_PREFIX_NAME} send prefix]\x1b[u"
     )
 
@@ -776,6 +1082,7 @@ def tail_file(
     should_stop: Callable[[], bool] | None = None,
     command_handler: Callable[[bytes], AttachCommand | None] | None = None,
     output_paused: Callable[[], bool] | None = None,
+    output_writer: Callable[[bytes], None] | None = None,
 ) -> AttachCommand | None:
     """Write a file's bytes to stdout, optionally following appends."""
 
@@ -798,8 +1105,11 @@ def tail_file(
             chunk = stream.read(8192)
             position = stream.tell()
         if chunk:
-            sys.stdout.buffer.write(chunk)
-            sys.stdout.buffer.flush()
+            if output_writer is not None:
+                output_writer(chunk)
+            else:
+                sys.stdout.buffer.write(chunk)
+                sys.stdout.buffer.flush()
             continue
         if not follow:
             return None
@@ -813,8 +1123,11 @@ def tail_file(
                 chunk = stream.read(8192)
                 position = stream.tell()
             if chunk:
-                sys.stdout.buffer.write(chunk)
-                sys.stdout.buffer.flush()
+                if output_writer is not None:
+                    output_writer(chunk)
+                else:
+                    sys.stdout.buffer.write(chunk)
+                    sys.stdout.buffer.flush()
             return None
         time.sleep(0.1)
 

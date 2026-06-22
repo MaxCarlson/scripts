@@ -10,7 +10,7 @@ from typing import Any
 
 from runmux import __version__
 from runmux.client import ClientError, interact_run, list_runs_live, view_run
-from runmux.constants import DEFAULT_REFRESH_SECONDS
+from runmux.constants import ATTACH_RESERVED_ROWS, DEFAULT_REFRESH_SECONDS
 from runmux.history import (
     HistoryError,
     command_stats,
@@ -370,6 +370,7 @@ def handle_run(args: argparse.Namespace) -> int:
         force_color=not args.no_force_color,
         rows=args.rows,
         columns=args.columns,
+        reserve_rows=0 if args.detach else ATTACH_RESERVED_ROWS,
     )
     if args.save_command:
         save_command(
@@ -404,6 +405,7 @@ def handle_run_saved_command(args: argparse.Namespace, selector_args: list[str])
         force_color=not args.no_force_color,
         rows=args.rows,
         columns=args.columns,
+        reserve_rows=0 if selector.detach else ATTACH_RESERVED_ROWS,
     )
     mark_saved_command_run(started.record.command_line)
     print(f"Started {started.record.id}: {started.record.command_line}")

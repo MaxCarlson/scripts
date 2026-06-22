@@ -97,6 +97,7 @@ def create_managed_run(
     duplicate_of: str | None = None,
     rows: int | None = None,
     columns: int | None = None,
+    reserve_rows: int = 0,
 ) -> StartedRun:
     """Create a registry record and start a detached supervisor."""
 
@@ -113,7 +114,7 @@ def create_managed_run(
 
     env_overrides = build_env_overrides(force_color=force_color)
     terminal_size = shutil.get_terminal_size(fallback=(80, 24))
-    final_rows = rows or terminal_size.lines
+    final_rows = max(1, (rows or terminal_size.lines) - max(0, reserve_rows))
     final_columns = columns or terminal_size.columns
 
     record = store.create_run(
