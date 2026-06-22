@@ -88,8 +88,34 @@ def truncate(value: str, width: int) -> str:
     return value[: width - 1] + "…"
 
 
+def colorize(value: str, color_code: str, *, enabled: bool) -> str:
+    """Apply ANSI color when enabled."""
+
+    if not enabled:
+        return value
+    return f"\x1b[{color_code}m{value}\x1b[0m"
+
+
+def status_color(status: str) -> str:
+    """Return a color code for a run status."""
+
+    if status == "running":
+        return "32"
+    if status == "paused":
+        return "33"
+    if status in {"failed", "lost"}:
+        return "31"
+    if status in {"finished", "killed"}:
+        return "90"
+    return "37"
+
+
 def build_list_rows(
-    records: list[RunRecord], *, width: int, selected_index: int | None = None
+    records: list[RunRecord],
+    *,
+    width: int,
+    selected_index: int | None = None,
+    color: bool = False,
 ) -> list[str]:
     """Build display rows for the live list table."""
 
@@ -100,20 +126,32 @@ def build_list_rows(
     fixed = id_width + status_width + runtime_width + pid_width + 10
     command_width = max(20, width - fixed)
     rows = [
-        f"{'ID':<{id_width}} {'STATUS':<{status_width}} {'RUNTIME':>{runtime_width}} "
-        f"{'PID':>{pid_width}} COMMAND",
-        f"{'-' * id_width} {'-' * status_width} {'-' * runtime_width} "
-        f"{'-' * pid_width} {'-' * command_width}",
+        colorize(
+            f"{'ID':<{id_width}} {'STATUS':<{status_width}} {'RUNTIME':>{runtime_width}} "
+            f"{'PID':>{pid_width}} COMMAND",
+            "1;37",
+            enabled=color,
+        ),
+        colorize(
+            f"{'-' * id_width} {'-' * status_width} {'-' * runtime_width} " f"{'-' * pid_width} {'-' * command_width}",
+            "2",
+            enabled=color,
+        ),
     ]
     for index, record in enumerate(records):
         pid = "" if record.pid is None else str(record.pid)
-        row = (
-            f"{str(record.numeric_id):<{id_width}} "
-            f"{record.status:<{status_width}} "
-            f"{format_duration(record.runtime_seconds):>{runtime_width}} "
-            f"{pid:>{pid_width}} "
-            f"{truncate(record.command_line, command_width)}"
+        status = colorize(
+            f"{record.status:<{status_width}}",
+            status_color(record.status),
+            enabled=color,
         )
+        runtime = colorize(
+            f"{format_duration(record.runtime_seconds):>{runtime_width}}",
+            "36",
+            enabled=color,
+        )
+        command = colorize(truncate(record.command_line, command_width), "97", enabled=color)
+        row = f"{str(record.numeric_id):<{id_width}} " f"{status} " f"{runtime} " f"{pid:>{pid_width}} " f"{command}"
         if selected_index == index:
             row = f"\x1b[7m{row}\x1b[0m"
         rows.append(row)
@@ -136,18 +174,14 @@ def list_runs_live(
     """Display runs once or as a live in-place table."""
 
     if output_json:
-        records = refresh_active_statuses(
-            store.list_runs(include_all=include_all, limit=limit), store
-        )
+        records = refresh_active_statuses(store.list_runs(include_all=include_all, limit=limit), store)
         payload = [record_to_json(record) for record in records]
         print(json.dumps(payload, indent=2))
         return 0
 
     if once:
         width = shutil.get_terminal_size(fallback=(120, 30)).columns
-        records = refresh_active_statuses(
-            store.list_runs(include_all=include_all, limit=limit), store
-        )
+        records = refresh_active_statuses(store.list_runs(include_all=include_all, limit=limit), store)
         print("\n".join(build_list_rows(records, width=width)))
         return 0
 
@@ -156,12 +190,13 @@ def list_runs_live(
     try:
         while True:
             width = shutil.get_terminal_size(fallback=(120, 30)).columns
-            records = refresh_active_statuses(
-                store.list_runs(include_all=include_all, limit=limit), store
-            )
+            records = refresh_active_statuses(store.list_runs(include_all=include_all, limit=limit), store)
             selected_index = max(0, min(selected_index, len(records) - 1)) if records else 0
             rows = build_list_rows(
-                records, width=width, selected_index=selected_index if records else None
+                records,
+                width=width,
+                selected_index=selected_index if records else None,
+                color=sys.stdout.isatty(),
             )
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
             header = f"runmux live list - {timestamp} - Up/Down select, i interact, v view, q quit"
@@ -195,9 +230,7 @@ def list_runs_live(
                 if key in {"i", "I"} and records:
                     sys.stdout.write("\x1b[?25h\x1b[H\x1b[2J")
                     sys.stdout.flush()
-                    return interact_run(
-                        store, run_id=str(records[selected_index].numeric_id), tail_lines=None
-                    )
+                    return interact_run(store, run_id=str(records[selected_index].numeric_id), tail_lines=None)
     except KeyboardInterrupt:
         return 0
     finally:
@@ -324,27 +357,72 @@ def view_run(
     current_from_end = from_end
     while True:
         record = store.get_run(current_run_id)
-        if follow:
-            send_resize(record, reserve_rows=ATTACH_RESERVED_ROWS)
-        command = tail_file(
-            record.log_file,
-            follow=follow,
-            from_end=current_from_end,
-            tail_lines=tail_lines,
-            should_stop=lambda record_id=record.id: store.get_run(record_id).status
-            in TERMINAL_STATUSES,
-            command_handler=make_command_handler(record, store, mode="view") if follow else None,
-        )
+        if not follow:
+            command = tail_file(
+                record.log_file,
+                follow=False,
+                from_end=current_from_end,
+                tail_lines=tail_lines,
+            )
+        else:
+            command = follow_view_run(
+                store,
+                record=record,
+                from_end=current_from_end or tail_lines is None,
+                tail_lines=tail_lines,
+            )
         if command is None or command.action == "detach":
             return 0
         if command.action == "jump" and command.target_id is not None:
             current_run_id = command.target_id
-            current_from_end = False
+            current_from_end = True
             continue
         if command.action == "interact":
             return interact_run(store, run_id=record.id, tail_lines=None)
         return 0
     return 0
+
+
+def follow_view_run(
+    store: RunStore,
+    *,
+    record: RunRecord,
+    from_end: bool,
+    tail_lines: int | None,
+    control_prefix: bytes = DEFAULT_CONTROL_PREFIX,
+) -> AttachCommand | None:
+    """Follow output in realtime while only listening for runmux prefix commands."""
+
+    send_resize(record, reserve_rows=ATTACH_RESERVED_ROWS)
+    stop_event = threading.Event()
+    output_pause_event = threading.Event()
+    tail_thread = threading.Thread(
+        target=tail_file,
+        kwargs={
+            "path": record.log_file,
+            "follow": True,
+            "from_end": from_end,
+            "tail_lines": tail_lines,
+            "should_stop": stop_event.is_set,
+            "output_paused": output_pause_event.is_set,
+        },
+        name="runmux-tail",
+        daemon=False,
+    )
+    tail_thread.start()
+
+    try:
+        set_terminal_title(f"runmux view {record.numeric_id} - prefix {DEFAULT_CONTROL_PREFIX_NAME}")
+        return view_input_loop(
+            control_prefix=control_prefix,
+            on_command=make_command_handler(record, store, mode="view"),
+            output_pause_event=output_pause_event,
+            should_stop=lambda: store.get_run(record.id).status in TERMINAL_STATUSES,
+        )
+    finally:
+        set_terminal_title(None)
+        stop_event.set()
+        tail_thread.join()
 
 
 def interact_run(
@@ -376,15 +454,13 @@ def interact_run(
                 "output_paused": output_pause_event.is_set,
             },
             name="runmux-tail",
-            daemon=True,
+            daemon=False,
         )
         tail_thread.start()
 
         with open_input_socket(record) as sock:
             try:
-                set_terminal_title(
-                    f"runmux interact {record.numeric_id} - prefix {DEFAULT_CONTROL_PREFIX_NAME}"
-                )
+                set_terminal_title(f"runmux interact {record.numeric_id} - prefix {DEFAULT_CONTROL_PREFIX_NAME}")
                 command = forward_input_loop(
                     sock,
                     control_prefix=control_prefix,
@@ -396,7 +472,7 @@ def interact_run(
                 stop_event.set()
                 with suppress(OSError):
                     sock.shutdown(socket.SHUT_WR)
-                tail_thread.join(timeout=1)
+                tail_thread.join()
 
         if command is None or command.action == "detach":
             return 0
@@ -426,9 +502,7 @@ def send_resize(record: RunRecord, *, reserve_rows: int = 0) -> None:
         return
 
 
-def make_command_handler(
-    record: RunRecord, store: RunStore, *, mode: str
-) -> Callable[[bytes], AttachCommand | None]:
+def make_command_handler(record: RunRecord, store: RunStore, *, mode: str) -> Callable[[bytes], AttachCommand | None]:
     """Create a handler for interact prefix commands.
 
     The handler returns None when attachment should continue, or an AttachCommand
@@ -530,6 +604,74 @@ def forward_windows_input(
                 continue
         sock.sendall(data)
     return None
+
+
+def view_input_loop(
+    *,
+    control_prefix: bytes,
+    on_command: Callable[[bytes], AttachCommand | None],
+    output_pause_event: threading.Event | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> AttachCommand | None:
+    """Read only runmux prefix keys while view output follows in another thread."""
+
+    if sys.platform == "win32":
+        return view_windows_input(
+            control_prefix=control_prefix,
+            on_command=on_command,
+            output_pause_event=output_pause_event,
+            should_stop=should_stop,
+        )
+
+    stdin_fd = sys.stdin.fileno()
+    with RawTerminal(stdin_fd):
+        while True:
+            if should_stop is not None and should_stop():
+                return None
+            ready, _, _ = select.select([sys.stdin], [], [], 0.1)
+            if not ready:
+                continue
+            data = os.read(stdin_fd, 1)
+            if not data:
+                return None
+            if data != control_prefix:
+                continue
+            with paused_output(output_pause_event):
+                show_prefix_menu()
+                command = os.read(stdin_fd, 1)
+                if command == control_prefix:
+                    continue
+                attach_command = on_command(command)
+                if attach_command is not None:
+                    return attach_command
+
+
+def view_windows_input(
+    *,
+    control_prefix: bytes,
+    on_command: Callable[[bytes], AttachCommand | None],
+    output_pause_event: threading.Event | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> AttachCommand | None:
+    """Read only runmux prefix keys from a Windows console."""
+
+    while True:
+        if should_stop is not None and should_stop():
+            return None
+        if not msvcrt.kbhit():
+            time.sleep(0.05)
+            continue
+        data = encode_windows_console_key(msvcrt.getwch())
+        if data != control_prefix:
+            continue
+        with paused_output(output_pause_event):
+            show_prefix_menu()
+            command = encode_windows_console_key(msvcrt.getwch())
+            if command == control_prefix:
+                continue
+            attach_command = on_command(command)
+            if attach_command is not None:
+                return attach_command
 
 
 def encode_windows_console_key(char: str) -> bytes:
@@ -647,6 +789,8 @@ def tail_file(
         if output_paused is not None and output_paused():
             time.sleep(0.05)
             continue
+        if should_stop is not None and should_stop():
+            return None
         with path.open("rb") as stream:
             stream.seek(position)
             chunk = stream.read(8192)

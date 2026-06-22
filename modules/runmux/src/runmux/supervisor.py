@@ -21,6 +21,7 @@ from types import TracebackType
 from typing import Any
 
 from runmux.constants import STATUS_FAILED, STATUS_FINISHED, STATUS_KILLED, STATUS_PAUSED
+from runmux.history import record_run_finished
 from runmux.ipc import encode_request
 from runmux.models import RunRecord
 from runmux.store import RunStore
@@ -123,9 +124,7 @@ class SupervisorState:
         if process is None or process.poll() is not None:
             raise RuntimeError("Process is not running.")
         if sys.platform == "win32":
-            raise RuntimeError(
-                "Resume is not supported on Windows without an external process API."
-            )
+            raise RuntimeError("Resume is not supported on Windows without an external process API.")
         os.kill(process.pid, signal.SIGCONT)
         self.store.update_run(self.record.id, status="running")
 
@@ -188,9 +187,7 @@ def make_handler(state: SupervisorState) -> type[socketserver.BaseRequestHandler
                         state.input_session_lock.release()
                 else:
                     self._send_json({"ok": False, "error": f"Unsupported operation: {op!r}."})
-            except (
-                Exception
-            ) as error:  # noqa: BLE001 - supervisor must not crash on bad client input.
+            except Exception as error:  # noqa: BLE001 - supervisor must not crash on bad client input.
                 try:
                     self._send_json({"ok": False, "error": str(error)})
                 except OSError:
@@ -271,7 +268,7 @@ def supervise_child(state: SupervisorState, *, port: int) -> int:
 
     argv = json.loads(state.record.argv_json)
     if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
-        state.store.mark_finished(run_id=state.record.id, status=STATUS_FAILED, exit_code=2)
+        mark_finished_with_history(state, status=STATUS_FAILED, exit_code=2)
         return 2
 
     env = os.environ.copy()
@@ -318,16 +315,12 @@ def supervise_child(state: SupervisorState, *, port: int) -> int:
                 )
                 exit_code = pump_posix_pty(state, output_log)
         except FileNotFoundError as error:
-            output_log.write(
-                f"runmux: program not found: {error}\n".encode("utf-8", errors="replace")
-            )
-            state.store.mark_finished(run_id=state.record.id, status=STATUS_FAILED, exit_code=127)
+            output_log.write(f"runmux: program not found: {error}\n".encode("utf-8", errors="replace"))
+            mark_finished_with_history(state, status=STATUS_FAILED, exit_code=127)
             return 127
         except Exception as error:  # noqa: BLE001 - record launch errors in the managed log.
-            output_log.write(
-                f"runmux: supervisor error: {error}\n".encode("utf-8", errors="replace")
-            )
-            state.store.mark_finished(run_id=state.record.id, status=STATUS_FAILED, exit_code=1)
+            output_log.write(f"runmux: supervisor error: {error}\n".encode("utf-8", errors="replace"))
+            mark_finished_with_history(state, status=STATUS_FAILED, exit_code=1)
             return 1
         finally:
             if state.master_fd is not None:
@@ -340,8 +333,21 @@ def supervise_child(state: SupervisorState, *, port: int) -> int:
         status = STATUS_FINISHED
     else:
         status = STATUS_FAILED
-    state.store.mark_finished(run_id=state.record.id, status=status, exit_code=exit_code)
+    mark_finished_with_history(state, status=status, exit_code=exit_code)
     return exit_code
+
+
+def mark_finished_with_history(
+    state: SupervisorState,
+    *,
+    status: str,
+    exit_code: int | None,
+) -> RunRecord:
+    """Mark a run finished and mirror completion into command history."""
+
+    record = state.store.mark_finished(run_id=state.record.id, status=status, exit_code=exit_code)
+    record_run_finished(record.id, status=status, runtime_seconds=record.runtime_seconds)
+    return record
 
 
 def launch_pipe_child(
@@ -413,9 +419,7 @@ def launch_windows_pty_child(
 def windows_child_creation_flags() -> int:
     """Return Windows flags that keep pipe-backed children headless."""
 
-    return getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
-        subprocess, "CREATE_NO_WINDOW", 0
-    )
+    return getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def launch_pty_child(
@@ -582,9 +586,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(description="Internal runmux supervisor process.")
     parser.add_argument("-i", "--run-id", required=True, help="Run ID to supervise.")
-    parser.add_argument(
-        "-s", "--state-dir", type=Path, default=None, help="State directory to use."
-    )
+    parser.add_argument("-s", "--state-dir", type=Path, default=None, help="State directory to use.")
     return parser
 
 

@@ -75,9 +75,7 @@ def request_json(
     return response
 
 
-def open_input_socket(
-    record: RunRecord, *, timeout: float = DEFAULT_SOCKET_TIMEOUT_SECONDS
-) -> socket.socket:
+def open_input_socket(record: RunRecord, *, timeout: float = DEFAULT_SOCKET_TIMEOUT_SECONDS) -> socket.socket:
     """Open an authenticated raw input socket to a running supervisor."""
 
     if record.port is None:

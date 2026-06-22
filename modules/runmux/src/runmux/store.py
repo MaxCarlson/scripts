@@ -102,9 +102,7 @@ class RunStore:
     def migrate_db(self, connection: sqlite3.Connection) -> None:
         """Apply lightweight schema migrations for existing runmux registries."""
 
-        columns = {
-            str(row["name"]) for row in connection.execute("PRAGMA table_info(runs)").fetchall()
-        }
+        columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(runs)").fetchall()}
         if "numeric_id" not in columns:
             connection.execute("ALTER TABLE runs ADD COLUMN numeric_id INTEGER")
             rows = connection.execute("SELECT id FROM runs ORDER BY created_at ASC").fetchall()
@@ -113,9 +111,7 @@ class RunStore:
                     "UPDATE runs SET numeric_id = ? WHERE id = ?",
                     (numeric_id, str(row["id"])),
                 )
-        connection.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_numeric_id ON runs(numeric_id)"
-        )
+        connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_numeric_id ON runs(numeric_id)")
 
     def create_run(
         self,
@@ -226,9 +222,7 @@ class RunStore:
             raise RunNotFoundError(f"No run found with ID prefix '{run_id_or_prefix}'.")
         if len(rows) > 1:
             matches = ", ".join(str(row["id"]) for row in rows)
-            raise AmbiguousRunIdError(
-                f"Run ID prefix '{run_id_or_prefix}' is ambiguous. Matches: {matches}"
-            )
+            raise AmbiguousRunIdError(f"Run ID prefix '{run_id_or_prefix}' is ambiguous. Matches: {matches}")
         return str(rows[0]["id"])
 
     def list_runs(self, *, include_all: bool = True, limit: int | None = None) -> list[RunRecord]:
@@ -249,9 +243,7 @@ class RunStore:
 
         record = self.get_run(run_id_or_prefix)
         if record.is_active:
-            raise RegistryError(
-                f"Run '{record.numeric_id}' is still active; kill it before removing it."
-            )
+            raise RegistryError(f"Run '{record.numeric_id}' is still active; kill it before removing it.")
         with self.connect() as connection:
             connection.execute("DELETE FROM runs WHERE id = ?", (record.id,))
         return record

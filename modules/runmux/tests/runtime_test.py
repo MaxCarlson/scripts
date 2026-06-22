@@ -8,9 +8,7 @@ from runmux.runner import create_managed_run
 from runmux.store import RunStore
 
 
-def wait_for_status(
-    store: RunStore, run_id: str, status: str, timeout_seconds: float = 10.0
-) -> None:
+def wait_for_status(store: RunStore, run_id: str, status: str, timeout_seconds: float = 10.0) -> None:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         record = store.get_run(run_id)

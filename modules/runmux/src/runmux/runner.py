@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from runmux.constants import STATUS_PENDING, TERMINAL_STATUSES
+from runmux.history import mark_saved_command_run, record_run_started, save_record_command
 from runmux.ipc import IpcError, request_json
 from runmux.models import RunRecord
 from runmux.store import RunStore
@@ -130,9 +131,19 @@ def create_managed_run(
         rows=final_rows,
         columns=final_columns,
     )
+    record_run_started(record)
     supervisor = start_supervisor(record.id, state_dir=store.state_dir)
     record = store.update_run(record.id, supervisor_pid=supervisor.pid)
     return StartedRun(record=record, supervisor_pid=supervisor.pid)
+
+
+def save_run_command(store: RunStore, *, run_id: str) -> RunRecord:
+    """Save an existing run's command for later reuse."""
+
+    record = store.get_run(run_id)
+    saved = save_record_command(record)
+    mark_saved_command_run(saved.command_line)
+    return record
 
 
 def start_supervisor(run_id: str, *, state_dir: Path | None = None) -> subprocess.Popen[Any]:
@@ -157,9 +168,7 @@ def start_supervisor(run_id: str, *, state_dir: Path | None = None) -> subproces
 def windows_supervisor_creation_flags() -> int:
     """Return Windows process flags that keep supervisors headless."""
 
-    return getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
-        subprocess, "CREATE_NO_WINDOW", 0
-    )
+    return getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def kill_run(store: RunStore, *, run_id: str, force: bool) -> RunRecord:
@@ -239,12 +248,9 @@ def restart_run(
     source = store.get_run(run_id)
     if source.status not in TERMINAL_STATUSES:
         raise RunnerError(
-            f"Run '{source.id}' is not finished. Use duplicate for concurrent copies, "
-            "or kill it before restarting."
+            f"Run '{source.id}' is not finished. Use duplicate for concurrent copies, " "or kill it before restarting."
         )
-    return clone_run(
-        store, source=source, restart_of=source.id, duplicate_of=None, force_color=force_color
-    )
+    return clone_run(store, source=source, restart_of=source.id, duplicate_of=None, force_color=force_color)
 
 
 def duplicate_run(
@@ -256,9 +262,7 @@ def duplicate_run(
     """Start a concurrent copy of a previous run's command metadata."""
 
     source = store.get_run(run_id)
-    return clone_run(
-        store, source=source, restart_of=None, duplicate_of=source.id, force_color=force_color
-    )
+    return clone_run(store, source=source, restart_of=None, duplicate_of=source.id, force_color=force_color)
 
 
 def clone_run(
