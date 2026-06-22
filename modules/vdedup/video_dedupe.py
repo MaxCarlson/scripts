@@ -853,7 +853,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     # Output & logging
     scan_p.add_argument(
         "-o", "--output-dir", type=str,
-        help="Directory for cache, report, and log files. Defaults to current directory.",
+        help=(
+            "Directory for cache, report, and log files. "
+            "By default the report is written as vdedup-q<quality>-report.json in this directory. "
+            "Defaults to current directory."
+        ),
     )
     scan_p.add_argument(
         "-K", "--resume-output", action="store_true",

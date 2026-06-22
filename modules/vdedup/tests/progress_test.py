@@ -67,3 +67,26 @@ def test_stage_stall_detector_emits_warning() -> None:
     # second call without new activity should not duplicate warning
     reporter._check_stage_stall()
     assert len(reporter.recent_logs()) == last_count
+
+
+def test_stop_handles_unicode_encode_error_from_live_dashboard() -> None:
+    reporter = ProgressReporter(enable_dash=True)
+
+    class FailingLive:
+        def stop(self) -> None:
+            raise UnicodeEncodeError("charmap", "x", 0, 1, "no mapping")
+
+    class RecordingConsole:
+        def __init__(self) -> None:
+            self.messages: list[str] = []
+
+        def print(self, message) -> None:
+            self.messages.append(str(message))
+
+    reporter._live = FailingLive()
+    reporter.console = RecordingConsole()
+
+    reporter.stop()
+
+    assert reporter._live is None
+    assert reporter.console.messages == ["Pipeline Complete"]

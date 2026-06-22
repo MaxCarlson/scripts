@@ -25,6 +25,15 @@ def test_scan_subcommand_help():
     assert exc_info.value.code == 0
 
 
+def test_scan_help_mentions_default_report_output(capsys: pytest.CaptureFixture[str]) -> None:
+    """scan help documents the auto-generated report filename."""
+    with pytest.raises(SystemExit) as exc_info:
+        parse_args(["scan", "--help"])
+    assert exc_info.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "vdedup-q<quality>-report.json" in help_text
+
+
 def test_view_subcommand_help():
     """video-dedupe view -h exits cleanly."""
     with pytest.raises(SystemExit) as exc_info:

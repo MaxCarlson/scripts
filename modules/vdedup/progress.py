@@ -586,13 +586,21 @@ class ProgressReporter:
             self._control_thread = None
         self._controls_enabled = False
         if self.enable_dash and self._live:
-            self._live.stop()
+            try:
+                self._live.stop()
+            except UnicodeEncodeError:
+                self._live = None
+                self.console.print("Pipeline Complete")
+                return
             self._live = None
             final = Panel(
                 Align.center(Text("Pipeline Complete", style="bold green")),
                 border_style="green",
             )
-            self.console.print(final)
+            try:
+                self.console.print(final)
+            except UnicodeEncodeError:
+                self.console.print("Pipeline Complete")
 
     def add_log(self, message: str, level: str = "INFO", *, source: str = "pipeline") -> None:
         """Record a diagnostic log entry for the UI."""
