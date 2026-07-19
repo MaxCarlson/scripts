@@ -369,6 +369,13 @@ REGISTRY: dict = {
         "desc": "Process video and image files; clean up download fragments",
         "items": [
             {
+                "name": "mangadl (module)",
+                "path": "modules/mangadl",
+                "desc": "Concurrent manga/gallery downloader with routing, recovery, worker dashboard, and logs",
+                "help_cmd": ["mangadl", "--help"],
+                "version": "1.3.0",
+            },
+            {
                 "name": "edit_video_file.py",
                 "path": "pyscripts/edit_video_file.py",
                 "desc": "Edit video files (trim, concat) using FFmpeg",
