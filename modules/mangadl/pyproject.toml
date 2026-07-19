@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mangadl"
+version = "1.3.0"
+description = "Concurrent, resumable manga and gallery download manager."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["gallery-dl>=1.32,<2", "termdash>=0.4.0"]
+
+[project.scripts]
+mangadl = "mangadl.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mangadl*"]
+
+[tool.pytest.ini_options]
+addopts = "-q --basetemp=.pytest_tmp_root/mangadl-tests"
+testpaths = ["tests"]
+pythonpath = ["."]
+tmp_path_retention_policy = "none"
