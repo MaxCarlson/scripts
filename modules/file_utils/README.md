@@ -1,4 +1,4 @@
-<!-- version: 1.4.0 -->
+<!-- version: 1.5.0 -->
 # file_utils Module
 
 The `file_utils` module provides a comprehensive set of Python utilities for managing files and directories. It offers functionalities for identifying and handling duplicate files, organizing files based on various criteria, and merging the contents of multiple files with advanced filtering and transformation options.
@@ -62,3 +62,14 @@ Example of `file_utils.py` usage (merging log files):
 ```bash
 python -m modules.file_utils.file_utils /var/log/nginx --glob_pattern "access.log*" --output_file merged_access.log --include_headers
 ```
+
+## Folder Growth Monitor
+
+The `monitor` subcommand tracks recursive file and byte growth for immediate subfolders while retaining history in an interactive terminal view.
+
+```text
+file-util monitor -P D:\Downloads -m history -H viewport
+file-util monitor -P D:\Downloads -m dashboard -s 5 -p 5 -l D:\Logs\folder-growth.csv
+```
+
+Use `-X/--no-interactive` for non-interactive runs and `-n/--max-scans` to stop after a bounded number of scans.

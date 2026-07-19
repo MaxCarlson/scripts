@@ -6,12 +6,14 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 from typing import Sequence
 import logging
 import json as _json
 from cross_platform.system_utils import SystemUtils
 from cross_platform.debug_utils import set_console_verbosity, set_log_verbosity
 from . import diskspace
+from . import file_growth_monitor
 from . import wsltool
 from . import path_ops
 
@@ -143,6 +145,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Calculate actual recursive sizes for directories.",
     )
 
+    # --- folder growth monitor command ---
+    monitor_parser = subparsers.add_parser(
+        "monitor",
+        help="Monitor folder growth with an interactive history/dashboard.",
+        description="Monitor immediate subfolders and recursively total their files and bytes.",
+    )
+    monitor_parser.add_argument("-P", "--path", default=".", help="Directory to monitor.")
+    monitor_parser.add_argument("-s", "--scan-interval", type=file_growth_monitor.positive_float, default=10.0, help="Seconds between scans.")
+    monitor_parser.add_argument("-p", "--print-interval", type=file_growth_monitor.positive_float, default=None, help="Minimum seconds between outputs.")
+    monitor_parser.add_argument("-a", "--change-window", type=file_growth_monitor.positive_float, default=10.0, help="Seconds for recent-change indication.")
+    monitor_parser.add_argument("-m", "--mode", choices=("dashboard", "history"), default="history", help="Display mode.")
+    monitor_parser.add_argument("-H", "--history-display", choices=("append", "viewport"), default="viewport", help="History style.")
+    monitor_parser.add_argument("-u", "--print-unchanged", action="store_true", help="Print unchanged history samples.")
+    monitor_parser.add_argument("-e", "--header-every", type=file_growth_monitor.non_negative_int, default=20, help="Repeat append-mode header every N rows.")
+    monitor_parser.add_argument("-M", "--max-history", type=file_growth_monitor.non_negative_int, default=0, help="Maximum viewport samples retained; 0 means unlimited.")
+    monitor_parser.add_argument("-l", "--log-file", type=Path, help="Optional CSV file for each displayed sample.")
+    monitor_parser.add_argument("-R", "--include-root-files", action="store_true", help="Include files directly inside the monitored directory.")
+    monitor_parser.add_argument("-L", "--follow-symlinks", action="store_true", help="Follow directory symlinks.")
+    monitor_parser.add_argument("-C", "--no-color", action="store_true", help="Disable ANSI colors.")
+    monitor_parser.add_argument("-X", "--no-interactive", action="store_true", help="Disable hotkeys and use Ctrl+C to stop.")
+    monitor_parser.add_argument("-n", "--max-scans", type=file_growth_monitor.non_negative_int, default=0, help="Stop after N scans; 0 means indefinitely.")
     # --- replace command ---
     replace_parser = subparsers.add_parser(
         "replace",
@@ -334,6 +357,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "ls":
         from . import lister
         return lister.run_lister(args)
+    elif args.command == "monitor":
+        args.print_interval = args.print_interval or args.scan_interval
+        args.scan_interval, args.print_interval = file_growth_monitor.normalize_intervals(args.scan_interval, args.print_interval)
+        return file_growth_monitor.monitor(args)
     elif args.command == "replace":
         from . import replacer
         return replacer.run_replacer(args)
