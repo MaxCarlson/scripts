@@ -70,7 +70,7 @@ def show_stats(
                     f"runmux stats - {time.strftime('%Y-%m-%d %H:%M:%S')} - " "q quit, Ctrl-Q quit now, Ctrl-C exit"
                 ),
                 color=sys.stdout.isatty(),
-            )
+            ).replace("\n", "\r\n")
             sys.stdout.write(screen)
             sys.stdout.flush()
             key = read_stats_key_nonblocking()
@@ -257,32 +257,26 @@ def format_stats_table(
     rows.append(format_stats_summary(stats, color=color))
     rows.append("")
     header = format_stats_header(color=color)
-    separator = f"{'-' * 4} {'-' * 8} {'-' * 7} {'-' * 10} " f"{'-' * 23} {'-' * 14} {'-' * 7} {'-' * 20}"
+    separator = f"{'-' * 4} {'-' * 8} {'-' * 7} {'-' * 10} " f"{'-' * 31} {'-' * 14} {'-' * 7} {'-' * 20}"
     rows.append(header)
     rows.append(colorize(separator, "2", enabled=color))
-    command_width = max(20, width - 84)
+    command_width = max(12, width - 88)
     for item in stats:
         detail = item.unavailable or truncate(item.record.command_line, command_width)
-        status = colorize(
-            f"{item.record.status:<8}",
-            status_color(item.record.status),
-            enabled=color,
-        )
-        cpu = colorize(
-            f"{item.cpu_percent:>6.1f}%",
-            metric_color(item.cpu_percent, 30, 75),
-            enabled=color,
-        )
+        status = colorize(f"{item.record.status:<8}", status_color(item.record.status), enabled=color)
+        cpu = colorize(f"{item.cpu_percent:>6.1f}%", metric_color(item.cpu_percent, 30, 75), enabled=color)
         rss = colorize(f"{format_bytes(item.rss_bytes):>10}", "36", enabled=color)
-        disk = (
-            f"{colorize('R', '34', enabled=color)} {format_bytes(item.read_bytes_per_second):>8}/s "
-            f"{colorize('W', '35', enabled=color)} {format_bytes(item.write_bytes_per_second):>8}/s"
+        disk_plain = (
+            f"R {format_bytes(item.read_bytes_per_second):>10}/s "
+            f"W {format_bytes(item.write_bytes_per_second):>10}/s"
         )
-        gpu = format_gpu_cell(item, color=color)
+        disk = colorize(disk_plain, "36", enabled=color)
+        gpu_plain = format_gpu_cell(item, color=False)
+        gpu = colorize(f"{gpu_plain:>14}", "32" if gpu_plain != "--" else "90", enabled=color)
         procs_threads = colorize(f"{item.process_count:>2}/{item.thread_count:<3}", "90", enabled=color)
         command = colorize(detail, "97", enabled=color)
         rows.append(
-            f"{item.record.numeric_id:<4} {status} {cpu} {rss} {disk} " f"{gpu:>14} {procs_threads:>7} {command}"
+            f"{item.record.numeric_id:<4} {status} {cpu} {rss} {disk} {gpu} {procs_threads} {command}"
         )
     if not stats:
         rows.append(colorize("No active runmux-managed processes.", "33", enabled=color))
@@ -313,7 +307,7 @@ def format_stats_summary(stats: list[ProcessStats], *, color: bool) -> str:
 def format_stats_header(*, color: bool) -> str:
     """Format the stats table header."""
 
-    header = f"{'ID':<4} {'STATE':<8} {'CPU':>7} {'RAM':>10} {'DISK I/O':<23} " f"{'GPU':>14} {'P/T':>7} COMMAND"
+    header = f"{'ID':<4} {'STATE':<8} {'CPU':>7} {'RAM':>10} {'DISK I/O':<31} " f"{'GPU':>14} {'P/T':>7} COMMAND"
     return colorize(header, "1;37", enabled=color)
 
 

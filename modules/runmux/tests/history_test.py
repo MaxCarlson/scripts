@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from runmux.history import (
@@ -13,6 +14,7 @@ from runmux.history import (
     most_common_history_entries,
     record_run_finished,
     record_run_started,
+    save_record_command,
     save_command,
     saved_bases,
 )
@@ -80,6 +82,25 @@ def test_saved_bases_and_command_stats(tmp_path: Path) -> None:
     assert stats["base_counts"] == {"ytaedl": 1}
     assert stats["saved"][0]["run_count"] == 1
     assert stats["saved"][0]["average_runtime_seconds"] == 10.0
+
+
+def test_save_record_command_preserves_execution_context(tmp_path: Path) -> None:
+    record = make_record(tmp_path)
+    contextual_record = replace(
+        record,
+        name="stars",
+        rows=40,
+        columns=140,
+        env_overrides_json='{"FORCE_COLOR": "1"}',
+    )
+
+    saved = save_record_command(contextual_record, path=tmp_path / "commands.json")
+
+    assert saved.cwd == str(tmp_path)
+    assert saved.name == "stars"
+    assert saved.rows == 40
+    assert saved.columns == 140
+    assert saved.force_color is True
 
 
 def test_indexed_history_is_newest_first_and_filter_preserves_ids(tmp_path: Path) -> None:

@@ -384,15 +384,36 @@ class RunStore:
             raise AmbiguousRunIdError(f"Run ID prefix '{run_id_or_prefix}' is ambiguous. Matches: {matches}")
         return str(rows[0]["id"])
 
-    def list_runs(self, *, include_all: bool = True, limit: int | None = None) -> list[RunRecord]:
+    def list_runs(
+        self,
+        *,
+        include_all: bool = True,
+        limit: int | None = None,
+        statuses: list[str] | None = None,
+    ) -> list[RunRecord]:
         """List runs ordered by newest first."""
 
-        where = "" if include_all else "WHERE status IN ('pending', 'running', 'paused')"
+        normalized_statuses = list(statuses or [])
+        if "active" in normalized_statuses:
+            normalized_statuses = [status for status in normalized_statuses if status != "active"]
+            normalized_statuses.extend(["pending", "running", "paused"])
+        if normalized_statuses:
+            placeholders = ",".join("?" for _ in normalized_statuses)
+            where = f"WHERE status IN ({placeholders})"
+            where_params: tuple[Any, ...] = tuple(dict.fromkeys(normalized_statuses))
+        elif include_all:
+            where = ""
+            where_params = ()
+        else:
+            where = "WHERE status IN ('pending', 'running', 'paused')"
+            where_params = ()
         limit_sql = "" if limit is None else "LIMIT ?"
-        params: tuple[Any, ...] = () if limit is None else (limit,)
+        params = where_params if limit is None else (*where_params, limit)
         with self.connect() as connection:
             rows = connection.execute(
-                f"SELECT * FROM runs {where} ORDER BY created_at DESC {limit_sql}",
+                f"SELECT * FROM runs {where} "
+                "ORDER BY CASE WHEN status IN ('pending', 'running', 'paused') THEN 0 ELSE 1 END, created_at DESC "
+                f"{limit_sql}",
                 params,
             ).fetchall()
         return [RunRecord.from_row(row) for row in rows]
@@ -424,6 +445,24 @@ class RunStore:
                     [(record.id,) for record in records],
                 )
         return records
+
+    def prune_terminal_runs(self, *, limit: int) -> list[RunRecord]:
+        """Retain only the newest configured number of terminal run records."""
+
+        if limit < 0:
+            raise RegistryError("Terminal record limit must be non-negative.")
+        statuses = tuple(sorted(TERMINAL_STATUSES))
+        placeholders = ",".join("?" for _ in statuses)
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM runs WHERE status IN ({placeholders}) "
+                "ORDER BY created_at DESC",
+                statuses,
+            ).fetchall()
+            removed = [RunRecord.from_row(row) for row in rows[limit:]]
+            if removed:
+                connection.executemany("DELETE FROM runs WHERE id = ?", [(record.id,) for record in removed])
+        return removed
 
     def update_run(self, run_id: str, **fields: Any) -> RunRecord:
         """Update selected fields for a run and return the updated record."""

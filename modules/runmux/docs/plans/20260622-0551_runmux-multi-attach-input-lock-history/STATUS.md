@@ -1,6 +1,6 @@
 # Multi-Attach and History Status
 
-Last updated: 2026-07-19 07:58:00 -07:00
+Last updated: 2026-07-19 08:18:00 -07:00
 
 ## Current Position
 
@@ -108,8 +108,10 @@ routing, legacy probe filtering, left-aligned/multiline status-aware metadata,
 combined interactive/CLI filters, detail and full-content toggles, replay run
 dialog, and `-p/--run-path`. Normal text now prints oldest-to-newest with a red
 `(ID).` marker, date on a separate line, and the interactive renderer uses
-CRLF plus a wrapped help/footer bar for narrow Windows consoles. `restart` and
-`duplicate` no longer append normal history. No post-change tests have been
-run at the user's request. Next is the user-owned targeted test/manual
-validation pass; locked JSONL migration and retention remain unfinished Stage
-4 storage work.
+CRLF plus a wrapped help/footer bar for narrow Windows consoles. Interactive
+status/date rows are separated, `w`/`x` wraps full values, `i` opens a full
+inspector with a run/back footer, and `run -H -i ID -V/--verify` requires an
+explicit y/n confirmation. `restart` and `duplicate` no longer append normal
+history. No post-change tests have been run at the user's request. Next is the
+user-owned targeted test/manual validation pass; locked JSONL migration and
+retention remain unfinished Stage 4 storage work.

@@ -8,6 +8,7 @@ import select
 import shutil
 import socket
 import sys
+import textwrap
 import threading
 import time
 import uuid
@@ -245,32 +246,38 @@ def build_list_rows(
     selected_index: int | None = None,
     color: bool = False,
     attachment_summaries: dict[str, AttachmentSummary] | None = None,
+    show_date: bool = False,
+    show_path: bool = False,
+    show_exit_code: bool = False,
 ) -> list[str]:
     """Build display rows for the live list table."""
 
-    id_width = 5
+    id_width = 6
     status_width = 9
     runtime_width = 8
-    pid_width = 8
-    attach_width = 22
-    fixed = id_width + status_width + runtime_width + pid_width + attach_width + 11
-    command_width = max(20, width - fixed)
+    pid_width = 7
+    attach_width = 21
+    separator_width = 5
+    fixed = id_width + status_width + runtime_width + pid_width + attach_width + separator_width
+    command_width = max(12, width - fixed)
+    command_on_own_line = command_width < 40
     rows = [
         colorize(
-            f"{'ID':<{id_width}} {'STATUS':<{status_width}} {'RUNTIME':>{runtime_width}} "
-            f"{'PID':>{pid_width}} {'ATTACH':<{attach_width}} COMMAND",
+            f"{'ID':>{id_width}} {'STATUS':<{status_width}} {'RUNTIME':>{runtime_width}} "
+            f"{'PID':>{pid_width}} {'ATTACH':<{attach_width}}" + (" COMMAND" if not command_on_own_line else ""),
             "1;37",
             enabled=color,
         ),
         colorize(
             f"{'-' * id_width} {'-' * status_width} {'-' * runtime_width} "
-            f"{'-' * pid_width} {'-' * attach_width} {'-' * command_width}",
+            f"{'-' * pid_width} {'-' * attach_width}" + (f" {'-' * command_width}" if not command_on_own_line else ""),
             "2",
             enabled=color,
         ),
     ]
     for index, record in enumerate(records):
         pid = "" if record.pid is None else str(record.pid)
+        identifier = colorize(f"({record.numeric_id}).".ljust(id_width), "31", enabled=color)
         status = colorize(
             f"{record.status:<{status_width}}",
             status_color(record.status),
@@ -281,24 +288,37 @@ def build_list_rows(
             "36",
             enabled=color,
         )
-        command = colorize(truncate(record.command_line, command_width), "97", enabled=color)
+        pid_text = colorize(f"{pid:>{pid_width}}", "33", enabled=color)
+        command = colorize(truncate(record.command_line, command_width), "36", enabled=color)
         summary = (attachment_summaries or {}).get(record.id)
         attach = format_attachment_summary(summary, width=attach_width, color=color)
         row = (
-            f"{str(record.numeric_id):<{id_width}} "
+            f"{identifier} "
             f"{status} "
             f"{runtime} "
-            f"{pid:>{pid_width}} "
-            f"{attach} "
-            f"{command}"
+            f"{pid_text} "
+            f"{attach}"
         )
+        if not command_on_own_line:
+            row = f"{row} {command}"
         if selected_index == index:
             row = f"\x1b[7m{row}\x1b[0m"
         rows.append(row)
+        if command_on_own_line:
+            for line in textwrap.wrap(record.command_line, width=max(1, width - 2), break_long_words=True, break_on_hyphens=False) or [""]:
+                rows.append(colorize(f"  {line}", "36", enabled=color))
+        if show_path:
+            rows.append(colorize(record.cwd, "35", enabled=color))
+        if show_date:
+            rows.append(colorize(f"created={record.created_at}  ended={record.ended_at or '--'}", "90", enabled=color))
+        if show_exit_code:
+            rows.append(colorize(f"exit={record.exit_code if record.exit_code is not None else '--'}", status_color(record.status), enabled=color))
+        if index < len(records) - 1:
+            rows.append("")
     if selected_index is not None and records:
         selected = records[selected_index]
         rows.append("")
-        rows.append(f"Selected {selected.numeric_id}: i=interact  v=view  q=quit")
+        rows.append(f"Selected {selected.numeric_id}: i=interact  v=view  s=save  d=duplicate  p=pause/resume  k=kill  r=restart  q=quit")
     return rows
 
 
@@ -348,11 +368,16 @@ def list_runs_live(
     limit: int | None,
     refresh_seconds: float,
     output_json: bool,
+    statuses: list[str] | None = None,
+    terminal_limit: int = 500,
+    show_date: bool = False,
+    show_path: bool = False,
+    show_exit_code: bool = False,
 ) -> int:
     """Display runs once or as a live in-place table."""
 
     if output_json:
-        records = refresh_active_statuses(store.list_runs(include_all=include_all, limit=limit), store)
+        records = listed_records(store, include_all=include_all, limit=limit, statuses=statuses, terminal_limit=terminal_limit)
         summaries = attachment_summaries_for(store, records)
         payload = [record_to_json(record, attachment=summaries[record.id]) for record in records]
         print(json.dumps(payload, indent=2))
@@ -360,25 +385,30 @@ def list_runs_live(
 
     if once:
         width = shutil.get_terminal_size(fallback=(120, 30)).columns
-        records = refresh_active_statuses(store.list_runs(include_all=include_all, limit=limit), store)
+        records = listed_records(store, include_all=include_all, limit=limit, statuses=statuses, terminal_limit=terminal_limit)
         summaries = attachment_summaries_for(store, records)
         print(
             "\n".join(
                 build_list_rows(
                     records,
                     width=width,
+                    color=sys.stdout.isatty(),
                     attachment_summaries=summaries,
+                    show_date=show_date,
+                    show_path=show_path,
+                    show_exit_code=show_exit_code,
                 )
             )
         )
         return 0
 
     selected_index = 0
+    message = ""
     print("\x1b[?25l", end="")
     try:
         while True:
             width = shutil.get_terminal_size(fallback=(120, 30)).columns
-            records = refresh_active_statuses(store.list_runs(include_all=include_all, limit=limit), store)
+            records = listed_records(store, include_all=include_all, limit=limit, statuses=statuses, terminal_limit=terminal_limit)
             summaries = attachment_summaries_for(store, records)
             selected_index = max(0, min(selected_index, len(records) - 1)) if records else 0
             rows = build_list_rows(
@@ -387,10 +417,19 @@ def list_runs_live(
                 selected_index=selected_index if records else None,
                 color=sys.stdout.isatty(),
                 attachment_summaries=summaries,
+                show_date=show_date,
+                show_path=show_path,
+                show_exit_code=show_exit_code,
             )
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-            header = f"runmux live list - {timestamp} - Up/Down select, i interact, v view, q quit"
-            screen = "\x1b[H\x1b[2J" + header + "\n\n" + "\n".join(rows) + "\n"
+            header = (
+                f"runmux live list - {timestamp} - Up/Down j/k select, PgUp/PgDn page, "
+                "i interact, v view, s save, d duplicate, p pause/resume, k kill, r restart, q quit"
+            )
+            if message:
+                header = f"{header} - {message}"
+                message = ""
+            screen = "\x1b[H\x1b[2J" + header + "\r\n\r\n" + "\r\n".join(rows) + "\r\n"
             sys.stdout.write(screen)
             sys.stdout.flush()
             deadline = time.monotonic() + refresh_seconds
@@ -407,6 +446,15 @@ def list_runs_live(
                 if key in {"DOWN", "j", "J"} and records:
                     selected_index = min(len(records) - 1, selected_index + 1)
                     break
+                if key == "PAGE_UP" and records:
+                    selected_index = max(0, selected_index - max(1, shutil.get_terminal_size(fallback=(120, 30)).lines - 6))
+                    break
+                if key == "PAGE_DOWN" and records:
+                    selected_index = min(
+                        len(records) - 1,
+                        selected_index + max(1, shutil.get_terminal_size(fallback=(120, 30)).lines - 6),
+                    )
+                    break
                 if key in {"v", "V"} and records:
                     sys.stdout.write("\x1b[?25h\x1b[H\x1b[2J")
                     sys.stdout.flush()
@@ -421,11 +469,74 @@ def list_runs_live(
                     sys.stdout.write("\x1b[?25h\x1b[H\x1b[2J")
                     sys.stdout.flush()
                     return interact_run(store, run_id=str(records[selected_index].numeric_id), tail_lines=None)
+                if key in {"s", "S"} and records:
+                    from runmux.runner import save_run_command
+
+                    saved_record = save_run_command(store, run_id=records[selected_index].id)
+                    message = f"Saved run {saved_record.numeric_id}."
+                    break
+                if key in {"d", "D"} and records:
+                    from runmux.runner import duplicate_run
+
+                    duplicate_run(store, run_id=records[selected_index].id)
+                    message = "Duplicated selected run."
+                    break
+                if key in {"k", "K"} and records:
+                    from runmux.runner import kill_run
+
+                    kill_run(store, run_id=records[selected_index].id, force=False)
+                    message = "Kill requested."
+                    break
+                if key in {"p", "P"} and records:
+                    from runmux.runner import pause_run, resume_run
+
+                    selected = records[selected_index]
+                    if selected.status == "paused":
+                        resume_run(store, run_id=selected.id)
+                        message = "Resumed selected run."
+                    elif selected.is_active:
+                        pause_run(store, run_id=selected.id)
+                        message = "Paused selected run."
+                    else:
+                        message = "Only active runs can be paused or resumed."
+                    break
+                if key in {"r", "R"} and records:
+                    from runmux.runner import restart_run
+
+                    selected = records[selected_index]
+                    if selected.status in TERMINAL_STATUSES:
+                        restart_run(store, run_id=selected.id)
+                        message = "Restarted selected run."
+                    else:
+                        message = "Only terminal runs can be restarted; use d to duplicate an active run."
+                    break
     except KeyboardInterrupt:
         return 0
     finally:
         print("\x1b[?25h", end="")
         sys.stdout.flush()
+
+
+def listed_records(
+    store: RunStore,
+    *,
+    include_all: bool,
+    limit: int | None,
+    statuses: list[str] | None,
+    terminal_limit: int,
+) -> list[RunRecord]:
+    """Refresh records and keep at most the configured terminal-record count visible."""
+
+    store.prune_terminal_runs(limit=terminal_limit)
+    records = refresh_active_statuses(
+        store.list_runs(include_all=include_all, limit=limit, statuses=statuses),
+        store,
+    )
+    if statuses or not include_all:
+        return records
+    active = [record for record in records if record.is_active]
+    terminal = [record for record in records if not record.is_active][:terminal_limit]
+    return active + terminal
 
 
 def read_key_nonblocking() -> str | None:
@@ -443,6 +554,10 @@ def read_key_nonblocking() -> str | None:
                 return "UP"
             if second == "P":
                 return "DOWN"
+            if second == "I":
+                return "PAGE_UP"
+            if second == "Q":
+                return "PAGE_DOWN"
             return second
         return key
     ready, _, _ = select.select([sys.stdin], [], [], 0)
@@ -455,6 +570,9 @@ def read_key_nonblocking() -> str | None:
             return "UP"
         if rest == "[B":
             return "DOWN"
+        if rest in {"[5", "[6"}:
+            sys.stdin.read(1)
+            return "PAGE_UP" if rest == "[5" else "PAGE_DOWN"
     return key
 
 

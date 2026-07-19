@@ -1,6 +1,6 @@
 # Runmux Current Handoff
 
-Last updated: 2026-07-19 07:46:07 -07:00
+Last updated: 2026-07-19 08:18:00 -07:00
 
 ## Resume Here
 
@@ -91,6 +91,10 @@ Run the user-owned targeted test commands and manually validate the Stage 4
 history workflow. The second-round requirements are coded but not validated:
 isolated test-history routing, legacy probe filtering, left-aligned/multiline
 colored metadata, combined/clearable filters, metadata/full-content toggles,
-and the multi-instance original/current/custom-path run dialog. Normal history
-now records only `runmux run` launch paths; restart and duplicate clones are
-excluded. Do not commit before validation.
+the multi-instance original/current/custom-path run dialog, date-separated
+interactive rows, `w`/`x` wrapping, Enter inspection, and `-V/--verify` replay
+confirmation. The follow-up now uses Enter inspection plus `p` detail printing,
+page navigation, ANSI-safe stats columns, and full saved-command execution
+context. `runmux load` now provides the saved-command browser and `cmd` is its
+compatibility alias. Normal history now records only `runmux run` launch paths;
+restart and duplicate clones are excluded. Do not commit before validation.

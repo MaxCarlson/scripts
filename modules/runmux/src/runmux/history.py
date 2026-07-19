@@ -31,6 +31,10 @@ class SavedCommand:
     cwd: str
     saved_at: str
     last_run_at: str | None = None
+    name: str | None = None
+    rows: int | None = None
+    columns: int | None = None
+    force_color: bool = True
 
 
 def get_history_path() -> Path:
@@ -132,7 +136,21 @@ def save_record_command(record: RunRecord, *, path: Path | None = None) -> Saved
     """Save a run record's command for later reuse."""
 
     argv = decode_argv(record.argv_json)
-    return save_command(argv=argv, command_line=record.command_line, cwd=record.cwd, path=path)
+    try:
+        env_overrides = json.loads(record.env_overrides_json)
+    except json.JSONDecodeError:
+        env_overrides = {}
+    force_color = bool(isinstance(env_overrides, dict) and env_overrides.get("FORCE_COLOR") == "1")
+    return save_command(
+        argv=argv,
+        command_line=record.command_line,
+        cwd=record.cwd,
+        name=record.name,
+        rows=record.rows,
+        columns=record.columns,
+        force_color=force_color,
+        path=path,
+    )
 
 
 def save_command(
@@ -140,16 +158,20 @@ def save_command(
     argv: list[str],
     command_line: str | None = None,
     cwd: str,
+    name: str | None = None,
+    rows: int | None = None,
+    columns: int | None = None,
+    force_color: bool = True,
     path: Path | None = None,
 ) -> SavedCommand:
-    """Save argv as a reusable command if it is not already saved."""
+    """Save argv and its execution context as a reusable command."""
 
     if not argv:
         raise HistoryError("Cannot save an empty command.")
     data = load_data(path)
     rendered = command_line or render_command_line(argv)
     for raw in data["saved_commands"]:
-        if raw.get("command_line") == rendered:
+        if raw.get("command_line") == rendered and raw.get("cwd") == cwd:
             return saved_from_dict(raw)
     next_id = next_saved_id(data["saved_commands"])
     item = {
@@ -158,6 +180,10 @@ def save_command(
         "argv": argv,
         "command_line": rendered,
         "cwd": cwd,
+        "name": name,
+        "rows": rows,
+        "columns": columns,
+        "force_color": force_color,
         "saved_at": utc_now_iso(),
         "last_run_at": None,
     }
@@ -166,13 +192,13 @@ def save_command(
     return saved_from_dict(item)
 
 
-def mark_saved_command_run(command_line: str, *, path: Path | None = None) -> None:
+def mark_saved_command_run(command_line: str, *, cwd: str | None = None, path: Path | None = None) -> None:
     """Record that a saved command was launched."""
 
     data = load_data(path)
     changed = False
     for raw in data["saved_commands"]:
-        if raw.get("command_line") == command_line:
+        if raw.get("command_line") == command_line and (cwd is None or raw.get("cwd") == cwd):
             raw["last_run_at"] = utc_now_iso()
             changed = True
             break
@@ -363,6 +389,10 @@ def saved_from_dict(raw: dict[str, Any]) -> SavedCommand:
         cwd=str(raw.get("cwd") or "."),
         saved_at=str(raw.get("saved_at") or ""),
         last_run_at=raw.get("last_run_at") if isinstance(raw.get("last_run_at"), str) else None,
+        name=raw.get("name") if isinstance(raw.get("name"), str) else None,
+        rows=raw.get("rows") if isinstance(raw.get("rows"), int) else None,
+        columns=raw.get("columns") if isinstance(raw.get("columns"), int) else None,
+        force_color=bool(raw.get("force_color", True)),
     )
 
 

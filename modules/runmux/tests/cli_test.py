@@ -6,6 +6,7 @@ import json
 import sys
 import threading
 import time
+import pytest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -15,16 +16,16 @@ from runmux.cli import (
     browse_history_fzf,
     build_parser,
     format_history_entry,
-    handle_cmd,
+    handle_load,
     handle_history,
     handle_ls,
     handle_remove,
-    handle_remove_finished,
     handle_run,
     handle_save,
     launch_history_entry,
     print_command_stats,
     render_history_browser,
+    render_history_inspector,
 )
 from runmux.client import (
     AttachCommand,
@@ -49,7 +50,7 @@ from runmux.runner import (
     remove_finished_runs,
     start_supervisor,
 )
-from runmux.store import RunStore
+from runmux.store import RegistryError, RunStore
 
 
 def test_normalize_program_args_strips_double_dash() -> None:
@@ -79,11 +80,14 @@ def test_ls_alias_defaults_to_one_shot_list(tmp_path: Path) -> None:
     assert args.func is handle_ls
 
 
-def test_remove_finished_command_parses(tmp_path: Path) -> None:
-    args = build_parser().parse_args(["--state-dir", str(tmp_path), "remove-finished", "--clean-only"])
+def test_ls_defaults_to_active_only_and_supports_terminal_views(tmp_path: Path) -> None:
+    default = build_parser().parse_args(["--state-dir", str(tmp_path), "ls"])
+    all_runs = build_parser().parse_args(["--state-dir", str(tmp_path), "ls", "--terminal", "--interactive"])
+    filtered = build_parser().parse_args(["--state-dir", str(tmp_path), "ls", "--status", "finished"])
 
-    assert args.func is handle_remove_finished
-    assert args.clean_only is True
+    assert default.terminal is False
+    assert all_runs.terminal is True and all_runs.interactive is True
+    assert filtered.status == ["finished"]
 
 
 def test_rm_alias_uses_remove_handler(tmp_path: Path) -> None:
@@ -137,12 +141,13 @@ def test_history_search_common_and_metadata_flags_parse(tmp_path: Path) -> None:
 
 def test_history_replay_flags_parse(tmp_path: Path) -> None:
     args = build_parser().parse_args(
-        ["--state-dir", str(tmp_path), "run", "--history", "--id", "7", "--path", "--detach"]
+        ["--state-dir", str(tmp_path), "run", "--history", "--id", "7", "--path", "--verify", "--detach"]
     )
 
     assert args.history is True
     assert args.history_id == 7
     assert args.history_path is True
+    assert args.verify is True
     assert args.program == []
 
 
@@ -160,10 +165,18 @@ def test_save_command_parses(tmp_path: Path) -> None:
     assert args.id == "2"
 
 
-def test_cmd_command_parses_stats(tmp_path: Path) -> None:
-    args = build_parser().parse_args(["--state-dir", str(tmp_path), "cmd", "--stats"])
+def test_save_history_entry_parses(tmp_path: Path) -> None:
+    args = build_parser().parse_args(["--state-dir", str(tmp_path), "save", "--history", "2"])
 
-    assert args.func is handle_cmd
+    assert args.history_id == 2
+
+
+def test_load_command_parses_stats_and_cmd_is_an_alias(tmp_path: Path) -> None:
+    args = build_parser().parse_args(["--state-dir", str(tmp_path), "load", "--stats"])
+    alias_args = build_parser().parse_args(["--state-dir", str(tmp_path), "cmd", "--stats"])
+
+    assert args.func is handle_load
+    assert alias_args.func is handle_load
     assert args.stats is True
 
 
@@ -263,7 +276,7 @@ def test_history_browser_renders_global_ids_and_bottom_hotkeys() -> None:
 
     assert "(3).  ytaedl run" in rendered
     assert "r run | s save" in rendered
-    assert rendered.rstrip().endswith("Enter | q")
+    assert rendered.rstrip().endswith("w/x wrap | q")
 
 
 def test_history_browser_can_render_full_multiline_details() -> None:
@@ -287,7 +300,32 @@ def test_history_browser_can_render_full_multiline_details() -> None:
     assert "C:\\a\\long\\working\\directory" in rendered
     assert "status=finished" in rendered
     assert "runtime=12s" in rendered
-    assert "v details | x full" in rendered
+    assert "v details | w/x wrap" in rendered
+
+
+def test_history_inspector_shows_full_known_history_metadata() -> None:
+    rendered = render_history_inspector(
+        {
+            "history_id": 3,
+            "command_line": "ytaedl run urls.txt",
+            "cwd": "D:\\work",
+            "argv": ["ytaedl", "run", "urls.txt"],
+            "status": "finished",
+            "exit_code": 0,
+            "runtime_seconds": 61,
+            "started_at": "2026-07-19T12:00:00+00:00",
+            "ended_at": "2026-07-19T12:01:01+00:00",
+            "run_id": "run-uuid",
+            "numeric_id": 11,
+            "base": "ytaedl",
+        }
+    )
+
+    assert "Command: ytaedl run urls.txt" in rendered
+    assert "Working path: D:\\work" in rendered
+    assert "Runtime: 1m01s" in rendered
+    assert "r run | Esc/q back" in rendered
+    assert "\x1b[36mCommand: ytaedl run urls.txt\x1b[0m" in rendered
 
 
 def test_history_browser_filters_can_be_combined_without_renumbering(tmp_path: Path) -> None:
@@ -983,18 +1021,11 @@ def test_remove_finished_cleans_leftover_supervisor_process(tmp_path: Path) -> N
     assert store.list_runs() == []
 
 
-def test_handle_remove_without_target_removes_terminal_runs(capsys) -> None:
+def test_handle_remove_without_target_requires_an_id() -> None:
     args = argparse.Namespace(id=None, target=None)
 
-    with (
-        patch("runmux.cli.get_store", return_value=Mock()) as get_store,
-        patch("runmux.cli.remove_finished_runs", return_value=[Mock(), Mock()]) as remove_all,
-    ):
-        result = handle_remove(args)
-
-    assert result == 0
-    remove_all.assert_called_once_with(get_store.return_value, clean_only=False)
-    assert "Removed 2 run(s)." in capsys.readouterr().out
+    with pytest.raises(RegistryError, match="requires"):
+        handle_remove(args)
 
 
 def test_handle_remove_with_target_removes_one_run(capsys) -> None:

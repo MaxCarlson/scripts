@@ -53,6 +53,8 @@ runmux run --history --id 1 --path
   dimensions, color handling, and save-command behavior during replay.
 - Add `-P/--path` for history replay. When present, validate the stored working
   directory and launch only after selecting that directory as the child cwd.
+- Add `-V/--verify` to history replay. Show the exact command, effective path,
+  and instance count, then require `y` to proceed or allow `n` to cancel.
 - Without `--path`, use explicit `-c/--cwd` when supplied, otherwise use the
   caller's current directory.
 - Reject missing IDs, invalid IDs, `--path` without `--history`, conflicting
@@ -92,7 +94,8 @@ runmux run --history --id 1 --path
 - Render the recorded path on a new, fully left-aligned line below its command;
   omit a `path=` label and use a distinct path color.
 - Render status/exit code on another line, with runtime adjacent when enabled.
-- Render date/time on its own information line. Color status, date/time, and
+- Render date/time on its own information line in both normal and interactive
+  views. Color status, date/time, and
   runtime according to the entry lifecycle status; keep the ID color distinct.
 - Record exit code and runtime at supervisor completion so new history entries
   can populate these optional fields.
@@ -117,6 +120,30 @@ runmux run --history --id 1 --path
   and compact command-only rows.
 - Add a full-content hotkey that toggles clipped single-line rows versus wrapped
   full commands, full paths, and metadata.
+- Enter opens a dedicated, fully colored inspector for the selected entry. It
+  must show the complete stored command, argv, path, timing, status, IDs, and
+  other known metadata; `r` opens its run dialog and Esc/q returns to the
+  multi-command browser. Add `p` to leave the browser and print the complete
+  colorized command record for copying or review.
+- Support arrows and `j`/`k` for single-entry navigation and Page Up/Page Down
+  for page-sized movement in all selectable runmux interactive views.
+- Preserve a saved command's argv, cwd, friendly name, terminal dimensions,
+  and forced-color mode. A saved-command replay uses those values unless an
+  explicit `run` option overrides them.
+- Replace the prompt-only `cmd` viewer with `load` (keeping `cmd` as a
+  compatibility alias). `load` must provide normal, filtered, JSON, fzf, and
+  interactive saved-command browsing with the same inspect/print/run controls
+  as history; saved IDs stay stable and are usable with `runmux run load -i ID`.
+- Make `ls` active/paused-only by default, with `--all` for active-first plus
+  terminal records and repeatable status filters. Provide optional cwd/date/
+  exit-code detail rows and an interactive action browser for viewing,
+  interacting, duplicating, pausing/resuming, killing, and restarting runs.
+- Add persistent module-local configuration, initially with
+  `terminal_record_limit=500`, and prune older terminal records automatically
+  so bulk `remove-finished` is unnecessary.
+- Standardize `-A/--all-details` as cosmetic-only: it enables every display
+  field for history, saved-command load, and run-list output without changing
+  filtering, retention, selection, or execution behavior.
 - On `r`, open a run dialog before launching. Prompt for instance count
   (default 1), then launch location (default original recorded cwd, current cwd,
   or a manually entered path). Pressing Enter through both defaults launches
@@ -171,4 +198,4 @@ runmux run --history --id 1 --path
   smoke tests, and a real replay from a non-default working directory.
 - Stop for manual validation before committing this stage.
 
-Last edited: 2026-07-19 07:58:00 -07:00
+Last edited: 2026-07-19 08:18:00 -07:00

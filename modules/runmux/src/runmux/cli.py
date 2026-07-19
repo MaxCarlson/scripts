@@ -14,6 +14,7 @@ from typing import Any
 
 from runmux import __version__
 from runmux.client import ClientError, interact_run, list_runs_live, view_run
+from runmux.config import ConfigError, load_config, set_config_value
 from runmux.constants import ATTACH_RESERVED_ROWS, DEFAULT_REFRESH_SECONDS
 from runmux.history import (
     HistoryError,
@@ -26,6 +27,7 @@ from runmux.history import (
     mark_saved_command_run,
     most_common_history_entries,
     save_command,
+    save_record_command,
     saved_bases,
 )
 from runmux.ipc import IpcError
@@ -136,6 +138,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run a history command from its recorded working directory.",
     )
     run_parser.add_argument(
+        "-V",
+        "--verify",
+        action="store_true",
+        help="Show a history replay summary and require y/n confirmation before starting it.",
+    )
+    run_parser.add_argument(
         "-C",
         "--no-force-color",
         action="store_true",
@@ -188,9 +196,16 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser.add_argument("-j", "--json", action="store_true", help="Emit JSON and exit.")
     list_parser.set_defaults(func=handle_list)
 
-    ls_parser = subparsers.add_parser("ls", help="Show runmux-managed programs once.")
-    add_list_filters(ls_parser)
+    ls_parser = subparsers.add_parser("ls", help="Show active runmux-managed programs.")
+    add_ls_filters(ls_parser)
     ls_parser.set_defaults(func=handle_ls)
+
+    config_parser = subparsers.add_parser("config", help="Show or update persistent runmux settings.")
+    config_group = config_parser.add_mutually_exclusive_group()
+    config_group.add_argument("-g", "--get", metavar="KEY", help="Show one configuration value.")
+    config_group.add_argument("-s", "--set", nargs=2, metavar=("KEY", "VALUE"), help="Persist one configuration value.")
+    config_parser.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
+    config_parser.set_defaults(func=handle_config)
 
     view_parser = subparsers.add_parser("view", help="View a managed program's ANSI output.")
     view_parser.add_argument("-i", "--id", required=True, help="Run ID or unambiguous ID prefix.")
@@ -280,18 +295,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_remove_args(rm_parser)
     rm_parser.set_defaults(func=handle_remove)
 
-    remove_finished_parser = subparsers.add_parser(
-        "remove-finished",
-        help="Remove all finished runs from the registry.",
-    )
-    remove_finished_parser.add_argument(
-        "-C",
-        "--clean-only",
-        action="store_true",
-        help="Only remove cleanly finished runs, leaving failed, killed, and lost runs.",
-    )
-    remove_finished_parser.set_defaults(func=handle_remove_finished)
-
     stats_parser = subparsers.add_parser(
         "stats",
         help="Show live CPU, memory, thread, and disk I/O stats for active runs.",
@@ -363,6 +366,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Include status and exit code.",
     )
     history_parser.add_argument("-r", "--runtime", action="store_true", help="Include elapsed runtime.")
+    history_parser.add_argument("-A", "--all-details", action="store_true", help="Include every cosmetic history detail.")
     history_parser.add_argument(
         "-p",
         "--plain",
@@ -372,19 +376,33 @@ def build_parser() -> argparse.ArgumentParser:
     history_parser.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
     history_parser.set_defaults(func=handle_history)
 
-    save_parser = subparsers.add_parser("save", help="Save an existing run's command.")
-    save_parser.add_argument("-i", "--id", required=True, help="Run ID or numeric ID.")
+    save_parser = subparsers.add_parser("save", help="Save a managed run or history command for reuse.")
+    save_source = save_parser.add_mutually_exclusive_group(required=True)
+    save_source.add_argument("-i", "--id", help="Managed run ID, including an active or paused run.")
+    save_source.add_argument("-H", "--history", dest="history_id", type=int, metavar="HISTORY_ID", help="Global history ID to save.")
     save_parser.set_defaults(func=handle_save)
 
-    cmd_parser = subparsers.add_parser("cmd", help="List or run saved commands.")
-    cmd_parser.add_argument(
-        "-S",
+    load_parser = subparsers.add_parser("load", aliases=["cmd"], help="Browse and run saved commands.")
+    load_parser.add_argument(
+        "-T",
         "--stats",
         action="store_true",
         help="Show saved-command and command-base stats.",
     )
-    cmd_parser.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
-    cmd_parser.set_defaults(func=handle_cmd)
+    load_parser.add_argument("-l", "--limit", type=int, default=None, help="Maximum saved commands to show.")
+    load_parser.add_argument("-I", "--interactive", action="store_true", help="Browse saved commands interactively.")
+    load_parser.add_argument("-f", "--fzf", action="store_true", help="Browse saved commands with fzf.")
+    load_parser.add_argument("-b", "--starts-with", default=None, help="Only show commands starting with this text.")
+    load_parser.add_argument("-c", "--contains", default=None, help="Only show commands containing this text.")
+    load_parser.add_argument("-m", "--most-common", nargs="?", const=10, type=positive_int, default=None, metavar="COUNT")
+    load_parser.add_argument("-d", "--date", action="store_true", help="Include saved date/time.")
+    load_parser.add_argument("-P", "--path", action="store_true", help="Include the saved working directory.")
+    load_parser.add_argument("-S", "--status", action="store_true", help="Include saved-command status.")
+    load_parser.add_argument("-r", "--runtime", action="store_true", help="Include runtime when known.")
+    load_parser.add_argument("-A", "--all-details", action="store_true", help="Include every cosmetic saved-command detail.")
+    load_parser.add_argument("-p", "--plain", action="store_true", help="Disable ANSI color.")
+    load_parser.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
+    load_parser.set_defaults(func=handle_load)
 
     return parser
 
@@ -405,6 +423,27 @@ def add_list_filters(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Maximum number of runs to display.",
     )
+    parser.add_argument("-j", "--json", action="store_true", help="Emit JSON and exit.")
+
+
+def add_ls_filters(parser: argparse.ArgumentParser) -> None:
+    """Add active-first display and interactive options for ``runmux ls``."""
+
+    parser.add_argument("-T", "--terminal", "--all-runs", action="store_true", help="Also show terminal runs after active runs.")
+    parser.add_argument("-I", "--interactive", action="store_true", help="Open the interactive run browser.")
+    parser.add_argument(
+        "-s",
+        "--status",
+        action="append",
+        choices=["active", "paused", "finished", "killed", "failed", "lost", "pending", "running"],
+        default=None,
+        help="Filter by status; repeat to include multiple statuses.",
+    )
+    parser.add_argument("-l", "--limit", type=int, default=None, help="Maximum runs to display.")
+    parser.add_argument("-d", "--date", action="store_true", help="Show run creation and completion timestamps.")
+    parser.add_argument("-P", "--path", action="store_true", help="Show each run working directory.")
+    parser.add_argument("-e", "--exit-code", action="store_true", help="Show each run exit code.")
+    parser.add_argument("-A", "--all-details", action="store_true", help="Show every cosmetic per-run detail.")
     parser.add_argument("-j", "--json", action="store_true", help="Emit JSON and exit.")
 
 
@@ -443,7 +482,7 @@ def handle_run(args: argparse.Namespace) -> int:
     if getattr(args, "history_id", None) is not None or bool(getattr(args, "history_path", False)):
         raise HistoryError("-i/--id and -P/--path require -H/--history.")
     program_args = normalize_program_args(args.program)
-    if program_args[0] == "cmd":
+    if program_args[0] in {"cmd", "load"}:
         return handle_run_saved_command(args, program_args[1:])
 
     store = get_store(args)
@@ -460,12 +499,14 @@ def handle_run(args: argparse.Namespace) -> int:
         reserve_rows=reserve_rows,
     )
     if args.save_command:
-        save_command(
-            argv=program_args,
-            command_line=started.record.command_line,
-            cwd=started.record.cwd,
+        saved = save_record_command(started.record)
+        mark_saved_command_run(saved.command_line, cwd=saved.cwd)
+        print_saved_command_confirmation(
+            saved,
+            ran_at=started.record.started_at or started.record.created_at,
+            status=started.record.status,
+            runtime_seconds=started.record.runtime_seconds,
         )
-        mark_saved_command_run(started.record.command_line)
     print(f"Started {started.record.id}: {started.record.command_line}")
     if args.attach:
         return view_run(store, run_id=started.record.id, follow=True, from_end=False, tail_lines=None, separator=has_separator)
@@ -510,6 +551,9 @@ def launch_history_entry(
         if not stored_cwd.is_dir():
             raise HistoryError(f"Recorded working directory does not exist: {stored_cwd}")
         cwd = stored_cwd
+    if bool(getattr(args, "verify", False)) and not confirm_history_replay(entry, cwd, instance_count):
+        print("History replay cancelled.")
+        return 0
 
     store = get_store(args)
     detach = bool(getattr(args, "detach", False))
@@ -538,8 +582,14 @@ def launch_history_entry(
         print(f"Started {started.record.id}: {started.record.command_line}")
     started = started_runs[-1]
     if bool(getattr(args, "save_command", False)):
-        save_command(argv=list(argv), command_line=started.record.command_line, cwd=started.record.cwd)
-        mark_saved_command_run(started.record.command_line)
+        saved = save_record_command(started.record)
+        mark_saved_command_run(saved.command_line, cwd=saved.cwd)
+        print_saved_command_confirmation(
+            saved,
+            ran_at=started.record.started_at or started.record.created_at,
+            status=started.record.status,
+            runtime_seconds=started.record.runtime_seconds,
+        )
     if attach:
         return view_run(
             store,
@@ -554,6 +604,104 @@ def launch_history_entry(
     if interact or not detach:
         return interact_run(store, run_id=started.record.id, tail_lines=None, separator=has_separator)
     return 0
+
+
+def launch_saved_history_entry(
+    args: argparse.Namespace,
+    entry: dict[str, Any],
+    *,
+    instance_count: int = 1,
+    cwd_override: Path | None = None,
+) -> int:
+    """Launch a saved command with its saved execution context by default."""
+
+    saved = entry.get("_saved_command")
+    if saved is None:
+        raise HistoryError("Saved command metadata is unavailable.")
+    if instance_count <= 0:
+        raise HistoryError("Instance count must be greater than zero.")
+    cwd = cwd_override if cwd_override is not None else getattr(args, "cwd", None)
+    if cwd is None:
+        cwd = Path(saved.cwd)
+    if not Path(cwd).is_dir():
+        raise HistoryError(f"Saved working directory does not exist: {cwd}")
+    store = get_store(args)
+    detach = bool(getattr(args, "detach", False))
+    attach = bool(getattr(args, "attach", False))
+    interact = bool(getattr(args, "interact", False))
+    has_separator = getattr(args, "separator", False) or os.environ.get("RUNMUX_SEPARATOR", "").lower() in (
+        "1", "true", "yes", "on"
+    )
+    reserve_rows = 0 if detach else (3 if has_separator else ATTACH_RESERVED_ROWS)
+    rows = getattr(args, "rows", None)
+    if rows is None and saved.rows is not None:
+        rows = saved.rows + reserve_rows
+    name = getattr(args, "name", None) if getattr(args, "name", None) is not None else saved.name
+    force_color = False if bool(getattr(args, "no_force_color", False)) else saved.force_color
+    started_runs = []
+    for _ in range(instance_count):
+        started = create_managed_run(
+            store,
+            program_args=list(saved.argv),
+            cwd=Path(cwd),
+            name=name,
+            force_color=force_color,
+            rows=rows,
+            columns=getattr(args, "columns", None) if getattr(args, "columns", None) is not None else saved.columns,
+            reserve_rows=reserve_rows,
+        )
+        started_runs.append(started)
+        print(f"Started {started.record.id}: {started.record.command_line}")
+    started = started_runs[-1]
+    mark_saved_command_run(saved.command_line, cwd=saved.cwd)
+    if attach:
+        return view_run(store, run_id=started.record.id, follow=True, from_end=False, tail_lines=None, separator=has_separator)
+    if detach:
+        return 0
+    if interact or not detach:
+        return interact_run(store, run_id=started.record.id, tail_lines=None, separator=has_separator)
+    return 0
+
+
+def launch_browser_entry(
+    args: argparse.Namespace,
+    entry: dict[str, Any],
+    *,
+    instance_count: int,
+    cwd_override: Path,
+) -> int:
+    """Launch either a history entry or a saved-command browser entry."""
+
+    if "_saved_command" in entry:
+        return launch_saved_history_entry(args, entry, instance_count=instance_count, cwd_override=cwd_override)
+    return launch_history_entry(
+        args,
+        entry,
+        use_original_path=False,
+        instance_count=instance_count,
+        cwd_override=cwd_override,
+    )
+
+
+def confirm_history_replay(entry: dict[str, Any], cwd: Path | None, instance_count: int) -> bool:
+    """Show a full replay summary and require an affirmative answer."""
+
+    launch_path = cwd if cwd is not None else Path.cwd()
+    print("History replay verification")
+    print(f"ID: {entry.get('history_id')}")
+    print(f"Command: {entry.get('command_line') or '--'}")
+    print(f"Path: {launch_path}")
+    print(f"Instances: {instance_count}")
+    while True:
+        try:
+            answer = input("Run this command? [y/N]: ").strip().casefold()
+        except (EOFError, KeyboardInterrupt):
+            return False
+        if answer in {"y", "yes"}:
+            return True
+        if answer in {"", "n", "no"}:
+            return False
+        print("Please enter y or n.")
 
 
 def prompt_history_run(entry: dict[str, Any]) -> tuple[int, Path] | None:
@@ -609,26 +757,32 @@ def prompt_history_run(entry: dict[str, Any]) -> tuple[int, Path] | None:
 
 
 def handle_run_saved_command(args: argparse.Namespace, selector_args: list[str]) -> int:
-    """Handle ``runmux run cmd`` saved-command selection."""
+    """Handle ``runmux run load -i ID`` saved-command replay."""
 
     selector = build_run_cmd_parser().parse_args(selector_args)
-    selected = select_saved_command()
+    if selector.saved_id is None:
+        raise HistoryError("Saved-command replay requires -i/--id ID. Browse with 'runmux load -I'.")
+    selected = next((command for command in list_saved_commands() if command.id == selector.saved_id), None)
     if selected is None:
-        return 0
+        raise HistoryError(f"Saved command ID {selector.saved_id} does not exist.")
     store = get_store(args)
     has_separator = getattr(args, "separator", False) or os.environ.get("RUNMUX_SEPARATOR", "").lower() in ("1", "true", "yes", "on") or os.environ.get("RUNMUX_DIVIDER", "").lower() in ("1", "true", "yes", "on")
     reserve_rows = 0 if selector.detach else (3 if has_separator else ATTACH_RESERVED_ROWS)
     started = create_managed_run(
         store,
         program_args=selected.argv,
-        cwd=Path(selected.cwd),
-        name=args.name,
-        force_color=not args.no_force_color,
-        rows=args.rows,
-        columns=args.columns,
+        cwd=args.cwd if args.cwd is not None else Path(selected.cwd),
+        name=args.name if args.name is not None else selected.name,
+        force_color=False if args.no_force_color else selected.force_color,
+        rows=(
+            args.rows
+            if args.rows is not None
+            else (selected.rows + reserve_rows if selected.rows is not None else None)
+        ),
+        columns=args.columns if args.columns is not None else selected.columns,
         reserve_rows=reserve_rows,
     )
-    mark_saved_command_run(started.record.command_line)
+    mark_saved_command_run(started.record.command_line, cwd=started.record.cwd)
     print(f"Started {started.record.id}: {started.record.command_line}")
     if selector.view:
         return view_run(
@@ -647,10 +801,11 @@ def handle_run_saved_command(args: argparse.Namespace, selector_args: list[str])
 
 
 def build_run_cmd_parser() -> argparse.ArgumentParser:
-    """Build the parser for ``runmux run cmd`` selector options."""
+    """Build the parser for ``runmux run load`` selector options."""
 
-    parser = argparse.ArgumentParser(prog="runmux run cmd")
-    parser.add_argument("-i", "--interact", action="store_true", help="Interact after launch.")
+    parser = argparse.ArgumentParser(prog="runmux run load")
+    parser.add_argument("-i", "--id", dest="saved_id", type=int, default=None, help="Saved command ID.")
+    parser.add_argument("-I", "--interact", action="store_true", help="Interact after launch.")
     parser.add_argument("-D", "--detach", action="store_true", help="Return after launch.")
     parser.add_argument("-w", "--view", action="store_true", help="View after launch.")
     return parser
@@ -666,6 +821,11 @@ def handle_list(args: argparse.Namespace) -> int:
         limit=args.limit,
         refresh_seconds=args.refresh,
         output_json=args.json,
+        statuses=None,
+        terminal_limit=load_config()["terminal_record_limit"],
+        show_date=False,
+        show_path=False,
+        show_exit_code=False,
     )
 
 
@@ -674,12 +834,36 @@ def handle_ls(args: argparse.Namespace) -> int:
 
     return list_runs_live(
         get_store(args),
-        once=True,
-        include_all=not args.active_only,
+        once=not args.interactive,
+        include_all=args.terminal or bool(args.status),
         limit=args.limit,
         refresh_seconds=DEFAULT_REFRESH_SECONDS,
         output_json=args.json,
+        statuses=args.status,
+        terminal_limit=load_config()["terminal_record_limit"],
+        show_date=args.date or args.all_details,
+        show_path=args.path or args.all_details,
+        show_exit_code=args.exit_code or args.all_details,
     )
+
+
+def handle_config(args: argparse.Namespace) -> int:
+    """Handle persistent runmux configuration display and updates."""
+
+    if args.set is not None:
+        config = set_config_value(args.set[0], args.set[1])
+    else:
+        config = load_config()
+    if args.get is not None:
+        if args.get not in config:
+            raise ConfigError(f"Unknown configuration key '{args.get}'.")
+        config = {args.get: config[args.get]}
+    if args.json:
+        print(json.dumps(config, indent=2, sort_keys=True))
+    else:
+        for key, value in sorted(config.items()):
+            print(f"{key}={value}")
+    return 0
 
 
 def handle_view(args: argparse.Namespace) -> int:
@@ -757,12 +941,10 @@ def handle_resume(args: argparse.Namespace) -> int:
 def handle_remove(args: argparse.Namespace) -> int:
     """Handle ``runmux remove``."""
 
-    store = get_store(args)
     target = args.id or args.target
     if target is None:
-        records = remove_finished_runs(store, clean_only=False)
-        print(f"Removed {len(records)} run(s).")
-        return 0
+        raise RegistryError("remove requires -i/--id or a positional run ID. Terminal retention is automatic.")
+    store = get_store(args)
     record = remove_run(store, run_id=target)
     print(f"Removed {record.numeric_id}: {record.command_line}")
     return 0
@@ -790,6 +972,8 @@ def handle_stats(args: argparse.Namespace) -> int:
 def handle_history(args: argparse.Namespace) -> int:
     """Handle ``runmux history``."""
 
+    if args.all_details:
+        args.date = args.path = args.status = args.runtime = True
     if args.interactive and args.fzf:
         raise HistoryError("Use either -I/--interactive or -f/--fzf, not both.")
     all_entries = indexed_history_entries()
@@ -936,6 +1120,10 @@ def browse_history(entries: list[dict[str, Any]], args: argparse.Namespace) -> i
                 selected = max(0, selected - 1)
             elif key in {"DOWN", "j", "J"}:
                 selected = min(len(visible_entries) - 1, selected + 1)
+            elif key == "PAGE_UP":
+                selected = max(0, selected - history_browser_page_size())
+            elif key == "PAGE_DOWN":
+                selected = min(len(visible_entries) - 1, selected + history_browser_page_size())
             elif key in {"r", "R"}:
                 choice = prompt_history_run(entry)
                 print("\x1b[?25l", end="")
@@ -943,13 +1131,27 @@ def browse_history(entries: list[dict[str, Any]], args: argparse.Namespace) -> i
                     action = (entry, choice[0], choice[1])
                     break
                 message = "Run cancelled."
+            elif key in {"ENTER", "\r", "\n"}:
+                choice = inspect_history_entry(entry)
+                print("\x1b[?25l", end="")
+                if choice is not None:
+                    action = (entry, choice[0], choice[1])
+                    break
+                message = "Inspection closed."
+            elif key in {"p", "P"}:
+                print("\x1b[?25h", end="")
+                print(render_history_inspector(entry, include_footer=False), end="")
+                return 0
             elif key in {"s", "S"}:
-                saved = save_command(
-                    argv=list(entry.get("argv") or []),
-                    command_line=str(entry.get("command_line") or ""),
-                    cwd=str(entry.get("cwd") or "."),
-                )
-                message = f"Saved command {saved.id}."
+                if "_saved_command" in entry:
+                    message = "This command is already saved."
+                else:
+                    saved = save_command(
+                        argv=list(entry.get("argv") or []),
+                        command_line=str(entry.get("command_line") or ""),
+                        cwd=str(entry.get("cwd") or "."),
+                    )
+                    message = f"Saved command {saved.id}."
             elif key in {"/", "b", "B"}:
                 mode = "contains" if key == "/" else "starts with"
                 current = contains_filter if mode == "contains" else prefix_filter
@@ -981,26 +1183,16 @@ def browse_history(entries: list[dict[str, Any]], args: argparse.Namespace) -> i
             elif key in {"v", "V"}:
                 detail_mode = (detail_mode + 1) % 4
                 message = f"Detail mode: {history_detail_mode_name(detail_mode)}."
-            elif key in {"x", "X"}:
+            elif key in {"w", "W", "x", "X"}:
                 expanded = not expanded
                 message = "Full content enabled." if expanded else "Compact rows enabled."
-            elif key in {"ENTER", "\r", "\n"}:
-                print("\x1b[?25h", end="")
-                print(str(entry.get("command_line") or ""))
-                return 0
             elif key in {"ESC", "q", "Q", "\x03"}:
                 return 0
     finally:
         print("\x1b[?25h", end="")
         sys.stdout.flush()
     if action:
-        return launch_history_entry(
-            args,
-            action[0],
-            use_original_path=False,
-            instance_count=action[1],
-            cwd_override=action[2],
-        )
+        return launch_browser_entry(args, action[0], instance_count=action[1], cwd_override=action[2])
     return 0
 
 
@@ -1042,7 +1234,7 @@ def render_history_browser(
         columns,
     )
     help_lines = wrap_history_browser_text(
-        "↑/↓ j/k | r run | s save | b prefix | / contains | c clear | v details | x full | Enter | q",
+        "↑/↓ j/k | PgUp/PgDn page | r run | Enter inspect | p print | s save | b prefix | / contains | c clear | v details | w/x wrap | q",
         columns,
     )
     footer_lines = message_lines + filter_lines + help_lines
@@ -1080,6 +1272,12 @@ def wrap_history_browser_text(value: str, columns: int) -> list[str]:
     )
 
 
+def history_browser_page_size() -> int:
+    """Return a conservative visible-row count for Page Up/Page Down."""
+
+    return max(1, shutil.get_terminal_size(fallback=(100, 24)).lines - 6)
+
+
 def render_history_browser_entry(
     entry: dict[str, Any],
     *,
@@ -1115,8 +1313,7 @@ def render_history_browser_entry(
         status = entry.get("status") or "--"
         exit_code = entry.get("exit_code") if entry.get("exit_code") is not None else "--"
         runtime = format_optional_duration(entry.get("runtime_seconds"))
-        date = entry.get("started_at") or "--"
-        metadata = f"status={status}  exit={exit_code}  runtime={runtime}  date={date}"
+        metadata = f"status={status}  exit={exit_code}  runtime={runtime}"
         metadata_lines = (
             textwrap.wrap(metadata, width=max(1, columns), break_long_words=True, break_on_hyphens=False)
             if expanded
@@ -1124,6 +1321,13 @@ def render_history_browser_entry(
         )
         color = history_status_color(entry)
         lines.extend(colorize(line, color, enabled=True) for line in metadata_lines)
+        date = f"date={entry.get('started_at') or '--'}"
+        date_lines = (
+            textwrap.wrap(date, width=max(1, columns), break_long_words=True, break_on_hyphens=False)
+            if expanded
+            else [date[:columns]]
+        )
+        lines.extend(colorize(line, color, enabled=True) for line in date_lines)
     return lines
 
 
@@ -1131,6 +1335,57 @@ def history_detail_mode_name(detail_mode: int) -> str:
     """Return a display label for an interactive metadata mode."""
 
     return {0: "commands", 1: "paths", 2: "status/date/runtime", 3: "all"}.get(detail_mode, "commands")
+
+
+def inspect_history_entry(entry: dict[str, Any]) -> tuple[int, Path] | None:
+    """Show a full history entry and optionally open its run dialog."""
+
+    while True:
+        sys.stdout.write("\x1b[H\x1b[2J" + render_history_inspector(entry))
+        sys.stdout.flush()
+        key = read_history_key()
+        if key in {"ESC", "q", "Q", "\x03"}:
+            return None
+        if key in {"r", "R"}:
+            choice = prompt_history_run(entry)
+            if choice is not None:
+                return choice
+
+
+def render_history_inspector(entry: dict[str, Any], *, include_footer: bool = True) -> str:
+    """Render one complete history entry for the interactive inspector."""
+
+    try:
+        columns, _ = os.get_terminal_size()
+    except OSError:
+        columns = 100
+    raw_argv = entry.get("argv")
+    argv_text = json.dumps(raw_argv) if isinstance(raw_argv, list) else "--"
+    fields: list[tuple[str, object, str]] = [
+        ("History ID", entry.get("history_id"), "31"),
+        ("Command", entry.get("command_line"), "36"),
+        ("Working path", entry.get("cwd"), "35"),
+        ("argv", argv_text, "36"),
+        ("Status", entry.get("status"), history_status_color(entry)),
+        ("Exit code", entry.get("exit_code"), history_status_color(entry)),
+        ("Runtime", format_optional_duration(entry.get("runtime_seconds")), history_status_color(entry)),
+        ("Started", entry.get("started_at"), history_status_color(entry)),
+        ("Ended", entry.get("ended_at"), history_status_color(entry)),
+        ("Run ID", entry.get("run_id"), "33"),
+        ("Run numeric ID", entry.get("numeric_id"), "33"),
+        ("Base", entry.get("base"), "90"),
+        ("Saved name", entry.get("name"), "90"),
+        ("Terminal rows", entry.get("rows"), "90"),
+        ("Terminal columns", entry.get("columns"), "90"),
+        ("Forced color", entry.get("force_color"), "90"),
+    ]
+    lines = [colorize("runmux history inspector", "1;37", enabled=True)]
+    for label, value, color_code in fields:
+        rendered = f"{label}: {value if value not in (None, '') else '--'}"
+        lines.extend(colorize(line, color_code, enabled=True) for line in wrap_history_browser_text(rendered, columns))
+    if include_footer:
+        lines.extend(colorize(line, "1;33", enabled=True) for line in wrap_history_browser_text("r run | Esc/q back", columns))
+    return "\r\n".join(lines) + "\r\n"
 
 
 def prompt_history_search(mode: str, current: str | None) -> tuple[bool, str | None]:
@@ -1178,6 +1433,8 @@ def browse_history_fzf(entries: list[dict[str, Any]], args: argparse.Namespace) 
     if entry is None:
         raise HistoryError(f"fzf selected unavailable history ID {history_id}.")
     if key == "r":
+        if "_saved_command" in entry:
+            return launch_saved_history_entry(args, entry)
         return launch_history_entry(args, entry, use_original_path=True)
     if key == "s":
         saved = save_command(
@@ -1204,6 +1461,10 @@ def read_history_key() -> str:
                 return "UP"
             if code == "P":
                 return "DOWN"
+            if code == "I":
+                return "PAGE_UP"
+            if code == "Q":
+                return "PAGE_DOWN"
             return code
         if key == "\r":
             return "ENTER"
@@ -1217,6 +1478,9 @@ def read_history_key() -> str:
             return "UP"
         if tail == "[B":
             return "DOWN"
+        if tail in {"[5", "[6"}:
+            sys.stdin.read(1)
+            return "PAGE_UP" if tail == "[5" else "PAGE_DOWN"
         return "ESC"
     if key in {"\r", "\n"}:
         return "ENTER"
@@ -1226,23 +1490,129 @@ def read_history_key() -> str:
 def handle_save(args: argparse.Namespace) -> int:
     """Handle ``runmux save``."""
 
+    if args.history_id is not None:
+        entry = history_entry_by_id(args.history_id)
+        saved = save_command(
+            argv=list(entry.get("argv") or []),
+            command_line=str(entry.get("command_line") or ""),
+            cwd=str(entry.get("cwd") or "."),
+        )
+        print_saved_command_confirmation(
+            saved,
+            ran_at=str(entry.get("started_at") or "--"),
+            status=str(entry.get("status") or "--"),
+            runtime_seconds=entry.get("runtime_seconds"),
+            prefix=f"Saved history {entry['history_id']} as command {saved.id}",
+        )
+        return 0
     record = save_run_command(get_store(args), run_id=args.id)
-    print(f"Saved {record.numeric_id}: {record.command_line}")
+    saved = save_record_command(record)
+    print_saved_command_confirmation(
+        saved,
+        ran_at=record.started_at or record.created_at,
+        status=record.status,
+        runtime_seconds=record.runtime_seconds,
+        prefix=f"Saved run {record.numeric_id} as command {saved.id}",
+    )
     return 0
 
 
-def handle_cmd(args: argparse.Namespace) -> int:
-    """Handle ``runmux cmd``."""
+def print_saved_command_confirmation(
+    saved: Any,
+    *,
+    ran_at: str,
+    status: str,
+    runtime_seconds: object,
+    prefix: str | None = None,
+) -> None:
+    """Print a complete, copyable saved-command confirmation."""
 
+    color = sys.stdout.isatty()
+    if prefix:
+        print(colorize(prefix, "1;37", enabled=color))
+    print(colorize(saved.command_line, "36", enabled=color))
+    print(colorize(f"date={ran_at or '--'}", history_status_color({"status": status}), enabled=color))
+    print(
+        colorize(
+            f"status={status or '--'}  runtime={format_optional_duration(runtime_seconds)}",
+            history_status_color({"status": status}),
+            enabled=color,
+        )
+    )
+    print(colorize(saved.cwd, "35", enabled=color))
+
+
+def handle_load(args: argparse.Namespace) -> int:
+    """Handle non-interactive and interactive saved-command browsing."""
+
+    if args.all_details:
+        args.date = args.path = args.status = args.runtime = True
     if args.stats:
         return print_command_stats(output_json=args.json)
+    if args.interactive and args.fzf:
+        raise HistoryError("Use either -I/--interactive or -f/--fzf, not both.")
+    all_entries = saved_command_entries()
+    entries = filter_history_entries(all_entries, starts_with=args.starts_with, contains=args.contains)
+    if args.most_common is not None:
+        entries = most_common_history_entries(entries, args.most_common)
+    elif args.limit is not None:
+        entries = entries[: args.limit]
     if args.json:
-        print(json.dumps([command.__dict__ for command in list_saved_commands()], indent=2))
+        print(json.dumps([public_saved_entry(entry) for entry in entries], indent=2))
         return 0
-    selected = select_saved_command()
-    if selected is not None:
-        print(selected.command_line)
+    if args.interactive:
+        return browse_history(all_entries, args)
+    if args.fzf:
+        return browse_history_fzf(entries, args)
+    color = sys.stdout.isatty() and not args.plain
+    display_entries = entries if args.most_common is not None else reversed(entries)
+    for entry in display_entries:
+        print(
+            format_history_entry(
+                int(entry["history_id"]),
+                entry,
+                color=color,
+                show_date=args.date,
+                show_path=args.path,
+                show_status=args.status,
+                show_runtime=args.runtime,
+            )
+        )
     return 0
+
+
+def saved_command_entries() -> list[dict[str, Any]]:
+    """Convert saved commands into history-browser-compatible entries."""
+
+    commands = sorted(list_saved_commands(), key=lambda item: item.saved_at, reverse=True)
+    return [
+        {
+            "history_id": command.id,
+            "run_id": None,
+            "numeric_id": None,
+            "base": command.base,
+            "argv": command.argv,
+            "command_line": command.command_line,
+            "cwd": command.cwd,
+            "name": command.name,
+            "rows": command.rows,
+            "columns": command.columns,
+            "force_color": command.force_color,
+            "status": "saved",
+            "started_at": command.saved_at,
+            "ended_at": None,
+            "runtime_seconds": None,
+            "exit_code": None,
+            "_saved_command": command,
+        }
+        for command in commands
+    ]
+
+
+def public_saved_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Remove browser-only objects before JSON serialization."""
+
+    return {key: value for key, value in entry.items() if not key.startswith("_")}
 
 
 def print_command_stats(*, output_json: bool) -> int:
@@ -1332,6 +1702,7 @@ def print_saved_commands(commands: list[Any]) -> None:
 
     for index, command in enumerate(commands):
         print(f"{index}: {command.command_line}")
+        print(f"   {command.cwd}")
 
 
 def read_number(label: str) -> int | None:
@@ -1378,6 +1749,7 @@ def main(argv: list[str] | None = None) -> int:
     except (
         AmbiguousRunIdError,
         ClientError,
+        ConfigError,
         HistoryError,
         IpcError,
         RegistryError,

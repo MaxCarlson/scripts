@@ -2,7 +2,7 @@
 
 Plan created: 2026-06-22 05:51:54 -07:00
 
-Last updated: 2026-07-19 07:58:00 -07:00
+Last updated: 2026-07-19 08:18:00 -07:00
 
 Full plan completed: pending
 
@@ -117,8 +117,20 @@ Automated result: 72 tests passed. Real supervisor IPC smoke confirmed
 - [x] Interactive metadata visibility cycles through compact/path/status/all; render tests added, not run.
 - [x] Interactive full-content toggle wraps complete commands, paths, and metadata; render tests added, not run.
 - [x] Interactive raw rendering uses CRLF and wraps footer/help rows for narrow Windows terminals; tests pending.
+- [x] Interactive status/runtime and date have separate rows; tests updated, not run.
+- [x] Interactive `w`/`x` wrap toggle and Enter full-entry inspector with run/back hotkeys coded; inspector render test added, not run.
+- [x] Enter opens the fully colorized inspector and `p` prints the complete entry; tests updated, not run.
+- [x] Interactive history and live list support arrow/j/k single movement and Page Up/Page Down page movement; tests pending.
 - [x] Interactive run dialog supports instance count and original/current/custom cwd; launch-count test added, not run.
 - [x] General `run` `-p/--run-path` alias is documented and has a parser test; not run.
+- [x] History replay `-V/--verify` confirmation prompt coded and parser test added, not run.
+- [x] Saved commands retain and replay cwd/name/dimensions/forced-color context unless overridden; tests added, not run.
+- [x] `load` saved-command browser replaces prompt-only `cmd`, retains `cmd` as an alias, and shares history browsing controls; tests added, not run.
+- [x] `ls` active-first filtering, optional detail rows, ANSI-safe colors, and interactive run actions coded; tests pending.
+- [x] Persistent module-local configuration and terminal-record retention/pruning coded; tests pending.
+- [x] Bulk `remove-finished` CLI removed; individual `remove` requires an ID; tests updated, not run.
+- [x] Cosmetic-only `-A/--all-details` shortcut coded for history, load, and ls; tests pending.
+- [x] Stats table uses ANSI-safe fixed-width cells and CRLF live redraw; tests added, not run.
 - [ ] Locked JSONL migration, retention, and concurrent-writer work remains.
 - [ ] Full automated verification and real non-default-cwd replay smoke test.
 - [ ] User manual validation before Stage 4 commit.

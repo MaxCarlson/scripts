@@ -141,6 +141,26 @@ def test_stats_table_and_json_include_resource_fields() -> None:
     assert "python busy.py" in table
     assert payload["numeric_id"] == 2
     assert "thread_count" in payload
+
+
+def test_stats_table_cells_share_header_columns_without_ansi_padding() -> None:
+    record = make_record()
+    stats = ProcessStats(
+        record,
+        process_count=1,
+        thread_count=4,
+        cpu_percent=12.5,
+        rss_bytes=1024,
+        read_bytes_per_second=2048,
+        write_bytes_per_second=4096,
+    )
+
+    lines = format_stats_table([stats], width=120, color=False).splitlines()
+    header = lines[2]
+    row = lines[4]
+
+    assert header.index("GPU") == row.index("--")
+    assert header.index("P/T") == row.index("1/4")
     assert "net_read_bytes_per_second" in payload
 
 
