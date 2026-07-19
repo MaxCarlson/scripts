@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from runmux.constants import DEFAULT_STARTUP_TIMEOUT_SECONDS, STATUS_PENDING, TERMINAL_STATUSES
-from runmux.history import mark_saved_command_run, record_run_started, save_record_command
+from runmux.history import history_path_for_state_dir, mark_saved_command_run, record_run_started, save_record_command
 from runmux.ipc import IpcError, request_json
 from runmux.models import RunRecord
 from runmux.store import RunStore
@@ -98,6 +98,7 @@ def create_managed_run(
     rows: int | None = None,
     columns: int | None = None,
     reserve_rows: int = 0,
+    record_history: bool = True,
 ) -> StartedRun:
     """Create a registry record and start a detached supervisor."""
 
@@ -133,7 +134,8 @@ def create_managed_run(
         rows=final_rows,
         columns=final_columns,
     )
-    record_run_started(record)
+    if record_history:
+        record_run_started(record, path=history_path_for_state_dir(store.state_dir))
     supervisor = start_supervisor(record.id, state_dir=store.state_dir)
     record = store.update_run(record.id, supervisor_pid=supervisor.pid)
     record = wait_for_supervisor_ready(
@@ -368,6 +370,7 @@ def clone_run(
         duplicate_of=duplicate_of,
         rows=source.rows,
         columns=source.columns,
+        record_history=False,
     )
 
 

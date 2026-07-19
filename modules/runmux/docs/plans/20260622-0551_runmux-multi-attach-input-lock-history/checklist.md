@@ -2,7 +2,7 @@
 
 Plan created: 2026-06-22 05:51:54 -07:00
 
-Last updated: 2026-06-22 06:44:27 -07:00
+Last updated: 2026-07-19 07:58:00 -07:00
 
 Full plan completed: pending
 
@@ -13,9 +13,9 @@ Plan branch merged: pending
 ## Plan Progress
 
 - [x] Stage 1: Startup Readiness - completed 2026-06-22 05:54:24 -07:00
-- [ ] Stage 2: Multi-Attach and Input Lock - in progress; automated verification complete, manual approval pending
-- [ ] Stage 3: Attachment UI and Configuration - planned
-- [ ] Stage 4: History Search and Summary - planned
+- [x] Stage 2: Multi-Attach and Input Lock - committed and manually approved 2026-07-19
+- [ ] Stage 3: Attachment UI and Configuration - partially implemented; persistent configuration remains
+- [ ] Stage 4: History Search, Replay, and Summary - detailed plan updated 2026-07-19
 
 This is the feature-level implementation and verification ledger for this
 implementation plan. See applicable global/repository LLM instructions for
@@ -65,8 +65,8 @@ Automated result: 64 tests passed before user approval policy was introduced.
 - [x] Existing and new Stage 2 tests pass together.
 - [x] Ruff, Black check, compileall, and coverage pass.
 - [x] Stage 2 staged for manual user testing.
-- [ ] User manually approves Stage 2.
-- [ ] Stage 2 committed.
+- [x] User manually approved Stage 2 on 2026-07-19: multiple terminals can interact with or view one run.
+- [x] Stage 2 committed as `1cb73e4`.
 
 Automated result: 72 tests passed. Real supervisor IPC smoke confirmed
 `I:2 V:1 T:3 L:1 Q:1` and matching JSON fields.
@@ -93,7 +93,32 @@ Automated result: 72 tests passed. Real supervisor IPC smoke confirmed
 - [ ] Existing history migration and backup.
 - [ ] Configurable retention.
 - [ ] Exit-code and attachment history fields.
-- [ ] Prefix and contains filtering.
-- [ ] Recent and frequency ordering.
-- [ ] Incremental interactive search.
-- [ ] Filtered text and JSON summaries.
+- [x] Global newest-first history IDs coded: latest `0`, second latest `1`; tests added, not run.
+- [x] Global IDs preserved in filtered, common, interactive, fzf, and JSON views; tests added, not run.
+- [x] Exact argv replay coded with `runmux run -H/--history -i/--id ID`; tests added, not run.
+- [x] Original cwd validation/replay coded with `-P/--path`; tests added, not run.
+- [x] Case-insensitive `--starts-with` and `--contains` filtering coded; tests added, not run.
+- [x] Most-common grouping coded with default 10 and argument override; tests added, not run.
+- [x] Matching is applied before most-common grouping.
+- [x] Default output changed to history ID and command only.
+- [x] Optional date, path, status/exit-code, and runtime fields coded.
+- [x] Interactive multi-row browser coded with persistent bottom hotkey help.
+- [x] Interactive navigation, run (`r`), save (`s`), print (Enter), search, and quit actions coded.
+- [x] Optional fzf mode coded with global-ID selection and print/run/save actions.
+- [x] Filtered text and structured JSON output coded.
+- [x] Focused ID, replay, filter, common, browser, metadata, and fzf tests added but not run.
+- [x] Isolated-state history routing and legacy internal-probe filtering coded; tests added, not run.
+- [x] Restart/duplicate clones are excluded from normal history; test added, not run.
+- [x] Left-aligned IDs and multiline path/status/date/runtime formatting coded; tests updated, not run.
+- [x] Status-aware metadata colors and distinct path color coded.
+- [x] Normal text history prints oldest-to-newest while preserving global newest-first IDs; ID marker changed to red `(ID).`; tests updated, not run.
+- [x] Date/time is rendered on its own status-colored line; tests updated, not run.
+- [x] Interactive prefix/contains filters can coexist, be replaced, and be cleared; focused combined-filter tests added, not run.
+- [x] Interactive metadata visibility cycles through compact/path/status/all; render tests added, not run.
+- [x] Interactive full-content toggle wraps complete commands, paths, and metadata; render tests added, not run.
+- [x] Interactive raw rendering uses CRLF and wraps footer/help rows for narrow Windows terminals; tests pending.
+- [x] Interactive run dialog supports instance count and original/current/custom cwd; launch-count test added, not run.
+- [x] General `run` `-p/--run-path` alias is documented and has a parser test; not run.
+- [ ] Locked JSONL migration, retention, and concurrent-writer work remains.
+- [ ] Full automated verification and real non-default-cwd replay smoke test.
+- [ ] User manual validation before Stage 4 commit.

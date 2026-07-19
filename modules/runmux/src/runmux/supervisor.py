@@ -31,7 +31,7 @@ from runmux.constants import (
     STATUS_KILLED,
     STATUS_PAUSED,
 )
-from runmux.history import record_run_finished
+from runmux.history import history_path_for_state_dir, record_run_finished
 from runmux.ipc import encode_request
 from runmux.models import RunRecord
 from runmux.store import RunStore
@@ -594,7 +594,13 @@ def mark_finished_with_history(
     """Mark a run finished and mirror completion into command history."""
 
     record = state.store.mark_finished(run_id=state.record.id, status=status, exit_code=exit_code)
-    record_run_finished(record.id, status=status, runtime_seconds=record.runtime_seconds)
+    record_run_finished(
+        record.id,
+        status=status,
+        runtime_seconds=record.runtime_seconds,
+        exit_code=record.exit_code,
+        path=history_path_for_state_dir(state.store.state_dir),
+    )
     return record
 
 

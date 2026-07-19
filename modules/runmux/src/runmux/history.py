@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from runmux.models import RunRecord, parse_iso_datetime, utc_now_iso
+from runmux.platform_paths import get_state_dir
 
 HISTORY_DIR_NAME = ".runmux"
 HISTORY_FILE_NAME = "commands.json"
@@ -37,6 +38,15 @@ def get_history_path() -> Path:
 
     module_root = Path(__file__).resolve().parents[2]
     return module_root / HISTORY_DIR_NAME / HISTORY_FILE_NAME
+
+
+def history_path_for_state_dir(state_dir: Path) -> Path:
+    """Route isolated registries away from the user's normal history file."""
+
+    resolved_state = state_dir.expanduser().resolve()
+    if resolved_state == get_state_dir().expanduser().resolve():
+        return get_history_path()
+    return resolved_state / HISTORY_FILE_NAME
 
 
 def load_data(path: Path | None = None) -> dict[str, Any]:
@@ -99,18 +109,23 @@ def record_run_finished(
     *,
     status: str,
     runtime_seconds: float | None,
+    exit_code: int | None = None,
     path: Path | None = None,
 ) -> None:
     """Update the matching history entry when a run exits."""
 
     data = load_data(path)
+    changed = False
     for item in reversed(data["history"]):
         if item.get("run_id") == run_id:
             item["status"] = status
             item["ended_at"] = utc_now_iso()
             item["runtime_seconds"] = runtime_seconds
+            item["exit_code"] = exit_code
+            changed = True
             break
-    save_data(data, path)
+    if changed:
+        save_data(data, path)
 
 
 def save_record_command(record: RunRecord, *, path: Path | None = None) -> SavedCommand:
@@ -192,6 +207,93 @@ def history_entries(path: Path | None = None) -> list[dict[str, Any]]:
 
     data = load_data(path)
     return list(data["history"])
+
+
+def indexed_history_entries(path: Path | None = None) -> list[dict[str, Any]]:
+    """Return newest-first history with global recency IDs.
+
+    The newest complete-history entry is always ID 0. Callers must filter this
+    result rather than enumerate filtered rows so displayed IDs remain valid
+    selectors for ``runmux run --history --id``.
+    """
+
+    entries = [entry for entry in history_entries(path) if not is_internal_probe_entry(entry)]
+    indexed: list[dict[str, Any]] = []
+    for history_id, entry in enumerate(reversed(entries)):
+        item = dict(entry)
+        item["history_id"] = history_id
+        indexed.append(item)
+    return indexed
+
+
+def is_internal_probe_entry(entry: dict[str, Any]) -> bool:
+    """Identify legacy test/smoke entries that leaked into user history."""
+
+    command = str(entry.get("command_line") or "").strip().casefold()
+    cwd = str(entry.get("cwd") or "").replace("/", "\\").casefold()
+    if ".pytest_tmp_root" in cwd or "pytest-of-" in cwd:
+        return True
+    if command == "python -v":
+        return True
+    if "print('runmux-ok')" in command or 'print("runmux-ok")' in command:
+        return True
+    return command in {"python -c print('history-smoke')", 'python -c print("history-smoke")'}
+
+
+def history_entry_by_id(history_id: int, path: Path | None = None) -> dict[str, Any]:
+    """Return one entry by its global newest-first history ID."""
+
+    if history_id < 0:
+        raise HistoryError("History ID must be zero or greater.")
+    entries = indexed_history_entries(path)
+    if not entries:
+        raise HistoryError("Runmux history is empty.")
+    if history_id >= len(entries):
+        raise HistoryError(f"History ID {history_id} does not exist (available: 0-{len(entries) - 1}).")
+    return entries[history_id]
+
+
+def filter_history_entries(
+    entries: list[dict[str, Any]],
+    *,
+    starts_with: str | None = None,
+    contains: str | None = None,
+) -> list[dict[str, Any]]:
+    """Filter indexed entries without changing their global history IDs."""
+
+    prefix = starts_with.casefold() if starts_with is not None else None
+    needle = contains.casefold() if contains is not None else None
+    filtered = []
+    for entry in entries:
+        command = str(entry.get("command_line") or "")
+        folded = command.casefold()
+        if prefix is not None and not folded.startswith(prefix):
+            continue
+        if needle is not None and needle not in folded:
+            continue
+        filtered.append(entry)
+    return filtered
+
+
+def most_common_history_entries(entries: list[dict[str, Any]], count: int = 10) -> list[dict[str, Any]]:
+    """Group commands by text and return their most recent occurrence IDs."""
+
+    if count <= 0:
+        raise HistoryError("Most-common count must be greater than zero.")
+    grouped: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        command = str(entry.get("command_line") or "")
+        key = command.casefold()
+        if key not in grouped:
+            representative = dict(entry)
+            representative["occurrence_count"] = 0
+            grouped[key] = representative
+        grouped[key]["occurrence_count"] += 1
+    ordered = sorted(
+        grouped.values(),
+        key=lambda item: (-int(item["occurrence_count"]), int(item["history_id"])),
+    )
+    return ordered[:count]
 
 
 def command_stats(path: Path | None = None) -> dict[str, Any]:

@@ -159,10 +159,11 @@ ultimate end goal or complete permanent roadmap for runmux.
 Stages:
 
 1. Startup readiness: implemented and committed.
-2. Multi-attach and FIFO input ownership: implemented, verified, staged, and
-   awaiting user manual approval.
-3. Attachment status UI and persistent settings: planned.
-4. Searchable retained history and summaries: planned.
+2. Multi-attach and FIFO input ownership: implemented, committed, and manually approved.
+3. Attachment status UI and persistent settings: partially implemented;
+   persistent configuration remains.
+4. History search, replay, interactive/fzf selection, and summaries: detailed
+   plan updated; implementation pending.
 
 Immediate plan status is in
 [`STATUS.md`](plans/20260622-0551_runmux-multi-attach-input-lock-history/STATUS.md).

@@ -11,6 +11,8 @@ from unittest.mock import Mock, patch
 
 import runmux.runner as runner
 from runmux.cli import (
+    apply_history_browser_filters,
+    browse_history_fzf,
     build_parser,
     format_history_entry,
     handle_cmd,
@@ -20,7 +22,9 @@ from runmux.cli import (
     handle_remove_finished,
     handle_run,
     handle_save,
+    launch_history_entry,
     print_command_stats,
+    render_history_browser,
 )
 from runmux.client import (
     AttachCommand,
@@ -106,6 +110,49 @@ def test_history_command_parses(tmp_path: Path) -> None:
     assert args.plain is True
 
 
+def test_history_search_common_and_metadata_flags_parse(tmp_path: Path) -> None:
+    args = build_parser().parse_args(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "history",
+            "--starts-with",
+            "ytaedl",
+            "--contains",
+            "run",
+            "--most-common",
+            "25",
+            "--date",
+            "--path",
+            "--status",
+            "--runtime",
+        ]
+    )
+
+    assert args.starts_with == "ytaedl"
+    assert args.contains == "run"
+    assert args.most_common == 25
+    assert args.date and args.path and args.status and args.runtime
+
+
+def test_history_replay_flags_parse(tmp_path: Path) -> None:
+    args = build_parser().parse_args(
+        ["--state-dir", str(tmp_path), "run", "--history", "--id", "7", "--path", "--detach"]
+    )
+
+    assert args.history is True
+    assert args.history_id == 7
+    assert args.history_path is True
+    assert args.program == []
+
+
+def test_run_path_alias_parses_for_normal_commands(tmp_path: Path) -> None:
+    args = build_parser().parse_args(["run", "--run-path", str(tmp_path), "--", "python", "task.py"])
+
+    assert args.cwd == tmp_path
+    assert args.program == ["--", "python", "task.py"]
+
+
 def test_save_command_parses(tmp_path: Path) -> None:
     args = build_parser().parse_args(["--state-dir", str(tmp_path), "save", "--id", "2"])
 
@@ -173,8 +220,169 @@ def test_history_entry_formats_command_on_copyable_line() -> None:
         color=False,
     )
 
+    assert rendered == "(7).  video-dedupe scan -D B:\\stars"
+
+
+def test_history_entry_metadata_is_opt_in() -> None:
+    entry = {
+        "started_at": "2026-06-11T23:24:15+00:00",
+        "cwd": "C:\\work",
+        "status": "finished",
+        "exit_code": 0,
+        "runtime_seconds": 64,
+        "command_line": "python task.py",
+    }
+
+    default = format_history_entry(2, entry, color=False)
+    detailed = format_history_entry(
+        2,
+        entry,
+        color=False,
+        show_date=True,
+        show_path=True,
+        show_status=True,
+        show_runtime=True,
+    )
+
+    assert default == "(2).  python task.py"
+    assert detailed.endswith("date=2026-06-11T23:24:15+00:00")
+    assert "\nC:\\work\n" in detailed
+    assert "status=finished" in detailed
+    assert "exit=0" in detailed
+    assert "runtime=1m04s" in detailed
+
+
+def test_history_browser_renders_global_ids_and_bottom_hotkeys() -> None:
+    rendered = render_history_browser(
+        [
+            {"history_id": 3, "command_line": "ytaedl run"},
+            {"history_id": 8, "command_line": "python task.py"},
+        ],
+        0,
+    )
+
+    assert "(3).  ytaedl run" in rendered
+    assert "r run | s save" in rendered
+    assert rendered.rstrip().endswith("Enter | q")
+
+
+def test_history_browser_can_render_full_multiline_details() -> None:
+    rendered = render_history_browser(
+        [
+            {
+                "history_id": 0,
+                "command_line": "python very_long_task_name.py --with several arguments",
+                "cwd": "C:\\a\\long\\working\\directory",
+                "status": "finished",
+                "exit_code": 0,
+                "runtime_seconds": 12,
+                "started_at": "2026-07-19T12:00:00+00:00",
+            }
+        ],
+        0,
+        detail_mode=3,
+        expanded=True,
+    )
+
+    assert "C:\\a\\long\\working\\directory" in rendered
     assert "status=finished" in rendered
-    assert "\n     cmd> video-dedupe scan -D B:\\stars" in rendered
+    assert "runtime=12s" in rendered
+    assert "v details | x full" in rendered
+
+
+def test_history_browser_filters_can_be_combined_without_renumbering(tmp_path: Path) -> None:
+    args = build_parser().parse_args(["--state-dir", str(tmp_path), "history"])
+    entries = [
+        {"history_id": 0, "command_line": "python run.py"},
+        {"history_id": 4, "command_line": "ytaedl run urls.txt"},
+        {"history_id": 7, "command_line": "ytaedl archive"},
+    ]
+
+    filtered = apply_history_browser_filters(entries, args, "ytaedl", "run")
+
+    assert [entry["history_id"] for entry in filtered] == [4]
+
+
+def test_handle_history_filters_without_renumbering_and_hides_metadata(capsys, tmp_path: Path) -> None:
+    args = build_parser().parse_args(
+        ["--state-dir", str(tmp_path), "history", "--starts-with", "ytaedl", "--plain"]
+    )
+    entries = [
+        {"history_id": 0, "command_line": "python newest.py"},
+        {"history_id": 4, "command_line": "ytaedl run", "started_at": "2026-01-01", "status": "finished"},
+    ]
+
+    with patch("runmux.cli.indexed_history_entries", return_value=entries):
+        result = handle_history(args)
+
+    assert result == 0
+    assert capsys.readouterr().out == "(4).  ytaedl run\n"
+
+
+def test_handle_run_replays_history_argv_and_original_path(tmp_path: Path) -> None:
+    args = build_parser().parse_args(
+        ["--state-dir", str(tmp_path / "state"), "run", "-H", "-i", "3", "-P", "-D"]
+    )
+    entry = {
+        "history_id": 3,
+        "argv": ["python", "task.py"],
+        "command_line": "python task.py",
+        "cwd": str(tmp_path),
+    }
+    started = Mock(record=Mock(id="new-run", command_line="python task.py", cwd=str(tmp_path)))
+
+    with (
+        patch("runmux.cli.history_entry_by_id", return_value=entry),
+        patch("runmux.cli.create_managed_run", return_value=started) as create_mock,
+    ):
+        result = handle_run(args)
+
+    assert result == 0
+    assert create_mock.call_args.kwargs["program_args"] == ["python", "task.py"]
+    assert create_mock.call_args.kwargs["cwd"] == tmp_path
+
+
+def test_history_replay_can_create_multiple_instances_before_attach(tmp_path: Path) -> None:
+    args = build_parser().parse_args(["--state-dir", str(tmp_path / "state"), "history"])
+    entry = {"history_id": 2, "argv": ["python", "task.py"], "command_line": "python task.py", "cwd": str(tmp_path)}
+    starts = [
+        Mock(record=Mock(id="run-1", command_line="python task.py", cwd=str(tmp_path))),
+        Mock(record=Mock(id="run-2", command_line="python task.py", cwd=str(tmp_path))),
+        Mock(record=Mock(id="run-3", command_line="python task.py", cwd=str(tmp_path))),
+    ]
+
+    with (
+        patch("runmux.cli.create_managed_run", side_effect=starts) as create_mock,
+        patch("runmux.cli.interact_run", return_value=0) as interact_mock,
+    ):
+        result = launch_history_entry(
+            args,
+            entry,
+            use_original_path=False,
+            instance_count=3,
+            cwd_override=tmp_path,
+        )
+
+    assert result == 0
+    assert create_mock.call_count == 3
+    interact_mock.assert_called_once()
+    assert interact_mock.call_args.kwargs["run_id"] == "run-3"
+
+
+def test_fzf_run_action_maps_selected_global_id(tmp_path: Path) -> None:
+    args = build_parser().parse_args(["--state-dir", str(tmp_path), "history", "--fzf"])
+    entries = [{"history_id": 7, "argv": ["python", "task.py"], "command_line": "python task.py", "cwd": str(tmp_path)}]
+    completed = Mock(returncode=0, stdout="r\n7\tpython task.py\n", stderr="")
+
+    with (
+        patch("runmux.cli.shutil.which", return_value="fzf"),
+        patch("runmux.cli.subprocess.run", return_value=completed),
+        patch("runmux.cli.launch_history_entry", return_value=0) as launch_mock,
+    ):
+        result = browse_history_fzf(entries, args)
+
+    assert result == 0
+    launch_mock.assert_called_once_with(args, entries[0], use_original_path=True)
 
 
 def test_windows_enter_is_forwarded_as_carriage_return() -> None:

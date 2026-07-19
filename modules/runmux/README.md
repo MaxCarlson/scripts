@@ -30,6 +30,11 @@ runmux interact -i 0
 ```powershell
 runmux stats
 runmux history
+runmux history --starts-with ytaedl
+runmux history --contains archive --most-common 10
+runmux history --interactive
+runmux history --fzf
+runmux run --history --id 1 --path
 runmux cmd
 ```
 
@@ -40,7 +45,9 @@ runmux cmd
 - `runmux ls` prints a non-interactive one-shot list.
 - `runmux run ...` now enters interact mode by default. Use `-D/--detach` to
   start and return to the shell, or `-w/--view` / `-a/--attach` to view without
-  forwarding ordinary keys to the program.
+  forwarding ordinary keys to the program. Use `-c/--cwd` or its
+  `-p/--run-path` alias to launch from an explicit directory without changing
+  the caller's current directory.
 - User-facing IDs are numeric and are reused after terminal runs are removed
   from the registry with `runmux remove -i ID`.
 - `runmux rm` and `runmux remove` are aliases. With no ID they remove all
@@ -48,10 +55,22 @@ runmux cmd
 - `runmux remove-finished` removes all terminal runs, including finished, failed,
   killed, and lost records. Add `-C/--clean-only` to remove only cleanly
   finished runs.
-- `runmux history` prints commands launched through runmux. History and saved
-  commands are stored repo-locally under `modules/runmux/.runmux/`. Commands
-  are printed on `cmd>` lines for easy copying; `runmux history -I` opens an
-  Up/Down history browser that prints the selected command with Enter.
+- `runmux history` assigns newest-first global history IDs (the newest entry is
+  ID 0), but prints normal text rows oldest-to-newest so the latest command is
+  last. Filter with `-b/--starts-with` and/or `-c/--contains`,
+  and use `-m/--most-common [COUNT]` for frequency ordering (default 10).
+  Filtered results retain their global IDs, so any displayed entry can be run
+  with `runmux run -H/--history -i/--id ID`. Add `-P/--path` to replay it from
+  its recorded working directory.
+- History metadata is opt-in: `-d/--date`, `-P/--path`, `-S/--status`, and
+  `-r/--runtime`. `-I/--interactive` opens a multi-row browser with visible
+  hotkeys (`r` run, `s` save, Enter print, `/` contains search, `b` prefix
+  search, `c` clear filters, `v` cycle metadata, `x` show full content, and
+  `q`/Esc exit). The run dialog accepts an instance count and defaults to the
+  command's original path; it can instead use the current directory or a
+  manually entered path. `-f/--fzf` uses fzf when it is available on PATH.
+- History and saved commands are stored repo-locally under
+  `modules/runmux/.runmux/`.
 - Save commands with `runmux run -s ...` or `runmux save -i ID`. Use `runmux cmd`
   to browse saved command bases and commands, `runmux cmd -S` for saved-command
   stats, and `runmux run cmd -i` to pick and run a saved command interactively.

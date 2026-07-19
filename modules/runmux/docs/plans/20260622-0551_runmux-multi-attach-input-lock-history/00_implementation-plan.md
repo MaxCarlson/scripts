@@ -56,8 +56,28 @@ settings in `modules/runmux/.runmux/config.json`, including:
 - Migrate the existing `commands.json` idempotently and preserve a backup.
 - Record command, argv, cwd, timing, status, exit code, relationships, and
   lifetime attachment statistics.
-- Support prefix and contains filtering, recent and frequency ordering,
-  incremental interactive search, structured JSON, and aggregate summaries.
+- Assign global newest-first replay IDs in every view: newest is `0`, second
+  newest is `1`, and filtered/common/interactive/fzf results retain those IDs.
+- Replay exact history argv with `runmux run -H/--history -i/--id ID`; add
+  `-P/--path` to restore and validate the original working directory.
+- Support case-insensitive starts-with and contains filters, recent and
+  most-common ordering (default 10, configurable per invocation), incremental
+  interactive search, structured JSON, and aggregate summaries.
+- Default history output shows only ID and command. Date, cwd, status/exit code,
+  and runtime are opt-in fields.
+- Provide an interactive browser with a persistent bottom hotkey row: `r` run,
+  `s` save, Enter print/copy, navigation keys, search controls, and `q`/Esc.
+- Provide an optional fzf browser that preserves global IDs and supports print,
+  run, and save actions.
+- Keep test/isolated-state runs out of normal user history and hide legacy probe
+  pollution before visible IDs are assigned.
+- Use left-aligned IDs and multiline optional metadata: distinct path line plus
+  status-colored status/date/runtime line.
+- Let interactive users add, replace, combine, or clear prefix/contains filters;
+  cycle metadata visibility; toggle wrapped full content; and configure count
+  plus original/current/custom cwd in a pre-run dialog.
+- Provide an explicit run-path alias for launching any command from a directory
+  other than the caller's current location.
 
 ## Execution Discipline
 
@@ -75,4 +95,4 @@ For every numbered cycle:
 10. Commit only after the user's all-clear.
 11. Refine and begin the next cycle plan.
 
-Last edited: 2026-06-22 06:44:27 -07:00
+Last edited: 2026-07-19 07:22:00 -07:00

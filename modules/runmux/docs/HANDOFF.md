@@ -1,6 +1,6 @@
 # Runmux Current Handoff
 
-Last updated: 2026-06-22 06:44:27 -07:00
+Last updated: 2026-07-19 07:46:07 -07:00
 
 ## Resume Here
 
@@ -16,28 +16,25 @@ Read in this order:
 5. `plans/20260622-0551_runmux-multi-attach-input-lock-history/STATUS.md`
 6. `plans/20260622-0551_runmux-multi-attach-input-lock-history/checklist.md`
 7. `plans/20260622-0551_runmux-multi-attach-input-lock-history/00_implementation-plan.md`
-8. `plans/20260622-0551_runmux-multi-attach-input-lock-history/02_multi-attach-input-lock__in_progress.md`
+8. `plans/20260622-0551_runmux-multi-attach-input-lock-history/04_history-search-and-summary__planned.md`
 
 ## Current State
 
 - Cycle 1 was committed as `f697615`.
-- Cycle 2 code and documentation are staged but intentionally uncommitted.
-- Required plan branch is
-  `runmux-multi-attach-input-lock-history-20260622-0551`.
-- This work began on `main` before the branch rule was introduced. The staged
-  work has now been moved to the required plan branch.
-- Runmux source version is staged as `0.8.0`.
-- Cycle 2 automated verification passed.
-- The assistant must wait for user manual approval.
-- Do not begin Cycle 3.
-- Do not commit Cycle 2 without explicit approval.
+- Stage 2 was committed as `1cb73e4` and manually approved on 2026-07-19.
+- Current branch is `main`; verify it again before implementation or commit work.
+- Runmux source version is `0.9.0`.
+- Stage 2 automated verification passed and the user confirmed concurrent
+  terminals can interact with or view the same managed run.
+- Stage 4 history display, filtering, common-command, replay, interactive, and
+  fzf code is implemented but awaiting user-run tests and manual validation.
 - Documentation now includes a detailed project README, reusable AGENTS policy,
   and HANDOFF files in every created documentation directory.
 - The active implementation plan is self-contained under
   `docs/plans/20260622-0551_runmux-multi-attach-input-lock-history/`.
 - Its checklist begins with plan creation, stage completion, and full-plan
   completion timestamps.
-- Current branch: `runmux-multi-attach-input-lock-history-20260622-0551`.
+- Current branch: `main`.
 
 ## Cycle 2 Implementation
 
@@ -64,9 +61,10 @@ coverage                               -> 54% overall, store 89%
 real IPC smoke                         -> I:2 V:1 T:3 L:1 Q:1
 ```
 
-## Manual Test Gate
+## Manual Validation
 
-The user should test:
+The user confirmed on 2026-07-19 that multiple terminals can interact with or
+view the same managed run. The original validation procedure was:
 
 1. Start an indefinitely interactive managed program.
 2. Open two `runmux interact` clients for the same run.
@@ -79,27 +77,20 @@ The user should test:
 9. Check `runmux ls` current/lifetime and lock counts.
 10. Detach clients and confirm current counts drop while lifetime totals remain.
 
-Cycle 3 status bars and persistent visible lock indicators are not expected yet.
-
 ## Known Risks
 
-- Full manual multi-terminal behavior has not yet been approved.
-- Lock feedback is currently a Ctrl-X message and list column, not a persistent
-  status bar.
-- Stage 3 will add the reserved terminal rows and richer input-owner display.
+- Stage 3 persistent configuration remains incomplete even though attachment
+  status rendering exists in the current code.
+- Stage 4 storage migration/retention remains unfinished.
 - Existing overall coverage remains modest because older CLI/supervisor paths
   have limited tests, though new state/store logic has direct coverage.
 
 ## Next Action
 
-Wait for the user's manual test result. If approved:
-
-1. Mark manual approval in the active plan's `checklist.md` and `STATUS.md`.
-2. Rename Cycle 2 to `__implemented.md`.
-3. Update plan timestamps and links.
-4. Commit the staged Cycle 2 change.
-5. Confirm a clean worktree.
-6. Plan Cycle 3 and populate its checklist before implementation.
-
-If testing fails, fix Cycle 2, update documents, rerun all verification, restage,
-and request another manual test.
+Run the user-owned targeted test commands and manually validate the Stage 4
+history workflow. The second-round requirements are coded but not validated:
+isolated test-history routing, legacy probe filtering, left-aligned/multiline
+colored metadata, combined/clearable filters, metadata/full-content toggles,
+and the multi-instance original/current/custom-path run dialog. Normal history
+now records only `runmux run` launch paths; restart and duplicate clones are
+excluded. Do not commit before validation.

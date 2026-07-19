@@ -493,9 +493,9 @@ REGISTRY: dict = {
             {
                 "name": "runmux (module)",
                 "path": "modules/runmux",
-                "desc": "Managed process runner with shared list, view, interact, restart, and duplicate controls",
+                "desc": "Managed process runner with shared sessions and searchable, replayable command history",
                 "help_cmd": ["python", "-m", "runmux", "--help"],
-                "version": "0.8.0",
+                "version": "0.9.0",
             },
             {
                 "name": "sshmanager (module)",
