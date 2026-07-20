@@ -4,8 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ytaedl"
-version = "2.13.0"
+version = "2.14.0"
 # Version history (MAJOR.MINOR.PATCH per MODULE_STANDARDS.md):
+# 2.14.0 — MINOR: show a TermDash loading indicator while slow domain-index startup work runs before the interactive UI.
 # 2.13.0 — MINOR: add ytaedl summary subcommand to print stats and locks of active instances, backed by periodic background stats writing, pruning, and archiving
 # 2.12.0 — MINOR: move URL-file lock sidecars to <archive>/locks with canonical full-path hashes so same-named files in different directories cannot collide
 # 2.11.0 — MINOR: exact -p/--priority-files workload mode (-i/--priority-files-only) with one worker per file; worker-owned cross-process URL-file locks and visible lock-wait status; fix cleanup index archive-dir initialization

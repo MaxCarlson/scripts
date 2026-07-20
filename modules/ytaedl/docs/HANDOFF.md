@@ -6,12 +6,13 @@
 
 ## Active Stage / Plan
 
-Implementing the `ytaedl summary` subcommand to report real-time manager stats and locks, backed by active and archived JSON stat files.
+Manual validation pending for the startup-loading indicator used during domain-index rebuilds.
 
-* Plan: [00_implementation-plan.md](file:///C:/Users/mcarls/src/scripts/modules/ytaedl/docs/plans/20260622-1417_ytaedl-summary-subcommand/00_implementation-plan.md)
-* Status: [STATUS.md](file:///C:/Users/mcarls/src/scripts/modules/ytaedl/docs/plans/20260622-1417_ytaedl-summary-subcommand/STATUS.md)
-* Checklist: [checklist.md](file:///C:/Users/mcarls/src/scripts/modules/ytaedl/docs/plans/20260622-1417_ytaedl-summary-subcommand/checklist.md)
+* Plan: [00_implementation-plan.md](plans/20260719-0000_startup-loading-indicator/00_implementation-plan.md)
+* Status: [STATUS.md](plans/20260719-0000_startup-loading-indicator/STATUS.md)
+* Checklist: [checklist.md](plans/20260719-0000_startup-loading-indicator/checklist.md)
 
 ## Verification and Commands
 
 * pytest command: `pytest modules/ytaedl/tests -q`
+* Latest result: `350 passed, 1 skipped` on 2026-07-19.

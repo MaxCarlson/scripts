@@ -48,6 +48,7 @@ from .domain_index import DomainIndex, ScanLogEntry, _extract_domain as _domain_
 from .downloader import ARCHIVE_PROCESSED_STATUSES, MAX_RESOLUTION_CHOICES, _merge_archive_status
 from .mp4_watcher import MP4Watcher, WatcherConfig, WatcherSnapshot
 from .urlfile_lock import probe_urlfile_lock
+from termdash import LoadingIndicator
 from termdash import utils as td_utils
 
 MP4_VALID_OPERATIONS = ("copy", "move")
@@ -1931,12 +1932,19 @@ def run_main(
             finished_urls = _load_archive_finished_urls(archive_dir)
             if finished_urls:
                 mlog.info(f"Seeding domain index from archive: {len(finished_urls)} finished URL(s)")
-            domain_index = DomainIndex.build(
-                _all_url_files,
-                finished_urls=finished_urls,
-                progress_cb=lambda msg: mlog.info(f"  {msg}"),
-            )
-            domain_index.save(domain_index_path)
+
+            with LoadingIndicator("Building domain index") as startup_loading:
+                def _report_domain_index_progress(message: str) -> None:
+                    startup_loading.update(message)
+                    mlog.info(f"  {message}")
+
+                domain_index = DomainIndex.build(
+                    _all_url_files,
+                    finished_urls=finished_urls,
+                    progress_cb=_report_domain_index_progress,
+                )
+                startup_loading.update("Saving domain index")
+                domain_index.save(domain_index_path)
             mlog.info(f"Domain index saved to {domain_index_path}")
 
         # Register save path for auto-save on updates
