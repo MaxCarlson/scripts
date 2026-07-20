@@ -31,6 +31,8 @@ class RunOptions:
     cookies: Path | None = None
     cookies_browser: str | None = None
     rate: str | None = None
+    hdporncomics_executable: str | None = None
+    hdporncomics_threads: int = 8
     ui: bool = True
 
 
@@ -95,6 +97,9 @@ class DownloadManager:
             command.extend(["--cookies-browser", self.options.cookies_browser])
         if self.options.rate:
             command.extend(["--rate", self.options.rate])
+        if self.options.hdporncomics_executable:
+            command.extend(["--hdporncomics-executable", self.options.hdporncomics_executable])
+        command.extend(["--hdporncomics-threads", str(self.options.hdporncomics_threads)])
         return command
 
     def _start_worker(self, slot: int, job: dict[str, Any]) -> None:
@@ -113,6 +118,7 @@ class DownloadManager:
         snapshot = self.snapshots[slot]
         snapshot.state = "run"
         snapshot.url = job["canonical_url"]
+        snapshot.backend = job["backend"]
         snapshot.attempt = job["attempts"]
         self.logger.info(
             "dispatch worker=%02d pid=%s job=%s attempt=%s url=%s",
@@ -173,6 +179,7 @@ class DownloadManager:
             "average_ips",
             "elapsed",
             "message",
+            "backend",
         ):
             if name in data and data[name] is not None:
                 setattr(snapshot, name, data[name])
@@ -193,7 +200,11 @@ class DownloadManager:
         elif event["event"] == "job_complete":
             state = JobState._value2member_map_.get(data.get("state"), JobState.SUCCEEDED)
             self.store.complete(event["job_id"], event["attempt_id"], state)
-            status = "FINISH_SKIPPED" if state == JobState.SKIPPED_ARCHIVE else "FINISH_SUCCESS"
+            status = (
+                "FINISH_SKIPPED"
+                if state == JobState.SKIPPED_ARCHIVE
+                else "FINISH_INCOMPLETE" if state == JobState.SUCCEEDED_INCOMPLETE else "FINISH_SUCCESS"
+            )
             self._write_worker_log(
                 slot,
                 status,

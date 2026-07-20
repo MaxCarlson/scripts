@@ -12,6 +12,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+from .hdporncomics_patch import patch_recovery_hint
 from .models import WorkerEvent
 from .naming import DIRECTORY_TEMPLATE, FILENAME_TEMPLATE
 
@@ -89,12 +90,46 @@ def _merge_partial(partial: Path, destination: Path) -> None:
         partial.rmdir()
 
 
+def _resolve_hdporncomics_executable(value: str | None) -> str:
+    """Resolve the optional executable without guessing or using a shell."""
+    configured = value or os.environ.get("HDPORNCOMICS_EXECUTABLE")
+    if configured:
+        candidate = Path(configured).expanduser()
+        if candidate.parent != Path(".") or candidate.is_absolute():
+            if not candidate.is_file():
+                raise RuntimeError(f"hdporncomics executable was not found: {candidate}")
+            return str(candidate.resolve())
+        resolved = shutil.which(configured)
+        if resolved:
+            return resolved
+        raise RuntimeError(f"hdporncomics executable was not found on PATH: {configured}")
+    resolved = shutil.which("hdporncomics")
+    if resolved is None and os.name == "nt":
+        resolved = shutil.which("hdporncomics.exe")
+    if resolved is None:
+        raise RuntimeError(
+            "hdporncomics executable was not found; install it with: python -m pip install --upgrade hdporncomics"
+        )
+    return resolved
+
+
 def _command(args: argparse.Namespace, partial: Path) -> list[str]:
     if args.backend == "native-nhentai":
         executable = shutil.which("nhentai")
         if not executable:
             raise RuntimeError("native nhentai executable is not installed")
         return [executable, "--id", args.url.rsplit("/", 2)[-2], "--output", str(partial)]
+    if args.backend == "hdporncomics":
+        return [
+            _resolve_hdporncomics_executable(args.hdporncomics_executable),
+            "--directory",
+            str(args.destination),
+            "--threads",
+            str(args.hdporncomics_threads),
+            "--force",
+            "--manhwa",
+            args.url,
+        ]
     command = [
         sys.executable,
         "-m",
@@ -127,10 +162,11 @@ def run(args: argparse.Namespace) -> int:
     partial.mkdir(parents=True, exist_ok=True)
     Path(args.raw_log).parent.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
-    baseline_images, baseline_size = _tree_stats(partial)
+    output_root = Path(args.destination) if args.backend == "hdporncomics" else partial
+    baseline_images, baseline_size = _tree_stats(output_root)
     samples: deque[tuple[float, int, int]] = deque(maxlen=30)
     tail: deque[str] = deque(maxlen=100)
-    _emit(args, "worker_ready", state="running", destination=str(partial))
+    _emit(args, "worker_ready", state="running", destination=str(output_root), backend=args.backend)
     try:
         command = _command(args, partial)
     except RuntimeError as exc:
@@ -164,14 +200,14 @@ def run(args: argparse.Namespace) -> int:
         last_emit = 0.0
         while process.poll() is None:
             now = time.monotonic()
-            images, size = _tree_stats(partial)
+            images, size = _tree_stats(output_root)
             samples.append((now, size, images))
             while len(samples) > 2 and now - samples[0][0] > 5.0:
                 samples.popleft()
             old_t, old_size, old_images = samples[0]
             delta = max(now - old_t, 0.001)
             elapsed = max(now - started, 0.001)
-            site, title = _identity(partial)
+            site, title = _identity(output_root)
             if now - last_emit >= 0.5:
                 _emit(
                     args,
@@ -186,37 +222,42 @@ def run(args: argparse.Namespace) -> int:
                     site=site,
                     title=title,
                     elapsed=elapsed,
-                    message=tail[-1] if tail else "starting gallery-dl",
+                    message=tail[-1] if tail else f"starting {args.backend}",
                 )
                 last_emit = now
             time.sleep(0.25)
         thread.join(timeout=5)
         returncode = process.returncode or 0
-    images, size = _tree_stats(partial)
+    images, size = _tree_stats(output_root)
     if returncode == 0:
-        _merge_partial(partial, Path(args.destination))
+        if args.backend != "hdporncomics":
+            _merge_partial(partial, Path(args.destination))
         skipped = (
             images == baseline_images and size == baseline_size and any("archive" in line.lower() for line in tail)
         )
+        incomplete = args.backend == "hdporncomics" and images == 0
         _emit(
             args,
             "job_complete",
-            state="skipped_archive" if skipped else "succeeded",
+            state="succeeded_incomplete" if incomplete else "skipped_archive" if skipped else "succeeded",
             images_done=images,
             images_total=images,
             bytes_done=size,
             bytes_total=size,
             elapsed=time.monotonic() - started,
+            message="hdporncomics exited successfully but no chapter images were found" if incomplete else "",
         )
         return 0
-    category, retryable = _classify(returncode, "\n".join(tail))
+    output = "\n".join(tail)
+    category, retryable = _classify(returncode, output)
+    hint = patch_recovery_hint(output) if args.backend == "hdporncomics" else None
     state = "failed_" + ("rate_limit" if category == "rate_limit" else category)
     _emit(
         args,
         "job_retryable_failure" if retryable else "job_terminal_failure",
         state=state,
         category=category,
-        message=tail[-1] if tail else f"backend exited {returncode}",
+        message=hint or tail[-1] if tail else f"backend exited {returncode}",
         returncode=returncode,
         images_done=images,
         bytes_done=size,
@@ -240,6 +281,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-c", "--cookies")
     parser.add_argument("-B", "--cookies-browser")
     parser.add_argument("-x", "--rate")
+    parser.add_argument("-e", "--hdporncomics-executable")
+    parser.add_argument("-H", "--hdporncomics-threads", type=int, default=8)
     return parser
 
 

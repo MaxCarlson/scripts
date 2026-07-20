@@ -4,7 +4,7 @@ Initial implementation is in progress. The user explicitly requested continuous 
 
 No commits, merges, migrations, relocations, or legacy deletions are authorized.
 
-Active files: [plan](plans/20260712-1540_mangadl-initial-implementation/00_implementation-plan.md), [status](plans/20260712-1540_mangadl-initial-implementation/STATUS.md), and [checklist](plans/20260712-1540_mangadl-initial-implementation/checklist.md).
+Active files: [plan](plans/20260719-1830_destination-audit-and-badges/00_implementation-plan.md), [status](plans/20260719-1830_destination-audit-and-badges/STATUS.md), and [checklist](plans/20260719-1830_destination-audit-and-badges/checklist.md).
 
 Default tests use no live websites. First manual validation must use copied inputs, a new state database/archive, and a test destination.
 

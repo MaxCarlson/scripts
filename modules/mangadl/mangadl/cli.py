@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import sqlite3
 import sys
@@ -8,7 +9,9 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .backends import choose_backend
+from .backends import backend_classification, choose_backend
+from .destination_audit import audit_destinations, write_audit_outputs
+from .hdporncomics_patch import apply_patch, patch_status
 from .input import collect_inputs
 from .manager import DownloadManager, RunOptions
 from .repair import apply_repair, plan_loose_images
@@ -41,7 +44,13 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("-a", "--archive", type=_path, required=True, help="gallery-dl SQLite archive path.")
     _add_state(run)
     run.add_argument("-w", "--workers", type=int, default=2, help="Concurrent worker count (default: 2).")
-    run.add_argument("-b", "--backend", choices=("auto", "gallery-dl", "native-nhentai"), default="auto")
+    run.add_argument(
+        "-b", "--backend", choices=("auto", "gallery-dl", "native-nhentai", "hdporncomics"), default="auto"
+    )
+    run.add_argument("-e", "--hdporncomics-executable", help="hdporncomics executable path or name.")
+    run.add_argument(
+        "-H", "--hdporncomics-threads", type=int, default=8, help="Internal hdporncomics threads (default: 8)."
+    )
     run.add_argument("-c", "--config", type=_path, help="Reserved mangadl TOML configuration path.")
     run.add_argument("-g", "--gallery-config", type=_path, help="gallery-dl configuration file.")
     run.add_argument("-l", "--log-dir", type=_path, default=_path("mangadl-logs"), help="Run log root.")
@@ -58,7 +67,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     inspect = subparsers.add_parser("inspect", help="Inspect URL routing or persisted jobs.")
     inspect.add_argument("-u", "--url", action="append", default=[], help="URL to probe; repeatable.")
-    inspect.add_argument("-b", "--backend", choices=("auto", "gallery-dl", "native-nhentai"), default="auto")
+    inspect.add_argument(
+        "-b", "--backend", choices=("auto", "gallery-dl", "native-nhentai", "hdporncomics"), default="auto"
+    )
     _add_state(inspect)
     inspect.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
 
@@ -74,6 +85,23 @@ def build_parser() -> argparse.ArgumentParser:
     archive = subparsers.add_parser("archive", help="Inspect a gallery-dl SQLite archive.")
     archive.add_argument("-a", "--archive", required=True, type=_path, help="gallery-dl archive path.")
     archive.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
+    patch = subparsers.add_parser("patch-hdporncomics", help="Check or apply the HDPornComics Windows path patch.")
+    patch.add_argument("-f", "--apply", action="store_true", help="Apply the known-safe compatibility patch.")
+    audit = subparsers.add_parser(
+        "audit", aliases=("audit-destinations",), help="Find URL-list items absent from all destination roots."
+    )
+    audit.add_argument("-i", "--input-file", action="append", required=True, help="URL file or glob; repeatable.")
+    audit.add_argument(
+        "-d", "--destination", action="append", type=_path, required=True, help="Download root to inspect; repeatable."
+    )
+    audit.add_argument(
+        "-o", "--missing-output", type=_path, required=True, help="Write URLs not found in any destination here."
+    )
+    audit.add_argument(
+        "-p", "--duplicates-output", type=_path, required=True, help="Write duplicate folder locations as JSON here."
+    )
+    audit.add_argument("-j", "--json", action="store_true", help="Emit the audit summary as JSON.")
+    audit.add_argument("-q", "--quiet", action="store_true", help="Suppress progress messages on stderr.")
     repair = subparsers.add_parser("repair-loose", help="Rebuild per-gallery folders from loose nhentai images.")
     repair.add_argument("-d", "--destination", required=True, type=_path, help="Directory containing loose images.")
     repair_mode = repair.add_mutually_exclusive_group()
@@ -87,6 +115,8 @@ def build_parser() -> argparse.ArgumentParser:
 def _run(args: argparse.Namespace) -> int:
     if args.workers < 1:
         raise ValueError("--workers must be at least 1")
+    if args.hdporncomics_threads < 1:
+        raise ValueError("--hdporncomics-threads must be at least 1")
     if not args.input_file and not args.url:
         raise ValueError("provide at least one --input-file or --url")
     inputs, rejected = collect_inputs(args.input_file, args.url)
@@ -123,6 +153,8 @@ def _run(args: argparse.Namespace) -> int:
             cookies=args.cookies,
             cookies_browser=args.cookies_browser,
             rate=args.max_rate,
+            hdporncomics_executable=args.hdporncomics_executable,
+            hdporncomics_threads=args.hdporncomics_threads,
             ui=not args.no_ui and not args.quiet,
         )
         return DownloadManager(options, store).run()
@@ -159,7 +191,15 @@ def _inspect(args: argparse.Namespace) -> int:
     payload = []
     for url in args.url:
         try:
-            payload.append({"url": url, "backend": choose_backend(url, args.backend), "supported": True})
+            backend = choose_backend(url, args.backend)
+            payload.append(
+                {
+                    "url": url,
+                    "backend": backend,
+                    "classification": backend_classification(url, backend),
+                    "supported": True,
+                }
+            )
         except ValueError as exc:
             payload.append({"url": url, "supported": False, "reason": str(exc)})
     print(
@@ -202,6 +242,61 @@ def _archive(args: argparse.Namespace) -> int:
         connection.close()
     payload = {"path": str(args.archive), "tables": tables, "archive_records": count}
     print(json.dumps(payload, indent=2, sort_keys=True) if args.json else f"{args.archive}: {count} archive records")
+    return 0
+
+
+def _patch_hdporncomics(args: argparse.Namespace) -> int:
+    status = apply_patch() if args.apply else patch_status()
+    print(status.message)
+    return 0 if status.state == "patched" else 1
+
+
+def _expand_audit_input_files(patterns: list[str]) -> list[Path]:
+    files: list[Path] = []
+    seen: set[Path] = set()
+    for pattern in patterns:
+        expanded = glob.glob(str(Path(pattern).expanduser()), recursive=False)
+        if not expanded:
+            raise ValueError(f"input file or glob matched no files: {pattern}")
+        for value in expanded:
+            path = Path(value).resolve()
+            if not path.is_file():
+                raise ValueError(f"input path is not a file: {path}")
+            if path not in seen:
+                seen.add(path)
+                files.append(path)
+    return files
+
+
+def _audit_destinations(args: argparse.Namespace) -> int:
+    files = _expand_audit_input_files(args.input_file)
+    progress = None if args.quiet else lambda message: print(f"Audit: {message}", file=sys.stderr, flush=True)
+    if progress:
+        progress(f"Loading {len(files)} URL file(s)")
+    inputs, rejected = collect_inputs(files, [])
+    if progress:
+        progress(f"Loaded {len(inputs)} unique URL(s); {len(rejected)} rejected/duplicate line(s)")
+    audit = audit_destinations(inputs, args.destination, progress)
+    write_audit_outputs(audit, args.missing_output, args.duplicates_output)
+    payload = {
+        "input_urls": len(inputs),
+        "rejected": rejected,
+        "resolved": len(audit.resolved),
+        "unresolved": len(audit.unresolved),
+        "duplicates": len(audit.duplicates),
+        "missing_output": str(args.missing_output),
+        "duplicates_output": str(args.duplicates_output),
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(
+            f"Audited {payload['input_urls']} URL(s): {payload['resolved']} found, "
+            f"{payload['unresolved']} missing, {payload['duplicates']} duplicate folder group(s)."
+        )
+    if progress:
+        progress(f"Wrote missing URLs: {args.missing_output}")
+        progress(f"Wrote duplicate folders: {args.duplicates_output}")
     return 0
 
 
@@ -257,6 +352,9 @@ def main(argv: list[str] | None = None) -> int:
             "status": _show_state,
             "retry": _retry,
             "archive": _archive,
+            "patch-hdporncomics": _patch_hdporncomics,
+            "audit": _audit_destinations,
+            "audit-destinations": _audit_destinations,
             "repair-loose": _repair_loose,
         }[args.command](args)
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:

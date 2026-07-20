@@ -21,6 +21,11 @@ STATUS_COLORS = {
     "skipped_archive": "cyan",
 }
 SITE_COLORS = {"NH": "red", "EH": "magenta", "EX": "magenta", "MD": "cyan", "H2R": "yellow"}
+BACKEND_BADGES = {
+    "gallery-dl": ("GD", "green"),
+    "native-nhentai": ("NH", "cyan"),
+    "hdporncomics": ("HD", "magenta"),
+}
 
 
 def human_bytes(value: float | int | None, suffix: str = "") -> str:
@@ -91,6 +96,11 @@ def color_identity(url: str, site: str = "") -> str:
     return f"{td_utils.color_text(tag, SITE_COLORS.get(tag, 'blue'))}:{identifier}"
 
 
+def color_backend_badge(backend: str) -> str:
+    badge, color = BACKEND_BADGES.get(backend, ("--", "gray"))
+    return td_utils.color_text(badge, color)
+
+
 def _progress(worker: WorkerSnapshot, width: int) -> str:
     if worker.images_total:
         ratio = max(0.0, min(1.0, worker.images_done / worker.images_total))
@@ -103,6 +113,7 @@ def _progress(worker: WorkerSnapshot, width: int) -> str:
 def _worker_lines(worker: WorkerSnapshot, selected: bool, width: int) -> list[str]:
     marker = td_utils.color_text(">", "cyan") if selected else " "
     identity = color_identity(worker.url, worker.site) if worker.url else td_utils.color_text("--:-", "gray")
+    backend = color_backend_badge(worker.backend)
     images = f"{worker.images_done}/{worker.images_total if worker.images_total is not None else '?'} img"
     sizes = f"{human_bytes(worker.bytes_done)}/{human_bytes(worker.bytes_total)}"
     rates = f"now {human_bytes(worker.current_bps, '/s')} avg {human_bytes(worker.average_bps, '/s')}"
@@ -112,18 +123,20 @@ def _worker_lines(worker: WorkerSnapshot, selected: bool, width: int) -> list[st
     if width >= 140:
         return [
             clip(
-                f"{marker}{worker.slot:02d} {color_status(worker.state)} | {identity} | {images} | {sizes} | {rates} | {items} | {elapsed} | {title}",
+                f"{marker}{worker.slot:02d} {color_status(worker.state)} {backend} | {identity} | {images} | {sizes} | {rates} | {items} | {elapsed} | {title}",
                 width,
             )
         ]
     if width >= 78:
         first = clip(
-            f"{marker}{worker.slot:02d} {color_status(worker.state)} | {identity} | {images} | {sizes} | {elapsed}",
+            f"{marker}{worker.slot:02d} {color_status(worker.state)} {backend} | {identity} | {images} | {sizes} | {elapsed}",
             width,
         )
         second = clip(f"    {_progress(worker, 18)} | {rates} | {items} | {title}", width)
         return [first, second]
-    first = clip(f"{marker}{worker.slot:02d} {color_status(worker.state)} | {identity} | {images} | {elapsed}", width)
+    first = clip(
+        f"{marker}{worker.slot:02d} {color_status(worker.state)} {backend} | {identity} | {images} | {elapsed}", width
+    )
     second = clip(f"    {_progress(worker, 10)} | {sizes} | {human_bytes(worker.current_bps, '/s')} | {items}", width)
     return [first, second]
 
@@ -184,7 +197,7 @@ def render_dashboard(
         lines.extend(_worker_lines(workers[slot], slot == selected, width))
     if log_lines is not None:
         lines.extend(
-            ["-" * width, clip(f"Worker {selected:02d} {'raw gallery-dl' if raw_log else 'activity'} log", width)]
+            ["-" * width, clip(f"Worker {selected:02d} {'raw backend' if raw_log else 'activity'} log", width)]
         )
         lines.extend(clip(line if raw_log else _color_log_line(line), width) for line in log_lines)
     lines.extend(
@@ -244,7 +257,7 @@ class ConsoleDashboard:
             lines = read_log_lines(self._log_path(), max(4, terminal.lines - 3))
             body = [clip(line if self.raw_view else _color_log_line(line), width) for line in lines]
             text = "\n".join(
-                [clip(f"Worker {self.selected:02d} {'raw gallery-dl' if self.raw_view else 'activity'} log", width)]
+                [clip(f"Worker {self.selected:02d} {'raw backend' if self.raw_view else 'activity'} log", width)]
                 + body
                 + ["", clip("f Back | r Raw/activity | q Quit", width)]
             )

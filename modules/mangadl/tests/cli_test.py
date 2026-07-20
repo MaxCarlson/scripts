@@ -31,3 +31,10 @@ def test_repair_loose_defaults_to_dry_run_and_supports_explicit_mode(tmp_path, c
 
     args = build_parser().parse_args(["repair-loose", "-d", str(tmp_path), "-n"])
     assert args.dry_run
+
+
+def test_inspect_reports_hdporncomics_manhwa_classification(capsys) -> None:
+    assert main(["inspect", "-u", "https://hdporncomics.com/manhwa/title/", "-j"]) == 0
+    output = capsys.readouterr().out
+    assert '"backend": "hdporncomics"' in output
+    assert '"classification": "manhwa"' in output

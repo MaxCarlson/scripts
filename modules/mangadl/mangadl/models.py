@@ -11,6 +11,7 @@ class JobState(StrEnum):
     RUNNING = "running"
     RETRY_WAIT = "retry_wait"
     SUCCEEDED = "succeeded"
+    SUCCEEDED_INCOMPLETE = "succeeded_incomplete"
     SKIPPED_ARCHIVE = "skipped_archive"
     FAILED_BAD_URL = "failed_bad_url"
     FAILED_UNSUPPORTED = "failed_unsupported"
@@ -26,6 +27,7 @@ class JobState(StrEnum):
 
 TERMINAL_STATES = {
     JobState.SUCCEEDED,
+    JobState.SUCCEEDED_INCOMPLETE,
     JobState.SKIPPED_ARCHIVE,
     JobState.FAILED_BAD_URL,
     JobState.FAILED_UNSUPPORTED,
@@ -69,6 +71,7 @@ class WorkerSnapshot:
     slot: int
     state: str = "idle"
     url: str = ""
+    backend: str = ""
     title: str = ""
     site: str = ""
     attempt: int = 0

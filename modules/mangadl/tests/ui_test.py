@@ -9,6 +9,7 @@ def test_dashboard_contains_compact_identity_rates_and_colors() -> None:
         1,
         state="run",
         url="https://nhentai.net/g/123/",
+        backend="gallery-dl",
         site="nhentai",
         images_done=2,
         images_total=10,
@@ -24,6 +25,7 @@ def test_dashboard_contains_compact_identity_rates_and_colors() -> None:
     assert "\x1b[32mRUN\x1b[0m" in output
     assert "1.0 KiB/s" in output
     assert "2/10" in output
+    assert "\x1b[32mGD\x1b[0m" in output
     assert all(visible_len(line) <= 120 for line in output.splitlines())
 
 

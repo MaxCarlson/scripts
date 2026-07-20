@@ -39,3 +39,26 @@ def test_gallery_command_uses_base_destination_and_shared_naming(tmp_path: Path)
     assert "--directory" not in command
     assert f'directory=["{DIRECTORY_TEMPLATE}"]' in command
     assert f"filename={FILENAME_TEMPLATE}" in command
+
+
+def test_hdporncomics_command_forces_manhwa_and_uses_output_root(tmp_path: Path) -> None:
+    executable = tmp_path / "hdporncomics.exe"
+    executable.write_text("", encoding="utf-8")
+    output = tmp_path / "output root"
+    args = Namespace(
+        backend="hdporncomics",
+        hdporncomics_executable=str(executable),
+        hdporncomics_threads=8,
+        destination=str(output),
+        url="https://hdporncomics.com/manhwa/a title/",
+    )
+    assert _command(args, tmp_path / "ignored") == [
+        str(executable.resolve()),
+        "--directory",
+        str(output),
+        "--threads",
+        "8",
+        "--force",
+        "--manhwa",
+        "https://hdporncomics.com/manhwa/a title/",
+    ]
