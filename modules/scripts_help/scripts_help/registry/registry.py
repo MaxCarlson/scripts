@@ -371,9 +371,9 @@ REGISTRY: dict = {
             {
                 "name": "mangadl (module)",
                 "path": "modules/mangadl",
-                "desc": "Concurrent manga/gallery downloader with routing, recovery, worker dashboard, and logs",
+                "desc": "Concurrent manga/gallery downloader with backend badges, destination audit, recovery, dashboard, and logs",
                 "help_cmd": ["mangadl", "--help"],
-                "version": "1.3.0",
+                "version": "1.6.0",
             },
             {
                 "name": "edit_video_file.py",
