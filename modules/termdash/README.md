@@ -58,6 +58,29 @@ with TermDash() as td:
         time.sleep(0.1)
 ```
 
+## Loading transitions
+
+Use a standalone indicator for slow startup work before a dashboard exists:
+
+```python
+from termdash import LoadingIndicator
+
+with LoadingIndicator("Building the URL index") as loading:
+    loading.update("Reading URL files")
+    build_index()
+```
+
+For work that happens after a dashboard is running, mark the transition. The
+spinner renders in its own row below the dashboard and disappears on exit:
+
+```python
+with dashboard.transition("Switching download profile"):
+    switch_profile()
+```
+
+`show_loading()` and `hide_loading()` provide equivalent manual control for a
+running dashboard.
+
 ## `ytdlp_parser.py`
 
 This module provides a lightweight parser for `yt-dlp` console output. It's designed to extract structured information from the raw text output of `yt-dlp` downloads, such as metadata, progress, completion status, and errors. While not a core component of the dashboard rendering, it can be used as a utility to feed data into a TermDash dashboard for monitoring `yt-dlp` operations.

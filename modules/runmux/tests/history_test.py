@@ -6,12 +6,14 @@ from pathlib import Path
 
 from runmux.history import (
     command_stats,
+    delete_saved_commands,
     filter_history_entries,
     history_entry_by_id,
     history_path_for_state_dir,
     history_entries,
     indexed_history_entries,
     most_common_history_entries,
+    load_unique_commands,
     record_run_finished,
     record_run_started,
     save_record_command,
@@ -196,3 +198,20 @@ def test_finish_does_not_create_history_for_unrecorded_clone(tmp_path: Path) -> 
     record_run_finished("clone-run", status="finished", runtime_seconds=1.0, path=path)
 
     assert not path.exists()
+
+
+def test_unique_command_ledger_keeps_runs_and_paths_after_saved_delete(tmp_path: Path) -> None:
+    path = tmp_path / "commands.json"
+    record = make_record(tmp_path)
+
+    record_run_started(record, path=path)
+    record_run_finished(record.id, status="finished", runtime_seconds=3.0, path=path)
+    saved = save_command(argv=["ytaedl", "run", "urls.txt"], cwd=str(tmp_path), path=path)
+    removed = delete_saved_commands({saved.id}, path=path)
+    ledger = load_unique_commands(path)
+
+    assert [item.id for item in removed] == [saved.id]
+    assert history_entries(path)
+    assert ledger["commands"][0]["run_count"] == 1
+    assert ledger["commands"][0]["paths"] == [str(tmp_path)]
+    assert ledger["commands"][0]["runs"][0]["runtime_seconds"] == 3.0

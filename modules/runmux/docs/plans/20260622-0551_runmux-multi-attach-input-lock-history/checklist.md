@@ -130,6 +130,10 @@ Automated result: 72 tests passed. Real supervisor IPC smoke confirmed
 - [x] Persistent module-local configuration and terminal-record retention/pruning coded; tests pending.
 - [x] Bulk `remove-finished` CLI removed; individual `remove` requires an ID; tests updated, not run.
 - [x] Cosmetic-only `-A/--all-details` shortcut coded for history, load, and ls; tests pending.
+- [ ] `load -I` confirmed delete action with y/n prompt.
+- [ ] `load delete` dry-run/apply with composable saved-command filters.
+- [ ] Module-local unique-command JSON ledger with per-run timestamps/runtimes and effective cwd paths.
+- [ ] History unique-command, path, and complete run-list views.
 - [x] Stats table uses ANSI-safe fixed-width cells and CRLF live redraw; tests added, not run.
 - [ ] Locked JSONL migration, retention, and concurrent-writer work remains.
 - [ ] Full automated verification and real non-default-cwd replay smoke test.

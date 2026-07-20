@@ -172,6 +172,24 @@ runmux run --history --id 1 --path
   history entry is saved.
 - Update README, CLI help, and scripts-help registry.
 
+## Saved-command deletion and unique-command ledger
+
+- Add an interactive `d` delete action in `runmux load -I`. It must show the
+  selected saved command and require a y/n confirmation before deletion.
+- Add `runmux load delete` with composable `--starts-with`, `--contains`,
+  `--before DATE`, and `--not-run-for DAYS` filters. The default is a dry run
+  that prints every matching saved command and requested display details;
+  `-A/--apply` performs the deletion.
+- Deleting a saved command must never remove its run history or unique-command
+  statistics.
+- Store a module-local JSON unique-command ledger. For every unique command it
+  records total run count, first/last run timestamps, every run timestamp and
+  runtime, and every distinct effective cwd used for the command.
+- Update the ledger only with the effective child cwd. A caller's own cwd must
+  not be recorded when a specific command cwd was supplied.
+- Add history options for unique-command-only views, unique command paths, and
+  complete run timestamp/runtime lists.
+
 ## Tests
 
 - Migration, backup, retention, and corrupt-data errors.

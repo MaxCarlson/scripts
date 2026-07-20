@@ -180,6 +180,30 @@ def test_load_command_parses_stats_and_cmd_is_an_alias(tmp_path: Path) -> None:
     assert args.stats is True
 
 
+def test_load_delete_filters_and_apply_parse(tmp_path: Path) -> None:
+    args = build_parser().parse_args(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "load",
+            "delete",
+            "--starts-with",
+            "ytaedl",
+            "--contains",
+            "run",
+            "--before",
+            "2026-07-01",
+            "--not-run-for",
+            "30",
+            "--apply",
+        ]
+    )
+
+    assert args.action == "delete"
+    assert args.apply is True
+    assert args.not_run_for == 30
+
+
 def test_command_stats_output_can_colorize(capsys) -> None:
     command = argparse.Namespace(
         id=0,

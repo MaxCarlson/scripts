@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from runmux.history import (
     HistoryError,
     command_stats,
     commands_for_base,
+    delete_saved_commands,
     filter_history_entries,
     history_entry_by_id,
     indexed_history_entries,
@@ -28,6 +30,7 @@ from runmux.history import (
     most_common_history_entries,
     save_command,
     save_record_command,
+    load_unique_commands,
     saved_bases,
 )
 from runmux.ipc import IpcError
@@ -367,6 +370,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     history_parser.add_argument("-r", "--runtime", action="store_true", help="Include elapsed runtime.")
     history_parser.add_argument("-A", "--all-details", action="store_true", help="Include every cosmetic history detail.")
+    history_parser.add_argument("-u", "--unique", action="store_true", help="Show unique-command ledger entries only.")
+    history_parser.add_argument("-X", "--unique-paths", action="store_true", help="With --unique, show every recorded effective cwd.")
+    history_parser.add_argument("-R", "--run-details", action="store_true", help="With --unique, show every recorded run time and runtime.")
     history_parser.add_argument(
         "-p",
         "--plain",
@@ -399,9 +405,14 @@ def build_parser() -> argparse.ArgumentParser:
     load_parser.add_argument("-P", "--path", action="store_true", help="Include the saved working directory.")
     load_parser.add_argument("-S", "--status", action="store_true", help="Include saved-command status.")
     load_parser.add_argument("-r", "--runtime", action="store_true", help="Include runtime when known.")
+    load_parser.add_argument("-C", "--run-count", action="store_true", help="Include unique-command run count.")
     load_parser.add_argument("-A", "--all-details", action="store_true", help="Include every cosmetic saved-command detail.")
     load_parser.add_argument("-p", "--plain", action="store_true", help="Disable ANSI color.")
     load_parser.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
+    load_parser.add_argument("-B", "--before", default=None, metavar="DATE", help="For delete: saved before this ISO date/time.")
+    load_parser.add_argument("-N", "--not-run-for", type=non_negative_int, default=None, metavar="DAYS", help="For delete: not run for at least DAYS.")
+    load_parser.add_argument("-a", "--apply", action="store_true", help="For delete: carry out deletion; otherwise dry-run.")
+    load_parser.add_argument("action", nargs="?", choices=["delete"], help="Optional saved-command action.")
     load_parser.set_defaults(func=handle_load)
 
     return parser
@@ -453,6 +464,15 @@ def positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
         raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
+def non_negative_int(value: str) -> int:
+    """Parse a non-negative CLI integer."""
+
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be zero or greater")
     return parsed
 
 
@@ -973,10 +993,10 @@ def handle_history(args: argparse.Namespace) -> int:
     """Handle ``runmux history``."""
 
     if args.all_details:
-        args.date = args.path = args.status = args.runtime = True
+        args.date = args.path = args.status = args.runtime = args.unique_paths = args.run_details = True
     if args.interactive and args.fzf:
         raise HistoryError("Use either -I/--interactive or -f/--fzf, not both.")
-    all_entries = indexed_history_entries()
+    all_entries = unique_command_entries() if args.unique else indexed_history_entries()
     entries = filter_history_entries(
         all_entries,
         starts_with=args.starts_with,
@@ -999,7 +1019,9 @@ def handle_history(args: argparse.Namespace) -> int:
     display_entries = entries if args.most_common is not None else reversed(entries)
     for entry in display_entries:
         print(
-            format_history_entry(
+            format_unique_history_entry(entry, args, color=color)
+            if args.unique
+            else format_history_entry(
                 int(entry["history_id"]),
                 entry,
                 color=color,
@@ -1010,6 +1032,61 @@ def handle_history(args: argparse.Namespace) -> int:
             )
         )
     return 0
+
+
+def unique_command_entries() -> list[dict[str, Any]]:
+    """Adapt unique-command ledger rows for history filtering and display."""
+
+    commands = sorted(load_unique_commands().get("commands", []), key=lambda item: str(item.get("last_run_at") or ""), reverse=True)
+    entries = []
+    for index, item in enumerate(commands):
+        runs = list(item.get("runs", []))
+        last = runs[-1] if runs else {}
+        paths = list(item.get("paths", []))
+        entries.append(
+            {
+                "history_id": index,
+                "command_line": item.get("command_line") or "",
+                "argv": item.get("argv") or [],
+                "cwd": paths[-1] if paths else "--",
+                "status": last.get("status") or "--",
+                "exit_code": None,
+                "runtime_seconds": last.get("runtime_seconds"),
+                "started_at": item.get("last_run_at") or "--",
+                "occurrence_count": item.get("run_count", 0),
+                "unique_paths": paths,
+                "unique_runs": runs,
+            }
+        )
+    return entries
+
+
+def format_unique_history_entry(entry: dict[str, Any], args: argparse.Namespace, *, color: bool) -> str:
+    """Format one ledger command with optional complete path/run detail lists."""
+
+    rendered = format_history_entry(
+        int(entry["history_id"]),
+        entry,
+        color=color,
+        show_date=args.date,
+        show_path=args.path,
+        show_status=args.status,
+        show_runtime=args.runtime,
+    )
+    lines = [rendered]
+    if args.unique_paths:
+        lines.extend(colorize(str(path), "35", enabled=color) for path in entry.get("unique_paths", []))
+    if args.run_details:
+        for run in entry.get("unique_runs", []):
+            status = str(run.get("status") or "--")
+            lines.append(
+                colorize(
+                    f"date={run.get('started_at') or '--'}  runtime={format_optional_duration(run.get('runtime_seconds'))}  status={status}",
+                    history_status_color({"status": status}),
+                    enabled=color,
+                )
+            )
+    return "\n".join(lines)
 
 
 def format_history_entry(
@@ -1152,6 +1229,17 @@ def browse_history(entries: list[dict[str, Any]], args: argparse.Namespace) -> i
                         cwd=str(entry.get("cwd") or "."),
                     )
                     message = f"Saved command {saved.id}."
+            elif key in {"d", "D"}:
+                if "_saved_command" not in entry:
+                    message = "Only saved commands can be deleted from this browser."
+                    continue
+                print("\x1b[?25h", end="")
+                if confirm_saved_command_delete(entry):
+                    removed = delete_saved_commands({int(entry["history_id"])})
+                    print(f"Deleted {len(removed)} saved command(s); history and unique-command statistics were preserved.")
+                    return 0
+                print("\x1b[?25l", end="")
+                message = "Delete cancelled."
             elif key in {"/", "b", "B"}:
                 mode = "contains" if key == "/" else "starts with"
                 current = contains_filter if mode == "contains" else prefix_filter
@@ -1234,7 +1322,7 @@ def render_history_browser(
         columns,
     )
     help_lines = wrap_history_browser_text(
-        "↑/↓ j/k | PgUp/PgDn page | r run | Enter inspect | p print | s save | b prefix | / contains | c clear | v details | w/x wrap | q",
+        "↑/↓ j/k | PgUp/PgDn page | r run | Enter inspect | p print | s save | d delete | b prefix | / contains | c clear | v details | w/x wrap | q",
         columns,
     )
     footer_lines = message_lines + filter_lines + help_lines
@@ -1401,6 +1489,19 @@ def prompt_history_search(mode: str, current: str | None) -> tuple[bool, str | N
     return True, value or None
 
 
+def confirm_saved_command_delete(entry: dict[str, Any]) -> bool:
+    """Require explicit confirmation before deleting a saved command."""
+
+    print("Delete saved command?")
+    print(str(entry.get("command_line") or "--"))
+    print(str(entry.get("cwd") or "--"))
+    try:
+        answer = input("Delete? [y/N]: ").strip().casefold()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return answer in {"y", "yes"}
+
+
 def browse_history_fzf(entries: list[dict[str, Any]], args: argparse.Namespace) -> int:
     """Select a history entry with fzf while retaining its global ID."""
 
@@ -1546,9 +1647,11 @@ def handle_load(args: argparse.Namespace) -> int:
     """Handle non-interactive and interactive saved-command browsing."""
 
     if args.all_details:
-        args.date = args.path = args.status = args.runtime = True
+        args.date = args.path = args.status = args.runtime = args.run_count = True
     if args.stats:
         return print_command_stats(output_json=args.json)
+    if args.action == "delete":
+        return handle_load_delete(args)
     if args.interactive and args.fzf:
         raise HistoryError("Use either -I/--interactive or -f/--fzf, not both.")
     all_entries = saved_command_entries()
@@ -1567,6 +1670,47 @@ def handle_load(args: argparse.Namespace) -> int:
     color = sys.stdout.isatty() and not args.plain
     display_entries = entries if args.most_common is not None else reversed(entries)
     for entry in display_entries:
+        rendered = format_history_entry(
+                int(entry["history_id"]),
+                entry,
+                color=color,
+                show_date=args.date,
+                show_path=args.path,
+                show_status=args.status,
+                show_runtime=args.runtime,
+            )
+        if args.run_count:
+            count_text = colorize(f"runs={entry.get('run_count', 0)}", "90", enabled=color)
+            rendered = f"{rendered}\n{count_text}"
+        print(rendered)
+    return 0
+
+
+def handle_load_delete(args: argparse.Namespace) -> int:
+    """Dry-run or apply a composable saved-command deletion filter."""
+
+    before = parse_filter_datetime(args.before) if args.before else None
+    now = datetime.now(timezone.utc)
+    entries = filter_history_entries(saved_command_entries(), starts_with=args.starts_with, contains=args.contains)
+    matches = []
+    for entry in entries:
+        saved_at = parse_filter_datetime(str(entry.get("started_at") or ""))
+        ledger_last_run = entry.get("ledger_last_run_at")
+        saved_last_run = entry.get("_saved_command").last_run_at
+        last_run_at = parse_filter_datetime(str(ledger_last_run or saved_last_run or "")) if (ledger_last_run or saved_last_run) else None
+        if before is not None and (saved_at is None or saved_at >= before):
+            continue
+        if args.not_run_for is not None:
+            reference = last_run_at or saved_at
+            if reference is not None and (now - reference).total_seconds() < args.not_run_for * 86400:
+                continue
+        matches.append(entry)
+    if not matches:
+        print("No saved commands matched the deletion filters.")
+        return 0
+    color = sys.stdout.isatty() and not args.plain
+    print("Applying deletion:" if args.apply else "Dry run; matching saved commands:")
+    for entry in matches:
         print(
             format_history_entry(
                 int(entry["history_id"]),
@@ -1578,13 +1722,31 @@ def handle_load(args: argparse.Namespace) -> int:
                 show_runtime=args.runtime,
             )
         )
+    if not args.apply:
+        print("Re-run with -a/--apply to delete these saved commands only.")
+        return 0
+    removed = delete_saved_commands({int(entry["history_id"]) for entry in matches})
+    print(f"Deleted {len(removed)} saved command(s); history and unique-command statistics were preserved.")
     return 0
+
+
+def parse_filter_datetime(value: str) -> datetime | None:
+    """Parse an ISO date/time filter as a timezone-aware timestamp."""
+
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise HistoryError(f"Invalid ISO date/time: {value}") from error
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
 
 
 def saved_command_entries() -> list[dict[str, Any]]:
     """Convert saved commands into history-browser-compatible entries."""
 
     commands = sorted(list_saved_commands(), key=lambda item: item.saved_at, reverse=True)
+    ledger = {str(item.get("key") or ""): item for item in load_unique_commands().get("commands", [])}
     return [
         {
             "history_id": command.id,
@@ -1598,11 +1760,13 @@ def saved_command_entries() -> list[dict[str, Any]]:
             "rows": command.rows,
             "columns": command.columns,
             "force_color": command.force_color,
-            "status": "saved",
+            "status": (ledger.get(command.command_line.casefold(), {}).get("runs") or [{}])[-1].get("status") or "saved",
             "started_at": command.saved_at,
             "ended_at": None,
-            "runtime_seconds": None,
+            "runtime_seconds": (ledger.get(command.command_line.casefold(), {}).get("runs") or [{}])[-1].get("runtime_seconds"),
             "exit_code": None,
+            "run_count": int(ledger.get(command.command_line.casefold(), {}).get("run_count", 0)),
+            "ledger_last_run_at": ledger.get(command.command_line.casefold(), {}).get("last_run_at"),
             "_saved_command": command,
         }
         for command in commands

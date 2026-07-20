@@ -14,6 +14,7 @@ from runmux.platform_paths import get_state_dir
 
 HISTORY_DIR_NAME = ".runmux"
 HISTORY_FILE_NAME = "commands.json"
+UNIQUE_COMMANDS_FILE_NAME = "unique_commands.json"
 
 
 class HistoryError(RuntimeError):
@@ -51,6 +52,14 @@ def history_path_for_state_dir(state_dir: Path) -> Path:
     if resolved_state == get_state_dir().expanduser().resolve():
         return get_history_path()
     return resolved_state / HISTORY_FILE_NAME
+
+
+def unique_commands_path(history_path: Path | None = None) -> Path:
+    """Return the unique-command ledger beside the applicable history file."""
+
+    if history_path is None or history_path.resolve() == get_history_path().resolve():
+        return get_history_path().parent / UNIQUE_COMMANDS_FILE_NAME
+    return history_path.resolve().parent / UNIQUE_COMMANDS_FILE_NAME
 
 
 def load_data(path: Path | None = None) -> dict[str, Any]:
@@ -106,6 +115,7 @@ def record_run_started(record: RunRecord, *, path: Path | None = None) -> None:
         }
     )
     save_data(data, path)
+    record_unique_command_start(record, history_path=path)
 
 
 def record_run_finished(
@@ -130,6 +140,103 @@ def record_run_finished(
             break
     if changed:
         save_data(data, path)
+        record_unique_command_finish(
+            run_id,
+            status=status,
+            runtime_seconds=runtime_seconds,
+            history_path=path,
+        )
+
+
+def load_unique_commands(path: Path | None = None) -> dict[str, Any]:
+    """Load the module-local ledger of unique commands and every recorded run."""
+
+    data_path = unique_commands_path(path)
+    if not data_path.exists():
+        return {"commands": []}
+    try:
+        data = json.loads(data_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise HistoryError(f"Could not parse unique-command ledger: {data_path}") from error
+    if not isinstance(data, dict) or not isinstance(data.get("commands", []), list):
+        raise HistoryError(f"Invalid unique-command ledger: {data_path}")
+    return data
+
+
+def save_unique_commands(data: dict[str, Any], path: Path | None = None) -> None:
+    """Persist the unique-command ledger."""
+
+    data_path = unique_commands_path(path)
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def record_unique_command_start(record: RunRecord, *, history_path: Path | None = None) -> None:
+    """Append one exact effective-cwd run to its command's ledger entry."""
+
+    argv = decode_argv(record.argv_json)
+    data = load_unique_commands(history_path)
+    command_line = record.command_line
+    key = command_line.casefold()
+    entry = next((item for item in data["commands"] if item.get("key") == key), None)
+    started_at = record.started_at or record.created_at
+    run = {
+        "run_id": record.id,
+        "started_at": started_at,
+        "ended_at": None,
+        "status": record.status,
+        "runtime_seconds": None,
+        "cwd": record.cwd,
+    }
+    if entry is None:
+        entry = {
+            "key": key,
+            "command_line": command_line,
+            "argv": argv,
+            "first_run_at": started_at,
+            "last_run_at": started_at,
+            "run_count": 0,
+            "paths": [],
+            "runs": [],
+        }
+        data["commands"].append(entry)
+    entry["run_count"] = int(entry.get("run_count", 0)) + 1
+    entry["last_run_at"] = started_at
+    if record.cwd not in entry["paths"]:
+        entry["paths"].append(record.cwd)
+    entry["runs"].append(run)
+    save_unique_commands(data, history_path)
+
+
+def record_unique_command_finish(
+    run_id: str,
+    *,
+    status: str,
+    runtime_seconds: float | None,
+    history_path: Path | None = None,
+) -> None:
+    """Complete the matching unique-command run without deleting historical data."""
+
+    data = load_unique_commands(history_path)
+    for entry in data["commands"]:
+        for run in reversed(entry.get("runs", [])):
+            if run.get("run_id") == run_id:
+                run["status"] = status
+                run["ended_at"] = utc_now_iso()
+                run["runtime_seconds"] = runtime_seconds
+                save_unique_commands(data, history_path)
+                return
+
+
+def delete_saved_commands(ids: set[int], *, path: Path | None = None) -> list[SavedCommand]:
+    """Delete selected saved-command records only, preserving all history/ledger data."""
+
+    data = load_data(path)
+    removed = [saved_from_dict(raw) for raw in data["saved_commands"] if int(raw.get("id", -1)) in ids]
+    if removed:
+        data["saved_commands"] = [raw for raw in data["saved_commands"] if int(raw.get("id", -1)) not in ids]
+        save_data(data, path)
+    return removed
 
 
 def save_record_command(record: RunRecord, *, path: Path | None = None) -> SavedCommand:

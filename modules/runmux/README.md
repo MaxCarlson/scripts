@@ -93,6 +93,14 @@ runmux load
   filters and viewer controls as history. `cmd` remains an alias. Use
   `runmux load -T/--stats` for saved-command stats and
   `runmux run load -i ID` to launch a saved command by its stable saved ID.
+- In `runmux load -I`, press `d` and confirm `y` to delete the selected saved
+  command. `runmux load delete` is a dry run; combine `-b/--starts-with`,
+  `-c/--contains`, `-B/--before DATE`, and `-N/--not-run-for DAYS`, then add
+  `-a/--apply` to delete matching saved commands. This never removes history or
+  unique-command statistics.
+- `runmux history -u/--unique` views the module-local unique-command ledger.
+  Add `-X/--unique-paths` for every effective cwd and `-R/--run-details` for
+  every recorded run timestamp/runtime.
 - `runmux save -i RUN_ID` saves any existing managed run, including a running
   or paused one, with its current execution context. Use
   `runmux save -H HISTORY_ID` to save a history entry and its recorded cwd.

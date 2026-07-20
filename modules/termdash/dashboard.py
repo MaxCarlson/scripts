@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from typing import Iterable, Optional
 
 from .components import Line
+from .loading import DEFAULT_FRAMES, LoadingIndicator
 
 # ANSI
 CSI = "\x1b["
@@ -120,6 +121,8 @@ class TermDash:
 
         self._lines = {}
         self._line_order = []
+        self._loading_message: Optional[str] = None
+        self._loading_started_at = 0.0
 
         self.logger = None
         if log_file:
@@ -191,6 +194,38 @@ class TermDash:
                 return None
             st = getattr(ln, "_stats", {}).get(stat_name)
             return None if st is None else st.value
+
+    def show_loading(self, message: str = "Loading") -> None:
+        """Show a dashboard-managed spinner below the current dashboard."""
+        with self._lock_context("show_loading"):
+            self._loading_message = str(message)
+            self._loading_started_at = time.monotonic()
+            if self._running:
+                self._setup_screen()
+
+    def hide_loading(self) -> None:
+        """Remove a dashboard-managed loading spinner, if one is visible."""
+        with self._lock_context("hide_loading"):
+            self._loading_message = None
+            self._loading_started_at = 0.0
+
+    @contextmanager
+    def transition(self, message: str = "Loading"):
+        """Mark a blocking transition and show a spinner for its duration.
+
+        Running dashboards render the spinner in a dedicated row below their
+        normal content. Before :meth:`start`, this uses a standalone spinner,
+        which is suitable for slow application startup work.
+        """
+        if self._running:
+            self.show_loading(message)
+            try:
+                yield self
+            finally:
+                self.hide_loading()
+            return
+        with LoadingIndicator(message) as indicator:
+            yield indicator
 
     # Aggregation helpers
     def sum_stats(self, stat_name: str, line_names: Optional[Iterable[str]] = None) -> float:
@@ -264,6 +299,8 @@ class TermDash:
         try:
             cols, lines = os.get_terminal_size()
             visible = len(self._line_order) + (1 if self.has_status_line else 0)
+            if self._loading_message:
+                visible += 1
             allowed = max(1, lines - 1)
 
             self._effective_reserve_rows = max(0, min(self._reserve_extra_rows, allowed - visible))
@@ -438,6 +475,11 @@ class TermDash:
                 if self.has_status_line:
                     status_line_num = len(final_lines) + 1
                     out.append(f"{CSI}{status_line_num};1H{CLEAR_LINE}")
+                if self._loading_message:
+                    loading_row = len(final_lines) + (2 if self.has_status_line else 1)
+                    frame_index = int((time.monotonic() - self._loading_started_at) / self._refresh_rate)
+                    frame = DEFAULT_FRAMES[frame_index % len(DEFAULT_FRAMES)]
+                    out.append(f"{CSI}{loading_row};1H{CLEAR_LINE}{frame} {self._loading_message}")
                 sys.stdout.write("".join(out))
                 sys.stdout.flush()
 
