@@ -16,11 +16,12 @@ Before modifying this repository:
 2. Read this file.
 3. Read `MODULE_STANDARDS.md` for compatibility routing.
 4. Read `docs/agent/README.md`.
-5. For Python work, read `docs/agent/PYTHON_REPO_STANDARDS.md`.
-6. For scripts-repo-specific behavior, read `docs/agent/SCRIPTS_REPO_STANDARDS.md`.
-7. If working in a nested module with its own `docs/`, read that module's handoff docs.
-8. Read `validation-targets.json` when the task includes local validation.
-9. Run `git status`.
+5. Read `docs/agent/HYBRID_REMOTE_LOCAL_DEVELOPMENT_WORKFLOW.md` for substantial work.
+6. For Python work, read `docs/agent/PYTHON_REPO_STANDARDS.md`.
+7. For scripts-repo-specific behavior, read `docs/agent/SCRIPTS_REPO_STANDARDS.md`.
+8. If working in a nested module with its own `docs/`, read that module's handoff docs.
+9. Read `validation-targets.json` when the task includes local validation.
+10. Run `git status`.
 
 ## Repository Shape
 
@@ -35,6 +36,7 @@ scripts/
 ├── validation-targets.json
 ├── setup.py
 ├── AGENTS.md
+├── CLAUDE.md
 ├── MODULE_STANDARDS.md
 └── docs/agent/
 ```
@@ -85,11 +87,13 @@ For each substantial stage:
 3. Review the complete diff and correct obvious defects.
 4. Commit and push the coherent stage.
 5. Have the user pull the branch and run the repository-root validation dispatcher.
-6. Have the user commit and push the generated tracked validation report.
-7. Read the report remotely, diagnose failures, and implement the next pass.
+6. Have the user commit and push the generated tracked validation report changes.
+7. Read each target's `LATEST.txt` remotely, diagnose failures, and implement the next pass.
 8. Repeat until automated, environment-specific, and acceptance validation pass.
 
 Do not have local and remote agents independently edit the same branch concurrently. Use a separate patch branch if a local agent must author code.
+
+Local agents should apply the one-time substantial-task reminder defined in `AGENTS.md`. The reminder is advisory, appears at most once per conversation, and must not interrupt small or inherently local work.
 
 ## Repository Validation Dispatcher
 
@@ -108,8 +112,13 @@ validation-targets.json
 The dispatcher must support one or more named targets, bootstrap declared dependencies by default, run language-native tests and platform-specific validation scripts, capture complete stdout and stderr, preserve exit codes, and write tracked reports under:
 
 ```text
-docs/test-results/<target>/YYYYMMDD-HHMMSS_<target>.txt
+docs/test-results/<target>/
+├── LATEST.txt
+└── history/
+    └── YYYYMMDD-HHMMSS_<target>.txt
 ```
+
+`LATEST.txt` is always authoritative. History is comparison-only and is bounded by default to three prior reports and 14 days.
 
 The active remote agent should update `validation-targets.json` whenever the current stage requires different modules, commands, scripts, setup steps, or read-only environment checks. The user should normally only need to pull and run the same root command.
 
