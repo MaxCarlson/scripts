@@ -19,6 +19,7 @@ def write_projections(output_dir: Path, plan: PlanState, events: list[dict[str, 
     _atomic_write(output_dir / "PROGRESS.md", render_progress(plan, events))
     _atomic_write(output_dir / "TRACEABILITY.md", render_traceability(plan, events))
     _atomic_write(output_dir / "MANUAL_CHECKS.md", render_manual_checks(plan, events))
+    _atomic_write(output_dir / "ARCHITECTURE_REVIEW.md", render_architecture_review(plan, events))
     _atomic_write(output_dir / "LOCAL_HANDOFF.md", render_local_handoff(plan, events))
 
 
@@ -27,6 +28,8 @@ def render_progress(plan: PlanState, events: list[dict[str, Any]]) -> str:
 
     validations = [event for event in events if event.get("event_type") == "validation_run"]
     latest = validations[-1] if validations else None
+    request = plan.session.get("request", {})
+    batch = plan.session.get("batch", {})
     lines = [
         f"# Development Progress: {plan.title}",
         "",
@@ -34,22 +37,32 @@ def render_progress(plan: PlanState, events: list[dict[str, Any]]) -> str:
         "",
         "## Current State",
         "",
-        f"- **Plan:** `{plan.plan_id}`",
+        f"- **Plan:** `{plan.plan_id}` revision `{plan.plan_revision}`",
         f"- **Project root:** `{plan.project_root}`",
         f"- **Stage:** `{plan.stage.get('id', '')}` — {plan.stage.get('title', '')}",
         f"- **Stage status:** `{plan.stage.get('status', 'unknown')}`",
+        f"- **Request intake:** `{request.get('status', 'unknown')}` — {request.get('summary', '') or '(none)'}",
+        f"- **Selected items:** {', '.join(f'`{value}`' for value in plan.session.get('target_ids', [])) or '(none)'}",
+        f"- **Session budget:** `{batch.get('profile', 'standard')}`; target {batch.get('target_minutes', 0)} min; "
+        f"soft maximum {batch.get('max_minutes', 0)} min / {batch.get('max_items', 0)} items",
+        f"- **Selection rationale:** {plan.session.get('selection_rationale', '') or '(not declared)'}",
     ]
     if latest:
         provenance = latest.get("provenance", {})
         progress = latest.get("progress", {})
         routing = latest.get("routing", {})
         summary = latest.get("test_summary", {})
+        planning_gate = latest.get("planning_gate", {})
+        architecture = latest.get("architecture_review", {})
         lines.extend(
             [
                 f"- **Latest run:** `{latest.get('event_id', '')}`",
                 f"- **Tested commit:** `{provenance.get('commit', '')}`",
                 f"- **Progress:** `{progress.get('classification', 'unknown')}`",
                 f"- **Routing:** `{routing.get('decision', 'unknown')}`",
+                f"- **Planning gate:** `{'passed' if planning_gate.get('passed', True) else 'failed'}`",
+                f"- **Architecture review:** `{'due' if architecture.get('due') else 'not_due'}`; "
+                f"depth `{architecture.get('depth', 'cursory')}`",
                 f"- **Tests:** {summary.get('passed', 0)} passed, {summary.get('failed', 0)} failed, "
                 f"{summary.get('errors', 0)} errors, {summary.get('skipped', 0)} skipped",
                 "",
@@ -62,6 +75,12 @@ def render_progress(plan: PlanState, events: list[dict[str, Any]]) -> str:
         )
         for reason in progress.get("reasons", []):
             lines.append(f"- **Progress evidence:** {reason}")
+        for issue in planning_gate.get("issues", []):
+            lines.append(f"- **Planning issue:** {issue}")
+        for warning in planning_gate.get("warnings", []):
+            lines.append(f"- **Planning warning:** {warning}")
+        for trigger in architecture.get("triggers", []):
+            lines.append(f"- **Architecture-review trigger:** {trigger}")
     else:
         lines.extend(["- **Latest run:** none", "", "No validation run has been recorded."])
 
@@ -70,17 +89,37 @@ def render_progress(plan: PlanState, events: list[dict[str, Any]]) -> str:
             "",
             "## Plan Item State",
             "",
-            "| ID | Kind | Implementation | Automated | Manual | Verification |",
-            "|---|---|---|---|---|---|",
+            "| ID | Role | Priority | Depends on | Implementation | Automated | Manual | Verification |",
+            "|---|---|---:|---|---|---|---|---|",
         ]
     )
     latest_items = {item["id"]: item for item in latest.get("items", [])} if latest else {}
     for item in plan.items:
         state = latest_items.get(item.id, {})
+        dependencies = ", ".join(f"`{value}`" for value in item.depends_on) or "—"
         lines.append(
-            f"| `{item.id}` | {item.kind} | {item.implementation} | {state.get('automated', 'not_run')} | "
+            f"| `{item.id}` | {item.architecture_role} | {item.priority} | {dependencies} | "
+            f"{item.implementation} | {state.get('automated', 'not_run')} | "
             f"{state.get('manual', 'not_required')} | **{state.get('verification', item.implementation)}** |"
         )
+
+    lines.extend(["", "## Recommended Next-Batch Candidates", ""])
+    candidates = latest.get("planning_gate", {}).get("recommended_candidates", []) if latest else []
+    if candidates:
+        lines.extend(
+            [
+                "| ID | Role | Priority | Downstream dependents | Score |",
+                "|---|---|---:|---:|---:|",
+            ]
+        )
+        for candidate in candidates[:8]:
+            lines.append(
+                f"| `{candidate.get('id', '')}` | {candidate.get('architecture_role', '')} | "
+                f"{candidate.get('priority', 0)} | {candidate.get('downstream_dependents', 0)} | "
+                f"{candidate.get('score', 0)} |"
+            )
+    else:
+        lines.append("- No ready unimplemented candidates were identified.")
 
     lines.extend(["", "## Persistent and Recent Failures", ""])
     if latest and latest.get("failure_fingerprints"):
@@ -95,8 +134,8 @@ def render_progress(plan: PlanState, events: list[dict[str, Any]]) -> str:
             "",
             "## Run History",
             "",
-            "| Run | Commit | Progress | Routing | Pass | Fail/Error | Verified Δ |",
-            "|---|---|---|---|---:|---:|---:|",
+            "| Run | Plan rev | Commit | Progress | Routing | Pass | Fail/Error | Verified Δ |",
+            "|---|---:|---|---|---|---:|---:|---:|",
         ]
     )
     for event in validations:
@@ -104,9 +143,11 @@ def render_progress(plan: PlanState, events: list[dict[str, Any]]) -> str:
         comparison = event.get("comparison", {})
         commit = str(event.get("provenance", {}).get("commit", ""))[:12]
         lines.append(
-            f"| `{event.get('event_id', '')}` | `{commit}` | {event.get('progress', {}).get('classification', '')} | "
+            f"| `{event.get('event_id', '')}` | {event.get('plan_revision', 0)} | `{commit}` | "
+            f"{event.get('progress', {}).get('classification', '')} | "
             f"{event.get('routing', {}).get('decision', '')} | {summary.get('passed', 0)} | "
-            f"{int(summary.get('failed', 0)) + int(summary.get('errors', 0))} | {comparison.get('verified_delta', 0)} |"
+            f"{int(summary.get('failed', 0)) + int(summary.get('errors', 0))} | "
+            f"{comparison.get('verified_delta', 0)} |"
         )
 
     lines.extend(["", "## Read Next", ""])
@@ -140,6 +181,9 @@ def render_traceability(plan: PlanState, events: list[dict[str, Any]]) -> str:
                 f"### `{item.id}` — {item.title}",
                 "",
                 f"- Kind: `{item.kind}`",
+                f"- Architecture role: `{item.architecture_role}`",
+                f"- Priority: `{item.priority}`",
+                f"- Depends on: {', '.join(f'`{value}`' for value in item.depends_on) or '(none)'}",
                 f"- Implementation: `{item.implementation}`",
                 f"- Verification: `{state.get('verification', item.implementation)}`",
                 f"- Expected test patterns: {', '.join(f'`{value}`' for value in item.tests) or '(none)'}",
@@ -206,6 +250,67 @@ def render_manual_checks(plan: PlanState, events: list[dict[str, Any]]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def render_architecture_review(plan: PlanState, events: list[dict[str, Any]]) -> str:
+    """Render architecture-review status and a bounded review checklist."""
+
+    latest = next((event for event in reversed(events) if event.get("event_type") == "validation_run"), None)
+    review = latest.get("architecture_review", {}) if latest else {}
+    lines = [
+        f"# Architecture Review: {plan.title}",
+        "",
+        "> Generated review status. The working LLM records findings in the plan session before validation.",
+        "",
+        f"- **Due:** `{'yes' if review.get('due') else 'no'}`",
+        f"- **Recommended depth:** `{review.get('depth', 'cursory')}`",
+        f"- **Runs since last review:** `{review.get('runs_since_last_review', 0)}`",
+        f"- **Plan revisions since last review:** `{review.get('plan_revisions_since_last_review', 0)}`",
+        "",
+        "## Triggers",
+        "",
+    ]
+    triggers = review.get("triggers", [])
+    lines.extend(f"- {trigger}" for trigger in triggers)
+    if not triggers:
+        lines.append("- No architecture-review trigger is active.")
+
+    lines.extend(
+        [
+            "",
+            "## Review Questions",
+            "",
+            "1. Do current abstractions still serve the expanded feature set, or are parallel systems emerging?",
+            "2. Are foundational components being generalized only where multiple concrete requirements justify it?",
+            "3. Have new requirements introduced quality-attribute tradeoffs in reliability, security, performance, "
+            "modifiability, portability, or operability?",
+            "4. Are dependencies, scope boundaries, public interfaces, and data formats still coherent?",
+            "5. Does recent run history show repeated edits to the same area, regressions, handoffs, or workarounds?",
+            "6. Should any architecture decision be recorded, superseded, simplified, or reversed before more features?",
+            "7. Is the next batch still the highest-leverage dependency-cohesive slice?",
+            "",
+            "## Latest Completed Review",
+            "",
+        ]
+    )
+    completed = next(
+        (
+            event.get("architecture_review", {})
+            for event in reversed(events)
+            if event.get("event_type") == "validation_run"
+            and event.get("architecture_review", {}).get("performed")
+        ),
+        None,
+    )
+    if completed:
+        lines.append(f"- **Summary:** {completed.get('summary', '')}")
+        for finding in completed.get("findings", []):
+            lines.append(f"- **Finding:** {finding}")
+        for action in completed.get("actions", []):
+            lines.append(f"- **Action:** {action}")
+    else:
+        lines.append("- No completed architecture review is recorded.")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def render_local_handoff(plan: PlanState, events: list[dict[str, Any]]) -> str:
     """Render a self-contained local-Codex handoff when routing recommends it."""
 
@@ -237,10 +342,12 @@ def render_local_handoff(plan: PlanState, events: list[dict[str, Any]]) -> str:
         f"- **Project root:** `{plan.project_root}`",
         f"- **Branch:** `{provenance.get('branch', '')}`",
         f"- **Tested commit:** `{provenance.get('commit', '')}`",
+        f"- **Plan revision:** `{latest.get('plan_revision', plan.plan_revision)}`",
         f"- **Stage:** `{plan.stage.get('id', '')}` — {plan.stage.get('title', '')}",
         "",
         "## Intended Work",
         "",
+        f"- **User request:** {latest.get('request', {}).get('summary', '') or '(none)'}",
         f"- **Objective:** {latest.get('intent', {}).get('objective', '')}",
         f"- **Hypothesis:** {latest.get('intent', {}).get('hypothesis', '') or '(none)'}",
         f"- **Target items:** {', '.join(f'`{value}`' for value in latest.get('intent', {}).get('target_ids', []))}",
@@ -279,9 +386,10 @@ def render_local_handoff(plan: PlanState, events: list[dict[str, Any]]) -> str:
             "4. Add or improve the narrowest practical regression test or diagnostic check.",
             "5. Make the smallest compatible source change required to fix the blocker.",
             "6. Preserve public interfaces and unrelated behavior.",
-            "7. Run the complete project validation dispatcher after changes.",
-            "8. Work on a separate local patch branch; do not edit the remote feature branch concurrently.",
-            "9. Leave changes for user inspection, staging, commit, and push unless the user explicitly "
+            "7. Update the active plan intake/session state before publishing the local patch.",
+            "8. Run the complete project validation dispatcher after changes.",
+            "9. Work on a separate local patch branch; do not edit the remote feature branch concurrently.",
+            "10. Leave changes for user inspection, staging, commit, and push unless the user explicitly "
             "authorizes those actions.",
             "",
             "## Evidence Paths",
