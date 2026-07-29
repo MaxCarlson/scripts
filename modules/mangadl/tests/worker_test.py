@@ -19,6 +19,16 @@ def test_tree_stats_and_merge_partial(tmp_path: Path) -> None:
     assert not partial.exists()
 
 
+def test_tree_stats_counts_active_part_bytes_but_not_complete_images(tmp_path: Path) -> None:
+    partial = tmp_path / "partial"
+    partial.mkdir()
+    (partial / "0001.jpg.part").write_bytes(b"12345")
+    (partial / "0002.jpg").write_bytes(b"123")
+    (partial / "ignored.tmp").write_bytes(b"1234567")
+
+    assert _tree_stats(partial) == (1, 8)
+
+
 def test_failure_classification() -> None:
     assert _classify(1, "HTTP 429 rate limit") == ("rate_limit", True)
     assert _classify(1, "database is locked") == ("archive", True)
