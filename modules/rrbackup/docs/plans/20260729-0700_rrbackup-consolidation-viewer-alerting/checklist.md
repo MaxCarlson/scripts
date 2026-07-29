@@ -4,15 +4,22 @@
 
 - [x] Create canonical plan structure
 - [x] Document hybrid remote/local workflow
-- [x] Add module-root test orchestrator
-- [x] Add tracked test-result handoff file
+- [x] Add repository-root validation dispatcher
+- [x] Add manifest-driven validation targets
+- [x] Register RRBackup as the default target
+- [x] Bootstrap target development dependencies by default
+- [x] Use repository virtual-environment Python
+- [x] Isolate target working directory and pytest imports
 - [x] Capture complete pytest stdout/stderr
-- [x] Run all `*_test.ps1` scripts from one command
+- [x] Run all configured `*_test.ps1` scripts from one command
+- [x] Write tracked timestamped reports under `docs/test-results/<target>/`
 - [x] Add PowerShell environment smoke test
 - [x] Add opt-in production read-only test
 - [x] Run initial local Windows baseline
+- [x] Analyze second local Windows validation failure
 - [x] Triage inherited baseline failures
-- [ ] Correct or replace environment-dependent inherited tests
+- [ ] Validate repository-root dispatcher on Windows
+- [ ] Correct or replace remaining environment-dependent inherited tests
 - [ ] Add shared models
 - [ ] Add configuration resolver
 - [ ] Add Restic command boundary
