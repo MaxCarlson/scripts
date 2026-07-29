@@ -12,9 +12,10 @@ Before modifying the merged backup implementation, read:
 4. `../../../docs/agent/PYTHON_REPO_STANDARDS.md`
 5. `../../../docs/agent/SCRIPTS_REPO_STANDARDS.md`
 6. `HYBRID_REMOTE_LOCAL_DEVELOPMENT_WORKFLOW.md`
-7. `HANDOFF.md`
-8. `plans/HANDOFF.md`
-9. The active plan's `STATUS.md`, `checklist.md`, and current stage document
+7. `CLI_ARCHITECTURE_AND_AUDIT_COVERAGE.md`
+8. `HANDOFF.md`
+9. `plans/HANDOFF.md`
+10. The active plan's `STATUS.md`, `checklist.md`, and current stage document
 
 ## Active Plan
 
@@ -27,16 +28,37 @@ plans/20260729-0700_rrbackup-consolidation-viewer-alerting/
 The plan covers:
 
 - one shared Restic engine,
-- backward-compatible `rrb`, `rrbackup`, and `backup_module` commands,
+- canonical `backup` plus compatible `rrb`, `rrbackup`, and `backup_module` commands,
+- six hierarchical command areas with nested help,
 - safe configuration and setup management,
 - scheduler management,
 - backup history viewer and timeline,
+- one-command replacement for ad hoc shell-based backup audits,
 - missed-backup detection,
 - alerting,
 - scoped retention,
 - automated unit and temporary-repository integration tests,
 - Windows-specific PowerShell validation scripts,
 - controlled production acceptance.
+
+## Canonical CLI Areas
+
+```text
+backup run
+backup view
+backup config
+backup schedule
+backup restore
+backup repository
+```
+
+`backup edit` aliases `backup config`.
+
+The planned comprehensive read-only diagnostic command is:
+
+```text
+backup view audit
+```
 
 ## Validation Entry Point
 
