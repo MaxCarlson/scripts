@@ -47,7 +47,7 @@ def test_live_pages_surface_persisted_active_progress() -> None:
     assert "running-phone-sync 25.00%" in activity.line
     assert "RUNNING" in running.line
     assert "25.00%" in running.line
-    assert "1.0 MiB/s" in running.line
+    assert "1.00 MiB/s" in running.line
     assert any("Current files" in line for line in running.details)
 
 
