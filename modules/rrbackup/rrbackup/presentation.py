@@ -6,12 +6,15 @@ import os
 import re
 import sys
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from datetime import datetime, timezone
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .inventory import BackupInventoryRecord
+from .repository_summary import RepositorySummary
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_MIN_TIME = datetime.min.replace(tzinfo=timezone.utc)
+_MAX_TIME = datetime.max.replace(tzinfo=timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -303,6 +306,58 @@ def render_history(
     return "\n".join(lines)
 
 
+def render_repository_summary(
+    summary: RepositorySummary,
+    *,
+    colors: Optional[Palette] = None,
+) -> str:
+    """Render a combined, labeled repository summary."""
+
+    theme = colors or palette()
+    status = theme.good("AVAILABLE") if summary.available else theme.bad("UNAVAILABLE")
+    latest = summary.latest_snapshot
+    lines = [
+        theme.heading("Repository"),
+        "  Location:       {0}".format(theme.identifier(summary.repository)),
+        "  Status:         {0}".format(status),
+        "  Format:         {0}".format(summary.format_version or "unknown"),
+        "  Repository ID:  {0}".format(summary.repository_id or "unknown"),
+        "  Snapshots:      {0}".format(summary.snapshot_count),
+        "  Latest:         {0}".format(
+            "none"
+            if latest is None
+            else "{0} at {1}".format(latest.short_id, human_datetime(latest.time))
+        ),
+        "",
+        theme.heading("Keys"),
+    ]
+    lines.extend("  {0}".format(line) for line in summary.key_lines)
+    if not summary.key_lines:
+        lines.append("  " + theme.warning("No key metadata returned."))
+    lines.extend(["", theme.heading("Locks")])
+    if summary.lock_lines:
+        lines.extend("  {0}".format(line) for line in summary.lock_lines)
+    else:
+        lines.append("  " + theme.good("No repository locks."))
+    lines.extend(["", theme.heading("Storage statistics")])
+    if summary.storage is None:
+        lines.append("  " + theme.warning("Not cached. Run: backup repo --refresh-storage"))
+    else:
+        payload = summary.storage.payload
+        lines.extend(
+            [
+                "  Generated:      {0}".format(human_datetime(summary.storage.generated_utc)),
+                "  Snapshots:      {0}".format(payload.get("snapshots_count", "-")),
+                "  Files:          {0:,}".format(int(payload.get("total_file_count", 0))),
+                "  Restore size:   {0}".format(human_bytes(int(payload.get("total_size", 0)))),
+            ]
+        )
+    if summary.warnings:
+        lines.extend(["", theme.heading("Warnings")])
+        lines.extend("  {0}".format(theme.warning(value)) for value in summary.warnings)
+    return "\n".join(lines)
+
+
 def backup_detail_lines(record: BackupInventoryRecord) -> List[str]:
     """Build expandable detail content used by the shared interactive list."""
 
@@ -368,10 +423,7 @@ def browse_backups(
     action_key: Optional[str] = None,
     action_label: Optional[str] = None,
 ) -> List[BackupInventoryRecord]:
-    """Open the shared TermDash list and return explicitly selected records.
-
-    Returning an empty list means the user exited without confirming an action.
-    """
+    """Open the shared TermDash list and return explicitly selected records."""
 
     if not records or not interactive_available():
         return []
@@ -443,12 +495,8 @@ def browse_backups(
         sorters={
             "name": lambda item: item.definition.name.lower(),
             "health": lambda item: item.health.severity.value,
-            "latest": lambda item: (
-                datetime.min.astimezone()
-                if item.latest_snapshot is None
-                else item.latest_snapshot.time
-            ),
-            "next": lambda item: datetime.max.astimezone() if item.next_run is None else item.next_run,
+            "latest": lambda item: _MIN_TIME if item.latest_snapshot is None else item.latest_snapshot.time,
+            "next": lambda item: _MAX_TIME if item.next_run is None else item.next_run,
             "missed": lambda item: -1 if item.missed_runs is None else item.missed_runs,
         },
         formatter=formatter,
