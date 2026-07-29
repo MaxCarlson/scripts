@@ -257,7 +257,7 @@ def _plan_managed_instruction(path: Path, managed_block: str) -> SetupOperation:
         end = existing.index(MANAGED_END, start) + len(MANAGED_END)
         merged = existing[:start] + managed_block.rstrip() + existing[end:]
     else:
-        merged = existing.rstrip() + "\n\n" + managed_block
+        merged = managed_block.rstrip() + "\n\n" + existing
     merged = merged.rstrip() + "\n"
     action = "unchanged" if merged == existing else "update"
     reason = "Managed instruction block is current." if action == "unchanged" else "Inject or refresh managed instructions."
