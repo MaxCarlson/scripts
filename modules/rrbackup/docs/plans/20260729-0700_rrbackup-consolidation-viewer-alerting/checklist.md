@@ -4,124 +4,107 @@
 
 - [x] Create canonical plan structure
 - [x] Document hybrid remote/local workflow
-- [x] Add one-time substantial-task hybrid reminder for local agents
-- [x] Add repository-root validation dispatcher
-- [x] Add manifest-driven validation targets
-- [x] Register RRBackup as the default target
-- [x] Bootstrap target development dependencies by default
-- [x] Use repository virtual-environment Python
-- [x] Isolate target working directory and pytest imports
-- [x] Capture complete compile/lint/pytest/PowerShell stdout and stderr
-- [x] Run all configured `*_test.ps1` scripts from one command
-- [x] Add authoritative `LATEST.txt` per target
-- [x] Add `LATEST_CONTEXT.md` and `LATEST_PROGRESS.diff`
-- [x] Add bounded validation history
-- [x] Add PowerShell environment smoke test
-- [x] Add opt-in production read-only test
-- [x] Run initial local Windows baseline
-- [x] Diagnose shared-environment pytest collision
-- [x] Validate repository-root dispatcher on Windows
-- [x] Reach a clean inherited baseline: 126 passed, 8 skipped
-- [x] Triage inherited baseline failures
-- [x] Add canonical profile and source-attribution model
+- [x] Add repository-root validation dispatcher and target manifest
+- [x] Add authoritative `LATEST.txt`, context snapshot, progress diff, and bounded history
+- [x] Add PowerShell environment smoke and opt-in production read-only tests
+- [x] Add canonical profile and source attribution
 - [x] Add legacy `backup_module` JSON/default adapter
-- [x] Add Restic command boundary
-- [x] Add print-command-only/preview barrier
+- [x] Add Restic command boundary and secret redaction
+- [x] Add print-command-only hard barrier
 - [x] Correct dry-run state semantics
 - [x] Add CPU normal/overdue policy
-- [x] Ensure CPU waiting occurs before lock acquisition
-- [x] Add atomic state store
+- [x] Ensure CPU waiting precedes lock acquisition
+- [x] Add atomic run-state store
 - [x] Add process-identity lock and ownership token
+- [x] Add stale-lock replacement race protection
 - [x] Add snapshot and backup-summary parsers
 - [x] Add shared backup execution engine
-- [x] Add terminal-state handling for wait, lock, execution, and finalization failures
-- [x] Add Stage 1 unit and lifecycle regression tests
-- [x] Add compile and focused correctness-lint gates
-- [x] Bump RRBackup to `0.3.0`
-- [x] Add `psutil` runtime dependency
-- [x] Complete remote static review
-- [ ] Validate latest-first report migration and retention
-- [ ] Validate generated context snapshot and progress diff
-- [ ] Run Stage 1 local Windows validation
-- [ ] Correct local failures
-- [ ] Evaluate Stage 1 coverage threshold
-- [ ] Mark Stage 1 verified
+- [x] Add terminal-state handling for all failure paths
+- [x] Add unit and lifecycle regression tests
+- [x] Add compile and correctness-lint gates
+- [x] Pass local Windows validation: 199 passed, 8 skipped
+- [x] Validate `LATEST.*` migration and bounded history
+- [x] Mark Stage 1 verified
 
-## Stage 2 — Compatibility Merge and CLI
+## Stage 2 — Compatibility Merge and Hierarchical CLI
 
 - [x] Define six-area CLI architecture
-- [x] Map useful consolidation shell audits to first-class commands
+- [x] Map useful shell audits to first-class commands
 - [x] Define `backup view audit` contract
-- [ ] Add canonical `backup` entry point and required major version bump
-- [ ] Add `backup run`
-- [ ] Add `backup view`
-- [ ] Add `backup config`
-- [ ] Add `backup edit` alias
-- [ ] Add `backup schedule`
-- [ ] Add `backup restore`
-- [ ] Add `backup repository`
-- [ ] Preserve `rrb`
-- [ ] Preserve `rrbackup`
-- [ ] Preserve `backup_module`
-- [ ] Preserve `python -m backup_module`
-- [ ] Preserve legacy underscore options
-- [ ] Add canonical hyphenated options
-- [ ] Import legacy JSON/default configuration
-- [ ] Add root and nested help-contract tests
-- [ ] Add JSON stdout-purity tests
-- [ ] Add secret-redaction tests
-- [ ] Add `backup config discover`
-- [ ] Add executable/wrapper/environment diagnostics
-- [ ] Add known and relocated artifact discovery
-- [ ] Add scheduler and launcher discovery
-- [ ] Add repository key/stats/check/cache/lock inspection
+- [x] Add canonical `backup` entry point
+- [x] Bump package to `1.0.0`
+- [x] Route `backup`, `rrb`, and `rrbackup` to one canonical application
+- [x] Restore repository namespace compatibility shim
+- [x] Add actual installed-entry-point smoke checks without injected `PYTHONPATH`
+- [x] Clean stale editable metadata before validation install
+- [x] Add `backup run`
+- [x] Add `backup view` hierarchy and default dashboard
+- [x] Add `backup config` hierarchy
+- [x] Add `backup edit` alias translation
+- [x] Add `backup schedule` read-only discovery hierarchy
+- [x] Add `backup restore` search/preview/explicit-run hierarchy
+- [x] Add `backup repository` read-only hierarchy and explicit mutation gates
+- [x] Preserve common legacy `rrb` commands through translation
+- [x] Temporarily delegate legacy setup/prune/config mutation commands
+- [x] Preserve underscore-style option aliases for migrated commands
+- [x] Add canonical hyphenated options
+- [x] Import legacy JSON/default configuration into canonical profile
+- [x] Add root and major-area help-contract tests
+- [x] Add JSON stdout-purity coverage for print-only behavior
+- [x] Add secret-redaction tests
+- [x] Add `backup config discover`
+- [x] Add executable/runtime/environment diagnostics
+- [x] Add known path and input-file discovery
+- [x] Add Windows Task Scheduler discovery
+- [x] Add repository status/key/stats/check/cache/lock inspection
+- [x] Add dashboard, timeline, snapshots, runs, logs, storage, health, setup, system, provenance, schedules, audit, and export views
+- [x] Add parser, packaging, health, audit, repository, and scheduler tests
+- [ ] Pass expanded Windows validation checkpoint
+- [ ] Add TOML and named-set conversion to shared engine
+- [ ] Add snapshot tag/host/path filters
+- [ ] Implement `--redact-paths`
 - [ ] Add optional legacy shell-history evidence adapter
-- [ ] Verify known snapshots through merged CLI
+- [ ] Add detailed scheduler event, service, startup, systemd, and cron discovery
+- [ ] Add restore history and hash verification
+- [ ] Verify known production snapshots through canonical CLI
+- [ ] Preserve every historical `backup_module` command through shared engine
 - [ ] Reduce `modules/backup_module` to a compatibility shim
 - [ ] Remove duplicate engine only after compatibility tests pass
 
-## Stage 3 — Scheduler
+## Stage 3 — Scheduler Management
 
-- [ ] Windows Task Scheduler CRUD
+- [ ] Windows Task Scheduler create/update/delete/run/export/import
 - [ ] systemd user timer CRUD
 - [ ] cron compatibility CRUD
-- [ ] Startup-command and service launcher discovery
-- [ ] Schedule health
-- [ ] Schedule history
-- [ ] No-overlap behavior
-- [ ] Retry/start-when-available behavior
-- [ ] Export before replacement
+- [ ] Schedule health and history
+- [ ] No-overlap, retry, wake, and start-when-available behavior
 - [ ] Scheduler/run/snapshot correlation
 
-## Stage 4 — Viewer
+## Stage 4 — Viewer Expansion
 
-- [ ] Dashboard
-- [ ] Timeline
-- [ ] Snapshots
-- [ ] Snapshot details
-- [ ] Files and search
-- [ ] Runs
-- [ ] Logs
-- [ ] Sets
-- [ ] Schedules
-- [ ] Setup and system diagnostics
-- [ ] Provenance
-- [ ] Comprehensive audit
-- [ ] Gaps
-- [ ] Storage
-- [ ] Health
-- [ ] Alerts
-- [ ] JSON/JSONL/CSV/Markdown output
-- [ ] Missed-backup engine
+- [x] Dashboard foundation
+- [x] Timeline foundation
+- [x] Snapshot listing and details
+- [x] Search foundation
+- [x] Runs and logs
+- [x] Schedules and setup/system diagnostics
+- [x] Provenance and comprehensive audit foundation
+- [x] Storage and health foundation
+- [ ] File browsing inside snapshots
+- [ ] Rich set/profile views
+- [ ] Expected-run gap engine
+- [ ] Detailed missed-backup timeline
+- [ ] JSON Lines and CSV output
+- [ ] Alert-state view
+- [ ] Optional full-screen TUI
 
 ## Stage 5 — Alerts
 
-- [ ] Health evaluator
-- [ ] Alert persistence
-- [ ] Deduplication
-- [ ] Terminal exit codes
+- [ ] Alert persistence and fingerprints
+- [ ] Deduplication and acknowledge/resolve/reopen states
+- [ ] Stable health exit codes
 - [ ] Alert log
-- [ ] Webhook
+- [ ] Generic webhook
 - [ ] Windows notification
 - [ ] Email/external command
 - [ ] Schedule-compatible health check
@@ -129,10 +112,10 @@
 ## Stage 6 — Retention
 
 - [ ] Ownership tags
-- [ ] Preview
-- [ ] Apply confirmation
-- [ ] Legacy adoption
-- [ ] Isolation tests
+- [ ] Preview by default
+- [ ] Explicit apply confirmation
+- [ ] Legacy snapshot adoption
+- [ ] Mixed-repository isolation tests
 
 ## Stage 7 — Acceptance
 
