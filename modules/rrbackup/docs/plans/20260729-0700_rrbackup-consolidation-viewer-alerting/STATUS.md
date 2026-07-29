@@ -4,34 +4,48 @@
 
 Stage 1 is verified. The Windows safety-foundation checkpoint passed package compilation, focused correctness lint, 199 tests, and both PowerShell checks; 8 environment-dependent tests skipped intentionally. The repository-root validation evidence workflow also works as intended.
 
-Stage 2 remains split into bounded checkpoints. The current checkpoint is **2A — Single-CLI UX Foundation**. Its first Windows validation run completed and narrowed the remaining automated work to two attributable failures. Both failures are patched on the branch; the checkpoint now awaits one corrected local run plus manual UX acceptance.
+Stage 2 remains split into bounded checkpoints. The current checkpoint is **2A — Single-CLI UX Foundation**. Its second Windows validation run improved to 287 passing tests, 7 intentional skips, and one remaining test-double failure. That final test-double field omission is patched on the branch; the checkpoint now awaits one corrected local run plus manual UX acceptance.
 
 No Checkpoint 2B wizard/apply work should begin until Checkpoint 2A passes and its manual observations are reviewed.
 
 ## Latest Checkpoint 2A Evidence
 
-The pushed Windows run at commit `5e5c37a4cb3ae412f0a8848d6c93a27f06d08e21` recorded:
+The pushed Windows run at commit `1b09c80ccffb8d5840ea8861cf7a7ce9a4abd732` recorded:
 
 - dependency cleanup, uninstall, and editable installation: passed,
 - package/test compilation: passed,
 - focused correctness lint: passed,
 - root `backup` help contract: passed,
 - condensed `backup view` help contract: passed,
-- pytest: 286 passed, 7 skipped, 2 failed,
+- pytest: 287 passed, 7 skipped, 1 failed,
 - PowerShell installed-entry-point/environment smoke test: passed,
 - production read-only test: safely skipped,
-- package branch coverage: 60%.
+- package branch coverage: 60%,
+- pytest ANSI color sequences: preserved through the root dispatcher and captured in the raw report.
 
-The two pytest failures were:
+The remaining pytest failure was:
 
-1. `test_run_auto_json_lists_configured_backups_without_execution` used an incomplete fake profile that omitted the repository field required by the human-table renderer.
-2. `test_missing_config_error_message` exposed a real semantic defect: an explicitly supplied missing `--config` path silently fell back to legacy defaults instead of returning an error.
+1. `test_run_auto_json_lists_configured_backups_without_execution` used an incomplete fake definition that omitted `source_summary`, `schedule_text`, and `retention_text`, which are consumed by the human-table renderer before JSON emission.
 
-Corrections now on the branch:
+Correction now on the branch:
 
-- the test fixture carries the complete profile fields used by presentation code,
-- explicit missing config paths fail before command dispatch except for creation and migration flows where a new target is valid,
-- pytest is invoked with forced color so the live root-dispatcher console retains its normal colored status output.
+- the fake definition carries the complete presentation-facing interface used by `render_backup_table`.
+
+The prior explicit-config semantic defect is verified fixed. Running:
+
+```text
+backup --config .\does-not-exist.toml config show --json
+```
+
+returns `Config file not found` and exit code `2`, with no legacy-default fallback output.
+
+The alternative invocation:
+
+```text
+backup config .\does-not-exist.toml config show --json
+```
+
+is intentionally invalid because `--config <path>` is a root/global option and must appear before the `config` command area.
 
 ## Checkpoint Guardrail
 
@@ -58,6 +72,8 @@ Create/schedule wizard acceptance, scheduler/configuration apply, compatibility-
 - Root validation dispatcher and authoritative evidence handoff
 - Single installed `backup` entry point
 - Condensed task-oriented command/help hierarchy
+- Explicit missing-config failure semantics
+- Colored pytest output through the root dispatcher
 
 ### Implemented in Checkpoint 2A and substantially validated
 
@@ -93,15 +109,14 @@ Create/schedule wizard acceptance, scheduler/configuration apply, compatibility-
 
 ### Current bugs and uncertainty
 
-- The two automated failures from the first 2A run are patched but not yet locally revalidated.
-- Live pytest color through the root dispatcher is configured but still needs visual confirmation.
+- The final test-double correction is patched but not yet locally revalidated.
 - TUI navigation, resizing, and curses-failure fallback require manual Windows verification.
 - The module root `README.md` still documents the historical `rrb` interface and remains deferred until the new UX passes acceptance.
 - General CLI repository/password overrides are not yet covered by a non-default-repository manual test.
 
 ### Progress and loop assessment
 
-Measurable progress occurred. The checkpoint advanced from 256 passing tests in the prior slice to 286 passing tests while replacing the public command surface and adding the new inventory/presentation layer. The two failures were distinct and attributable; this is not a repeating or stalled failure pattern. The correct next action is a small corrected validation run, not additional feature implementation.
+Measurable progress occurred. Checkpoint 2A advanced from 256 passing tests to 286 and then 287 passing tests. The real missing-config semantic defect is fixed and manually verified; the only remaining failure was a distinct, attributable test-double interface omission. This is not a repeating product failure or stalled loop. The correct next action is one final corrected validation run, not additional feature implementation.
 
 ## Checkpoint 2A Validation Target
 
