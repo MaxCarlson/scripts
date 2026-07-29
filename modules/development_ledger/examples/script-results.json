@@ -1,0 +1,18 @@
+{
+    "schema_version": 1,
+    "source": "powershell",
+    "suite": "entrypoint-smoke",
+    "tests": [
+        {
+            "id": "powershell:entrypoint-smoke::preview",
+            "name": "Installed preview wrapper",
+            "status": "passed",
+            "duration_seconds": 0.5,
+            "message": "",
+            "item_ids": ["AC-001"],
+            "metadata": {
+                "platform": "windows"
+            }
+        }
+    ]
+}
