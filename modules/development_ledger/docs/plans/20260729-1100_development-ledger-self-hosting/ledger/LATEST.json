@@ -1,0 +1,1167 @@
+{
+    "schema_version": 1,
+    "event_type": "validation_run",
+    "event_id": "run-20260729T183209793795Z-f0a0c61e-27b23f",
+    "timestamp": "2026-07-29T18:32:09.793795+00:00",
+    "plan_id": "development-ledger-self-hosting",
+    "plan_title": "Development Ledger Self-Hosting",
+    "project_root": "modules/development_ledger",
+    "plan_revision": 1,
+    "stage": {
+        "id": "S1",
+        "title": "Repository dispatcher self-hosting",
+        "status": "awaiting_validation"
+    },
+    "actor": "remote_llm",
+    "mode": "hybrid",
+    "request": {
+        "status": "incorporated",
+        "summary": "Use the merged repository validation dispatcher to execute and record the first development-ledger validation cycle.",
+        "resolution": "compatible",
+        "affected_ids": [
+            "AC-S1-001",
+            "AC-S1-002"
+        ],
+        "supersedes": [],
+        "conflicts": []
+    },
+    "intent": {
+        "objective": "Make development_ledger the first self-hosted validation target without masking the root dispatcher result.",
+        "hypothesis": "A narrow adapter around the existing record command is sufficient for the first evidence cycle; public CLI and generic dispatcher changes should wait for real validation evidence.",
+        "target_ids": [
+            "AC-S1-001",
+            "AC-S1-002"
+        ],
+        "selection_rationale": "The adapter and manifest target form one dependency-cohesive integration stage and avoid broad dispatcher or public-CLI changes before the first real run.",
+        "stop_conditions": [
+            "The branch contains the adapter, target, tests, plan, and self-host documentation.",
+            "Static syntax, manifest, plan-state, and adapter behavior checks pass.",
+            "The user can pull and run one repository-root validation command."
+        ],
+        "batch": {
+            "profile": "standard",
+            "target_minutes": 15,
+            "max_minutes": 20,
+            "max_items": 4
+        },
+        "environment_dependencies": [
+            "Windows 11 PowerShell 7 root-dispatcher execution",
+            "editable Python package installation"
+        ],
+        "architecture_impact": "local",
+        "relevant_files": [
+            "development_ledger/dispatcher_record.py",
+            "tests/dispatcher_record_test.py",
+            "../../validation-targets.json",
+            "docs/SELF_HOSTING.md"
+        ]
+    },
+    "provenance": {
+        "repo_root": "C:\\Users\\mcarls\\src\\scripts",
+        "branch": "agent/add-development-ledger-module",
+        "commit": "f0a0c61e881d6a1bc321ca73edf0b879f7f7e164",
+        "baseline_commit": "",
+        "working_tree_clean": false,
+        "working_tree_status": [
+            "?? docs/test-results/development-ledger/"
+        ],
+        "changed_files": [],
+        "diff_stat": ""
+    },
+    "tests": [
+        {
+            "id": "pytest:tests.analysis_test::test_evaluate_items_separates_automated_and_manual_state",
+            "name": "test_evaluate_items_separates_automated_and_manual_state",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.analysis_test",
+            "duration_seconds": 0.012,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.analysis_test"
+            }
+        },
+        {
+            "id": "pytest:tests.analysis_test::test_build_event_detects_persistent_failure_and_loop",
+            "name": "test_build_event_detects_persistent_failure_and_loop",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.analysis_test",
+            "duration_seconds": 0.005,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.analysis_test"
+            }
+        },
+        {
+            "id": "pytest:tests.analysis_test::test_environment_failure_escalates_immediately",
+            "name": "test_environment_failure_escalates_immediately",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.analysis_test",
+            "duration_seconds": 0.003,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.analysis_test"
+            }
+        },
+        {
+            "id": "pytest:tests.analysis_test::test_recommend_local_model_uses_sol_for_security",
+            "name": "test_recommend_local_model_uses_sol_for_security",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.analysis_test",
+            "duration_seconds": 0.003,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.analysis_test"
+            }
+        },
+        {
+            "id": "pytest:tests.analysis_test::test_all_items_verified_produces_ready",
+            "name": "test_all_items_verified_produces_ready",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.analysis_test",
+            "duration_seconds": 0.003,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.analysis_test"
+            }
+        },
+        {
+            "id": "pytest:tests.analysis_test::test_conflicting_request_stops_before_implementation",
+            "name": "test_conflicting_request_stops_before_implementation",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.analysis_test",
+            "duration_seconds": 0.003,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.analysis_test"
+            }
+        },
+        {
+            "id": "pytest:tests.analysis_test::test_batch_candidates_favor_foundational_prerequisites",
+            "name": "test_batch_candidates_favor_foundational_prerequisites",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.analysis_test",
+            "duration_seconds": 0.003,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.analysis_test"
+            }
+        },
+        {
+            "id": "pytest:tests.analysis_test::test_architecture_review_becomes_due_after_configured_run_backstop",
+            "name": "test_architecture_review_becomes_due_after_configured_run_backstop",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.analysis_test",
+            "duration_seconds": 0.004,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.analysis_test"
+            }
+        },
+        {
+            "id": "pytest:tests.cli_test::test_validate_plan_cli",
+            "name": "test_validate_plan_cli",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.cli_test",
+            "duration_seconds": 0.005,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.cli_test"
+            }
+        },
+        {
+            "id": "pytest:tests.cli_test::test_record_cli_writes_ledger_and_projections",
+            "name": "test_record_cli_writes_ledger_and_projections",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.cli_test",
+            "duration_seconds": 0.247,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.cli_test"
+            }
+        },
+        {
+            "id": "pytest:tests.cli_test::test_init_plan_defaults_to_preview",
+            "name": "test_init_plan_defaults_to_preview",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.cli_test",
+            "duration_seconds": 0.003,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.cli_test"
+            }
+        },
+        {
+            "id": "pytest:tests.cli_test::test_init_plan_write_creates_file",
+            "name": "test_init_plan_write_creates_file",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.cli_test",
+            "duration_seconds": 0.004,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.cli_test"
+            }
+        },
+        {
+            "id": "pytest:tests.cli_test::test_main_returns_two_for_invalid_plan",
+            "name": "test_main_returns_two_for_invalid_plan",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.cli_test",
+            "duration_seconds": 0.007,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.cli_test"
+            }
+        },
+        {
+            "id": "pytest:tests.cli_test::test_manual_and_summarize_cli",
+            "name": "test_manual_and_summarize_cli",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.cli_test",
+            "duration_seconds": 0.245,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.cli_test"
+            }
+        },
+        {
+            "id": "pytest:tests.dispatcher_record_test::test_dispatcher_record_preserves_recording_failures[0-0]",
+            "name": "test_dispatcher_record_preserves_recording_failures[0-0]",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.dispatcher_record_test",
+            "duration_seconds": 0.001,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.dispatcher_record_test"
+            }
+        },
+        {
+            "id": "pytest:tests.dispatcher_record_test::test_dispatcher_record_preserves_recording_failures[1-0]",
+            "name": "test_dispatcher_record_preserves_recording_failures[1-0]",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.dispatcher_record_test",
+            "duration_seconds": 0.001,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.dispatcher_record_test"
+            }
+        },
+        {
+            "id": "pytest:tests.dispatcher_record_test::test_dispatcher_record_preserves_recording_failures[2-2]",
+            "name": "test_dispatcher_record_preserves_recording_failures[2-2]",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.dispatcher_record_test",
+            "duration_seconds": 0.0,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.dispatcher_record_test"
+            }
+        },
+        {
+            "id": "pytest:tests.event_id_test::test_automatic_event_ids_are_unique_for_same_timestamp_and_commit",
+            "name": "test_automatic_event_ids_are_unique_for_same_timestamp_and_commit",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.event_id_test",
+            "duration_seconds": 0.001,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.event_id_test"
+            }
+        },
+        {
+            "id": "pytest:tests.ledger_test::test_append_event_writes_compact_jsonl_and_rejects_duplicates",
+            "name": "test_append_event_writes_compact_jsonl_and_rejects_duplicates",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.ledger_test",
+            "duration_seconds": 0.009,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.ledger_test"
+            }
+        },
+        {
+            "id": "pytest:tests.ledger_test::test_read_events_rejects_invalid_json",
+            "name": "test_read_events_rejects_invalid_json",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.ledger_test",
+            "duration_seconds": 0.007,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.ledger_test"
+            }
+        },
+        {
+            "id": "pytest:tests.plan_test::test_load_plan_parses_items_and_manual_checks",
+            "name": "test_load_plan_parses_items_and_manual_checks",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.plan_test",
+            "duration_seconds": 0.004,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.plan_test"
+            }
+        },
+        {
+            "id": "pytest:tests.plan_test::test_parse_plan_rejects_missing_markers",
+            "name": "test_parse_plan_rejects_missing_markers",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.plan_test",
+            "duration_seconds": 0.001,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.plan_test"
+            }
+        },
+        {
+            "id": "pytest:tests.plan_test::test_parse_plan_rejects_duplicate_item_ids",
+            "name": "test_parse_plan_rejects_duplicate_item_ids",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.plan_test",
+            "duration_seconds": 0.001,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.plan_test"
+            }
+        },
+        {
+            "id": "pytest:tests.plan_test::test_parse_plan_rejects_unknown_manual_check_reference",
+            "name": "test_parse_plan_rejects_unknown_manual_check_reference",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.plan_test",
+            "duration_seconds": 0.001,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.plan_test"
+            }
+        },
+        {
+            "id": "pytest:tests.plan_test::test_render_plan_template_round_trips",
+            "name": "test_render_plan_template_round_trips",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.plan_test",
+            "duration_seconds": 0.001,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.plan_test"
+            }
+        },
+        {
+            "id": "pytest:tests.plan_test::test_plan_rejects_invalid_implementation_state",
+            "name": "test_plan_rejects_invalid_implementation_state",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.plan_test",
+            "duration_seconds": 0.001,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.plan_test"
+            }
+        },
+        {
+            "id": "pytest:tests.plan_test::test_plan_rejects_manual_check_unknown_item",
+            "name": "test_plan_rejects_manual_check_unknown_item",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.plan_test",
+            "duration_seconds": 0.001,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.plan_test"
+            }
+        },
+        {
+            "id": "pytest:tests.pytest_plugin_test::test_pytest_plugin_registers_marker_and_exports_properties",
+            "name": "test_pytest_plugin_registers_marker_and_exports_properties",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.pytest_plugin_test",
+            "duration_seconds": 0.0,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.pytest_plugin_test"
+            }
+        },
+        {
+            "id": "pytest:tests.pytest_plugin_test::test_marker_ids_ignores_empty_values",
+            "name": "test_marker_ids_ignores_empty_values",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.pytest_plugin_test",
+            "duration_seconds": 0.0,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.pytest_plugin_test"
+            }
+        },
+        {
+            "id": "pytest:tests.render_test::test_render_progress_is_compact_orientation_document",
+            "name": "test_render_progress_is_compact_orientation_document",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.render_test",
+            "duration_seconds": 0.004,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.render_test"
+            }
+        },
+        {
+            "id": "pytest:tests.render_test::test_write_projections_creates_all_expected_files",
+            "name": "test_write_projections_creates_all_expected_files",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.render_test",
+            "duration_seconds": 0.008,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.render_test"
+            }
+        },
+        {
+            "id": "pytest:tests.render_test::test_local_handoff_contains_attempt_history_when_escalated",
+            "name": "test_local_handoff_contains_attempt_history_when_escalated",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.render_test",
+            "duration_seconds": 0.004,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.render_test"
+            }
+        },
+        {
+            "id": "pytest:tests.render_test::test_architecture_review_projection_explains_due_review",
+            "name": "test_architecture_review_projection_explains_due_review",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.render_test",
+            "duration_seconds": 0.003,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.render_test"
+            }
+        },
+        {
+            "id": "pytest:tests.render_test::test_render_progress_without_events_and_inactive_handoff",
+            "name": "test_render_progress_without_events_and_inactive_handoff",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.render_test",
+            "duration_seconds": 0.003,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.render_test"
+            }
+        },
+        {
+            "id": "pytest:tests.results_test::test_parse_junit_xml_extracts_status_and_requirement",
+            "name": "test_parse_junit_xml_extracts_status_and_requirement",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.results_test",
+            "duration_seconds": 0.006,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.results_test"
+            }
+        },
+        {
+            "id": "pytest:tests.results_test::test_parse_script_results_preserves_explicit_ids",
+            "name": "test_parse_script_results_preserves_explicit_ids",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.results_test",
+            "duration_seconds": 0.007,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.results_test"
+            }
+        },
+        {
+            "id": "pytest:tests.results_test::test_parse_transcript_extracts_commands_pytest_counts_and_coverage",
+            "name": "test_parse_transcript_extracts_commands_pytest_counts_and_coverage",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.results_test",
+            "duration_seconds": 0.007,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.results_test"
+            }
+        },
+        {
+            "id": "pytest:tests.results_test::test_failure_fingerprint_normalizes_paths_and_addresses",
+            "name": "test_failure_fingerprint_normalizes_paths_and_addresses",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.results_test",
+            "duration_seconds": 0.001,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.results_test"
+            }
+        },
+        {
+            "id": "pytest:tests.results_test::test_parse_script_results_rejects_bad_status",
+            "name": "test_parse_script_results_rejects_bad_status",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.results_test",
+            "duration_seconds": 0.007,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.results_test"
+            }
+        },
+        {
+            "id": "pytest:tests.results_test::test_parse_transcript_without_summary_returns_zero_metrics",
+            "name": "test_parse_transcript_without_summary_returns_zero_metrics",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.results_test",
+            "duration_seconds": 0.007,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.results_test"
+            }
+        },
+        {
+            "id": "pytest:tests.schema_test::test_all_shipped_json_schemas_are_valid_json",
+            "name": "test_all_shipped_json_schemas_are_valid_json",
+            "status": "failed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.schema_test",
+            "duration_seconds": 0.018,
+            "message": "KeyError: 'type'",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.schema_test"
+            }
+        },
+        {
+            "id": "pytest:tests.scripts_repository_integration_test::test_validation_manifest_self_hosts_development_ledger",
+            "name": "test_validation_manifest_self_hosts_development_ledger",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.scripts_repository_integration_test",
+            "duration_seconds": 0.001,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.scripts_repository_integration_test"
+            }
+        },
+        {
+            "id": "pytest:tests.setup_cli_test::test_setup_cli_dry_run_then_write",
+            "name": "test_setup_cli_dry_run_then_write",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.setup_cli_test",
+            "duration_seconds": 0.059,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.setup_cli_test"
+            }
+        },
+        {
+            "id": "pytest:tests.setup_cli_test::test_setup_cli_json_output",
+            "name": "test_setup_cli_json_output",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.setup_cli_test",
+            "duration_seconds": 0.015,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.setup_cli_test"
+            }
+        },
+        {
+            "id": "pytest:tests.setup_cli_test::test_dedicated_setup_entrypoint_prepends_subcommand",
+            "name": "test_dedicated_setup_entrypoint_prepends_subcommand",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.setup_cli_test",
+            "duration_seconds": 0.01,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.setup_cli_test"
+            }
+        },
+        {
+            "id": "pytest:tests.setup_preservation_test::test_existing_docs_readmes_and_handoff_are_preserved",
+            "name": "test_existing_docs_readmes_and_handoff_are_preserved",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.setup_preservation_test",
+            "duration_seconds": 0.018,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.setup_preservation_test"
+            }
+        },
+        {
+            "id": "pytest:tests.setup_preservation_test::test_existing_agent_file_with_broken_marker_blocks_application",
+            "name": "test_existing_agent_file_with_broken_marker_blocks_application",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.setup_preservation_test",
+            "duration_seconds": 0.009,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.setup_preservation_test"
+            }
+        },
+        {
+            "id": "pytest:tests.setup_test::test_setup_dry_run_is_non_mutating_and_targets_multiple_scopes",
+            "name": "test_setup_dry_run_is_non_mutating_and_targets_multiple_scopes",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.setup_test",
+            "duration_seconds": 0.016,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.setup_test"
+            }
+        },
+        {
+            "id": "pytest:tests.setup_test::test_apply_setup_creates_native_files_docs_and_config",
+            "name": "test_apply_setup_creates_native_files_docs_and_config",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.setup_test",
+            "duration_seconds": 0.023,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.setup_test"
+            }
+        },
+        {
+            "id": "pytest:tests.setup_test::test_existing_agents_content_is_preserved_and_setup_is_idempotent",
+            "name": "test_existing_agents_content_is_preserved_and_setup_is_idempotent",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.setup_test",
+            "duration_seconds": 0.029,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.setup_test"
+            }
+        },
+        {
+            "id": "pytest:tests.setup_test::test_nested_claude_and_gemini_import_scoped_agents_and_root_workflow",
+            "name": "test_nested_claude_and_gemini_import_scoped_agents_and_root_workflow",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.setup_test",
+            "duration_seconds": 0.024,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.setup_test"
+            }
+        },
+        {
+            "id": "pytest:tests.setup_test::test_copilot_scope_file_has_apply_to_pattern",
+            "name": "test_copilot_scope_file_has_apply_to_pattern",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.setup_test",
+            "duration_seconds": 0.02,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.setup_test"
+            }
+        },
+        {
+            "id": "pytest:tests.setup_test::test_unmarked_managed_document_conflicts_unless_forced",
+            "name": "test_unmarked_managed_document_conflicts_unless_forced",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.setup_test",
+            "duration_seconds": 0.012,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.setup_test"
+            }
+        },
+        {
+            "id": "pytest:tests.setup_test::test_missing_module_and_scope_escape_are_rejected",
+            "name": "test_missing_module_and_scope_escape_are_rejected",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.setup_test",
+            "duration_seconds": 0.004,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.setup_test"
+            }
+        },
+        {
+            "id": "pytest:tests.setup_test::test_all_modules_discovers_immediate_module_directories",
+            "name": "test_all_modules_discovers_immediate_module_directories",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.setup_test",
+            "duration_seconds": 0.007,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.setup_test"
+            }
+        },
+        {
+            "id": "pytest:tests.writer_test::test_write_script_results_round_trips",
+            "name": "test_write_script_results_round_trips",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.writer_test",
+            "duration_seconds": 0.006,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.writer_test"
+            }
+        },
+        {
+            "id": "pytest:tests.writer_test::test_script_check_rejects_invalid_status",
+            "name": "test_script_check_rejects_invalid_status",
+            "status": "passed",
+            "suite": "pytest",
+            "source": "pytest",
+            "file": "",
+            "classname": "tests.writer_test",
+            "duration_seconds": 0.001,
+            "message": "",
+            "item_ids": [],
+            "metadata": {
+                "junit_classname": "tests.writer_test"
+            }
+        },
+        {
+            "id": "command:clean-stale-development-ledger-editable-metadata",
+            "name": "Clean stale development-ledger editable metadata",
+            "status": "passed",
+            "suite": "validation-transcript",
+            "source": "transcript",
+            "file": "",
+            "classname": "",
+            "duration_seconds": 0.0,
+            "message": "",
+            "item_ids": [],
+            "metadata": {}
+        },
+        {
+            "id": "command:install-development-ledger-editable-development-dependencies",
+            "name": "Install development-ledger editable development dependencies",
+            "status": "passed",
+            "suite": "validation-transcript",
+            "source": "transcript",
+            "file": "",
+            "classname": "",
+            "duration_seconds": 0.0,
+            "message": "",
+            "item_ids": [],
+            "metadata": {}
+        },
+        {
+            "id": "command:compile-development-ledger-package-and-tests",
+            "name": "Compile development-ledger package and tests",
+            "status": "passed",
+            "suite": "validation-transcript",
+            "source": "transcript",
+            "file": "",
+            "classname": "",
+            "duration_seconds": 0.0,
+            "message": "",
+            "item_ids": [],
+            "metadata": {}
+        },
+        {
+            "id": "command:lint-development-ledger-package-and-tests",
+            "name": "Lint development-ledger package and tests",
+            "status": "passed",
+            "suite": "validation-transcript",
+            "source": "transcript",
+            "file": "",
+            "classname": "",
+            "duration_seconds": 0.0,
+            "message": "",
+            "item_ids": [],
+            "metadata": {}
+        },
+        {
+            "id": "command:validate-development-ledger-active-plan",
+            "name": "Validate development-ledger active plan",
+            "status": "passed",
+            "suite": "validation-transcript",
+            "source": "transcript",
+            "file": "",
+            "classname": "",
+            "duration_seconds": 0.0,
+            "message": "",
+            "item_ids": [],
+            "metadata": {}
+        },
+        {
+            "id": "command:development-ledger-cli-help-contract",
+            "name": "Development-ledger CLI help contract",
+            "status": "passed",
+            "suite": "validation-transcript",
+            "source": "transcript",
+            "file": "",
+            "classname": "",
+            "duration_seconds": 0.0,
+            "message": "",
+            "item_ids": [],
+            "metadata": {}
+        },
+        {
+            "id": "command:development-ledger-pytest-and-coverage-suite",
+            "name": "Development-ledger pytest and coverage suite",
+            "status": "failed",
+            "suite": "validation-transcript",
+            "source": "transcript",
+            "file": "",
+            "classname": "",
+            "duration_seconds": 0.0,
+            "message": "",
+            "item_ids": [],
+            "metadata": {}
+        }
+    ],
+    "test_summary": {
+        "total": 64,
+        "passed": 62,
+        "failed": 2,
+        "errors": 0,
+        "skipped": 0,
+        "duration_seconds": 0.905,
+        "transcript_metrics": {
+            "passed": 56,
+            "failed": 1,
+            "skipped": 0,
+            "errors": 0
+        }
+    },
+    "failure_fingerprints": [
+        "command:development-ledger-pytest-and-coverage-suite|failed|",
+        "pytest:tests.schema_test::test_all_shipped_json_schemas_are_valid_json|failed|KeyError: 'type'"
+    ],
+    "items": [
+        {
+            "id": "AC-S1-001",
+            "title": "The dispatcher adapter treats a successfully written failed-test event as recording success while preserving actual recording failures.",
+            "kind": "criterion",
+            "implementation": "implemented",
+            "automated": "not_run",
+            "manual": "not_required",
+            "verification": "unverified",
+            "matched_test_ids": [],
+            "manual_check_states": {},
+            "depends_on": [],
+            "blocked_by": [],
+            "relevant_files": [
+                "development_ledger/dispatcher_record.py",
+                "tests/dispatcher_record_test.py"
+            ],
+            "priority": 10,
+            "architecture_role": "foundation"
+        },
+        {
+            "id": "AC-S1-002",
+            "title": "The repository root dispatcher exposes a development-ledger target that validates the module, emits JUnit XML, and records a plan event last.",
+            "kind": "criterion",
+            "implementation": "implemented",
+            "automated": "not_run",
+            "manual": "pending",
+            "verification": "unverified",
+            "matched_test_ids": [],
+            "manual_check_states": {
+                "MC-S1-001": "pending"
+            },
+            "depends_on": [
+                "AC-S1-001"
+            ],
+            "blocked_by": [],
+            "relevant_files": [
+                "../../validation-targets.json",
+                "tests/scripts_repository_integration_test.py"
+            ],
+            "priority": 10,
+            "architecture_role": "integration"
+        }
+    ],
+    "manual_checks": [
+        {
+            "id": "MC-S1-001",
+            "title": "Run and inspect the first Windows self-host validation",
+            "item_ids": [
+                "AC-S1-002"
+            ],
+            "instructions": [
+                "Run ./Invoke-Tests.ps1 -Target development-ledger from the repository root.",
+                "Confirm the dispatcher preserves its exact overall result.",
+                "Confirm one run event and all generated projections are written."
+            ],
+            "expected": "The target records complete evidence and the dispatcher result still reflects the validation sections.",
+            "platform": "windows",
+            "status": "pending",
+            "safety": "non_destructive",
+            "notes": ""
+        }
+    ],
+    "planning_gate": {
+        "passed": true,
+        "issues": [],
+        "warnings": [],
+        "selected_ids": [
+            "AC-S1-001",
+            "AC-S1-002"
+        ],
+        "dependency_order": [
+            "AC-S1-001",
+            "AC-S1-002"
+        ],
+        "recommended_candidates": [],
+        "batch": {
+            "profile": "standard",
+            "target_minutes": 15,
+            "max_minutes": 20,
+            "max_items": 4
+        }
+    },
+    "comparison": {
+        "baseline": true,
+        "new_failures": [
+            "command:development-ledger-pytest-and-coverage-suite|failed|",
+            "pytest:tests.schema_test::test_all_shipped_json_schemas_are_valid_json|failed|KeyError: 'type'"
+        ],
+        "persistent_failures": [],
+        "resolved_failures": [],
+        "item_transitions": [],
+        "test_count_delta": {},
+        "verified_delta": 0
+    },
+    "progress": {
+        "classification": "baseline",
+        "material_progress": true,
+        "reasons": [
+            "Established baseline."
+        ]
+    },
+    "architecture_review": {
+        "due": false,
+        "performed": true,
+        "depth": "completed",
+        "triggers": [],
+        "runs_since_last_review": 0,
+        "plan_revisions_since_last_review": 0,
+        "summary": "Use a dedicated adapter and existing ordered target commands for the first self-host cycle; defer public CLI and generic dispatcher changes until the evidence is reviewed.",
+        "findings": [
+            "The root dispatcher already preserves prior command failures.",
+            "The existing record command writes evidence before returning result 1 for failed normalized tests.",
+            "A narrow adapter can map only that post-write result without changing current callers."
+        ],
+        "actions": [
+            "Add the adapter and its unit test.",
+            "Add one development-ledger validation target."
+        ]
+    },
+    "routing": {
+        "decision": "handoff_local",
+        "reason": "Failures depend on local environment capabilities: Windows 11 PowerShell 7 root-dispatcher execution, editable Python package installation",
+        "model": "gpt-5.6-terra",
+        "reasoning": "high"
+    },
+    "artifacts": [
+        "C:\\Users\\mcarls\\src\\scripts\\modules\\development_ledger\\.pytest_tmp_root\\validation-20260729-113201\\pytest.xml",
+        "C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\development-ledger\\LATEST.txt"
+    ]
+}
