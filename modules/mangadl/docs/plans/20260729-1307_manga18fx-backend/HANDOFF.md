@@ -10,17 +10,20 @@ Base: `agent/add-development-ledger-module`
 
 - `modules/mangadl/mangadl/manga18fx.py`
 - `modules/mangadl/mangadl/backends.py`
+- `modules/mangadl/mangadl/cli.py`
 - `modules/mangadl/mangadl/worker.py`
 - `modules/mangadl/tests/manga18fx_test.py`
+- `modules/mangadl/tests/image_workers_test.py`
 - `modules/mangadl/tests/backends_test.py`
 - `modules/mangadl/tests/worker_test.py`
 - `modules/mangadl/tests/conftest.py`
 - `modules/mangadl/pyproject.toml`
 - `modules/mangadl/mangadl/__init__.py`
+- `modules/mangadl/README.md`
 
 ## Behavior
 
-A normal auto-routed invocation now accepts Manga18FX series URLs:
+A normal auto-routed invocation accepts Manga18FX series URLs:
 
 ```powershell
 mangadl run -i .\urls8.txt -d .\downloads -a .\mangadl-archive.sqlite3 -s .\mangadl-state.sqlite3
@@ -28,27 +31,47 @@ mangadl run -i .\urls8.txt -d .\downloads -a .\mangadl-archive.sqlite3 -s .\mang
 
 Each series is written as one top-level manga directory. Each chapter receives a naturally ordered numeric prefix, and each image receives a zero-padded numeric filename. The native backend uses the existing `-C/--cookies` Netscape/Mozilla cookies-file option when supplied.
 
+Manga18FX now has two concurrency controls:
+
+- `-w/--workers`: simultaneous series jobs; default `2`.
+- `-I/--image-workers`: simultaneous image transfers within each Manga18FX series; default `4`, valid range `1-8`.
+
+```powershell
+mangadl run -i .\urls8.txt -d .\downloads -a .\mangadl-archive.sqlite3 -s .\mangadl-state.sqlite3 -w 2 -I 4
+```
+
+The approximate maximum number of simultaneous Manga18FX image transfers is `workers × image-workers`. Chapter-page discovery remains serial. Missing images inside each chapter use a bounded thread pool with a separate HTTP opener/cookie jar per thread. Deterministic filenames, existing-file checks, `.part` files, and atomic renames remain unchanged.
+
 ## Validation State
 
-- The user confirmed that the Manga18FX URL-file workflow is downloading correctly on Windows 11.
-- The initial full-suite run exposed a Windows pytest base-temp parent-directory failure and one environment-dependent gallery-dl extractor assertion.
-- The base-temp path is now selected by a module-local pytest hook, which creates its parent before `tmp_path` fixtures initialize.
-- The gallery-dl routing test now mocks `extractor.find`, testing mangadl's routing contract rather than the installed gallery-dl catalog.
-- An isolated replica of the corrected pytest hook and routing tests passed: `11 passed`.
-- The complete mangadl suite must still be rerun in the user's checkout before merge.
+- The user confirmed that the original serial Manga18FX URL-file workflow downloads correctly on Windows 11.
+- The serial implementation averaged approximately 800 KiB/s with two outer workers, motivating bounded per-series image concurrency.
+- The initial full-suite run exposed a Windows pytest base-temp parent-directory failure and environment-dependent gallery-dl tests; those test-harness defects have been corrected.
+- Offline tests were added for `-I` parsing, the default value, worker-environment propagation, actual concurrent overlap, and the maximum value.
+- The complete mangadl suite must be rerun in the user's checkout after the concurrency changes before merge.
 
 ## Required Local Validation
 
 From `modules/mangadl` after pulling the latest branch:
 
 ```powershell
+python -m pip install -e .
 pytest --tb=short -q .\tests\
 ```
 
-After that passes, rerun one already-downloaded Manga18FX URL and confirm the summary reports existing files as skipped rather than downloading them again.
+After that passes, rerun the URL file using the conservative default:
+
+```powershell
+mangadl run -i .\urls8.txt -d .\downloads -a .\mangadl-archive.sqlite3 -s .\mangadl-state.sqlite3 -w 2 -I 4
+```
+
+Compare aggregate throughput with the prior serial baseline. If the source remains responsive, try `-I 6` and then `-I 8`; reduce the value if rate-limit, timeout, or transient server errors increase.
+
+Also rerun one already-downloaded Manga18FX URL and confirm existing files are skipped rather than downloaded again.
 
 ## Risks
 
+- Aggregate concurrency multiplies across outer and inner workers; `-w 4 -I 8` could attempt roughly 32 simultaneous image transfers and is not recommended as a starting point.
 - Manga18FX can change HTML structure or add anti-bot behavior.
 - Browser-cookie extraction is not implemented for this backend; use an exported Netscape/Mozilla cookie file if anonymous requests fail.
-- Do not merge into `main` until the complete Windows pytest suite passes.
+- Do not merge into `main` until the complete Windows pytest suite and one live concurrency run pass.
