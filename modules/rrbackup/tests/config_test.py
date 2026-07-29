@@ -294,7 +294,7 @@ class TestLoadConfig:
         assert settings.restic_bin == "restic"
         assert settings.rclone_bin == "rclone"
         assert settings.repo is not None
-        assert settings.repo.url == "/tmp/test-repo"
+        assert settings.repo.url == str(temp_dir / "repository")
         assert [backup_set.name for backup_set in settings.sets] == ["test-set"]
 
     def test_missing_config_raises(self, temp_dir) -> None:
@@ -318,10 +318,10 @@ class TestLoadConfig:
 
         settings = load_config(config_file, expand=False)
 
-        assert settings.state_dir == "/tmp/rrbackup/state"
-        assert settings.log_dir == "/tmp/rrbackup/logs"
+        assert settings.state_dir == str(temp_dir / "state")
+        assert settings.log_dir == str(temp_dir / "logs")
         assert settings.repo is not None
-        assert settings.repo.password_file == "/tmp/restic_password.txt"
+        assert settings.repo.password_file == str(temp_dir / "restic_password.txt")
 
     def test_legacy_max_snapshots_maps_to_retention(self, temp_dir) -> None:
         config_file = temp_dir / "legacy.toml"
@@ -329,7 +329,7 @@ class TestLoadConfig:
             config_file,
             {
                 "backup_sets": [
-                    {"name": "legacy", "include": ["/data"], "max_snapshots": 12}
+                    {"name": "legacy", "include": [str(temp_dir / "data")], "max_snapshots": 12}
                 ]
             },
         )
@@ -361,7 +361,7 @@ class TestSettingsSerialization:
     def test_full_settings_to_dict(self, sample_settings) -> None:
         result = settings_to_dict(sample_settings)
 
-        assert result["repository"]["url"] == "/tmp/test-repo"
+        assert result["repository"]["url"] == sample_settings.repo.url
         assert "password_env" not in result["repository"]
         assert result["backup_sets"][0]["name"] == "test-set"
         assert result["backup_sets"][0]["schedule"] == {
