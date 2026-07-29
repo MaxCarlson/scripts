@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -17,6 +18,9 @@ from .manager import DownloadManager, RunOptions
 from .repair import apply_repair, plan_loose_images
 from .repair_ui import RepairDashboard
 from .state import StateStore
+
+
+MANGA18FX_IMAGE_WORKERS_ENV = "MANGADL_MANGA18FX_IMAGE_WORKERS"
 
 
 def _path(value: str) -> Path:
@@ -45,7 +49,17 @@ def build_parser() -> argparse.ArgumentParser:
     _add_state(run)
     run.add_argument("-w", "--workers", type=int, default=2, help="Concurrent worker count (default: 2).")
     run.add_argument(
-        "-b", "--backend", choices=("auto", "gallery-dl", "native-nhentai", "hdporncomics"), default="auto"
+        "-I",
+        "--image-workers",
+        type=int,
+        default=4,
+        help="Concurrent Manga18FX image downloads per series (default: 4; range: 1-8).",
+    )
+    run.add_argument(
+        "-b",
+        "--backend",
+        choices=("auto", "gallery-dl", "native-nhentai", "hdporncomics", "manga18fx"),
+        default="auto",
     )
     run.add_argument("-e", "--hdporncomics-executable", help="hdporncomics executable path or name.")
     run.add_argument(
@@ -68,7 +82,10 @@ def build_parser() -> argparse.ArgumentParser:
     inspect = subparsers.add_parser("inspect", help="Inspect URL routing or persisted jobs.")
     inspect.add_argument("-u", "--url", action="append", default=[], help="URL to probe; repeatable.")
     inspect.add_argument(
-        "-b", "--backend", choices=("auto", "gallery-dl", "native-nhentai", "hdporncomics"), default="auto"
+        "-b",
+        "--backend",
+        choices=("auto", "gallery-dl", "native-nhentai", "hdporncomics", "manga18fx"),
+        default="auto",
     )
     _add_state(inspect)
     inspect.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
@@ -115,10 +132,13 @@ def build_parser() -> argparse.ArgumentParser:
 def _run(args: argparse.Namespace) -> int:
     if args.workers < 1:
         raise ValueError("--workers must be at least 1")
+    if not 1 <= args.image_workers <= 8:
+        raise ValueError("--image-workers must be between 1 and 8")
     if args.hdporncomics_threads < 1:
         raise ValueError("--hdporncomics-threads must be at least 1")
     if not args.input_file and not args.url:
         raise ValueError("provide at least one --input-file or --url")
+    os.environ[MANGA18FX_IMAGE_WORKERS_ENV] = str(args.image_workers)
     inputs, rejected = collect_inputs(args.input_file, args.url)
     routes: dict[str, str] = {}
     unsupported: list[dict[str, Any]] = []
