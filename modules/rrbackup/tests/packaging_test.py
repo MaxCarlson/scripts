@@ -15,7 +15,7 @@ def test_modules_path_import_resolves_regular_package_and_cli(tmp_path: Path) ->
     script = (
         "import rrbackup; "
         "from rrbackup import __version__; "
-        "from rrbackup.app import build_parser; "
+        "from rrbackup.application import build_parser; "
         "assert rrbackup.__file__; "
         "assert __version__ == '1.0.0'; "
         "parser = build_parser('backup'); "
