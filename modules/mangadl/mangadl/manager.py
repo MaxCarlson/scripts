@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .concurrency import Manga18FXConcurrencyPlan, plan_manga18fx_concurrency
+from .concurrency import MAX_OUTER_WORKERS, Manga18FXConcurrencyPlan, plan_manga18fx_concurrency
 from .models import JobState, WorkerSnapshot
 from .state import StateStore
 from .ui import ConsoleDashboard, DashboardRuntime, human_bytes, plain_identity
@@ -37,19 +37,24 @@ class RunOptions:
     rate: str | None = None
     hdporncomics_executable: str | None = None
     hdporncomics_threads: int = 8
+    worker_start_delay: float = 2.0
     ui: bool = True
 
 
 class DownloadManager:
     def __init__(self, options: RunOptions, store: StateStore) -> None:
+        if options.worker_start_delay < 0:
+            raise ValueError("worker_start_delay must be zero or greater")
         plan = plan_manga18fx_concurrency(options.workers, self._requested_image_workers())
         options.workers = plan.effective_workers
         self.options = options
         self.store = store
         self.target_workers = plan.effective_workers
+        self.maximum_workers = plan.maximum_workers
         self.image_workers = plan.effective_image_workers
         self.logical_cpus = plan.logical_cpus
         self.concurrency_budget = plan.budget
+        self.next_worker_start_at = 0.0
         self.events: queue.Queue[tuple[int, dict[str, Any] | None]] = queue.Queue()
         self.processes: dict[int, subprocess.Popen[str]] = {}
         self.assignments: dict[int, dict[str, Any]] = {}
@@ -118,6 +123,11 @@ class DownloadManager:
 
     def _adjust_runtime(self, action: str) -> None:
         if action == "workers_up":
+            if self.target_workers >= self.maximum_workers:
+                self._set_runtime_notice(
+                    f"Worker target is already at the maximum of {self.maximum_workers}."
+                )
+                return
             candidate = self.target_workers + 1
             aggregate = self._future_aggregate(candidate, self.image_workers)
             if aggregate > self.concurrency_budget:
@@ -127,7 +137,10 @@ class DownloadManager:
                 return
             self.target_workers = candidate
             self.snapshots.setdefault(candidate, WorkerSnapshot(candidate))
-            self._set_runtime_notice(f"Worker target increased to {candidate}.")
+            self._set_runtime_notice(
+                f"Worker target increased to {candidate}; startup will be staggered by "
+                f"{self.options.worker_start_delay:.1f}s."
+            )
             return
 
         if action == "workers_down":
@@ -239,18 +252,20 @@ class DownloadManager:
         self.processes[slot] = process
         self.assignments[slot] = job
         self.worker_costs[slot] = self.image_workers if job["backend"] == "manga18fx" else 1
+        self.next_worker_start_at = time.monotonic() + self.options.worker_start_delay
         snapshot = self.snapshots.setdefault(slot, WorkerSnapshot(slot))
         snapshot.state = "run"
         snapshot.url = job["canonical_url"]
         snapshot.backend = job["backend"]
         snapshot.attempt = job["attempts"]
         self.logger.info(
-            "dispatch worker=%02d pid=%s job=%s attempt=%s image_workers=%s url=%s",
+            "dispatch worker=%02d pid=%s job=%s attempt=%s image_workers=%s next_start_in=%.2fs url=%s",
             slot,
             process.pid,
             job["id"],
             job["attempt_id"],
             self.worker_costs[slot],
+            self.options.worker_start_delay,
             job["canonical_url"],
         )
         self._write_worker_log(
@@ -395,6 +410,7 @@ class DownloadManager:
                     pass
 
                 slots = sorted(set(range(1, self.target_workers + 1)) | set(self.processes))
+                started_worker = False
                 for slot in slots:
                     process = self.processes.get(slot)
                     if process is not None and process.poll() is None:
@@ -430,9 +446,12 @@ class DownloadManager:
                         continue
                     if self.stop_requested or self.dashboard.paused_all or slot in self.dashboard.paused_workers:
                         continue
+                    if started_worker or time.monotonic() < self.next_worker_start_at:
+                        continue
                     leased = self.store.lease(self.options.run_id, slot)
                     if leased is not None:
                         self._start_worker(slot, dict(leased))
+                        started_worker = True
 
                 counts = self.store.counts(self.options.run_id)
                 active = any(process.poll() is None for process in self.processes.values())
