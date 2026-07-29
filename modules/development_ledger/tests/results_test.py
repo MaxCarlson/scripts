@@ -36,6 +36,27 @@ def test_parse_junit_xml_extracts_status_and_requirement(tmp_path: Path):
     assert aggregate_tests(tests)["failed"] == 1
 
 
+def test_parse_junit_xml_canonicalizes_pytest_classname_without_file(tmp_path: Path):
+    path = tmp_path / "pytest.xml"
+    path.write_text(
+        """<?xml version="1.0"?>
+<testsuite name="pytest" tests="2">
+  <testcase classname="tests.dispatcher_record_test" name="test_function" time="0.1" />
+  <testcase classname="tests.dispatcher_record_test.TestAdapter" name="test_method" time="0.1" />
+</testsuite>
+""",
+        encoding="utf-8",
+    )
+
+    tests = parse_junit_xml(path)
+
+    assert [test.id for test in tests] == [
+        "pytest:tests/dispatcher_record_test.py::test_function",
+        "pytest:tests/dispatcher_record_test.py::test_method",
+    ]
+    assert all(test.file == "tests/dispatcher_record_test.py" for test in tests)
+
+
 def test_parse_script_results_preserves_explicit_ids(tmp_path: Path):
     path = tmp_path / "results.json"
     path.write_text(
