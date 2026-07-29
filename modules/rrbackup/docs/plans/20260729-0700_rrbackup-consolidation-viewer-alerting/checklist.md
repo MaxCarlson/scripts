@@ -28,161 +28,183 @@
 
 ## Stage 2 — Unified CLI, Inventory, and Terminal UX
 
-### Validation and progress evidence
+Stage 2 is split into bounded checkpoints. Do not begin the next checkpoint until the current checkpoint's automated and manual evidence has been reviewed.
+
+### Checkpoint 2A — Single-CLI UX Foundation — Awaiting Local Validation
+
+#### Validation and progress evidence
 
 - [x] Add canonical `backup` entry point
 - [x] Fix repository namespace/import behavior for installed entry points
-- [x] Pass installed `backup`, `rrb`, and `rrbackup` smoke checks
 - [x] Run first expanded Windows checkpoint
 - [x] Confirm 256 tests pass
 - [x] Identify two obsolete integration assertions for historical `rrb` help
+- [x] Replace obsolete integration assertions with canonical `backup` checks
 - [x] Record manual feedback on view fragmentation, raw JSON, scheduler noise, and slow storage statistics
-- [ ] Pass the corrected Windows validation checkpoint with no stale help assertions
+- [x] Add bounded Checkpoint 2A scope and stop rule to the active plan
+- [x] Add compile, focused lint, help, pytest/coverage, and PowerShell gates for Checkpoint 2A
+- [ ] Pass corrected Windows validation for Checkpoint 2A
+- [ ] Complete Checkpoint 2A manual acceptance
 
-### Public command surface
+#### Public command surface
 
 - [x] Approve one public executable: `backup`
-- [ ] Remove `rrb` and `rrbackup` console entry points
-- [ ] Keep internal package naming only where needed for migration
-- [ ] Expose exactly seven task-oriented root areas:
-  - [ ] `backup create`
-  - [ ] `backup run`
-  - [ ] `backup view`
-  - [ ] `backup schedule`
-  - [ ] `backup restore`
-  - [ ] `backup repo`
-  - [ ] `backup config`
-- [ ] Replace public `repository` spelling with `repo`
-- [ ] Update all root and nested help text
-- [ ] Remove compatibility-command references from public help
+- [x] Remove `rrb` and `rrbackup` console entry points from package metadata
+- [x] Bump package to `2.0.0` for the entry-point-breaking change
+- [x] Add uninstall/reinstall validation so retired wrappers are removed
+- [x] Keep internal `rrbackup` package naming only where needed for migration
+- [x] Expose exactly seven task-oriented root areas:
+  - [x] `backup create`
+  - [x] `backup run`
+  - [x] `backup view`
+  - [x] `backup schedule`
+  - [x] `backup restore`
+  - [x] `backup repo`
+  - [x] `backup config`
+- [x] Replace public `repository` spelling with `repo`
+- [x] Update root and nested help text
+- [x] Remove compatibility-command references from public help
+- [x] Preserve selected old spellings only as hidden translations
 
-### Unified backup inventory
+#### Unified backup inventory
 
 - [x] Add schedule model support for minute/hour/day/week/month/year/custom/manual
 - [x] Add schedule description, next-run, and missed-run calculations
 - [x] Add one inventory model for canonical TOML sets and legacy `local-main`
 - [x] Enrich inventory records with sources, tags, repository, schedule, retention, snapshots, runs, health, next run, missed runs, and scheduler state
 - [x] Add stable module-owned scheduler task names
-- [ ] Add inventory unit tests for canonical and legacy definitions
-- [ ] Add schedule-math tests across all supported frequencies
-- [ ] Add missed-run boundary and timezone tests
-- [ ] Ensure inventory errors are reported per backup without hiding other records
+- [x] Convert canonical TOML backup sets into shared-engine profiles
+- [x] Preserve VSS, cache exclusion, one-filesystem, tags, dry-run default, and raw Restic arguments during conversion
+- [x] Keep read-only inventory loading from creating state/log/input directories
+- [x] Add canonical and multi-backup inventory tests
+- [x] Add schedule-math tests for minute/hour/day/week/month/year
+- [x] Add missed-run boundary tests
+- [ ] Add explicit timezone/DST transition tests
+- [ ] Improve per-backup repository-error isolation if local evidence shows one failing repository hides other records
 
-### `backup view`
+#### `backup view`
 
-- [ ] Replace the long display-specific subcommand list with one task-oriented dashboard
-- [ ] Add six top-level dashboard sections:
-  - [ ] Overview
-  - [ ] Backups
-  - [ ] History
-  - [ ] Repository
-  - [ ] Schedules
-  - [ ] Diagnostics
-- [ ] Add noninteractive section selection with `--section`
-- [ ] Keep explicit `--plain`, `--json`, and `--markdown` modes
-- [ ] Hide or remove old display-specific commands from normal help
-- [ ] Preserve required old operations as internal translation aliases only during migration
-- [ ] Render compact one- or two-line backup rows
-- [ ] Add expandable/collapsible detail blocks
-- [ ] Support Up/Down, `j`/`k`, Page Up/Page Down, filtering, Enter/details, and horizontal scrolling
+- [x] Replace the long display-specific help tree with one task-oriented dashboard command
+- [x] Add six primary dashboard sections:
+  - [x] Overview
+  - [x] Backups
+  - [x] History
+  - [x] Repository
+  - [x] Schedules
+  - [x] Diagnostics
+- [x] Keep audit as an explicit structured section
+- [x] Add noninteractive section selection with `--section`
+- [x] Keep explicit `--plain`, `--json`, and `--markdown` modes
+- [x] Hide old display-specific commands from normal help
+- [x] Preserve selected old read-only spellings as hidden translation aliases
+- [x] Render compact one- or two-line backup rows
+- [x] Add expandable/collapsible detail content through TermDash
+- [x] Support Up/Down, `j`/`k`, Page Up/Page Down, filtering, Enter/details, and horizontal scrolling through the shared component
+- [x] Add presentation and callback tests without launching curses
+- [ ] Verify TUI navigation, resizing, and terminal fallback manually on Windows
 - [ ] Add snapshot tag/host/path filtering to structured modes
 - [ ] Add file browsing inside snapshots
 - [ ] Add optional path redaction for audit output
-- [ ] Keep audit/export as explicit structured sections rather than default human output
 
-### `backup run`
+#### `backup run`
 
-- [ ] Support `backup run`, `backup run auto`, and `backup run <backup-name>`
-- [ ] Show the configured backup inventory when no name or `auto` is supplied
-- [ ] Display backup name, source summary, repository, health, latest snapshot, schedule, next run, and missed-run count
-- [ ] Allow interactive single or multi-selection for early/manual runs
-- [ ] Run selected backups without requiring source-file, tag, exclude, or repository knowledge
-- [ ] Preserve direct named execution for automation
-- [ ] Preserve preview, dry-run, CPU-policy bypass, extra tags, exclusions, and raw Restic arguments
-- [ ] Keep print-command-only as a hard no-side-effect barrier
-- [ ] Add run-selection and direct-run tests
+- [x] Support `backup run`, `backup run auto`, and `backup run <backup-name>`
+- [x] Show configured backup inventory when no name or `auto` is supplied
+- [x] Display backup name, source summary, repository, health, latest snapshot, schedule, next run, and missed-run count
+- [x] Allow interactive multi-selection for early/manual runs
+- [x] Run selected backups without requiring source-file, tag, exclude, or repository knowledge
+- [x] Preserve direct named execution for automation
+- [x] Preserve preview, dry-run, CPU-policy bypass, extra tags, exclusions, and raw Restic arguments
+- [x] Keep print-command-only as a hard no-side-effect barrier
+- [x] Add run-selection, direct-run, skipped-exit, and no-materialization preview tests
+- [ ] Manually verify chooser cancellation and selected-run confirmation behavior
 
-### `backup schedule`
+#### `backup schedule`
 
-- [x] Restrict Windows scheduler discovery to module-owned canonical invocations
-- [ ] Ensure unrelated operating-system tasks containing `Backup` are excluded
-- [ ] Make `backup schedule` default to a backup-centric schedule table
-- [ ] Render one compact line per backup plus one indented schedule/retention line
-- [ ] Show enabled state, last run, next run, last result, and missed-run count
-- [ ] Add `backup schedule wizard`
-- [ ] Add `backup schedule edit <backup-name>`
-- [ ] Support selecting one or more backups in the wizard
-- [ ] Support minute/hour/day/week/month/year scheduling
-- [ ] Support interval, time of day, weekday, day of month, and month of year fields
-- [ ] Support retention counts for latest/hourly/daily/weekly/monthly/yearly snapshots
-- [ ] Preview scheduler and configuration changes before applying
+- [x] Restrict Windows scheduler discovery to module-owned canonical or legacy invocations
+- [x] Exclude unrelated operating-system tasks containing `Backup`
+- [x] Make `backup schedule` default to a backup-centric schedule table
+- [x] Render one compact line per backup plus one indented schedule/retention line
+- [x] Show enabled/manual/missing state, last run, next run, and missed-run count
+- [x] Add strict scheduler-ownership regression tests
+- [ ] Validate schedule table readability against the real Windows machine
+
+#### `backup repo`
+
+- [x] Combine status, keys, locks, snapshot count, latest snapshot, and cached storage information into one labeled human summary
+- [x] Replace default raw JSON with formatted human output
+- [x] Keep JSON only behind explicit `--json`
+- [x] Never invoke full restore-size statistics implicitly
+- [x] Add explicit `backup repo --refresh-storage`
+- [x] Add a loading indicator for explicit expensive repository operations when TermDash is available
+- [x] Cache full storage statistics with generated time and command metadata
+- [x] Add `backup repo check` with readable output
+- [x] Format key metadata and lock state as labeled sections
+- [x] Add tests proving default repo view never calls slow statistics and cached results are reused
+- [ ] Manually verify default repo summary completes quickly against `B:\ResticRepos\PC-Local`
+- [ ] Manually verify explicit storage refresh remains opt-in and clearly signposted
+
+#### Shared terminal UI and presentation
+
+- [x] Select and declare `termdash>=0.5.0` as the shared list/detail dependency
+- [x] Add Windows curses dependency for the interactive interface
+- [x] Add one shared RRBackup palette and status-style policy
+- [x] Green = healthy/success/enabled
+- [x] Yellow = warning/due/manual/preview
+- [x] Red = failure/critical/missed/disabled
+- [x] Cyan = headings/identifiers/selected values
+- [x] Dim = secondary metadata
+- [x] Magenta = active interactive/automatic mode
+- [x] Use shared table, detail, footer, keyboard, filter, paging, horizontal-scroll, and multi-select conventions
+- [x] Ensure explicit plain, JSON, and Markdown output contains no ANSI escapes
+- [x] Add graceful non-TTY plain rendering paths
+- [x] Add formatter, details, selection callback, color, and ANSI-stripping tests
+- [ ] Manually verify fallback behavior when curses cannot initialize
+
+### Checkpoint 2B — Create and Schedule Wizard Preview — Deferred Until 2A Passes
+
+- [x] Add preview-first wizard data and scheduler-plan scaffolding
+- [ ] Validate the creation wizard interactively without applying
+- [ ] Validate the schedule editor interactively without applying
+- [ ] Validate selecting one or more backups
+- [ ] Validate minute/hour/day/week/month/year inputs
+- [ ] Validate retention inputs for latest/hourly/daily/weekly/monthly/yearly
+- [ ] Validate complete proposed configuration and scheduler previews
+- [ ] Ensure no writes occur without a later explicit apply checkpoint
+
+### Checkpoint 2C — Configuration and Scheduler Apply — Deferred
+
+- [ ] Add and validate atomic canonical configuration writes through the wizard
+- [ ] Add and validate Windows Task Scheduler create/update/delete/run/export/import
 - [ ] Require explicit confirmation or `--apply`
-- [ ] Preserve Windows Task Scheduler create/update/delete/run/export/import
-- [ ] Add systemd user timer CRUD
-- [ ] Add cron compatibility CRUD
+- [ ] Export existing scheduler definitions before replacement
+- [ ] Add rollback behavior
 - [ ] Add no-overlap, retry, wake, and start-when-available behavior
 - [ ] Add scheduler/run/snapshot correlation and schedule history
+- [ ] Add systemd user timer CRUD
+- [ ] Add cron compatibility CRUD
 
-### `backup repo`
+### Checkpoint 2D — Compatibility Shim and Duplicate-Engine Removal — Deferred
 
-- [ ] Combine status, keys, locks, snapshot count, latest snapshot, integrity state, and cached storage information into one labeled human summary
-- [ ] Replace default raw JSON with formatted human output
-- [ ] Keep JSON only behind explicit `--json`
-- [ ] Never invoke full restore-size statistics implicitly
-- [ ] Add explicit `backup repo --refresh-storage`
-- [ ] Show a loading indicator for expensive repository operations
-- [ ] Cache full storage statistics with generated time and command metadata
-- [ ] Add `backup repo check` with readable progress/result output
-- [ ] Format key metadata and lock state as labeled tables
-- [ ] Add tests proving default repo view never calls slow statistics
-
-### `backup create`
-
-- [ ] Add a themed creation wizard
-- [ ] Walk through backup name
-- [ ] Walk through one or more source paths
-- [ ] Walk through exclusions
-- [ ] Walk through local or remote repository target
-- [ ] Walk through credential method and password-file handling
-- [ ] Walk through schedule selection
-- [ ] Walk through retention selection
-- [ ] Show a complete final preview
-- [ ] Require explicit save/apply confirmation
-- [ ] Create configuration, input files, repository initialization plan, and scheduler plan safely
-- [ ] Avoid production mutation in automated tests
-- [ ] Add wizard-model tests without launching curses
-
-### Shared terminal UI and presentation
-
-- [x] Select `termdash.interactive_list.InteractiveList` as the shared list/detail component
-- [x] Confirm shared component supports arrows, Page Up/Page Down, filtering, horizontal scrolling, multi-select, and detail expansion
-- [ ] Add one shared RRBackup palette and status-style policy
-- [ ] Green = healthy/success/enabled
-- [ ] Yellow = warning/due/manual/preview
-- [ ] Red = failure/critical/missed/disabled
-- [ ] Cyan = headings/identifiers/selected values
-- [ ] Dim = secondary metadata
-- [ ] Magenta = active interactive/automatic mode
-- [ ] Use the same table, confirmation, footer, and keyboard conventions across view/run/schedule/create
-- [ ] Ensure plain text, JSON, Markdown, logs, and redirected output contain no ANSI escapes
-- [ ] Add graceful non-TTY fallback to formatted plain text
-- [ ] Add TUI formatter, detail block, sorting, filtering, pagination, and callback tests without opening curses
-
-### Compatibility merger
-
-- [ ] Convert canonical TOML backup sets into shared-engine profiles
 - [ ] Preserve required historical `backup_module` behavior through `backup`
 - [ ] Replace `modules/backup_module` internals with a thin compatibility shim
 - [ ] Remove duplicate engine only after compatibility tests pass
 - [ ] Add optional legacy shell-history evidence adapter
 - [ ] Add detailed scheduler event, service, startup, systemd, and cron discovery
 - [ ] Add structured restore history and hash verification
+
+### Checkpoint 2E — Production and Controlled Acceptance — Deferred
+
 - [ ] Verify known production snapshots through canonical CLI
 - [ ] Run explicit production read-only validation
+- [ ] Complete controlled production backup only after explicit approval
+- [ ] Complete small restore and hash verification
+- [ ] Complete scheduled execution acceptance
+- [ ] Complete final viewer, repository-summary, audit, and documentation acceptance
 
 ## Stage 3 — Scheduler Management
 
-Scheduler work is being folded into the task-oriented Stage 2 UX where it is required for `run`, `schedule`, and `create`. Cross-platform backend completion remains tracked here.
+Scheduler work is folded into Stage 2 checkpoints where it is required for `run`, `schedule`, and `create`. Cross-platform backend completion remains tracked here.
 
 - [ ] Windows Task Scheduler CRUD complete
 - [ ] systemd user timer CRUD complete
@@ -201,7 +223,7 @@ Scheduler work is being folded into the task-oriented Stage 2 UX where it is req
 - [x] Schedules and setup/system diagnostics foundation
 - [x] Provenance and comprehensive audit foundation
 - [x] Storage and health foundation
-- [ ] Task-oriented full-screen TUI complete
+- [ ] Task-oriented full-screen TUI accepted
 - [ ] File browsing inside snapshots
 - [ ] Rich backup/profile views
 - [ ] Expected-run gap engine
