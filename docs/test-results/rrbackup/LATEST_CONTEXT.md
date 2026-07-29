@@ -1,8 +1,8 @@
 # Validation Context: rrbackup
 
-Generated: 2026-07-29T13:37:15.1104059-07:00
+Generated: 2026-07-29T14:07:04.3628924-07:00
 Branch: agent/merge-restic-backup-modules
-Commit: a8b2b5fb14f5b015315ae6d03b953921138ae976
+Commit: 2b52dfd4f6bc8d04f37c012fff299da3d123c16a
 Validation report: docs\test-results\rrbackup\LATEST.txt
 
 ## Validation Highlights
@@ -12,10 +12,10 @@ Validation report: docs\test-results\rrbackup\LATEST.txt
 - RESULT: PASS - Install shared TermDash dependency
 - RESULT: PASS - Install RRBackup editable development dependencies
 - RESULT: PASS - Compile RRBackup package and tests
-- RESULT: PASS - Lint RRBackup checkpoint 2A.1b
+- RESULT: PASS - Lint RRBackup checkpoint 2A.2
 - RESULT: PASS - Canonical backup CLI help contract
 - RESULT: PASS - Condensed backup view help contract
-- [32m======================= [32m[1m297 passed[0m, [33m7 skipped[0m[32m in 15.20s[0m[32m =======================[0m
+- [32m======================= [32m[1m310 passed[0m, [33m7 skipped[0m[32m in 15.17s[0m[32m =======================[0m
 - RESULT: PASS - RRBackup pytest and coverage suite
 - RESULT: PASS - PowerShell test: tests\powershell\environment_smoke_test.ps1
 - RESULT: PASS - PowerShell test: tests\powershell\production_read_only_test.ps1
@@ -27,6 +27,12 @@ Validation report: docs\test-results\rrbackup\LATEST.txt
  M docs/test-results/rrbackup/LATEST.txt
  D docs/test-results/rrbackup/LATEST_CONTEXT.md
  D docs/test-results/rrbackup/LATEST_PROGRESS.diff
+ D docs/test-results/rrbackup/history/20260729-105729_rrbackup.txt
+ D docs/test-results/rrbackup/history/20260729-105729_rrbackup_context.md
+ D docs/test-results/rrbackup/history/20260729-105729_rrbackup_progress.diff
+?? docs/test-results/rrbackup/history/20260729-133648_rrbackup.txt
+?? docs/test-results/rrbackup/history/20260729-133648_rrbackup_context.md
+?? docs/test-results/rrbackup/history/20260729-133648_rrbackup_progress.diff
 ```
 
 ## Project Status Sources
@@ -39,11 +45,9 @@ Validation report: docs\test-results\rrbackup\LATEST.txt
 
 Stage 1 is verified. The Windows safety-foundation checkpoint passed package compilation, focused correctness lint, 199 tests, and both PowerShell checks; 8 environment-dependent tests skipped intentionally. The repository-root validation evidence workflow also works as intended.
 
-Checkpoint **2A — Single-CLI UX Foundation** and Checkpoint **2A.1a — Completed Versus Attempted Run Visibility** are accepted.
+Checkpoint **2A — Single-CLI UX Foundation**, Checkpoint **2A.1a — Completed Versus Attempted Run Visibility**, and Checkpoint **2A.1b — Interactive Viewer Carousel** are accepted.
 
-Checkpoint **2A.1b — Interactive Viewer Carousel** passed automated Windows validation with 295 tests passing and 7 intentional skips. Manual testing confirmed the interactive History page, concise run-selector rows, and compact default Audit summary. Manual testing also showed that the original Overview page duplicated the old per-backup list closely enough that bare `backup view` appeared unchanged.
-
-The current validation-ready correction keeps the six-page carousel but replaces page 1 with a true aggregate dashboard. Do not begin the live run monitor, Stop action, or pause/resume work until this correction passes automated and manual review.
+The current validation-ready patch is **2A.2 — Expandable Live Viewer and Confirmed In-TUI Run Monitor**. It adds inline expansion, reliable alternate page keys, confirmation before execution, aggregate Restic progress, live viewer refresh, and graceful Stop. Pause/resume and delayed resume remain deferred to Checkpoint 2A.3.
 
 Detailed scope is tracked in:
 
@@ -53,95 +57,134 @@ Detailed scope is tracked in:
 
 ## Latest Automated Evidence
 
-The pushed Windows run at commit `e9b4aea5c3b51be3a9adaf94394ce0cb33c1d172` recorded:
+The pushed Windows run at commit `a8b2b5fb14f5b015315ae6d03b953921138ae976` recorded:
 
 - dependency cleanup, uninstall, and editable installation: passed,
 - package/test compilation: passed,
 - focused correctness lint: passed,
 - root `backup` help contract: passed,
 - condensed `backup view` help contract: passed,
-- pytest: 295 passed, 7 skipped, 0 failed,
+- pytest: 297 passed, 7 skipped, 0 failed,
 - PowerShell installed-entry-point/environment smoke test: passed,
 - production read-only test: safely skipped,
-- package branch coverage: 61%,
 - pytest ANSI color sequences: preserved through the root dispatcher.
+
+`LATEST_PROGRESS.diff` had no prior context snapshot and therefore established a new comparison baseline. This does not reduce the authority of the clean `LATEST.txt` result.
 
 ## Accepted Manual Findings
 
 ### Completed versus attempted runs
 
-- `backup view` shows:
-  - Last complete: April snapshot
-  - Last attempt: recent interrupted run
-  - Attempt state: `INTERRUPTED`
-- `backup view --section history` showed both:
-  - attempted interrupted run
-  - completed snapshot `022aad5b`
-- `backup run auto` displayed the same separation.
-- The plain post-selector table was readable and correctly separated completion from attempt state.
+- `backup view` distinguishes the April completed snapshot from the July interrupted attempt.
+- `backup view --section history` shows both the interrupted attempt and completed snapshot `022aad5b`.
+- `backup run auto` shows Last complete, Last attempt, and Attempt state separately.
 
 ### Viewer carousel
 
-- `backup view --section history` entered the interactive carousel on `View: HISTORY — pg. 3/6`.
-- The History page displayed the interrupted attempt and completed snapshot correctly.
-- `backup view --section audit` produced a concise human summary instead of raw Markdown/JSON.
-- `backup view --section audit --json` intentionally produced the complete, large machine-readable audit.
-- `backup run auto` used the cleaner unlabeled row layout.
-- Bare `backup view` appeared unchanged because the original Overview page was another per-backup inventory table rather than an aggregate dashboard.
+Manual Windows review confirmed:
 
-### Run selector and execution
+- bare `backup view` opens `View: OVERVIEW — pg. 1/6`,
+- Overview is an aggregate dashboard rather than a duplicate backup list,
+- page 2 shows configured backups,
+- page 3 shows History,
+- page 4 shows Repository,
+- page 5 shows Schedules,
+- page 6 shows compact Diagnostics,
+- `backup view --demo` supplies six varied synthetic backups,
+- `backup view --plain` uses aggregate Overview semantics,
+- `backup view --section history` starts directly on page 3,
+- default Audit output is concise,
+- explicit Audit `--json` remains the complete large machine-readable export,
+- the run selector uses the cleaner unlabeled row layout.
 
-- `backup run auto` opens the expected selector.
-- Pressing `R` still immediately starts a real backup in the current build.
-- Restic JSON progress messages are printed raw.
-- The future monitor must show aggregate progress, elapsed time, ETA, file/byte counts, current files, active state, and a confirmed Stop action.
-- Active-run information must also be visible from `backup view` and both details pages.
-- Pause/resume and delayed resume remain a separate safety-sensitive checkpoint.
-- Exact per-drive progress cannot be claimed from Restic's aggregate JSON without additional verified instrumentation.
+### Manual interaction gaps found after 2A.1b
 
-## Current Correction — Checkpoint 2A.1b
+- Overview details required Enter and left much of the screen unused.
+- Inline expand/collapse, expand-all, and collapse-all controls were requested.
+- The displayed `[`/`]` page controls were unreliable in the active Windows terminal.
+- Additional previous/next keys were requested.
+- Pressing `R` in `backup run auto` still exited the selector and immediately started Restic.
+- Raw Restic JSON status objects still printed once per line.
+- Real execution needed to remain inside a progress UI with speed, elapsed time, ETA, file/byte counts, current files, and Stop.
+- `backup view` needed to show persisted progress while a backup is running.
+
+## Current Patch — Checkpoint 2A.2
 
 Implemented on the branch:
 
-- Bare `backup view` remains page 1 of the six-page carousel.
-- Page 1 is now an aggregate dashboard rather than a duplicate backup list.
-- The aggregate Overview contains expandable rows for:
-  - backup health,
-  - current/recent activity,
-  - completion coverage,
-  - schedule state and missed runs,
-  - repository grouping.
-- Page 2 remains the detailed per-backup inventory.
-- Plain Overview output uses the same aggregate semantics.
-- Runtime regression coverage proves that bare `backup view` routes into the carousel with `start_page="overview"`.
-- Focused tests distinguish the aggregate Overview from the detailed Backups page.
-- The new controller is included in compile, Ruff, and pytest validation.
+### Expandable viewer
 
-Already implemented and awaiting complete manual acceptance:
+- `e`: toggle inline details for the selected row.
+- `c`: collapse the selected row.
+- `E`: expand all rows on the current page.
+- `C`: collapse all rows on the current page.
+- Expanded detail rows remain adjacent to their parent and retain the parent's sort values.
+- Enter still opens the complete detail screen.
+- Additional page controls:
+  - `p` or `-`: previous page,
+  - `n`, `+`, or `=`: next page,
+  - existing Tab and `1` through `6` controls remain.
+- Page 2 now includes live State, Progress, Speed, and ETA columns while preserving sources and repository information.
+- Overview Activity details include active progress.
 
-- pages:
-  1. Overview
-  2. Backups
-  3. History
-  4. Repository
-  5. Schedules
-  6. Diagnostics
-- persistent page labels such as `View: OVERVIEW — pg. 1/6`,
-- `[`/`]`, Tab, and `1`–`6` page controls,
-- lazy Repository and Diagnostics loading,
-- safe `backup view --demo` fixtures,
-- compact Diagnostics and default Audit summaries,
-- concise run-selector formatting.
+### Live viewer refresh
 
-Not implemented in this checkpoint:
+- Interactive real-data viewers wake once per second without requiring a key press.
+- Only run-state JSON is refreshed; Restic repository listing and diagnostics are not repeatedly executed.
+- Overview, Backups, and History pages are invalidated only when the persisted run record changes.
+- Demo mode remains deterministic and does not start the refresh thread.
 
-- confirmation before pressing `R`,
-- live progress monitor,
-- active-run refresh,
-- explicit Stop action,
-- pause/resume,
-- scheduled resume,
-- global switching between root command areas.
+### Confirmed execution
+
+- Pressing `R` in the selector now means review/confirm, not immediate execution.
+- A second curses screen lists selected backups, sources, and repositories.
+- `Y` begins execution.
+- `N`, Esc, `q`, or Ctrl+Q cancels before any backup input is materialized or Restic is started.
+- Interactive named runs use the same confirmation monitor.
+- Noninteractive JSON/plain/Markdown, scheduled named runs, and `--print-command-only` retain their existing behavior.
+
+### In-TUI run monitor
+
+- Restic output is consumed without raw terminal echo.
+- JSON status lines are parsed into:
+  - aggregate percentage,
+  - processed/total files,
+  - processed/total bytes,
+  - average bytes per second,
+  - elapsed time,
+  - estimated remaining time,
+  - current files.
+- Progress is shown for each selected backup in one monitor.
+- Multiple selected backups execute sequentially.
+- Progress is persisted into the active run record at a throttled interval for `backup view`.
+- Final progress is preserved in terminal run metadata.
+- `S` opens a Stop confirmation.
+- Confirmed Stop terminates the active Restic process gracefully and cancels remaining selections.
+- Ctrl+C remains an emergency graceful-stop path.
+- The monitor does not allow a normal quit while execution is active.
+
+### Safety and scope boundaries
+
+- Restic still creates one snapshot with the existing source-file semantics.
+- The monitor reports only aggregate Restic progress.
+- Per-drive percentages and ETAs are not fabricated because the Restic status stream does not provide trustworthy source-level totals.
+- No production backup is started by automated tests.
+- Pause/resume, delayed resume, and Windows process suspension are not implemented here.
+
+### Focused tests added
+
+- Restic progress parsing, speed, and ETA.
+- Malformed/non-status line rejection.
+- Streaming output callbacks without terminal echo.
+- Stop requested before process creation.
+- Stop requested after process attachment.
+- Monitor worker progress and terminal state handling.
+- Pending-run cancellation.
+- Interactive run routing through confirmation rather than immediate execution.
+- Throttled progress persistence into a running record.
+- Live Overview and Backups progress rendering.
+- Inline expansion materialization.
+- Expand/collapse-all and reliable previous/next navigation.
 
 ## Progress Assessment
 
@@ -165,23 +208,24 @@ Not implemented in this checkpoint:
 - Clean Checkpoint 2A validation: 288 passed, 7 skipped
 - Clean Checkpoint 2A.1a validation: 289 passed, 7 skipped
 - Clean initial Checkpoint 2A.1b validation: 295 passed, 7 skipped
-- Manual acceptance of completed-versus-attempted run visibility
-- Manual acceptance of History carousel entry, compact Audit summary, and concise run-selector rows
+- Clean aggregate-Overview correction validation: 297 passed, 7 skipped
+- Manual acceptance of all six viewer pages, demo mode, plain Overview, compact Diagnostics/Audit, and concise run-selector rows
 
 ### Current bugs and uncertainty
 
-- The aggregate Overview correction has not yet been locally compiled, linted, or tested.
-- `backup view --demo` visual density and all page-switch keys still need manual Windows verification.
-- Repository, Schedules, Diagnostics, terminal resize, filter persistence expectations, and detail usefulness need manual review.
-- Lazy repository collection may pause briefly when the Repository page is first opened; it remains read-only.
-- `R` in `backup run auto` still begins execution immediately. Do not press it during this checkpoint.
-- The installed build still prints raw Restic JSON during execution until Checkpoint 2A.2.
-- Pause/resume feasibility and repository-lock safety require a dedicated design and controlled acceptance.
+- Checkpoint 2A.2 has not yet been locally compiled, linted, or tested.
+- The selector-to-confirmation transition may produce a brief terminal redraw, but must never expose raw Restic JSON.
+- Windows curses behavior for the one-second wake key requires manual validation.
+- Inline expansion density, scrolling, filtering, and resize behavior require visual review.
+- ETA is based on average processed bytes per second and may fluctuate while Restic is still discovering files and total bytes.
+- Stop during a CPU-policy wait is recorded immediately in the monitor but the worker cannot exit until the CPU waiter returns or Restic starts and honors the already-requested stop.
+- The shared state root still assumes one latest active run per profile directory; broader simultaneous multi-profile execution remains outside this checkpoint.
+- Pause/resume feasibility and repository-lock safety require Checkpoint 2A.3.
 - The module root `README.md` still documents the historical `rrb` interface and remains deferred until the new UX passes acceptance.
 
 ### Stall/loop assessment
 
-Measurable progress continues. Automated 2A.1b validation passed, and manual review identified a presentation-model issue rather than a broken carousel. The correction separates aggregate Overview information from detailed Backups information and adds direct runtime coverage. The project is not looping or stuck.
+Measurable progress continues. The 2A.1b correction passed 297 tests and manual review confirmed the new information architecture. The current work addresses two distinct user-observed interaction defects: unused viewer space and unsafe/unusable execution presentation. The project is not repeating the same failure or stuck.
 
 ## Next Validation
 
@@ -191,19 +235,7 @@ From the repository root:
 ./Invoke-Tests.ps1
 ```
 
-After automated validation, manually exercise:
-
-```text
-backup view
-backup view --demo
-backup view --section backups
-backup view --section repository
-backup view --section schedules
-backup view --section diagnostics
-backup run auto
-```
-
-Do not press `R` in the run selector during this checkpoint.
+After automated validation, manually verify the expandable viewer first. Only then perform a short controlled backup-monitor test and stop it deliberately.
 
 ## Last Known Production State
 
@@ -335,7 +367,7 @@ Stage 2 is split into bounded checkpoints. Do not begin the next checkpoint unti
 - [x] Preserve preview, dry-run, CPU-policy bypass, extra tags, exclusions, and raw Restic arguments
 - [x] Keep print-command-only as a hard no-side-effect barrier
 - [x] Add run-selection, direct-run, skipped-exit, and no-materialization preview tests
-- [ ] Add and manually verify final selected-run confirmation
+- [ ] Manually verify final selected-run confirmation and monitored execution
 
 #### `backup schedule`
 
@@ -389,7 +421,7 @@ Stage 2 is split into bounded checkpoints. Do not begin the next checkpoint unti
 - [x] Pass local validation: 289 passed, 7 skipped
 - [x] Manually verify the July interrupted attempt and April completed snapshot appear separately
 
-### Checkpoint 2A.1b — Interactive Viewer Carousel — Awaiting Local Validation
+### Checkpoint 2A.1b — Interactive Viewer Carousel — Accepted
 
 - [x] Add six-page interactive viewer controller
 - [x] Add persistent `View: <PAGE> — pg. n/6` header
@@ -407,22 +439,49 @@ Stage 2 is split into bounded checkpoints. Do not begin the next checkpoint unti
 - [x] Route `backup run auto` through the concise selector
 - [x] Add non-curses tests for page builders, switching, lazy loading, demo diversity, diagnostics, audit summary, and selector formatting
 - [x] Add new viewer/runtime modules and tests to root compilation/lint/pytest validation
+- [x] Pass local automated validation: 297 passed, 7 skipped
+- [x] Manually accept demo carousel visuals, page layouts, and compact diagnostics
+- [x] Manually accept the real six-page carousel and aggregate Overview
+- [x] Manually accept concise run-selector formatting
+- [ ] Carry remaining expansion/navigation refinements through Checkpoint 2A.2
+
+### Checkpoint 2A.2 — Expandable Live Viewer and Confirmed In-TUI Run Monitor — Awaiting Local Validation
+
+#### Viewer interaction
+
+- [x] Add inline expand/collapse for the selected row with `e` and `c`
+- [x] Add expand-all/collapse-all with `E` and `C`
+- [x] Keep expanded detail rows adjacent to their parent during sorting
+- [x] Add reliable previous/next alternatives: `p`/`n` and `-`/`+`
+- [x] Preserve Tab and `1`–`6` direct page navigation
+- [x] Add live State, Progress, Speed, and ETA columns to the Backups page
+- [x] Add active progress to Overview Activity details
+- [x] Refresh persisted active-run state without repeatedly probing Restic repositories
+- [x] Add focused expansion, navigation, and live-progress tests
 - [ ] Pass local automated validation
-- [ ] Manually accept demo carousel visuals, hotkeys, details, filters, and resizing
-- [ ] Manually accept real carousel and compact diagnostics
-- [ ] Manually accept concise run-selector formatting without pressing `R`
+- [ ] Manually accept expansion density, filtering, scrolling, navigation, and resize behavior
 
-### Checkpoint 2A.2 — Confirmed In-TUI Run Monitor — Deferred
+#### Run confirmation and monitoring
 
-- [ ] Add a final confirmation page before real execution
-- [ ] Keep execution inside the themed TUI
-- [ ] Parse Restic JSON status rather than printing it raw
-- [ ] Show aggregate percentage, files, bytes, elapsed time, ETA, and current files
-- [ ] Show active-run state from both `backup run auto` and `backup view`
-- [ ] Add richer live/persisted details pages
-- [ ] Show completion state and snapshot ID without leaving the TUI
-- [ ] Add confirmed graceful Stop
-- [ ] Preserve Ctrl+C as an emergency graceful-stop path
+- [x] Add a final confirmation page before interactive execution
+- [x] Keep interactive execution inside the curses monitor
+- [x] Parse Restic JSON status rather than printing it raw
+- [x] Show aggregate percentage, files, bytes, speed, elapsed time, ETA, and current files
+- [x] Persist throttled progress for live display from `backup view`
+- [x] Show active-run state from both `backup run auto` and `backup view`
+- [x] Add richer live/persisted details to the Backups page
+- [x] Show terminal completion state without leaving the monitor
+- [ ] Show a successful terminal snapshot ID prominently without leaving the monitor
+- [x] Add confirmed graceful Stop
+- [x] Preserve Ctrl+C as an emergency graceful-stop path
+- [x] Cancel remaining selected backups after confirmed Stop
+- [x] Preserve noninteractive, scheduled, JSON/plain/Markdown, and print-command-only behavior
+- [x] Add progress parser, streaming executor, stop-control, monitor-model, routing, and persistence tests
+- [ ] Pass local automated validation
+- [ ] Manually verify confirmation cancellation has no side effects
+- [ ] Manually verify live progress and no raw JSON output
+- [ ] Manually verify `backup view` refreshes active progress
+- [ ] Manually verify graceful Stop and interrupted-history persistence
 - [ ] Investigate trustworthy per-source/per-drive instrumentation without changing snapshot semantics
 
 ### Checkpoint 2A.3 — Pause, Resume, and Scheduled Resume — Deferred
