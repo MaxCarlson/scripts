@@ -60,6 +60,7 @@
             "rrbackup/restic.py",
             "rrbackup/snapshots.py",
             "rrbackup/state.py",
+            "tests/engine_failure_test.py",
             "tests/engine_test.py",
             "tests/locking_test.py",
             "tests/models_test.py",
