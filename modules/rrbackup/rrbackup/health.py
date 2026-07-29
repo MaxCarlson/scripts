@@ -42,8 +42,6 @@ class HealthIssue:
     details: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        """Serialize the health issue."""
-
         return {
             "code": self.code,
             "severity": self.severity.value,
@@ -66,13 +64,9 @@ class HealthReport:
 
     @property
     def healthy(self) -> bool:
-        """Whether no warning or critical issue exists."""
-
         return _SEVERITY_ORDER[self.severity] < _SEVERITY_ORDER[HealthSeverity.WARNING]
 
     def to_dict(self) -> Dict[str, Any]:
-        """Serialize the report."""
-
         return {
             "profile": self.profile,
             "severity": self.severity.value,
@@ -99,18 +93,33 @@ def evaluate_health(
     latest_run: Optional[RunRecord],
     lock: LockInspection,
     now: Optional[datetime] = None,
+    sources_available: Optional[bool] = None,
 ) -> HealthReport:
-    """Evaluate current backup health without mutating any state."""
+    """Evaluate current backup health without mutating state.
+
+    ``sources_available`` lets canonical TOML inventory validate its in-memory
+    source list without requiring the generated ``sources.txt`` file to exist
+    before the first real run. ``None`` preserves legacy file-based behavior.
+    """
 
     generated = ensure_utc(now or utc_now())
     ordered = sorted(snapshots, key=lambda snapshot: snapshot.time, reverse=True)
     latest_snapshot = ordered[0] if ordered else None
     issues: List[HealthIssue] = []
 
-    required_paths = {
-        "password-file": profile.password_file,
-        "sources-file": profile.sources_file,
-    }
+    required_paths = {"password-file": profile.password_file}
+    if sources_available is None:
+        required_paths["sources-file"] = profile.sources_file
+    elif not sources_available:
+        issues.append(
+            HealthIssue(
+                code="missing-sources",
+                severity=HealthSeverity.CRITICAL,
+                message="No source paths are configured for this backup.",
+                recommendation="Add at least one source path before running a backup.",
+            )
+        )
+
     optional_paths = {"excludes-file": profile.excludes_file}
     for code, raw_path in required_paths.items():
         if not raw_path or not Path(raw_path).exists():
@@ -123,7 +132,7 @@ def evaluate_health(
                 )
             )
     for code, raw_path in optional_paths.items():
-        if raw_path and not Path(raw_path).exists():
+        if raw_path and not Path(raw_path).exists() and sources_available is None:
             issues.append(
                 HealthIssue(
                     code="missing-{0}".format(code),

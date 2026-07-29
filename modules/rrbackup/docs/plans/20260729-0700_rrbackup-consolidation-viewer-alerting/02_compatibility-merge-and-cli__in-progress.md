@@ -4,6 +4,88 @@
 
 In progress. Automated validation proved the safety engine and most of the first CLI slice, but manual acceptance identified an over-fragmented command tree, raw JSON as the default human interface, unrelated scheduler matches, and an unexpectedly expensive storage command. This stage is being corrected around task-oriented dashboards and wizards before the old backup module is removed.
 
+## Checkpoint Cadence
+
+Stage 2 is intentionally divided into bounded validation checkpoints rather than implemented as one large batch.
+
+Each checkpoint should:
+
+- contain one closely related feature or correction group,
+- be large enough to justify roughly 10–20 minutes between local pull/test/push cycles,
+- include its own source changes, tests, documentation update, static review, and manual-test list,
+- stop for local validation before the next checkpoint begins,
+- avoid stacking multiple unverified subsystems,
+- make failures attributable to a small set of recent changes.
+
+Remote implementation must not continue into the next checkpoint after publishing a validation-ready checkpoint. The next checkpoint begins only after the latest automated and manual results are reviewed.
+
+## Stage 2 Checkpoint Sequence
+
+### Checkpoint 2A — Single-CLI UX Foundation — Current
+
+Scope:
+
+- install only the `backup` console command,
+- expose the seven task-oriented root areas,
+- unify canonical TOML sets and legacy `local-main` in one backup inventory,
+- provide concise colored human renderers and plain/JSON/Markdown alternatives,
+- condense `backup view` into six sections,
+- make `backup run` select configured backups by name or chooser,
+- make `backup schedule` display configured backups rather than arbitrary OS tasks,
+- restrict scheduler discovery to module-owned tasks,
+- combine repository status into one human summary,
+- ensure slow restore-size statistics run only through explicit refresh,
+- add tests for parser, inventory, presentation, scheduler filtering, repository caching, and preview safety.
+
+Out of scope for Checkpoint 2A:
+
+- applying scheduler mutations,
+- writing production configuration through the create wizard,
+- retention execution,
+- removing the old `backup_module` engine,
+- cross-platform scheduler CRUD completion.
+
+Wizard and scheduler-apply code may exist as unaccepted scaffolding, but local acceptance for this checkpoint is preview/read-only only.
+
+### Checkpoint 2B — Create and Schedule Wizard Preview
+
+Scope:
+
+- interactive create wizard,
+- interactive schedule editor,
+- multi-backup selection,
+- minute/hour/day/week/month/year inputs,
+- retention inputs,
+- complete proposed configuration and scheduler preview,
+- no production writes unless a later apply checkpoint is explicitly entered.
+
+### Checkpoint 2C — Configuration and Scheduler Apply
+
+Scope:
+
+- atomic canonical configuration writes,
+- Windows Task Scheduler create/update/delete/run/export/import,
+- explicit confirmation and `--apply` gates,
+- rollback/export-before-replacement behavior,
+- isolated temporary and controlled local acceptance.
+
+### Checkpoint 2D — Compatibility Shim and Duplicate-Engine Removal
+
+Scope:
+
+- preserve required historical `backup_module` commands through the shared engine,
+- replace `modules/backup_module` internals with a thin adapter,
+- remove duplicate engine code only after compatibility tests pass.
+
+### Checkpoint 2E — Production Read-Only and Controlled Acceptance
+
+Scope:
+
+- canonical production snapshot verification,
+- manual TUI acceptance,
+- controlled backup and restore verification only after explicit approval,
+- final Stage 2 documentation and handoff.
+
 ## Progress Assessment
 
 ### Accomplished
@@ -17,18 +99,18 @@ In progress. Automated validation proved the safety engine and most of the first
 
 ### Not Yet Accomplished
 
-- Human output is not consistently formatted or color-coded.
-- `backup view` exposes too many display-specific subcommands.
-- `backup schedule list` includes unrelated Windows tasks.
-- `backup run` does not yet provide a backup chooser/inventory.
-- `backup create` and the schedule editor wizard do not yet exist.
-- Repository output is still raw JSON and `restore-size` statistics are too expensive for a default view.
-- Two inherited integration tests still assert obsolete `rrb` help text.
+- Human output is not consistently formatted or color-coded in a locally verified build.
+- The condensed `backup view` UX has not passed local acceptance.
+- Strict scheduler filtering has not passed local validation.
+- The configured-backup run chooser has not passed local validation.
+- Repository summary and explicit storage refresh have not passed local validation.
+- Create and schedule-edit wizards have not passed preview-only acceptance.
+- Two inherited integration tests still assert obsolete `rrb` help text in the last pushed report.
 - The old `backup_module` implementation has not yet been reduced to a shim.
 
 ### Stall/Loop Check
 
-Measurable progress occurred. The current work is not repeating Stage 1; it is a bounded UX and command-model correction driven by successful manual use of the new data layer.
+Measurable progress occurred. The current work is not repeating Stage 1; it is a bounded UX and command-model correction driven by successful manual use of the new data layer. Checkpoint 2A must now be validated before any further Stage 2 feature implementation.
 
 ## Canonical Command
 
@@ -222,14 +304,17 @@ From the repository root:
 ./Invoke-Tests.ps1
 ```
 
-Manual acceptance after automated validation must cover:
+Manual acceptance after Checkpoint 2A must cover:
 
-1. visual hierarchy and color consistency,
-2. TUI navigation and resize behavior,
-3. backup selection and preview,
-4. schedule wizard usability,
-5. repository summary readability,
-6. create-wizard flow without applying production changes.
+1. root and nested help simplification,
+2. visual hierarchy and color consistency,
+3. TUI navigation and resize behavior,
+4. backup inventory and preview-only selection,
+5. backup-centric schedule readability,
+6. repository summary readability,
+7. proof that default repository view does not run full storage statistics.
+
+Wizard apply operations are not part of Checkpoint 2A acceptance.
 
 ## Exit Criteria
 

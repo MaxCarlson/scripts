@@ -50,26 +50,35 @@ try {
     [Environment]::SetEnvironmentVariable('PYTHONPATH', $null, 'Process')
     Set-Location -LiteralPath $RepoRoot
 
-    $ImportOutput = & $PythonExecutable -c "import rrbackup; print(rrbackup.__file__); print(rrbackup.__version__)" 2>&1
-    Assert-True -Condition ($LASTEXITCODE -eq 0) -Message "Unable to import rrbackup without injected PYTHONPATH: $($ImportOutput -join ' ')"
-    Assert-True -Condition (($ImportOutput -join "`n") -match '1\.0\.0') -Message 'RRBackup package version was not 1.0.0.'
-    Write-Output "rrbackup import without PYTHONPATH: $($ImportOutput -join ' | ')"
+    $ImportOutput = & $PythonExecutable -c "import rrbackup, termdash; print(rrbackup.__file__); print(rrbackup.__version__); print(termdash.__file__)" 2>&1
+    Assert-True -Condition ($LASTEXITCODE -eq 0) -Message "Unable to import rrbackup and termdash without injected PYTHONPATH: $($ImportOutput -join ' ')"
+    Assert-True -Condition (($ImportOutput -join "`n") -match '2\.0\.0') -Message 'RRBackup package version was not 2.0.0.'
+    Assert-True -Condition (($ImportOutput -join "`n") -match '(?i)termdash') -Message 'TermDash was not importable.'
+    Write-Output "rrbackup and termdash import without PYTHONPATH: $($ImportOutput -join ' | ')"
 
     $ScriptsRoot = Split-Path -Parent $PythonExecutable
-    foreach ($EntryPointName in @('backup', 'rrb', 'rrbackup')) {
-        $Candidate = Join-Path $ScriptsRoot "$EntryPointName.exe"
-        if (-not (Test-Path -LiteralPath $Candidate -PathType Leaf)) {
-            $Candidate = Join-Path $ScriptsRoot $EntryPointName
-        }
+    $BackupCommand = Join-Path $ScriptsRoot 'backup.exe'
+    if (-not (Test-Path -LiteralPath $BackupCommand -PathType Leaf)) {
+        $BackupCommand = Join-Path $ScriptsRoot 'backup'
+    }
 
-        Assert-True -Condition (Test-Path -LiteralPath $Candidate -PathType Leaf) -Message "Installed entry point is missing: $Candidate"
-        $HelpOutput = & $Candidate --help 2>&1
-        Assert-True -Condition ($LASTEXITCODE -eq 0) -Message "$EntryPointName --help failed: $($HelpOutput -join ' ')"
-        Assert-True -Condition (($HelpOutput -join "`n") -match '(?i)usage') -Message "$EntryPointName --help did not contain a usage line."
-        foreach ($Area in @('run', 'view', 'config', 'schedule', 'restore', 'repository')) {
-            Assert-True -Condition (($HelpOutput -join "`n") -match "(?m)\b$Area\b") -Message "$EntryPointName --help did not list '$Area'."
-        }
-        Write-Output "$EntryPointName installed entry point: PASS ($Candidate)"
+    Assert-True -Condition (Test-Path -LiteralPath $BackupCommand -PathType Leaf) -Message "Installed backup entry point is missing: $BackupCommand"
+    $HelpOutput = & $BackupCommand --help 2>&1
+    Assert-True -Condition ($LASTEXITCODE -eq 0) -Message "backup --help failed: $($HelpOutput -join ' ')"
+    Assert-True -Condition (($HelpOutput -join "`n") -match '(?i)usage') -Message 'backup --help did not contain a usage line.'
+    foreach ($Area in @('create', 'run', 'view', 'schedule', 'restore', 'repo', 'config')) {
+        Assert-True -Condition (($HelpOutput -join "`n") -match "(?m)\b$Area\b") -Message "backup --help did not list '$Area'."
+    }
+    Assert-True -Condition (-not (($HelpOutput -join "`n") -match '(?m)\brrb\b')) -Message 'backup --help still advertises rrb.'
+    Assert-True -Condition (-not (($HelpOutput -join "`n") -match '(?m)\brrbackup\b')) -Message 'backup --help still advertises rrbackup.'
+    Write-Output "backup installed entry point: PASS ($BackupCommand)"
+
+    foreach ($RetiredName in @('rrb', 'rrbackup')) {
+        $RetiredExe = Join-Path $ScriptsRoot "$RetiredName.exe"
+        $RetiredScript = Join-Path $ScriptsRoot $RetiredName
+        Assert-True -Condition (-not (Test-Path -LiteralPath $RetiredExe -PathType Leaf)) -Message "Retired entry point remains installed: $RetiredExe"
+        Assert-True -Condition (-not (Test-Path -LiteralPath $RetiredScript -PathType Leaf)) -Message "Retired entry point remains installed: $RetiredScript"
+        Write-Output "$RetiredName installed entry point: ABSENT (expected)"
     }
 }
 finally {

@@ -1,278 +1,186 @@
-"""Integration tests for rrbackup (requires actual config and/or Google Drive setup)."""
+"""Integration tests for the canonical backup CLI and optional live services."""
+
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
+from rrbackup.application import main
 from rrbackup.config import load_config, platform_config_default
 
 
 @pytest.mark.integration
 @pytest.mark.requires_config
 class TestWithUserConfig:
-    """Integration tests that require user config file."""
-
-    def test_user_config_exists_and_loads(self):
-        """Test that user config file exists and can be loaded."""
-        config_path = platform_config_default()
-
-        # This will fail if config doesn't exist (per conftest.py setup)
+    def test_user_config_exists_and_loads(self) -> None:
+        assert platform_config_default().exists()
         settings = load_config(None)
-
-        assert settings is not None
         assert settings.repo is not None
-        assert settings.repo.url is not None
+        assert settings.repo.url
 
-    def test_user_config_has_valid_repository(self):
-        """Test user config has valid repository configuration."""
+    def test_user_config_has_valid_repository(self) -> None:
         settings = load_config(None)
+        assert settings.repo is not None
+        assert settings.repo.url
+        assert settings.repo.password_file or settings.repo.password_env
 
-        assert settings.repo.url, "Repository URL must be configured"
-        assert (
-            settings.repo.password_file or settings.repo.password_env
-        ), "Password file or env var must be configured"
-
-    def test_user_config_has_backup_sets(self):
-        """Test user config has at least one backup set."""
+    def test_user_config_has_backup_sets(self) -> None:
         settings = load_config(None)
+        assert settings.sets
+        assert settings.sets[0].name
+        assert settings.sets[0].include
 
-        assert len(settings.sets) > 0, "At least one backup set must be configured"
-        first_set = settings.sets[0]
-        assert first_set.name, "Backup set must have a name"
-        assert len(first_set.include) > 0, "Backup set must have include paths"
-
-    def test_user_config_has_retention_policy(self):
-        """Test user config has retention policy."""
-        settings = load_config(None)
-
-        retention = settings.retention_defaults
-        # At least one retention value should be set
-        has_retention = any(
-            [
+    def test_user_config_has_retention_policy(self) -> None:
+        retention = load_config(None).retention_defaults
+        assert any(
+            value is not None
+            for value in (
                 retention.keep_last,
                 retention.keep_hourly,
                 retention.keep_daily,
                 retention.keep_weekly,
                 retention.keep_monthly,
                 retention.keep_yearly,
-            ]
+            )
         )
-        assert has_retention, "Retention policy should have at least one value set"
 
 
 @pytest.mark.integration
 @pytest.mark.requires_gdrive
 class TestWithGoogleDrive:
-    """Integration tests that require Google Drive to be configured."""
-
-    def test_rclone_gdrive_configured(self):
-        """Test rclone has gdrive remote configured."""
+    def test_rclone_gdrive_configured(self) -> None:
         result = subprocess.run(
             ["rclone", "listremotes"],
             capture_output=True,
             text=True,
             timeout=5,
+            check=False,
         )
-
         assert result.returncode == 0
         assert "gdrive:" in result.stdout
 
-    def test_rclone_gdrive_connectivity(self):
-        """Test Google Drive is accessible via rclone."""
+    def test_rclone_gdrive_connectivity(self) -> None:
         result = subprocess.run(
             ["rclone", "lsd", "gdrive:", "--max-depth", "1"],
             capture_output=True,
             text=True,
             timeout=15,
+            check=False,
         )
+        assert result.returncode == 0, result.stderr
 
-        # If this fails, conftest.py will have caught it and failed the test
-        # This test only runs if gdrive is configured AND working
-        assert result.returncode == 0, f"rclone failed: {result.stderr}"
-
-    def test_rclone_can_create_directory(self):
-        """Test rclone can create directory in Google Drive."""
+    def test_rclone_can_create_directory(self) -> None:
         test_dir = "gdrive:/rrbackup-test-dir"
-
-        # Create test directory
-        result = subprocess.run(
+        created = subprocess.run(
             ["rclone", "mkdir", test_dir],
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
-
-        assert result.returncode == 0, f"Failed to create directory: {result.stderr}"
-
-        # Verify it exists
-        result = subprocess.run(
-            ["rclone", "lsd", "gdrive:", "--max-depth", "1"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-
-        assert "rrbackup-test-dir" in result.stdout
-
-        # Clean up
-        subprocess.run(
-            ["rclone", "rmdir", test_dir],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-
-    @pytest.mark.slow
-    def test_rclone_upload_download(self):
-        """Test rclone can upload and download files to Google Drive."""
-        import tempfile
-
-        test_content = "RRBackup test file content"
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # Create test file
-            test_file = f"{temp_dir}/test.txt"
-            with open(test_file, "w") as f:
-                f.write(test_content)
-
-            # Upload
-            result = subprocess.run(
-                ["rclone", "copy", test_file, "gdrive:/rrbackup-test"],
+        try:
+            assert created.returncode == 0, created.stderr
+            listed = subprocess.run(
+                ["rclone", "lsd", "gdrive:", "--max-depth", "1"],
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=10,
+                check=False,
             )
-            assert result.returncode == 0, f"Upload failed: {result.stderr}"
-
-            # Download
-            download_file = f"{temp_dir}/downloaded.txt"
-            result = subprocess.run(
-                ["rclone", "copy", "gdrive:/rrbackup-test/test.txt", temp_dir],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            assert result.returncode == 0, f"Download failed: {result.stderr}"
-
-            # Verify content
-            with open(f"{temp_dir}/test.txt", "r") as f:
-                content = f.read()
-            assert content == test_content
-
-            # Clean up
+            assert "rrbackup-test-dir" in listed.stdout
+        finally:
             subprocess.run(
-                ["rclone", "purge", "gdrive:/rrbackup-test"],
+                ["rclone", "rmdir", test_dir],
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=10,
+                check=False,
             )
 
 
 @pytest.mark.integration
-class TestResticBinaryAvailability:
-    """Test that restic binary is available."""
-
-    def test_restic_binary_exists(self):
-        """Test restic binary is on PATH."""
+class TestBinaryAvailability:
+    @pytest.mark.parametrize("command", ["restic", "rclone"])
+    def test_binary_exists(self, command: str) -> None:
         result = subprocess.run(
-            ["restic", "version"],
+            [command, "version"],
             capture_output=True,
             text=True,
             timeout=5,
+            check=False,
         )
-
         assert result.returncode == 0
-        assert "restic" in result.stdout.lower()
-
-    def test_rclone_binary_exists(self):
-        """Test rclone binary is on PATH."""
-        result = subprocess.run(
-            ["rclone", "version"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-
-        assert result.returncode == 0
-        assert "rclone" in result.stdout.lower()
+        assert command in (result.stdout + result.stderr).lower()
 
 
 @pytest.mark.integration
 class TestEndToEndBackupRestore:
-    """End-to-end test of backup and restore cycle."""
-
     @pytest.mark.slow
-    def test_full_backup_restore_cycle(self, temp_dir, mocker):
-        """Test complete backup and restore workflow with local repository."""
+    def test_full_backup_restore_cycle(self, temp_dir: Path) -> None:
         import tomli_w
-        from rrbackup.cli import main
 
-        # Create test data
         source_dir = temp_dir / "source"
         source_dir.mkdir()
-        (source_dir / "file1.txt").write_text("Test content 1")
-        (source_dir / "file2.txt").write_text("Test content 2")
+        (source_dir / "file1.txt").write_text("Test content 1", encoding="utf-8")
+        (source_dir / "file2.txt").write_text("Test content 2", encoding="utf-8")
         (source_dir / "subdir").mkdir()
-        (source_dir / "subdir" / "file3.txt").write_text("Test content 3")
+        (source_dir / "subdir" / "file3.txt").write_text("Test content 3", encoding="utf-8")
 
-        # Create repository
         repo_dir = temp_dir / "repo"
-        repo_dir.mkdir()
-
-        # Create password file
         password_file = temp_dir / "password.txt"
-        password_file.write_text("test-password-integration")
-
-        # Create config
-        config_dict = {
-            "repository": {
-                "url": str(repo_dir),
-                "password_file": str(password_file),
-            },
-            "restic": {"bin": "restic"},
-            "rclone": {"bin": "rclone"},
-            "state": {"dir": str(temp_dir / "state")},
-            "log": {"dir": str(temp_dir / "logs")},
-            "retention_defaults": {"keep_daily": 7},
-            "backup_sets": [
-                {
-                    "name": "test-set",
-                    "include": [str(source_dir)],
-                    "exclude": ["**/*.tmp"],
-                    "tags": ["integration-test"],
-                }
-            ],
-        }
-
+        password_file.write_text("test-password-integration", encoding="utf-8")
         config_file = temp_dir / "config.toml"
-        config_file.write_text(tomli_w.dumps(config_dict), encoding="utf-8")
+        config_file.write_text(
+            tomli_w.dumps(
+                {
+                    "repository": {
+                        "url": str(repo_dir),
+                        "password_file": str(password_file),
+                    },
+                    "restic": {"bin": "restic"},
+                    "rclone": {"bin": "rclone"},
+                    "state": {"dir": str(temp_dir / "state")},
+                    "log": {"dir": str(temp_dir / "logs")},
+                    "retention_defaults": {"keep_daily": 7},
+                    "backup_sets": [
+                        {
+                            "name": "test-set",
+                            "include": [str(source_dir)],
+                            "exclude": ["**/*.tmp"],
+                            "tags": ["integration-test"],
+                            "use_fs_snapshot": False,
+                            "exclude_caches": False,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
 
-        # Initialize repository
-        result = main(["-c", str(config_file), "setup"])
-        assert result == 0, "Repository initialization failed"
+        initialized = subprocess.run(
+            [
+                "restic",
+                "-r",
+                str(repo_dir),
+                "--password-file",
+                str(password_file),
+                "init",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert initialized.returncode == 0, initialized.stderr
 
-        # Run backup
-        result = main(["-c", str(config_file), "backup", "-s", "test-set"])
-        assert result == 0, "Backup failed"
+        assert main(["--config", str(config_file), "run", "test-set", "--force"]) == 0
+        assert main(["--config", str(config_file), "view", "--section", "history", "--plain"]) == 0
+        assert main(["--config", str(config_file), "repo", "check", "--plain"]) == 0
 
-        # List snapshots
-        result = main(["-c", str(config_file), "list"])
-        assert result == 0, "List snapshots failed"
-
-        # Check repository
-        result = main(["-c", str(config_file), "check"])
-        assert result == 0, "Repository check failed"
-
-        # Stats
-        result = main(["-c", str(config_file), "stats"])
-        assert result == 0, "Stats failed"
-
-        # Restore (using restic directly)
         restore_dir = temp_dir / "restore"
-        restore_dir.mkdir()
-
-        restore_result = subprocess.run(
+        restored = subprocess.run(
             [
                 "restic",
                 "-r",
@@ -287,97 +195,96 @@ class TestEndToEndBackupRestore:
             capture_output=True,
             text=True,
             timeout=30,
+            check=False,
         )
-
-        assert restore_result.returncode == 0, f"Restore failed: {restore_result.stderr}"
-
-        # Verify restored files
-        restored_file1 = restore_dir / str(source_dir).lstrip("/") / "file1.txt"
-        if not restored_file1.exists():
-            # Try alternative path (Windows vs Linux)
-            restored_file1 = restore_dir / source_dir.name / "file1.txt"
-
-        # Just verify something was restored
-        restored_files = list(restore_dir.rglob("*.txt"))
-        assert len(restored_files) >= 3, "Not all files were restored"
+        assert restored.returncode == 0, restored.stderr
+        assert len(list(restore_dir.rglob("*.txt"))) >= 3
 
 
 @pytest.mark.integration
 class TestCLIHelpOutput:
-    """Test CLI help output is user-friendly."""
-
-    def test_main_help_output(self):
-        """Test main help text."""
+    def test_main_help_output(self) -> None:
         result = subprocess.run(
-            ["rrb", "--help"],
+            ["backup", "--help"],
             capture_output=True,
             text=True,
             timeout=5,
+            check=False,
         )
-
         assert result.returncode == 0
-        assert "Restic + Rclone backup CLI" in result.stdout
-        assert "setup" in result.stdout
-        assert "backup" in result.stdout
-        assert "list" in result.stdout
+        assert "backup create" in result.stdout
+        assert "backup view" in result.stdout
+        assert "repo" in result.stdout
+        assert "rrb" not in result.stdout
 
-    def test_backup_help_output(self):
-        """Test backup subcommand help text."""
+    def test_run_help_output(self) -> None:
         result = subprocess.run(
-            ["rrb", "backup", "--help"],
+            ["backup", "run", "--help"],
             capture_output=True,
             text=True,
             timeout=5,
+            check=False,
         )
-
         assert result.returncode == 0
-        assert "--set" in result.stdout
+        assert "auto" in result.stdout
         assert "--dry-run" in result.stdout
-        assert "--tag" in result.stdout
+        assert "--print-command-only" in result.stdout
 
-    def test_config_help_output(self):
-        """Test config subcommand help text."""
+    def test_view_help_is_condensed(self) -> None:
         result = subprocess.run(
-            ["rrb", "config", "--help"],
+            ["backup", "view", "--help"],
             capture_output=True,
             text=True,
             timeout=5,
+            check=False,
         )
+        assert result.returncode == 0
+        assert "--section" in result.stdout
+        assert "timeline" not in result.stdout
+        assert "snapshots" not in result.stdout
 
+    def test_schedule_help_lists_editor(self) -> None:
+        result = subprocess.run(
+            ["backup", "schedule", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
         assert result.returncode == 0
         assert "wizard" in result.stdout
-        assert "show" in result.stdout
-        assert "add-set" in result.stdout
+        assert "edit" in result.stdout
 
 
 @pytest.mark.integration
 class TestErrorMessages:
-    """Test error messages are clear and actionable."""
-
-    def test_missing_config_error_message(self, temp_dir):
-        """Test error when config file is missing."""
-        from rrbackup.cli import main
-
+    def test_missing_config_error_message(self, temp_dir: Path) -> None:
         missing_config = temp_dir / "nonexistent.toml"
-
-        result = main(["-c", str(missing_config), "list"])
-
+        result = main(["--config", str(missing_config), "config", "show", "--json"])
         assert result != 0
 
-    def test_invalid_backup_set_error_message(self, temp_dir):
-        """Test error when backup set doesn't exist."""
+    def test_invalid_backup_name_returns_nonzero(self, temp_dir: Path) -> None:
         import tomli_w
-        from rrbackup.cli import main
 
-        config_dict = {
-            "repository": {"url": "/tmp/repo", "password_file": "/tmp/pwd.txt"},
-            "restic": {"bin": "restic"},
-            "rclone": {"bin": "rclone"},
-            "backup_sets": [{"name": "valid-set", "include": ["/tmp"]}],
-        }
-
+        password_file = temp_dir / "password.txt"
+        password_file.write_text("test", encoding="utf-8")
         config_file = temp_dir / "config.toml"
-        config_file.write_text(tomli_w.dumps(config_dict), encoding="utf-8")
-
-        with pytest.raises(SystemExit, match="not found"):
-            main(["-c", str(config_file), "backup", "-s", "nonexistent-set"])
+        config_file.write_text(
+            tomli_w.dumps(
+                {
+                    "repository": {
+                        "url": str(temp_dir / "repo"),
+                        "password_file": str(password_file),
+                    },
+                    "backup_sets": [
+                        {
+                            "name": "valid-set",
+                            "include": [str(temp_dir)],
+                            "use_fs_snapshot": False,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert main(["--config", str(config_file), "run", "missing", "--json"]) != 0

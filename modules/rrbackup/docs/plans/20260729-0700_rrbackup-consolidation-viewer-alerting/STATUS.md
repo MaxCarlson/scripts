@@ -2,109 +2,111 @@
 
 ## Overall
 
-Stage 1 is verified. The latest Windows checkpoint passed package compilation, focused correctness lint, 199 tests, and both PowerShell checks; 8 environment-dependent tests skipped intentionally. The `LATEST.txt`, `LATEST_CONTEXT.md`, `LATEST_PROGRESS.diff`, and bounded-history migration also worked.
+Stage 1 is verified. The Windows checkpoint passed package compilation, focused correctness lint, 199 tests, and both PowerShell checks; 8 environment-dependent tests skipped intentionally. The repository-root validation evidence workflow also works as intended.
 
-Stage 2 is now in progress. The branch adds the canonical `backup` entry point, redirects `rrb` and `rrbackup` to one hierarchical application after installation, introduces the first working viewer/audit/repository/schedule-discovery slice, and preserves selected legacy flat commands through translation or temporary delegation.
+Stage 2 is split into bounded checkpoints. The current checkpoint is **2A — Single-CLI UX Foundation**, and it is ready for local automated and manual validation. No additional Stage 2 feature group should begin until the resulting evidence is reviewed.
 
-A post-validation manual check exposed a real installed-entry-point namespace failure that the old smoke test masked by injecting `PYTHONPATH`. The repository namespace compatibility shim has been restored, version lookup moved to a dedicated module, and validation now executes the actual installed `backup`, `rrb`, and `rrbackup` entry points with the injected path removed.
+The prior Stage 2 checkpoint collected 266 tests: 256 passed, 8 skipped, and 2 failed because inherited integration assertions still expected obsolete `rrb` help text. Those assertions have been replaced with canonical `backup` checks in Checkpoint 2A.
 
-## Stage 1 — Verified
+Manual acceptance of the prior CLI identified:
 
-- [x] Canonical profile and source-attribution model
-- [x] Legacy `backup_module` JSON/default adapter
-- [x] Production-compatible Restic command builder
-- [x] Hard preview/print-only execution barrier
-- [x] Distinct dry-run state that never updates last success
-- [x] CPU normal/overdue policy with waiting before lock acquisition
-- [x] Process-identity lock with ownership token and stale-lock race protection
-- [x] Atomic run history, latest-run, and last-success state
-- [x] Snapshot and backup-summary JSON parsers
-- [x] Shared backup execution engine
-- [x] Terminal state for wait, lock, execution, interruption, and finalization failures
-- [x] Compile and focused lint gates
-- [x] Local Windows verification
+- an over-fragmented `backup view` command tree,
+- raw JSON as default human-facing repository/diagnostic output,
+- unrelated Windows tasks in schedule discovery,
+- an implicit restore-size calculation that took about 72 seconds,
+- a run command that required too much Restic/configuration knowledge,
+- missing shared color and interactive presentation conventions.
 
-### Verified Stage 1 evidence
+Checkpoint 2A directly targets those findings.
 
-- 207 tests collected
-- 199 passed
-- 8 intentionally skipped
-- 0 failed
-- 0 errors
-- package branch coverage: 55%
-- compile: passed
-- focused correctness lint: passed
-- PowerShell environment smoke test: passed
-- production read-only test: safely skipped
+## Checkpoint Guardrail
 
-## Stage 2 — Implemented and Awaiting Validation
+Each checkpoint contains one closely related feature/correction group and should result in approximately 10–20 minutes between local pull/test/push cycles.
 
-- [x] Package version advanced to `1.0.0` for the new entry point
-- [x] `backup`, `rrb`, and `rrbackup` entry points target one canonical application
-- [x] Root help exposes exactly six major areas
-- [x] `backup edit` translates to `backup config`
-- [x] Canonical and underscore-style aliases for migrated options
-- [x] Legacy `backup`, `list`, `stats`, `check`, and `progress` command translation
-- [x] Temporary delegation for legacy setup/prune/config mutation commands
-- [x] `backup run` preview, dry-run, CPU-policy bypass, and distinct skipped exit code
-- [x] `backup view` dashboard, timeline, snapshots, snapshot details, runs, run details, logs, storage, health, schedules, setup, system, provenance, search, audit, and export
-- [x] `backup config` effective, path, validate, discover, import preview, profiles, and sets
-- [x] Read-only Windows Task Scheduler discovery adapter
-- [x] `backup restore` search, preview, explicit `--apply` run gate, and availability reporting
-- [x] `backup repository` status, keys, locks, stats, check, cache status, explicit init gate, and retention preview placeholder
-- [x] Comprehensive audit collector with configuration provenance, path metadata, source/exclusion entries, repository metadata, keys, snapshots, runs, logs, locks, schedules, health, provenance, and recommendations
-- [x] Secret environment values and password contents excluded from audit output
-- [x] Installed-entry-point namespace regression fixed and tested
-- [x] Stale editable metadata cleanup added before validation install
-- [x] Parser, packaging, health, audit, repository, and scheduler tests added
+For every checkpoint:
 
-## Stage 2 Remaining
+1. source, tests, planning state, and static review are completed together,
+2. implementation stops for local validation,
+3. automated and manual results are reviewed before the next checkpoint,
+4. failures must remain attributable to the newest bounded change set.
 
-- [ ] Pass the expanded Windows validation checkpoint
-- [ ] Add TOML/named-set conversion to the canonical engine
-- [ ] Preserve all historical `backup_module` commands through the shared engine
-- [ ] Reduce `modules/backup_module` to a compatibility shim
-- [ ] Add snapshot tag/host/path filtering to the canonical viewer
-- [ ] Implement path redaction for `backup view audit --redact-paths`
-- [ ] Add detailed scheduler event history, service, startup, systemd, and cron discovery
-- [ ] Add structured restore history and hash verification
-- [ ] Verify known production snapshots through canonical read-only commands
-- [ ] Run production read-only validation explicitly
+Create/schedule wizard acceptance, scheduler/configuration apply, compatibility-shim removal, and production-write work are not part of Checkpoint 2A.
 
-## Canonical CLI
+## Progress Assessment
 
-```text
-backup run
-backup view
-backup config
-backup schedule
-backup restore
-backup repository
-```
+### Successfully implemented and previously verified
 
-`backup edit` aliases `backup config`. `rrb` and `rrbackup` expose the same hierarchy after editable installation. `backup_module` and `python -m backup_module` remain compatibility surfaces while their independent engine is removed.
+- Shared safety engine and terminal-state handling
+- Production repository and snapshot read-only access
+- Snapshot timeline and health data
+- Provenance and comprehensive audit collection
+- Configuration/source attribution
+- Root validation dispatcher and authoritative evidence handoff
+- 256 passing tests in the last Stage 2 report
 
-The comprehensive read-only diagnostic command is:
+### Implemented in Checkpoint 2A and awaiting local validation
 
-```text
-backup view audit
-```
+- Package version `2.0.0`
+- Only one declared public console entry point: `backup`
+- Uninstall/reinstall validation that removes retired `rrb` and `rrbackup` wrappers
+- Seven task-oriented areas: `create`, `run`, `view`, `schedule`, `restore`, `repo`, and `config`
+- Condensed `view --section` interface
+- Unified canonical-TOML/legacy backup inventory
+- Canonical backup-set conversion through the shared engine
+- Preservation of VSS/fs-snapshot, cache exclusion, one-filesystem, dry-run, tags, and raw Restic options
+- Read-only inventory loading without creating generated state/input directories
+- Configured-backup `run auto` chooser and direct named execution
+- Hard print-only no-materialization/no-execution behavior
+- Backup-centric schedule table
+- Strict scheduler ownership filtering
+- Shared TermDash dependency and Windows curses dependency
+- Shared color policy, ANSI-aware tables, compact rows, details, filtering, paging, scrolling, and multi-select adapter
+- Combined human-readable repository summary
+- Explicit `--refresh-storage` and atomic storage-statistics cache
+- Focused tests for parser, packaging, inventory, schedule math, presentation, repository caching, scheduler filtering, and integration behavior
+- Updated compile, lint, help, pytest/coverage, and PowerShell validation gates
 
-## Last Known Production State
+### Deferred until Checkpoint 2A evidence is reviewed
 
-- Repository: `B:\ResticRepos\PC-Local`
-- Known snapshots: `a1609113`, `022aad5b`
-- Latest snapshot: 2026-04-14
-- Current backup schedule: absent
-- Automated production mutation: prohibited
+- Interactive create-wizard acceptance
+- Interactive schedule-wizard acceptance
+- Configuration and scheduler mutation
+- Retention execution
+- Cross-platform scheduler CRUD completion
+- `backup_module` compatibility-shim conversion and duplicate-engine removal
+- Production backup/restore mutation
 
-## Validation
+### Current bugs and uncertainty
+
+- No Checkpoint 2A code has yet run in the local Windows environment.
+- The module root `README.md` still documents the historical `rrb` interface and is intentionally deferred until the new UX passes acceptance.
+- TUI resizing and curses-failure fallback require manual Windows verification.
+- General CLI repository/password overrides are not yet covered by a non-default-repository manual test.
+
+### Progress and loop assessment
+
+Measurable progress occurred. This is not a repeated safety-engine pass: Checkpoint 2A visibly changes the public command surface, human output, schedule filtering, run selection, and repository behavior in response to manual feedback. The checkpoint is now frozen. Continuing feature work before local validation would constitute poor progress control.
+
+## Checkpoint 2A Validation Target
 
 From the repository root:
 
 ```powershell
 ./Invoke-Tests.ps1
 ```
+
+The target performs:
+
+1. RRBackup metadata cleanup,
+2. RRBackup uninstall to remove stale entry points,
+3. editable TermDash installation,
+4. editable RRBackup `2.0.0` installation,
+5. package/test compilation,
+6. focused correctness lint,
+7. root help validation,
+8. condensed view-help validation,
+9. full pytest and branch coverage,
+10. PowerShell installed-entry-point and environment checks.
 
 Authoritative evidence:
 
@@ -113,3 +115,11 @@ docs/test-results/rrbackup/LATEST.txt
 docs/test-results/rrbackup/LATEST_CONTEXT.md
 docs/test-results/rrbackup/LATEST_PROGRESS.diff
 ```
+
+## Last Known Production State
+
+- Repository: `B:\ResticRepos\PC-Local`
+- Known snapshots: `a1609113`, `022aad5b`
+- Latest snapshot: 2026-04-14
+- Current module-owned backup schedule: absent
+- Automated production mutation: prohibited

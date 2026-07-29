@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rrbackup"
-version = "1.0.0"
+version = "2.0.0"
 description = "Unified cross-platform Restic backup management and viewer CLI"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -12,8 +12,10 @@ authors = [{ name = "Max", email = "max@example.com" }]
 license = { text = "MIT" }
 dependencies = [
     "psutil>=5.9",
+    "termdash>=0.5.0",
     "tomli; python_version < '3.11'",
     "tomli-w",
+    "windows-curses; platform_system == 'Windows'",
 ]
 
 [project.optional-dependencies]
@@ -27,8 +29,6 @@ dev = [
 
 [project.scripts]
 backup = "rrbackup.application:main"
-rrb = "rrbackup.compatibility:main"
-rrbackup = "rrbackup.compatibility:main"
 
 [tool.setuptools.packages.find]
 # Discover packages from project root (flat layout)

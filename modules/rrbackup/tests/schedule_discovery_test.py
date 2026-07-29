@@ -6,9 +6,14 @@ import subprocess
 import pytest
 
 from rrbackup import schedule_discovery
+from rrbackup.schedule_discovery import ScheduleRecord, is_owned_schedule_record
 
 
-def completed(stdout: str = "", stderr: str = "", returncode: int = 0) -> subprocess.CompletedProcess[str]:
+def completed(
+    stdout: str = "",
+    stderr: str = "",
+    returncode: int = 0,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(
         args=["pwsh"],
         returncode=returncode,
@@ -52,6 +57,117 @@ def test_windows_schedule_discovery_normalizes_records(
     assert record.enabled is True
     assert record.missed_runs == 1
     assert record.settings["start_when_available"] is True
+
+
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [
+        (
+            ScheduleRecord(
+                backend="windows-task-scheduler",
+                identifier="\\RRBackup::local-main",
+                enabled=True,
+                state="Ready",
+                executable="backup.exe",
+                arguments=("run", "local-main"),
+            ),
+            True,
+        ),
+        (
+            ScheduleRecord(
+                backend="windows-task-scheduler",
+                identifier="\\CustomTask",
+                enabled=True,
+                state="Ready",
+                executable="backup.exe",
+                arguments=("run", "local-main"),
+            ),
+            True,
+        ),
+        (
+            ScheduleRecord(
+                backend="windows-task-scheduler",
+                identifier="\\LegacyBackup",
+                enabled=True,
+                state="Ready",
+                executable="python.exe",
+                arguments=("-m", "backup_module", "backup"),
+            ),
+            True,
+        ),
+        (
+            ScheduleRecord(
+                backend="windows-task-scheduler",
+                identifier="\\BackupInstalledPrograms",
+                enabled=True,
+                state="Ready",
+                executable="pwsh.exe",
+                arguments=("-File", "BackupInstalledPrograms.ps1"),
+            ),
+            False,
+        ),
+        (
+            ScheduleRecord(
+                backend="windows-task-scheduler",
+                identifier="\\Microsoft\\Windows\\CloudRestore\\Backup",
+                enabled=True,
+                state="Ready",
+                executable="rundll32.exe",
+                arguments=("cloudrestore.dll",),
+            ),
+            False,
+        ),
+        (
+            ScheduleRecord(
+                backend="windows-task-scheduler",
+                identifier="\\BackupViewer",
+                enabled=True,
+                state="Ready",
+                executable="backup.exe",
+                arguments=("view",),
+            ),
+            False,
+        ),
+    ],
+)
+def test_schedule_ownership_is_strict(
+    record: ScheduleRecord,
+    expected: bool,
+) -> None:
+    assert is_owned_schedule_record(record) is expected
+
+
+def test_windows_discovery_drops_unrelated_backup_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(schedule_discovery.shutil, "which", lambda name: "pwsh.exe")
+    payload = [
+        {
+            "backend": "windows-task-scheduler",
+            "identifier": "\\RRBackup::local-main",
+            "enabled": True,
+            "state": "Ready",
+            "executable": "backup.exe",
+            "arguments": ["run", "local-main"],
+        },
+        {
+            "backend": "windows-task-scheduler",
+            "identifier": "\\BackupInstalledPrograms",
+            "enabled": True,
+            "state": "Ready",
+            "executable": "pwsh.exe",
+            "arguments": ["-File", "BackupInstalledPrograms.ps1"],
+        },
+    ]
+
+    discovery = schedule_discovery.discover_schedules(
+        platform_name="nt",
+        command_runner=lambda *args, **kwargs: completed(json.dumps(payload)),
+    )
+
+    assert [record.identifier for record in discovery.records] == [
+        "\\RRBackup::local-main"
+    ]
 
 
 def test_windows_discovery_reports_missing_powershell(

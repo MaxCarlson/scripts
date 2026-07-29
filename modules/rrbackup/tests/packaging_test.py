@@ -6,7 +6,9 @@ import sys
 from pathlib import Path
 
 
-def test_modules_path_import_resolves_regular_package_and_clis(tmp_path: Path) -> None:
+def test_modules_path_import_resolves_regular_package_and_backup_cli(
+    tmp_path: Path,
+) -> None:
     repo_root = Path(__file__).resolve().parents[3]
     modules_root = repo_root / "modules"
     environment = os.environ.copy()
@@ -14,14 +16,19 @@ def test_modules_path_import_resolves_regular_package_and_clis(tmp_path: Path) -
 
     script = (
         "import rrbackup; "
+        "import termdash; "
         "from rrbackup import __version__; "
         "from rrbackup.application import build_parser; "
-        "from rrbackup.cli import build_parser as build_legacy_parser; "
         "assert rrbackup.__file__; "
-        "assert __version__ == '1.0.0'; "
-        "assert build_parser('backup').prog == 'backup'; "
-        "assert build_legacy_parser().prog == 'rrb'; "
-        "print(rrbackup.__file__)"
+        "assert termdash.__file__; "
+        "assert __version__ == '2.0.0'; "
+        "parser = build_parser('backup'); "
+        "assert parser.prog == 'backup'; "
+        "assert 'create' in parser.format_help(); "
+        "assert 'repo' in parser.format_help(); "
+        "assert 'rrb' not in parser.format_help(); "
+        "print(rrbackup.__file__); "
+        "print(termdash.__file__)"
     )
     result = subprocess.run(
         [sys.executable, "-c", script],
@@ -35,3 +42,4 @@ def test_modules_path_import_resolves_regular_package_and_clis(tmp_path: Path) -
     assert result.returncode == 0, result.stderr
     assert "modules" in result.stdout.lower()
     assert "rrbackup" in result.stdout.lower()
+    assert "termdash" in result.stdout.lower()
