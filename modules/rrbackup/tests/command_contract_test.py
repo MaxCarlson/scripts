@@ -1,4 +1,4 @@
-"""Tests for the merged backup CLI command and audit contract."""
+"""Tests for the unified backup CLI command and audit contract."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from rrbackup.command_contract import (
     MAJOR_COMMANDS,
     OPTIONAL_AUDIT_SECTIONS,
     SENSITIVE_AUDIT_SECTIONS,
+    VIEW_SECTIONS,
     get_audit_section,
     resolve_major_command,
 )
@@ -21,26 +22,41 @@ from rrbackup.command_contract import (
 @pytest.mark.unit
 def test_canonical_and_compatibility_programs() -> None:
     assert CANONICAL_PROGRAM == "backup"
-    assert COMPATIBILITY_PROGRAMS == ("rrb", "rrbackup", "backup_module")
+    assert COMPATIBILITY_PROGRAMS == ("backup_module",)
 
 
 @pytest.mark.unit
-def test_exact_six_major_command_areas() -> None:
+def test_exact_seven_major_command_areas() -> None:
     assert MAJOR_COMMANDS == (
+        "create",
         "run",
         "view",
-        "config",
         "schedule",
         "restore",
-        "repository",
+        "repo",
+        "config",
     )
-    assert len(MAJOR_COMMANDS) == len(set(MAJOR_COMMANDS)) == 6
+    assert len(MAJOR_COMMANDS) == len(set(MAJOR_COMMANDS)) == 7
 
 
 @pytest.mark.unit
-def test_edit_alias_resolves_to_config() -> None:
-    assert COMMAND_ALIASES == {"edit": "config"}
+def test_task_oriented_view_sections() -> None:
+    assert VIEW_SECTIONS == (
+        "overview",
+        "backups",
+        "history",
+        "repository",
+        "schedules",
+        "diagnostics",
+        "audit",
+    )
+
+
+@pytest.mark.unit
+def test_command_aliases_resolve() -> None:
+    assert COMMAND_ALIASES == {"edit": "config", "repository": "repo"}
     assert resolve_major_command("edit") == "config"
+    assert resolve_major_command("repository") == "repo"
     assert resolve_major_command(" CONFIG ") == "config"
 
 
