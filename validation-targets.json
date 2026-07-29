@@ -137,6 +137,7 @@
             "tests/restic_test.py",
             "tests/run_monitor_test.py",
             "tests/run_progress_test.py",
+            "tests/run_runtime_test.py",
             "tests/schedule_discovery_test.py",
             "tests/schedule_math_test.py",
             "tests/snapshots_test.py",
