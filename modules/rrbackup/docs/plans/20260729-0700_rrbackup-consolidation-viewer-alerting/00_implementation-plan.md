@@ -80,8 +80,9 @@ The existing snapshots were created by the direct Restic predecessor workflow. `
 - Process-identity locking
 - CPU policy
 - Snapshot summary parsing
-- Module-root test runner and PowerShell checks
-- Tracked `TEST_RESULTS.txt` evidence loop
+- Repository-root validation dispatcher and target manifest
+- RRBackup PowerShell checks registered as a validation target
+- Timestamped tracked reports under `docs/test-results/rrbackup/`
 - High-coverage unit tests
 
 ### Stage 2 — Compatibility Merge and Hierarchical CLI
@@ -185,14 +186,15 @@ backup view audit --include-legacy-evidence
 - CLI contract tests for root help, nested help, aliases, output purity, and compatibility surfaces.
 - PowerShell scripts for Windows entry points, Task Scheduler definition generation/inspection, path quoting, and optional production read-only compatibility.
 - Generated temp data remains under `modules/rrbackup/.pytest_tmp_root/`.
-- The complete local result is written to tracked `modules/rrbackup/TEST_RESULTS.txt`.
+- The repository-root dispatcher bootstraps declared dependencies and invokes pytest with import isolation.
+- Complete local results are written to tracked, timestamped files under `docs/test-results/rrbackup/`.
 
 ## Local Validation Loop
 
-From `modules/rrbackup`:
+From the repository root:
 
 ```powershell
-./Invoke-Tests.ps1 -Bootstrap
+./Invoke-Tests.ps1
 ```
 
 Optional production read-only checks:
@@ -201,4 +203,10 @@ Optional production read-only checks:
 ./Invoke-Tests.ps1 -IncludeProductionReadOnly
 ```
 
-The runner captures complete pytest and PowerShell output in `TEST_RESULTS.txt`, returns nonzero when required checks fail, and allows the result file to be committed and pushed for remote diagnosis.
+The dispatcher reads `validation-targets.json`, selects `rrbackup` by default, captures complete pytest and PowerShell output, returns nonzero when required checks fail, and writes a report named:
+
+```text
+docs/test-results/rrbackup/YYYYMMDD-HHMMSS_rrbackup.txt
+```
+
+The user commits and pushes the generated report for remote diagnosis.
