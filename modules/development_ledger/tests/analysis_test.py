@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from development_ledger.analysis import build_validation_event, evaluate_items, recommend_local_model
+from development_ledger.analysis import (
+    build_validation_event,
+    evaluate_items,
+    recommend_batch_candidates,
+    recommend_local_model,
+)
 from development_ledger.models import NormalizedTest
 from development_ledger.plan import load_plan
 
@@ -59,6 +64,8 @@ def test_build_event_detects_persistent_failure_and_loop(plan_path):
         prior_events=[],
     )
     first["progress"] = {"classification": "stalled", "material_progress": False, "reasons": []}
+    plan.session["request"]["status"] = "no_new_request"
+    plan.session["request"]["resolution"] = "none"
 
     second = build_validation_event(
         event_id="run-2",
@@ -126,3 +133,65 @@ def test_all_items_verified_produces_ready(plan_path):
 
     assert event["progress"]["classification"] == "ready"
     assert event["routing"]["decision"] == "ready_for_acceptance"
+
+
+def test_conflicting_request_stops_before_implementation(plan_path):
+    plan = load_plan(plan_path)
+    plan.session["request"] = {
+        "status": "conflict_pending",
+        "summary": "Switch the persistence format.",
+        "resolution": "user_decision_required",
+        "affected_ids": ["AC-001"],
+        "supersedes": [],
+        "conflicts": ["The active plan requires JSON while the new request is ambiguous about replacement."],
+    }
+
+    event = build_validation_event(
+        event_id="conflict",
+        timestamp="2026-07-29T00:00:00+00:00",
+        plan=plan,
+        tests=[],
+        provenance=_provenance("e" * 40),
+        prior_events=[],
+    )
+
+    assert not event["planning_gate"]["passed"]
+    assert event["routing"]["decision"] == "stop_for_user_decision"
+
+
+def test_batch_candidates_favor_foundational_prerequisites(plan_path):
+    plan = load_plan(plan_path)
+    for item in plan.items:
+        item.implementation = "planned"
+
+    candidates = recommend_batch_candidates(plan)
+
+    assert candidates[0]["id"] == "AC-001"
+    assert candidates[0]["architecture_role"] == "foundation"
+
+
+def test_architecture_review_becomes_due_after_configured_run_backstop(plan_path):
+    plan = load_plan(plan_path)
+    plan.policy["architecture_review"]["max_validation_runs"] = 1
+    first = build_validation_event(
+        event_id="first",
+        timestamp="2026-07-29T00:00:00+00:00",
+        plan=plan,
+        tests=[],
+        provenance=_provenance("f" * 40),
+        prior_events=[],
+    )
+    plan.session["request"]["status"] = "no_new_request"
+    plan.session["request"]["resolution"] = "none"
+
+    second = build_validation_event(
+        event_id="second",
+        timestamp="2026-07-29T01:00:00+00:00",
+        plan=plan,
+        tests=[],
+        provenance=_provenance("1" * 40),
+        prior_events=[first],
+    )
+
+    assert second["architecture_review"]["due"]
+    assert second["routing"]["decision"] == "review_architecture"
