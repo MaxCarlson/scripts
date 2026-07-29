@@ -6,72 +6,105 @@
 
 Base: `agent/add-development-ledger-module`
 
-## Implemented Files
+## Implemented Scope
 
-- `modules/mangadl/mangadl/manga18fx.py`
-- `modules/mangadl/mangadl/backends.py`
-- `modules/mangadl/mangadl/cli.py`
-- `modules/mangadl/mangadl/worker.py`
-- `modules/mangadl/tests/manga18fx_test.py`
-- `modules/mangadl/tests/image_workers_test.py`
-- `modules/mangadl/tests/backends_test.py`
-- `modules/mangadl/tests/worker_test.py`
-- `modules/mangadl/tests/conftest.py`
-- `modules/mangadl/pyproject.toml`
-- `modules/mangadl/mangadl/__init__.py`
-- `modules/mangadl/README.md`
+- Native Manga18FX parser/downloader and backend routing.
+- Destination-aware resume and deterministic chapter/image naming.
+- Bounded per-series image concurrency through `-I/--image-workers`.
+- Logical-CPU aggregate concurrency budgeting with one processor reserved.
+- Safe outer-worker ceiling, runtime tuning controls, and staggered process startup.
+- Fixed-width dashboard rows, per-worker progress/activity rows, runtime concurrency header, and immediate `q` shutdown.
+- Bounded preflight auto-tuning with JSON reports and automatic winner application.
+- Offline tests covering backend parsing, routing, concurrency, UI, safety limits, stagger behavior, and tuning/scoring.
 
-## Behavior
+## Confirmed Live Behavior
 
-A normal auto-routed invocation accepts Manga18FX series URLs:
+The user confirmed correct Manga18FX URL-file downloads on Windows 11. These combinations start and download normally on the current B: destination:
+
+- `-w 2 -I 2`
+- `-w 2 -I 4`
+- `-w 4 -I 1`
+- `-w 4 -I 2`
+- `-w 4 -I 4`
+- `-w 4 -I 5`
+
+A fifth outer worker causes immediate 100% disk utilization and no observable progress, even at `-w 5 -I 1` and `-w 5 -I 2`. Six and eight outer workers exhibit the same or worse behavior. This establishes four as the safe default outer-worker ceiling for this destination.
+
+## Concurrency Interface
+
+- `-w/--workers`: requested simultaneous series jobs; default `2`.
+- `-m/--max-workers`: outer-worker safety ceiling; default `4`, hard maximum `8`.
+- `-U/--worker-start-delay`: seconds between worker launches; default `2`.
+- `-I/--image-workers`: image transfers inside each Manga18FX series; default `4`, range `1-8`.
+
+A plain request above the ceiling is reduced before launch:
 
 ```powershell
-mangadl run -i .\urls8.txt -d .\downloads -a .\mangadl-archive.sqlite3 -s .\mangadl-state.sqlite3
+mangadl run -i .\urls8.txt -d .\downloads -a .\mangadl-archive.sqlite3 -s .\mangadl-state.sqlite3 -w 5 -I 2
 ```
 
-Each series is written as one top-level manga directory. Each chapter receives a naturally ordered numeric prefix, and each image receives a zero-padded numeric filename. The native backend uses the existing `-C/--cookies` Netscape/Mozilla cookies-file option when supplied.
-
-Manga18FX now has two concurrency controls:
-
-- `-w/--workers`: simultaneous series jobs; default `2`.
-- `-I/--image-workers`: simultaneous image transfers within each Manga18FX series; default `4`, valid range `1-8`.
+The effective outer-worker count is four. An experimental fifth worker requires an explicit override:
 
 ```powershell
-mangadl run -i .\urls8.txt -d .\downloads -a .\mangadl-archive.sqlite3 -s .\mangadl-state.sqlite3 -w 2 -I 4
+mangadl run -i .\urls8.txt -d .\downloads -a .\mangadl-archive.sqlite3 -s .\mangadl-state.sqlite3 -m 5 -w 5 -U 5 -I 2
 ```
 
-The approximate maximum number of simultaneous Manga18FX image transfers is `workers × image-workers`. Chapter-page discovery remains serial. Missing images inside each chapter use a bounded thread pool with a separate HTTP opener/cookie jar per thread. Deterministic filenames, existing-file checks, `.part` files, and atomic renames remain unchanged.
+Runtime controls:
 
-## Validation State
+- `+` / `-`: increase or decrease the target outer-worker count.
+- `]` / `[`: increase or decrease image workers for newly started Manga18FX jobs.
+- Lowering outer workers drains excess active jobs rather than terminating them.
+- `q` interrupts immediately through the same cleanup path as Ctrl+C.
 
-- The user confirmed that the original serial Manga18FX URL-file workflow downloads correctly on Windows 11.
-- The serial implementation averaged approximately 800 KiB/s with two outer workers, motivating bounded per-series image concurrency.
-- The initial full-suite run exposed a Windows pytest base-temp parent-directory failure and environment-dependent gallery-dl tests; those test-harness defects have been corrected.
-- Offline tests were added for `-I` parsing, the default value, worker-environment propagation, actual concurrent overlap, and the maximum value.
-- The complete mangadl suite must be rerun in the user's checkout after the concurrency changes before merge.
+## Auto-Tune Interface
+
+```powershell
+mangadl run -i .\urls8.txt -d .\downloads -a .\mangadl-archive.sqlite3 -s .\mangadl-state.sqlite3 -T -W 1:4 -Y 1:8 -D 8 -Q 2 -K 24
+```
+
+- `-T/--auto-tune`: enable preflight tuning.
+- `-W/--tune-workers MIN:MAX`: inclusive outer-worker bounds; cannot exceed `--max-workers`.
+- `-Y/--tune-image-workers MIN:MAX`: inclusive inner-thread bounds.
+- `-D/--tune-seconds`: target sample time per combination.
+- `-Q/--tune-rounds`: repeated samples per combination.
+- `-K/--tune-sample-images`: representative image cap per active series/candidate.
+- `-O/--tune-report`: JSON report destination.
+
+Candidate startup and stagger time count against measured throughput. Near-ties within two percent select the lower-concurrency combination.
 
 ## Required Local Validation
 
-From `modules/mangadl` after pulling the latest branch:
+From `modules\mangadl`:
 
 ```powershell
-python -m pip install -e .
-pytest --tb=short -q .\tests\
+
+git pull --ff-only && python -m pip install -e . && pytest --tb=short -q .\tests\
 ```
 
-After that passes, rerun the URL file using the conservative default:
+Then verify the public options:
 
 ```powershell
-mangadl run -i .\urls8.txt -d .\downloads -a .\mangadl-archive.sqlite3 -s .\mangadl-state.sqlite3 -w 2 -I 4
+mangadl run --help | Select-String 'max-workers|worker-start-delay|auto-tune|tune-workers|tune-image-workers'
 ```
 
-Compare aggregate throughput with the prior serial baseline. If the source remains responsive, try `-I 6` and then `-I 8`; reduce the value if rate-limit, timeout, or transient server errors increase.
+Preview the tuning matrix without downloading:
 
-Also rerun one already-downloaded Manga18FX URL and confirm existing files are skipped rather than downloaded again.
+```powershell
+mangadl run -i .\urls8.txt -d .\downloads -a .\mangadl-archive.sqlite3 -s .\mangadl-state.sqlite3 -T -W 1:4 -Y 1:8 -D 8 -Q 2 -K 24 -n
+```
 
-## Risks
+After tests and preview pass, run a small live tuning matrix first:
 
-- Aggregate concurrency multiplies across outer and inner workers; `-w 4 -I 8` could attempt roughly 32 simultaneous image transfers and is not recommended as a starting point.
-- Manga18FX can change HTML structure or add anti-bot behavior.
-- Browser-cookie extraction is not implemented for this backend; use an exported Netscape/Mozilla cookie file if anonymous requests fail.
-- Do not merge into `main` until the complete Windows pytest suite and one live concurrency run pass.
+```powershell
+mangadl run -i .\urls8.txt -d .\downloads -a .\mangadl-archive.sqlite3 -s .\mangadl-state.sqlite3 -T -W 2:4 -Y 2:5 -D 8 -Q 1 -K 12
+```
+
+## Merge Gate
+
+Do not merge into `main` until:
+
+1. The full Windows pytest suite passes.
+2. The normal `-w 5` request is visibly reduced to four.
+3. Worker launches visibly stagger rather than all starting at once.
+4. The live auto-tune report completes and applies a valid winner.
+5. One rerun confirms existing Manga18FX files are skipped.
