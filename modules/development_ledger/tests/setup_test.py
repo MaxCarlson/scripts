@@ -58,6 +58,7 @@ def test_existing_agents_content_is_preserved_and_setup_is_idempotent(tmp_path: 
 
     assert "Keep this rule." in first_content
     assert first_content.count("development-ledger:managed-instructions:start") == 1
+    assert first_content.index("development-ledger:managed-instructions:start") < first_content.index("# Existing")
     assert next(operation for operation in second.operations if operation.path == "AGENTS.md").action == "unchanged"
 
 
