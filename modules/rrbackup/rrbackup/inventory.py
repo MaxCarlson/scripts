@@ -288,7 +288,7 @@ def load_definitions(config_path: Optional[str] = None) -> Tuple[List[BackupDefi
     candidate = resolve_config_path(config_path)
     definitions: List[BackupDefinition] = []
     if candidate.exists() and candidate.suffix.lower() != ".json":
-        settings = load_config(candidate)
+        settings = load_config(candidate, create_directories=False)
         for backup_set in settings.sets:
             try:
                 definitions.append(
@@ -472,6 +472,9 @@ def build_inventory(
             latest_run=latest_run,
             lock=ProcessLock(profile.lock_file).inspect(),
             now=current,
+            sources_available=(
+                bool(definition.sources) if definition.source_kind == "toml" else None
+            ),
         )
         records.append(
             BackupInventoryRecord(
