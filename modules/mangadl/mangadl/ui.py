@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -27,6 +28,17 @@ BACKEND_BADGES = {
     "hdporncomics": ("HD", "magenta"),
     "manga18fx": ("M18", "blue"),
 }
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardRuntime:
+    active_workers: int
+    target_workers: int
+    image_workers: int
+    aggregate: int
+    budget: int
+    logical_cpus: int
+    notice: str = ""
 
 
 def human_bytes(value: float | int | None, suffix: str = "") -> str:
@@ -116,8 +128,15 @@ def _progress(worker: WorkerSnapshot, width: int) -> str:
         ratio = max(0.0, min(1.0, worker.images_done / worker.images_total))
         filled = int(width * ratio)
         return "[" + td_utils.color_text("=" * filled, "green") + "." * (width - filled) + "]"
-    pulse = worker.images_done % width
+    pulse = int(max(0.0, worker.elapsed) * 4) % max(1, width)
     return "[" + "." * pulse + td_utils.color_text(">", "cyan") + "." * (width - pulse - 1) + "]"
+
+
+def _progress_label(worker: WorkerSnapshot) -> str:
+    if worker.images_total:
+        ratio = max(0.0, min(1.0, worker.images_done / worker.images_total))
+        return f"{ratio * 100:5.1f}%"
+    return "activity"
 
 
 def _worker_lines(worker: WorkerSnapshot, selected: bool, width: int) -> list[str]:
@@ -130,9 +149,11 @@ def _worker_lines(worker: WorkerSnapshot, selected: bool, width: int) -> list[st
     items = f"{worker.current_ips:.2f} img/s"
     elapsed = td_utils.fmt_hms(worker.elapsed)
     title = worker.title if worker.title and worker.title != "gallery" else ""
+    message = worker.message or title or "waiting for progress"
+
     if width >= 160:
         title_width = width - 145
-        return [
+        first = (
             f"{marker}{worker.slot:02d} "
             f"{fit_field(color_status(worker.state), 12)} "
             f"{fit_field(backend, 3)} | "
@@ -143,18 +164,34 @@ def _worker_lines(worker: WorkerSnapshot, selected: bool, width: int) -> list[st
             f"{fit_field(items, 11, 'right')} | "
             f"{fit_field(elapsed, 8, 'right')} | "
             f"{fit_field(title, title_width)}"
-        ]
+        )
+        bar_width = max(12, min(72, width - 34))
+        second = fit_field(
+            f"    {_progress(worker, bar_width)} {_progress_label(worker):>8} | {message}",
+            width,
+        )
+        return [first, second]
+
     if width >= 78:
         first = clip(
             f"{marker}{worker.slot:02d} {color_status(worker.state)} {backend} | {identity} | {images} | {sizes} | {elapsed}",
             width,
         )
-        second = clip(f"    {_progress(worker, 18)} | {rates} | {items} | {title}", width)
+        bar_width = max(12, min(36, width - 38))
+        second = clip(
+            f"    {_progress(worker, bar_width)} {_progress_label(worker):>8} | {rates} | {items}",
+            width,
+        )
         return [first, second]
+
     first = clip(
         f"{marker}{worker.slot:02d} {color_status(worker.state)} {backend} | {identity} | {images} | {elapsed}", width
     )
-    second = clip(f"    {_progress(worker, 10)} | {sizes} | {human_bytes(worker.current_bps, '/s')} | {items}", width)
+    bar_width = max(8, min(18, width - 26))
+    second = clip(
+        f"    {_progress(worker, bar_width)} {_progress_label(worker):>8} | {human_bytes(worker.current_bps, '/s')}",
+        width,
+    )
     return [first, second]
 
 
@@ -192,6 +229,7 @@ def render_dashboard(
     width: int = 120,
     log_lines: list[str] | None = None,
     raw_log: bool = False,
+    runtime: DashboardRuntime | None = None,
 ) -> str:
     total = sum(counts.values())
     done = counts.get("succeeded", 0) + counts.get("skipped_archive", 0)
@@ -203,13 +241,26 @@ def render_dashboard(
         clip(
             f"{td_utils.color_text('mangadl', 'bright')} {run_id} | Manga {td_utils.color_text(f'{done}/{total}', 'green')} | Q {counts.get('queued', 0)} Run {td_utils.color_text(str(running), 'green')} Retry {td_utils.color_text(str(counts.get('retry_wait', 0)), 'yellow')} Fail {td_utils.color_text(str(failed), 'red' if failed else 'gray')}",
             width,
-        ),
+        )
+    ]
+    if runtime is not None:
+        lines.append(
+            clip(
+                f"Workers {runtime.active_workers}/{runtime.target_workers} | Images/worker {runtime.image_workers} | "
+                f"Active concurrency {runtime.aggregate}/{runtime.budget} | Logical CPUs {runtime.logical_cpus}",
+                width,
+            )
+        )
+    lines.append(
         clip(
             f"Speed {td_utils.color_text(human_bytes(speed, '/s'), 'cyan')} | Worker avg {human_bytes(avg, '/s')} | Downloaded {human_bytes(sum(w.bytes_done for w in workers.values()))}",
             width,
-        ),
-        "-" * width,
-    ]
+        )
+    )
+    if runtime is not None and runtime.notice:
+        lines.append(clip(f"Tuning: {runtime.notice}", width))
+    lines.append("-" * width)
+
     for slot in sorted(workers):
         lines.extend(_worker_lines(workers[slot], slot == selected, width))
     if log_lines is not None:
@@ -221,7 +272,8 @@ def render_dashboard(
         [
             "-" * width,
             clip(
-                "Up/Down j/k Select | l Inline log | f Fullscreen | r Raw/activity | p Worker | P All | q Quit", width
+                "Up/Down j/k Select | +/- Workers | [/] Image threads | l Log | f Fullscreen | r Raw | p/P Pause | q Quit",
+                width,
             ),
         ]
     )
@@ -245,6 +297,14 @@ class ConsoleDashboard:
             self.selected = min(worker_count, self.selected + 1)
         elif key in {"UP", "k"}:
             self.selected = max(1, self.selected - 1)
+        elif key in {"+", "="}:
+            return "workers_up"
+        elif key == "-":
+            return "workers_down"
+        elif key == "]":
+            return "images_up"
+        elif key == "[":
+            return "images_down"
         elif key == "l":
             self.inline_log = not self.inline_log
             self.fullscreen_log = False
@@ -265,7 +325,12 @@ class ConsoleDashboard:
         suffix = "-gallery-dl.log" if self.raw_view else ".log"
         return self.log_dir / folder / f"worker-{self.selected:02d}{suffix}"
 
-    def render(self, counts: dict[str, int], workers: dict[int, WorkerSnapshot]) -> None:
+    def render(
+        self,
+        counts: dict[str, int],
+        workers: dict[int, WorkerSnapshot],
+        runtime: DashboardRuntime | None = None,
+    ) -> None:
         if not self.enabled:
             return
         terminal = os.get_terminal_size() if sys_stdout_tty() else os.terminal_size((120, 30))
@@ -281,10 +346,28 @@ class ConsoleDashboard:
         else:
             log_lines = None
             if self.inline_log:
-                base_rows = len(render_dashboard(self.run_id, counts, workers, self.selected, width).splitlines())
+                base_rows = len(
+                    render_dashboard(
+                        self.run_id,
+                        counts,
+                        workers,
+                        self.selected,
+                        width,
+                        runtime=runtime,
+                    ).splitlines()
+                )
                 available_log_rows = max(1, terminal.lines - base_rows - 2)
                 log_lines = read_log_lines(self._log_path(), available_log_rows)
-            text = render_dashboard(self.run_id, counts, workers, self.selected, width, log_lines, self.raw_view)
+            text = render_dashboard(
+                self.run_id,
+                counts,
+                workers,
+                self.selected,
+                width,
+                log_lines,
+                self.raw_view,
+                runtime,
+            )
         print("\x1b[H\x1b[2J" + text, end="", flush=True)
 
 
