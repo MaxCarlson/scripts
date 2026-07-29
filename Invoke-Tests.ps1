@@ -34,6 +34,8 @@ $ResultsRoot = Join-Path $RepoRoot 'docs\test-results'
 $Timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $OverallFailures = [System.Collections.Generic.List[string]]::new()
 $ReportPaths = [System.Collections.Generic.List[string]]::new()
+$ContextPaths = [System.Collections.Generic.List[string]]::new()
+$ProgressPaths = [System.Collections.Generic.List[string]]::new()
 
 function Resolve-PythonExecutable {
     [CmdletBinding()]
@@ -102,16 +104,16 @@ function Get-ManifestItems {
     return @($Container[$Name])
 }
 
-function Get-ReportArchiveStamp {
+function Get-ArtifactArchiveStamp {
     [CmdletBinding()]
     [OutputType([string])]
     param(
         [Parameter(Mandatory)]
-        [string]$ReportPath
+        [string]$Path
     )
 
-    foreach ($Line in @(Get-Content -LiteralPath $ReportPath -TotalCount 40 -ErrorAction SilentlyContinue)) {
-        if ($Line -match '^Timestamp:\s*(.+)$') {
+    foreach ($Line in @(Get-Content -LiteralPath $Path -TotalCount 50 -ErrorAction SilentlyContinue)) {
+        if ($Line -match '^(?:Timestamp|Generated):\s*(.+)$') {
             $ParsedTimestamp = [DateTimeOffset]::MinValue
             if ([DateTimeOffset]::TryParse($Matches[1], [ref]$ParsedTimestamp)) {
                 return $ParsedTimestamp.ToString('yyyyMMdd-HHmmss')
@@ -119,12 +121,68 @@ function Get-ReportArchiveStamp {
         }
     }
 
-    return (Get-Item -LiteralPath $ReportPath).LastWriteTime.ToString('yyyyMMdd-HHmmss')
+    return (Get-Item -LiteralPath $Path).LastWriteTime.ToString('yyyyMMdd-HHmmss')
+}
+
+function Get-UniqueArchivePath {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)]
+        [string]$HistoryRoot,
+
+        [Parameter(Mandatory)]
+        [string]$ArchiveStamp,
+
+        [Parameter(Mandatory)]
+        [string]$Suffix
+    )
+
+    $ArchivePath = Join-Path $HistoryRoot ("{0}_{1}" -f $ArchiveStamp, $Suffix)
+    $Counter = 1
+    while (Test-Path -LiteralPath $ArchivePath) {
+        $ArchivePath = Join-Path $HistoryRoot ("{0}-{1}_{2}" -f $ArchiveStamp, $Counter, $Suffix)
+        $Counter++
+    }
+
+    return $ArchivePath
+}
+
+function Limit-HistoryFiles {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$HistoryRoot,
+
+        [Parameter(Mandatory)]
+        [string]$Filter,
+
+        [Parameter(Mandatory)]
+        [int]$MaxCount,
+
+        [Parameter(Mandatory)]
+        [int]$MaxAgeDays
+    )
+
+    $Cutoff = (Get-Date).AddDays(-$MaxAgeDays)
+    Get-ChildItem -LiteralPath $HistoryRoot -File -Filter $Filter -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -lt $Cutoff } |
+        Remove-Item -Force
+
+    $RemainingFiles = @(
+        Get-ChildItem -LiteralPath $HistoryRoot -File -Filter $Filter -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime, Name -Descending
+    )
+    if ($RemainingFiles.Count -gt $MaxCount) {
+        $RemainingFiles |
+            Select-Object -Skip $MaxCount |
+            Remove-Item -Force
+    }
 }
 
 function Initialize-TargetReportStore {
     [CmdletBinding()]
-    [OutputType([string])]
+    [OutputType([hashtable])]
     param(
         [Parameter(Mandatory)]
         [string]$TargetResultsRoot,
@@ -141,6 +199,7 @@ function Initialize-TargetReportStore {
 
     $HistoryRoot = Join-Path $TargetResultsRoot 'history'
     $LatestReportPath = Join-Path $TargetResultsRoot 'LATEST.txt'
+    $PreviousArchiveStamp = $null
 
     New-Item -ItemType Directory -Path $TargetResultsRoot -Force | Out-Null
     New-Item -ItemType Directory -Path $HistoryRoot -Force | Out-Null
@@ -154,36 +213,97 @@ function Initialize-TargetReportStore {
     }
 
     if (Test-Path -LiteralPath $LatestReportPath -PathType Leaf) {
-        $ArchiveStamp = Get-ReportArchiveStamp -ReportPath $LatestReportPath
-        $ArchiveName = "${ArchiveStamp}_${SafeTargetName}.txt"
-        $ArchivePath = Join-Path $HistoryRoot $ArchiveName
-        $Counter = 1
-
-        while (Test-Path -LiteralPath $ArchivePath) {
-            $ArchiveName = "${ArchiveStamp}-${Counter}_${SafeTargetName}.txt"
-            $ArchivePath = Join-Path $HistoryRoot $ArchiveName
-            $Counter++
-        }
-
+        $PreviousArchiveStamp = Get-ArtifactArchiveStamp -Path $LatestReportPath
+        $ArchivePath = Get-UniqueArchivePath `
+            -HistoryRoot $HistoryRoot `
+            -ArchiveStamp $PreviousArchiveStamp `
+            -Suffix ("{0}.txt" -f $SafeTargetName)
         Move-Item -LiteralPath $LatestReportPath -Destination $ArchivePath
     }
 
-    $Cutoff = (Get-Date).AddDays(-$MaxHistoryDays)
-    Get-ChildItem -LiteralPath $HistoryRoot -File -Filter '*.txt' -ErrorAction SilentlyContinue |
-        Where-Object { $_.LastWriteTime -lt $Cutoff } |
-        Remove-Item -Force
+    Limit-HistoryFiles `
+        -HistoryRoot $HistoryRoot `
+        -Filter ("*_{0}.txt" -f $SafeTargetName) `
+        -MaxCount $MaxHistoryCount `
+        -MaxAgeDays $MaxHistoryDays
 
-    $RemainingHistory = @(
-        Get-ChildItem -LiteralPath $HistoryRoot -File -Filter '*.txt' -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime, Name -Descending
+    return @{
+        ReportPath = $LatestReportPath
+        HistoryRoot = $HistoryRoot
+        PreviousArchiveStamp = $PreviousArchiveStamp
+    }
+}
+
+function Initialize-TargetContextStore {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)]
+        [string]$TargetResultsRoot,
+
+        [Parameter(Mandatory)]
+        [string]$SafeTargetName,
+
+        [Parameter()]
+        [AllowNull()]
+        [string]$PreferredArchiveStamp,
+
+        [Parameter(Mandatory)]
+        [int]$MaxHistoryCount,
+
+        [Parameter(Mandatory)]
+        [int]$MaxHistoryDays
     )
-    if ($RemainingHistory.Count -gt $MaxHistoryCount) {
-        $RemainingHistory |
-            Select-Object -Skip $MaxHistoryCount |
-            Remove-Item -Force
+
+    $HistoryRoot = Join-Path $TargetResultsRoot 'history'
+    $LatestContextPath = Join-Path $TargetResultsRoot 'LATEST_CONTEXT.md'
+    $LatestProgressPath = Join-Path $TargetResultsRoot 'LATEST_PROGRESS.diff'
+    $PreviousContextPath = $null
+    $ArchiveStamp = $PreferredArchiveStamp
+
+    New-Item -ItemType Directory -Path $TargetResultsRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $HistoryRoot -Force | Out-Null
+
+    if (Test-Path -LiteralPath $LatestContextPath -PathType Leaf) {
+        if ([string]::IsNullOrWhiteSpace($ArchiveStamp)) {
+            $ArchiveStamp = Get-ArtifactArchiveStamp -Path $LatestContextPath
+        }
+
+        $PreviousContextPath = Get-UniqueArchivePath `
+            -HistoryRoot $HistoryRoot `
+            -ArchiveStamp $ArchiveStamp `
+            -Suffix ("{0}_context.md" -f $SafeTargetName)
+        Move-Item -LiteralPath $LatestContextPath -Destination $PreviousContextPath
     }
 
-    return $LatestReportPath
+    if (Test-Path -LiteralPath $LatestProgressPath -PathType Leaf) {
+        if ([string]::IsNullOrWhiteSpace($ArchiveStamp)) {
+            $ArchiveStamp = Get-ArtifactArchiveStamp -Path $LatestProgressPath
+        }
+
+        $ProgressArchivePath = Get-UniqueArchivePath `
+            -HistoryRoot $HistoryRoot `
+            -ArchiveStamp $ArchiveStamp `
+            -Suffix ("{0}_progress.diff" -f $SafeTargetName)
+        Move-Item -LiteralPath $LatestProgressPath -Destination $ProgressArchivePath
+    }
+
+    Limit-HistoryFiles `
+        -HistoryRoot $HistoryRoot `
+        -Filter ("*_{0}_context.md" -f $SafeTargetName) `
+        -MaxCount $MaxHistoryCount `
+        -MaxAgeDays $MaxHistoryDays
+    Limit-HistoryFiles `
+        -HistoryRoot $HistoryRoot `
+        -Filter ("*_{0}_progress.diff" -f $SafeTargetName) `
+        -MaxCount $MaxHistoryCount `
+        -MaxAgeDays $MaxHistoryDays
+
+    return @{
+        ContextPath = $LatestContextPath
+        ProgressPath = $LatestProgressPath
+        PreviousContextPath = $PreviousContextPath
+    }
 }
 
 function Write-ReportLine {
@@ -288,6 +408,148 @@ function Invoke-ManifestCommand {
     }
 }
 
+function Write-TargetContextSnapshot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$TargetName,
+
+        [Parameter(Mandatory)]
+        [string]$WorkingDirectory,
+
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$TargetSpec,
+
+        [Parameter(Mandatory)]
+        [string]$ReportPath,
+
+        [Parameter(Mandatory)]
+        [string]$ContextPath
+    )
+
+    $Lines = [System.Collections.Generic.List[string]]::new()
+    $Lines.Add("# Validation Context: $TargetName") | Out-Null
+    $Lines.Add('') | Out-Null
+    $Lines.Add("Generated: $(Get-Date -Format o)") | Out-Null
+    $Lines.Add("Branch: $(& git -C $RepoRoot branch --show-current 2>$null)") | Out-Null
+    $Lines.Add("Commit: $(& git -C $RepoRoot rev-parse HEAD 2>$null)") | Out-Null
+    $Lines.Add("Validation report: $([System.IO.Path]::GetRelativePath($RepoRoot, $ReportPath))") | Out-Null
+    $Lines.Add('') | Out-Null
+    $Lines.Add('## Validation Highlights') | Out-Null
+    $Lines.Add('') | Out-Null
+
+    $HighlightLines = @(
+        Get-Content -LiteralPath $ReportPath -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_ -match '^(?:TARGET RESULT|OVERALL RESULT|Failure count|RESULT: (?:PASS|FAIL))' -or
+                $_ -match '(?i)\b(?:passed|failed|skipped|errors?)\b.*\bin\s+[0-9.]+s\b'
+            } |
+            Select-Object -Last 30
+    )
+    if ($HighlightLines.Count -eq 0) {
+        $Lines.Add('- No summary lines were detected in the validation report.') | Out-Null
+    }
+    else {
+        foreach ($HighlightLine in $HighlightLines) {
+            $Lines.Add("- $HighlightLine") | Out-Null
+        }
+    }
+
+    $Lines.Add('') | Out-Null
+    $Lines.Add('## Working Tree') | Out-Null
+    $Lines.Add('') | Out-Null
+    $GitStatus = @(& git -C $RepoRoot status --short 2>$null)
+    if ($GitStatus.Count -eq 0) {
+        $Lines.Add('```text') | Out-Null
+        $Lines.Add('(clean)') | Out-Null
+        $Lines.Add('```') | Out-Null
+    }
+    else {
+        $Lines.Add('```text') | Out-Null
+        foreach ($StatusLine in $GitStatus) {
+            $Lines.Add([string]$StatusLine) | Out-Null
+        }
+        $Lines.Add('```') | Out-Null
+    }
+
+    $Lines.Add('') | Out-Null
+    $Lines.Add('## Project Status Sources') | Out-Null
+    $Lines.Add('') | Out-Null
+    $ContextFiles = @(Get-ManifestItems -Container $TargetSpec -Name 'context_files')
+    if ($ContextFiles.Count -eq 0) {
+        $Lines.Add('No context files are configured for this target.') | Out-Null
+    }
+    else {
+        foreach ($RelativePathObject in $ContextFiles) {
+            $RelativePath = [string]$RelativePathObject
+            $SourcePath = Join-Path $WorkingDirectory $RelativePath
+            $Lines.Add("### `$RelativePath`") | Out-Null
+            $Lines.Add('') | Out-Null
+
+            if (Test-Path -LiteralPath $SourcePath -PathType Leaf) {
+                $SourceText = Get-Content -LiteralPath $SourcePath -Raw
+                $Lines.Add($SourceText.TrimEnd()) | Out-Null
+            }
+            else {
+                $Lines.Add("_Missing at validation time: `$SourcePath`_") | Out-Null
+            }
+
+            $Lines.Add('') | Out-Null
+        }
+    }
+
+    Set-Content -LiteralPath $ContextPath -Value $Lines -Encoding utf8
+}
+
+function Write-ContextProgressDiff {
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [AllowNull()]
+        [string]$PreviousContextPath,
+
+        [Parameter(Mandatory)]
+        [string]$CurrentContextPath,
+
+        [Parameter(Mandatory)]
+        [string]$ProgressPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PreviousContextPath) -or -not (Test-Path -LiteralPath $PreviousContextPath)) {
+        Set-Content `
+            -LiteralPath $ProgressPath `
+            -Value 'No previous context snapshot is available. This validation establishes the baseline.' `
+            -Encoding utf8
+        return
+    }
+
+    $DiffOutput = @(
+        & git -c core.quotepath=false diff --no-index --no-ext-diff --unified=3 -- $PreviousContextPath $CurrentContextPath 2>&1
+    )
+    $DiffExitCode = $LASTEXITCODE
+
+    if ($DiffExitCode -eq 0) {
+        Set-Content `
+            -LiteralPath $ProgressPath `
+            -Value 'No project-status changes were detected since the previous validation context.' `
+            -Encoding utf8
+        return
+    }
+
+    if ($DiffExitCode -eq 1) {
+        Set-Content -LiteralPath $ProgressPath -Value $DiffOutput -Encoding utf8
+        return
+    }
+
+    Set-Content `
+        -LiteralPath $ProgressPath `
+        -Value @(
+            "Unable to generate context diff. git diff --no-index exited with code $DiffExitCode.",
+            $DiffOutput
+        ) `
+        -Encoding utf8
+}
+
 if (-not (Test-Path -LiteralPath $ManifestPath)) {
     throw "Validation manifest not found: $ManifestPath"
 }
@@ -349,17 +611,30 @@ foreach ($TargetName in $SelectedTargets) {
     $InitialStatus = @(& git -C $RepoRoot status --short 2>$null)
     $SafeTargetName = $TargetName -replace '[^A-Za-z0-9._-]', '_'
     $TargetResultsRoot = Join-Path $ResultsRoot $SafeTargetName
-    $ReportPath = Initialize-TargetReportStore `
+    $ReportStore = Initialize-TargetReportStore `
         -TargetResultsRoot $TargetResultsRoot `
         -SafeTargetName $SafeTargetName `
         -MaxHistoryCount $MaxHistoryPerTarget `
         -MaxHistoryDays $MaxHistoryAgeDays
+    $ContextStore = Initialize-TargetContextStore `
+        -TargetResultsRoot $TargetResultsRoot `
+        -SafeTargetName $SafeTargetName `
+        -PreferredArchiveStamp $ReportStore.PreviousArchiveStamp `
+        -MaxHistoryCount $MaxHistoryPerTarget `
+        -MaxHistoryDays $MaxHistoryAgeDays
+
+    $ReportPath = [string]$ReportStore.ReportPath
+    $ContextPath = [string]$ContextStore.ContextPath
+    $ProgressPath = [string]$ContextStore.ProgressPath
+    $PreviousContextPath = $ContextStore.PreviousContextPath
     $TempRoot = Join-Path $WorkingDirectory ('.pytest_tmp_root\validation-{0}' -f $Timestamp)
     $TargetFailures = [System.Collections.Generic.List[string]]::new()
 
     New-Item -ItemType Directory -Path $TempRoot -Force | Out-Null
     Set-Content -LiteralPath $ReportPath -Value '' -Encoding utf8
     $ReportPaths.Add($ReportPath)
+    $ContextPaths.Add($ContextPath)
+    $ProgressPaths.Add($ProgressPath)
 
     $Tokens = @{
         '{repo_root}' = $RepoRoot
@@ -398,7 +673,7 @@ foreach ($TargetName in $SelectedTargets) {
         Write-ReportLine -ReportPath $ReportPath -Text "Platform: $([System.Runtime.InteropServices.RuntimeInformation]::OSDescription)"
         Write-ReportLine -ReportPath $ReportPath -Text "Bootstrap enabled: $(-not $SkipBootstrap)"
         Write-ReportLine -ReportPath $ReportPath -Text "Production read-only checks: $([bool]$IncludeProductionReadOnly)"
-        Write-ReportLine -ReportPath $ReportPath -Text "History retention: $MaxHistoryPerTarget prior reports, maximum age $MaxHistoryAgeDays days"
+        Write-ReportLine -ReportPath $ReportPath -Text "History retention: $MaxHistoryPerTarget prior runs, maximum age $MaxHistoryAgeDays days"
         Write-ReportLine -ReportPath $ReportPath -Text "Git branch: $(& git -C $RepoRoot branch --show-current 2>$null)"
         Write-ReportLine -ReportPath $ReportPath -Text "Git commit: $(& git -C $RepoRoot rev-parse HEAD 2>$null)"
         Write-ReportLine -ReportPath $ReportPath -Text 'Git status before validation:'
@@ -481,6 +756,8 @@ foreach ($TargetName in $SelectedTargets) {
 
         Write-ReportSection -ReportPath $ReportPath -Title 'TARGET SUMMARY'
         Write-ReportLine -ReportPath $ReportPath -Text "Latest report: $ReportPath"
+        Write-ReportLine -ReportPath $ReportPath -Text "Context snapshot: $ContextPath"
+        Write-ReportLine -ReportPath $ReportPath -Text "Progress diff: $ProgressPath"
         if ($TargetFailures.Count -eq 0) {
             Write-ReportLine -ReportPath $ReportPath -Text 'TARGET RESULT: PASS'
             Write-ReportLine -ReportPath $ReportPath -Text 'All requested validation sections passed.'
@@ -504,6 +781,17 @@ foreach ($TargetName in $SelectedTargets) {
                 Write-ReportLine -ReportPath $ReportPath -Text ([string]$Line)
             }
         }
+
+        Write-TargetContextSnapshot `
+            -TargetName $TargetName `
+            -WorkingDirectory $WorkingDirectory `
+            -TargetSpec $TargetSpec `
+            -ReportPath $ReportPath `
+            -ContextPath $ContextPath
+        Write-ContextProgressDiff `
+            -PreviousContextPath $PreviousContextPath `
+            -CurrentContextPath $ContextPath `
+            -ProgressPath $ProgressPath
     }
     finally {
         foreach ($Entry in $PreviousEnvironment.GetEnumerator()) {
@@ -516,8 +804,10 @@ Write-Output ''
 Write-Output ('=' * 100)
 Write-Output 'REPOSITORY VALIDATION SUMMARY'
 Write-Output ('=' * 100)
-foreach ($ReportPath in $ReportPaths) {
-    Write-Output "Latest report: $ReportPath"
+for ($Index = 0; $Index -lt $ReportPaths.Count; $Index++) {
+    Write-Output "Latest report: $($ReportPaths[$Index])"
+    Write-Output "Context snapshot: $($ContextPaths[$Index])"
+    Write-Output "Progress diff: $($ProgressPaths[$Index])"
 }
 
 if ($OverallFailures.Count -eq 0) {
