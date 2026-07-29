@@ -12,6 +12,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .config import (
     BackupSet,
+    Repo,
     RetentionPolicy,
     Schedule,
     Settings,
@@ -30,12 +31,7 @@ from .profile import (
 )
 from .repository_ops import RepositoryClient
 from .schedule_discovery import ScheduleDiscovery, ScheduleRecord, discover_schedules
-from .schedule_math import (
-    count_missed_runs,
-    describe_retention,
-    describe_schedule,
-    next_scheduled_run,
-)
+from .schedule_math import count_missed_runs, describe_retention, describe_schedule, next_scheduled_run
 from .snapshots import SnapshotRecord
 from .state import RunStateStore
 
@@ -58,10 +54,8 @@ class BackupDefinition:
 
     @property
     def task_name(self) -> str:
-        """Return the stable scheduler identifier for this backup."""
-
         normalized = re.sub(r"[^A-Za-z0-9_.-]+", "-", self.name).strip("-")
-        return f"RRBackup::{normalized or 'backup'}"
+        return "RRBackup::{0}".format(normalized or "backup")
 
     @property
     def schedule_text(self) -> str:
@@ -77,7 +71,7 @@ class BackupDefinition:
             return "No sources"
         if len(self.sources) == 1:
             return self.sources[0]
-        return f"{self.sources[0]} +{len(self.sources) - 1} more"
+        return "{0} +{1} more".format(self.sources[0], len(self.sources) - 1)
 
     def materialize_inputs(self) -> None:
         """Write canonical set inputs immediately before execution."""
@@ -88,11 +82,43 @@ class BackupDefinition:
         if self.profile.excludes_file:
             _atomic_write_lines(Path(self.profile.excludes_file), self.excludes)
 
+    def to_backup_set(self) -> BackupSet:
+        """Return a lossless canonical representation of this definition."""
+
+        if self.backup_set is not None:
+            current = self.backup_set
+            return BackupSet(
+                name=self.name,
+                include=list(self.sources),
+                exclude=list(self.excludes),
+                tags=list(self.tags),
+                one_fs=current.one_fs,
+                dry_run_default=current.dry_run_default,
+                backup_type=current.backup_type,
+                encryption=current.encryption,
+                compression=current.compression,
+                schedule=self.schedule,
+                retention=self.retention,
+                use_fs_snapshot=current.use_fs_snapshot,
+                exclude_caches=current.exclude_caches,
+                extra_backup_args=list(current.extra_backup_args),
+            )
+        return BackupSet(
+            name=self.name,
+            include=list(self.sources),
+            exclude=list(self.excludes),
+            tags=list(self.tags),
+            schedule=self.schedule,
+            retention=self.retention,
+            use_fs_snapshot=self.profile.use_fs_snapshot,
+            exclude_caches=self.profile.exclude_caches,
+            extra_backup_args=list(self.profile.extra_backup_args),
+            dry_run_default=self.profile.dry_run,
+        )
+
 
 @dataclass(frozen=True)
 class BackupInventoryRecord:
-    """Backup definition enriched with snapshots, runs, schedule, and health."""
-
     definition: BackupDefinition
     latest_snapshot: Optional[SnapshotRecord]
     latest_run: Optional[RunRecord]
@@ -167,7 +193,7 @@ def _atomic_write_lines(path: Path, values: Iterable[str]) -> None:
         raise ValueError("Cannot materialize an empty input path.")
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
+        prefix=".{0}.".format(path.name),
         suffix=".tmp",
         dir=str(path.parent),
         text=True,
@@ -210,8 +236,8 @@ def _profile_from_set(
 
     profile_root = _profile_state_root(settings, backup_set.name)
     tags = tuple(backup_set.tags or [backup_set.name])
-    extra_arguments: List[str] = []
-    if backup_set.one_fs:
+    extra_arguments = list(backup_set.extra_backup_args)
+    if backup_set.one_fs and "--one-file-system" not in extra_arguments:
         extra_arguments.append("--one-file-system")
 
     attribution = {
@@ -228,13 +254,13 @@ def _profile_from_set(
         sources_file=str(profile_root / "sources.txt"),
         excludes_file=str(profile_root / "excludes.txt"),
         status_file=str(profile_root / "status.json"),
-        log_file=str(Path(settings.log_dir or profile_root / "logs") / f"{backup_set.name}.log"),
+        log_file=str(Path(settings.log_dir or profile_root / "logs") / "{0}.log".format(backup_set.name)),
         lock_file=str(profile_root / "backup.lock"),
         tag=tags[0] if tags else backup_set.name,
         restic_executable=settings.restic_bin,
         restore_root=str(profile_root / "restore"),
-        use_fs_snapshot=True,
-        exclude_caches=True,
+        use_fs_snapshot=backup_set.use_fs_snapshot,
+        exclude_caches=backup_set.exclude_caches,
         dry_run=backup_set.dry_run_default,
         extra_backup_args=extra_arguments,
         attribution=attribution,
@@ -255,15 +281,13 @@ def _profile_from_set(
     )
 
 
-def load_definitions(
-    config_path: Optional[str] = None,
-) -> Tuple[List[BackupDefinition], List[str]]:
+def load_definitions(config_path: Optional[str] = None) -> Tuple[List[BackupDefinition], List[str]]:
     """Load canonical TOML sets when available, otherwise legacy defaults."""
 
     warnings: List[str] = []
     candidate = resolve_config_path(config_path)
     definitions: List[BackupDefinition] = []
-    if candidate.exists():
+    if candidate.exists() and candidate.suffix.lower() != ".json":
         settings = load_config(candidate)
         for backup_set in settings.sets:
             try:
@@ -271,25 +295,19 @@ def load_definitions(
                     _profile_from_set(settings, backup_set, config_path=candidate)
                 )
             except (OSError, ValueError) as exc:
-                warnings.append(f"{backup_set.name}: {exc}")
+                warnings.append("{0}: {1}".format(backup_set.name, exc))
         if definitions:
             return definitions, warnings
-        warnings.append(f"No usable backup sets were found in {candidate}.")
+        warnings.append("No usable backup sets were found in {0}.".format(candidate))
 
-    legacy_config = (
-        config_path
-        if config_path and candidate.suffix.lower() == ".json"
-        else None
-    )
+    legacy_config = config_path if config_path and candidate.suffix.lower() == ".json" else None
     legacy_profile, legacy_path = load_legacy_profile(legacy_config)
-    sources = tuple(read_path_list(legacy_profile.sources_file))
-    excludes = tuple(read_path_list(legacy_profile.excludes_file))
     definitions.append(
         BackupDefinition(
             name=legacy_profile.name,
             profile=legacy_profile,
-            sources=sources,
-            excludes=excludes,
+            sources=tuple(read_path_list(legacy_profile.sources_file)),
+            excludes=tuple(read_path_list(legacy_profile.excludes_file)),
             tags=tuple([legacy_profile.tag] if legacy_profile.tag else []),
             schedule=Schedule(type="manual", description="No schedule configured"),
             retention=None,
@@ -298,6 +316,52 @@ def load_definitions(
         )
     )
     return definitions, warnings
+
+
+def settings_from_definitions(
+    definitions: Sequence[BackupDefinition],
+    *,
+    existing: Optional[Settings] = None,
+) -> Settings:
+    """Build canonical settings while preserving existing global options."""
+
+    if not definitions:
+        raise ValueError("At least one backup definition is required.")
+    first = definitions[0]
+    settings = existing or Settings(
+        restic_bin=first.profile.restic_executable,
+        state_dir=str(Path(first.profile.status_file).parent / "rrbackup-state"),
+        log_dir=str(Path(first.profile.log_file).parent),
+        repo=Repo(
+            url=first.profile.repository,
+            password_file=first.profile.password_file,
+        ),
+    )
+    settings.sets = [definition.to_backup_set() for definition in definitions]
+    if settings.repo is None:
+        settings.repo = Repo(
+            url=first.profile.repository,
+            password_file=first.profile.password_file,
+        )
+    return settings
+
+
+def upsert_backup_set(settings: Settings, backup_set: BackupSet) -> Settings:
+    """Replace a set by case-insensitive name or append it."""
+
+    normalized = backup_set.name.lower()
+    replaced = False
+    sets: List[BackupSet] = []
+    for current in settings.sets:
+        if current.name.lower() == normalized:
+            sets.append(backup_set)
+            replaced = True
+        else:
+            sets.append(current)
+    if not replaced:
+        sets.append(backup_set)
+    settings.sets = sets
+    return settings
 
 
 def _match_schedule(
@@ -314,7 +378,7 @@ def _match_schedule(
         ).lower()
         if expected_name in identifier or (
             "backup" in command_text
-            and " run " in f" {command_text} "
+            and " run " in " {0} ".format(command_text)
             and name in command_text
         ):
             matches.append(record)
@@ -322,9 +386,7 @@ def _match_schedule(
 
 
 def _record_store(definition: BackupDefinition) -> RunStateStore:
-    return RunStateStore(
-        Path(definition.profile.status_file).parent / "rrbackup-state"
-    )
+    return RunStateStore(Path(definition.profile.status_file).parent / "rrbackup-state")
 
 
 def _filter_snapshots(
@@ -379,12 +441,10 @@ def build_inventory(
         )
         if cache_key not in snapshot_cache:
             snapshots, result = repository_factory(profile).snapshots()
-            error = (
-                None
-                if result.return_code == 0
-                else "Restic snapshot listing failed."
+            snapshot_cache[cache_key] = (
+                snapshots,
+                None if result.return_code == 0 else "Restic snapshot listing failed.",
             )
-            snapshot_cache[cache_key] = (snapshots, error)
         snapshots, snapshot_error = snapshot_cache[cache_key]
         relevant = _filter_snapshots(snapshots, definition)
         latest_snapshot = relevant[0] if relevant else None
@@ -400,15 +460,11 @@ def build_inventory(
             else:
                 missed_runs = count_missed_runs(
                     definition.schedule,
-                    since=(
-                        None
-                        if latest_snapshot is None
-                        else latest_snapshot.time
-                    ),
+                    since=None if latest_snapshot is None else latest_snapshot.time,
                     until=current,
                 )
         except ValueError as exc:
-            warnings.append(f"{definition.name}: invalid schedule: {exc}")
+            warnings.append("{0}: invalid schedule: {1}".format(definition.name, exc))
 
         health = evaluate_health(
             profile,
@@ -417,7 +473,6 @@ def build_inventory(
             lock=ProcessLock(profile.lock_file).inspect(),
             now=current,
         )
-        record_warnings = tuple([snapshot_error] if snapshot_error else [])
         records.append(
             BackupInventoryRecord(
                 definition=definition,
@@ -427,7 +482,7 @@ def build_inventory(
                 next_run=next_run,
                 missed_runs=missed_runs,
                 health=health,
-                warnings=record_warnings,
+                warnings=tuple([snapshot_error] if snapshot_error else []),
             )
         )
 
