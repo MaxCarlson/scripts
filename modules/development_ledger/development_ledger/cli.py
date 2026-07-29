@@ -16,7 +16,7 @@ from development_ledger.models import VALID_MANUAL_STATES
 from development_ledger.plan import PlanValidationError, load_plan, render_plan_template
 from development_ledger.render import render_progress, write_projections
 from development_ledger.results import ResultParseError, parse_junit_xml, parse_script_results, parse_transcript
-from development_ledger.setup import SUPPORTED_AGENTS, apply_setup, plan_repository_setup
+from development_ledger.setup import SUPPORTED_AGENTS, SetupResult, apply_setup, plan_repository_setup
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -234,7 +234,7 @@ def _handle_manual(args: argparse.Namespace) -> int:
     return 0
 
 
-def _print_setup_result(result: object, *, write: bool) -> None:
+def _print_setup_result(result: SetupResult, *, write: bool) -> None:
     mode = "APPLY" if write else "DRY-RUN"
     print(f"{mode}: {result.repo_root}")
     print(f"SCOPES: {', '.join(result.scopes)}")
@@ -264,10 +264,10 @@ def _print_run_summary(event: dict[str, object], output_dir: Path) -> None:
 
 
 def _timestamp() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def _event_id(prefix: str, timestamp: str, commit: str) -> str:
-    compact = timestamp.replace("+00:00", "Z").replace("-", "").replace(":", "")
-    suffix = commit[:8] if commit else uuid.uuid4().hex[:8]
-    return f"{prefix}-{compact}-{suffix}"
+    compact = timestamp.replace("+00:00", "Z").replace("-", "").replace(":", "").replace(".", "")
+    commit_part = commit[:8] if commit else "no-commit"
+    return f"{prefix}-{compact}-{commit_part}-{uuid.uuid4().hex[:6]}"
