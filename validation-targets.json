@@ -44,7 +44,7 @@
           ]
         },
         {
-          "name": "Lint RRBackup safety foundation",
+          "name": "Lint RRBackup safety, CLI, and viewer foundation",
           "executable": "{python}",
           "arguments": [
             "-m",
@@ -52,23 +52,44 @@
             "check",
             "--select",
             "E4,E7,E9,F821,F822,F823",
+            "rrbackup/application.py",
+            "rrbackup/audit.py",
             "rrbackup/engine.py",
+            "rrbackup/health.py",
             "rrbackup/locking.py",
             "rrbackup/models.py",
             "rrbackup/policy.py",
             "rrbackup/profile.py",
+            "rrbackup/repository_ops.py",
             "rrbackup/restic.py",
+            "rrbackup/schedule_discovery.py",
             "rrbackup/snapshots.py",
             "rrbackup/state.py",
+            "rrbackup/version.py",
+            "tests/application_test.py",
+            "tests/audit_test.py",
             "tests/engine_failure_test.py",
             "tests/engine_test.py",
+            "tests/health_test.py",
             "tests/locking_test.py",
             "tests/models_test.py",
+            "tests/packaging_test.py",
             "tests/policy_test.py",
             "tests/profile_test.py",
+            "tests/repository_ops_test.py",
             "tests/restic_test.py",
+            "tests/schedule_discovery_test.py",
             "tests/snapshots_test.py",
             "tests/state_test.py"
+          ]
+        },
+        {
+          "name": "Canonical backup CLI help contract",
+          "executable": "{python}",
+          "arguments": [
+            "-m",
+            "rrbackup.application",
+            "--help"
           ]
         },
         {
