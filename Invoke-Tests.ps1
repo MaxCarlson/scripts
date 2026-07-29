@@ -376,7 +376,7 @@ foreach ($TargetName in $SelectedTargets) {
             foreach ($Entry in $TargetSpec['environment'].GetEnumerator()) {
                 $VariableName = [string]$Entry.Key
                 $PreviousEnvironment[$VariableName] = [Environment]::GetEnvironmentVariable($VariableName, 'Process')
-                $ResolvedValue = Convert-TokenText -Text ([string]$Entry.Value -Tokens $Tokens)
+                $ResolvedValue = Convert-TokenText -Text ([string]$Entry.Value) -Tokens $Tokens
                 [Environment]::SetEnvironmentVariable($VariableName, $ResolvedValue, 'Process')
             }
         }
