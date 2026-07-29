@@ -114,6 +114,7 @@
             "tests/engine_failure_test.py",
             "tests/engine_test.py",
             "tests/health_test.py",
+            "tests/integration_test.py",
             "tests/inventory_test.py",
             "tests/locking_test.py",
             "tests/models_test.py",
