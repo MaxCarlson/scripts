@@ -19,6 +19,7 @@ git pull --ff-only && ./Invoke-Tests.ps1 -Target development-ledger
 - `TRACEABILITY.md` matches the dispatcher adapter and repository-integration tests to `AC-S1-001` and `AC-S1-002`.
 - `RUNS.jsonl` receives exactly one additional immutable event.
 - `PROGRESS.md` no longer routes this source-level correction to a local agent.
+- Both acceptance items are verified from JUnit and dispatcher transcript evidence without a separate manual command.
 - The prior raw report is archived under bounded history.
 
 ## Generated paths
