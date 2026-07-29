@@ -7,10 +7,9 @@ import pytest
 
 from rrbackup import run_runtime
 from rrbackup.models import RunRecord, RunState
-from rrbackup.run_monitor import MonitorOutcome
+from rrbackup.operations_dashboard import OperationsOutcome
 from rrbackup.state import RunStateStore
 from rrbackup.viewer import build_demo_records
-
 
 UTC = timezone.utc
 NOW = datetime(2026, 7, 29, 20, 0, tzinfo=UTC)
@@ -31,7 +30,7 @@ def _args():
     )
 
 
-def test_interactive_named_run_routes_through_confirmation_monitor(
+def test_interactive_named_run_routes_through_persistent_operations_dashboard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     record = build_demo_records(now=NOW)[0]
@@ -40,28 +39,30 @@ def test_interactive_named_run_routes_through_confirmation_monitor(
 
     monkeypatch.setattr(
         run_runtime,
-        "_selected_records",
+        "_available_records",
         lambda args: (inventory, [record]),
     )
     monkeypatch.setattr(run_runtime, "interactive_available", lambda: True)
 
-    def monitor(records, callback):
+    def dashboard(records, callback, *, dry_run):
         observed["records"] = records
         observed["callback"] = callback
-        return MonitorOutcome(cancelled=True, payloads=tuple(), exit_codes=tuple())
+        observed["dry_run"] = dry_run
+        return OperationsOutcome(started_count=0, exit_codes=tuple())
 
-    monkeypatch.setattr(run_runtime, "run_backup_monitor", monitor)
+    monkeypatch.setattr(run_runtime, "run_operations_dashboard", dashboard)
     monkeypatch.setattr(
         run_runtime.cli_runtime,
         "_run_one",
         lambda *args: (_ for _ in ()).throw(
-            AssertionError("interactive execution must wait for monitor confirmation")
+            AssertionError("interactive execution must remain inside the dashboard")
         ),
     )
 
     assert run_runtime.handle_run(_args()) == run_runtime.cli_runtime.EXIT_OK
     assert observed["records"] == [record]
     assert callable(observed["callback"])
+    assert observed["dry_run"] is False
 
 
 def test_progress_persistence_updates_running_record_metadata(tmp_path) -> None:
