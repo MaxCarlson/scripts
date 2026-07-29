@@ -19,6 +19,7 @@ from .config import (
     resolve_config_path,
 )
 from .health import HealthReport, evaluate_health
+from .locking import ProcessLock
 from .models import RunRecord, utc_now
 from .profile import (
     BackupProfile,
@@ -29,7 +30,12 @@ from .profile import (
 )
 from .repository_ops import RepositoryClient
 from .schedule_discovery import ScheduleDiscovery, ScheduleRecord, discover_schedules
-from .schedule_math import count_missed_runs, describe_retention, describe_schedule, next_scheduled_run
+from .schedule_math import (
+    count_missed_runs,
+    describe_retention,
+    describe_schedule,
+    next_scheduled_run,
+)
 from .snapshots import SnapshotRecord
 from .state import RunStateStore
 
@@ -74,7 +80,7 @@ class BackupDefinition:
         return f"{self.sources[0]} +{len(self.sources) - 1} more"
 
     def materialize_inputs(self) -> None:
-        """Write canonical set inputs to deterministic files immediately before execution."""
+        """Write canonical set inputs immediately before execution."""
 
         if self.source_kind != "toml":
             return
@@ -107,7 +113,11 @@ class BackupInventoryRecord:
             "repository": self.definition.profile.repository,
             "schedule": self.definition.schedule.to_dict(),
             "schedule_text": self.definition.schedule_text,
-            "retention": None if self.definition.retention is None else self.definition.retention.to_dict(),
+            "retention": (
+                None
+                if self.definition.retention is None
+                else self.definition.retention.to_dict()
+            ),
             "retention_text": self.definition.retention_text,
             "task_name": self.definition.task_name,
             "latest_snapshot": (
@@ -131,7 +141,11 @@ class BackupInventory:
 
     def by_name(self, name: str) -> BackupInventoryRecord:
         normalized = name.strip().lower()
-        matches = [record for record in self.records if record.definition.name.lower() == normalized]
+        matches = [
+            record
+            for record in self.records
+            if record.definition.name.lower() == normalized
+        ]
         if len(matches) != 1:
             raise ValueError(
                 "Backup name matched {0} definitions; exactly one is required: {1!r}".format(
@@ -189,8 +203,8 @@ def _profile_from_set(
     if not password_file:
         if settings.repo.password_env:
             raise ValueError(
-                "Canonical password_env credentials are not yet supported by the shared engine; "
-                "configure repository.password_file instead."
+                "Canonical password_env credentials are not yet supported by the shared "
+                "engine; configure repository.password_file instead."
             )
         raise ValueError("Canonical repository has no password file.")
 
@@ -241,8 +255,10 @@ def _profile_from_set(
     )
 
 
-def load_definitions(config_path: Optional[str] = None) -> Tuple[List[BackupDefinition], List[str]]:
-    """Load canonical TOML sets when available, otherwise legacy production defaults."""
+def load_definitions(
+    config_path: Optional[str] = None,
+) -> Tuple[List[BackupDefinition], List[str]]:
+    """Load canonical TOML sets when available, otherwise legacy defaults."""
 
     warnings: List[str] = []
     candidate = resolve_config_path(config_path)
@@ -260,7 +276,12 @@ def load_definitions(config_path: Optional[str] = None) -> Tuple[List[BackupDefi
             return definitions, warnings
         warnings.append(f"No usable backup sets were found in {candidate}.")
 
-    legacy_profile, legacy_path = load_legacy_profile(config_path if config_path and candidate.suffix.lower() == ".json" else None)
+    legacy_config = (
+        config_path
+        if config_path and candidate.suffix.lower() == ".json"
+        else None
+    )
+    legacy_profile, legacy_path = load_legacy_profile(legacy_config)
     sources = tuple(read_path_list(legacy_profile.sources_file))
     excludes = tuple(read_path_list(legacy_profile.excludes_file))
     definitions.append(
@@ -292,14 +313,18 @@ def _match_schedule(
             [record.executable or ""] + [str(value) for value in record.arguments]
         ).lower()
         if expected_name in identifier or (
-            "backup" in command_text and " run " in f" {command_text} " and name in command_text
+            "backup" in command_text
+            and " run " in f" {command_text} "
+            and name in command_text
         ):
             matches.append(record)
     return matches[0] if len(matches) == 1 else None
 
 
 def _record_store(definition: BackupDefinition) -> RunStateStore:
-    return RunStateStore(Path(definition.profile.status_file).parent / "rrbackup-state")
+    return RunStateStore(
+        Path(definition.profile.status_file).parent / "rrbackup-state"
+    )
 
 
 def _filter_snapshots(
@@ -316,7 +341,11 @@ def _filter_snapshots(
             return tagged
     if definition.sources:
         expected = set(definition.sources)
-        matched = [snapshot for snapshot in snapshots if expected.issubset(set(snapshot.paths))]
+        matched = [
+            snapshot
+            for snapshot in snapshots
+            if expected.issubset(set(snapshot.paths))
+        ]
         if matched:
             return matched
     return list(snapshots)
@@ -329,21 +358,32 @@ def build_inventory(
     schedule_discovery: Optional[ScheduleDiscovery] = None,
     repository_factory: Callable[[BackupProfile], RepositoryClient] = RepositoryClient,
 ) -> BackupInventory:
-    """Build the authoritative backup inventory used by view/run/schedule/create."""
+    """Build the authoritative inventory used by view, run, and schedule."""
 
     current = now or utc_now()
     definitions, warnings = load_definitions(config_path)
     discovery = schedule_discovery or discover_schedules()
     warnings.extend(discovery.warnings)
 
-    snapshot_cache: Dict[Tuple[str, str, str], Tuple[List[SnapshotRecord], Optional[str]]] = {}
+    snapshot_cache: Dict[
+        Tuple[str, str, str],
+        Tuple[List[SnapshotRecord], Optional[str]],
+    ] = {}
     records: List[BackupInventoryRecord] = []
     for definition in definitions:
         profile = definition.profile
-        cache_key = (profile.repository, profile.password_file, profile.restic_executable)
+        cache_key = (
+            profile.repository,
+            profile.password_file,
+            profile.restic_executable,
+        )
         if cache_key not in snapshot_cache:
             snapshots, result = repository_factory(profile).snapshots()
-            error = None if result.return_code == 0 else "Restic snapshot listing failed."
+            error = (
+                None
+                if result.return_code == 0
+                else "Restic snapshot listing failed."
+            )
             snapshot_cache[cache_key] = (snapshots, error)
         snapshots, snapshot_error = snapshot_cache[cache_key]
         relevant = _filter_snapshots(snapshots, definition)
@@ -360,7 +400,11 @@ def build_inventory(
             else:
                 missed_runs = count_missed_runs(
                     definition.schedule,
-                    since=None if latest_snapshot is None else latest_snapshot.time,
+                    since=(
+                        None
+                        if latest_snapshot is None
+                        else latest_snapshot.time
+                    ),
                     until=current,
                 )
         except ValueError as exc:
@@ -370,6 +414,8 @@ def build_inventory(
             profile,
             snapshots=relevant,
             latest_run=latest_run,
+            lock=ProcessLock(profile.lock_file).inspect(),
+            now=current,
         )
         record_warnings = tuple([snapshot_error] if snapshot_error else [])
         records.append(
@@ -385,4 +431,7 @@ def build_inventory(
             )
         )
 
-    return BackupInventory(records=tuple(records), warnings=tuple(dict.fromkeys(warnings)))
+    return BackupInventory(
+        records=tuple(records),
+        warnings=tuple(dict.fromkeys(warnings)),
+    )
