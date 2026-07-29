@@ -117,7 +117,7 @@ Stage 2 is split into bounded checkpoints. Do not begin the next checkpoint unti
 - [x] Preserve preview, dry-run, CPU-policy bypass, extra tags, exclusions, and raw Restic arguments
 - [x] Keep print-command-only as a hard no-side-effect barrier
 - [x] Add run-selection, direct-run, skipped-exit, and no-materialization preview tests
-- [ ] Add and manually verify final selected-run confirmation
+- [ ] Manually verify final selected-run confirmation and monitored execution
 
 #### `backup schedule`
 
@@ -171,7 +171,7 @@ Stage 2 is split into bounded checkpoints. Do not begin the next checkpoint unti
 - [x] Pass local validation: 289 passed, 7 skipped
 - [x] Manually verify the July interrupted attempt and April completed snapshot appear separately
 
-### Checkpoint 2A.1b — Interactive Viewer Carousel — Awaiting Local Validation
+### Checkpoint 2A.1b — Interactive Viewer Carousel — Accepted
 
 - [x] Add six-page interactive viewer controller
 - [x] Add persistent `View: <PAGE> — pg. n/6` header
@@ -189,22 +189,49 @@ Stage 2 is split into bounded checkpoints. Do not begin the next checkpoint unti
 - [x] Route `backup run auto` through the concise selector
 - [x] Add non-curses tests for page builders, switching, lazy loading, demo diversity, diagnostics, audit summary, and selector formatting
 - [x] Add new viewer/runtime modules and tests to root compilation/lint/pytest validation
+- [x] Pass local automated validation: 297 passed, 7 skipped
+- [x] Manually accept demo carousel visuals, page layouts, and compact diagnostics
+- [x] Manually accept the real six-page carousel and aggregate Overview
+- [x] Manually accept concise run-selector formatting
+- [ ] Carry remaining expansion/navigation refinements through Checkpoint 2A.2
+
+### Checkpoint 2A.2 — Expandable Live Viewer and Confirmed In-TUI Run Monitor — Awaiting Local Validation
+
+#### Viewer interaction
+
+- [x] Add inline expand/collapse for the selected row with `e` and `c`
+- [x] Add expand-all/collapse-all with `E` and `C`
+- [x] Keep expanded detail rows adjacent to their parent during sorting
+- [x] Add reliable previous/next alternatives: `p`/`n` and `-`/`+`
+- [x] Preserve Tab and `1`–`6` direct page navigation
+- [x] Add live State, Progress, Speed, and ETA columns to the Backups page
+- [x] Add active progress to Overview Activity details
+- [x] Refresh persisted active-run state without repeatedly probing Restic repositories
+- [x] Add focused expansion, navigation, and live-progress tests
 - [ ] Pass local automated validation
-- [ ] Manually accept demo carousel visuals, hotkeys, details, filters, and resizing
-- [ ] Manually accept real carousel and compact diagnostics
-- [ ] Manually accept concise run-selector formatting without pressing `R`
+- [ ] Manually accept expansion density, filtering, scrolling, navigation, and resize behavior
 
-### Checkpoint 2A.2 — Confirmed In-TUI Run Monitor — Deferred
+#### Run confirmation and monitoring
 
-- [ ] Add a final confirmation page before real execution
-- [ ] Keep execution inside the themed TUI
-- [ ] Parse Restic JSON status rather than printing it raw
-- [ ] Show aggregate percentage, files, bytes, elapsed time, ETA, and current files
-- [ ] Show active-run state from both `backup run auto` and `backup view`
-- [ ] Add richer live/persisted details pages
-- [ ] Show completion state and snapshot ID without leaving the TUI
-- [ ] Add confirmed graceful Stop
-- [ ] Preserve Ctrl+C as an emergency graceful-stop path
+- [x] Add a final confirmation page before interactive execution
+- [x] Keep interactive execution inside the curses monitor
+- [x] Parse Restic JSON status rather than printing it raw
+- [x] Show aggregate percentage, files, bytes, speed, elapsed time, ETA, and current files
+- [x] Persist throttled progress for live display from `backup view`
+- [x] Show active-run state from both `backup run auto` and `backup view`
+- [x] Add richer live/persisted details to the Backups page
+- [x] Show terminal completion state without leaving the monitor
+- [ ] Show a successful terminal snapshot ID prominently without leaving the monitor
+- [x] Add confirmed graceful Stop
+- [x] Preserve Ctrl+C as an emergency graceful-stop path
+- [x] Cancel remaining selected backups after confirmed Stop
+- [x] Preserve noninteractive, scheduled, JSON/plain/Markdown, and print-command-only behavior
+- [x] Add progress parser, streaming executor, stop-control, monitor-model, routing, and persistence tests
+- [ ] Pass local automated validation
+- [ ] Manually verify confirmation cancellation has no side effects
+- [ ] Manually verify live progress and no raw JSON output
+- [ ] Manually verify `backup view` refreshes active progress
+- [ ] Manually verify graceful Stop and interrupted-history persistence
 - [ ] Investigate trustworthy per-source/per-drive instrumentation without changing snapshot semantics
 
 ### Checkpoint 2A.3 — Pause, Resume, and Scheduled Resume — Deferred
