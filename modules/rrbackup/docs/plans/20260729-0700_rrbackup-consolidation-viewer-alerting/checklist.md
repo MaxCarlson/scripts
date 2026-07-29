@@ -117,7 +117,7 @@ Stage 2 is split into bounded checkpoints. Do not begin the next checkpoint unti
 - [x] Preserve preview, dry-run, CPU-policy bypass, extra tags, exclusions, and raw Restic arguments
 - [x] Keep print-command-only as a hard no-side-effect barrier
 - [x] Add run-selection, direct-run, skipped-exit, and no-materialization preview tests
-- [ ] Manually verify final selected-run confirmation and monitored execution
+- [ ] Manually accept the persistent operations dashboard and controlled execution
 
 #### `backup schedule`
 
@@ -193,9 +193,9 @@ Stage 2 is split into bounded checkpoints. Do not begin the next checkpoint unti
 - [x] Manually accept demo carousel visuals, page layouts, and compact diagnostics
 - [x] Manually accept the real six-page carousel and aggregate Overview
 - [x] Manually accept concise run-selector formatting
-- [ ] Carry remaining expansion/navigation refinements through Checkpoint 2A.2
+- [x] Carry expansion/navigation refinements into Checkpoint 2A.2a
 
-### Checkpoint 2A.2 — Expandable Live Viewer and Confirmed In-TUI Run Monitor — Awaiting Local Validation
+### Checkpoint 2A.2a — Expandable Live Viewer and Confirmed Aggregate Monitor — Accepted
 
 #### Viewer interaction
 
@@ -208,45 +208,96 @@ Stage 2 is split into bounded checkpoints. Do not begin the next checkpoint unti
 - [x] Add active progress to Overview Activity details
 - [x] Refresh persisted active-run state without repeatedly probing Restic repositories
 - [x] Add focused expansion, navigation, and live-progress tests
-- [ ] Pass local automated validation
-- [ ] Manually accept expansion density, filtering, scrolling, navigation, and resize behavior
+- [x] Pass local automated validation: 310 passed, 7 skipped
+- [x] Manually accept expansion density and demo-mode detail presentation
 
-#### Run confirmation and monitoring
+#### Confirmed aggregate monitor plumbing
 
-- [x] Add a final confirmation page before interactive execution
-- [x] Keep interactive execution inside the curses monitor
+- [x] Add final confirmation before interactive execution
 - [x] Parse Restic JSON status rather than printing it raw
 - [x] Show aggregate percentage, files, bytes, speed, elapsed time, ETA, and current files
 - [x] Persist throttled progress for live display from `backup view`
 - [x] Show active-run state from both `backup run auto` and `backup view`
 - [x] Add richer live/persisted details to the Backups page
-- [x] Show terminal completion state without leaving the monitor
-- [ ] Show a successful terminal snapshot ID prominently without leaving the monitor
+- [x] Show terminal completion state without raw terminal output
 - [x] Add confirmed graceful Stop
 - [x] Preserve Ctrl+C as an emergency graceful-stop path
 - [x] Cancel remaining selected backups after confirmed Stop
 - [x] Preserve noninteractive, scheduled, JSON/plain/Markdown, and print-command-only behavior
 - [x] Add progress parser, streaming executor, stop-control, monitor-model, routing, and persistence tests
+- [x] Pass local automated validation: 310 passed, 7 skipped
+- [x] Manually verify WAITING to RUNNING transitions and aggregate progress
+- [x] Manually verify no raw Restic JSON output
+- [x] Record that modal monitor is not the accepted default information architecture
+
+### Checkpoint 2A.2b — Persistent Backup Operations Dashboard — Awaiting Local Validation
+
+#### Persistent inventory and confirmation
+
+- [x] Keep all configured backups visible after pressing `R`
+- [x] Add inline confirmation rather than switching to a modal monitor
+- [x] Show complete confirmation information for every selected backup
+- [x] Include repository, schedule, retention, last complete, last attempt, excludes, tags, and all sources
+- [x] Require `Y` before materializing inputs or starting Restic
+- [x] Preserve `N` and Esc cancellation with no side effects
+- [x] Add confirmation scrolling while retaining inventory context
+- [x] Add confirmation-content regression tests
+
+#### Inline operations and source activity
+
+- [x] Show selection, name, health, state, aggregate percentage, speed, ETA, last complete, last attempt, and sources
+- [x] Add one automatic activity line per configured drive/source group while running
+- [x] Show source groups as ACTIVE, SEEN, or PENDING
+- [x] Label source lines as aggregate-only rather than fabricating per-drive percentages
+- [x] Keep `Space` multi-selection available while other jobs run
+- [x] Allow `R` to start another eligible backup without leaving the dashboard
+- [x] Use independent worker/control objects for approved backups
+- [x] Preserve existing process-lock conflict handling
+- [x] Keep external persisted runs visible but not falsely controllable
+- [x] Add concurrent-start model tests
+
+#### Inline management and focused details
+
+- [x] Add inline Stop confirmation with `S`
+- [x] Limit Stop to locally managed active runs
+- [x] Preserve Ctrl+C as graceful Stop-all for locally managed jobs
+- [x] Block normal quit while a locally managed job is active
+- [x] Keep `e`/`c` and `E`/`C` expansion controls
+- [x] Add explicit focused single-backup view through Enter, `i`, or `m`
+- [x] Keep filtering through `f`
+- [x] Add operational color hierarchy for running, waiting, success, failure, interruption, stopping, and idle health
+- [x] Add Stop-target regression tests
+
+#### Routing and compatibility
+
+- [x] Route interactive `backup run auto` through the persistent operations dashboard
+- [x] Route interactive named runs through the same dashboard
+- [x] Preserve noninteractive JSON/plain/Markdown behavior
+- [x] Preserve scheduled named execution
+- [x] Preserve `--print-command-only` as a hard no-side-effect barrier
+- [x] Add the new module and tests to compile, lint, pytest, help, packaging, and PowerShell validation
 - [ ] Pass local automated validation
-- [ ] Manually verify confirmation cancellation has no side effects
-- [ ] Manually verify live progress and no raw JSON output
-- [ ] Manually verify `backup view` refreshes active progress
-- [ ] Manually verify graceful Stop and interrupted-history persistence
-- [ ] Investigate trustworthy per-source/per-drive instrumentation without changing snapshot semantics
+- [ ] Manually verify colors, resizing, filtering, scrolling, and focused mode
+- [ ] Manually verify rich inline confirmation cancellation creates no attempt
+- [ ] Manually verify live execution remains on the inventory dashboard
+- [ ] Manually verify another eligible backup can be selected while one runs
+- [ ] Manually verify source-drive activity lines
+- [ ] Manually verify graceful Stop and History persistence
+- [ ] Show successful terminal snapshot ID prominently in the operations dashboard
 
 ### Checkpoint 2A.3 — Pause, Resume, and Scheduled Resume — Deferred
 
 - [ ] Design a safe Windows process-suspension boundary
 - [ ] Preserve process identity and repository lock ownership
 - [ ] Persist and display paused state
-- [ ] Add manual resume
+- [ ] Add Pause and Resume actions to the persistent operations dashboard
 - [ ] Add pause-now/resume-after-duration
 - [ ] Define UI-exit and reboot behavior for scheduled resume
 - [ ] Add crash/stale-process recovery
 - [ ] Add stop-while-paused handling
 - [ ] Add injected-clock and Windows controlled-acceptance tests
 
-### Checkpoint 2B — Create and Schedule Wizard Preview — Deferred Until Viewer/Monitor Work Passes
+### Checkpoint 2B — Create and Schedule Wizard Preview — Deferred Until Viewer/Operations Work Passes
 
 - [x] Add preview-first wizard data and scheduler-plan scaffolding
 - [ ] Validate the creation wizard interactively without applying
