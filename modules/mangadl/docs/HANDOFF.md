@@ -1,11 +1,9 @@
 # mangadl Immediate Project Handoff
 
-Initial implementation is in progress. The user explicitly requested continuous implementation, so per-stage manual pauses are waived. Testing, documentation, and final manual production approval remain required.
+The active work is the native Manga18FX backend on `agent/add-manga18fx-backend`, based on `agent/add-development-ledger-module`.
 
-No commits, merges, migrations, relocations, or legacy deletions are authorized.
+Active files: [plan](plans/20260729-1307_manga18fx-backend/00_implementation-plan.md), [status](plans/20260729-1307_manga18fx-backend/STATUS.md), [checklist](plans/20260729-1307_manga18fx-backend/checklist.md), and [handoff](plans/20260729-1307_manga18fx-backend/HANDOFF.md).
 
-Active files: [plan](plans/20260719-1830_destination-audit-and-badges/00_implementation-plan.md), [status](plans/20260719-1830_destination-audit-and-badges/STATUS.md), and [checklist](plans/20260719-1830_destination-audit-and-badges/checklist.md).
+The backend recognizes `manga18fx.com/manga/<slug>` series URLs, parses all chapter/image links, downloads into per-job partial directories, and merges successful manga/chapter folders into the destination root. The existing `-C/--cookies` Netscape/Mozilla cookies-file option is supported.
 
-Default tests use no live websites. First manual validation must use copied inputs, a new state database/archive, and a test destination.
-
-`repair-loose` is now safe-by-default dry-run with colored in-place scanning, metadata, move, and verification progress. Apply still requires explicit `-f/--apply`.
+No merge or production migration is authorized. The full mangadl pytest suite and a disposable one-series live smoke test remain required before the full URL-file batch.
