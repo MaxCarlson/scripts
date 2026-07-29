@@ -77,7 +77,7 @@
           ]
         },
         {
-          "name": "Lint RRBackup checkpoint 2A",
+          "name": "Lint RRBackup checkpoint 2A.1b",
           "executable": "{python}",
           "arguments": [
             "-m",
@@ -101,12 +101,15 @@
             "rrbackup/repository_ops.py",
             "rrbackup/repository_summary.py",
             "rrbackup/restic.py",
+            "rrbackup/run_runtime.py",
             "rrbackup/schedule_discovery.py",
             "rrbackup/schedule_math.py",
             "rrbackup/scheduler_management.py",
             "rrbackup/snapshots.py",
             "rrbackup/state.py",
             "rrbackup/version.py",
+            "rrbackup/viewer.py",
+            "rrbackup/viewer_runtime.py",
             "rrbackup/wizards.py",
             "tests/application_test.py",
             "tests/audit_test.py",
@@ -129,7 +132,8 @@
             "tests/schedule_discovery_test.py",
             "tests/schedule_math_test.py",
             "tests/snapshots_test.py",
-            "tests/state_test.py"
+            "tests/state_test.py",
+            "tests/viewer_test.py"
           ]
         },
         {
