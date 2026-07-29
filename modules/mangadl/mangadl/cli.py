@@ -6,10 +6,12 @@ import json
 import os
 import sqlite3
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .autotune import TuneRange, generate_candidates, parse_tune_range, run_manga18fx_autotune
 from .backends import backend_classification, choose_backend
 from .destination_audit import audit_destinations, write_audit_outputs
 from .hdporncomics_patch import apply_patch, patch_status
@@ -19,8 +21,10 @@ from .repair import apply_repair, plan_loose_images
 from .repair_ui import RepairDashboard
 from .state import StateStore
 
-
 MANGA18FX_IMAGE_WORKERS_ENV = "MANGADL_MANGA18FX_IMAGE_WORKERS"
+DEFAULT_TUNE_WORKER_MAX = 6
+MAX_TUNE_WORKERS = 8
+MAX_IMAGE_WORKERS = 8
 
 
 def _path(value: str) -> Path:
@@ -54,6 +58,53 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=4,
         help="Concurrent Manga18FX image downloads per series (default: 4; range: 1-8).",
+    )
+    run.add_argument(
+        "-T",
+        "--auto-tune",
+        action="store_true",
+        help="Benchmark bounded Manga18FX worker combinations before the real run.",
+    )
+    run.add_argument(
+        "-W",
+        "--tune-workers",
+        type=parse_tune_range,
+        metavar="MIN:MAX",
+        help="Inclusive outer-worker range; default 1:6, hard maximum 8.",
+    )
+    run.add_argument(
+        "-Y",
+        "--tune-image-workers",
+        type=parse_tune_range,
+        metavar="MIN:MAX",
+        help="Inclusive Manga18FX image-worker range; default 1:8.",
+    )
+    run.add_argument(
+        "-D",
+        "--tune-seconds",
+        type=float,
+        default=8.0,
+        help="Target sample seconds per combination (default: 8).",
+    )
+    run.add_argument(
+        "-Q",
+        "--tune-rounds",
+        type=int,
+        default=2,
+        help="Benchmark rounds per combination; rates are averaged (default: 2).",
+    )
+    run.add_argument(
+        "-K",
+        "--tune-sample-images",
+        type=int,
+        default=24,
+        help="Maximum representative image transfers per active series and combination (default: 24).",
+    )
+    run.add_argument(
+        "-O",
+        "--tune-report",
+        type=_path,
+        help="Auto-tune JSON report path; defaults to a timestamped file under --log-dir.",
     )
     run.add_argument(
         "-b",
@@ -129,15 +180,54 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _resolved_tune_ranges(args: argparse.Namespace) -> tuple[TuneRange, TuneRange]:
+    worker_range = args.tune_workers or TuneRange(1, DEFAULT_TUNE_WORKER_MAX)
+    image_range = args.tune_image_workers or TuneRange(1, MAX_IMAGE_WORKERS)
+    if worker_range.maximum > MAX_TUNE_WORKERS:
+        raise ValueError(f"--tune-workers maximum must not exceed {MAX_TUNE_WORKERS}")
+    if image_range.maximum > MAX_IMAGE_WORKERS:
+        raise ValueError(f"--tune-image-workers maximum must not exceed {MAX_IMAGE_WORKERS}")
+    return worker_range, image_range
+
+
+def _auto_tune_preview(args: argparse.Namespace, manga18fx_urls: list[str]) -> dict[str, Any]:
+    worker_range, image_range = _resolved_tune_ranges(args)
+    logical_cpus = max(1, int(os.cpu_count() or 1))
+    candidates = generate_candidates(
+        worker_range,
+        image_range,
+        logical_cpus=logical_cpus,
+        available_series=len(manga18fx_urls),
+    )
+    return {
+        "enabled": True,
+        "worker_range": {"minimum": worker_range.minimum, "maximum": worker_range.maximum},
+        "image_worker_range": {"minimum": image_range.minimum, "maximum": image_range.maximum},
+        "seconds_per_candidate": args.tune_seconds,
+        "rounds": args.tune_rounds,
+        "sample_images_per_series": args.tune_sample_images,
+        "logical_cpus": logical_cpus,
+        "budget": max(1, logical_cpus - 1),
+        "candidate_count": len(candidates),
+    }
+
+
 def _run(args: argparse.Namespace) -> int:
     if args.workers < 1:
         raise ValueError("--workers must be at least 1")
-    if not 1 <= args.image_workers <= 8:
-        raise ValueError("--image-workers must be between 1 and 8")
+    if not 1 <= args.image_workers <= MAX_IMAGE_WORKERS:
+        raise ValueError(f"--image-workers must be between 1 and {MAX_IMAGE_WORKERS}")
     if args.hdporncomics_threads < 1:
         raise ValueError("--hdporncomics-threads must be at least 1")
+    if args.tune_seconds <= 0:
+        raise ValueError("--tune-seconds must be greater than zero")
+    if args.tune_rounds < 1:
+        raise ValueError("--tune-rounds must be at least 1")
+    if args.tune_sample_images < 1:
+        raise ValueError("--tune-sample-images must be at least 1")
     if not args.input_file and not args.url:
         raise ValueError("provide at least one --input-file or --url")
+
     os.environ[MANGA18FX_IMAGE_WORKERS_ENV] = str(args.image_workers)
     inputs, rejected = collect_inputs(args.input_file, args.url)
     routes: dict[str, str] = {}
@@ -148,18 +238,69 @@ def _run(args: argparse.Namespace) -> int:
         except ValueError as exc:
             unsupported.append({"url": item.url, "reason": str(exc)})
     inputs = [item for item in inputs if item.canonical_url in routes]
-    preview = {"accepted": len(inputs), "rejected": rejected, "unsupported": unsupported, "routes": routes}
+    manga18fx_urls = [item.canonical_url for item in inputs if routes[item.canonical_url] == "manga18fx"]
+    preview: dict[str, Any] = {
+        "accepted": len(inputs),
+        "rejected": rejected,
+        "unsupported": unsupported,
+        "routes": routes,
+    }
+    if args.auto_tune:
+        preview["auto_tune"] = _auto_tune_preview(args, manga18fx_urls)
     if args.dry_run:
         print(json.dumps(preview, indent=2, sort_keys=True))
         return 1 if unsupported else 0
     if not inputs:
         print(json.dumps(preview, indent=2, sort_keys=True), file=sys.stderr)
         return 2
+
+    tune_result = None
+    if args.auto_tune:
+        if not manga18fx_urls:
+            raise ValueError("--auto-tune requires at least one routed Manga18FX series URL")
+        worker_range, image_range = _resolved_tune_ranges(args)
+        report_path = args.tune_report or (args.log_dir / f"autotune-{time.strftime('%Y%m%d-%H%M%S')}.json")
+        progress = None if args.quiet else lambda message: print(f"Auto-tune: {message}", file=sys.stderr, flush=True)
+        tune_result = run_manga18fx_autotune(
+            manga18fx_urls,
+            args.destination,
+            report_path,
+            worker_range=worker_range,
+            image_range=image_range,
+            seconds=args.tune_seconds,
+            rounds=args.tune_rounds,
+            sample_images=args.tune_sample_images,
+            cookies=args.cookies,
+            progress=progress,
+        )
+        args.workers = tune_result.selected_workers
+        args.image_workers = tune_result.selected_image_workers
+        args.tune_report = tune_result.report_path
+        os.environ[MANGA18FX_IMAGE_WORKERS_ENV] = str(args.image_workers)
+
     store = StateStore(args.state_db)
     try:
         config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
         run_id = store.create_run(config, args.run_id)
         store.add_jobs(run_id, inputs, routes)
+        if tune_result is not None:
+            run_log = args.log_dir / run_id
+            run_log.mkdir(parents=True, exist_ok=True)
+            (run_log / "autotune-selection.json").write_text(
+                json.dumps(
+                    {
+                        "report": str(tune_result.report_path),
+                        "selected_workers": tune_result.selected_workers,
+                        "selected_image_workers": tune_result.selected_image_workers,
+                        "logical_cpus": tune_result.logical_cpus,
+                        "budget": tune_result.budget,
+                        "elapsed": tune_result.elapsed,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
         options = RunOptions(
             run_id=run_id,
             destination=args.destination,
