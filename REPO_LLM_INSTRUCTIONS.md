@@ -19,7 +19,8 @@ Before modifying this repository:
 5. For Python work, read `docs/agent/PYTHON_REPO_STANDARDS.md`.
 6. For scripts-repo-specific behavior, read `docs/agent/SCRIPTS_REPO_STANDARDS.md`.
 7. If working in a nested module with its own `docs/`, read that module's handoff docs.
-8. Run `git status`.
+8. Read `validation-targets.json` when the task includes local validation.
+9. Run `git status`.
 
 ## Repository Shape
 
@@ -29,6 +30,9 @@ scripts/
 ├── pyscripts/
 ├── pscripts/
 ├── bin/
+├── docs/
+├── Invoke-Tests.ps1
+├── validation-targets.json
 ├── setup.py
 ├── AGENTS.md
 ├── MODULE_STANDARDS.md
@@ -56,30 +60,60 @@ ruff check <file>
 - Module tests must keep temp roots inside the owning module directory, normally `modules/<module>/.pytest_tmp_root/`.
 - Preserve unrelated user state. Do not stage or commit unless explicitly approved.
 
-## Token Conservation / Browser LLM Offloading
+## Hybrid Browser/Local Development Workflow
 
-The user has hard token limits on local/CLI agents. Flag token-heavy work that does not require local file access for browser-LLM offloading.
+Use the browser/app agent for as much repository work as connected tools permit. This includes repository inspection, planning, implementation, test creation, documentation, static review, commits, pushes, and diagnosis.
 
-Good offload candidates:
+Reserve the local machine or local LLM for authoritative execution that genuinely depends on:
 
-- implementation plans,
-- design docs,
-- summaries/reports,
-- spec gap reviews,
-- brainstorming approaches.
+- the checked-out working tree,
+- the operating system,
+- installed tools and package state,
+- credentials and private services,
+- hardware,
+- schedulers and background services,
+- GUI/TUI behavior,
+- networking and remote storage,
+- performance or long-running tests.
 
-Must stay local:
+Do not delegate broad implementation work to a local agent merely because the repository is local. The remote agent should leave the smallest possible environment-dependent validation remainder.
 
-- editing files,
-- running tests,
-- executing commands,
-- anything needing live repo access.
+For each substantial stage:
 
-When offloading:
+1. Update the active plan, status, checklist, and handoff files.
+2. Implement source, tests, scripts, and documentation on the feature branch.
+3. Review the complete diff and correct obvious defects.
+4. Commit and push the coherent stage.
+5. Have the user pull the branch and run the repository-root validation dispatcher.
+6. Have the user commit and push the generated tracked validation report.
+7. Read the report remotely, diagnose failures, and implement the next pass.
+8. Repeat until automated, environment-specific, and acceptance validation pass.
 
-1. Write a self-contained Markdown handoff document.
-2. Tell the user exactly which files/folders to attach.
-3. Keep the handoff concise and task-focused.
+Do not have local and remote agents independently edit the same branch concurrently. Use a separate patch branch if a local agent must author code.
+
+## Repository Validation Dispatcher
+
+The canonical local validation entry point is:
+
+```powershell
+./Invoke-Tests.ps1
+```
+
+Its target manifest is:
+
+```text
+validation-targets.json
+```
+
+The dispatcher must support one or more named targets, bootstrap declared dependencies by default, run language-native tests and platform-specific validation scripts, capture complete stdout and stderr, preserve exit codes, and write tracked reports under:
+
+```text
+docs/test-results/<target>/YYYYMMDD-HHMMSS_<target>.txt
+```
+
+The active remote agent should update `validation-targets.json` whenever the current stage requires different modules, commands, scripts, setup steps, or read-only environment checks. The user should normally only need to pull and run the same root command.
+
+Default validation must use isolated temporary resources and must not mutate production systems. Production read-only checks require an explicit switch. Destructive acceptance checks require explicit approval and isolated targets.
 
 ## UI / TUI Reuse
 
