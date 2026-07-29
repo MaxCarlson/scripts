@@ -32,11 +32,14 @@ def test_command_shape_normalizes_run_modes_and_config() -> None:
     assert archive.argv[:2] == ("archive", "-a")
 
 
-def test_normal_run_help_hides_expert_options() -> None:
+def test_normal_run_help_hides_expert_options_and_advertises_modes() -> None:
     help_text = _run_parser(build_parser(["run", "--help"])).format_help()
 
     assert "--workers" in help_text
     assert "--image-workers" in help_text
+    assert "run optimize --help" in help_text
+    assert "run benchmark --help" in help_text
+    assert "run config --help" in help_text
     assert "--backend" not in help_text
     assert "--retry-wait" not in help_text
     assert "--cookies" not in help_text
@@ -51,6 +54,7 @@ def test_optimize_and_config_help_expose_relevant_options() -> None:
     assert "--min-workers" in optimize_help
     assert "--max-image-workers" in optimize_help
     assert "--evaluation" in optimize_help
+    assert "run optimize config --help" in optimize_help
     assert "--backend" not in optimize_help
     assert "--backend" in config_help
     assert "--worker-start-delay" in config_help
