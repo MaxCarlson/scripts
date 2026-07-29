@@ -1,0 +1,68 @@
+{
+  "default_targets": [
+    "rrbackup"
+  ],
+  "targets": {
+    "rrbackup": {
+      "description": "RRBackup consolidation, compatibility, viewer, scheduler, and alerting validation.",
+      "working_directory": "modules/rrbackup",
+      "environment": {
+        "PYTHONUTF8": "1",
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONPATH": "{target_root}",
+        "RRBACKUP_INCLUDE_PRODUCTION_READ_ONLY": "{include_production_read_only}"
+      },
+      "bootstrap": [
+        {
+          "name": "Install RRBackup editable development dependencies",
+          "executable": "{python}",
+          "arguments": [
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "-e",
+            "{target_root}[dev]"
+          ]
+        }
+      ],
+      "commands": [
+        {
+          "name": "RRBackup pytest and coverage suite",
+          "executable": "{python}",
+          "arguments": [
+            "-m",
+            "pytest",
+            "tests",
+            "-vv",
+            "-ra",
+            "--tb=short",
+            "--durations=25",
+            "--strict-config",
+            "--strict-markers",
+            "--import-mode=importlib",
+            "--rootdir",
+            "{target_root}",
+            "--basetemp",
+            "{temp_root}",
+            "--cov=rrbackup",
+            "--cov-branch",
+            "--cov-report=term-missing"
+          ]
+        }
+      ],
+      "powershell_tests": [
+        {
+          "glob": "tests/powershell/*_test.ps1",
+          "arguments": [
+            "-RepoRoot",
+            "{repo_root}",
+            "-PythonExecutable",
+            "{python}",
+            "-IncludeProductionReadOnly:{include_production_read_only_bool}"
+          ]
+        }
+      ]
+    }
+  }
+}
