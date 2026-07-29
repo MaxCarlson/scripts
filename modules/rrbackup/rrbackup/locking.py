@@ -170,6 +170,29 @@ class ProcessLock:
             ),
         )
 
+    def _remove_stale_lock(self, expected_token: str) -> bool:
+        """Remove a stale lock only if its ownership token is unchanged."""
+
+        try:
+            current_payload = _read_payload(self.lock_path)
+        except FileNotFoundError:
+            return False
+        except Exception as exc:
+            raise InvalidLockError(
+                "Lock changed while validating stale ownership and is now invalid: {0}".format(
+                    exc
+                )
+            )
+
+        if str(current_payload.get("token", "")) != expected_token:
+            return False
+
+        try:
+            self.lock_path.unlink()
+        except FileNotFoundError:
+            return False
+        return True
+
     def acquire(self) -> None:
         """Acquire the lock, removing only a positively identified stale lock."""
 
@@ -218,10 +241,13 @@ class ProcessLock:
                             self.lock_path,
                         )
                     )
-                try:
-                    self.lock_path.unlink()
-                except FileNotFoundError:
-                    continue
+                if inspection.token is None:
+                    raise InvalidLockError(
+                        "Stale lock has no ownership token: {0}".format(
+                            self.lock_path
+                        )
+                    )
+                self._remove_stale_lock(inspection.token)
 
         raise LockError("Unable to acquire lock after resolving concurrent changes.")
 
