@@ -109,6 +109,7 @@
             "rrbackup/state.py",
             "rrbackup/version.py",
             "rrbackup/viewer.py",
+            "rrbackup/viewer_controller.py",
             "rrbackup/viewer_runtime.py",
             "rrbackup/wizards.py",
             "tests/application_test.py",
