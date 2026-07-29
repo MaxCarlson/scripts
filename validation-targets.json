@@ -1,193 +1,325 @@
 {
-  "default_targets": [
-    "rrbackup"
-  ],
-  "targets": {
-    "rrbackup": {
-      "description": "RRBackup consolidation, single-CLI UX, viewer, scheduler, and repository validation.",
-      "working_directory": "modules/rrbackup",
-      "context_files": [
-        "docs/plans/20260729-0700_rrbackup-consolidation-viewer-alerting/STATUS.md",
-        "docs/plans/20260729-0700_rrbackup-consolidation-viewer-alerting/checklist.md"
-      ],
-      "environment": {
-        "PYTHONUTF8": "1",
-        "PYTHONUNBUFFERED": "1",
-        "PY_COLORS": "1",
-        "PYTHONPATH": "{target_root}",
-        "RRBACKUP_INCLUDE_PRODUCTION_READ_ONLY": "{include_production_read_only}"
-      },
-      "bootstrap": [
-        {
-          "name": "Clean stale RRBackup and TermDash editable metadata",
-          "executable": "{python}",
-          "arguments": [
-            "-c",
-            "import shutil; from pathlib import Path; roots=[Path(r'{target_root}'), Path(r'{repo_root}')/'modules'/'termdash']; targets=[]; [targets.extend(list(root.glob('*.egg-info'))+[root/'build', root/'dist']) for root in roots]; [shutil.rmtree(str(path), ignore_errors=True) for path in targets if path.exists()]"
-          ]
+    "default_targets": [
+        "rrbackup"
+    ],
+    "targets": {
+        "rrbackup": {
+            "description": "RRBackup consolidation, single-CLI UX, viewer, scheduler, and repository validation.",
+            "working_directory": "modules/rrbackup",
+            "context_files": [
+                "docs/plans/20260729-0700_rrbackup-consolidation-viewer-alerting/STATUS.md",
+                "docs/plans/20260729-0700_rrbackup-consolidation-viewer-alerting/checklist.md"
+            ],
+            "environment": {
+                "PYTHONUTF8": "1",
+                "PYTHONUNBUFFERED": "1",
+                "PY_COLORS": "1",
+                "PYTHONPATH": "{target_root}",
+                "RRBACKUP_INCLUDE_PRODUCTION_READ_ONLY": "{include_production_read_only}"
+            },
+            "bootstrap": [
+                {
+                    "name": "Clean stale RRBackup and TermDash editable metadata",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-c",
+                        "import shutil; from pathlib import Path; roots=[Path(r'{target_root}'), Path(r'{repo_root}')/'modules'/'termdash']; targets=[]; [targets.extend(list(root.glob('*.egg-info'))+[root/'build', root/'dist']) for root in roots]; [shutil.rmtree(str(path), ignore_errors=True) for path in targets if path.exists()]"
+                    ]
+                },
+                {
+                    "name": "Uninstall prior RRBackup entry points",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "pip",
+                        "uninstall",
+                        "-y",
+                        "rrbackup"
+                    ]
+                },
+                {
+                    "name": "Install shared TermDash dependency",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "pip",
+                        "install",
+                        "--disable-pip-version-check",
+                        "--no-build-isolation",
+                        "-e",
+                        "{repo_root}/modules/termdash"
+                    ]
+                },
+                {
+                    "name": "Install RRBackup editable development dependencies",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "pip",
+                        "install",
+                        "--disable-pip-version-check",
+                        "--no-build-isolation",
+                        "-e",
+                        "{target_root}[dev]"
+                    ]
+                }
+            ],
+            "commands": [
+                {
+                    "name": "Compile RRBackup package and tests",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "compileall",
+                        "-q",
+                        "rrbackup",
+                        "tests"
+                    ]
+                },
+                {
+                    "name": "Lint RRBackup checkpoint 2A",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "ruff",
+                        "check",
+                        "--select",
+                        "E4,E7,E9,F821,F822,F823",
+                        "rrbackup/application.py",
+                        "rrbackup/audit.py",
+                        "rrbackup/cli_runtime.py",
+                        "rrbackup/command_contract.py",
+                        "rrbackup/config.py",
+                        "rrbackup/engine.py",
+                        "rrbackup/health.py",
+                        "rrbackup/inventory.py",
+                        "rrbackup/locking.py",
+                        "rrbackup/models.py",
+                        "rrbackup/policy.py",
+                        "rrbackup/presentation.py",
+                        "rrbackup/profile.py",
+                        "rrbackup/repository_ops.py",
+                        "rrbackup/repository_summary.py",
+                        "rrbackup/restic.py",
+                        "rrbackup/schedule_discovery.py",
+                        "rrbackup/schedule_math.py",
+                        "rrbackup/scheduler_management.py",
+                        "rrbackup/snapshots.py",
+                        "rrbackup/state.py",
+                        "rrbackup/version.py",
+                        "rrbackup/wizards.py",
+                        "tests/application_test.py",
+                        "tests/audit_test.py",
+                        "tests/command_contract_test.py",
+                        "tests/config_test.py",
+                        "tests/engine_failure_test.py",
+                        "tests/engine_test.py",
+                        "tests/health_test.py",
+                        "tests/integration_test.py",
+                        "tests/inventory_test.py",
+                        "tests/locking_test.py",
+                        "tests/models_test.py",
+                        "tests/packaging_test.py",
+                        "tests/policy_test.py",
+                        "tests/presentation_test.py",
+                        "tests/profile_test.py",
+                        "tests/repository_ops_test.py",
+                        "tests/repository_summary_test.py",
+                        "tests/restic_test.py",
+                        "tests/schedule_discovery_test.py",
+                        "tests/schedule_math_test.py",
+                        "tests/snapshots_test.py",
+                        "tests/state_test.py"
+                    ]
+                },
+                {
+                    "name": "Canonical backup CLI help contract",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "rrbackup.application",
+                        "--help"
+                    ]
+                },
+                {
+                    "name": "Condensed backup view help contract",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "rrbackup.application",
+                        "view",
+                        "--help"
+                    ]
+                },
+                {
+                    "name": "RRBackup pytest and coverage suite",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "pytest",
+                        "tests",
+                        "-vv",
+                        "-ra",
+                        "--color=yes",
+                        "--tb=short",
+                        "--durations=25",
+                        "--strict-config",
+                        "--strict-markers",
+                        "--import-mode=importlib",
+                        "--rootdir",
+                        "{target_root}",
+                        "--basetemp",
+                        "{temp_root}",
+                        "--cov=rrbackup",
+                        "--cov-branch",
+                        "--cov-report=term-missing"
+                    ]
+                }
+            ],
+            "powershell_tests": [
+                {
+                    "glob": "tests/powershell/*_test.ps1",
+                    "arguments": [
+                        "-RepoRoot",
+                        "{repo_root}",
+                        "-PythonExecutable",
+                        "{python}",
+                        "-IncludeProductionReadOnly:{include_production_read_only_bool}"
+                    ]
+                }
+            ]
         },
-        {
-          "name": "Uninstall prior RRBackup entry points",
-          "executable": "{python}",
-          "arguments": [
-            "-m",
-            "pip",
-            "uninstall",
-            "-y",
-            "rrbackup"
-          ]
-        },
-        {
-          "name": "Install shared TermDash dependency",
-          "executable": "{python}",
-          "arguments": [
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            "--no-build-isolation",
-            "-e",
-            "{repo_root}/modules/termdash"
-          ]
-        },
-        {
-          "name": "Install RRBackup editable development dependencies",
-          "executable": "{python}",
-          "arguments": [
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            "--no-build-isolation",
-            "-e",
-            "{target_root}[dev]"
-          ]
+        "development-ledger": {
+            "description": "Development-ledger package, active plan, scripts-repository integration, and self-hosted evidence validation.",
+            "working_directory": "modules/development_ledger",
+            "context_files": [
+                "docs/plans/20260729-1100_development-ledger-self-hosting/STATUS.md",
+                "docs/plans/20260729-1100_development-ledger-self-hosting/checklist.md",
+                "docs/plans/20260729-1100_development-ledger-self-hosting/00_implementation-plan.md"
+            ],
+            "environment": {
+                "PYTHONUTF8": "1",
+                "PYTHONUNBUFFERED": "1",
+                "PY_COLORS": "1",
+                "PYTHONPATH": "{target_root}"
+            },
+            "bootstrap": [
+                {
+                    "name": "Clean stale development-ledger editable metadata",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-c",
+                        "import shutil; from pathlib import Path; root=Path(r'{target_root}'); targets=list(root.glob('*.egg-info'))+[root/'build', root/'dist']; [shutil.rmtree(str(path), ignore_errors=True) for path in targets if path.exists()]"
+                    ]
+                },
+                {
+                    "name": "Install development-ledger editable development dependencies",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "pip",
+                        "install",
+                        "--disable-pip-version-check",
+                        "--no-build-isolation",
+                        "-e",
+                        "{target_root}[dev]"
+                    ]
+                }
+            ],
+            "commands": [
+                {
+                    "name": "Compile development-ledger package and tests",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "compileall",
+                        "-q",
+                        "development_ledger",
+                        "tests"
+                    ]
+                },
+                {
+                    "name": "Lint development-ledger package and tests",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "ruff",
+                        "check",
+                        "--select",
+                        "E4,E7,E9,F821,F822,F823",
+                        "development_ledger",
+                        "tests"
+                    ]
+                },
+                {
+                    "name": "Validate development-ledger active plan",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "development_ledger",
+                        "validate-plan",
+                        "-p",
+                        "docs/plans/20260729-1100_development-ledger-self-hosting/00_implementation-plan.md"
+                    ]
+                },
+                {
+                    "name": "Development-ledger CLI help contract",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "development_ledger",
+                        "--help"
+                    ]
+                },
+                {
+                    "name": "Development-ledger pytest and coverage suite",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "pytest",
+                        "tests",
+                        "-vv",
+                        "-ra",
+                        "--color=yes",
+                        "--tb=short",
+                        "--durations=25",
+                        "--strict-config",
+                        "--strict-markers",
+                        "--import-mode=importlib",
+                        "--rootdir",
+                        "{target_root}",
+                        "--basetemp",
+                        "{temp_root}",
+                        "--junitxml={temp_root}/pytest.xml",
+                        "--cov=development_ledger",
+                        "--cov-branch",
+                        "--cov-report=term-missing"
+                    ]
+                },
+                {
+                    "name": "Record development-ledger validation event",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "development_ledger.dispatcher_record",
+                        "-p",
+                        "docs/plans/20260729-1100_development-ledger-self-hosting/00_implementation-plan.md",
+                        "-o",
+                        "docs/plans/20260729-1100_development-ledger-self-hosting/ledger",
+                        "-r",
+                        "{repo_root}",
+                        "-j",
+                        "{temp_root}/pytest.xml",
+                        "-t",
+                        "{repo_root}/docs/test-results/development-ledger/LATEST.txt",
+                        "-a",
+                        "remote_llm",
+                        "-m",
+                        "hybrid",
+                        "-w"
+                    ]
+                }
+            ]
         }
-      ],
-      "commands": [
-        {
-          "name": "Compile RRBackup package and tests",
-          "executable": "{python}",
-          "arguments": [
-            "-m",
-            "compileall",
-            "-q",
-            "rrbackup",
-            "tests"
-          ]
-        },
-        {
-          "name": "Lint RRBackup checkpoint 2A",
-          "executable": "{python}",
-          "arguments": [
-            "-m",
-            "ruff",
-            "check",
-            "--select",
-            "E4,E7,E9,F821,F822,F823",
-            "rrbackup/application.py",
-            "rrbackup/audit.py",
-            "rrbackup/cli_runtime.py",
-            "rrbackup/command_contract.py",
-            "rrbackup/config.py",
-            "rrbackup/engine.py",
-            "rrbackup/health.py",
-            "rrbackup/inventory.py",
-            "rrbackup/locking.py",
-            "rrbackup/models.py",
-            "rrbackup/policy.py",
-            "rrbackup/presentation.py",
-            "rrbackup/profile.py",
-            "rrbackup/repository_ops.py",
-            "rrbackup/repository_summary.py",
-            "rrbackup/restic.py",
-            "rrbackup/schedule_discovery.py",
-            "rrbackup/schedule_math.py",
-            "rrbackup/scheduler_management.py",
-            "rrbackup/snapshots.py",
-            "rrbackup/state.py",
-            "rrbackup/version.py",
-            "rrbackup/wizards.py",
-            "tests/application_test.py",
-            "tests/audit_test.py",
-            "tests/command_contract_test.py",
-            "tests/config_test.py",
-            "tests/engine_failure_test.py",
-            "tests/engine_test.py",
-            "tests/health_test.py",
-            "tests/integration_test.py",
-            "tests/inventory_test.py",
-            "tests/locking_test.py",
-            "tests/models_test.py",
-            "tests/packaging_test.py",
-            "tests/policy_test.py",
-            "tests/presentation_test.py",
-            "tests/profile_test.py",
-            "tests/repository_ops_test.py",
-            "tests/repository_summary_test.py",
-            "tests/restic_test.py",
-            "tests/schedule_discovery_test.py",
-            "tests/schedule_math_test.py",
-            "tests/snapshots_test.py",
-            "tests/state_test.py"
-          ]
-        },
-        {
-          "name": "Canonical backup CLI help contract",
-          "executable": "{python}",
-          "arguments": [
-            "-m",
-            "rrbackup.application",
-            "--help"
-          ]
-        },
-        {
-          "name": "Condensed backup view help contract",
-          "executable": "{python}",
-          "arguments": [
-            "-m",
-            "rrbackup.application",
-            "view",
-            "--help"
-          ]
-        },
-        {
-          "name": "RRBackup pytest and coverage suite",
-          "executable": "{python}",
-          "arguments": [
-            "-m",
-            "pytest",
-            "tests",
-            "-vv",
-            "-ra",
-            "--color=yes",
-            "--tb=short",
-            "--durations=25",
-            "--strict-config",
-            "--strict-markers",
-            "--import-mode=importlib",
-            "--rootdir",
-            "{target_root}",
-            "--basetemp",
-            "{temp_root}",
-            "--cov=rrbackup",
-            "--cov-branch",
-            "--cov-report=term-missing"
-          ]
-        }
-      ],
-      "powershell_tests": [
-        {
-          "glob": "tests/powershell/*_test.ps1",
-          "arguments": [
-            "-RepoRoot",
-            "{repo_root}",
-            "-PythonExecutable",
-            "{python}",
-            "-IncludeProductionReadOnly:{include_production_read_only_bool}"
-          ]
-        }
-      ]
     }
-  }
 }

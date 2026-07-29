@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "development-ledger"
-version = "1.0.0"
+version = "1.1.0"
 description = "Plan-aware validation ledger and hybrid/local LLM handoff tooling"
 authors = [{name = "mcarls"}]
 requires-python = ">=3.11"
