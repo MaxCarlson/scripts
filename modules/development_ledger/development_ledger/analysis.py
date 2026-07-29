@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import re
-from collections import Counter
+from collections import Counter, defaultdict, deque
 from typing import Any
 
 from development_ledger.models import NormalizedTest, PlanItem, PlanState
@@ -37,8 +37,11 @@ def evaluate_items(
                 "verification": verification,
                 "matched_test_ids": [test.id for test in matched],
                 "manual_check_states": check_states,
+                "depends_on": item.depends_on,
                 "blocked_by": item.blocked_by,
                 "relevant_files": item.relevant_files,
+                "priority": item.priority,
+                "architecture_role": item.architecture_role,
             }
         )
     return evaluations
@@ -65,12 +68,12 @@ def build_validation_event(
     test_summary = aggregate_tests(tests)
     if transcript_metrics:
         test_summary["transcript_metrics"] = transcript_metrics
-    failures = sorted(
-        failure_fingerprint(test) for test in tests if test.status in {"failed", "error"}
-    )
+    failures = sorted(failure_fingerprint(test) for test in tests if test.status in {"failed", "error"})
     comparison = compare_to_previous(item_evaluations, failures, test_summary, prior_validation)
     progress = classify_progress(plan, item_evaluations, comparison, prior_events, failures)
-    routing = recommend_routing(plan, progress, failures)
+    planning_gate = assess_planning_gate(plan, prior_events)
+    architecture_review = assess_architecture_review(plan, prior_events, progress)
+    routing = recommend_routing(plan, progress, failures, planning_gate, architecture_review)
 
     return {
         "schema_version": 1,
@@ -80,14 +83,20 @@ def build_validation_event(
         "plan_id": plan.plan_id,
         "plan_title": plan.title,
         "project_root": plan.project_root,
+        "plan_revision": plan.plan_revision,
         "stage": plan.stage,
         "actor": actor or str(plan.session.get("actor", "unknown")),
         "mode": mode or str(plan.session.get("mode", "hybrid")),
+        "request": dict(plan.session.get("request", {})),
         "intent": {
             "objective": str(plan.session.get("objective", "")),
             "hypothesis": str(plan.session.get("hypothesis", "")),
             "target_ids": list(plan.session.get("target_ids", [])),
+            "selection_rationale": str(plan.session.get("selection_rationale", "")),
+            "stop_conditions": list(plan.session.get("stop_conditions", [])),
+            "batch": dict(plan.session.get("batch", {})),
             "environment_dependencies": list(plan.session.get("environment_dependencies", [])),
+            "architecture_impact": str(plan.session.get("architecture_impact", "none")),
             "relevant_files": list(plan.session.get("relevant_files", [])),
         },
         "provenance": provenance,
@@ -98,8 +107,10 @@ def build_validation_event(
         "manual_checks": [
             {**check.to_dict(), "status": manual_statuses.get(check.id, check.status)} for check in plan.manual_checks
         ],
+        "planning_gate": planning_gate,
         "comparison": comparison,
         "progress": progress,
+        "architecture_review": architecture_review,
         "routing": routing,
         "artifacts": artifacts or [],
     }
@@ -129,6 +140,7 @@ def build_manual_event(
         "plan_id": plan.plan_id,
         "plan_title": plan.title,
         "project_root": plan.project_root,
+        "plan_revision": plan.plan_revision,
         "stage": plan.stage,
         "actor": actor,
         "check_id": check_id,
@@ -148,6 +160,166 @@ def current_manual_statuses(plan: PlanState, events: list[dict[str, Any]]) -> di
         if event.get("event_type") == "manual_check" and event.get("check_id") in statuses:
             statuses[str(event["check_id"])] = str(event.get("status", statuses[str(event["check_id"])]))
     return statuses
+
+
+def assess_planning_gate(plan: PlanState, prior_events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Check request intake, dependency readiness, and batch cohesion before another pass."""
+
+    issues: list[str] = []
+    warnings: list[str] = []
+    request = plan.session.get("request", {})
+    request_status = str(request.get("status", ""))
+    if request_status == "conflict_pending":
+        issues.append("User requirements conflict with the current plan and require an explicit decision.")
+
+    previous = _latest_event(prior_events, "validation_run")
+    if request_status == "incorporated" and previous:
+        previous_revision = int(previous.get("plan_revision", 0) or 0)
+        if plan.plan_revision <= previous_revision:
+            issues.append("The request is marked incorporated but plan_revision did not increase.")
+
+    selected_ids = list(plan.session.get("target_ids", []))
+    selected = set(selected_ids)
+    item_map = plan.item_map()
+    for item_id in selected_ids:
+        item = item_map[item_id]
+        for dependency_id in item.depends_on:
+            dependency = item_map[dependency_id]
+            if dependency_id not in selected and dependency.implementation not in {"implemented", "deferred"}:
+                issues.append(
+                    f"Selected item {item_id} depends on unfinished {dependency_id}, which is not included in the batch."
+                )
+
+    batch = plan.session.get("batch", {})
+    max_items = int(batch.get("max_items", plan.policy["session"]["max_items"]))
+    if len(selected_ids) > max_items:
+        warnings.append(
+            f"The batch selects {len(selected_ids)} items, above the configured soft maximum of {max_items}."
+        )
+    if not selected_ids:
+        warnings.append("No target plan items are selected for this session.")
+    if len(selected_ids) > 1 and not _selected_items_are_cohesive(plan, selected_ids):
+        warnings.append(
+            "Selected items are not connected by dependencies or shared relevant files; consider a more cohesive batch."
+        )
+
+    candidates = recommend_batch_candidates(plan)
+    return {
+        "passed": not issues,
+        "issues": issues,
+        "warnings": warnings,
+        "selected_ids": selected_ids,
+        "dependency_order": _dependency_order(plan, selected_ids),
+        "recommended_candidates": candidates,
+        "batch": dict(batch),
+    }
+
+
+def recommend_batch_candidates(plan: PlanState) -> list[dict[str, Any]]:
+    """Rank ready plan items, favoring prerequisites, foundations, priority, and downstream leverage."""
+
+    item_map = plan.item_map()
+    dependents: dict[str, set[str]] = defaultdict(set)
+    for item in plan.items:
+        for dependency in item.depends_on:
+            dependents[dependency].add(item.id)
+
+    candidates: list[dict[str, Any]] = []
+    for item in plan.items:
+        if item.implementation in {"implemented", "deferred", "blocked"}:
+            continue
+        unresolved = [
+            dependency
+            for dependency in item.depends_on
+            if item_map[dependency].implementation not in {"implemented", "deferred"}
+        ]
+        if unresolved:
+            continue
+        downstream = _transitive_dependent_count(item.id, dependents)
+        role_bonus = 100 if item.architecture_role == "foundation" else 30 if item.architecture_role == "integration" else 0
+        score = role_bonus + item.priority * 10 + downstream
+        candidates.append(
+            {
+                "id": item.id,
+                "title": item.title,
+                "score": score,
+                "priority": item.priority,
+                "architecture_role": item.architecture_role,
+                "downstream_dependents": downstream,
+                "relevant_files": item.relevant_files,
+            }
+        )
+    return sorted(candidates, key=lambda value: (-int(value["score"]), str(value["id"])))
+
+
+def assess_architecture_review(
+    plan: PlanState,
+    prior_events: list[dict[str, Any]],
+    progress: dict[str, Any],
+) -> dict[str, Any]:
+    """Determine whether a lightweight or deeper architecture review is due."""
+
+    requested = bool(plan.session.get("architecture_review", {}).get("requested", False))
+    performed = bool(plan.session.get("architecture_review", {}).get("performed", False))
+    current_review = dict(plan.session.get("architecture_review", {}))
+    latest_review = next(
+        (
+            event
+            for event in reversed(prior_events)
+            if event.get("event_type") == "validation_run"
+            and event.get("architecture_review", {}).get("performed")
+        ),
+        None,
+    )
+    validations = [event for event in prior_events if event.get("event_type") == "validation_run"]
+    if latest_review:
+        review_index = validations.index(latest_review)
+        runs_since = len(validations) - review_index - 1
+        reviewed_revision = int(latest_review.get("plan_revision", 0) or 0)
+    else:
+        runs_since = len(validations)
+        reviewed_revision = 0
+    revisions_since = max(0, plan.plan_revision - reviewed_revision)
+
+    triggers: list[str] = []
+    policy = plan.policy["architecture_review"]
+    impact = str(plan.session.get("architecture_impact", "none"))
+    if requested:
+        triggers.append("The user or working agent explicitly requested an architecture review.")
+    if impact in {"cross_cutting", "foundational"}:
+        triggers.append(f"The current change declares {impact} architecture impact.")
+    if progress.get("classification") in {"looping", "regressing"}:
+        triggers.append(f"The latest progress classification is {progress.get('classification')}.")
+    if runs_since >= int(policy["max_validation_runs"]):
+        triggers.append(f"{runs_since} validation runs have occurred since the last architecture review.")
+    if revisions_since >= int(policy["max_plan_revisions"]):
+        triggers.append(f"The plan advanced {revisions_since} revisions since the last architecture review.")
+
+    if performed:
+        return {
+            "due": False,
+            "performed": True,
+            "depth": "completed",
+            "triggers": triggers,
+            "runs_since_last_review": 0,
+            "plan_revisions_since_last_review": 0,
+            "summary": current_review.get("summary", ""),
+            "findings": current_review.get("findings", []),
+            "actions": current_review.get("actions", []),
+        }
+
+    depth = "deep" if impact == "foundational" or len(triggers) >= 2 else "cursory"
+    return {
+        "due": bool(triggers),
+        "performed": False,
+        "depth": depth,
+        "triggers": triggers,
+        "runs_since_last_review": runs_since,
+        "plan_revisions_since_last_review": revisions_since,
+        "summary": "",
+        "findings": [],
+        "actions": [],
+    }
 
 
 def compare_to_previous(
@@ -246,7 +418,7 @@ def classify_progress(
             material = True
             reasons.append("All non-deferred plan items are verified.")
     elif material:
-        classification = "partial_progress" if failures else "progressing"
+        classification = "partial_progress"
     elif same_failures and (same_hypothesis or prior_classification in {"stalled", "looping"}):
         classification = "looping"
         reasons.append("The same failure set persisted without a new successful hypothesis.")
@@ -259,23 +431,39 @@ def classify_progress(
     return {"classification": classification, "material_progress": material, "reasons": reasons}
 
 
-def recommend_routing(plan: PlanState, progress: dict[str, Any], failures: list[str]) -> dict[str, Any]:
+def recommend_routing(
+    plan: PlanState,
+    progress: dict[str, Any],
+    failures: list[str],
+    planning_gate: dict[str, Any],
+    architecture_review: dict[str, Any],
+) -> dict[str, Any]:
     """Recommend the next actor and a local Codex model when escalation is warranted."""
 
     classification = progress["classification"]
     environment_dependencies = list(plan.session.get("environment_dependencies", []))
-    if failures and environment_dependencies:
+    request_status = str(plan.session.get("request", {}).get("status", ""))
+    if request_status == "conflict_pending":
+        decision = "stop_for_user_decision"
+        reason = "Conflicting requirements must be resolved in the plan before implementation continues."
+    elif not planning_gate.get("passed", True):
+        decision = "replan_remote"
+        reason = "The plan-intake or dependency gate failed: " + "; ".join(planning_gate.get("issues", []))
+    elif failures and environment_dependencies:
         decision = "handoff_local"
         reason = "Failures depend on local environment capabilities: " + ", ".join(environment_dependencies)
     elif classification == "looping":
         decision = "handoff_local"
         reason = "The remote iteration is looping on the same evidence."
-    elif classification == "stalled":
-        decision = "one_targeted_remote_pass"
-        reason = "One bounded remote pass is permitted only with a distinct evidence-backed hypothesis."
     elif classification == "regressing":
         decision = "replan_remote"
         reason = "Regressions should be isolated or reverted before further feature expansion."
+    elif architecture_review.get("due"):
+        decision = "review_architecture"
+        reason = "Architecture review is due before selecting another implementation batch."
+    elif classification == "stalled":
+        decision = "one_targeted_remote_pass"
+        reason = "One bounded remote pass is permitted only with a distinct evidence-backed hypothesis."
     elif classification in {"progressing", "partial_progress", "baseline"}:
         decision = "continue_remote"
         reason = "Evidence shows useful progress or establishes the first baseline."
@@ -361,6 +549,68 @@ def _verification_status(item: PlanItem, automated: str, manual: str) -> str:
     if manual in {"pending", "blocked"}:
         return "manual_pending"
     return "verified"
+
+
+def _selected_items_are_cohesive(plan: PlanState, selected_ids: list[str]) -> bool:
+    item_map = plan.item_map()
+    selected = set(selected_ids)
+    graph: dict[str, set[str]] = {item_id: set() for item_id in selected_ids}
+    for left_id in selected_ids:
+        left = item_map[left_id]
+        for right_id in selected_ids:
+            if left_id == right_id:
+                continue
+            right = item_map[right_id]
+            related = (
+                right_id in left.depends_on
+                or left_id in right.depends_on
+                or bool(set(left.relevant_files) & set(right.relevant_files))
+            )
+            if related:
+                graph[left_id].add(right_id)
+    visited: set[str] = set()
+    queue = deque([selected_ids[0]])
+    while queue:
+        item_id = queue.popleft()
+        if item_id in visited:
+            continue
+        visited.add(item_id)
+        queue.extend(graph[item_id] - visited)
+    return visited == selected
+
+
+def _dependency_order(plan: PlanState, selected_ids: list[str]) -> list[str]:
+    selected = set(selected_ids)
+    item_map = plan.item_map()
+    indegree = {item_id: 0 for item_id in selected_ids}
+    outgoing: dict[str, list[str]] = defaultdict(list)
+    for item_id in selected_ids:
+        for dependency in item_map[item_id].depends_on:
+            if dependency in selected:
+                indegree[item_id] += 1
+                outgoing[dependency].append(item_id)
+    queue = deque(sorted((item_id for item_id, degree in indegree.items() if degree == 0)))
+    ordered: list[str] = []
+    while queue:
+        current = queue.popleft()
+        ordered.append(current)
+        for dependent in sorted(outgoing[current]):
+            indegree[dependent] -= 1
+            if indegree[dependent] == 0:
+                queue.append(dependent)
+    return ordered if len(ordered) == len(selected_ids) else selected_ids
+
+
+def _transitive_dependent_count(item_id: str, dependents: dict[str, set[str]]) -> int:
+    visited: set[str] = set()
+    queue = deque(dependents.get(item_id, set()))
+    while queue:
+        current = queue.popleft()
+        if current in visited:
+            continue
+        visited.add(current)
+        queue.extend(dependents.get(current, set()) - visited)
+    return len(visited)
 
 
 def _latest_event(events: list[dict[str, Any]], event_type: str) -> dict[str, Any] | None:
