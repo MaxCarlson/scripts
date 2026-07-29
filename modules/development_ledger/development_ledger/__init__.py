@@ -4,7 +4,7 @@ from development_ledger.models import ManualCheck, NormalizedTest, PlanItem, Pla
 from development_ledger.setup import SetupResult, apply_setup, plan_repository_setup
 from development_ledger.writer import ScriptCheck, write_script_results
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 __all__ = [
     "ManualCheck",
