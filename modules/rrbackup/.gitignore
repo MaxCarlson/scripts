@@ -1,0 +1,5 @@
+.pytest_tmp_root/
+test-results/
+.coverage
+coverage.xml
+htmlcov/
