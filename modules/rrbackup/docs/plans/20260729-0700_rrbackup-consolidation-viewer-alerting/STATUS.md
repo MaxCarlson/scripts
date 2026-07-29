@@ -2,9 +2,9 @@
 
 ## Overall
 
-Stage 1 is in progress. The reusable repository-root validation dispatcher is now proven on Windows: the latest complete run collected 134 tests, passed 126, intentionally skipped 8 environment-dependent tests, and produced no failures or errors. Both PowerShell validation scripts passed or safely skipped as designed.
+Stage 1 implementation is complete and awaiting local validation. The reusable repository-root validation dispatcher was previously proven on Windows with 126 passing tests and 8 intentional skips. This checkpoint adds the shared safety engine and a substantial regression suite before any existing public CLI is redirected.
 
-Validation reports now use an unambiguous latest-first layout with bounded history. The six-area CLI and shell-audit replacement contract remain fixed for Stage 2.
+Validation evidence now uses `LATEST.txt`, `LATEST_CONTEXT.md`, and `LATEST_PROGRESS.diff`, with bounded history. The six-area CLI and shell-audit replacement contract remain fixed for Stage 2.
 
 ## Completed
 
@@ -23,13 +23,12 @@ Validation reports now use an unambiguous latest-first layout with bounded histo
 - [x] Target working-directory isolation
 - [x] Pytest `--import-mode=importlib`
 - [x] Authoritative `docs/test-results/<target>/LATEST.txt`
+- [x] Paired `LATEST_CONTEXT.md` and `LATEST_PROGRESS.diff`
 - [x] Bounded prior-report history
-- [x] Full stdout/stderr capture for pytest and PowerShell tests
+- [x] Full stdout/stderr capture for compilation, lint, pytest, and PowerShell tests
 - [x] PowerShell environment/entry-point smoke test
 - [x] Opt-in production read-only snapshot compatibility test
 - [x] Project-local ignored temporary-test root
-- [x] Initial Windows validation output committed and consumed remotely
-- [x] Shared-environment pytest failure diagnosed
 - [x] Repository-root dispatcher validated on Windows
 - [x] User-config-dependent tests changed from mandatory failure to optional skip
 - [x] Live Google Drive tests made explicitly opt-in
@@ -38,32 +37,34 @@ Validation reports now use an unambiguous latest-first layout with bounded histo
 - [x] Canonical six-area CLI architecture defined
 - [x] Useful shell-audit capabilities mapped to first-class module commands
 - [x] `backup view audit` contract defined
+- [x] Canonical legacy `backup_module` profile adapter with source attribution
+- [x] Production-compatible Restic backup command builder
+- [x] Hard preview/print-only execution barrier
+- [x] Distinct dry-run execution mode
+- [x] Process-identity-aware lock with ownership token
+- [x] Atomic current/history/last-success state store
+- [x] CPU normal/overdue decision and wait policy
+- [x] Snapshot and backup-summary JSON parsers
+- [x] Shared backup execution engine
+- [x] CPU gating occurs before lock acquisition
+- [x] Dry runs never update last-success state
+- [x] Lock, wait, execution, interruption, and finalization failures reach terminal state
+- [x] RRBackup version bumped to `0.3.0`
+- [x] `psutil` declared as a runtime dependency
+- [x] Stage 1 unit and lifecycle regression tests authored
 
-## In Progress
+## Awaiting Validation
 
-- [ ] Shared safety foundation
-- [ ] Stage 1 unit tests and coverage
-- [ ] Temporary-repository integration harness expansion
-- [ ] Validation of latest-first report migration and retention
+- [ ] Compile new package and tests on Windows
+- [ ] Run focused correctness lint
+- [ ] Run full pytest and coverage suite
+- [ ] Run PowerShell smoke tests
+- [ ] Verify first-run migration to `LATEST.*` validation artifacts
+- [ ] Verify generated context snapshot and baseline progress diff
+- [ ] Correct failures found by the local run
+- [ ] Decide whether Stage 1 coverage is sufficient before Stage 2
 
-## Validation Evidence
-
-### Initial baseline
-
-- 130 tests collected
-- 112 passed
-- 4 skipped
-- 10 failed
-- 4 errored
-- package-only branch coverage: 32%
-
-### Shared-environment failure
-
-The module-local runner imported another module's `tests.conftest` from the shared repository environment. A manual pytest command used a different Python environment without `pytest-mock` or `tomli-w`.
-
-This was corrected structurally through the repository-root dispatcher, target working-directory isolation, dependency bootstrap, explicit repository Python resolution, target `PYTHONPATH`, and pytest importlib mode.
-
-### Latest clean Windows run
+## Latest Proven Baseline Before This Checkpoint
 
 - 134 tests collected
 - 126 passed
@@ -74,7 +75,22 @@ This was corrected structurally through the repository-root dispatcher, target w
 - environment smoke test: passed
 - production read-only test: safely skipped
 
-The skipped tests require either a user RRBackup configuration or explicitly enabled Google Drive access.
+The next run adds the new Stage 1 tests and will establish the first safety-foundation baseline.
+
+## New Stage 1 Components
+
+```text
+rrbackup/engine.py
+rrbackup/locking.py
+rrbackup/models.py
+rrbackup/policy.py
+rrbackup/profile.py
+rrbackup/restic.py
+rrbackup/snapshots.py
+rrbackup/state.py
+```
+
+The existing public `rrb` and `rrbackup` commands still use the inherited implementation. Stage 2 will redirect compatible commands only after this safety foundation passes locally.
 
 ## CLI Contract
 
@@ -125,10 +141,10 @@ Optional production read-only validation:
 ./Invoke-Tests.ps1 -IncludeProductionReadOnly
 ```
 
-The authoritative report is:
+The authoritative evidence is:
 
 ```text
 docs/test-results/rrbackup/LATEST.txt
+docs/test-results/rrbackup/LATEST_CONTEXT.md
+docs/test-results/rrbackup/LATEST_PROGRESS.diff
 ```
-
-Prior reports are retained only under `history/`, with default limits of three reports and 14 days.
