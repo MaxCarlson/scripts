@@ -16,6 +16,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if (Test-Path -LiteralPath Variable:PSNativeCommandUseErrorActionPreference) {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
 
 $RepoRoot = $PSScriptRoot
 $ManifestPath = Join-Path $RepoRoot 'validation-targets.json'
@@ -73,6 +76,24 @@ function Convert-TokenText {
     return $Result
 }
 
+function Get-ManifestItems {
+    [CmdletBinding()]
+    [OutputType([object[]])]
+    param(
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$Container,
+
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
+
+    if (-not $Container.Contains($Name) -or $null -eq $Container[$Name]) {
+        return @()
+    }
+
+    return @($Container[$Name])
+}
+
 function Write-ReportLine {
     [CmdletBinding()]
     param(
@@ -117,7 +138,7 @@ function Invoke-ManifestCommand {
         [string]$WorkingDirectory,
 
         [Parameter(Mandatory)]
-        [hashtable]$CommandSpec,
+        [System.Collections.IDictionary]$CommandSpec,
 
         [Parameter(Mandatory)]
         [hashtable]$Tokens,
@@ -126,10 +147,16 @@ function Invoke-ManifestCommand {
         [System.Collections.Generic.List[string]]$TargetFailures
     )
 
-    $Name = Convert-TokenText -Text ([string]$CommandSpec.name) -Tokens $Tokens
-    $Executable = Convert-TokenText -Text ([string]$CommandSpec.executable) -Tokens $Tokens
+    foreach ($RequiredName in @('name', 'executable')) {
+        if (-not $CommandSpec.Contains($RequiredName)) {
+            throw "Validation command for target '$TargetName' is missing '$RequiredName'."
+        }
+    }
+
+    $Name = Convert-TokenText -Text ([string]$CommandSpec['name']) -Tokens $Tokens
+    $Executable = Convert-TokenText -Text ([string]$CommandSpec['executable']) -Tokens $Tokens
     $Arguments = @(
-        foreach ($Argument in @($CommandSpec.arguments)) {
+        foreach ($Argument in (Get-ManifestItems -Container $CommandSpec -Name 'arguments')) {
             Convert-TokenText -Text ([string]$Argument) -Tokens $Tokens
         }
     )
@@ -173,11 +200,14 @@ if (-not (Test-Path -LiteralPath $ManifestPath)) {
 }
 
 $Manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json -AsHashtable
-$AvailableTargets = @($Manifest.targets.Keys | Sort-Object)
+if (-not $Manifest.Contains('targets')) {
+    throw "Validation manifest does not define a 'targets' object: $ManifestPath"
+}
 
+$AvailableTargets = @($Manifest['targets'].Keys | Sort-Object)
 if ($ListTargets) {
     foreach ($Name in $AvailableTargets) {
-        $Description = [string]$Manifest.targets[$Name].description
+        $Description = [string]$Manifest['targets'][$Name]['description']
         Write-Output ("{0,-24} {1}" -f $Name, $Description)
     }
 
@@ -187,8 +217,11 @@ if ($ListTargets) {
 $SelectedTargets = if ($Target -and $Target.Count -gt 0) {
     @($Target)
 }
+elseif ($Manifest.Contains('default_targets')) {
+    @($Manifest['default_targets'])
+}
 else {
-    @($Manifest.default_targets)
+    @()
 }
 
 if ($SelectedTargets -contains 'all') {
@@ -201,7 +234,7 @@ if ($SelectedTargets.Count -eq 0) {
 }
 
 foreach ($Name in $SelectedTargets) {
-    if (-not $Manifest.targets.ContainsKey($Name)) {
+    if (-not $Manifest['targets'].Contains($Name)) {
         throw "Unknown validation target '$Name'. Run ./Invoke-Tests.ps1 -ListTargets to list available targets."
     }
 }
@@ -210,12 +243,17 @@ $Python = Resolve-PythonExecutable
 New-Item -ItemType Directory -Path $ResultsRoot -Force | Out-Null
 
 foreach ($TargetName in $SelectedTargets) {
-    $TargetSpec = $Manifest.targets[$TargetName]
-    $WorkingDirectory = Join-Path $RepoRoot ([string]$TargetSpec.working_directory)
+    $TargetSpec = $Manifest['targets'][$TargetName]
+    if (-not $TargetSpec.Contains('working_directory')) {
+        throw "Validation target '$TargetName' does not define a working_directory."
+    }
+
+    $WorkingDirectory = Join-Path $RepoRoot ([string]$TargetSpec['working_directory'])
     if (-not (Test-Path -LiteralPath $WorkingDirectory)) {
         throw "Working directory for target '$TargetName' does not exist: $WorkingDirectory"
     }
 
+    $InitialStatus = @(& git -C $RepoRoot status --short 2>$null)
     $SafeTargetName = $TargetName -replace '[^A-Za-z0-9._-]', '_'
     $TargetResultsRoot = Join-Path $ResultsRoot $SafeTargetName
     $ReportPath = Join-Path $TargetResultsRoot ("{0}_{1}.txt" -f $Timestamp, $SafeTargetName)
@@ -238,16 +276,25 @@ foreach ($TargetName in $SelectedTargets) {
 
     $PreviousEnvironment = @{}
     try {
-        foreach ($Entry in $TargetSpec.environment.GetEnumerator()) {
-            $VariableName = [string]$Entry.Key
-            $PreviousEnvironment[$VariableName] = [Environment]::GetEnvironmentVariable($VariableName, 'Process')
-            $ResolvedValue = Convert-TokenText -Text ([string]$Entry.Value) -Tokens $Tokens
-            [Environment]::SetEnvironmentVariable($VariableName, $ResolvedValue, 'Process')
+        if ($TargetSpec.Contains('environment')) {
+            foreach ($Entry in $TargetSpec['environment'].GetEnumerator()) {
+                $VariableName = [string]$Entry.Key
+                $PreviousEnvironment[$VariableName] = [Environment]::GetEnvironmentVariable($VariableName, 'Process')
+                $ResolvedValue = Convert-TokenText -Text ([string]$Entry.Value) -Tokens $Tokens
+                [Environment]::SetEnvironmentVariable($VariableName, $ResolvedValue, 'Process')
+            }
+        }
+
+        $Description = if ($TargetSpec.Contains('description')) {
+            [string]$TargetSpec['description']
+        }
+        else {
+            ''
         }
 
         Write-ReportSection -ReportPath $ReportPath -Title ("VALIDATION TARGET: {0}" -f $TargetName)
         Write-ReportLine -ReportPath $ReportPath -Text "Timestamp: $(Get-Date -Format o)"
-        Write-ReportLine -ReportPath $ReportPath -Text "Description: $($TargetSpec.description)"
+        Write-ReportLine -ReportPath $ReportPath -Text "Description: $Description"
         Write-ReportLine -ReportPath $ReportPath -Text "Repository root: $RepoRoot"
         Write-ReportLine -ReportPath $ReportPath -Text "Working directory: $WorkingDirectory"
         Write-ReportLine -ReportPath $ReportPath -Text "Python: $Python"
@@ -259,7 +306,6 @@ foreach ($TargetName in $SelectedTargets) {
         Write-ReportLine -ReportPath $ReportPath -Text "Git commit: $(& git -C $RepoRoot rev-parse HEAD 2>$null)"
         Write-ReportLine -ReportPath $ReportPath -Text 'Git status before validation:'
 
-        $InitialStatus = @(& git -C $RepoRoot status --short 2>$null)
         if ($InitialStatus.Count -eq 0) {
             Write-ReportLine -ReportPath $ReportPath -Text '(clean)'
         }
@@ -270,29 +316,37 @@ foreach ($TargetName in $SelectedTargets) {
         }
 
         if (-not $SkipBootstrap) {
-            foreach ($CommandSpec in @($TargetSpec.bootstrap)) {
-                Invoke-ManifestCommand `
-                    -TargetName $TargetName `
-                    -ReportPath $ReportPath `
-                    -WorkingDirectory $WorkingDirectory `
-                    -CommandSpec $CommandSpec `
-                    -Tokens $Tokens `
-                    -TargetFailures $TargetFailures
+            foreach ($CommandSpec in (Get-ManifestItems -Container $TargetSpec -Name 'bootstrap')) {
+                $InvokeParameters = @{
+                    TargetName = $TargetName
+                    ReportPath = $ReportPath
+                    WorkingDirectory = $WorkingDirectory
+                    CommandSpec = $CommandSpec
+                    Tokens = $Tokens
+                    TargetFailures = $TargetFailures
+                }
+                Invoke-ManifestCommand @InvokeParameters
             }
         }
 
-        foreach ($CommandSpec in @($TargetSpec.commands)) {
-            Invoke-ManifestCommand `
-                -TargetName $TargetName `
-                -ReportPath $ReportPath `
-                -WorkingDirectory $WorkingDirectory `
-                -CommandSpec $CommandSpec `
-                -Tokens $Tokens `
-                -TargetFailures $TargetFailures
+        foreach ($CommandSpec in (Get-ManifestItems -Container $TargetSpec -Name 'commands')) {
+            $InvokeParameters = @{
+                TargetName = $TargetName
+                ReportPath = $ReportPath
+                WorkingDirectory = $WorkingDirectory
+                CommandSpec = $CommandSpec
+                Tokens = $Tokens
+                TargetFailures = $TargetFailures
+            }
+            Invoke-ManifestCommand @InvokeParameters
         }
 
-        foreach ($ScriptGroup in @($TargetSpec.powershell_tests)) {
-            $Pattern = Join-Path $WorkingDirectory ([string]$ScriptGroup.glob)
+        foreach ($ScriptGroup in (Get-ManifestItems -Container $TargetSpec -Name 'powershell_tests')) {
+            if (-not $ScriptGroup.Contains('glob')) {
+                throw "A PowerShell test group for '$TargetName' does not define a glob."
+            }
+
+            $Pattern = Join-Path $WorkingDirectory ([string]$ScriptGroup['glob'])
             $Scripts = @(Get-ChildItem -Path $Pattern -File -ErrorAction SilentlyContinue | Sort-Object FullName)
 
             if ($Scripts.Count -eq 0) {
@@ -306,7 +360,7 @@ foreach ($TargetName in $SelectedTargets) {
 
             foreach ($Script in $Scripts) {
                 $ScriptArguments = @(
-                    foreach ($Argument in @($ScriptGroup.arguments)) {
+                    foreach ($Argument in (Get-ManifestItems -Container $ScriptGroup -Name 'arguments')) {
                         Convert-TokenText -Text ([string]$Argument) -Tokens $Tokens
                     }
                 )
@@ -316,14 +370,15 @@ foreach ($TargetName in $SelectedTargets) {
                     executable = 'pwsh'
                     arguments = @('-NoLogo', '-NoProfile', '-File', $Script.FullName) + $ScriptArguments
                 }
-
-                Invoke-ManifestCommand `
-                    -TargetName $TargetName `
-                    -ReportPath $ReportPath `
-                    -WorkingDirectory $WorkingDirectory `
-                    -CommandSpec $CommandSpec `
-                    -Tokens $Tokens `
-                    -TargetFailures $TargetFailures
+                $InvokeParameters = @{
+                    TargetName = $TargetName
+                    ReportPath = $ReportPath
+                    WorkingDirectory = $WorkingDirectory
+                    CommandSpec = $CommandSpec
+                    Tokens = $Tokens
+                    TargetFailures = $TargetFailures
+                }
+                Invoke-ManifestCommand @InvokeParameters
             }
         }
 
