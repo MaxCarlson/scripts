@@ -4,13 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rrbackup"
-version = "0.2.0"
+version = "0.3.0"
 description = "Cross-platform Restic + Rclone backup CLI"
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{ name = "Max", email = "max@example.com" }]
 license = { text = "MIT" }
 dependencies = [
+    "psutil>=5.9",
     "tomli; python_version < '3.11'",
     "tomli-w",
 ]
