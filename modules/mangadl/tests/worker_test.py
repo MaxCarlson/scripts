@@ -1,3 +1,4 @@
+import sys
 from argparse import Namespace
 from pathlib import Path
 
@@ -61,4 +62,25 @@ def test_hdporncomics_command_forces_manhwa_and_uses_output_root(tmp_path: Path)
         "--force",
         "--manhwa",
         "https://hdporncomics.com/manhwa/a title/",
+    ]
+
+
+def test_manga18fx_command_uses_native_module_and_partial_root(tmp_path: Path) -> None:
+    partial = tmp_path / "partial root"
+    cookies = tmp_path / "cookies.txt"
+    args = Namespace(
+        backend="manga18fx",
+        cookies=str(cookies),
+        url="https://manga18fx.com/manga/example/",
+    )
+
+    assert _command(args, partial) == [
+        sys.executable,
+        "-m",
+        "mangadl.manga18fx",
+        "--destination",
+        str(partial),
+        "--cookies",
+        str(cookies),
+        "https://manga18fx.com/manga/example/",
     ]
