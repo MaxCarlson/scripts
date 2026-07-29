@@ -181,6 +181,7 @@ def run(args: argparse.Namespace) -> int:
     output_root = Path(args.destination) if args.backend == "hdporncomics" else partial
     baseline_images, baseline_size = _tree_stats(output_root)
     images, size = baseline_images, baseline_size
+    site, title = _identity(output_root)
     samples: deque[tuple[float, int, int]] = deque([(started, size, images)], maxlen=30)
     tail: deque[str] = deque(maxlen=100)
     _emit(args, "worker_ready", state="running", destination=str(output_root), backend=args.backend)
@@ -220,6 +221,8 @@ def run(args: argparse.Namespace) -> int:
             now = time.monotonic()
             if now - last_stats >= STATS_INTERVAL:
                 images, size = _tree_stats(output_root)
+                if not title:
+                    site, title = _identity(output_root)
                 samples.append((now, size, images))
                 while len(samples) > 2 and now - samples[0][0] > 5.0:
                     samples.popleft()
@@ -227,7 +230,6 @@ def run(args: argparse.Namespace) -> int:
             old_t, old_size, old_images = samples[0]
             delta = max(now - old_t, 0.001)
             elapsed = max(now - started, 0.001)
-            site, title = _identity(output_root)
             if now - last_emit >= HEARTBEAT_INTERVAL:
                 _emit(
                     args,
