@@ -113,6 +113,13 @@ class BackupEngine:
             echo=False,
         )
 
+    def _terminal_failure(self, record: RunRecord, reason: str) -> RunRecord:
+        """Persist a failure transition and return the terminal record."""
+
+        failed = record.transition(RunState.FAILURE, reason=reason)
+        self.state_store.save(failed)
+        return failed
+
     def run(
         self,
         *,
@@ -168,11 +175,10 @@ class BackupEngine:
                 self.state_store.save(record)
                 raise
             except Exception as exc:
-                record = record.transition(
-                    RunState.FAILURE,
-                    reason="CPU-window evaluation failed: {0}".format(exc),
+                self._terminal_failure(
+                    record,
+                    "CPU-window evaluation failed: {0}".format(exc),
                 )
-                self.state_store.save(record)
                 raise
 
             decision = wait_result.decision
@@ -196,9 +202,17 @@ class BackupEngine:
                     summary=None,
                 )
 
-        lock = self.lock_factory()
         execution: Optional[ExecutionResult] = None
         summary: Optional[BackupSummary] = None
+
+        try:
+            lock = self.lock_factory()
+        except Exception as exc:
+            self._terminal_failure(
+                record,
+                "Unable to construct backup lock: {0}".format(exc),
+            )
+            raise
 
         try:
             lock.acquire()
@@ -215,11 +229,13 @@ class BackupEngine:
                 summary=None,
             )
         except LockError as exc:
-            record = record.transition(
-                RunState.FAILURE,
-                reason=str(exc),
+            self._terminal_failure(record, str(exc))
+            raise
+        except Exception as exc:
+            self._terminal_failure(
+                record,
+                "Unexpected lock acquisition failure: {0}".format(exc),
             )
-            self.state_store.save(record)
             raise
 
         try:
@@ -269,42 +285,53 @@ class BackupEngine:
                 self.state_store.save(record)
                 raise
             except Exception as exc:
-                record = record.transition(
-                    RunState.FAILURE,
-                    reason="Backup execution failed: {0}".format(exc),
+                self._terminal_failure(
+                    record,
+                    "Backup execution failed: {0}".format(exc),
                 )
-                self.state_store.save(record)
                 raise
 
-            summary = parse_backup_json_lines(execution.output)
-            if execution.return_code != 0:
-                record = record.transition(
-                    RunState.FAILURE,
-                    exit_code=execution.return_code,
-                    reason="Restic exited with code {0}.".format(
-                        execution.return_code
-                    ),
-                )
-            elif mode == ExecutionMode.DRY_RUN:
-                record = record.transition(
-                    RunState.DRY_RUN,
-                    exit_code=0,
-                    reason="Restic dry-run completed; no snapshot was created.",
-                    metadata=(
-                        {} if summary is None else {"summary": summary.to_dict()}
-                    ),
-                )
-            else:
-                snapshot_id = None if summary is None else summary.snapshot_id
-                record = record.transition(
-                    RunState.SUCCESS,
-                    exit_code=0,
-                    snapshot_id=snapshot_id,
-                    reason="Backup completed successfully.",
-                    metadata=(
-                        {} if summary is None else {"summary": summary.to_dict()}
-                    ),
-                )
+            try:
+                summary = parse_backup_json_lines(execution.output)
+                if execution.return_code != 0:
+                    record = record.transition(
+                        RunState.FAILURE,
+                        exit_code=execution.return_code,
+                        reason="Restic exited with code {0}.".format(
+                            execution.return_code
+                        ),
+                    )
+                elif mode == ExecutionMode.DRY_RUN:
+                    record = record.transition(
+                        RunState.DRY_RUN,
+                        exit_code=0,
+                        reason="Restic dry-run completed; no snapshot was created.",
+                        metadata=(
+                            {}
+                            if summary is None
+                            else {"summary": summary.to_dict()}
+                        ),
+                    )
+                else:
+                    snapshot_id = None if summary is None else summary.snapshot_id
+                    record = record.transition(
+                        RunState.SUCCESS,
+                        exit_code=0,
+                        snapshot_id=snapshot_id,
+                        reason="Backup completed successfully.",
+                        metadata=(
+                            {}
+                            if summary is None
+                            else {"summary": summary.to_dict()}
+                        ),
+                    )
+            except Exception as exc:
+                if record.state == RunState.RUNNING:
+                    self._terminal_failure(
+                        record,
+                        "Unable to finalize backup result: {0}".format(exc),
+                    )
+                raise
 
             self.state_store.save(record)
             return BackupRunResult(
