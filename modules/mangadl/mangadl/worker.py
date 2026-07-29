@@ -17,18 +17,22 @@ from .models import WorkerEvent
 from .naming import DIRECTORY_TEMPLATE, FILENAME_TEMPLATE
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp"}
+STATS_INTERVAL = 1.0
+HEARTBEAT_INTERVAL = 0.5
 
 
 def _tree_stats(root: Path) -> tuple[int, int]:
+    """Return complete-image count and bytes written, including active .part files."""
     images = size = 0
     if not root.exists():
         return images, size
     for path in root.rglob("*"):
         try:
-            if path.is_file() and not path.name.endswith((".part", ".tmp")):
-                if path.suffix.lower() in IMAGE_SUFFIXES:
-                    images += 1
-                size += path.stat().st_size
+            if not path.is_file() or path.name.endswith(".tmp"):
+                continue
+            size += path.stat().st_size
+            if not path.name.endswith(".part") and path.suffix.lower() in IMAGE_SUFFIXES:
+                images += 1
         except OSError:
             continue
     return images, size
@@ -176,7 +180,8 @@ def run(args: argparse.Namespace) -> int:
     started = time.monotonic()
     output_root = Path(args.destination) if args.backend == "hdporncomics" else partial
     baseline_images, baseline_size = _tree_stats(output_root)
-    samples: deque[tuple[float, int, int]] = deque(maxlen=30)
+    images, size = baseline_images, baseline_size
+    samples: deque[tuple[float, int, int]] = deque([(started, size, images)], maxlen=30)
     tail: deque[str] = deque(maxlen=100)
     _emit(args, "worker_ready", state="running", destination=str(output_root), backend=args.backend)
     try:
@@ -210,17 +215,20 @@ def run(args: argparse.Namespace) -> int:
         thread = threading.Thread(target=capture, daemon=True)
         thread.start()
         last_emit = 0.0
+        last_stats = started
         while process.poll() is None:
             now = time.monotonic()
-            images, size = _tree_stats(output_root)
-            samples.append((now, size, images))
-            while len(samples) > 2 and now - samples[0][0] > 5.0:
-                samples.popleft()
+            if now - last_stats >= STATS_INTERVAL:
+                images, size = _tree_stats(output_root)
+                samples.append((now, size, images))
+                while len(samples) > 2 and now - samples[0][0] > 5.0:
+                    samples.popleft()
+                last_stats = now
             old_t, old_size, old_images = samples[0]
             delta = max(now - old_t, 0.001)
             elapsed = max(now - started, 0.001)
             site, title = _identity(output_root)
-            if now - last_emit >= 0.5:
+            if now - last_emit >= HEARTBEAT_INTERVAL:
                 _emit(
                     args,
                     "heartbeat",
@@ -237,7 +245,7 @@ def run(args: argparse.Namespace) -> int:
                     message=tail[-1] if tail else f"starting {args.backend}",
                 )
                 last_emit = now
-            time.sleep(0.25)
+            time.sleep(0.1)
         thread.join(timeout=5)
         returncode = process.returncode or 0
     images, size = _tree_stats(output_root)
