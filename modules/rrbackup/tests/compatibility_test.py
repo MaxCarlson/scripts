@@ -12,6 +12,10 @@ from rrbackup import compatibility
     "arguments",
     [
         ["backup", "--set", "daily"],
+        ["list"],
+        ["list", "--tag", "local-main"],
+        ["ls", "--path", "C:\\"],
+        ["snapshots", "--host", "Xeres"],
         ["setup"],
         ["prune"],
         ["config", "init"],
@@ -33,7 +37,6 @@ def test_commands_with_unmigrated_semantics_use_legacy(arguments: list[str]) -> 
         ["schedule", "discover"],
         ["restore", "preview", "latest", "--target", "restore"],
         ["repository", "status"],
-        ["list"],
         ["stats"],
         ["check"],
         ["progress"],
