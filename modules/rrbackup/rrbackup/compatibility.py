@@ -25,6 +25,9 @@ _GLOBAL_VALUE_OPTIONS = {
 
 _LEGACY_DIRECT_COMMANDS = {
     "backup",
+    "list",
+    "ls",
+    "snapshots",
     "setup",
     "prune",
 }
