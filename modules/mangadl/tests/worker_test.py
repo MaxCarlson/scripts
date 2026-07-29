@@ -2,8 +2,17 @@ import sys
 from argparse import Namespace
 from pathlib import Path
 
+import pytest
+
 from mangadl.naming import DIRECTORY_TEMPLATE, FILENAME_TEMPLATE
-from mangadl.worker import _classify, _command, _merge_partial, _tree_stats
+from mangadl.worker import (
+    _classify,
+    _command,
+    _manga18fx_completion,
+    _merge_partial,
+    _parse_manga18fx_output,
+    _tree_stats,
+)
 
 
 def test_tree_stats_and_merge_partial(tmp_path: Path) -> None:
@@ -33,6 +42,44 @@ def test_failure_classification() -> None:
     assert _classify(1, "HTTP 429 rate limit") == ("rate_limit", True)
     assert _classify(1, "database is locked") == ("archive", True)
     assert _classify(1, "HTTP 404 not found") == ("bad_url", False)
+
+
+def test_manga18fx_output_parser_reads_chapter_and_completion_counts() -> None:
+    chapter = _parse_manga18fx_output("chapter=2/215 title='Chapter 2' images=37")
+    complete = _parse_manga18fx_output(
+        "complete destination=C:\\downloads\\Title downloaded=0 skipped=8123"
+    )
+
+    assert chapter == {
+        "kind": "chapter",
+        "chapter_index": 2,
+        "chapters_total": 215,
+        "chapter_title": "Chapter 2",
+        "chapter_images": 37,
+    }
+    assert complete == {
+        "kind": "complete",
+        "downloaded": 0,
+        "skipped": 8123,
+        "images_total": 8123,
+    }
+
+
+def test_manga18fx_completion_distinguishes_resume_from_empty_success() -> None:
+    assert _manga18fx_completion(0, 8123) == (
+        "skipped_archive",
+        8123,
+        "already complete: 8123 images were present in the library",
+    )
+    assert _manga18fx_completion(25, 75) == (
+        "succeeded",
+        100,
+        "completed: 25 downloaded, 75 already present",
+    )
+    assert _manga18fx_completion(100, 0) == ("succeeded", 100, "")
+
+    with pytest.raises(ValueError, match="zero downloaded or existing images"):
+        _manga18fx_completion(0, 0)
 
 
 def test_gallery_command_uses_base_destination_and_shared_naming(tmp_path: Path) -> None:
