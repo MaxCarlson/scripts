@@ -29,9 +29,9 @@ Historical and static analysis established:
 2. The browser/app agent updates the active plan before each implementation stage.
 3. The browser/app agent implements source and tests on the feature branch and pushes a coherent stage.
 4. The user pulls the branch and runs the repository-root `Invoke-Tests.ps1` dispatcher.
-5. The dispatcher reads `validation-targets.json`, bootstraps dependencies, runs the selected language-native and PowerShell tests, and writes one tracked report per target.
+5. The dispatcher reads `validation-targets.json`, bootstraps dependencies, runs the selected language-native and PowerShell tests, and writes one authoritative report per target.
 6. The user stages, commits, and pushes the generated files under `docs/test-results/<target>/`.
-7. The browser/app agent reads the reports, updates `STATUS.md`, `checklist.md`, and stage handoff documents, and implements the next pass.
+7. The browser/app agent reads `LATEST.txt`, updates `STATUS.md`, `checklist.md`, and stage handoff documents, and implements the next pass.
 8. Repeat until temporary-repository integration, Windows adapter, production read-only, controlled backup, restore, scheduler, viewer, audit, and alert acceptance are verified.
 
 The generalized responsibility split and reusable repository-root dispatcher pattern are documented in:
@@ -60,6 +60,22 @@ Production read-only checks require:
 
 No automated validation may run production backup, restore, init, unlock, forget, prune, cache cleanup, stale-lock removal, or retention application.
 
+## Validation Reports
+
+The authoritative RRBackup result is always:
+
+```text
+../../../docs/test-results/rrbackup/LATEST.txt
+```
+
+Prior results are comparison-only and are stored under:
+
+```text
+../../../docs/test-results/rrbackup/history/
+```
+
+The dispatcher retains at most three prior results and removes results older than 14 days by default.
+
 ## Validation Evidence
 
 ### First committed baseline
@@ -71,22 +87,28 @@ No automated validation may run production backup, restore, init, unlock, forget
 - 4 errored
 - package-only branch coverage: 32%
 
-That run proved the original module-local report handoff could capture full output and be consumed remotely.
+That run proved the original report handoff could capture full output and be consumed remotely.
 
-### Second local run
+### Shared-environment failure
 
-The module-local runner failed before test collection because pytest imported another module's `tests.conftest` from the shared repository environment. A manual `pytest` invocation used a different interpreter that lacked `pytest-mock` and `tomli-w`, causing missing-fixture and missing-dependency failures. The stale console entry points also required an editable reinstall after removal of the duplicate outer initializer.
+The module-local runner then exposed a shared-repository `tests.conftest` import collision. A manual pytest run also used the wrong interpreter and lacked `pytest-mock` and `tomli-w`.
 
-The response is now structural rather than command-specific:
+The repository-root dispatcher now resolves the repository virtual environment, bootstraps development dependencies, runs from the target directory, sets target `PYTHONPATH`, and uses pytest importlib mode.
 
-- repository-root `Invoke-Tests.ps1`,
-- manifest-driven target selection,
-- dependency bootstrap enabled by default,
-- repository virtual-environment Python resolution,
-- target working-directory isolation,
-- pytest `--import-mode=importlib`,
-- timestamped tracked reports under `docs/test-results/rrbackup/`,
-- removal of module-local runner and result file.
+### Latest clean Windows run
+
+The latest complete local report recorded:
+
+- 134 tests collected
+- 126 passed
+- 8 intentionally skipped
+- 0 failed
+- 0 errors
+- package branch coverage: 36%
+- environment smoke test: passed
+- production read-only test: safely skipped because it was not enabled
+
+The skipped tests require either a user RRBackup configuration or explicitly enabled Google Drive access. The local LLM's fixes were reviewed and retained because they correctly resolved the dispatcher binding error, dependency/bootstrap isolation, stale console-entry behavior, and Windows integration-test execution.
 
 ## Canonical CLI Contract
 
