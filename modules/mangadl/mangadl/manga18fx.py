@@ -344,6 +344,7 @@ def download_series(
     existing_series_directory = existing_root / series_name if existing_root is not None else None
     downloaded = 0
     skipped = 0
+    discovered = 0
     print(
         f"series={title!r} chapters={len(chapters)} image_workers={image_workers} destination={series_directory}",
         flush=True,
@@ -354,6 +355,7 @@ def download_series(
         images = parse_chapter_images(chapter_html, chapter.url)
         if not images:
             raise RuntimeError(f"no images were found for chapter {chapter.title!r}: {chapter.url}")
+        discovered += len(images)
 
         chapter_directory_name = _chapter_directory_name(chapter, chapter_index)
         chapter_directory = series_directory / chapter_directory_name
@@ -382,17 +384,22 @@ def download_series(
                 continue
             pending.append((image_url, target_base))
 
-        if not pending:
-            continue
+        if pending:
+            def download_pending(item: tuple[str, Path]) -> Path:
+                image_url, target_base = item
+                return _download_image(thread_opener(), image_url, chapter.url, target_base, timeout)
 
-        def download_pending(item: tuple[str, Path]) -> Path:
-            image_url, target_base = item
-            return _download_image(thread_opener(), image_url, chapter.url, target_base, timeout)
+            worker_count = min(image_workers, len(pending))
+            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="manga18fx-image") as executor:
+                for _ in executor.map(download_pending, pending):
+                    downloaded += 1
 
-        worker_count = min(image_workers, len(pending))
-        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="manga18fx-image") as executor:
-            for _ in executor.map(download_pending, pending):
-                downloaded += 1
+        print(
+            f"progress chapter={chapter_index}/{len(chapters)} title={chapter.title!r} "
+            f"chapter_images={len(images)} downloaded={downloaded} skipped={skipped} "
+            f"processed={downloaded + skipped} discovered={discovered}",
+            flush=True,
+        )
 
     return series_directory, downloaded, skipped
 
