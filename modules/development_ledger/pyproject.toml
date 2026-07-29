@@ -19,9 +19,13 @@ dev = [
 
 [project.scripts]
 development-ledger = "development_ledger.cli:main"
+development-ledger-setup = "development_ledger.setup_cli:main"
 
 [tool.setuptools]
 packages = ["development_ledger"]
+
+[tool.setuptools.package-data]
+development_ledger = ["templates/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
