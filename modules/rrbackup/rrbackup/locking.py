@@ -7,7 +7,7 @@ import os
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Mapping, Optional
+from typing import Any, Callable, Dict, Mapping, Optional, Union
 
 import psutil
 
@@ -114,7 +114,7 @@ class ProcessLock:
 
     def __init__(
         self,
-        lock_path: os.PathLike[str] | str,
+        lock_path: Union[os.PathLike[str], str],
         *,
         identity_factory: Callable[[], ProcessIdentity] = current_process_identity,
         matcher: Callable[[ProcessIdentity], bool] = process_matches,
