@@ -1,8 +1,576 @@
-RRBACKUP TEST RESULTS
-=====================
 
-This tracked file is overwritten by modules/rrbackup/Invoke-Tests.ps1.
 
-Run the test harness locally, then stage, commit, and push this file so the remote implementation agent can inspect the complete pytest and PowerShell test output without manual copy/paste.
+================================================================================================
+RRBACKUP TEST CONTEXT
+================================================================================================
+Timestamp: 2026-07-29T07:49:12.3472651-07:00
+Repository root: C:\Users\mcarls\src\scripts
+Module root: C:\Users\mcarls\src\scripts\modules\rrbackup
+Python: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe
+PowerShell: 7.6.1
+Platform: Microsoft Windows 10.0.26200
+Production read-only checks: False
+Git branch: agent/merge-restic-backup-modules
+Git commit: ac80b6c11968223d18e5fada9db3326fc33b74cc
+Git status before tests:
+ M modules/rrbackup/TEST_RESULTS.txt
 
-No test run has been recorded in this file yet.
+================================================================================================
+Install RRBackup editable development dependencies
+================================================================================================
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pip install --disable-pip-version-check -e C:\Users\mcarls\src\scripts\modules\rrbackup[dev]
+WARNING: Ignoring invalid distribution ~%bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~-bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~=bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ebndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~~bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+Obtaining file:///C:/Users/mcarls/src/scripts/modules/rrbackup
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Checking if build backend supports build_editable: started
+  Checking if build backend supports build_editable: finished with status 'done'
+  Getting requirements to build editable: started
+  Getting requirements to build editable: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Preparing editable metadata (pyproject.toml): finished with status 'done'
+Requirement already satisfied: tomli-w in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from rrbackup==0.2.0) (1.2.0)
+Requirement already satisfied: pytest>=7.0 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from rrbackup==0.2.0) (9.0.3)
+Requirement already satisfied: pytest-cov>=4.0 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from rrbackup==0.2.0) (7.0.0)
+Requirement already satisfied: pytest-mock>=3.10 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from rrbackup==0.2.0) (3.15.1)
+Requirement already satisfied: mypy>=1.0 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from rrbackup==0.2.0) (1.20.2)
+Requirement already satisfied: ruff>=0.1.0 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from rrbackup==0.2.0) (0.14.8)
+Requirement already satisfied: typing_extensions>=4.6.0 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from mypy>=1.0->rrbackup==0.2.0) (4.15.0)
+Requirement already satisfied: mypy_extensions>=1.0.0 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from mypy>=1.0->rrbackup==0.2.0) (1.1.0)
+Requirement already satisfied: pathspec>=1.0.0 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from mypy>=1.0->rrbackup==0.2.0) (1.1.1)
+Requirement already satisfied: librt>=0.8.0 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from mypy>=1.0->rrbackup==0.2.0) (0.9.0)
+Requirement already satisfied: colorama>=0.4 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from pytest>=7.0->rrbackup==0.2.0) (0.4.6)
+Requirement already satisfied: iniconfig>=1.0.1 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from pytest>=7.0->rrbackup==0.2.0) (2.3.0)
+Requirement already satisfied: packaging>=22 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from pytest>=7.0->rrbackup==0.2.0) (25.0)
+Requirement already satisfied: pluggy<2,>=1.5 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from pytest>=7.0->rrbackup==0.2.0) (1.6.0)
+Requirement already satisfied: pygments>=2.7.2 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from pytest>=7.0->rrbackup==0.2.0) (2.19.2)
+Requirement already satisfied: coverage>=7.10.6 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from coverage[toml]>=7.10.6->pytest-cov>=4.0->rrbackup==0.2.0) (7.13.0)
+Building wheels for collected packages: rrbackup
+  Building editable for rrbackup (pyproject.toml): started
+  Building editable for rrbackup (pyproject.toml): finished with status 'done'
+  Created wheel for rrbackup: filename=rrbackup-0.2.0-0.editable-py3-none-any.whl size=6158 sha256=c34bee5e446e95fd4d2f35fa0330236c80039a904d81fcf618bd7d1ae1444c2a
+  Stored in directory: C:\Users\mcarls\src\scripts\modules\rrbackup\.pytest_tmp_root\validation\pip-ephem-wheel-cache-2c_1aal4\wheels\8c\5d\d7\3308138532b7624f56969ac10a1a7e70bff0bfeb301caeee82
+Successfully built rrbackup
+WARNING: Ignoring invalid distribution ~%bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~-bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~=bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ebndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~~bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+Installing collected packages: rrbackup
+  Attempting uninstall: rrbackup
+    Found existing installation: rrbackup 0.2.0
+    Uninstalling rrbackup-0.2.0:
+      Successfully uninstalled rrbackup-0.2.0
+WARNING: Ignoring invalid distribution ~%bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~-bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~=bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ebndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~~bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+Successfully installed rrbackup-0.2.0
+RESULT: PASS - Install RRBackup editable development dependencies
+
+================================================================================================
+RRBackup pytest and coverage suite
+================================================================================================
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest C:\Users\mcarls\src\scripts\modules\rrbackup\tests -vv -ra --tb=short --durations=25 --strict-config --strict-markers --basetemp C:\Users\mcarls\src\scripts\modules\rrbackup\.pytest_tmp_root\validation --cov=rrbackup --cov-branch --cov-report=term-missing
+
+============================================================
+RRBackup Test Environment Status
+============================================================
+User config: [MISSING] Not found at C:\Users\mcarls\AppData\Roaming\rrbackup\config.toml
+Google Drive: [SKIP] Not configured (tests will be skipped)
+============================================================
+
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.0.3, pluggy-1.6.0 -- C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\mcarls\src\scripts\modules\rrbackup
+configfile: pytest.ini
+plugins: anyio-4.12.1, libtmux-0.47.0, asyncio-1.3.0, cov-7.0.0, mock-3.15.1
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 130 items
+
+tests/cli_test.py::TestBuildParser::test_parser_created PASSED           [  0%]
+tests/cli_test.py::TestBuildParser::test_version_flag PASSED             [  1%]
+tests/cli_test.py::TestBuildParser::test_version_short_flag PASSED       [  2%]
+tests/cli_test.py::TestBuildParser::test_config_flag PASSED              [  3%]
+tests/cli_test.py::TestBuildParser::test_config_short_flag PASSED        [  3%]
+tests/cli_test.py::TestBuildParser::test_verbose_flag PASSED             [  4%]
+tests/cli_test.py::TestBuildParser::test_verbose_short_flag PASSED       [  5%]
+tests/cli_test.py::TestSetupCommand::test_setup_command_parsed PASSED    [  6%]
+tests/cli_test.py::TestSetupCommand::test_setup_password_file_flag PASSED [  6%]
+tests/cli_test.py::TestSetupCommand::test_setup_password_file_short_flag PASSED [  7%]
+tests/cli_test.py::TestSetupCommand::test_setup_remote_check_flag PASSED [  8%]
+tests/cli_test.py::TestSetupCommand::test_setup_remote_check_short_flag PASSED [  9%]
+tests/cli_test.py::TestSetupCommand::test_setup_wizard_flag PASSED       [ 10%]
+tests/cli_test.py::TestSetupCommand::test_setup_wizard_short_flag PASSED [ 10%]
+tests/cli_test.py::TestListCommand::test_list_command_parsed PASSED      [ 11%]
+tests/cli_test.py::TestListCommand::test_list_path_filter PASSED         [ 12%]
+tests/cli_test.py::TestListCommand::test_list_path_short_flag PASSED     [ 13%]
+tests/cli_test.py::TestListCommand::test_list_path_multiple PASSED       [ 13%]
+tests/cli_test.py::TestListCommand::test_list_tag_filter PASSED          [ 14%]
+tests/cli_test.py::TestListCommand::test_list_tag_short_flag PASSED      [ 15%]
+tests/cli_test.py::TestListCommand::test_list_host_filter PASSED         [ 16%]
+tests/cli_test.py::TestListCommand::test_list_host_short_flag PASSED     [ 16%]
+tests/cli_test.py::TestBackupCommand::test_backup_requires_set PASSED    [ 17%]
+tests/cli_test.py::TestBackupCommand::test_backup_set_flag PASSED        [ 18%]
+tests/cli_test.py::TestBackupCommand::test_backup_set_short_flag PASSED  [ 19%]
+tests/cli_test.py::TestBackupCommand::test_backup_dry_run_flag PASSED    [ 20%]
+tests/cli_test.py::TestBackupCommand::test_backup_dry_run_short_flag PASSED [ 20%]
+tests/cli_test.py::TestBackupCommand::test_backup_extra_tags PASSED      [ 21%]
+tests/cli_test.py::TestBackupCommand::test_backup_extra_excludes PASSED  [ 22%]
+tests/cli_test.py::TestBackupCommand::test_backup_extra_args FAILED      [ 23%]
+tests/cli_test.py::TestStatsCommand::test_stats_command_parsed PASSED    [ 23%]
+tests/cli_test.py::TestCheckCommand::test_check_command_parsed PASSED    [ 24%]
+tests/cli_test.py::TestPruneCommand::test_prune_command_parsed PASSED    [ 25%]
+tests/cli_test.py::TestProgressCommand::test_progress_command_parsed PASSED [ 26%]
+tests/cli_test.py::TestMainFunction::test_main_with_no_args_shows_help PASSED [ 26%]
+tests/cli_test.py::TestMainFunction::test_main_with_list_command FAILED  [ 27%]
+tests/cli_test.py::TestMainFunction::test_main_returns_error_code_on_failure FAILED [ 28%]
+tests/cli_test.py::TestCLIErrorHandling::test_invalid_command_shows_error PASSED [ 29%]
+tests/cli_test.py::TestCLIErrorHandling::test_missing_required_argument_shows_error PASSED [ 30%]
+tests/cli_test.py::TestCLIErrorHandling::test_config_not_found_returns_error FAILED [ 30%]
+tests/cli_test.py::TestAllCommandsHaveShortFlags::test_global_flags_have_short_forms FAILED [ 31%]
+tests/cli_test.py::TestAllCommandsHaveShortFlags::test_setup_flags_have_short_forms PASSED [ 32%]
+tests/cli_test.py::TestAllCommandsHaveShortFlags::test_list_flags_have_short_forms PASSED [ 33%]
+tests/cli_test.py::TestAllCommandsHaveShortFlags::test_backup_flags_have_short_forms FAILED [ 33%]
+tests/cli_test.py::TestConfigSubcommands::test_config_init_command PASSED [ 34%]
+tests/cli_test.py::TestConfigSubcommands::test_config_init_force_flag PASSED [ 35%]
+tests/cli_test.py::TestConfigSubcommands::test_config_wizard_command PASSED [ 36%]
+tests/cli_test.py::TestConfigSubcommands::test_config_wizard_initialize_repo_flag PASSED [ 36%]
+tests/cli_test.py::TestConfigSubcommands::test_config_show_command PASSED [ 37%]
+tests/cli_test.py::TestConfigSubcommands::test_config_show_effective_flag PASSED [ 38%]
+tests/cli_test.py::TestConfigSubcommands::test_config_list_sets_command PASSED [ 39%]
+tests/cli_test.py::TestConfigSubcommands::test_config_add_set_command PASSED [ 40%]
+tests/cli_test.py::TestConfigSubcommands::test_config_remove_set_command PASSED [ 40%]
+tests/cli_test.py::TestConfigSubcommands::test_config_set_command PASSED [ 41%]
+tests/cli_test.py::TestConfigSubcommands::test_config_retention_command PASSED [ 42%]
+tests/cli_test.py::TestConfigSubcommands::test_config_retention_use_defaults_flag PASSED [ 43%]
+tests/cli_test.py::TestConfigSubcommands::test_config_retention_clear_flag PASSED [ 43%]
+tests/config_test.py::TestPlatformConfigDefault::test_windows_config_path PASSED [ 44%]
+tests/config_test.py::TestPlatformConfigDefault::test_linux_config_path FAILED [ 45%]
+tests/config_test.py::TestRepoDataclass::test_repo_creation PASSED       [ 46%]
+tests/config_test.py::TestRepoDataclass::test_repo_with_password_env PASSED [ 46%]
+tests/config_test.py::TestRepoDataclass::test_repo_expand FAILED         [ 47%]
+tests/config_test.py::TestBackupSetDataclass::test_backup_set_minimal PASSED [ 48%]
+tests/config_test.py::TestBackupSetDataclass::test_backup_set_full PASSED [ 49%]
+tests/config_test.py::TestRetentionPolicyDataclass::test_retention_defaults PASSED [ 50%]
+tests/config_test.py::TestRetentionPolicyDataclass::test_retention_custom PASSED [ 50%]
+tests/config_test.py::TestSettingsDataclass::test_settings_minimal PASSED [ 51%]
+tests/config_test.py::TestSettingsDataclass::test_settings_expand PASSED [ 52%]
+tests/config_test.py::TestResolveConfigPath::test_explicit_path_takes_precedence PASSED [ 53%]
+tests/config_test.py::TestResolveConfigPath::test_env_var_takes_precedence_over_default PASSED [ 53%]
+tests/config_test.py::TestResolveConfigPath::test_default_when_no_override PASSED [ 54%]
+tests/config_test.py::TestLoadConfig::test_load_valid_config PASSED      [ 55%]
+tests/config_test.py::TestLoadConfig::test_load_config_file_not_found PASSED [ 56%]
+tests/config_test.py::TestLoadConfig::test_load_config_warns_missing_binaries PASSED [ 56%]
+tests/config_test.py::TestLoadConfig::test_load_config_no_expand FAILED  [ 57%]
+tests/config_test.py::TestSettingsToDict::test_minimal_settings_to_dict PASSED [ 58%]
+tests/config_test.py::TestSettingsToDict::test_full_settings_to_dict PASSED [ 59%]
+tests/config_test.py::TestSettingsToDict::test_settings_to_dict_excludes_none_values PASSED [ 60%]
+tests/config_test.py::TestSaveConfig::test_save_config_creates_file PASSED [ 60%]
+tests/config_test.py::TestSaveConfig::test_save_config_creates_parent_dirs PASSED [ 61%]
+tests/config_test.py::TestSaveConfig::test_save_config_fails_if_exists PASSED [ 62%]
+tests/config_test.py::TestSaveConfig::test_save_config_overwrites_if_allowed PASSED [ 63%]
+tests/config_test.py::TestConfigRoundTrip::test_save_and_load_roundtrip PASSED [ 63%]
+tests/config_test.py::TestEdgeCases::test_empty_backup_sets PASSED       [ 64%]
+tests/config_test.py::TestEdgeCases::test_backup_set_with_empty_lists PASSED [ 65%]
+tests/config_test.py::TestEdgeCases::test_retention_all_none PASSED      [ 66%]
+tests/config_test.py::TestEdgeCases::test_unicode_paths_in_config PASSED [ 66%]
+tests/integration_test.py::TestWithUserConfig::test_user_config_exists_and_loads ERROR [ 67%]
+tests/integration_test.py::TestWithUserConfig::test_user_config_has_valid_repository ERROR [ 68%]
+tests/integration_test.py::TestWithUserConfig::test_user_config_has_backup_sets ERROR [ 69%]
+tests/integration_test.py::TestWithUserConfig::test_user_config_has_retention_policy ERROR [ 70%]
+tests/integration_test.py::TestWithGoogleDrive::test_rclone_gdrive_configured SKIPPED [ 70%]
+tests/integration_test.py::TestWithGoogleDrive::test_rclone_gdrive_connectivity SKIPPED [ 71%]
+tests/integration_test.py::TestWithGoogleDrive::test_rclone_can_create_directory SKIPPED [ 72%]
+tests/integration_test.py::TestWithGoogleDrive::test_rclone_upload_download SKIPPED [ 73%]
+tests/integration_test.py::TestResticBinaryAvailability::test_restic_binary_exists PASSED [ 73%]
+tests/integration_test.py::TestResticBinaryAvailability::test_rclone_binary_exists PASSED [ 74%]
+tests/integration_test.py::TestEndToEndBackupRestore::test_full_backup_restore_cycle PASSED [ 75%]
+tests/integration_test.py::TestCLIHelpOutput::test_main_help_output PASSED [ 76%]
+tests/integration_test.py::TestCLIHelpOutput::test_backup_help_output PASSED [ 76%]
+tests/integration_test.py::TestCLIHelpOutput::test_config_help_output PASSED [ 77%]
+tests/integration_test.py::TestErrorMessages::test_missing_config_error_message FAILED [ 78%]
+tests/integration_test.py::TestErrorMessages::test_invalid_backup_set_error_message PASSED [ 79%]
+tests/runner_test.py::TestHelperFunctions::test_now_stamp_format PASSED  [ 80%]
+tests/runner_test.py::TestHelperFunctions::test_logfile_path PASSED      [ 80%]
+tests/runner_test.py::TestHelperFunctions::test_pidfile_path PASSED      [ 81%]
+tests/runner_test.py::TestHelperFunctions::test_repo_url PASSED          [ 82%]
+tests/runner_test.py::TestEnvForRepo::test_env_with_password_file PASSED [ 83%]
+tests/runner_test.py::TestEnvForRepo::test_env_with_password_env PASSED  [ 83%]
+tests/runner_test.py::TestEnvForRepo::test_env_missing_password_env_raises_error PASSED [ 84%]
+tests/runner_test.py::TestEnvForRepo::test_env_no_repo_raises_error PASSED [ 85%]
+tests/runner_test.py::TestRunRestic::test_run_restic_success PASSED      [ 86%]
+tests/runner_test.py::TestRunRestic::test_run_restic_failure_raises_error PASSED [ 86%]
+tests/runner_test.py::TestRunRestic::test_run_restic_creates_log_file PASSED [ 87%]
+tests/runner_test.py::TestStartBackup::test_start_backup_creates_pid_file PASSED [ 88%]
+tests/runner_test.py::TestStartBackup::test_start_backup_includes_tags PASSED [ 89%]
+tests/runner_test.py::TestStartBackup::test_start_backup_includes_excludes PASSED [ 90%]
+tests/runner_test.py::TestStartBackup::test_start_backup_dry_run PASSED  [ 90%]
+tests/runner_test.py::TestStartBackup::test_start_backup_one_file_system PASSED [ 91%]
+tests/runner_test.py::TestStartBackup::test_start_backup_cleans_up_pid_on_error PASSED [ 92%]
+tests/runner_test.py::TestListSnapshots::test_list_snapshots_no_filters PASSED [ 93%]
+tests/runner_test.py::TestListSnapshots::test_list_snapshots_with_filters PASSED [ 93%]
+tests/runner_test.py::TestRepoStats::test_repo_stats PASSED              [ 94%]
+tests/runner_test.py::TestRunCheck::test_run_check PASSED                [ 95%]
+tests/runner_test.py::TestRunForgetPrune::test_forget_prune_with_RetentionPolicy PASSED [ 96%]
+tests/runner_test.py::TestRunForgetPrune::test_forget_prune_skips_none_values PASSED [ 96%]
+tests/runner_test.py::TestShowInProgress::test_show_in_progress_no_pidfiles PASSED [ 97%]
+tests/runner_test.py::TestShowInProgress::test_show_in_progress_with_pidfiles PASSED [ 98%]
+tests/runner_test.py::TestErrorHandling::test_backup_with_missing_include_paths PASSED [ 99%]
+tests/runner_test.py::TestErrorHandling::test_restic_timeout_handling PASSED [100%]
+
+=================================== ERRORS ====================================
+___ ERROR at setup of TestWithUserConfig.test_user_config_exists_and_loads ____
+tests\conftest.py:120: in pytest_runtest_setup
+    pytest.fail(
+E   Failed: User config file required but not found at C:\Users\mcarls\AppData\Roaming\rrbackup\config.toml. Create config file first (see SETUP_INSTRUCTIONS.md)
+_ ERROR at setup of TestWithUserConfig.test_user_config_has_valid_repository __
+tests\conftest.py:120: in pytest_runtest_setup
+    pytest.fail(
+E   Failed: User config file required but not found at C:\Users\mcarls\AppData\Roaming\rrbackup\config.toml. Create config file first (see SETUP_INSTRUCTIONS.md)
+____ ERROR at setup of TestWithUserConfig.test_user_config_has_backup_sets ____
+tests\conftest.py:120: in pytest_runtest_setup
+    pytest.fail(
+E   Failed: User config file required but not found at C:\Users\mcarls\AppData\Roaming\rrbackup\config.toml. Create config file first (see SETUP_INSTRUCTIONS.md)
+_ ERROR at setup of TestWithUserConfig.test_user_config_has_retention_policy __
+tests\conftest.py:120: in pytest_runtest_setup
+    pytest.fail(
+E   Failed: User config file required but not found at C:\Users\mcarls\AppData\Roaming\rrbackup\config.toml. Create config file first (see SETUP_INSTRUCTIONS.md)
+================================== FAILURES ===================================
+__________________ TestBackupCommand.test_backup_extra_args ___________________
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:1943: in _parse_known_args2
+    namespace, args = self._parse_known_args(args, namespace, intermixed)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:2184: in _parse_known_args
+    start_index = consume_optional(start_index)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:2103: in consume_optional
+    arg_count = match_argument(action, selected_patterns)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:2298: in _match_argument
+    raise ArgumentError(action, msg)
+E   argparse.ArgumentError: argument --extra/-x: expected one argument
+
+During handling of the above exception, another exception occurred:
+tests\cli_test.py:240: in test_backup_extra_args
+    args = parser.parse_args(["backup", "-s", "docs", "-x", "--verbose"])
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:1904: in parse_args
+    args, argv = self.parse_known_args(args, namespace)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:1914: in parse_known_args
+    return self._parse_known_args2(args, namespace, intermixed=False)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:1943: in _parse_known_args2
+    namespace, args = self._parse_known_args(args, namespace, intermixed)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:2165: in _parse_known_args
+    positionals_end_index = consume_positionals(start_index)
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:2141: in consume_positionals
+    take_action(action, args)
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:2018: in take_action
+    action(self, namespace, argument_values, option_string)
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:1272: in __call__
+    subnamespace, arg_strings = parser.parse_known_args(arg_strings, None)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:1914: in parse_known_args
+    return self._parse_known_args2(args, namespace, intermixed=False)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:1945: in _parse_known_args2
+    self.error(str(err))
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:2650: in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:2637: in exit
+    _sys.exit(status)
+E   SystemExit: 2
+---------------------------- Captured stderr call -----------------------------
+usage: rrb backup [-h] --set SET [--dry-run] [--tag TAG] [--exclude EXCLUDE]
+                  [--extra EXTRA]
+rrb backup: error: argument --extra/-x: expected one argument
+________________ TestMainFunction.test_main_with_list_command _________________
+tests\cli_test.py:324: in test_main_with_list_command
+    result = main(["-c", str(config_file), "list"])
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+rrbackup\cli.py:285: in main
+    return args.func(args)
+           ^^^^^^^^^^^^^^^
+rrbackup\cli.py:199: in cmd_list
+    cfg = _load_cfg_from_args(args)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^
+rrbackup\cli.py:168: in _load_cfg_from_args
+    return load_config(args.config)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+rrbackup\config.py:222: in load_config
+    data = tomllib.load(f)
+           ^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\tomllib\_parser.py:63: in load
+    raise TypeError(
+E   TypeError: File must be opened in binary mode, e.g. use `open('foo.toml', 'rb')`
+__________ TestMainFunction.test_main_returns_error_code_on_failure ___________
+tests\cli_test.py:332: in test_main_returns_error_code_on_failure
+    result = main(["-c", str(missing_config), "list"])
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+rrbackup\cli.py:285: in main
+    return args.func(args)
+           ^^^^^^^^^^^^^^^
+rrbackup\cli.py:199: in cmd_list
+    cfg = _load_cfg_from_args(args)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^
+rrbackup\cli.py:168: in _load_cfg_from_args
+    return load_config(args.config)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+rrbackup\config.py:219: in load_config
+    raise FileNotFoundError(f"Config file not found: {candidate}")
+E   FileNotFoundError: Config file not found: C:\Users\mcarls\src\scripts\modules\rrbackup\.pytest_tmp_root\validation\test_main_returns_error_code_o0\missing.toml
+__________ TestCLIErrorHandling.test_config_not_found_returns_error ___________
+tests\cli_test.py:358: in test_config_not_found_returns_error
+    result = main(["-c", "/nonexistent.toml", "list"])
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+rrbackup\cli.py:285: in main
+    return args.func(args)
+           ^^^^^^^^^^^^^^^
+rrbackup\cli.py:199: in cmd_list
+    cfg = _load_cfg_from_args(args)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^
+rrbackup\cli.py:168: in _load_cfg_from_args
+    return load_config(args.config)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+rrbackup\config.py:219: in load_config
+    raise FileNotFoundError(f"Config file not found: {candidate}")
+E   FileNotFoundError: Config file not found: \nonexistent.toml
+______ TestAllCommandsHaveShortFlags.test_global_flags_have_short_forms _______
+tests\cli_test.py:372: in test_global_flags_have_short_forms
+    parser.parse_args(["--version"])  # Will exit
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:1904: in parse_args
+    args, argv = self.parse_known_args(args, namespace)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:1914: in parse_known_args
+    return self._parse_known_args2(args, namespace, intermixed=False)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:1943: in _parse_known_args2
+    namespace, args = self._parse_known_args(args, namespace, intermixed)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:2184: in _parse_known_args
+    start_index = consume_optional(start_index)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:2113: in consume_optional
+    take_action(action, args, option_string)
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:2018: in take_action
+    action(self, namespace, argument_values, option_string)
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:1177: in __call__
+    parser.exit()
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:2637: in exit
+    _sys.exit(status)
+E   SystemExit: 0
+---------------------------- Captured stdout call -----------------------------
+rrb 0.1.0
+______ TestAllCommandsHaveShortFlags.test_backup_flags_have_short_forms _______
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:1943: in _parse_known_args2
+    namespace, args = self._parse_known_args(args, namespace, intermixed)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:2184: in _parse_known_args
+    start_index = consume_optional(start_index)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:2103: in consume_optional
+    arg_count = match_argument(action, selected_patterns)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:2298: in _match_argument
+    raise ArgumentError(action, msg)
+E   argparse.ArgumentError: argument --extra/-x: expected one argument
+
+During handling of the above exception, another exception occurred:
+tests\cli_test.py:404: in test_backup_flags_have_short_forms
+    args = parser.parse_args(["backup", "-s", "docs", "-n", "-t", "tag", "-e", "*.tmp", "-x", "--verbose"])
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:1904: in parse_args
+    args, argv = self.parse_known_args(args, namespace)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:1914: in parse_known_args
+    return self._parse_known_args2(args, namespace, intermixed=False)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:1943: in _parse_known_args2
+    namespace, args = self._parse_known_args(args, namespace, intermixed)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:2165: in _parse_known_args
+    positionals_end_index = consume_positionals(start_index)
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:2141: in consume_positionals
+    take_action(action, args)
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:2018: in take_action
+    action(self, namespace, argument_values, option_string)
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:1272: in __call__
+    subnamespace, arg_strings = parser.parse_known_args(arg_strings, None)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:1914: in parse_known_args
+    return self._parse_known_args2(args, namespace, intermixed=False)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:1945: in _parse_known_args2
+    self.error(str(err))
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:2650: in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\argparse.py:2637: in exit
+    _sys.exit(status)
+E   SystemExit: 2
+---------------------------- Captured stderr call -----------------------------
+usage: rrb backup [-h] --set SET [--dry-run] [--tag TAG] [--exclude EXCLUDE]
+                  [--extra EXTRA]
+rrb backup: error: argument --extra/-x: expected one argument
+______________ TestPlatformConfigDefault.test_linux_config_path _______________
+C:\Users\mcarls\src\scripts\modules\rrbackup\tests\config_test.py:45: in test_linux_config_path
+    result = platform_config_default()
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\mcarls\src\scripts\modules\rrbackup\rrbackup\config.py:44: in platform_config_default
+    return pathlib.Path.home() / ".config" / "rrbackup" / "config.toml"
+           ^^^^^^^^^^^^^^^^^^^
+C:\Users\mcarls\AppData\Local\Programs\Python\Python312\Lib\pathlib.py:1202: in home
+    return cls("~").expanduser()
+           ^^^^^^^^^^^^^^^^^^^^^
+C:\Users\mcarls\AppData\Local\Programs\Python\Python312\Lib\pathlib.py:1408: in expanduser
+    return self._from_parsed_parts(drv, root, tail + self._tail[1:])
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\mcarls\AppData\Local\Programs\Python\Python312\Lib\pathlib.py:422: in _from_parsed_parts
+    path = self.with_segments(path_str)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\mcarls\AppData\Local\Programs\Python\Python312\Lib\pathlib.py:385: in with_segments
+    return type(self)(*pathsegments)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\mcarls\AppData\Local\Programs\Python\Python312\Lib\pathlib.py:1422: in __new__
+    raise NotImplementedError(
+E   NotImplementedError: cannot instantiate 'PosixPath' on your system
+_____________________ TestRepoDataclass.test_repo_expand ______________________
+tests\config_test.py:79: in test_repo_expand
+    assert expanded.password_file.startswith("/")
+E   AssertionError: assert False
+E    +  where False = <built-in method startswith of str object at 0x000001E7CB44EF10>('/')
+E    +    where <built-in method startswith of str object at 0x000001E7CB44EF10> = 'C:\\Users\\mcarls/passwords/restic.txt'.startswith
+E    +      where 'C:\\Users\\mcarls/passwords/restic.txt' = Repo(url='C:\\Users\\mcarls/backups/repo', password_env=None, password_file='C:\\Users\\mcarls/passwords/restic.txt').password_file
+__________________ TestLoadConfig.test_load_config_no_expand __________________
+tests\config_test.py:280: in test_load_config_no_expand
+    assert settings.state_dir is None
+E   AssertionError: assert '/tmp/rrbackup/state' is None
+E    +  where '/tmp/rrbackup/state' = Settings(restic_bin='restic', rclone_bin='rclone', log_dir='/tmp/rrbackup/logs', state_dir='/tmp/rrbackup/state', repo=Repo(url='/tmp/test-repo', password_env=None, password_file='/tmp/restic_password.txt'), sets=[BackupSet(name='test-set', include=['/home/user/documents'], exclude=['**/.git'], tags=['test'], one_fs=False, dry_run_default=False, backup_type='incremental', encryption=None, compression=None, schedule=Schedule(type='daily', time='02:00', interval_hours=None, day_of_week=None, day_of_month=None, description=None), retention=RetentionPolicy(keep_last=None, keep_hourly=None, keep_daily=7, keep_weekly=4, keep_monthly=6, keep_yearly=2, max_total_size=None, max_total_size_bytes=None))], retention_defaults=RetentionPolicy(keep_last=None, keep_hourly=None, keep_daily=7, keep_weekly=4, keep_monthly=6, keep_yearly=2, max_total_size=None, max_total_size_bytes=None)).state_dir
+_____________ TestErrorMessages.test_missing_config_error_message _____________
+tests\integration_test.py:363: in test_missing_config_error_message
+    result = main(["-c", str(missing_config), "list"])
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+rrbackup\cli.py:285: in main
+    return args.func(args)
+           ^^^^^^^^^^^^^^^
+rrbackup\cli.py:199: in cmd_list
+    cfg = _load_cfg_from_args(args)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^
+rrbackup\cli.py:168: in _load_cfg_from_args
+    return load_config(args.config)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+rrbackup\config.py:219: in load_config
+    raise FileNotFoundError(f"Config file not found: {candidate}")
+E   FileNotFoundError: Config file not found: C:\Users\mcarls\src\scripts\modules\rrbackup\.pytest_tmp_root\validation\test_missing_config_error_mess0\nonexistent.toml
+=============================== tests coverage ================================
+______________ coverage: platform win32, python 3.12.10-final-0 _______________
+
+Name                       Stmts   Miss Branch BrPart  Cover   Missing
+----------------------------------------------------------------------
+rrbackup\__init__.py           3      3      0      0     0%   2-5
+rrbackup\cli.py              187     37     22      7    77%   173, 179, 186-187, 190-191, 193-195, 202-203, 205-206, 208, 212-214, 240-242, 250-252, 260-262, 266-272, 276-278, 289
+rrbackup\config.py           223     31     92     22    81%   50-66, 97->99, 100, 102, 104, 106, 128, 165, 240->243, 255, 303, 309, 311, 313, 337, 338->340, 366, 368, 370, 372->374, 374->378, 376->378
+rrbackup\config_cli.py       355    324    108      0     7%   35, 43-45, 50-52, 57-62, 67-79, 84-96, 101-125, 129-130, 135-138, 142-144, 149-192, 197-216, 221-265, 270-321, 325-331, 335-368, 372-393, 397-538, 542-581, 594-618
+rrbackup\interactive.py      110     99     38      0     7%   13-28, 35-50, 62-86, 98-115, 122-140, 148-157
+rrbackup\runner.py           110      8     46     10    88%   28->34, 81-82, 100->103, 103->106, 109, 116-117, 144, 145->147, 147->149, 149->151, 151->153, 174-175
+rrbackup\setup_wizard.py     530    471    202      0     8%   37, 46-48, 52-53, 57-65, 69-76, 80-86, 91-99, 110-124, 128-144, 149-173, 176-186, 189-200, 203-209, 216-249, 252-301, 304-313, 316-353, 356-391, 394-415, 418-437, 440-472, 476-504, 507-517, 520-526, 529-535, 538-543, 548-553, 556-559, 562-579, 582, 591-601, 604-606, 611-632, 647-654, 657-684, 687-706, 709-711, 714-752, 755-764, 767-791, 794-805, 808-813, 822-823
+----------------------------------------------------------------------
+TOTAL                       1518    973    508     39    32%
+Coverage HTML written to dir htmlcov
+============================ slowest 25 durations =============================
+6.78s call     tests/integration_test.py::TestEndToEndBackupRestore::test_full_backup_restore_cycle
+0.15s call     tests/integration_test.py::TestCLIHelpOutput::test_main_help_output
+0.14s call     tests/integration_test.py::TestCLIHelpOutput::test_config_help_output
+0.14s call     tests/integration_test.py::TestCLIHelpOutput::test_backup_help_output
+0.09s call     tests/integration_test.py::TestResticBinaryAvailability::test_rclone_binary_exists
+0.09s setup    tests/integration_test.py::TestWithGoogleDrive::test_rclone_can_create_directory
+0.09s setup    tests/integration_test.py::TestWithGoogleDrive::test_rclone_gdrive_connectivity
+0.08s setup    tests/integration_test.py::TestWithGoogleDrive::test_rclone_gdrive_configured
+0.08s setup    tests/integration_test.py::TestWithGoogleDrive::test_rclone_upload_download
+0.03s call     tests/integration_test.py::TestResticBinaryAvailability::test_restic_binary_exists
+0.03s call     tests/runner_test.py::TestErrorHandling::test_restic_timeout_handling
+0.02s call     tests/integration_test.py::TestErrorMessages::test_invalid_backup_set_error_message
+0.01s call     tests/runner_test.py::TestListSnapshots::test_list_snapshots_no_filters
+0.01s call     tests/config_test.py::TestSaveConfig::test_save_config_creates_file
+0.01s call     tests/config_test.py::TestConfigRoundTrip::test_save_and_load_roundtrip
+0.01s call     tests/cli_test.py::TestMainFunction::test_main_with_list_command
+0.01s call     tests/config_test.py::TestSaveConfig::test_save_config_overwrites_if_allowed
+0.00s call     tests/cli_test.py::TestMainFunction::test_main_with_no_args_shows_help
+0.00s setup    tests/cli_test.py::TestBuildParser::test_parser_created
+0.00s call     tests/cli_test.py::TestBackupCommand::test_backup_requires_set
+0.00s call     tests/runner_test.py::TestStartBackup::test_start_backup_cleans_up_pid_on_error
+0.00s call     tests/cli_test.py::TestConfigSubcommands::test_config_add_set_command
+0.00s call     tests/config_test.py::TestLoadConfig::test_load_valid_config
+0.00s call     tests/runner_test.py::TestRunRestic::test_run_restic_failure_raises_error
+0.00s call     tests/runner_test.py::TestStartBackup::test_start_backup_includes_tags
+=========================== short test summary info ===========================
+SKIPPED [4] tests\conftest.py:135: Google Drive not configured. See GOOGLE_DRIVE_SETUP.md to configure.
+ERROR tests/integration_test.py::TestWithUserConfig::test_user_config_exists_and_loads - Failed: User config file required but not found at C:\Users\mcarls\AppData\Roaming\rrbackup\config.toml. Create config file first (see SETUP_INSTRUCTIONS.md)
+ERROR tests/integration_test.py::TestWithUserConfig::test_user_config_has_valid_repository - Failed: User config file required but not found at C:\Users\mcarls\AppData\Roaming\rrbackup\config.toml. Create config file first (see SETUP_INSTRUCTIONS.md)
+ERROR tests/integration_test.py::TestWithUserConfig::test_user_config_has_backup_sets - Failed: User config file required but not found at C:\Users\mcarls\AppData\Roaming\rrbackup\config.toml. Create config file first (see SETUP_INSTRUCTIONS.md)
+ERROR tests/integration_test.py::TestWithUserConfig::test_user_config_has_retention_policy - Failed: User config file required but not found at C:\Users\mcarls\AppData\Roaming\rrbackup\config.toml. Create config file first (see SETUP_INSTRUCTIONS.md)
+FAILED tests/cli_test.py::TestBackupCommand::test_backup_extra_args - SystemExit: 2
+FAILED tests/cli_test.py::TestMainFunction::test_main_with_list_command - TypeError: File must be opened in binary mode, e.g. use `open('foo.toml', 'rb')`
+FAILED tests/cli_test.py::TestMainFunction::test_main_returns_error_code_on_failure - FileNotFoundError: Config file not found: C:\Users\mcarls\src\scripts\modules\rrbackup\.pytest_tmp_root\validation\test_main_returns_error_code_o0\missing.toml
+FAILED tests/cli_test.py::TestCLIErrorHandling::test_config_not_found_returns_error - FileNotFoundError: Config file not found: \nonexistent.toml
+FAILED tests/cli_test.py::TestAllCommandsHaveShortFlags::test_global_flags_have_short_forms - SystemExit: 0
+FAILED tests/cli_test.py::TestAllCommandsHaveShortFlags::test_backup_flags_have_short_forms - SystemExit: 2
+FAILED tests/config_test.py::TestPlatformConfigDefault::test_linux_config_path - NotImplementedError: cannot instantiate 'PosixPath' on your system
+FAILED tests/config_test.py::TestRepoDataclass::test_repo_expand - AssertionError: assert False
+ +  where False = <built-in method startswith of str object at 0x000001E7CB44EF10>('/')
+ +    where <built-in method startswith of str object at 0x000001E7CB44EF10> = 'C:\\Users\\mcarls/passwords/restic.txt'.startswith
+ +      where 'C:\\Users\\mcarls/passwords/restic.txt' = Repo(url='C:\\Users\\mcarls/backups/repo', password_env=None, password_file='C:\\Users\\mcarls/passwords/restic.txt').password_file
+FAILED tests/config_test.py::TestLoadConfig::test_load_config_no_expand - AssertionError: assert '/tmp/rrbackup/state' is None
+ +  where '/tmp/rrbackup/state' = Settings(restic_bin='restic', rclone_bin='rclone', log_dir='/tmp/rrbackup/logs', state_dir='/tmp/rrbackup/state', repo=Repo(url='/tmp/test-repo', password_env=None, password_file='/tmp/restic_password.txt'), sets=[BackupSet(name='test-set', include=['/home/user/documents'], exclude=['**/.git'], tags=['test'], one_fs=False, dry_run_default=False, backup_type='incremental', encryption=None, compression=None, schedule=Schedule(type='daily', time='02:00', interval_hours=None, day_of_week=None, day_of_month=None, description=None), retention=RetentionPolicy(keep_last=None, keep_hourly=None, keep_daily=7, keep_weekly=4, keep_monthly=6, keep_yearly=2, max_total_size=None, max_total_size_bytes=None))], retention_defaults=RetentionPolicy(keep_last=None, keep_hourly=None, keep_daily=7, keep_weekly=4, keep_monthly=6, keep_yearly=2, max_total_size=None, max_total_size_bytes=None)).state_dir
+FAILED tests/integration_test.py::TestErrorMessages::test_missing_config_error_message - FileNotFoundError: Config file not found: C:\Users\mcarls\src\scripts\modules\rrbackup\.pytest_tmp_root\validation\test_missing_config_error_mess0\nonexistent.toml
+============= 10 failed, 112 passed, 4 skipped, 4 errors in 9.45s =============
+RESULT: FAIL - RRBackup pytest and coverage suite
+ERROR: Command returned exit code 1.
+
+================================================================================================
+PowerShell test: tests\powershell\environment_smoke_test.ps1
+================================================================================================
+Command: pwsh -NoLogo -NoProfile -File C:\Users\mcarls\src\scripts\modules\rrbackup\tests\powershell\environment_smoke_test.ps1 -RepoRoot C:\Users\mcarls\src\scripts -PythonExecutable C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -IncludeProductionReadOnly:False
+RepoRoot=C:\Users\mcarls\src\scripts
+PythonExecutable=C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe
+PowerShellVersion=7.6.1
+IncludeProductionReadOnly=False
+Python 3.12.10
+rrbackup import: C:\Users\mcarls\src\scripts\modules\rrbackup\rrbackup\__init__.py
+rrbackup CLI help: PASS
+restic: C:\Program Files\WinGet\Links\restic.exe
+restic 0.19.1 compiled with go1.26.4 on windows/amd64
+Environment smoke test completed successfully.
+RESULT: PASS - PowerShell test: tests\powershell\environment_smoke_test.ps1
+
+================================================================================================
+PowerShell test: tests\powershell\production_read_only_test.ps1
+================================================================================================
+Command: pwsh -NoLogo -NoProfile -File C:\Users\mcarls\src\scripts\modules\rrbackup\tests\powershell\production_read_only_test.ps1 -RepoRoot C:\Users\mcarls\src\scripts -PythonExecutable C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -IncludeProductionReadOnly:False
+SKIP: Production read-only checks were not explicitly enabled.
+RESULT: PASS - PowerShell test: tests\powershell\production_read_only_test.ps1
+
+================================================================================================
+TEST SUMMARY
+================================================================================================
+Result file: C:\Users\mcarls\src\scripts\modules\rrbackup\TEST_RESULTS.txt
+OVERALL RESULT: FAIL
+Failure count: 1
+- RRBackup pytest and coverage suite: Command returned exit code 1.
+
+Git status after tests:
+ M modules/rrbackup/TEST_RESULTS.txt
