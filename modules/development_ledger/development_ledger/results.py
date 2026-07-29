@@ -26,7 +26,6 @@ class ResultParseError(ValueError):
 
 def parse_junit_xml(path: Path, *, source: str = "pytest") -> list[NormalizedTest]:
     """Parse JUnit XML into normalized tests."""
-
     try:
         root = ET.parse(path).getroot()
     except (ET.ParseError, OSError) as exc:
@@ -51,7 +50,6 @@ def parse_junit_xml(path: Path, *, source: str = "pytest") -> list[NormalizedTes
 
 def parse_script_results(path: Path) -> list[NormalizedTest]:
     """Parse the repository-owned generic JSON script-result format."""
-
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
@@ -94,7 +92,6 @@ def parse_script_results(path: Path) -> list[NormalizedTest]:
 
 def parse_transcript(path: Path) -> tuple[list[NormalizedTest], dict[str, float | int]]:
     """Extract coarse command results and metrics from the current text-report format."""
-
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
@@ -126,7 +123,6 @@ def parse_transcript(path: Path) -> tuple[list[NormalizedTest], dict[str, float 
 
 def aggregate_tests(tests: Iterable[NormalizedTest]) -> dict[str, int | float]:
     """Return aggregate counts and duration for normalized tests."""
-
     summary: dict[str, int | float] = {
         "total": 0,
         "passed": 0,
@@ -145,7 +141,6 @@ def aggregate_tests(tests: Iterable[NormalizedTest]) -> dict[str, int | float]:
 
 def failure_fingerprint(test: NormalizedTest) -> str:
     """Create a stable compact fingerprint for one failing/error test."""
-
     first_line = test.message.strip().splitlines()[0] if test.message.strip() else ""
     normalized = re.sub(r"\b0x[0-9a-fA-F]+\b", "<address>", first_line)
     normalized = re.sub(r"\b\d{4}-\d{2}-\d{2}[T ][^\s]+", "<timestamp>", normalized)
@@ -157,7 +152,9 @@ def failure_fingerprint(test: NormalizedTest) -> str:
 def _parse_junit_case(case: ET.Element, *, suite_name: str, source: str) -> NormalizedTest:
     name = case.attrib.get("name", "unnamed")
     classname = case.attrib.get("classname", "")
-    file_name = case.attrib.get("file", "")
+    file_name = case.attrib.get("file", "").replace("\\", "/")
+    if not file_name and source == "pytest":
+        file_name = _pytest_classname_to_file(classname)
     stable_part = f"{file_name}::{name}" if file_name else f"{classname}::{name}" if classname else name
     test_id = f"{source}:{stable_part}"
 
@@ -190,6 +187,16 @@ def _parse_junit_case(case: ET.Element, *, suite_name: str, source: str) -> Norm
         item_ids=sorted(set(item_ids)),
         metadata={"junit_classname": classname},
     )
+
+
+def _pytest_classname_to_file(classname: str) -> str:
+    """Convert pytest's dotted JUnit classname to the documented file-path form."""
+    parts = [part for part in classname.split(".") if part]
+    while parts and (parts[-1].startswith("Test") or parts[-1][:1].isupper()):
+        parts.pop()
+    if not parts or not all(part.isidentifier() for part in parts):
+        return ""
+    return "/".join(parts) + ".py"
 
 
 def _split_ids(value: str) -> list[str]:
