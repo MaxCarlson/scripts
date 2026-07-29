@@ -8,9 +8,11 @@ import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from .models import ExecutionMode, ensure_utc, utc_now
+
+PathInput = Union[os.PathLike[str], str]
 
 
 class ResticCommandError(RuntimeError):
@@ -188,10 +190,10 @@ def execute_restic(
     command: ResticCommand,
     *,
     mode: ExecutionMode = ExecutionMode.RUN,
-    log_path: Optional[os.PathLike[str] | str] = None,
+    log_path: Optional[PathInput] = None,
     echo: bool = True,
     base_environment: Optional[Mapping[str, str]] = None,
-    popen_factory: Callable[..., subprocess.Popen[str]] = subprocess.Popen,
+    popen_factory: Callable[..., subprocess.Popen] = subprocess.Popen,
     clock: Callable[[], datetime] = utc_now,
 ) -> ExecutionResult:
     """Execute a Restic command or preview it without starting a process.
@@ -236,7 +238,9 @@ def execute_restic(
             output=tuple(),
         )
 
-    process_environment = dict(os.environ if base_environment is None else base_environment)
+    process_environment = dict(
+        os.environ if base_environment is None else base_environment
+    )
     process_environment.update(dict(effective_command.environment))
     output: List[str] = []
 
