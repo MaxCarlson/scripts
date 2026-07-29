@@ -14,6 +14,7 @@ Base: `agent/add-development-ledger-module`
 - `modules/mangadl/tests/manga18fx_test.py`
 - `modules/mangadl/tests/backends_test.py`
 - `modules/mangadl/tests/worker_test.py`
+- `modules/mangadl/tests/conftest.py`
 - `modules/mangadl/pyproject.toml`
 - `modules/mangadl/mangadl/__init__.py`
 
@@ -29,10 +30,25 @@ Each series is written as one top-level manga directory. Each chapter receives a
 
 ## Validation State
 
-The isolated new parser/naming tests passed: `5 passed`. The full module test suite and live-site smoke test remain local validation requirements.
+- The user confirmed that the Manga18FX URL-file workflow is downloading correctly on Windows 11.
+- The initial full-suite run exposed a Windows pytest base-temp parent-directory failure and one environment-dependent gallery-dl extractor assertion.
+- The base-temp path is now selected by a module-local pytest hook, which creates its parent before `tmp_path` fixtures initialize.
+- The gallery-dl routing test now mocks `extractor.find`, testing mangadl's routing contract rather than the installed gallery-dl catalog.
+- An isolated replica of the corrected pytest hook and routing tests passed: `11 passed`.
+- The complete mangadl suite must still be rerun in the user's checkout before merge.
+
+## Required Local Validation
+
+From `modules/mangadl` after pulling the latest branch:
+
+```powershell
+pytest --tb=short -q .\tests\
+```
+
+After that passes, rerun one already-downloaded Manga18FX URL and confirm the summary reports existing files as skipped rather than downloading them again.
 
 ## Risks
 
 - Manga18FX can change HTML structure or add anti-bot behavior.
 - Browser-cookie extraction is not implemented for this backend; use an exported Netscape/Mozilla cookie file if anonymous requests fail.
-- Do not run the full URL list until one disposable single-series smoke test succeeds.
+- Do not merge into `main` until the complete Windows pytest suite passes.
