@@ -2,7 +2,7 @@
 
 ## Overall
 
-Stage 1 is in progress. The canonical documentation structure, hybrid remote/local collaboration workflow, module-local test orchestrator, PowerShell smoke tests, and initial Windows baseline run are complete. Shared safety-foundation source work and replacement tests are next.
+Stage 1 is in progress. The remote/local validation loop is proven: the user ran the module-local orchestrator, committed `TEST_RESULTS.txt`, and the complete pytest and PowerShell output was read remotely. The first inherited baseline fixes are committed. The six-area CLI and shell-audit replacement contract are also fixed for Stage 2.
 
 ## Completed
 
@@ -14,42 +14,81 @@ Stage 1 is in progress. The canonical documentation structure, hybrid remote/loc
 - [x] Hybrid remote/local workflow documented
 - [x] Module-local `Invoke-Tests.ps1` orchestrator
 - [x] Tracked `TEST_RESULTS.txt` evidence handoff
-- [x] Full stdout/stderr capture design for pytest and PowerShell tests
+- [x] Full stdout/stderr capture for pytest and PowerShell tests
 - [x] PowerShell environment/entry-point smoke test
 - [x] Opt-in production read-only snapshot compatibility test
 - [x] Project-local ignored temporary-test root
-- [x] Initial Windows baseline validation
+- [x] First Windows validation output committed and consumed remotely
 - [x] Initial failure triage
+- [x] User-config-dependent tests changed from mandatory failure to optional skip
+- [x] Live Google Drive tests made explicitly opt-in
+- [x] Top-level CLI configuration errors converted to stable nonzero return codes
+- [x] Duplicate outer RRBackup package initializer removed
+- [x] Canonical six-area CLI architecture defined
+- [x] Useful shell-audit capabilities mapped to first-class module commands
+- [x] `backup view audit` contract defined
 
 ## In Progress
 
-- [ ] Correct or replace inherited tests that depend on user configuration or external services
+- [ ] Correct remaining inherited test defects
 - [ ] Shared safety foundation
 - [ ] Stage 1 unit tests and coverage
 - [ ] Temporary-repository integration harness
 
-## Initial Windows Baseline
+## Committed Windows Baseline
 
-The first local run collected 130 tests:
+The committed `TEST_RESULTS.txt` run collected 130 tests:
 
 - 112 passed
 - 4 skipped
 - 10 failed
 - 4 errored
-- reported coverage: 59%
+- package-only branch coverage: 32%
 
-Primary baseline issues:
+The runner itself worked correctly:
 
-- inherited integration tests fail when the user's RRBackup config is absent instead of skipping or using isolated fixtures,
-- raw Restic options beginning with `-` are passed to `--extra` ambiguously in tests,
-- top-level CLI configuration errors escape instead of becoming stable nonzero return codes,
-- platform tests mutate `os.name` and make `pathlib` instantiate an unsupported concrete path type,
-- path-expansion tests assume POSIX behavior while running on Windows,
-- one no-expansion test contradicts the supplied fixture, which explicitly contains state and log directories,
-- a CLI test mocks `Path.open` in a way that converts binary TOML loading into text-mode loading,
-- coverage is inflated by test modules and diluted by large legacy wizard modules that will be rewritten or removed.
+- editable development install passed,
+- complete pytest output was captured,
+- environment smoke test passed,
+- production read-only test was safely skipped because it was not enabled,
+- the tracked result file was generated and pushed successfully.
 
-The complete baseline supplied by the user is recorded in the current conversation and will be superseded by the tracked `TEST_RESULTS.txt` workflow on the next run.
+Remaining inherited baseline issues:
+
+- raw Restic options beginning with `-` require unambiguous `--extra=<value>` syntax or a redesigned pass-through interface,
+- one CLI test incorrectly mocks `Path.open`, turning valid binary TOML loading into text-mode loading,
+- one version-short-form test does not catch the expected successful `SystemExit`,
+- platform tests mutate `os.name`, which breaks `pathlib` concrete path selection on Windows,
+- path-expansion tests assume POSIX output on Windows,
+- one no-expansion test contradicts its fixture, which explicitly supplies state and log directories,
+- large legacy config/wizard modules have little coverage and are scheduled for replacement rather than superficial coverage inflation.
+
+## CLI Contract
+
+The canonical command will be `backup` with six major areas:
+
+```text
+backup run
+backup view
+backup config
+backup schedule
+backup restore
+backup repository
+```
+
+`backup edit` aliases `backup config`. Existing `rrb`, `rrbackup`, `backup_module`, and `python -m backup_module` interfaces remain during the compatibility period.
+
+The complete contract and shell-audit mapping are in:
+
+```text
+docs/CLI_ARCHITECTURE_AND_AUDIT_COVERAGE.md
+```
+
+The comprehensive read-only diagnostic replacement is:
+
+```text
+backup view audit
+```
 
 ## Last Known Production State
 
@@ -73,7 +112,7 @@ Optional production read-only validation:
 ./Invoke-Tests.ps1 -IncludeProductionReadOnly
 ```
 
-The test runner overwrites the tracked file:
+The runner overwrites the tracked file:
 
 ```text
 TEST_RESULTS.txt
