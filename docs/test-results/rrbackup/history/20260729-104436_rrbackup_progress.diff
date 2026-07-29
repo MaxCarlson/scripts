@@ -1,0 +1,534 @@
+diff --git "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\rrbackup\\history\\20260729-093813_rrbackup_context.md" "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\rrbackup\\LATEST_CONTEXT.md"
+index c9557d1..ce7babf 100644
+--- "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\rrbackup\\history\\20260729-093813_rrbackup_context.md"
++++ "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\rrbackup\\LATEST_CONTEXT.md"
+@@ -1,18 +1,21 @@
+ # Validation Context: rrbackup
+ 
+-Generated: 2026-07-29T09:38:32.0584260-07:00
++Generated: 2026-07-29T10:45:04.7939154-07:00
+ Branch: agent/merge-restic-backup-modules
+-Commit: 50bfafb0dc20fba881d5ddff2aa78f865c63d9c7
++Commit: 5e5c37a4cb3ae412f0a8848d6c93a27f06d08e21
+ Validation report: docs\test-results\rrbackup\LATEST.txt
+ 
+ ## Validation Highlights
+ 
+-- RESULT: PASS - Clean stale RRBackup editable metadata
++- RESULT: PASS - Clean stale RRBackup and TermDash editable metadata
++- RESULT: PASS - Uninstall prior RRBackup entry points
++- RESULT: PASS - Install shared TermDash dependency
+ - RESULT: PASS - Install RRBackup editable development dependencies
+ - RESULT: PASS - Compile RRBackup package and tests
+-- RESULT: PASS - Lint RRBackup safety, CLI, and viewer foundation
++- RESULT: PASS - Lint RRBackup checkpoint 2A
+ - RESULT: PASS - Canonical backup CLI help contract
+-- ================== 2 failed, 256 passed, 8 skipped in 11.18s ==================
++- RESULT: PASS - Condensed backup view help contract
++- ================== 2 failed, 286 passed, 7 skipped in 16.60s ==================
+ - RESULT: FAIL - RRBackup pytest and coverage suite
+ - RESULT: PASS - PowerShell test: tests\powershell\environment_smoke_test.ps1
+ - RESULT: PASS - PowerShell test: tests\powershell\production_read_only_test.ps1
+@@ -25,9 +28,9 @@ Validation report: docs\test-results\rrbackup\LATEST.txt
+  M docs/test-results/rrbackup/LATEST.txt
+  D docs/test-results/rrbackup/LATEST_CONTEXT.md
+  D docs/test-results/rrbackup/LATEST_PROGRESS.diff
+-?? docs/test-results/rrbackup/history/20260729-090444_rrbackup.txt
+-?? docs/test-results/rrbackup/history/20260729-090444_rrbackup_context.md
+-?? docs/test-results/rrbackup/history/20260729-090444_rrbackup_progress.diff
++?? docs/test-results/rrbackup/history/20260729-093813_rrbackup.txt
++?? docs/test-results/rrbackup/history/20260729-093813_rrbackup_context.md
++?? docs/test-results/rrbackup/history/20260729-093813_rrbackup_progress.diff
+ ```
+ 
+ ## Project Status Sources
+@@ -38,103 +41,92 @@ Validation report: docs\test-results\rrbackup\LATEST.txt
+ 
+ ## Overall
+ 
+-Stage 1 is verified. The latest Windows checkpoint passed package compilation, focused correctness lint, 199 tests, and both PowerShell checks; 8 environment-dependent tests skipped intentionally. The `LATEST.txt`, `LATEST_CONTEXT.md`, `LATEST_PROGRESS.diff`, and bounded-history migration also worked.
+-
+-Stage 2 is now in progress. The branch adds the canonical `backup` entry point, redirects `rrb` and `rrbackup` to one hierarchical application after installation, introduces the first working viewer/audit/repository/schedule-discovery slice, and preserves selected legacy flat commands through translation or temporary delegation.
+-
+-A post-validation manual check exposed a real installed-entry-point namespace failure that the old smoke test masked by injecting `PYTHONPATH`. The repository namespace compatibility shim has been restored, version lookup moved to a dedicated module, and validation now executes the actual installed `backup`, `rrb`, and `rrbackup` entry points with the injected path removed.
+-
+-## Stage 1 ΓÇö Verified
+-
+-- [x] Canonical profile and source-attribution model
+-- [x] Legacy `backup_module` JSON/default adapter
+-- [x] Production-compatible Restic command builder
+-- [x] Hard preview/print-only execution barrier
+-- [x] Distinct dry-run state that never updates last success
+-- [x] CPU normal/overdue policy with waiting before lock acquisition
+-- [x] Process-identity lock with ownership token and stale-lock race protection
+-- [x] Atomic run history, latest-run, and last-success state
+-- [x] Snapshot and backup-summary JSON parsers
+-- [x] Shared backup execution engine
+-- [x] Terminal state for wait, lock, execution, interruption, and finalization failures
+-- [x] Compile and focused lint gates
+-- [x] Local Windows verification
+-
+-### Verified Stage 1 evidence
+-
+-- 207 tests collected
+-- 199 passed
+-- 8 intentionally skipped
+-- 0 failed
+-- 0 errors
+-- package branch coverage: 55%
+-- compile: passed
+-- focused correctness lint: passed
+-- PowerShell environment smoke test: passed
+-- production read-only test: safely skipped
+-
+-## Stage 2 ΓÇö Implemented and Awaiting Validation
+-
+-- [x] Package version advanced to `1.0.0` for the new entry point
+-- [x] `backup`, `rrb`, and `rrbackup` entry points target one canonical application
+-- [x] Root help exposes exactly six major areas
+-- [x] `backup edit` translates to `backup config`
+-- [x] Canonical and underscore-style aliases for migrated options
+-- [x] Legacy `backup`, `list`, `stats`, `check`, and `progress` command translation
+-- [x] Temporary delegation for legacy setup/prune/config mutation commands
+-- [x] `backup run` preview, dry-run, CPU-policy bypass, and distinct skipped exit code
+-- [x] `backup view` dashboard, timeline, snapshots, snapshot details, runs, run details, logs, storage, health, schedules, setup, system, provenance, search, audit, and export
+-- [x] `backup config` effective, path, validate, discover, import preview, profiles, and sets
+-- [x] Read-only Windows Task Scheduler discovery adapter
+-- [x] `backup restore` search, preview, explicit `--apply` run gate, and availability reporting
+-- [x] `backup repository` status, keys, locks, stats, check, cache status, explicit init gate, and retention preview placeholder
+-- [x] Comprehensive audit collector with configuration provenance, path metadata, source/exclusion entries, repository metadata, keys, snapshots, runs, logs, locks, schedules, health, provenance, and recommendations
+-- [x] Secret environment values and password contents excluded from audit output
+-- [x] Installed-entry-point namespace regression fixed and tested
+-- [x] Stale editable metadata cleanup added before validation install
+-- [x] Parser, packaging, health, audit, repository, and scheduler tests added
+-
+-## Stage 2 Remaining
+-
+-- [ ] Pass the expanded Windows validation checkpoint
+-- [ ] Add TOML/named-set conversion to the canonical engine
+-- [ ] Preserve all historical `backup_module` commands through the shared engine
+-- [ ] Reduce `modules/backup_module` to a compatibility shim
+-- [ ] Add snapshot tag/host/path filtering to the canonical viewer
+-- [ ] Implement path redaction for `backup view audit --redact-paths`
+-- [ ] Add detailed scheduler event history, service, startup, systemd, and cron discovery
+-- [ ] Add structured restore history and hash verification
+-- [ ] Verify known production snapshots through canonical read-only commands
+-- [ ] Run production read-only validation explicitly
++Stage 1 is verified. The Windows checkpoint passed package compilation, focused correctness lint, 199 tests, and both PowerShell checks; 8 environment-dependent tests skipped intentionally. The repository-root validation evidence workflow also works as intended.
+ 
+-## Canonical CLI
++Stage 2 is split into bounded checkpoints. The current checkpoint is **2A ΓÇö Single-CLI UX Foundation**, and it is ready for local automated and manual validation. No additional Stage 2 feature group should begin until the resulting evidence is reviewed.
+ 
+-```text
+-backup run
+-backup view
+-backup config
+-backup schedule
+-backup restore
+-backup repository
+-```
++The prior Stage 2 checkpoint collected 266 tests: 256 passed, 8 skipped, and 2 failed because inherited integration assertions still expected obsolete `rrb` help text. Those assertions have been replaced with canonical `backup` checks in Checkpoint 2A.
+ 
+-`backup edit` aliases `backup config`. `rrb` and `rrbackup` expose the same hierarchy after editable installation. `backup_module` and `python -m backup_module` remain compatibility surfaces while their independent engine is removed.
++Manual acceptance of the prior CLI identified:
+ 
+-The comprehensive read-only diagnostic command is:
++- an over-fragmented `backup view` command tree,
++- raw JSON as default human-facing repository/diagnostic output,
++- unrelated Windows tasks in schedule discovery,
++- an implicit restore-size calculation that took about 72 seconds,
++- a run command that required too much Restic/configuration knowledge,
++- missing shared color and interactive presentation conventions.
+ 
+-```text
+-backup view audit
+-```
++Checkpoint 2A directly targets those findings.
+ 
+-## Last Known Production State
++## Checkpoint Guardrail
+ 
+-- Repository: `B:\ResticRepos\PC-Local`
+-- Known snapshots: `a1609113`, `022aad5b`
+-- Latest snapshot: 2026-04-14
+-- Current backup schedule: absent
+-- Automated production mutation: prohibited
++Each checkpoint contains one closely related feature/correction group and should result in approximately 10ΓÇô20 minutes between local pull/test/push cycles.
++
++For every checkpoint:
++
++1. source, tests, planning state, and static review are completed together,
++2. implementation stops for local validation,
++3. automated and manual results are reviewed before the next checkpoint,
++4. failures must remain attributable to the newest bounded change set.
++
++Create/schedule wizard acceptance, scheduler/configuration apply, compatibility-shim removal, and production-write work are not part of Checkpoint 2A.
++
++## Progress Assessment
++
++### Successfully implemented and previously verified
++
++- Shared safety engine and terminal-state handling
++- Production repository and snapshot read-only access
++- Snapshot timeline and health data
++- Provenance and comprehensive audit collection
++- Configuration/source attribution
++- Root validation dispatcher and authoritative evidence handoff
++- 256 passing tests in the last Stage 2 report
++
++### Implemented in Checkpoint 2A and awaiting local validation
++
++- Package version `2.0.0`
++- Only one declared public console entry point: `backup`
++- Uninstall/reinstall validation that removes retired `rrb` and `rrbackup` wrappers
++- Seven task-oriented areas: `create`, `run`, `view`, `schedule`, `restore`, `repo`, and `config`
++- Condensed `view --section` interface
++- Unified canonical-TOML/legacy backup inventory
++- Canonical backup-set conversion through the shared engine
++- Preservation of VSS/fs-snapshot, cache exclusion, one-filesystem, dry-run, tags, and raw Restic options
++- Read-only inventory loading without creating generated state/input directories
++- Configured-backup `run auto` chooser and direct named execution
++- Hard print-only no-materialization/no-execution behavior
++- Backup-centric schedule table
++- Strict scheduler ownership filtering
++- Shared TermDash dependency and Windows curses dependency
++- Shared color policy, ANSI-aware tables, compact rows, details, filtering, paging, scrolling, and multi-select adapter
++- Combined human-readable repository summary
++- Explicit `--refresh-storage` and atomic storage-statistics cache
++- Focused tests for parser, packaging, inventory, schedule math, presentation, repository caching, scheduler filtering, and integration behavior
++- Updated compile, lint, help, pytest/coverage, and PowerShell validation gates
++
++### Deferred until Checkpoint 2A evidence is reviewed
++
++- Interactive create-wizard acceptance
++- Interactive schedule-wizard acceptance
++- Configuration and scheduler mutation
++- Retention execution
++- Cross-platform scheduler CRUD completion
++- `backup_module` compatibility-shim conversion and duplicate-engine removal
++- Production backup/restore mutation
++
++### Current bugs and uncertainty
+ 
+-## Validation
++- No Checkpoint 2A code has yet run in the local Windows environment.
++- The module root `README.md` still documents the historical `rrb` interface and is intentionally deferred until the new UX passes acceptance.
++- TUI resizing and curses-failure fallback require manual Windows verification.
++- General CLI repository/password overrides are not yet covered by a non-default-repository manual test.
++
++### Progress and loop assessment
++
++Measurable progress occurred. This is not a repeated safety-engine pass: Checkpoint 2A visibly changes the public command surface, human output, schedule filtering, run selection, and repository behavior in response to manual feedback. The checkpoint is now frozen. Continuing feature work before local validation would constitute poor progress control.
++
++## Checkpoint 2A Validation Target
+ 
+ From the repository root:
+ 
+@@ -142,6 +134,19 @@ From the repository root:
+ ./Invoke-Tests.ps1
+ ```
+ 
++The target performs:
++
++1. RRBackup metadata cleanup,
++2. RRBackup uninstall to remove stale entry points,
++3. editable TermDash installation,
++4. editable RRBackup `2.0.0` installation,
++5. package/test compilation,
++6. focused correctness lint,
++7. root help validation,
++8. condensed view-help validation,
++9. full pytest and branch coverage,
++10. PowerShell installed-entry-point and environment checks.
++
+ Authoritative evidence:
+ 
+ ```text
+@@ -150,6 +155,14 @@ docs/test-results/rrbackup/LATEST_CONTEXT.md
+ docs/test-results/rrbackup/LATEST_PROGRESS.diff
+ ```
+ 
++## Last Known Production State
++
++- Repository: `B:\ResticRepos\PC-Local`
++- Known snapshots: `a1609113`, `022aad5b`
++- Latest snapshot: 2026-04-14
++- Current module-owned backup schedule: absent
++- Automated production mutation: prohibited
++
+ ### `docs/plans/20260729-0700_rrbackup-consolidation-viewer-alerting/checklist.md`
+ 
+ # Consolidation Checklist
+@@ -180,77 +193,210 @@ docs/test-results/rrbackup/LATEST_PROGRESS.diff
+ - [x] Validate `LATEST.*` migration and bounded history
+ - [x] Mark Stage 1 verified
+ 
+-## Stage 2 ΓÇö Compatibility Merge and Hierarchical CLI
++## Stage 2 ΓÇö Unified CLI, Inventory, and Terminal UX
++
++Stage 2 is split into bounded checkpoints. Do not begin the next checkpoint until the current checkpoint's automated and manual evidence has been reviewed.
++
++### Checkpoint 2A ΓÇö Single-CLI UX Foundation ΓÇö Awaiting Local Validation
++
++#### Validation and progress evidence
+ 
+-- [x] Define six-area CLI architecture
+-- [x] Map useful shell audits to first-class commands
+-- [x] Define `backup view audit` contract
+ - [x] Add canonical `backup` entry point
+-- [x] Bump package to `1.0.0`
+-- [x] Route `backup`, `rrb`, and `rrbackup` to one canonical application
+-- [x] Restore repository namespace compatibility shim
+-- [x] Add actual installed-entry-point smoke checks without injected `PYTHONPATH`
+-- [x] Clean stale editable metadata before validation install
+-- [x] Add `backup run`
+-- [x] Add `backup view` hierarchy and default dashboard
+-- [x] Add `backup config` hierarchy
+-- [x] Add `backup edit` alias translation
+-- [x] Add `backup schedule` read-only discovery hierarchy
+-- [x] Add `backup restore` search/preview/explicit-run hierarchy
+-- [x] Add `backup repository` read-only hierarchy and explicit mutation gates
+-- [x] Preserve common legacy `rrb` commands through translation
+-- [x] Temporarily delegate legacy setup/prune/config mutation commands
+-- [x] Preserve underscore-style option aliases for migrated commands
+-- [x] Add canonical hyphenated options
+-- [x] Import legacy JSON/default configuration into canonical profile
+-- [x] Add root and major-area help-contract tests
+-- [x] Add JSON stdout-purity coverage for print-only behavior
+-- [x] Add secret-redaction tests
+-- [x] Add `backup config discover`
+-- [x] Add executable/runtime/environment diagnostics
+-- [x] Add known path and input-file discovery
+-- [x] Add Windows Task Scheduler discovery
+-- [x] Add repository status/key/stats/check/cache/lock inspection
+-- [x] Add dashboard, timeline, snapshots, runs, logs, storage, health, setup, system, provenance, schedules, audit, and export views
+-- [x] Add parser, packaging, health, audit, repository, and scheduler tests
+-- [ ] Pass expanded Windows validation checkpoint
+-- [ ] Add TOML and named-set conversion to shared engine
+-- [ ] Add snapshot tag/host/path filters
+-- [ ] Implement `--redact-paths`
++- [x] Fix repository namespace/import behavior for installed entry points
++- [x] Run first expanded Windows checkpoint
++- [x] Confirm 256 tests pass
++- [x] Identify two obsolete integration assertions for historical `rrb` help
++- [x] Replace obsolete integration assertions with canonical `backup` checks
++- [x] Record manual feedback on view fragmentation, raw JSON, scheduler noise, and slow storage statistics
++- [x] Add bounded Checkpoint 2A scope and stop rule to the active plan
++- [x] Add compile, focused lint, help, pytest/coverage, and PowerShell gates for Checkpoint 2A
++- [ ] Pass corrected Windows validation for Checkpoint 2A
++- [ ] Complete Checkpoint 2A manual acceptance
++
++#### Public command surface
++
++- [x] Approve one public executable: `backup`
++- [x] Remove `rrb` and `rrbackup` console entry points from package metadata
++- [x] Bump package to `2.0.0` for the entry-point-breaking change
++- [x] Add uninstall/reinstall validation so retired wrappers are removed
++- [x] Keep internal `rrbackup` package naming only where needed for migration
++- [x] Expose exactly seven task-oriented root areas:
++  - [x] `backup create`
++  - [x] `backup run`
++  - [x] `backup view`
++  - [x] `backup schedule`
++  - [x] `backup restore`
++  - [x] `backup repo`
++  - [x] `backup config`
++- [x] Replace public `repository` spelling with `repo`
++- [x] Update root and nested help text
++- [x] Remove compatibility-command references from public help
++- [x] Preserve selected old spellings only as hidden translations
++
++#### Unified backup inventory
++
++- [x] Add schedule model support for minute/hour/day/week/month/year/custom/manual
++- [x] Add schedule description, next-run, and missed-run calculations
++- [x] Add one inventory model for canonical TOML sets and legacy `local-main`
++- [x] Enrich inventory records with sources, tags, repository, schedule, retention, snapshots, runs, health, next run, missed runs, and scheduler state
++- [x] Add stable module-owned scheduler task names
++- [x] Convert canonical TOML backup sets into shared-engine profiles
++- [x] Preserve VSS, cache exclusion, one-filesystem, tags, dry-run default, and raw Restic arguments during conversion
++- [x] Keep read-only inventory loading from creating state/log/input directories
++- [x] Add canonical and multi-backup inventory tests
++- [x] Add schedule-math tests for minute/hour/day/week/month/year
++- [x] Add missed-run boundary tests
++- [ ] Add explicit timezone/DST transition tests
++- [ ] Improve per-backup repository-error isolation if local evidence shows one failing repository hides other records
++
++#### `backup view`
++
++- [x] Replace the long display-specific help tree with one task-oriented dashboard command
++- [x] Add six primary dashboard sections:
++  - [x] Overview
++  - [x] Backups
++  - [x] History
++  - [x] Repository
++  - [x] Schedules
++  - [x] Diagnostics
++- [x] Keep audit as an explicit structured section
++- [x] Add noninteractive section selection with `--section`
++- [x] Keep explicit `--plain`, `--json`, and `--markdown` modes
++- [x] Hide old display-specific commands from normal help
++- [x] Preserve selected old read-only spellings as hidden translation aliases
++- [x] Render compact one- or two-line backup rows
++- [x] Add expandable/collapsible detail content through TermDash
++- [x] Support Up/Down, `j`/`k`, Page Up/Page Down, filtering, Enter/details, and horizontal scrolling through the shared component
++- [x] Add presentation and callback tests without launching curses
++- [ ] Verify TUI navigation, resizing, and terminal fallback manually on Windows
++- [ ] Add snapshot tag/host/path filtering to structured modes
++- [ ] Add file browsing inside snapshots
++- [ ] Add optional path redaction for audit output
++
++#### `backup run`
++
++- [x] Support `backup run`, `backup run auto`, and `backup run <backup-name>`
++- [x] Show configured backup inventory when no name or `auto` is supplied
++- [x] Display backup name, source summary, repository, health, latest snapshot, schedule, next run, and missed-run count
++- [x] Allow interactive multi-selection for early/manual runs
++- [x] Run selected backups without requiring source-file, tag, exclude, or repository knowledge
++- [x] Preserve direct named execution for automation
++- [x] Preserve preview, dry-run, CPU-policy bypass, extra tags, exclusions, and raw Restic arguments
++- [x] Keep print-command-only as a hard no-side-effect barrier
++- [x] Add run-selection, direct-run, skipped-exit, and no-materialization preview tests
++- [ ] Manually verify chooser cancellation and selected-run confirmation behavior
++
++#### `backup schedule`
++
++- [x] Restrict Windows scheduler discovery to module-owned canonical or legacy invocations
++- [x] Exclude unrelated operating-system tasks containing `Backup`
++- [x] Make `backup schedule` default to a backup-centric schedule table
++- [x] Render one compact line per backup plus one indented schedule/retention line
++- [x] Show enabled/manual/missing state, last run, next run, and missed-run count
++- [x] Add strict scheduler-ownership regression tests
++- [ ] Validate schedule table readability against the real Windows machine
++
++#### `backup repo`
++
++- [x] Combine status, keys, locks, snapshot count, latest snapshot, and cached storage information into one labeled human summary
++- [x] Replace default raw JSON with formatted human output
++- [x] Keep JSON only behind explicit `--json`
++- [x] Never invoke full restore-size statistics implicitly
++- [x] Add explicit `backup repo --refresh-storage`
++- [x] Add a loading indicator for explicit expensive repository operations when TermDash is available
++- [x] Cache full storage statistics with generated time and command metadata
++- [x] Add `backup repo check` with readable output
++- [x] Format key metadata and lock state as labeled sections
++- [x] Add tests proving default repo view never calls slow statistics and cached results are reused
++- [ ] Manually verify default repo summary completes quickly against `B:\ResticRepos\PC-Local`
++- [ ] Manually verify explicit storage refresh remains opt-in and clearly signposted
++
++#### Shared terminal UI and presentation
++
++- [x] Select and declare `termdash>=0.5.0` as the shared list/detail dependency
++- [x] Add Windows curses dependency for the interactive interface
++- [x] Add one shared RRBackup palette and status-style policy
++- [x] Green = healthy/success/enabled
++- [x] Yellow = warning/due/manual/preview
++- [x] Red = failure/critical/missed/disabled
++- [x] Cyan = headings/identifiers/selected values
++- [x] Dim = secondary metadata
++- [x] Magenta = active interactive/automatic mode
++- [x] Use shared table, detail, footer, keyboard, filter, paging, horizontal-scroll, and multi-select conventions
++- [x] Ensure explicit plain, JSON, and Markdown output contains no ANSI escapes
++- [x] Add graceful non-TTY plain rendering paths
++- [x] Add formatter, details, selection callback, color, and ANSI-stripping tests
++- [ ] Manually verify fallback behavior when curses cannot initialize
++
++### Checkpoint 2B ΓÇö Create and Schedule Wizard Preview ΓÇö Deferred Until 2A Passes
++
++- [x] Add preview-first wizard data and scheduler-plan scaffolding
++- [ ] Validate the creation wizard interactively without applying
++- [ ] Validate the schedule editor interactively without applying
++- [ ] Validate selecting one or more backups
++- [ ] Validate minute/hour/day/week/month/year inputs
++- [ ] Validate retention inputs for latest/hourly/daily/weekly/monthly/yearly
++- [ ] Validate complete proposed configuration and scheduler previews
++- [ ] Ensure no writes occur without a later explicit apply checkpoint
++
++### Checkpoint 2C ΓÇö Configuration and Scheduler Apply ΓÇö Deferred
++
++- [ ] Add and validate atomic canonical configuration writes through the wizard
++- [ ] Add and validate Windows Task Scheduler create/update/delete/run/export/import
++- [ ] Require explicit confirmation or `--apply`
++- [ ] Export existing scheduler definitions before replacement
++- [ ] Add rollback behavior
++- [ ] Add no-overlap, retry, wake, and start-when-available behavior
++- [ ] Add scheduler/run/snapshot correlation and schedule history
++- [ ] Add systemd user timer CRUD
++- [ ] Add cron compatibility CRUD
++
++### Checkpoint 2D ΓÇö Compatibility Shim and Duplicate-Engine Removal ΓÇö Deferred
++
++- [ ] Preserve required historical `backup_module` behavior through `backup`
++- [ ] Replace `modules/backup_module` internals with a thin compatibility shim
++- [ ] Remove duplicate engine only after compatibility tests pass
+ - [ ] Add optional legacy shell-history evidence adapter
+ - [ ] Add detailed scheduler event, service, startup, systemd, and cron discovery
+-- [ ] Add restore history and hash verification
++- [ ] Add structured restore history and hash verification
++
++### Checkpoint 2E ΓÇö Production and Controlled Acceptance ΓÇö Deferred
++
+ - [ ] Verify known production snapshots through canonical CLI
+-- [ ] Preserve every historical `backup_module` command through shared engine
+-- [ ] Reduce `modules/backup_module` to a compatibility shim
+-- [ ] Remove duplicate engine only after compatibility tests pass
++- [ ] Run explicit production read-only validation
++- [ ] Complete controlled production backup only after explicit approval
++- [ ] Complete small restore and hash verification
++- [ ] Complete scheduled execution acceptance
++- [ ] Complete final viewer, repository-summary, audit, and documentation acceptance
+ 
+ ## Stage 3 ΓÇö Scheduler Management
+ 
+-- [ ] Windows Task Scheduler create/update/delete/run/export/import
+-- [ ] systemd user timer CRUD
+-- [ ] cron compatibility CRUD
+-- [ ] Schedule health and history
+-- [ ] No-overlap, retry, wake, and start-when-available behavior
+-- [ ] Scheduler/run/snapshot correlation
++Scheduler work is folded into Stage 2 checkpoints where it is required for `run`, `schedule`, and `create`. Cross-platform backend completion remains tracked here.
++
++- [ ] Windows Task Scheduler CRUD complete
++- [ ] systemd user timer CRUD complete
++- [ ] cron compatibility CRUD complete
++- [ ] Schedule health and history complete
++- [ ] No-overlap, retry, wake, and start-when-available complete
++- [ ] Scheduler/run/snapshot correlation complete
+ 
+ ## Stage 4 ΓÇö Viewer Expansion
+ 
+-- [x] Dashboard foundation
+-- [x] Timeline foundation
+-- [x] Snapshot listing and details
++- [x] Dashboard data foundation
++- [x] Timeline data foundation
++- [x] Snapshot listing and details foundation
+ - [x] Search foundation
+-- [x] Runs and logs
+-- [x] Schedules and setup/system diagnostics
++- [x] Runs and logs foundation
++- [x] Schedules and setup/system diagnostics foundation
+ - [x] Provenance and comprehensive audit foundation
+ - [x] Storage and health foundation
++- [ ] Task-oriented full-screen TUI accepted
+ - [ ] File browsing inside snapshots
+-- [ ] Rich set/profile views
++- [ ] Rich backup/profile views
+ - [ ] Expected-run gap engine
+ - [ ] Detailed missed-backup timeline
+ - [ ] JSON Lines and CSV output
+ - [ ] Alert-state view
+-- [ ] Optional full-screen TUI
+ 
+ ## Stage 5 ΓÇö Alerts
+ 
+@@ -279,6 +425,9 @@ docs/test-results/rrbackup/LATEST_PROGRESS.diff
+ - [ ] Small restore and hash verification
+ - [ ] Scheduled execution
+ - [ ] Viewer acceptance
++- [ ] Create-wizard acceptance
++- [ ] Schedule-wizard acceptance
++- [ ] Repository-summary acceptance
+ - [ ] Audit-command acceptance
+ - [ ] Alert acceptance
+ - [ ] Documentation cleanup

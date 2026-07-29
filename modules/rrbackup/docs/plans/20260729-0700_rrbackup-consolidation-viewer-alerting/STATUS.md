@@ -2,22 +2,36 @@
 
 ## Overall
 
-Stage 1 is verified. The Windows checkpoint passed package compilation, focused correctness lint, 199 tests, and both PowerShell checks; 8 environment-dependent tests skipped intentionally. The repository-root validation evidence workflow also works as intended.
+Stage 1 is verified. The Windows safety-foundation checkpoint passed package compilation, focused correctness lint, 199 tests, and both PowerShell checks; 8 environment-dependent tests skipped intentionally. The repository-root validation evidence workflow also works as intended.
 
-Stage 2 is split into bounded checkpoints. The current checkpoint is **2A — Single-CLI UX Foundation**, and it is ready for local automated and manual validation. No additional Stage 2 feature group should begin until the resulting evidence is reviewed.
+Stage 2 remains split into bounded checkpoints. The current checkpoint is **2A — Single-CLI UX Foundation**. Its first Windows validation run completed and narrowed the remaining automated work to two attributable failures. Both failures are patched on the branch; the checkpoint now awaits one corrected local run plus manual UX acceptance.
 
-The prior Stage 2 checkpoint collected 266 tests: 256 passed, 8 skipped, and 2 failed because inherited integration assertions still expected obsolete `rrb` help text. Those assertions have been replaced with canonical `backup` checks in Checkpoint 2A.
+No Checkpoint 2B wizard/apply work should begin until Checkpoint 2A passes and its manual observations are reviewed.
 
-Manual acceptance of the prior CLI identified:
+## Latest Checkpoint 2A Evidence
 
-- an over-fragmented `backup view` command tree,
-- raw JSON as default human-facing repository/diagnostic output,
-- unrelated Windows tasks in schedule discovery,
-- an implicit restore-size calculation that took about 72 seconds,
-- a run command that required too much Restic/configuration knowledge,
-- missing shared color and interactive presentation conventions.
+The pushed Windows run at commit `5e5c37a4cb3ae412f0a8848d6c93a27f06d08e21` recorded:
 
-Checkpoint 2A directly targets those findings.
+- dependency cleanup, uninstall, and editable installation: passed,
+- package/test compilation: passed,
+- focused correctness lint: passed,
+- root `backup` help contract: passed,
+- condensed `backup view` help contract: passed,
+- pytest: 286 passed, 7 skipped, 2 failed,
+- PowerShell installed-entry-point/environment smoke test: passed,
+- production read-only test: safely skipped,
+- package branch coverage: 60%.
+
+The two pytest failures were:
+
+1. `test_run_auto_json_lists_configured_backups_without_execution` used an incomplete fake profile that omitted the repository field required by the human-table renderer.
+2. `test_missing_config_error_message` exposed a real semantic defect: an explicitly supplied missing `--config` path silently fell back to legacy defaults instead of returning an error.
+
+Corrections now on the branch:
+
+- the test fixture carries the complete profile fields used by presentation code,
+- explicit missing config paths fail before command dispatch except for creation and migration flows where a new target is valid,
+- pytest is invoked with forced color so the live root-dispatcher console retains its normal colored status output.
 
 ## Checkpoint Guardrail
 
@@ -28,7 +42,7 @@ For every checkpoint:
 1. source, tests, planning state, and static review are completed together,
 2. implementation stops for local validation,
 3. automated and manual results are reviewed before the next checkpoint,
-4. failures must remain attributable to the newest bounded change set.
+4. failures remain attributable to the newest bounded change set.
 
 Create/schedule wizard acceptance, scheduler/configuration apply, compatibility-shim removal, and production-write work are not part of Checkpoint 2A.
 
@@ -42,9 +56,10 @@ Create/schedule wizard acceptance, scheduler/configuration apply, compatibility-
 - Provenance and comprehensive audit collection
 - Configuration/source attribution
 - Root validation dispatcher and authoritative evidence handoff
-- 256 passing tests in the last Stage 2 report
+- Single installed `backup` entry point
+- Condensed task-oriented command/help hierarchy
 
-### Implemented in Checkpoint 2A and awaiting local validation
+### Implemented in Checkpoint 2A and substantially validated
 
 - Package version `2.0.0`
 - Only one declared public console entry point: `backup`
@@ -66,7 +81,7 @@ Create/schedule wizard acceptance, scheduler/configuration apply, compatibility-
 - Focused tests for parser, packaging, inventory, schedule math, presentation, repository caching, scheduler filtering, and integration behavior
 - Updated compile, lint, help, pytest/coverage, and PowerShell validation gates
 
-### Deferred until Checkpoint 2A evidence is reviewed
+### Deferred until Checkpoint 2A evidence is fully accepted
 
 - Interactive create-wizard acceptance
 - Interactive schedule-wizard acceptance
@@ -78,14 +93,15 @@ Create/schedule wizard acceptance, scheduler/configuration apply, compatibility-
 
 ### Current bugs and uncertainty
 
-- No Checkpoint 2A code has yet run in the local Windows environment.
-- The module root `README.md` still documents the historical `rrb` interface and is intentionally deferred until the new UX passes acceptance.
-- TUI resizing and curses-failure fallback require manual Windows verification.
+- The two automated failures from the first 2A run are patched but not yet locally revalidated.
+- Live pytest color through the root dispatcher is configured but still needs visual confirmation.
+- TUI navigation, resizing, and curses-failure fallback require manual Windows verification.
+- The module root `README.md` still documents the historical `rrb` interface and remains deferred until the new UX passes acceptance.
 - General CLI repository/password overrides are not yet covered by a non-default-repository manual test.
 
 ### Progress and loop assessment
 
-Measurable progress occurred. This is not a repeated safety-engine pass: Checkpoint 2A visibly changes the public command surface, human output, schedule filtering, run selection, and repository behavior in response to manual feedback. The checkpoint is now frozen. Continuing feature work before local validation would constitute poor progress control.
+Measurable progress occurred. The checkpoint advanced from 256 passing tests in the prior slice to 286 passing tests while replacing the public command surface and adding the new inventory/presentation layer. The two failures were distinct and attributable; this is not a repeating or stalled failure pattern. The correct next action is a small corrected validation run, not additional feature implementation.
 
 ## Checkpoint 2A Validation Target
 
@@ -97,7 +113,7 @@ From the repository root:
 
 The target performs:
 
-1. RRBackup metadata cleanup,
+1. RRBackup and TermDash metadata cleanup,
 2. RRBackup uninstall to remove stale entry points,
 3. editable TermDash installation,
 4. editable RRBackup `2.0.0` installation,
@@ -105,7 +121,7 @@ The target performs:
 6. focused correctness lint,
 7. root help validation,
 8. condensed view-help validation,
-9. full pytest and branch coverage,
+9. full pytest and branch coverage with colored live output,
 10. PowerShell installed-entry-point and environment checks.
 
 Authoritative evidence:

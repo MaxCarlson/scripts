@@ -27,3 +27,17 @@
 - [ ] Add chronological development-log generation
 - [ ] Add cross-platform dispatcher parity
 - [ ] Add dedicated dispatcher unit tests
+
+## Later Compact-Report Processing
+
+- [ ] Define the authoritative compact report schema
+- [ ] Keep live pytest output colored while normalizing tracked text to plain UTF-8
+- [ ] Remove successful installation chatter from the compact handoff
+- [ ] Collapse individual passing-test lines into aggregate counts
+- [ ] Preserve complete failure/error/traceback and short-summary details
+- [ ] Preserve commands, working directories, exact exit codes, warnings, skips, and environment metadata
+- [ ] Preserve coverage totals and meaningful regressions
+- [ ] Decide whether raw transcripts are tracked, failure-only, or local-only
+- [ ] Document the compact-report contract in `AGENTS.md`, `CLAUDE.md`, and `docs/test-results/README.md`
+- [ ] Add regression tests proving compaction cannot hide actionable failures
+- [ ] Measure token/size reduction before making compact output authoritative
