@@ -23,6 +23,14 @@ Multiple `-i/--input-file` and `-u/--url` options are accepted. Blank lines and 
 
 `https://manga18fx.com/manga/...` and `https://www.manga18fx.com/manga/...` URLs automatically use mangadl's native Manga18FX backend. It creates one top-level folder per series, stable naturally ordered chapter folders, and zero-padded image files. Failed jobs remain under `_partial/<job-id>/`; successful jobs merge into the destination. Reruns inspect the final library and skip images already present. Use `-C/--cookies` with a Netscape/Mozilla cookies export if anonymous requests are blocked.
 
+Manga18FX downloads use two concurrency levels. `-w/--workers` controls simultaneous series jobs, while `-I/--image-workers` controls simultaneous image transfers inside each Manga18FX series. The image-worker default is `4`, and the accepted range is `1` through `8`.
+
+```powershell
+mangadl run -i .\manga18fx-urls.txt -d .\downloads -a .\gallery-dl-archive.sqlite3 -s .\mangadl-state.sqlite3 -w 2 -I 4
+```
+
+The maximum Manga18FX image-transfer concurrency is approximately `workers × image-workers`; for example, `-w 2 -I 4` permits up to eight active image transfers. Start with the default and increase to `-I 6` or `-I 8` only when the source remains responsive and does not return rate-limit or transient server errors.
+
 ## Operations
 
 ```powershell
@@ -67,7 +75,7 @@ Each run writes `manager.log`, `events.jsonl`, `summary.json`, structured per-wo
 
 - Image and byte totals remain unknown until exposed by the backend or completion; the dashboard does not fabricate percentages.
 - Pause is a scheduling/drain pause and does not suspend an in-progress HTTP request.
-- `--config` and `--anonymize-logs` are reserved compatibility options in 1.7.0.
+- `--config` and `--anonymize-logs` are reserved compatibility options in 1.8.0.
 - Browser-cookie extraction is passed through to gallery-dl only. The native Manga18FX backend supports `-C/--cookies` Netscape/Mozilla files.
 - Manga18FX HTML or anti-bot changes may require backend maintenance.
 - No legacy downloader is migrated, modified, or deleted.
