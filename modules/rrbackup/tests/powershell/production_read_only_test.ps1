@@ -118,22 +118,23 @@ if (-not (Test-Path -LiteralPath $BackupCommand -PathType Leaf)) {
 Assert-True -Condition (Test-Path -LiteralPath $BackupCommand -PathType Leaf) -Message "Canonical backup entry point is missing: $BackupCommand"
 
 Write-Output "BackupCommand=$BackupCommand"
-Write-Output 'Operation=backup view snapshots --json (read-only)'
+Write-Output 'Operation=backup view --section audit --json (read-only)'
 
 $CanonicalOutput = & $BackupCommand `
     --repository $Repository `
     --password-file $PasswordFile `
     view `
-    snapshots `
+    --section audit `
     --json 2>&1
 
-Assert-True -Condition ($LASTEXITCODE -eq 0) -Message "Canonical snapshot listing failed: $($CanonicalOutput -join ' ')"
+Assert-True -Condition ($LASTEXITCODE -eq 0) -Message "Canonical audit failed: $($CanonicalOutput -join ' ')"
 
 try {
-    $CanonicalSnapshots = @(($CanonicalOutput -join [Environment]::NewLine) | ConvertFrom-Json)
+    $CanonicalAudit = ($CanonicalOutput -join [Environment]::NewLine) | ConvertFrom-Json
+    $CanonicalSnapshots = @($CanonicalAudit.sections.snapshots.records)
 }
 catch {
-    throw "Unable to parse canonical snapshot JSON: $($_.Exception.Message)"
+    throw "Unable to parse canonical audit JSON: $($_.Exception.Message)"
 }
 
 Assert-KnownSnapshots -Snapshots $CanonicalSnapshots -SourceName 'Canonical backup CLI'
@@ -146,4 +147,4 @@ $CanonicalSnapshots |
     Write-Output
 
 Write-Output 'Production read-only compatibility test completed successfully.'
-Write-Output 'No backup, restore, init, unlock, forget, prune, cache cleanup, or retention command was executed.'
+Write-Output 'No backup, restore, init, unlock, forget, prune, cache cleanup, storage refresh, or retention command was executed.'
