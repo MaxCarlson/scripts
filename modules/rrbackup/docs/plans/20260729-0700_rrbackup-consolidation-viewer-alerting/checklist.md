@@ -3,9 +3,16 @@
 ## Stage 1 — Safety Foundation
 
 - [x] Create canonical plan structure
-- [ ] Add root validation orchestrator
-- [ ] Add PowerShell environment smoke test
-- [ ] Add opt-in production read-only test
+- [x] Document hybrid remote/local workflow
+- [x] Add module-root test orchestrator
+- [x] Add tracked test-result handoff file
+- [x] Capture complete pytest stdout/stderr
+- [x] Run all `*_test.ps1` scripts from one command
+- [x] Add PowerShell environment smoke test
+- [x] Add opt-in production read-only test
+- [x] Run initial local Windows baseline
+- [x] Triage inherited baseline failures
+- [ ] Correct or replace environment-dependent inherited tests
 - [ ] Add shared models
 - [ ] Add configuration resolver
 - [ ] Add Restic command boundary
@@ -30,6 +37,8 @@
 - [ ] Add canonical hyphenated options
 - [ ] Import legacy JSON/default configuration
 - [ ] Verify known snapshots through merged CLI
+- [ ] Reduce `modules/backup_module` to a compatibility shim
+- [ ] Remove duplicate engine only after compatibility tests pass
 
 ## Stage 3 — Scheduler
 
