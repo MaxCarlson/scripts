@@ -12,9 +12,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .concurrency import Manga18FXConcurrencyPlan, plan_manga18fx_concurrency
 from .models import JobState, WorkerSnapshot
 from .state import StateStore
-from .ui import ConsoleDashboard, human_bytes, plain_identity
+from .ui import ConsoleDashboard, DashboardRuntime, human_bytes, plain_identity
+
+MANGA18FX_IMAGE_WORKERS_ENV = "MANGADL_MANGA18FX_IMAGE_WORKERS"
+MAX_IMAGE_WORKERS = 8
 
 
 @dataclass(slots=True)
@@ -38,21 +42,50 @@ class RunOptions:
 
 class DownloadManager:
     def __init__(self, options: RunOptions, store: StateStore) -> None:
+        plan = plan_manga18fx_concurrency(options.workers, self._requested_image_workers())
+        options.workers = plan.effective_workers
         self.options = options
         self.store = store
+        self.target_workers = plan.effective_workers
+        self.image_workers = plan.effective_image_workers
+        self.logical_cpus = plan.logical_cpus
+        self.concurrency_budget = plan.budget
         self.events: queue.Queue[tuple[int, dict[str, Any] | None]] = queue.Queue()
         self.processes: dict[int, subprocess.Popen[str]] = {}
         self.assignments: dict[int, dict[str, Any]] = {}
+        self.worker_costs: dict[int, int] = {}
         self.reader_done: set[int] = set()
         self.last_worker_status_log: dict[int, float] = {}
-        self.snapshots = {slot: WorkerSnapshot(slot) for slot in range(1, options.workers + 1)}
+        self.snapshots = {slot: WorkerSnapshot(slot) for slot in range(1, self.target_workers + 1)}
         self.stop_requested = False
+        self.runtime_notice = self._initial_concurrency_notice(plan)
         self.run_log = options.log_dir / options.run_id
         for folder in (self.run_log / "workers", self.run_log / "raw"):
             folder.mkdir(parents=True, exist_ok=True)
         self.events_path = self.run_log / "events.jsonl"
         self.logger = self._logger()
         self.dashboard = ConsoleDashboard(options.ui, options.run_id, self.run_log)
+        if plan.adjusted:
+            self.logger.warning(self.runtime_notice)
+
+    @staticmethod
+    def _requested_image_workers() -> int:
+        raw = os.environ.get(MANGA18FX_IMAGE_WORKERS_ENV, "4")
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            return 4
+
+    @staticmethod
+    def _initial_concurrency_notice(plan: Manga18FXConcurrencyPlan) -> str:
+        if not plan.adjusted:
+            return "Runtime concurrency is within the logical-CPU budget."
+        return (
+            "Adjusted requested concurrency "
+            f"-w {plan.requested_workers} -I {plan.requested_image_workers} "
+            f"({plan.requested_total}) to -w {plan.effective_workers} "
+            f"-I {plan.effective_image_workers} ({plan.effective_total})."
+        )
 
     def _logger(self) -> logging.Logger:
         logger = logging.getLogger(f"mangadl.{self.options.run_id}")
@@ -62,6 +95,93 @@ class DownloadManager:
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         logger.addHandler(handler)
         return logger
+
+    def _active_slots(self) -> set[int]:
+        return {slot for slot, process in self.processes.items() if process.poll() is None}
+
+    def _future_aggregate(self, target_workers: int, image_workers: int) -> int:
+        """Return the worst of current and steady-state aggregate concurrency."""
+        total = 0
+        active_slots = self._active_slots()
+        highest_slot = max(active_slots | set(range(1, target_workers + 1)), default=0)
+        for slot in range(1, highest_slot + 1):
+            if slot in active_slots:
+                active_cost = self.worker_costs.get(slot, 1)
+                total += max(active_cost, image_workers) if slot <= target_workers else active_cost
+            elif slot <= target_workers:
+                total += image_workers
+        return total
+
+    def _set_runtime_notice(self, message: str) -> None:
+        self.runtime_notice = message
+        self.logger.info("runtime tuning: %s", message)
+
+    def _adjust_runtime(self, action: str) -> None:
+        if action == "workers_up":
+            candidate = self.target_workers + 1
+            aggregate = self._future_aggregate(candidate, self.image_workers)
+            if aggregate > self.concurrency_budget:
+                self._set_runtime_notice(
+                    f"Worker increase blocked: {aggregate} would exceed budget {self.concurrency_budget}."
+                )
+                return
+            self.target_workers = candidate
+            self.snapshots.setdefault(candidate, WorkerSnapshot(candidate))
+            self._set_runtime_notice(f"Worker target increased to {candidate}.")
+            return
+
+        if action == "workers_down":
+            if self.target_workers <= 1:
+                self._set_runtime_notice("Worker target is already at the minimum of 1.")
+                return
+            self.target_workers -= 1
+            self._set_runtime_notice(
+                f"Worker target reduced to {self.target_workers}; excess active workers will drain."
+            )
+            return
+
+        if action == "images_up":
+            if self.image_workers >= MAX_IMAGE_WORKERS:
+                self._set_runtime_notice(f"Image workers are already at the maximum of {MAX_IMAGE_WORKERS}.")
+                return
+            candidate = self.image_workers + 1
+            aggregate = self._future_aggregate(self.target_workers, candidate)
+            if aggregate > self.concurrency_budget:
+                self._set_runtime_notice(
+                    f"Image-worker increase blocked: {aggregate} would exceed budget {self.concurrency_budget}."
+                )
+                return
+            self.image_workers = candidate
+            self._set_runtime_notice(
+                f"Image workers increased to {candidate}; applies to newly started Manga18FX jobs."
+            )
+            return
+
+        if action == "images_down":
+            if self.image_workers <= 1:
+                self._set_runtime_notice("Image workers are already at the minimum of 1.")
+                return
+            self.image_workers -= 1
+            self._set_runtime_notice(
+                f"Image workers reduced to {self.image_workers}; applies to newly started Manga18FX jobs."
+            )
+
+    def _dashboard_runtime(self) -> DashboardRuntime:
+        active_slots = self._active_slots()
+        aggregate = sum(self.worker_costs.get(slot, 1) for slot in active_slots)
+        return DashboardRuntime(
+            active_workers=len(active_slots),
+            target_workers=self.target_workers,
+            image_workers=self.image_workers,
+            aggregate=aggregate,
+            budget=self.concurrency_budget,
+            logical_cpus=self.logical_cpus,
+            notice=self.runtime_notice,
+        )
+
+    def _visible_snapshots(self) -> dict[int, WorkerSnapshot]:
+        slots = set(range(1, self.target_workers + 1)) | self._active_slots()
+        return {slot: self.snapshots.setdefault(slot, WorkerSnapshot(slot)) for slot in sorted(slots)}
 
     def _worker_command(self, slot: int, job: dict[str, Any]) -> list[str]:
         command = [
@@ -103,6 +223,8 @@ class DownloadManager:
         return command
 
     def _start_worker(self, slot: int, job: dict[str, Any]) -> None:
+        child_env = os.environ.copy()
+        child_env[MANGA18FX_IMAGE_WORKERS_ENV] = str(self.image_workers)
         process = subprocess.Popen(
             self._worker_command(slot, job),
             stdout=subprocess.PIPE,
@@ -112,20 +234,23 @@ class DownloadManager:
             errors="replace",
             bufsize=1,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+            env=child_env,
         )
         self.processes[slot] = process
         self.assignments[slot] = job
-        snapshot = self.snapshots[slot]
+        self.worker_costs[slot] = self.image_workers if job["backend"] == "manga18fx" else 1
+        snapshot = self.snapshots.setdefault(slot, WorkerSnapshot(slot))
         snapshot.state = "run"
         snapshot.url = job["canonical_url"]
         snapshot.backend = job["backend"]
         snapshot.attempt = job["attempts"]
         self.logger.info(
-            "dispatch worker=%02d pid=%s job=%s attempt=%s url=%s",
+            "dispatch worker=%02d pid=%s job=%s attempt=%s image_workers=%s url=%s",
             slot,
             process.pid,
             job["id"],
             job["attempt_id"],
+            self.worker_costs[slot],
             job["canonical_url"],
         )
         self._write_worker_log(
@@ -164,7 +289,7 @@ class DownloadManager:
             self.logger.warning("ignored stale event worker=%02d attempt=%s", slot, event.get("attempt_id"))
             return
         data = event.get("data", {})
-        snapshot = self.snapshots[slot]
+        snapshot = self.snapshots.setdefault(slot, WorkerSnapshot(slot))
         snapshot.state = data.get("state", snapshot.state).replace("running", "run")
         for name in (
             "title",
@@ -249,8 +374,9 @@ class DownloadManager:
                 key = msvcrt.getwch()
                 if key in {"\x00", "\xe0"}:
                     key = {"H": "UP", "P": "DOWN"}.get(msvcrt.getwch(), "")
-                if self.dashboard.handle_key(key, self.options.workers) == "quit":
-                    self.stop_requested = True
+                action = self.dashboard.handle_key(key, max(self.snapshots, default=self.target_workers))
+                if action:
+                    self._adjust_runtime(action)
 
     def run(self) -> int:
         self.store.recover_expired(self.options.run_id)
@@ -267,7 +393,9 @@ class DownloadManager:
                             self._apply(slot, event)
                 except queue.Empty:
                     pass
-                for slot in range(1, self.options.workers + 1):
+
+                slots = sorted(set(range(1, self.target_workers + 1)) | set(self.processes))
+                for slot in slots:
                     process = self.processes.get(slot)
                     if process is not None and process.poll() is None:
                         continue
@@ -295,13 +423,17 @@ class DownloadManager:
                                     job["id"], job["attempt_id"], JobState.FAILED_BACKEND, "backend", message
                                 )
                         self.processes.pop(slot, None)
+                        self.worker_costs.pop(slot, None)
                         self.reader_done.discard(slot)
                         self.snapshots[slot] = WorkerSnapshot(slot)
+                    if slot > self.target_workers:
+                        continue
                     if self.stop_requested or self.dashboard.paused_all or slot in self.dashboard.paused_workers:
                         continue
                     leased = self.store.lease(self.options.run_id, slot)
                     if leased is not None:
                         self._start_worker(slot, dict(leased))
+
                 counts = self.store.counts(self.options.run_id)
                 active = any(process.poll() is None for process in self.processes.values())
                 pending = (
@@ -313,7 +445,7 @@ class DownloadManager:
                 if (not active and pending == 0) or (self.stop_requested and not active):
                     break
                 if time.monotonic() - last_render >= 0.25:
-                    self.dashboard.render(counts, self.snapshots)
+                    self.dashboard.render(counts, self._visible_snapshots(), self._dashboard_runtime())
                     last_render = time.monotonic()
                 time.sleep(0.1)
         except KeyboardInterrupt:
@@ -321,7 +453,12 @@ class DownloadManager:
             for process in self.processes.values():
                 process.terminate()
             for process in self.processes.values():
-                process.wait(timeout=10)
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+
         counts = self.store.counts(self.options.run_id)
         failed = sum(value for key, value in counts.items() if key.startswith("failed_"))
         status = "failed" if failed else ("interrupted" if self.stop_requested else "succeeded")
