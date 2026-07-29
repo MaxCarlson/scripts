@@ -1,4 +1,4 @@
-"""Runtime wrapper for configured-backup selection and monitored execution."""
+"""Runtime wrapper for configured-backup operations and monitored execution."""
 
 from __future__ import annotations
 
@@ -12,31 +12,19 @@ from .engine import BackupEngine
 from .inventory import BackupInventoryRecord
 from .models import ExecutionMode, RunState
 from .monitored_restic import ResticExecutionControl, execute_restic_monitored
+from .operations_dashboard import run_operations_dashboard
 from .presentation import interactive_available, render_backup_table
-from .run_monitor import run_backup_monitor
 from .run_progress import BackupProgress, parse_progress_line
 from .state import RunStateStore
-from .viewer import select_backups
-
 
 ProgressCallback = Callable[[BackupProgress], None]
 
 
-def _selected_records(args: Any) -> tuple[object, List[BackupInventoryRecord]]:
+def _available_records(args: Any) -> tuple[object, List[BackupInventoryRecord]]:
     result = cli_runtime.inventory(args)
-    if args.backup_name.lower() != "auto":
-        return result, [result.by_name(args.backup_name)]
-    if args.json:
-        return result, []
-    if interactive_available() and not args.plain:
-        return result, select_backups(
-            result.records,
-            title="RRBackup — Select backups to run",
-            multi_select=True,
-            action_key="r",
-            action_label="review and run selected backups",
-        )
-    return result, []
+    if args.backup_name.lower() == "auto":
+        return result, list(result.records)
+    return result, [result.by_name(args.backup_name)]
 
 
 def _configured_profile(record: BackupInventoryRecord, args: Any):
@@ -52,7 +40,7 @@ def _configured_profile(record: BackupInventoryRecord, args: Any):
 
 
 class _ProgressPersistence:
-    """Persist throttled progress while forwarding every update to the monitor."""
+    """Persist throttled progress while forwarding every update to the dashboard."""
 
     def __init__(
         self,
@@ -151,11 +139,35 @@ def _exit_code(values: List[int]) -> int:
     return cli_runtime.EXIT_OK
 
 
-def handle_run(args: Any) -> int:
-    """Choose configured backups and execute them through the appropriate surface."""
+def _interactive_dashboard(args: Any) -> bool:
+    return (
+        interactive_available()
+        and not args.json
+        and not args.plain
+        and not args.markdown
+        and not args.print_command_only
+    )
 
-    result, selected = _selected_records(args)
-    if args.backup_name.lower() == "auto" and not selected:
+
+def handle_run(args: Any) -> int:
+    """List or execute configured backups through the appropriate surface."""
+
+    result, available = _available_records(args)
+    if _interactive_dashboard(args):
+        outcome = run_operations_dashboard(
+            available,
+            lambda selected_record, progress_callback, control: _run_one_monitored(
+                selected_record,
+                args,
+                progress_callback,
+                control,
+            ),
+            dry_run=args.dry_run,
+            initial_confirmation=args.backup_name.lower() != "auto",
+        )
+        return _exit_code(list(outcome.exit_codes))
+
+    if args.backup_name.lower() == "auto":
         text = render_backup_table(
             result.records,
             colors=cli_runtime.theme(args),
@@ -171,31 +183,9 @@ def handle_run(args: Any) -> int:
         )
         return cli_runtime.EXIT_OK
 
-    monitored = (
-        bool(selected)
-        and interactive_available()
-        and not args.json
-        and not args.plain
-        and not args.markdown
-        and not args.print_command_only
-    )
-    if monitored:
-        outcome = run_backup_monitor(
-            selected,
-            lambda selected_record, progress_callback, control: _run_one_monitored(
-                selected_record,
-                args,
-                progress_callback,
-                control,
-            ),
-        )
-        if outcome.cancelled:
-            return cli_runtime.EXIT_OK
-        return _exit_code(list(outcome.exit_codes))
-
     payloads: List[Dict[str, Any]] = []
     exit_codes: List[int] = []
-    for selected_record in selected:
+    for selected_record in available:
         payload, code = cli_runtime._run_one(selected_record, args)
         payloads.append(payload)
         exit_codes.append(code)
