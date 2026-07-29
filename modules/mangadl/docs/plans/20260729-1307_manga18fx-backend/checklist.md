@@ -14,7 +14,11 @@
 - [x] Pass the existing cookies-file option to the native backend.
 - [x] Add offline parser/routing/worker tests.
 - [x] Bump the module minor version.
-- [ ] Run the complete mangadl pytest suite locally.
-- [ ] Run a single-series live smoke test in a disposable destination.
-- [ ] Verify a second smoke run skips existing files and exits successfully.
-- [ ] Run the full URL-file batch only after smoke validation.
+- [x] Confirm a live Manga18FX URL file routes and downloads correctly on Windows 11.
+- [x] Fix module-local pytest base-temp creation on Windows.
+- [x] Make gallery-dl routing tests independent of the installed extractor catalog.
+- [x] Run isolated regression checks for the test fixes: 11 passed.
+- [ ] Rerun the complete mangadl pytest suite in the user's Windows checkout.
+- [ ] Verify a second live run skips existing files and exits successfully.
+- [ ] Complete the full URL-file batch and review the run summary.
+- [ ] Merge into `main` only after the complete pytest suite passes.
