@@ -119,6 +119,18 @@ def _command(args: argparse.Namespace, partial: Path) -> list[str]:
         if not executable:
             raise RuntimeError("native nhentai executable is not installed")
         return [executable, "--id", args.url.rsplit("/", 2)[-2], "--output", str(partial)]
+    if args.backend == "manga18fx":
+        command = [
+            sys.executable,
+            "-m",
+            "mangadl.manga18fx",
+            "--destination",
+            str(partial),
+        ]
+        if args.cookies:
+            command.extend(["--cookies", args.cookies])
+        command.append(args.url)
+        return command
     if args.backend == "hdporncomics":
         return [
             _resolve_hdporncomics_executable(args.hdporncomics_executable),
