@@ -23,6 +23,11 @@ HEARTBEAT_INTERVAL = 0.5
 MANGA18FX_CHAPTER_RE = re.compile(
     r"^chapter=(?P<index>\d+)/(?P<total>\d+)\s+title=(?P<title>.+?)\s+images=(?P<images>\d+)$"
 )
+MANGA18FX_PROGRESS_RE = re.compile(
+    r"^progress\s+chapter=(?P<index>\d+)/(?P<total>\d+)\s+title=(?P<title>.+?)\s+"
+    r"chapter_images=(?P<chapter_images>\d+)\s+downloaded=(?P<downloaded>\d+)\s+"
+    r"skipped=(?P<skipped>\d+)\s+processed=(?P<processed>\d+)\s+discovered=(?P<discovered>\d+)$"
+)
 MANGA18FX_COMPLETE_RE = re.compile(
     r"^complete\s+destination=.*?\s+downloaded=(?P<downloaded>\d+)\s+skipped=(?P<skipped>\d+)$"
 )
@@ -54,30 +59,50 @@ def _identity(root: Path) -> tuple[str, str]:
     return "", ""
 
 
+def _unquote_title(value: str) -> str:
+    title = value.strip()
+    if len(title) >= 2 and title[0] == title[-1] and title[0] in {"'", '"'}:
+        return title[1:-1]
+    return title
+
+
 def _parse_manga18fx_output(line: str) -> dict[str, Any] | None:
     """Parse stable native-backend status lines without interpreting arbitrary output."""
     chapter = MANGA18FX_CHAPTER_RE.match(line)
     if chapter:
-        title = chapter.group("title").strip()
-        if len(title) >= 2 and title[0] == title[-1] and title[0] in {"'", '"'}:
-            title = title[1:-1]
         return {
             "kind": "chapter",
             "chapter_index": int(chapter.group("index")),
             "chapters_total": int(chapter.group("total")),
-            "chapter_title": title,
+            "chapter_title": _unquote_title(chapter.group("title")),
             "chapter_images": int(chapter.group("images")),
+        }
+
+    progress = MANGA18FX_PROGRESS_RE.match(line)
+    if progress:
+        return {
+            "kind": "progress",
+            "chapter_index": int(progress.group("index")),
+            "chapters_total": int(progress.group("total")),
+            "chapter_title": _unquote_title(progress.group("title")),
+            "chapter_images": int(progress.group("chapter_images")),
+            "downloaded": int(progress.group("downloaded")),
+            "skipped": int(progress.group("skipped")),
+            "processed": int(progress.group("processed")),
+            "discovered": int(progress.group("discovered")),
         }
 
     complete = MANGA18FX_COMPLETE_RE.match(line)
     if complete:
         downloaded = int(complete.group("downloaded"))
         skipped = int(complete.group("skipped"))
+        total = downloaded + skipped
         return {
             "kind": "complete",
             "downloaded": downloaded,
             "skipped": skipped,
-            "images_total": downloaded + skipped,
+            "processed": total,
+            "images_total": total,
         }
     return None
 
@@ -276,6 +301,12 @@ def run(args: argparse.Namespace) -> int:
                             f"chapter {parsed['chapter_index']}/{parsed['chapters_total']}: "
                             f"{parsed['chapter_title']} ({parsed['chapter_images']} images)"
                         )
+                    elif parsed["kind"] == "progress":
+                        backend_progress["message"] = (
+                            f"chapter {parsed['chapter_index']}/{parsed['chapters_total']} complete | "
+                            f"{parsed['processed']} processed: {parsed['downloaded']} downloaded, "
+                            f"{parsed['skipped']} existing"
+                        )
                     elif parsed["kind"] == "complete":
                         backend_progress["message"] = (
                             f"complete: {parsed['downloaded']} downloaded, {parsed['skipped']} already present"
@@ -287,6 +318,9 @@ def run(args: argparse.Namespace) -> int:
         last_stats = started
         while process.poll() is None:
             now = time.monotonic()
+            with backend_progress_lock:
+                progress = dict(backend_progress)
+            reported_images = int(progress.get("processed", images))
             if now - last_stats >= STATS_INTERVAL:
                 images, size = _tree_stats(output_root)
                 if not title:
@@ -294,16 +328,16 @@ def run(args: argparse.Namespace) -> int:
                     if discovered_site:
                         site = discovered_site
                     title = discovered_title
-                samples.append((now, size, images))
+                with backend_progress_lock:
+                    progress = dict(backend_progress)
+                reported_images = int(progress.get("processed", images))
+                samples.append((now, size, reported_images))
                 while len(samples) > 2 and now - samples[0][0] > 5.0:
                     samples.popleft()
                 last_stats = now
             old_t, old_size, old_images = samples[0]
             delta = max(now - old_t, 0.001)
             elapsed = max(now - started, 0.001)
-            with backend_progress_lock:
-                progress = dict(backend_progress)
-            reported_images = int(progress.get("images_total", images)) if progress.get("kind") == "complete" else images
             reported_total = progress.get("images_total") if progress.get("kind") == "complete" else None
             message = str(progress.get("message") or (tail[-1] if tail else f"starting {args.backend}"))
             if now - last_emit >= HEARTBEAT_INTERVAL:
@@ -316,8 +350,8 @@ def run(args: argparse.Namespace) -> int:
                     bytes_done=size,
                     current_bps=max(0.0, (size - old_size) / delta),
                     average_bps=max(0.0, (size - baseline_size) / elapsed),
-                    current_ips=max(0.0, (images - old_images) / delta),
-                    average_ips=max(0.0, (images - baseline_images) / elapsed),
+                    current_ips=max(0.0, (reported_images - old_images) / delta),
+                    average_ips=max(0.0, (reported_images - baseline_images) / elapsed),
                     site=site,
                     title=title,
                     elapsed=elapsed,
