@@ -134,6 +134,7 @@ class FakeDefinition:
     def __init__(self) -> None:
         self.name = "local-main"
         self.source_summary = "C:\\"
+        self.schedule = SimpleNamespace(type="manual")
         self.schedule_text = "Manual"
         self.retention_text = "No retention policy"
         self.profile = SimpleNamespace(
