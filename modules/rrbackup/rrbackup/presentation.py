@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .inventory import BackupInventoryRecord
+from .models import RunRecord, RunState
 from .repository_summary import RepositorySummary
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -150,6 +151,44 @@ def human_age(value: Optional[datetime], *, now: Optional[datetime] = None) -> s
     return "{0}y ago".format(days // 365)
 
 
+def _run_time(run: Optional[RunRecord]) -> Optional[datetime]:
+    if run is None:
+        return None
+    return run.finished_utc or run.started_utc or run.created_utc
+
+
+def _last_complete_time(record: BackupInventoryRecord) -> Optional[datetime]:
+    """Return the latest known completed-backup time.
+
+    A successful structured run is preferred when it is the newest completed
+    evidence. Existing snapshots remain authoritative fallback evidence for
+    backups created before the merged engine recorded run state.
+    """
+
+    snapshot_time = None if record.latest_snapshot is None else record.latest_snapshot.time
+    run = record.latest_run
+    successful_run_time = (
+        _run_time(run)
+        if run is not None and run.state == RunState.SUCCESS
+        else None
+    )
+    candidates = [value for value in (snapshot_time, successful_run_time) if value is not None]
+    return max(candidates) if candidates else None
+
+
+def _run_state_text(run: Optional[RunRecord], colors: Palette) -> str:
+    if run is None:
+        return colors.muted("NONE")
+    text = run.state.value.upper()
+    if run.state == RunState.SUCCESS:
+        return colors.good(text)
+    if run.state in {RunState.QUEUED, RunState.WAITING, RunState.RUNNING}:
+        return colors.active(text)
+    if run.state in {RunState.SKIPPED, RunState.DRY_RUN}:
+        return colors.warning(text)
+    return colors.bad(text)
+
+
 def _health_text(record: BackupInventoryRecord, colors: Palette) -> str:
     severity = record.health.severity.value
     text = severity.upper()
@@ -185,7 +224,9 @@ def render_backup_table(
     headers = [
         theme.heading("Backup"),
         theme.heading("Health"),
-        theme.heading("Latest"),
+        theme.heading("Last complete"),
+        theme.heading("Last attempt"),
+        theme.heading("Attempt state"),
         theme.heading("Next"),
         theme.heading("Missed"),
     ]
@@ -193,7 +234,6 @@ def render_backup_table(
         headers.append(theme.heading("Repository"))
     rows: List[List[str]] = []
     for record in records:
-        latest = record.latest_snapshot
         missed = "-" if record.missed_runs is None else str(record.missed_runs)
         if record.missed_runs:
             missed = theme.bad(missed)
@@ -202,7 +242,9 @@ def render_backup_table(
         first = [
             theme.identifier(record.definition.name),
             _health_text(record, theme),
-            human_age(None if latest is None else latest.time),
+            human_age(_last_complete_time(record)),
+            human_age(_run_time(record.latest_run)),
+            _run_state_text(record.latest_run, theme),
             human_datetime(record.next_run),
             missed,
         ]
@@ -215,11 +257,13 @@ def render_backup_table(
             theme.muted(record.definition.schedule_text),
             theme.muted(record.definition.retention_text),
             "",
+            "",
+            "",
         ]
         if include_repository:
             detail.append("")
         rows.append(detail)
-    return render_table(headers, rows, right_aligned=(4,))
+    return render_table(headers, rows, right_aligned=(6,))
 
 
 def render_schedule_table(
@@ -235,20 +279,23 @@ def render_schedule_table(
     headers = [
         theme.heading("Backup"),
         theme.heading("State"),
-        theme.heading("Last run"),
+        theme.heading("Last complete"),
+        theme.heading("Last attempt"),
+        theme.heading("Attempt state"),
         theme.heading("Next run"),
         theme.heading("Missed"),
     ]
     rows: List[List[str]] = []
     for record in records:
-        scheduler = record.scheduler_record
         missed = "-" if record.missed_runs is None else str(record.missed_runs)
         missed_text = theme.bad(missed) if record.missed_runs else missed
         rows.append(
             [
                 theme.identifier(record.definition.name),
                 _schedule_state(record, theme),
-                "-" if scheduler is None else (scheduler.last_run or "-"),
+                human_datetime(_last_complete_time(record)),
+                human_datetime(_run_time(record.latest_run)),
+                _run_state_text(record.latest_run, theme),
                 human_datetime(record.next_run),
                 missed_text,
             ]
@@ -260,9 +307,11 @@ def render_schedule_table(
                 theme.muted("task: {0}".format(record.definition.task_name)),
                 "",
                 "",
+                "",
+                "",
             ]
         )
-    return render_table(headers, rows, right_aligned=(4,))
+    return render_table(headers, rows, right_aligned=(6,))
 
 
 def render_history(
@@ -279,7 +328,7 @@ def render_history(
             events.append(
                 (
                     snapshot.time,
-                    "{0}  {1}  snapshot {2}".format(
+                    "{0}  {1}  completed snapshot {2}".format(
                         human_datetime(snapshot.time),
                         theme.identifier(record.definition.name),
                         snapshot.short_id,
@@ -290,9 +339,9 @@ def render_history(
             run = record.latest_run
             events.append(
                 (
-                    run.created_utc,
-                    "{0}  {1}  run {2} ({3})".format(
-                        human_datetime(run.created_utc),
+                    _run_time(run) or run.created_utc,
+                    "{0}  {1}  attempted run {2} ({3})".format(
+                        human_datetime(_run_time(run)),
                         theme.identifier(record.definition.name),
                         run.run_id[:8],
                         run.state.value,
@@ -358,6 +407,29 @@ def render_repository_summary(
     return "\n".join(lines)
 
 
+def _run_detail_lines(run: Optional[RunRecord]) -> List[str]:
+    if run is None:
+        return ["Last attempted run: none"]
+    values = [
+        "Last attempted run: {0} at {1}".format(
+            run.state.value.upper(),
+            human_datetime(_run_time(run)),
+        ),
+        "  Run ID: {0}".format(run.run_id),
+    ]
+    if run.started_utc is not None:
+        values.append("  Started: {0}".format(human_datetime(run.started_utc)))
+    if run.finished_utc is not None:
+        values.append("  Finished: {0}".format(human_datetime(run.finished_utc)))
+    if run.exit_code is not None:
+        values.append("  Exit code: {0}".format(run.exit_code))
+    if run.snapshot_id:
+        values.append("  Snapshot ID: {0}".format(run.snapshot_id))
+    if run.reason:
+        values.append("  Reason: {0}".format(run.reason))
+    return values
+
+
 def backup_detail_lines(record: BackupInventoryRecord) -> List[str]:
     """Build expandable detail content used by the shared interactive list."""
 
@@ -380,14 +452,24 @@ def backup_detail_lines(record: BackupInventoryRecord) -> List[str]:
             "Retention: {0}".format(definition.retention_text),
             "Task: {0}".format(definition.task_name),
             "Next expected run: {0}".format(human_datetime(record.next_run)),
-            "Missed runs: {0}".format("unknown" if record.missed_runs is None else record.missed_runs),
-            "Latest snapshot: {0}".format(
+            "Missed runs: {0}".format(
+                "unknown" if record.missed_runs is None else record.missed_runs
+            ),
+            "Last complete backup: {0}".format(
                 "none"
                 if latest is None
-                else "{0} at {1}".format(latest.short_id, human_datetime(latest.time))
+                else "snapshot {0} at {1}".format(
+                    latest.short_id,
+                    human_datetime(latest.time),
+                )
             ),
-            "Scheduler: {0}".format("not installed" if scheduler is None else scheduler.identifier),
         ]
+    )
+    lines.extend(_run_detail_lines(record.latest_run))
+    lines.append(
+        "Scheduler: {0}".format(
+            "not installed" if scheduler is None else scheduler.identifier
+        )
     )
     if record.health.issues:
         lines.append("Health findings:")
@@ -442,12 +524,21 @@ def browse_backups(
         scroll_offset: int,
     ) -> str:
         del sort_field, show_date, show_time
-        latest = "never" if item.latest_snapshot is None else human_age(item.latest_snapshot.time)
+        complete = human_age(_last_complete_time(item))
+        attempted = human_age(_run_time(item.latest_run))
+        attempt_state = (
+            "NONE" if item.latest_run is None else item.latest_run.state.value.upper()
+        )
         missed = "?" if item.missed_runs is None else str(item.missed_runs)
-        line = "{0:<20} {1:<9} latest {2:<10} next {3:<16} missed {4:<4} {5}".format(
+        line = (
+            "{0:<20} {1:<9} complete {2:<10} attempt {3:<10} {4:<11} "
+            "next {5:<16} missed {6:<4} {7}"
+        ).format(
             item.definition.name,
             item.health.severity.value.upper(),
-            latest,
+            complete,
+            attempted,
+            attempt_state,
             human_datetime(item.next_run),
             missed,
             item.definition.source_summary,
@@ -458,6 +549,9 @@ def browse_backups(
 
     def filter_item(item: BackupInventoryRecord, pattern: str) -> bool:
         needle = pattern.lower().replace("*", "")
+        attempt_state = (
+            "none" if item.latest_run is None else item.latest_run.state.value
+        )
         haystack = " ".join(
             [
                 item.definition.name,
@@ -465,11 +559,16 @@ def browse_backups(
                 item.definition.profile.repository,
                 item.definition.schedule_text,
                 item.health.severity.value,
+                attempt_state,
             ]
         ).lower()
         return needle in haystack
 
-    def key_handler(key: int, current: BackupInventoryRecord, state: Any) -> Tuple[bool, bool]:
+    def key_handler(
+        key: int,
+        current: BackupInventoryRecord,
+        state: Any,
+    ) -> Tuple[bool, bool]:
         del state
         if action_key and key in {ord(action_key.lower()), ord(action_key.upper())}:
             view = holder["view"]
@@ -486,7 +585,9 @@ def browse_backups(
     if multi_select:
         footer.append("Space: select/deselect")
     if action_key and action_label:
-        footer.append("{0}: {1} | Ctrl+Q: cancel".format(action_key.upper(), action_label))
+        footer.append(
+            "{0}: {1} | Ctrl+Q: cancel".format(action_key.upper(), action_label)
+        )
     else:
         footer.append("Ctrl+Q: close")
 
@@ -495,7 +596,8 @@ def browse_backups(
         sorters={
             "name": lambda item: item.definition.name.lower(),
             "health": lambda item: item.health.severity.value,
-            "latest": lambda item: _MIN_TIME if item.latest_snapshot is None else item.latest_snapshot.time,
+            "complete": lambda item: _last_complete_time(item) or _MIN_TIME,
+            "attempt": lambda item: _run_time(item.latest_run) or _MIN_TIME,
             "next": lambda item: _MAX_TIME if item.next_run is None else item.next_run,
             "missed": lambda item: -1 if item.missed_runs is None else item.missed_runs,
         },
@@ -504,7 +606,10 @@ def browse_backups(
         initial_sort="name",
         initial_order="asc",
         header=title,
-        columns_line="BACKUP               HEALTH    LATEST         NEXT             MISSED SOURCES",
+        columns_line=(
+            "BACKUP               HEALTH    LAST COMPLETE        LAST ATTEMPT        "
+            "ATTEMPT STATE NEXT             MISSED SOURCES"
+        ),
         footer_lines=footer,
         detail_formatter=backup_detail_lines,
         key_handler=key_handler,
