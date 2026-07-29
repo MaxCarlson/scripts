@@ -18,7 +18,7 @@ MAJOR_COMMANDS = (
 COMMAND_ALIASES = {"edit": "config"}
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class AuditSection:
     """Describe one read-only section emitted by ``backup view audit``."""
 
