@@ -1,84 +1,218 @@
-# Stage 2 — Compatibility Merge and Hierarchical CLI
+# Stage 2 — Unified Backup CLI, Inventory, and Terminal UI
 
 ## Status
 
-In progress. The first canonical CLI, viewer, audit, repository-inspection, schedule-discovery, and compatibility-translation slice is implemented and awaiting Windows validation.
+In progress. Automated validation proved the safety engine and most of the first CLI slice, but manual acceptance identified an over-fragmented command tree, raw JSON as the default human interface, unrelated scheduler matches, and an unexpectedly expensive storage command. This stage is being corrected around task-oriented dashboards and wizards before the old backup module is removed.
 
-## Goal
+## Progress Assessment
 
-Consolidate `rrbackup` and `backup_module` behind one engine, expose the canonical `backup` command, preserve existing public interfaces, and make routine backup administration and diagnosis possible without ad hoc shell scripts.
+### Accomplished
 
-## Canonical Areas
+- The shared safety engine is verified on Windows.
+- The installed `backup` command works.
+- Snapshot, timeline, health, provenance, repository, scheduler-discovery, and audit data sources work against the existing production repository.
+- The two known production snapshots are visible with correct tags, paths, host, user, parent, version, and summary metadata.
+- 256 tests passed in the latest Stage 2 run.
+- Installed-entry-point smoke tests passed.
+
+### Not Yet Accomplished
+
+- Human output is not consistently formatted or color-coded.
+- `backup view` exposes too many display-specific subcommands.
+- `backup schedule list` includes unrelated Windows tasks.
+- `backup run` does not yet provide a backup chooser/inventory.
+- `backup create` and the schedule editor wizard do not yet exist.
+- Repository output is still raw JSON and `restore-size` statistics are too expensive for a default view.
+- Two inherited integration tests still assert obsolete `rrb` help text.
+- The old `backup_module` implementation has not yet been reduced to a shim.
+
+### Stall/Loop Check
+
+Measurable progress occurred. The current work is not repeating Stage 1; it is a bounded UX and command-model correction driven by successful manual use of the new data layer.
+
+## Canonical Command
+
+Only one public executable is required:
+
+```text
+backup
+```
+
+The internal Python package may retain the `rrbackup` name during consolidation, but the `rrb` and `rrbackup` console entry points are removed with explicit user approval.
+
+## Root Command Areas
+
+```text
+backup create
+backup run
+backup view
+backup schedule
+backup restore
+backup repo
+backup config
+```
+
+`repo` replaces `repository` as the public spelling.
+
+## Task-Oriented UX
+
+### `backup view`
+
+`backup view` is one interactive dashboard rather than a list of mostly independent display commands.
+
+Primary sections inside the dashboard:
+
+1. Overview
+2. Backups
+3. History
+4. Repository
+5. Schedules
+6. Diagnostics
+
+The default TTY experience uses the shared `termdash.interactive_list.InteractiveList` component and supports:
+
+- Up/Down and `j`/`k`
+- Page Up/Page Down
+- horizontal scrolling
+- filtering
+- Enter for details
+- expandable/collapsible detail blocks
+- compact one- or two-line rows
+- consistent status colors
+
+Non-interactive and automation access remains available through flags:
+
+```text
+backup view --section overview
+backup view --section history
+backup view --section diagnostics
+backup view --section audit --json
+backup view --plain
+```
+
+Legacy display-specific operations may remain as hidden translation aliases during development, but they are removed from normal help.
+
+### `backup run`
 
 ```text
 backup run
-backup view
-backup config
-backup schedule
-backup restore
-backup repository
+backup run auto
+backup run <backup-name>
 ```
 
-`backup edit` aliases `backup config`. Installed `backup`, `rrb`, and `rrbackup` commands target the same application. `backup_module` remains the historical flat compatibility surface until its independent engine is removed.
+With no name or with `auto`, display the configured backup inventory with:
 
-## Implemented in This Checkpoint
+- backup name
+- source summary
+- repository
+- health
+- last successful snapshot
+- schedule
+- next expected run
+- missed-run count
 
-- Package version `1.0.0`
-- New `backup` entry point
-- Shared hierarchical parser for `backup`, `rrb`, and `rrbackup`
-- Root and nested help contracts
-- Legacy underscore-style aliases on migrated options
-- Translation of common historical RRBackup commands
-- Explicit delegation for historical setup/prune/config mutation commands
-- `backup run` preview, dry-run, CPU bypass, tags, exclusions, and raw Restic arguments
-- Distinct nonzero exit for skipped runs
-- Viewer dashboard, timeline, snapshots, snapshot details, runs, logs, storage, health, setup, system, provenance, schedules, audit, search, and export
-- Effective configuration, discovery, validation, and legacy-import preview
-- Windows Task Scheduler read-only discovery
-- Restore search, preview, and explicit `--apply` execution gate
-- Repository status, keys, locks, stats, check, cache status, explicit init gate, and retention preview
-- Comprehensive structured audit and Markdown export
-- Secret environment and password-content redaction
-- Repository namespace compatibility shim
-- Installed-entry-point tests without injected `PYTHONPATH`
-- Stale editable metadata cleanup before package install
-- Parser, packaging, health, audit, repository, and scheduler tests
+Interactive selection allows an early run without requiring the user to know source files, tags, excludes, or repository arguments. Direct named execution remains available for scripts.
 
-## Entry-Point Regression
+### `backup schedule`
 
-The Stage 1 report passed because the smoke test inherited `PYTHONPATH={target_root}`. A manual `rrb -h` then exposed that repository-local imports could resolve `modules/rrbackup` as a namespace package without executing the inner package initializer.
+The default view is backup-centric, not a raw Task Scheduler query. One compact record is shown per configured backup, with schedule details directly below it.
 
-The correction is structural:
+```text
+backup schedule
+backup schedule wizard
+backup schedule edit <backup-name>
+backup schedule list --plain
+```
 
-- `modules/rrbackup/__init__.py` is an intentional repository-path compatibility shim.
-- The shim extends the package path to `modules/rrbackup/rrbackup`.
-- Version data lives in `rrbackup/version.py`.
-- Validation removes the injected `PYTHONPATH` before importing and running installed entry points.
-- Validation invokes the real `backup`, `rrb`, and `rrbackup` executables.
+The wizard supports selecting one or more backups and editing:
 
-## Remaining Stage 2 Work
+- minute/hour/day/week/month/year frequency
+- interval
+- time of day
+- weekday/day of month/month of year where applicable
+- retention counts for latest/hourly/daily/weekly/monthly/yearly snapshots
 
-- [ ] Pass expanded Windows validation
-- [ ] Convert existing RRBackup TOML/named sets to canonical profiles
-- [ ] Preserve all `backup_module` commands through the shared engine
-- [ ] Replace `modules/backup_module` internals with a compatibility shim
-- [ ] Add snapshot tag/host/path filtering
-- [ ] Implement audit path redaction
-- [ ] Add detailed scheduler event, service, startup, systemd, and cron discovery
-- [ ] Add structured restore history and verification
-- [ ] Add optional legacy shell-history evidence
-- [ ] Verify production snapshots through canonical read-only commands
+Scheduler discovery must include only tasks owned by this backup module or whose executable/arguments invoke the canonical `backup` command. Generic Windows tasks containing the word `Backup` are excluded.
+
+### `backup repo`
+
+`backup repo` displays one combined, labeled repository summary:
+
+- repository availability and format
+- current key metadata
+- active/stale locks
+- snapshot count
+- latest snapshot logical size
+- last known integrity-check state
+- cached full storage statistics, when available
+
+The slow `restic stats --mode restore-size` operation is never run implicitly. It requires an explicit refresh operation and a loading indicator:
+
+```text
+backup repo --refresh-storage
+backup repo check
+```
+
+JSON remains available only when explicitly requested.
+
+### `backup create`
+
+A themed setup wizard creates a complete backup definition by walking through:
+
+1. name
+2. source paths
+3. exclusions
+4. repository target
+5. credential method
+6. schedule
+7. retention
+8. preview
+9. explicit save/apply
+
+The wizard uses the same palette, table layout, confirmation style, and keyboard conventions as `view`, `run`, and `schedule`.
+
+## Shared UI Rules
+
+- Green: healthy/success/enabled
+- Yellow: warning/due/manual/preview
+- Red: failure/critical/missed/disabled
+- Cyan: headings, identifiers, and selected values
+- Dim: secondary metadata
+- Magenta: active interactive mode or automatic selection
+
+Plain text, JSON, and Markdown outputs never contain ANSI escape sequences.
+
+## Automated Test Requirements
+
+- Only the `backup` console entry point is installed.
+- Root help lists the seven task-oriented areas.
+- `view` help is concise and does not expose the old long display-command list.
+- Human renderers are snapshot-tested without ANSI.
+- Color policy is tested independently from terminal capability.
+- TUI formatters, detail blocks, sorting, filtering, and selection callbacks are unit tested without launching curses.
+- Inventory combines canonical TOML sets and the legacy `local-main` profile.
+- Schedule discovery rejects unrelated operating-system backup tasks.
+- Schedule calculations cover minute/hour/day/week/month/year and missed-run counts.
+- Slow repository statistics are never invoked by default views.
+- JSON stdout remains machine-clean.
+- Existing safety, engine, snapshot, repository, and audit tests continue passing.
+
+## Remaining Compatibility Work
+
+- Convert canonical TOML backup sets into shared engine profiles.
+- Preserve needed `backup_module` behavior through `backup` commands.
+- Replace `modules/backup_module` internals with a thin import/translation shim.
+- Remove duplicate engines after local and manual acceptance.
 
 ## Safety Boundaries
 
-- Default viewer/config/schedule/repository inspection is read-only.
+- Default views and wizards do not mutate production state.
+- Wizards show a complete preview before writing configuration or scheduler state.
+- Scheduler creation/update requires explicit confirmation or `--apply`.
 - `backup run --print-command-only` launches no process and writes no state.
-- Dry runs never update last-success state.
-- Skipped runs return a distinct nonzero exit.
-- Restore execution requires `restore run --apply`.
-- Repository initialization requires `repository init --apply`.
-- Retention application, cache cleanup, stale-lock removal, and legacy adoption are not enabled in this stage.
-- Production repository mutation remains prohibited during automated validation.
+- Slow repository operations are explicit.
+- Retention application remains disabled until ownership scoping is verified.
+- Production mutation remains prohibited during automated validation.
 
 ## Validation
 
@@ -88,24 +222,24 @@ From the repository root:
 ./Invoke-Tests.ps1
 ```
 
-The expanded target now performs:
+Manual acceptance after automated validation must cover:
 
-1. stale editable-metadata cleanup,
-2. editable dependency installation,
-3. package/test compilation,
-4. focused lint,
-5. canonical CLI help execution,
-6. full pytest/coverage,
-7. installed entry-point smoke tests,
-8. production read-only test only when explicitly enabled.
+1. visual hierarchy and color consistency,
+2. TUI navigation and resize behavior,
+3. backup selection and preview,
+4. schedule wizard usability,
+5. repository summary readability,
+6. create-wizard flow without applying production changes.
 
 ## Exit Criteria
 
 Stage 2 completes when:
 
-1. all four public command surfaces use the shared engine,
-2. root and nested help contracts pass,
-3. viewer/audit capabilities replace all useful consolidation shell diagnostics,
-4. existing production snapshots are visible through canonical read-only commands,
-5. the old `backup_module` engine is reduced to compatibility-only code,
-6. local Windows validation passes.
+1. `backup` is the only installed public executable,
+2. configured backups are represented through one inventory model,
+3. view/run/schedule/repo/create use the shared terminal presentation layer,
+4. default human output is concise and readable,
+5. JSON/Markdown output remains available explicitly,
+6. schedule discovery contains only module-owned backup schedules,
+7. the old `backup_module` engine is reduced to compatibility-only code,
+8. automated and manual Windows validation pass.
