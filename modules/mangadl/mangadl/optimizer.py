@@ -19,9 +19,6 @@ from .ui import human_bytes
 
 EvaluationMode = Literal["complete", "timed"]
 SearchStrategy = Literal["adaptive", "grid"]
-ProgressCallback = Callable[["OptimizationStatus"], None]
-StopCallback = Callable[[], bool]
-
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp"}
 
 
@@ -82,6 +79,10 @@ class OptimizationResult:
     report_path: Path
 
 
+ProgressCallback = Callable[[OptimizationStatus], None]
+StopCallback = Callable[[], bool]
+
+
 def generate_optimization_states(
     minimum_workers: int,
     maximum_workers: int,
@@ -98,15 +99,19 @@ def generate_optimization_states(
     if available_series < 1:
         return ()
 
-    logical = max(1, int(logical_cpus))
-    budget = max(1, logical - 1)
+    budget = max(1, int(logical_cpus) - 1)
     states = {
         OptimizationState(workers, image_workers)
         for workers in range(minimum_workers, min(maximum_workers, available_series) + 1)
         for image_workers in range(minimum_image_workers, maximum_image_workers + 1)
         if workers * image_workers <= budget
     }
-    return tuple(sorted(states, key=lambda state: (state.aggregate, state.workers, state.image_workers)))
+    return tuple(
+        sorted(
+            states,
+            key=lambda state: (state.aggregate, state.workers, state.image_workers),
+        )
+    )
 
 
 class AdaptiveStateSelector:
@@ -131,9 +136,9 @@ class AdaptiveStateSelector:
         self.trials: list[OptimizationTrial] = []
 
     def epsilon(self) -> float:
-        return self.epsilon_floor + (self.epsilon_start - self.epsilon_floor) * math.exp(
-            -len(self.trials) / self.epsilon_decay_trials
-        )
+        return self.epsilon_floor + (
+            self.epsilon_start - self.epsilon_floor
+        ) * math.exp(-len(self.trials) / self.epsilon_decay_trials)
 
     def grouped(self) -> dict[OptimizationState, list[OptimizationTrial]]:
         grouped: dict[OptimizationState, list[OptimizationTrial]] = {}
@@ -146,7 +151,10 @@ class AdaptiveStateSelector:
         return {trial.state for trial in self.trials}
 
     def average_bps(self, state: OptimizationState) -> float:
-        values = [trial.bytes_per_second for trial in self.grouped().get(state, ())]
+        values = [
+            trial.bytes_per_second
+            for trial in self.grouped().get(state, ())
+        ]
         return sum(values) / len(values) if values else 0.0
 
     def best_state(self) -> OptimizationState | None:
@@ -154,32 +162,73 @@ class AdaptiveStateSelector:
         if not grouped:
             return None
         peak = max(self.average_bps(state) for state in grouped)
-        near_peak = [state for state in grouped if self.average_bps(state) >= peak * 0.98]
-        return min(near_peak, key=lambda state: (state.aggregate, -self.average_bps(state), state.workers))
+        near_peak = [
+            state
+            for state in grouped
+            if self.average_bps(state) >= peak * 0.98
+        ]
+        return min(
+            near_peak,
+            key=lambda state: (
+                state.aggregate,
+                state.workers,
+                -self.average_bps(state),
+            ),
+        )
 
     def convergence(self) -> float:
         if not self.trials:
             return 0.0
         coverage = len(self.tried_states()) / len(self.states)
         exploitation = 1.0 - self.epsilon()
-        repeat_factor = min(1.0, len(self.trials) / max(4.0, math.sqrt(len(self.states)) * 2.0))
-        return max(0.0, min(1.0, (coverage * 0.45 + exploitation * 0.55) * repeat_factor))
+        repeat_factor = min(
+            1.0,
+            len(self.trials) / max(4.0, math.sqrt(len(self.states)) * 2.0),
+        )
+        return max(
+            0.0,
+            min(1.0, (coverage * 0.45 + exploitation * 0.55) * repeat_factor),
+        )
 
     def neighbors(self, center: OptimizationState) -> tuple[OptimizationState, ...]:
         return tuple(
             state
             for state in self.states
-            if abs(state.workers - center.workers) + abs(state.image_workers - center.image_workers) == 1
+            if abs(state.workers - center.workers)
+            + abs(state.image_workers - center.image_workers)
+            == 1
         )
 
     def _coverage_state(self) -> OptimizationState:
-        untried = [state for state in self.states if state not in self.tried_states()]
+        untried = [
+            state for state in self.states if state not in self.tried_states()
+        ]
         if untried:
-            return min(untried, key=lambda state: (state.aggregate, state.workers, state.image_workers))
-        return min(self.states, key=lambda state: (len(self.grouped().get(state, ())), state.aggregate))
+            return min(
+                untried,
+                key=lambda state: (
+                    state.aggregate,
+                    state.workers,
+                    state.image_workers,
+                ),
+            )
+        grouped = self.grouped()
+        return min(
+            self.states,
+            key=lambda state: (
+                len(grouped.get(state, ())),
+                state.aggregate,
+                state.workers,
+            ),
+        )
 
-    def _exploration_state(self, best: OptimizationState | None) -> OptimizationState:
-        untried = [state for state in self.states if state not in self.tried_states()]
+    def _exploration_state(
+        self,
+        best: OptimizationState | None,
+    ) -> OptimizationState:
+        untried = [
+            state for state in self.states if state not in self.tried_states()
+        ]
         if not untried:
             return self.rng.choice(self.states)
         if best is None:
@@ -187,28 +236,47 @@ class AdaptiveStateSelector:
         return max(
             untried,
             key=lambda state: (
-                abs(state.workers - best.workers) + abs(state.image_workers - best.image_workers),
+                abs(state.workers - best.workers)
+                + abs(state.image_workers - best.image_workers),
                 -state.aggregate,
+                -state.workers,
             ),
         )
+
+    def _model_score(self, state: OptimizationState) -> float:
+        related = [
+            trial.bytes_per_second
+            for trial_state, trials in self.grouped().items()
+            if trial_state.workers == state.workers
+            or trial_state.image_workers == state.image_workers
+            for trial in trials
+        ]
+        return sum(related) / len(related) if related else 0.0
 
     def _ucb_state(self) -> OptimizationState:
         grouped = self.grouped()
         successful = sum(len(values) for values in grouped.values())
-        peak = max((self.average_bps(state) for state in grouped), default=1.0)
+        peak = max(
+            (self.average_bps(state) for state in grouped),
+            default=1.0,
+        )
 
         def score(state: OptimizationState) -> float:
             values = grouped.get(state, ())
             if not values:
                 return float("inf")
-            mean = self.average_bps(state)
-            bonus = peak * 0.20 * math.sqrt(math.log(successful + 2.0) / len(values))
-            return mean + bonus
+            bonus = peak * 0.20 * math.sqrt(
+                math.log(successful + 2.0) / len(values)
+            )
+            return self.average_bps(state) + bonus
 
         return max(self.states, key=score)
 
     def choose(self) -> tuple[OptimizationState, str]:
-        warmup = min(len(self.states), max(4, math.ceil(math.sqrt(len(self.states)) * 2)))
+        warmup = min(
+            len(self.states),
+            max(4, math.ceil(math.sqrt(len(self.states)) * 2)),
+        )
         if len(self.trials) < warmup:
             return self._coverage_state(), "warmup-coverage"
 
@@ -217,21 +285,18 @@ class AdaptiveStateSelector:
             return self._exploration_state(best), "epsilon-exploration"
 
         if best is not None:
-            untried_neighbors = [state for state in self.neighbors(best) if state not in self.tried_states()]
+            untried_neighbors = [
+                state
+                for state in self.neighbors(best)
+                if state not in self.tried_states()
+            ]
             if untried_neighbors:
-                return max(untried_neighbors, key=lambda state: self._model_score(state)), "best-neighbor"
+                return (
+                    max(untried_neighbors, key=self._model_score),
+                    "best-neighbor",
+                )
 
         return self._ucb_state(), "ucb-exploitation"
-
-    def _model_score(self, state: OptimizationState) -> float:
-        grouped = self.grouped()
-        related = [
-            trial.bytes_per_second
-            for trial_state, trials in grouped.items()
-            if trial_state.workers == state.workers or trial_state.image_workers == state.image_workers
-            for trial in trials
-        ]
-        return sum(related) / len(related) if related else 0.0
 
     def record(self, trial: OptimizationTrial) -> None:
         self.trials.append(trial)
@@ -244,10 +309,17 @@ def _tree_stats(root: Path) -> tuple[int, int]:
         return images, size
     for path in root.rglob("*"):
         try:
-            if not path.is_file() or "_logs" in path.parts or path.name.endswith(".tmp"):
+            if (
+                not path.is_file()
+                or "_logs" in path.parts
+                or path.name.endswith(".tmp")
+            ):
                 continue
             size += path.stat().st_size
-            if not path.name.endswith(".part") and path.suffix.lower() in IMAGE_SUFFIXES:
+            if (
+                not path.name.endswith(".part")
+                and path.suffix.lower() in IMAGE_SUFFIXES
+            ):
                 images += 1
         except OSError:
             continue
@@ -270,6 +342,7 @@ def _terminate_processes(processes: list[subprocess.Popen[str]]) -> None:
                 pass
         if process.poll() is None:
             process.kill()
+            process.wait(timeout=5)
 
 
 def benchmark_online_state(
@@ -293,7 +366,7 @@ def benchmark_online_state(
     logs = destination / "_logs"
     logs.mkdir(parents=True, exist_ok=True)
     processes: list[subprocess.Popen[str]] = []
-    handles = []
+    handles: list[object] = []
     started = time.monotonic()
     deadline = started + trial_seconds if evaluation == "timed" else None
 
@@ -310,7 +383,9 @@ def benchmark_online_state(
             if deadline is not None and time.monotonic() >= deadline:
                 break
 
-            log_handle = (logs / f"worker-{index:02d}.log").open("w", encoding="utf-8", errors="replace")
+            log_handle = (
+                logs / f"worker-{index:02d}.log"
+            ).open("w", encoding="utf-8", errors="replace")
             handles.append(log_handle)
             command = [
                 sys.executable,
@@ -332,13 +407,19 @@ def benchmark_online_state(
                     text=True,
                     encoding="utf-8",
                     errors="replace",
-                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+                    creationflags=(
+                        subprocess.CREATE_NEW_PROCESS_GROUP
+                        if os.name == "nt"
+                        else 0
+                    ),
                 )
             )
 
         previous_time = started
         previous_size = 0
-        while processes and any(process.poll() is None for process in processes):
+        while processes and any(
+            process.poll() is None for process in processes
+        ):
             now = time.monotonic()
             if stop_requested and stop_requested():
                 raise KeyboardInterrupt
@@ -348,37 +429,66 @@ def benchmark_online_state(
             delta = max(now - previous_time, 0.001)
             current_bps = max(0.0, (size - previous_size) / delta)
             if progress:
-                progress(now - started, size, current_bps, sum(process.poll() is None for process in processes))
+                progress(
+                    now - started,
+                    size,
+                    current_bps,
+                    sum(process.poll() is None for process in processes),
+                )
             previous_time = now
             previous_size = size
             time.sleep(0.25)
     finally:
-        if evaluation == "timed" or any(process.poll() is None for process in processes):
+        if evaluation == "timed" or any(
+            process.poll() is None for process in processes
+        ):
             _terminate_processes(processes)
         for handle in handles:
-            handle.close()
+            handle.close()  # type: ignore[attr-defined]
 
     elapsed = max(time.monotonic() - started, 0.001)
     images, size = _tree_stats(destination)
-    errors = sum(1 for process in processes if process.returncode not in {0, None} and evaluation == "complete")
+    errors = sum(
+        1
+        for process in processes
+        if process.returncode not in {0, None} and evaluation == "complete"
+    )
     return size, images, elapsed, errors
 
 
-def _state_averages(trials: list[OptimizationTrial]) -> dict[OptimizationState, float]:
+def _state_averages(
+    trials: list[OptimizationTrial],
+) -> dict[OptimizationState, float]:
     grouped: dict[OptimizationState, list[float]] = {}
     for trial in trials:
         if trial.bytes_per_second > 0:
             grouped.setdefault(trial.state, []).append(trial.bytes_per_second)
-    return {state: sum(values) / len(values) for state, values in grouped.items()}
+    return {
+        state: sum(values) / len(values)
+        for state, values in grouped.items()
+    }
 
 
-def select_best_state(trials: list[OptimizationTrial]) -> OptimizationState:
+def select_best_state(
+    trials: list[OptimizationTrial],
+) -> OptimizationState:
     averages = _state_averages(trials)
     if not averages:
         raise RuntimeError("optimization produced no successful throughput samples")
     peak = max(averages.values())
-    near_peak = [state for state, value in averages.items() if value >= peak * 0.98]
-    return min(near_peak, key=lambda state: (state.aggregate, -averages[state], state.workers))
+    near_peak = [
+        state
+        for state, value in averages.items()
+        if value >= peak * 0.98
+    ]
+    return min(
+        near_peak,
+        key=lambda state: (
+            state.aggregate,
+            state.workers,
+            -averages[state],
+        ),
+    )
 
 
 def _write_report(
@@ -397,37 +507,48 @@ def _write_report(
     averages = _state_averages(trials)
     tried = {trial.state for trial in trials}
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
+    payload = {
+        "status": status,
+        "strategy": strategy,
+        "evaluation": evaluation,
+        "logical_cpus": logical_cpus,
+        "budget": budget,
+        "elapsed": elapsed,
+        "state_count": len(states),
+        "tried_state_count": len(tried),
+        "states": [
+            asdict(state) | {"aggregate": state.aggregate}
+            for state in states
+        ],
+        "trials": [
+            asdict(trial)
+            | {
+                "state": asdict(trial.state),
+                "aggregate": trial.state.aggregate,
+            }
+            for trial in trials
+        ],
+        "state_averages": [
             {
-                "status": status,
-                "strategy": strategy,
-                "evaluation": evaluation,
-                "logical_cpus": logical_cpus,
-                "budget": budget,
-                "elapsed": elapsed,
-                "state_count": len(states),
-                "tried_state_count": len(tried),
-                "states": [asdict(state) | {"aggregate": state.aggregate} for state in states],
-                "trials": [
-                    asdict(trial) | {"state": asdict(trial.state), "aggregate": trial.state.aggregate}
-                    for trial in trials
-                ],
-                "state_averages": [
-                    {
-                        "workers": state.workers,
-                        "image_workers": state.image_workers,
-                        "aggregate": state.aggregate,
-                        "average_bps": average,
-                    }
-                    for state, average in sorted(averages.items(), key=lambda item: item[1], reverse=True)
-                ],
-                "selected": asdict(selected) | {"aggregate": selected.aggregate} if selected else None,
-            },
-            indent=4,
-            sort_keys=True,
-        )
-        + "\n",
+                "workers": state.workers,
+                "image_workers": state.image_workers,
+                "aggregate": state.aggregate,
+                "average_bps": average,
+            }
+            for state, average in sorted(
+                averages.items(),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+        ],
+        "selected": (
+            asdict(selected) | {"aggregate": selected.aggregate}
+            if selected
+            else None
+        ),
+    }
+    path.write_text(
+        json.dumps(payload, indent=4, sort_keys=True) + os.linesep,
         encoding="utf-8",
     )
 
@@ -457,6 +578,7 @@ def run_online_optimization(
     if not urls:
         raise ValueError("optimization requires at least one Manga18FX URL")
 
+    destination.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
     logical = max(1, int(logical_cpus or os.cpu_count() or 1))
     budget = max(1, logical - 1)
@@ -473,7 +595,6 @@ def run_online_optimization(
 
     selector = AdaptiveStateSelector(states, seed=seed)
     trials: list[OptimizationTrial] = []
-    ordered_grid = list(states)
 
     def emit(
         current_state: OptimizationState | None,
@@ -498,8 +619,14 @@ def run_online_optimization(
                 current_reason=reason,
                 best_state=best,
                 best_bps=selector.average_bps(best) if best else 0.0,
-                exploration=selector.epsilon() if strategy == "adaptive" else 0.0,
-                convergence=selector.convergence() if strategy == "adaptive" else len(selector.tried_states()) / len(states),
+                exploration=(
+                    selector.epsilon() if strategy == "adaptive" else 0.0
+                ),
+                convergence=(
+                    selector.convergence()
+                    if strategy == "adaptive"
+                    else len(selector.tried_states()) / len(states)
+                ),
                 current_elapsed=current_elapsed,
                 current_bytes=current_bytes,
                 current_bps=current_bps,
@@ -510,23 +637,40 @@ def run_online_optimization(
         )
 
     try:
-        with tempfile.TemporaryDirectory(prefix=".mangadl-optimization-", dir=destination) as temporary:
+        with tempfile.TemporaryDirectory(
+            prefix=".mangadl-optimization-",
+            dir=destination,
+        ) as temporary:
             temporary_root = Path(temporary)
             for index in range(1, planned_trials + 1):
                 if stop_requested and stop_requested():
                     raise KeyboardInterrupt
+
                 if strategy == "grid":
-                    state = ordered_grid[(index - 1) % len(ordered_grid)]
-                    reason = "grid-ascending" if ((index - 1) // len(ordered_grid)) % 2 == 0 else "grid-repeat"
+                    round_index, position = divmod(index - 1, len(states))
+                    ordered = states if round_index % 2 == 0 else tuple(reversed(states))
+                    state = ordered[position]
+                    reason = (
+                        "grid-ascending"
+                        if round_index % 2 == 0
+                        else "grid-descending"
+                    )
                 else:
                     state, reason = selector.choose()
 
                 rotation = (index - 1) % len(urls)
                 rotated_urls = tuple(urls[rotation:] + urls[:rotation])
-                trial_root = temporary_root / f"trial-{index:04d}-w{state.workers}-i{state.image_workers}"
+                trial_root = temporary_root / (
+                    f"trial-{index:04d}-w{state.workers}-i{state.image_workers}"
+                )
                 emit(state, reason)
 
-                def candidate_progress(elapsed: float, size: int, bps: float, active: int) -> None:
+                def candidate_progress(
+                    elapsed: float,
+                    size: int,
+                    bps: float,
+                    active: int,
+                ) -> None:
                     emit(state, reason, elapsed, size, bps, active)
 
                 size, images, elapsed, errors = benchmark_online_state(
@@ -554,7 +698,6 @@ def run_online_optimization(
                 trials.append(trial)
                 selector.record(trial)
                 shutil.rmtree(trial_root, ignore_errors=True)
-                selected = selector.best_state()
                 _write_report(
                     report_path,
                     status="running",
@@ -564,12 +707,11 @@ def run_online_optimization(
                     budget=budget,
                     states=states,
                     trials=trials,
-                    selected=selected,
+                    selected=selector.best_state(),
                     elapsed=time.monotonic() - started,
                 )
                 emit(None, "trial-complete")
     except BaseException:
-        selected = selector.best_state()
         _write_report(
             report_path,
             status="interrupted",
@@ -579,7 +721,7 @@ def run_online_optimization(
             budget=budget,
             states=states,
             trials=trials,
-            selected=selected,
+            selected=selector.best_state(),
             elapsed=time.monotonic() - started,
         )
         raise
@@ -636,25 +778,45 @@ class OptimizationDashboard:
         self._poll_keyboard()
         if not self.enabled:
             return
+
         current = status.current_state
         best = status.best_state
-        current_text = f"w{current.workers}/i{current.image_workers}" if current else "--"
-        best_text = f"w{best.workers}/i{best.image_workers}" if best else "--"
+        current_text = (
+            f"w{current.workers}/i{current.image_workers}"
+            if current
+            else "--"
+        )
+        best_text = (
+            f"w{best.workers}/i{best.image_workers}"
+            if best
+            else "--"
+        )
         lines = [
-            f"{td_utils.color_text('mangadl', 'bright')} {status.strategy} {status.evaluation} optimization",
             (
-                f"States {status.tried_states}/{status.total_states} | Trials "
-                f"{status.completed_trials}/{status.planned_trials} | "
-                f"Convergence {status.convergence * 100:5.1f}% | Explore {status.exploration * 100:4.1f}%"
+                f"{td_utils.color_text('mangadl', 'bright')} "
+                f"{status.strategy} {status.evaluation} optimization"
             ),
             (
-                f"Current {current_text} ({status.current_reason}) | Best {best_text} "
-                f"{human_bytes(status.best_bps, '/s')} | Budget {status.budget}/{status.logical_cpus}"
+                f"States {status.tried_states}/{status.total_states} | "
+                f"Trials {status.completed_trials}/{status.planned_trials} | "
+                f"Convergence {status.convergence * 100:5.1f}% | "
+                f"Explore {status.exploration * 100:4.1f}%"
             ),
             (
-                f"Trial {status.current_elapsed:6.1f}s | Active {status.active_workers} | "
-                f"{human_bytes(status.current_bytes)} | {human_bytes(status.current_bps, '/s')}"
+                f"Current {current_text} ({status.current_reason}) | "
+                f"Best {best_text} {human_bytes(status.best_bps, '/s')} | "
+                f"Budget {status.budget}/{status.logical_cpus}"
+            ),
+            (
+                f"Trial {status.current_elapsed:6.1f}s | "
+                f"Active {status.active_workers} | "
+                f"{human_bytes(status.current_bytes)} | "
+                f"{human_bytes(status.current_bps, '/s')}"
             ),
             "q Quit optimization safely",
         ]
-        print("\x1b[H\x1b[2J" + "\n".join(lines), end="", flush=True)
+        print(
+            "\x1b[H\x1b[2J" + os.linesep.join(lines),
+            end="",
+            flush=True,
+        )
