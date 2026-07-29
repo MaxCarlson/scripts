@@ -137,20 +137,20 @@ def temp_password_file(temp_dir):
 
 
 @pytest.fixture
-def sample_repo() -> Repo:
-    """Return a sample repository configuration."""
+def sample_repo(temp_dir) -> Repo:
+    """Return a sample repository configuration inside the pytest temp root."""
     return Repo(
-        url="/tmp/test-repo",
-        password_file="/tmp/restic_password.txt",
+        url=str(temp_dir / "repository"),
+        password_file=str(temp_dir / "restic_password.txt"),
     )
 
 
 @pytest.fixture
-def sample_backup_set() -> BackupSet:
-    """Return a sample backup-set configuration."""
+def sample_backup_set(temp_dir) -> BackupSet:
+    """Return a sample backup-set configuration inside the pytest temp root."""
     return BackupSet(
         name="test-set",
-        include=["/home/user/documents"],
+        include=[str(temp_dir / "documents")],
         exclude=["**/.git", "**/__pycache__"],
         tags=["test", "sample"],
         one_fs=False,
@@ -222,17 +222,17 @@ def mock_restic_failure(mock_subprocess_run):
 
 
 @pytest.fixture
-def sample_config_dict() -> dict[str, Any]:
-    """Return a sample TOML-compatible configuration dictionary."""
+def sample_config_dict(temp_dir) -> dict[str, Any]:
+    """Return a TOML-compatible config confined to the pytest temp root."""
     return {
         "repository": {
-            "url": "/tmp/test-repo",
-            "password_file": "/tmp/restic_password.txt",
+            "url": str(temp_dir / "repository"),
+            "password_file": str(temp_dir / "restic_password.txt"),
         },
         "restic": {"bin": "restic"},
         "rclone": {"bin": "rclone"},
-        "state": {"dir": "/tmp/rrbackup/state"},
-        "log": {"dir": "/tmp/rrbackup/logs"},
+        "state": {"dir": str(temp_dir / "state")},
+        "log": {"dir": str(temp_dir / "logs")},
         "retention_defaults": {
             "keep_daily": 7,
             "keep_weekly": 4,
@@ -242,7 +242,7 @@ def sample_config_dict() -> dict[str, Any]:
         "backup_sets": [
             {
                 "name": "test-set",
-                "include": ["/home/user/documents"],
+                "include": [str(temp_dir / "documents")],
                 "exclude": ["**/.git"],
                 "tags": ["test"],
                 "one_fs": False,
