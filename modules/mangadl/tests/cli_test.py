@@ -42,6 +42,8 @@ def test_run_parser_defaults_to_safe_worker_ceiling_and_stagger(tmp_path) -> Non
 
 
 def test_dry_run_routes_without_writing(tmp_path, capsys, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MANGADL_MAX_OUTER_WORKERS", raising=False)
+    monkeypatch.delenv("MANGADL_MANGA18FX_IMAGE_WORKERS", raising=False)
     monkeypatch.setattr(
         GalleryDlBackend,
         "score",
@@ -61,6 +63,7 @@ def test_auto_tune_dry_run_reports_explicit_bounds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("MANGADL_MAX_OUTER_WORKERS", raising=False)
+    monkeypatch.delenv("MANGADL_MANGA18FX_IMAGE_WORKERS", raising=False)
     result = main(
         [
             "run",
@@ -95,7 +98,12 @@ def test_auto_tune_dry_run_reports_explicit_bounds(
     assert payload["auto_tune"]["image_worker_range"] == {"minimum": 2, "maximum": 5}
 
 
-def test_auto_tune_range_cannot_exceed_configured_ceiling(tmp_path) -> None:
+def test_auto_tune_range_cannot_exceed_configured_ceiling(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MANGADL_MAX_OUTER_WORKERS", raising=False)
+    monkeypatch.delenv("MANGADL_MANGA18FX_IMAGE_WORKERS", raising=False)
     with pytest.raises(SystemExit) as exc_info:
         main(
             [
@@ -116,7 +124,13 @@ def test_auto_tune_range_cannot_exceed_configured_ceiling(tmp_path) -> None:
     assert exc_info.value.code == 2
 
 
-def test_explicit_max_workers_override_allows_experimental_bound(tmp_path, capsys) -> None:
+def test_explicit_max_workers_override_allows_experimental_bound(
+    tmp_path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MANGADL_MAX_OUTER_WORKERS", raising=False)
+    monkeypatch.delenv("MANGADL_MANGA18FX_IMAGE_WORKERS", raising=False)
     result = main(
         [
             "run",
