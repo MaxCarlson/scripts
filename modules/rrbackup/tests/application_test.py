@@ -133,6 +133,9 @@ def test_hidden_aliases_translate_without_appearing_in_help(
 class FakeDefinition:
     def __init__(self) -> None:
         self.name = "local-main"
+        self.source_summary = "C:\\"
+        self.schedule_text = "Manual"
+        self.retention_text = "No retention policy"
         self.profile = SimpleNamespace(
             repository="repo",
             password_file="password.txt",
