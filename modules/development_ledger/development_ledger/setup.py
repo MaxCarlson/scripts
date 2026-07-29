@@ -106,9 +106,9 @@ def plan_repository_setup(
     operations.extend(
         [
             _plan_owned_file(workflow_path, _template("workflow.md", root_values), force=force),
-            _plan_owned_file(root / "docs" / "README.md", _template("docs-readme.md", root_values), force=force),
+            _plan_create_only(root / "docs" / "README.md", _template("docs-readme.md", root_values)),
             _plan_create_only(root / "docs" / "HANDOFF.md", _template("handoff.md", root_values)),
-            _plan_owned_file(root / "docs" / "plans" / "README.md", _template("plans-readme.md", root_values), force=force),
+            _plan_create_only(root / "docs" / "plans" / "README.md", _template("plans-readme.md", root_values)),
         ]
     )
 
@@ -145,11 +145,9 @@ def plan_repository_setup(
             )
         operations.extend(
             [
-                _plan_owned_file(scope_root / "docs" / "README.md", _template("scope-docs-readme.md", values), force=force),
+                _plan_create_only(scope_root / "docs" / "README.md", _template("scope-docs-readme.md", values)),
                 _plan_create_only(scope_root / "docs" / "HANDOFF.md", _template("handoff.md", values)),
-                _plan_owned_file(
-                    scope_root / "docs" / "plans" / "README.md", _template("plans-readme.md", values), force=force
-                ),
+                _plan_create_only(scope_root / "docs" / "plans" / "README.md", _template("plans-readme.md", values)),
             ]
         )
 
@@ -159,6 +157,7 @@ def plan_repository_setup(
         repository_name=repo_name,
         scope_paths=scope_paths,
         agents=selected_agents,
+        force=force,
     )
     operations.append(_plan_json_file(config_path, config_content, force=force))
 
@@ -244,16 +243,15 @@ def _template(name: str, values: dict[str, str]) -> str:
 
 
 def _plan_managed_instruction(path: Path, managed_block: str) -> SetupOperation:
-    relative = path
     if not path.exists():
         header = f"# {path.stem} Instructions\n\n" if path.name != "copilot-instructions.md" else "# Repository Instructions\n\n"
-        return SetupOperation(str(relative), "create", "Create native agent instruction file.", header + managed_block)
+        return SetupOperation(str(path), "create", "Create native agent instruction file.", header + managed_block)
 
     existing = path.read_text(encoding="utf-8")
     start_count = existing.count(MANAGED_START)
     end_count = existing.count(MANAGED_END)
     if start_count != end_count or start_count > 1:
-        return SetupOperation(str(relative), "conflict", "Malformed or duplicate managed instruction markers.")
+        return SetupOperation(str(path), "conflict", "Malformed or duplicate managed instruction markers.")
     if start_count == 1:
         start = existing.index(MANAGED_START)
         end = existing.index(MANAGED_END, start) + len(MANAGED_END)
@@ -263,7 +261,7 @@ def _plan_managed_instruction(path: Path, managed_block: str) -> SetupOperation:
     merged = merged.rstrip() + "\n"
     action = "unchanged" if merged == existing else "update"
     reason = "Managed instruction block is current." if action == "unchanged" else "Inject or refresh managed instructions."
-    return SetupOperation(str(relative), action, reason, merged if action == "update" else "")
+    return SetupOperation(str(path), action, reason, merged if action == "update" else "")
 
 
 def _plan_owned_file(path: Path, content: str, *, force: bool) -> SetupOperation:
@@ -289,21 +287,27 @@ def _merged_config(
     repository_name: str,
     scope_paths: list[Path],
     agents: tuple[str, ...],
+    force: bool,
 ) -> str:
     existing: dict[str, Any] = {}
     if path.exists():
         try:
             loaded = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
-            raise SetupError(f"Invalid JSON in existing {path}: {exc}") from exc
+            if not force:
+                raise SetupError(f"Invalid JSON in existing {path}: {exc}") from exc
+            loaded = {}
         if not isinstance(loaded, dict):
-            raise SetupError(f"Existing {path} must contain a JSON object.")
+            if not force:
+                raise SetupError(f"Existing {path} must contain a JSON object.")
+            loaded = {}
         existing = loaded
 
     existing["schema_version"] = 1
     existing["repository_name"] = repository_name
     existing["instruction_strategy"] = "essential-inline-plus-native-imports"
-    existing["agents"] = list(agents)
+    prior_agents = existing.get("agents", []) if isinstance(existing.get("agents", []), list) else []
+    existing["agents"] = list(dict.fromkeys([*(str(value) for value in prior_agents), *agents]))
     current_scopes = {
         str(item.get("path")): item
         for item in existing.get("scopes", [])
@@ -349,7 +353,6 @@ def _deduplicate_operations(root: Path, operations: list[SetupOperation]) -> lis
     for operation in operations:
         absolute = Path(operation.path)
         relative = absolute.relative_to(root) if absolute.is_absolute() else absolute
-        normalized = relative.as_posix()
-        operation.path = normalized
-        deduplicated[normalized] = operation
+        operation.path = relative.as_posix()
+        deduplicated[operation.path] = operation
     return list(deduplicated.values())
