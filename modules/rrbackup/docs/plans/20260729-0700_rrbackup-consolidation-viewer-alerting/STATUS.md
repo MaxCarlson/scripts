@@ -2,7 +2,7 @@
 
 ## Overall
 
-Stage 1 is in progress.
+Stage 1 is in progress. The documentation structure and local validation harness are implemented; shared safety-foundation source work and its unit tests are next.
 
 ## Completed
 
@@ -12,17 +12,21 @@ Stage 1 is in progress.
 - [x] Dedicated feature branch
 - [x] Canonical project documentation structure
 - [x] Validation-loop design
+- [x] Root validation orchestrator
+- [x] PowerShell environment/entry-point smoke test
+- [x] Opt-in production read-only snapshot compatibility test
+- [x] Generated-output isolation under the RRBackup module
+- [x] Initial static review of the validation harness
 
 ## In Progress
 
-- [ ] Root validation orchestrator
-- [ ] PowerShell smoke tests
 - [ ] Shared safety foundation
 - [ ] Stage 1 unit tests and coverage
+- [ ] Temporary-repository integration harness
 
 ## Blocked on Local Evidence
 
-None yet. Local Windows validation begins after Stage 1 source and tests are committed.
+The validation harness itself has not yet been executed on Windows. Its first run may expose environment or packaging assumptions that need adjustment before it becomes the stable validation entry point.
 
 ## Last Known Production State
 
@@ -35,3 +39,15 @@ None yet. Local Windows validation begins after Stage 1 source and tests are com
 ## Validation Record
 
 No branch validation run has been completed yet.
+
+Initial validation command:
+
+```powershell
+./Invoke-RRBackupValidation.ps1 -Bootstrap
+```
+
+Optional production read-only validation:
+
+```powershell
+./Invoke-RRBackupValidation.ps1 -IncludeProductionReadOnly
+```
