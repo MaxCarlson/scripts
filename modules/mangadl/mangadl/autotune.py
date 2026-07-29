@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import math
+import os
 import shutil
 import statistics
 import tempfile
@@ -116,7 +116,7 @@ def generate_candidates(
     logical_cpus: int,
     available_series: int,
 ) -> tuple[TuneCandidate, ...]:
-    """Generate valid combinations below the logical-CPU concurrency budget."""
+    """Generate combinations below the logical-CPU concurrency budget."""
     if available_series < 1:
         return ()
     budget = plan_manga18fx_concurrency(1, 1, logical_cpus=logical_cpus).budget
@@ -229,7 +229,12 @@ def benchmark_candidate(
     cookies: Path | None,
     timeout: float,
     round_number: int,
+    worker_start_delay: float = 0.0,
 ) -> TuneSample:
+    """Benchmark one combination, including stagger/startup time in its score."""
+    if worker_start_delay < 0:
+        raise ValueError("worker_start_delay must be zero or greater")
+
     started = time.monotonic()
     deadline = started + seconds
     bytes_downloaded = 0
@@ -237,18 +242,24 @@ def benchmark_candidate(
     errors = 0
 
     with ThreadPoolExecutor(max_workers=candidate.workers, thread_name_prefix="mangadl-tune-series") as executor:
-        futures = [
-            executor.submit(
-                _benchmark_probe,
-                probe,
-                destination / f"series-{index:02d}",
-                image_workers=candidate.image_workers,
-                deadline=deadline,
-                cookies=cookies,
-                timeout=min(timeout, max(5.0, seconds + 5.0)),
+        futures = []
+        for index, probe in enumerate(probes[: candidate.workers], start=1):
+            if index > 1 and worker_start_delay > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(worker_start_delay, remaining))
+            futures.append(
+                executor.submit(
+                    _benchmark_probe,
+                    probe,
+                    destination / f"series-{index:02d}",
+                    image_workers=candidate.image_workers,
+                    deadline=deadline,
+                    cookies=cookies,
+                    timeout=min(timeout, max(5.0, seconds + 5.0)),
+                )
             )
-            for index, probe in enumerate(probes[: candidate.workers], start=1)
-        ]
         for future in as_completed(futures):
             try:
                 sample_bytes, sample_images, sample_errors = future.result()
@@ -320,6 +331,7 @@ def _write_report(
     seconds: float,
     rounds: int,
     sample_images: int,
+    worker_start_delay: float,
     probes: tuple[ProbeSeries, ...],
     samples: tuple[TuneSample, ...],
     scores: tuple[TuneScore, ...],
@@ -337,6 +349,7 @@ def _write_report(
         "seconds_per_candidate": seconds,
         "rounds": rounds,
         "sample_images_per_series": sample_images,
+        "worker_start_delay": worker_start_delay,
         "probe_series": [
             {"url": probe.url, "title": probe.title, "images": len(probe.images)} for probe in probes
         ],
@@ -358,6 +371,7 @@ def run_manga18fx_autotune(
     rounds: int,
     sample_images: int,
     cookies: Path | None,
+    worker_start_delay: float = 0.0,
     timeout: float = 45.0,
     logical_cpus: int | None = None,
     progress: ProgressCallback | None = None,
@@ -368,14 +382,18 @@ def run_manga18fx_autotune(
         raise ValueError("auto-tune rounds must be at least 1")
     if sample_images < 1:
         raise ValueError("auto-tune sample images must be at least 1")
+    if worker_start_delay < 0:
+        raise ValueError("worker_start_delay must be zero or greater")
     if not urls:
         raise ValueError("auto-tune requires at least one Manga18FX URL")
 
     started_wall = time.time()
     started = time.monotonic()
-    logical = max(1, int(logical_cpus or __import__("os").cpu_count() or 1))
+    logical = max(1, int(logical_cpus or os.cpu_count() or 1))
     budget = max(1, logical - 1)
     worker_max = min(worker_range.maximum, len(urls), budget)
+    if worker_range.minimum > worker_max:
+        raise ValueError("auto-tune worker minimum exceeds available series or CPU budget")
     effective_worker_range = TuneRange(worker_range.minimum, worker_max)
     candidates = generate_candidates(
         effective_worker_range,
@@ -430,6 +448,7 @@ def run_manga18fx_autotune(
                         cookies=cookies,
                         timeout=timeout,
                         round_number=round_index + 1,
+                        worker_start_delay=worker_start_delay,
                     )
                     samples.append(sample)
                     emit(
@@ -448,6 +467,7 @@ def run_manga18fx_autotune(
                         seconds=seconds,
                         rounds=rounds,
                         sample_images=sample_images,
+                        worker_start_delay=worker_start_delay,
                         probes=prepared,
                         samples=tuple(samples),
                         scores=partial_scores,
@@ -465,6 +485,7 @@ def run_manga18fx_autotune(
             seconds=seconds,
             rounds=rounds,
             sample_images=sample_images,
+            worker_start_delay=worker_start_delay,
             probes=prepared,
             samples=tuple(samples),
             scores=score_samples(samples),
@@ -485,6 +506,7 @@ def run_manga18fx_autotune(
         seconds=seconds,
         rounds=rounds,
         sample_images=sample_images,
+        worker_start_delay=worker_start_delay,
         probes=prepared,
         samples=tuple(samples),
         scores=scores,
