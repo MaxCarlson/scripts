@@ -4,14 +4,14 @@ import argparse
 import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Any, List
+from typing import Any
 
 import pytest
 
-from rrbackup import application
+from rrbackup import application, cli_runtime
 from rrbackup.command_contract import MAJOR_COMMANDS
 from rrbackup.models import ExecutionMode, RunRecord, RunState
-from rrbackup.restic import ExecutionResult, ResticCommand
+from rrbackup.restic import ResticCommand
 
 UTC = timezone.utc
 
@@ -71,11 +71,16 @@ def test_major_area_help_succeeds(
 
 def test_view_help_is_condensed() -> None:
     parser = application.build_parser("backup")
-    view = parser.parse_args(["view", "--section", "history", "--plain"])
+    view_args = parser.parse_args(["view", "--section", "history", "--plain"])
 
-    assert view.section == "history"
-    assert view.plain
-    help_text = parser._subparsers._group_actions[0].choices["view"].format_help()
+    assert view_args.section == "history"
+    assert view_args.plain
+    root_action = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    help_text = root_action.choices["view"].format_help()
     assert "--section" in help_text
     for old_command in (
         "timeline",
@@ -112,6 +117,10 @@ def test_repo_is_public_spelling_and_repository_is_hidden_alias() -> None:
         (["view", "audit", "--json"], ["view", "--section", "audit", "--json"]),
         (["schedule", "list"], ["schedule"]),
         (["edit", "show"], ["config", "show"]),
+        (
+            ["--config", "settings.toml", "view", "dashboard"],
+            ["--config", "settings.toml", "view", "--section", "overview"],
+        ),
     ],
 )
 def test_hidden_aliases_translate_without_appearing_in_help(
@@ -168,7 +177,7 @@ def test_run_auto_json_lists_configured_backups_without_execution(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(application, "_inventory", lambda args: FakeInventory())
+    monkeypatch.setattr(cli_runtime, "inventory", lambda args: FakeInventory())
 
     result = application.main(["run", "auto", "--json"])
 
@@ -181,8 +190,10 @@ def test_print_command_only_never_materializes_inputs_or_executes(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    inventory = FakeInventory()
-    command = ResticCommand(argv=("restic", "-r", "repo", "backup", "--files-from-verbatim", "sources.txt"))
+    fake_inventory = FakeInventory()
+    command = ResticCommand(
+        argv=("restic", "-r", "repo", "backup", "--files-from-verbatim", "sources.txt")
+    )
 
     class FakeEngine:
         def __init__(self, profile: object) -> None:
@@ -191,18 +202,18 @@ def test_print_command_only_never_materializes_inputs_or_executes(
         def build_backup_command(self) -> ResticCommand:
             return command
 
-        def preview(self) -> ExecutionResult:
-            raise AssertionError("preview execution boundary must not be called for print-only")
+        def run(self, **kwargs: object) -> object:
+            raise AssertionError("execution must not occur for print-only")
 
-    monkeypatch.setattr(application, "_inventory", lambda args: inventory)
-    monkeypatch.setattr(application, "BackupEngine", FakeEngine)
+    monkeypatch.setattr(cli_runtime, "inventory", lambda args: fake_inventory)
+    monkeypatch.setattr(cli_runtime, "BackupEngine", FakeEngine)
 
     result = application.main(
         ["run", "local-main", "--print-command-only", "--json"]
     )
 
     assert result == application.EXIT_OK
-    assert inventory.records[0].definition.materialize_count == 0
+    assert fake_inventory.records[0].definition.materialize_count == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["results"][0]["executed"] is False
     assert payload["results"][0]["mode"] == "preview"
@@ -212,9 +223,9 @@ def test_real_run_materializes_inputs_and_preserves_skipped_exit(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    inventory = FakeInventory()
-    record = RunRecord.create(profile="local-main", backup_set="local-main")
-    record = record.transition(RunState.SKIPPED, reason="CPU threshold exceeded.")
+    fake_inventory = FakeInventory()
+    run_record = RunRecord.create(profile="local-main", backup_set="local-main")
+    run_record = run_record.transition(RunState.SKIPPED, reason="CPU threshold exceeded.")
 
     class FakeEngine:
         def __init__(self, profile: object) -> None:
@@ -222,14 +233,14 @@ def test_real_run_materializes_inputs_and_preserves_skipped_exit(
 
         def run(self, **kwargs: object) -> object:
             assert kwargs["mode"] == ExecutionMode.RUN
-            return SimpleNamespace(record=record, summary=None, execution=None)
+            return SimpleNamespace(record=run_record, summary=None, execution=None)
 
-    monkeypatch.setattr(application, "_inventory", lambda args: inventory)
-    monkeypatch.setattr(application, "BackupEngine", FakeEngine)
+    monkeypatch.setattr(cli_runtime, "inventory", lambda args: fake_inventory)
+    monkeypatch.setattr(cli_runtime, "BackupEngine", FakeEngine)
 
     result = application.main(["run", "local-main", "--json"])
 
     assert result == application.EXIT_SKIPPED
-    assert inventory.records[0].definition.materialize_count == 1
+    assert fake_inventory.records[0].definition.materialize_count == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["results"][0]["record"]["state"] == "skipped"
