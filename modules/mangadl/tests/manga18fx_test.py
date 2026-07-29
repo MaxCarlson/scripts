@@ -1,8 +1,12 @@
-from pathlib import Path
-
 import pytest
 
-from mangadl.manga18fx import Chapter, parse_chapter_images, parse_series, sanitize_component
+from mangadl.manga18fx import (
+    Chapter,
+    _chapter_directory_name,
+    parse_chapter_images,
+    parse_series,
+    sanitize_component,
+)
 
 
 def test_parse_series_title_chapters_and_natural_order() -> None:
@@ -59,3 +63,9 @@ def test_sanitize_component_limits_long_names() -> None:
 
     assert len(result) == 80
     assert result == "x" * 80
+
+
+def test_chapter_directory_name_is_stable_for_fractional_chapters() -> None:
+    assert _chapter_directory_name(Chapter("Chapter 215.5", "https://example/chapter"), 99) == (
+        "0215.5 - Chapter 215.5"
+    )
