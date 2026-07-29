@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from .models import ExecutionMode
 from .profile import BackupProfile
 from .restic import ExecutionResult, ResticCommand, build_restic_command, execute_restic
-from .snapshots import SnapshotInfo, parse_snapshots_json
+from .snapshots import SnapshotRecord, parse_snapshots_json
 
 
 @dataclass(frozen=True)
@@ -56,7 +56,7 @@ class RepositoryClient:
         tags: Sequence[str] = (),
         host: Optional[str] = None,
         paths: Sequence[str] = (),
-    ) -> Tuple[List[SnapshotInfo], ExecutionResult]:
+    ) -> Tuple[List[SnapshotRecord], ExecutionResult]:
         """Return parsed snapshots ordered newest first."""
 
         arguments: List[str] = ["snapshots", "--json"]
@@ -71,7 +71,8 @@ class RepositoryClient:
         payload = "".join(result.output)
         if result.return_code != 0:
             return [], result
-        return parse_snapshots_json(payload), result
+        records = parse_snapshots_json(payload)
+        return list(reversed(records)), result
 
     def status(self) -> RepositoryOperation:
         """Read the repository configuration metadata."""
