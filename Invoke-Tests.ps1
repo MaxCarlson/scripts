@@ -483,7 +483,7 @@ function Write-TargetContextSnapshot {
         foreach ($RelativePathObject in $ContextFiles) {
             $RelativePath = [string]$RelativePathObject
             $SourcePath = Join-Path $WorkingDirectory $RelativePath
-            $Lines.Add("### `$RelativePath`") | Out-Null
+            $Lines.Add(('### `{0}`' -f $RelativePath)) | Out-Null
             $Lines.Add('') | Out-Null
 
             if (Test-Path -LiteralPath $SourcePath -PathType Leaf) {
@@ -491,7 +491,7 @@ function Write-TargetContextSnapshot {
                 $Lines.Add($SourceText.TrimEnd()) | Out-Null
             }
             else {
-                $Lines.Add("_Missing at validation time: `$SourcePath`_") | Out-Null
+                $Lines.Add(('_Missing at validation time: `{0}`_' -f $SourcePath)) | Out-Null
             }
 
             $Lines.Add('') | Out-Null
