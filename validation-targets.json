@@ -13,6 +13,7 @@
       "environment": {
         "PYTHONUTF8": "1",
         "PYTHONUNBUFFERED": "1",
+        "PY_COLORS": "1",
         "PYTHONPATH": "{target_root}",
         "RRBACKUP_INCLUDE_PRODUCTION_READ_ONLY": "{include_production_read_only}"
       },
@@ -159,6 +160,7 @@
             "tests",
             "-vv",
             "-ra",
+            "--color=yes",
             "--tb=short",
             "--durations=25",
             "--strict-config",
