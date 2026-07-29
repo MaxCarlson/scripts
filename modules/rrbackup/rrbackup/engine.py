@@ -6,14 +6,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
-from .locking import ProcessIdentity, ProcessLock, current_process_identity
+from .locking import (
+    AlreadyRunningError,
+    LockError,
+    ProcessIdentity,
+    ProcessLock,
+    current_process_identity,
+)
 from .models import ExecutionMode, RunRecord, RunState
 from .policy import CpuDecision, WaitResult, wait_for_cpu_window
 from .profile import BackupProfile
 from .restic import (
     ExecutionResult,
     ResticCommand,
-    ResticExecutionError,
     ResticInterrupted,
     build_restic_command,
     execute_restic,
@@ -49,9 +54,7 @@ class BackupEngine:
         self.state_store = state_store or RunStateStore(
             Path(profile.status_file).parent / "rrbackup-state"
         )
-        self.lock_factory = lock_factory or (
-            lambda: ProcessLock(profile.lock_file)
-        )
+        self.lock_factory = lock_factory or (lambda: ProcessLock(profile.lock_file))
         self.command_executor = command_executor
         self.identity_factory = identity_factory
         self.cpu_waiter = cpu_waiter
@@ -84,9 +87,7 @@ class BackupEngine:
         arguments = ["backup", "--json"]
         if self.profile.use_fs_snapshot:
             arguments.append("--use-fs-snapshot")
-        arguments.extend(
-            ["--files-from-verbatim", self.profile.sources_file]
-        )
+        arguments.extend(["--files-from-verbatim", self.profile.sources_file])
         if self.profile.excludes_file:
             arguments.extend(["--iexclude-file", self.profile.excludes_file])
         if self.profile.exclude_caches:
@@ -103,7 +104,7 @@ class BackupEngine:
         )
 
     def preview(self) -> ExecutionResult:
-        """Validate and render a backup command without writing state or acquiring a lock."""
+        """Validate and render a backup command without state or lock side effects."""
 
         self.validate_backup_inputs()
         return self.command_executor(
@@ -154,10 +155,26 @@ class BackupEngine:
                 reason="Waiting for an acceptable CPU window.",
             )
             self.state_store.save(record)
-            wait_result = self.cpu_waiter(
-                self.profile.cpu_policy,
-                last_success=last_success_time,
-            )
+            try:
+                wait_result = self.cpu_waiter(
+                    self.profile.cpu_policy,
+                    last_success=last_success_time,
+                )
+            except KeyboardInterrupt:
+                record = record.transition(
+                    RunState.INTERRUPTED,
+                    reason="CPU-window wait was interrupted.",
+                )
+                self.state_store.save(record)
+                raise
+            except Exception as exc:
+                record = record.transition(
+                    RunState.FAILURE,
+                    reason="CPU-window evaluation failed: {0}".format(exc),
+                )
+                self.state_store.save(record)
+                raise
+
             decision = wait_result.decision
             if not decision.should_run:
                 record = record.transition(
@@ -183,7 +200,28 @@ class BackupEngine:
         execution: Optional[ExecutionResult] = None
         summary: Optional[BackupSummary] = None
 
-        lock.acquire()
+        try:
+            lock.acquire()
+        except AlreadyRunningError as exc:
+            record = record.transition(
+                RunState.SKIPPED,
+                reason=str(exc),
+            )
+            self.state_store.save(record)
+            return BackupRunResult(
+                record=record,
+                execution=None,
+                decision=decision,
+                summary=None,
+            )
+        except LockError as exc:
+            record = record.transition(
+                RunState.FAILURE,
+                reason=str(exc),
+            )
+            self.state_store.save(record)
+            raise
+
         try:
             identity = lock.identity or self.identity_factory()
             record.pid = identity.pid
@@ -223,10 +261,17 @@ class BackupEngine:
                     decision=decision,
                     summary=None,
                 )
-            except ResticExecutionError as exc:
+            except KeyboardInterrupt:
+                record = record.transition(
+                    RunState.INTERRUPTED,
+                    reason="Backup execution was interrupted.",
+                )
+                self.state_store.save(record)
+                raise
+            except Exception as exc:
                 record = record.transition(
                     RunState.FAILURE,
-                    reason=str(exc),
+                    reason="Backup execution failed: {0}".format(exc),
                 )
                 self.state_store.save(record)
                 raise
