@@ -18,7 +18,7 @@ where = ["."]
 include = ["mangadl*"]
 
 [tool.pytest.ini_options]
-addopts = "-q --basetemp=.pytest_tmp_root/mangadl-tests"
+addopts = "-q"
 testpaths = ["tests"]
 pythonpath = ["."]
 tmp_path_retention_policy = "none"
