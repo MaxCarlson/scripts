@@ -13,16 +13,36 @@ Manual acceptance then identified design defects that automated tests did not re
 - `backup schedule list` matches unrelated Windows tasks containing the word `Backup`.
 - `backup view storage` silently performs an expensive full restore-size calculation and took about 72 seconds on the production repository.
 - `backup run` requires too much knowledge of sources, tags, and paths instead of presenting configured backups.
-- A creation wizard, backup-centric schedule wizard, consistent color policy, and shared interactive UI are still missing.
+- A creation wizard, backup-centric schedule wizard, consistent color policy, and shared interactive UI were missing from the validated build.
 
-The active Stage 2 plan and checklist now contain the complete requested UX, command, wizard, schedule, retention, repository, and TUI specification so the requirements are not lost.
+The active Stage 2 plan and checklist contain the complete requested UX, command, wizard, schedule, retention, repository, and TUI specification so the requirements are not lost.
+
+## Checkpoint Guardrail
+
+Stage 2 is split into bounded checkpoints sized for roughly 10–20 minutes between local pull/test/push cycles.
+
+The current checkpoint is **2A — Single-CLI UX Foundation**. Work stops for local validation after its tests and documentation are complete. No additional Stage 2 feature group begins until the newest automated and manual results are reviewed.
+
+Checkpoint 2A includes:
+
+1. one installed `backup` command,
+2. seven task-oriented root areas,
+3. unified configured-backup inventory,
+4. concise human tables and shared color policy,
+5. condensed `view`,
+6. configured-backup selection for `run`,
+7. backup-centric schedule display and strict task filtering,
+8. combined repository summary with explicit cached storage refresh,
+9. tests for these exact boundaries.
+
+Checkpoint 2A excludes production configuration writes, scheduler mutation acceptance, retention execution, and duplicate-engine removal. Create/schedule wizard and scheduler-apply code currently present on the branch is unaccepted scaffolding for later checkpoints and must not be manually applied during 2A validation.
 
 ## Progress Assessment
 
 ### Successfully implemented and verified
 
 - Shared safety engine and terminal-state handling
-- Canonical `backup` executable
+- Canonical `backup` executable in the last validated package
 - Installed-entry-point packaging/import correction
 - Production repository and snapshot read-only access
 - Snapshot timeline and health data
@@ -34,34 +54,46 @@ The active Stage 2 plan and checklist now contain the complete requested UX, com
 
 ### Implemented but not yet locally verified
 
+- Package configuration with only the `backup` console entry point
+- Seven-area task-oriented parser: `create`, `run`, `view`, `schedule`, `restore`, `repo`, and `config`
 - Expanded schedule model for minute/hour/day/week/month/year/custom/manual schedules
 - Schedule description, next-run, and missed-run calculations
 - Unified inventory for canonical TOML sets and legacy `local-main`
 - Inventory enrichment with snapshots, runs, health, scheduler state, next run, and missed runs
 - Strict scheduler ownership matching for canonical `backup` invocations and `RRBackup::` tasks
+- Shared ANSI-aware human tables, status palette, plain fallback, and TermDash selection/details adapter
+- Condensed view sections and configured-backup run selection
+- Backup-centric schedule rendering
+- Combined repository summary and explicit cached storage refresh
+- Canonical TOML preservation of VSS, cache exclusion, one-file-system, tags, and raw Restic options
+- Preview-oriented create/schedule wizard and scheduler-management scaffolding
 
-### Not yet implemented
+### Remaining before Checkpoint 2A validation handoff
 
-- One-public-command packaging (`backup` only)
-- Seven-area task-oriented root CLI
-- Condensed interactive `backup view`
-- Interactive/default `backup run` chooser
-- Backup-centric schedule table and schedule editor wizard
-- Themed creation wizard
-- Combined human-readable `backup repo` summary
-- Explicit cached storage refresh
-- Shared color/table/TUI presentation layer
+- Complete focused unit tests for inventory, presentation, repository summary/cache, scheduler filtering, and preview safety
+- Update validation manifest lint targets and smoke commands
+- Complete static review of new parser/runtime modules
+- Update checklist/handoff state
+- Stop implementation and request one local root validation run
+
+### Deferred to later checkpoints
+
+- Interactive create and schedule wizard acceptance
+- Production configuration writes
+- Scheduler create/update/delete acceptance
+- Retention execution
+- Cross-platform scheduler CRUD completion
 - Removal of duplicate `backup_module` engine
 
-### Bugs and failing tests
+### Bugs and failing tests from the last pushed report
 
 - Two inherited integration tests assert obsolete `rrb` help wording and wizard exposure.
 - No current evidence of a functional engine regression.
-- The newly added inventory/schedule work has not yet been run locally.
+- The new Checkpoint 2A implementation has not yet been run locally.
 
 ### Progress and loop assessment
 
-Measurable progress occurred. The work is not looping: Stage 1 is complete, the Stage 2 data layer works against production, and manual feedback has redirected the next bounded implementation toward usability rather than repeating safety work. The next checkpoint must show visible CLI simplification and human-output improvements; another checkpoint containing only internal refactoring would be insufficient progress.
+Measurable progress occurred. The work is not looping: Stage 1 is complete, the Stage 2 data layer works against production, and manual feedback redirected Checkpoint 2A toward visible usability improvements. The scope is now frozen until local validation; continuing into another feature group before that run would violate the checkpoint guardrail.
 
 ## Active Stage 2 Command Target
 
@@ -84,21 +116,6 @@ backup config
 ```
 
 `repo` replaces the public `repository` spelling. The internal package may retain the `rrbackup` name during migration.
-
-## Current Implementation Target
-
-The current pass is implementing:
-
-1. one unified configured-backup inventory,
-2. strict module-owned scheduler discovery,
-3. shared colored human renderers,
-4. a condensed `view` dashboard,
-5. a configured-backup chooser for `run`,
-6. backup-centric schedule output,
-7. a combined repository summary that never runs expensive statistics implicitly,
-8. parser and packaging changes for the single `backup` command.
-
-The schedule editor and creation wizard models follow immediately after the inventory/presentation checkpoint, using the same shared TUI conventions.
 
 ## Last Known Production State
 
