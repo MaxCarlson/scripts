@@ -1,9 +1,20 @@
 # mangadl Immediate Project Handoff
 
-The active work is the native Manga18FX backend on `agent/add-manga18fx-backend`, based on `agent/add-development-ledger-module`.
+Active branch: `agent/add-manga18fx-backend`, based on `agent/add-development-ledger-module`.
 
-Active files: [plan](plans/20260729-1307_manga18fx-backend/00_implementation-plan.md), [status](plans/20260729-1307_manga18fx-backend/STATUS.md), [checklist](plans/20260729-1307_manga18fx-backend/checklist.md), and [handoff](plans/20260729-1307_manga18fx-backend/HANDOFF.md).
+Current version: `mangadl 1.11.0`.
 
-The backend recognizes `manga18fx.com/manga/<slug>` series URLs, parses all chapter/image links, downloads into per-job partial directories, and merges successful manga/chapter folders into the destination root. The existing `-C/--cookies` Netscape/Mozilla cookies-file option is supported.
+Primary planning records:
 
-The user confirmed that a Manga18FX URL file downloads correctly on Windows 11. Windows pytest base-temp setup and the environment-dependent gallery-dl routing test have been corrected on the branch. The complete mangadl pytest suite must be rerun after pulling the latest commits; merge into `main` remains unauthorized until that suite passes.
+- [Manga18FX plan](plans/20260729-1307_manga18fx-backend/00_implementation-plan.md)
+- [Manga18FX status](plans/20260729-1307_manga18fx-backend/STATUS.md)
+- [Manga18FX checklist](plans/20260729-1307_manga18fx-backend/checklist.md)
+- [Manga18FX handoff](plans/20260729-1307_manga18fx-backend/HANDOFF.md)
+- [CLI/optimizer/archive plan](plans/20260729-1630_cli-optimizer-archive/PLAN.md)
+- [CLI/optimizer/archive status](plans/20260729-1630_cli-optimizer-archive/STATUS.md)
+
+Implemented scope includes the native Manga18FX backend; destination-aware resume; bounded inner image concurrency; safe/staggered outer workers; runtime concurrency controls; cumulative native progress; aligned two-row dashboard output; concise `run`, `optimize`, `benchmark`, and nested `config` command surfaces; online adaptive optimization and systematic benchmarking; and an interactive archive browser.
+
+The user confirmed live Manga18FX downloads and approximately 15-17 MiB/s aggregate throughput with four outer workers. A fifth outer worker saturates the current destination disk and remains outside the safe default ceiling.
+
+The full Windows pytest suite has not yet run against 1.11.0. Merge into `main` remains unauthorized until tests, one bounded live optimize/benchmark run, resume-only progress, and archive browsing are validated locally.
