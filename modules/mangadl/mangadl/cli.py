@@ -13,6 +13,11 @@ from typing import Any
 from . import __version__
 from .autotune import TuneRange, generate_candidates, parse_tune_range, run_manga18fx_autotune
 from .backends import backend_classification, choose_backend
+from .concurrency import (
+    DEFAULT_MAX_OUTER_WORKERS,
+    HARD_MAX_OUTER_WORKERS,
+    MAX_OUTER_WORKERS_ENV,
+)
 from .destination_audit import audit_destinations, write_audit_outputs
 from .hdporncomics_patch import apply_patch, patch_status
 from .input import collect_inputs
@@ -22,8 +27,6 @@ from .repair_ui import RepairDashboard
 from .state import StateStore
 
 MANGA18FX_IMAGE_WORKERS_ENV = "MANGADL_MANGA18FX_IMAGE_WORKERS"
-DEFAULT_TUNE_WORKER_MAX = 6
-MAX_TUNE_WORKERS = 8
 MAX_IMAGE_WORKERS = 8
 
 
@@ -51,7 +54,21 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("-d", "--destination", type=_path, required=True, help="Destination library root.")
     run.add_argument("-a", "--archive", type=_path, required=True, help="gallery-dl SQLite archive path.")
     _add_state(run)
-    run.add_argument("-w", "--workers", type=int, default=2, help="Concurrent worker count (default: 2).")
+    run.add_argument("-w", "--workers", type=int, default=2, help="Requested concurrent series workers (default: 2).")
+    run.add_argument(
+        "-m",
+        "--max-workers",
+        type=int,
+        default=DEFAULT_MAX_OUTER_WORKERS,
+        help="Outer-worker safety ceiling (default: 4; experimental maximum: 8).",
+    )
+    run.add_argument(
+        "-U",
+        "--worker-start-delay",
+        type=float,
+        default=2.0,
+        help="Seconds between worker process launches (default: 2; use 0 to disable staggering).",
+    )
     run.add_argument(
         "-I",
         "--image-workers",
@@ -70,7 +87,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--tune-workers",
         type=parse_tune_range,
         metavar="MIN:MAX",
-        help="Inclusive outer-worker range; default 1:6, hard maximum 8.",
+        help="Inclusive outer-worker range; defaults to 1 through --max-workers.",
     )
     run.add_argument(
         "-Y",
@@ -181,10 +198,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _resolved_tune_ranges(args: argparse.Namespace) -> tuple[TuneRange, TuneRange]:
-    worker_range = args.tune_workers or TuneRange(1, DEFAULT_TUNE_WORKER_MAX)
+    worker_range = args.tune_workers or TuneRange(1, args.max_workers)
     image_range = args.tune_image_workers or TuneRange(1, MAX_IMAGE_WORKERS)
-    if worker_range.maximum > MAX_TUNE_WORKERS:
-        raise ValueError(f"--tune-workers maximum must not exceed {MAX_TUNE_WORKERS}")
+    if worker_range.maximum > args.max_workers:
+        raise ValueError(
+            f"--tune-workers maximum {worker_range.maximum} exceeds --max-workers {args.max_workers}"
+        )
     if image_range.maximum > MAX_IMAGE_WORKERS:
         raise ValueError(f"--tune-image-workers maximum must not exceed {MAX_IMAGE_WORKERS}")
     return worker_range, image_range
@@ -206,6 +225,7 @@ def _auto_tune_preview(args: argparse.Namespace, manga18fx_urls: list[str]) -> d
         "seconds_per_candidate": args.tune_seconds,
         "rounds": args.tune_rounds,
         "sample_images_per_series": args.tune_sample_images,
+        "worker_start_delay": args.worker_start_delay,
         "logical_cpus": logical_cpus,
         "budget": max(1, logical_cpus - 1),
         "candidate_count": len(candidates),
@@ -215,6 +235,10 @@ def _auto_tune_preview(args: argparse.Namespace, manga18fx_urls: list[str]) -> d
 def _run(args: argparse.Namespace) -> int:
     if args.workers < 1:
         raise ValueError("--workers must be at least 1")
+    if not 1 <= args.max_workers <= HARD_MAX_OUTER_WORKERS:
+        raise ValueError(f"--max-workers must be between 1 and {HARD_MAX_OUTER_WORKERS}")
+    if args.worker_start_delay < 0:
+        raise ValueError("--worker-start-delay must be zero or greater")
     if not 1 <= args.image_workers <= MAX_IMAGE_WORKERS:
         raise ValueError(f"--image-workers must be between 1 and {MAX_IMAGE_WORKERS}")
     if args.hdporncomics_threads < 1:
@@ -229,6 +253,7 @@ def _run(args: argparse.Namespace) -> int:
         raise ValueError("provide at least one --input-file or --url")
 
     os.environ[MANGA18FX_IMAGE_WORKERS_ENV] = str(args.image_workers)
+    os.environ[MAX_OUTER_WORKERS_ENV] = str(args.max_workers)
     inputs, rejected = collect_inputs(args.input_file, args.url)
     routes: dict[str, str] = {}
     unsupported: list[dict[str, Any]] = []
@@ -244,6 +269,9 @@ def _run(args: argparse.Namespace) -> int:
         "rejected": rejected,
         "unsupported": unsupported,
         "routes": routes,
+        "requested_workers": args.workers,
+        "max_workers": args.max_workers,
+        "worker_start_delay": args.worker_start_delay,
     }
     if args.auto_tune:
         preview["auto_tune"] = _auto_tune_preview(args, manga18fx_urls)
@@ -271,6 +299,7 @@ def _run(args: argparse.Namespace) -> int:
             rounds=args.tune_rounds,
             sample_images=args.tune_sample_images,
             cookies=args.cookies,
+            worker_start_delay=args.worker_start_delay,
             progress=progress,
         )
         args.workers = tune_result.selected_workers
@@ -316,6 +345,7 @@ def _run(args: argparse.Namespace) -> int:
             rate=args.max_rate,
             hdporncomics_executable=args.hdporncomics_executable,
             hdporncomics_threads=args.hdporncomics_threads,
+            worker_start_delay=args.worker_start_delay,
             ui=not args.no_ui and not args.quiet,
         )
         return DownloadManager(options, store).run()
