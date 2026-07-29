@@ -3,12 +3,22 @@
     "$id": "https://example.invalid/development-ledger/plan-state.schema.json",
     "title": "Development Ledger Plan State",
     "type": "object",
-    "required": ["schema_version", "plan_id", "title", "project_root", "stage", "session", "items"],
+    "required": [
+        "schema_version",
+        "plan_id",
+        "title",
+        "project_root",
+        "plan_revision",
+        "stage",
+        "session",
+        "items"
+    ],
     "properties": {
         "schema_version": {"const": 1},
         "plan_id": {"type": "string", "minLength": 1},
         "title": {"type": "string", "minLength": 1},
         "project_root": {"type": "string", "minLength": 1},
+        "plan_revision": {"type": "integer", "minimum": 1},
         "stage": {
             "type": "object",
             "required": ["id"],
@@ -21,14 +31,64 @@
         },
         "session": {
             "type": "object",
+            "required": [
+                "request",
+                "target_ids",
+                "selection_rationale",
+                "stop_conditions",
+                "batch",
+                "architecture_impact",
+                "architecture_review"
+            ],
             "properties": {
                 "actor": {"type": "string"},
                 "mode": {"type": "string"},
+                "request": {
+                    "type": "object",
+                    "required": ["status", "summary", "resolution", "affected_ids", "supersedes", "conflicts"],
+                    "properties": {
+                        "status": {"enum": ["no_new_request", "incorporated", "conflict_pending"]},
+                        "summary": {"type": "string"},
+                        "resolution": {
+                            "enum": ["none", "compatible", "explicit_user_override", "user_decision_required"]
+                        },
+                        "affected_ids": {"type": "array", "items": {"type": "string"}},
+                        "supersedes": {"type": "array", "items": {"type": "string"}},
+                        "conflicts": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "additionalProperties": false
+                },
                 "objective": {"type": "string"},
                 "hypothesis": {"type": "string"},
                 "target_ids": {"type": "array", "items": {"type": "string"}},
+                "selection_rationale": {"type": "string"},
+                "stop_conditions": {"type": "array", "items": {"type": "string"}},
+                "batch": {
+                    "type": "object",
+                    "required": ["profile", "target_minutes", "max_minutes", "max_items"],
+                    "properties": {
+                        "profile": {"type": "string"},
+                        "target_minutes": {"type": "integer", "minimum": 1},
+                        "max_minutes": {"type": "integer", "minimum": 1},
+                        "max_items": {"type": "integer", "minimum": 1}
+                    },
+                    "additionalProperties": false
+                },
                 "environment_dependencies": {"type": "array", "items": {"type": "string"}},
                 "diagnostic_complexity": {"enum": ["mechanical", "normal", "complex", "deep", "critical"]},
+                "architecture_impact": {"enum": ["none", "local", "cross_cutting", "foundational"]},
+                "architecture_review": {
+                    "type": "object",
+                    "required": ["requested", "performed", "summary", "findings", "actions"],
+                    "properties": {
+                        "requested": {"type": "boolean"},
+                        "performed": {"type": "boolean"},
+                        "summary": {"type": "string"},
+                        "findings": {"type": "array", "items": {"type": "string"}},
+                        "actions": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "additionalProperties": false
+                },
                 "relevant_files": {"type": "array", "items": {"type": "string"}}
             },
             "additionalProperties": true
@@ -46,8 +106,13 @@
                     "implementation": {"enum": ["planned", "in_progress", "implemented", "blocked", "deferred"]},
                     "tests": {"type": "array", "items": {"type": "string"}},
                     "manual_checks": {"type": "array", "items": {"type": "string"}},
+                    "depends_on": {"type": "array", "items": {"type": "string"}},
                     "blocked_by": {"type": "array", "items": {"type": "string"}},
                     "relevant_files": {"type": "array", "items": {"type": "string"}},
+                    "priority": {"type": "integer"},
+                    "architecture_role": {
+                        "enum": ["feature", "foundation", "integration", "verification", "migration"]
+                    },
                     "notes": {"type": "string"}
                 },
                 "additionalProperties": false
@@ -71,6 +136,29 @@
                 },
                 "additionalProperties": false
             }
+        },
+        "policy": {
+            "type": "object",
+            "properties": {
+                "session": {
+                    "type": "object",
+                    "properties": {
+                        "target_minutes": {"type": "integer", "minimum": 1},
+                        "max_minutes": {"type": "integer", "minimum": 1},
+                        "max_items": {"type": "integer", "minimum": 1}
+                    },
+                    "additionalProperties": false
+                },
+                "architecture_review": {
+                    "type": "object",
+                    "properties": {
+                        "max_validation_runs": {"type": "integer", "minimum": 1},
+                        "max_plan_revisions": {"type": "integer", "minimum": 1}
+                    },
+                    "additionalProperties": false
+                }
+            },
+            "additionalProperties": false
         },
         "relevant_docs": {"type": "array", "items": {"type": "string"}},
         "metadata": {"type": "object"}
