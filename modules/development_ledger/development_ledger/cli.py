@@ -16,6 +16,7 @@ from development_ledger.models import VALID_MANUAL_STATES
 from development_ledger.plan import PlanValidationError, load_plan, render_plan_template
 from development_ledger.render import render_progress, write_projections
 from development_ledger.results import ResultParseError, parse_junit_xml, parse_script_results, parse_transcript
+from development_ledger.setup import SUPPORTED_AGENTS, apply_setup, plan_repository_setup
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -24,6 +25,29 @@ def build_parser() -> argparse.ArgumentParser:
         description="Create plan-aware validation history and hybrid/local LLM handoff artifacts.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    setup = subparsers.add_parser("setup", help="Bootstrap development-ledger instructions and docs in a repository.")
+    setup.add_argument("-r", "--repo-root", type=Path, required=True, help="Target repository root.")
+    setup.add_argument(
+        "-s", "--scope", action="append", default=[], help="Repository-relative independent planning scope; repeatable."
+    )
+    setup.add_argument(
+        "-m", "--module", action="append", default=[], help="Module name below modules/; repeatable convenience option."
+    )
+    setup.add_argument("-A", "--all-modules", action="store_true", help="Add every immediate directory below modules/.")
+    setup.add_argument(
+        "-a",
+        "--agent",
+        action="append",
+        choices=SUPPORTED_AGENTS,
+        default=[],
+        help="Agent instruction target; repeatable. Defaults to all supported agents.",
+    )
+    setup.add_argument("-N", "--repository-name", default="", help="Display name; defaults to root directory name.")
+    setup.add_argument("-f", "--force", action="store_true", help="Replace conflicting setup-managed documents.")
+    setup.add_argument("-F", "--format", choices=("text", "json"), default="text", help="Result format.")
+    setup.add_argument("-w", "--write", action="store_true", help="Apply changes; otherwise show a dry-run plan.")
+    setup.set_defaults(handler=_handle_setup)
 
     validate = subparsers.add_parser("validate-plan", help="Validate the structured state in a plan document.")
     validate.add_argument("-p", "--plan", type=Path, required=True, help="Markdown plan containing ledger state.")
@@ -83,6 +107,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (PlanValidationError, ResultParseError, LedgerError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
+
+
+def _handle_setup(args: argparse.Namespace) -> int:
+    result = plan_repository_setup(
+        args.repo_root,
+        scopes=args.scope,
+        modules=args.module,
+        all_modules=args.all_modules,
+        agents=args.agent,
+        repository_name=args.repository_name,
+        force=args.force,
+    )
+    if args.write:
+        apply_setup(result)
+    if args.format == "json":
+        print(json.dumps(result.to_dict(), indent=4, ensure_ascii=False))
+    else:
+        _print_setup_result(result, write=args.write)
+    return 2 if result.has_conflicts else 0
 
 
 def _handle_validate_plan(args: argparse.Namespace) -> int:
@@ -191,6 +234,18 @@ def _handle_manual(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_setup_result(result: object, *, write: bool) -> None:
+    mode = "APPLY" if write else "DRY-RUN"
+    print(f"{mode}: {result.repo_root}")
+    print(f"SCOPES: {', '.join(result.scopes)}")
+    print(f"AGENTS: {', '.join(result.agents)}")
+    for operation in result.operations:
+        print(f"{operation.action.upper():9} {operation.path} — {operation.reason}")
+    print(f"CHANGES: {result.changed_count}")
+    if result.has_conflicts:
+        print("CONFLICTS: resolve conflicts or rerun with an appropriate explicit --force.")
+
+
 def _print_run_summary(event: dict[str, object], output_dir: Path) -> None:
     summary = event["test_summary"]
     progress = event["progress"]
@@ -213,6 +268,6 @@ def _timestamp() -> str:
 
 
 def _event_id(prefix: str, timestamp: str, commit: str) -> str:
-    compact = timestamp.replace("-", "").replace(":", "").replace("+00:00", "Z")
+    compact = timestamp.replace("+00:00", "Z").replace("-", "").replace(":", "")
     suffix = commit[:8] if commit else uuid.uuid4().hex[:8]
     return f"{prefix}-{compact}-{suffix}"
