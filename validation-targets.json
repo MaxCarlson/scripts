@@ -18,6 +18,14 @@
       },
       "bootstrap": [
         {
+          "name": "Clean stale RRBackup editable metadata",
+          "executable": "{python}",
+          "arguments": [
+            "-c",
+            "import shutil; from pathlib import Path; root=Path(r'{target_root}'); targets=list(root.glob('*.egg-info'))+[root/'build', root/'dist']; [shutil.rmtree(str(path), ignore_errors=True) for path in targets if path.exists()]"
+          ]
+        },
+        {
           "name": "Install RRBackup editable development dependencies",
           "executable": "{python}",
           "arguments": [
@@ -26,6 +34,7 @@
             "install",
             "--disable-pip-version-check",
             "--no-build-isolation",
+            "--force-reinstall",
             "-e",
             "{target_root}[dev]"
           ]
