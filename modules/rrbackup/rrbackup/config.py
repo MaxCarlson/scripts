@@ -215,8 +215,18 @@ def resolve_config_path(path: PathLikeStr | None) -> pathlib.Path:
     return platform_config_default()
 
 
-def load_config(path: PathLikeStr | None, *, expand: bool = True) -> Settings:
-    """Load canonical TOML configuration."""
+def load_config(
+    path: PathLikeStr | None,
+    *,
+    expand: bool = True,
+    create_directories: bool = True,
+) -> Settings:
+    """Load canonical TOML configuration.
+
+    ``create_directories=False`` is required for read-only inventory, view, audit,
+    and preview paths. Runtime setup commands may keep the default behavior.
+    """
+
     candidate = resolve_config_path(path)
     if not candidate.exists():
         raise FileNotFoundError(f"Config file not found: {candidate}")
@@ -230,8 +240,9 @@ def load_config(path: PathLikeStr | None, *, expand: bool = True) -> Settings:
         for executable in (config.restic_bin, config.rclone_bin):
             if shutil.which(executable) is None:
                 print(f"[rrbackup] Warning: '{executable}' not found on PATH.", file=sys.stderr)
-        pathlib.Path(config.state_dir).mkdir(parents=True, exist_ok=True)
-        pathlib.Path(config.log_dir).mkdir(parents=True, exist_ok=True)
+        if create_directories:
+            pathlib.Path(config.state_dir).mkdir(parents=True, exist_ok=True)
+            pathlib.Path(config.log_dir).mkdir(parents=True, exist_ok=True)
     return config
 
 
