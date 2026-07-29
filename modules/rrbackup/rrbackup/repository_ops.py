@@ -135,8 +135,11 @@ class RepositoryClient:
         arguments = ["check"]
         if read_data:
             arguments.append("--read-data")
-        result = self.execute(arguments, echo=True)
-        return RepositoryOperation(result=result)
+        result = self.execute(arguments, echo=False)
+        return RepositoryOperation(
+            result=result,
+            payload={"lines": [line.rstrip("\r\n") for line in result.output]},
+        )
 
 
 def operation_to_dict(operation: RepositoryOperation) -> Dict[str, Any]:
