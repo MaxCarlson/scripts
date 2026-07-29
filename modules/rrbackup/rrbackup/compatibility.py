@@ -24,17 +24,21 @@ _GLOBAL_VALUE_OPTIONS = {
 }
 
 _LEGACY_DIRECT_COMMANDS = {
-    "backup",
+    "setup",
     "list",
     "ls",
     "snapshots",
-    "setup",
+    "backup",
+    "stats",
+    "check",
     "prune",
+    "progress",
 }
 
 _LEGACY_CONFIG_COMMANDS = {
     "init",
     "wizard",
+    "show",
     "list-sets",
     "add-set",
     "remove-set",
