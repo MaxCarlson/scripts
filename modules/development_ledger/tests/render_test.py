@@ -5,7 +5,12 @@ from pathlib import Path
 from development_ledger.analysis import build_validation_event
 from development_ledger.models import NormalizedTest
 from development_ledger.plan import load_plan
-from development_ledger.render import render_local_handoff, render_progress, write_projections
+from development_ledger.render import (
+    render_architecture_review,
+    render_local_handoff,
+    render_progress,
+    write_projections,
+)
 
 
 def _event(plan):
@@ -38,6 +43,9 @@ def test_render_progress_is_compact_orientation_document(plan_path):
 
     assert "# Development Progress: Demo Plan" in text
     assert "## Plan Item State" in text
+    assert "Request intake" in text
+    assert "Session budget" in text
+    assert "Recommended Next-Batch Candidates" in text
     assert "AC-001" in text
     assert "Run History" in text
 
@@ -53,6 +61,7 @@ def test_write_projections_creates_all_expected_files(plan_path, tmp_path: Path)
         "PROGRESS.md",
         "TRACEABILITY.md",
         "MANUAL_CHECKS.md",
+        "ARCHITECTURE_REVIEW.md",
         "LOCAL_HANDOFF.md",
     }
 
@@ -73,6 +82,19 @@ def test_local_handoff_contains_attempt_history_when_escalated(plan_path):
     assert "Local Codex Diagnostic Handoff" in text
     assert "gpt-5.6-terra" in text
     assert "Attempts Already Recorded" in text
+    assert "Plan revision" in text
+
+
+def test_architecture_review_projection_explains_due_review(plan_path):
+    plan = load_plan(plan_path)
+    plan.session["architecture_review"]["requested"] = True
+    event = _event(plan)
+
+    text = render_architecture_review(plan, [event])
+
+    assert "Architecture Review" in text
+    assert "Due:** `yes`" in text
+    assert "Review Questions" in text
 
 
 def test_render_progress_without_events_and_inactive_handoff(plan_path):
