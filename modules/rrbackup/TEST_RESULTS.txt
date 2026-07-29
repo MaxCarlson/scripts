@@ -1,0 +1,8 @@
+RRBACKUP TEST RESULTS
+=====================
+
+This tracked file is overwritten by modules/rrbackup/Invoke-Tests.ps1.
+
+Run the test harness locally, then stage, commit, and push this file so the remote implementation agent can inspect the complete pytest and PowerShell test output without manual copy/paste.
+
+No test run has been recorded in this file yet.
