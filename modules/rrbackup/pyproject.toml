@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rrbackup"
-version = "0.3.0"
-description = "Cross-platform Restic + Rclone backup CLI"
+version = "1.0.0"
+description = "Unified cross-platform Restic backup management and viewer CLI"
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{ name = "Max", email = "max@example.com" }]
@@ -26,8 +26,9 @@ dev = [
 ]
 
 [project.scripts]
-rrb = "rrbackup.cli:main"
-rrbackup = "rrbackup.cli:main"
+backup = "rrbackup.app:main"
+rrb = "rrbackup.app:main"
+rrbackup = "rrbackup.app:main"
 
 [tool.setuptools.packages.find]
 # Discover packages from project root (flat layout)
