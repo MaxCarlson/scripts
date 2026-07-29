@@ -17,8 +17,12 @@ from rrbackup import compatibility
         ["ls", "--path", "C:\\"],
         ["snapshots", "--host", "Xeres"],
         ["setup"],
+        ["stats"],
+        ["check"],
         ["prune"],
+        ["progress"],
         ["config", "init"],
+        ["config", "show"],
         ["--config", "settings.toml", "backup", "--set", "daily"],
     ],
 )
@@ -34,12 +38,12 @@ def test_commands_with_unmigrated_semantics_use_legacy(arguments: list[str]) -> 
         ["view"],
         ["view", "audit"],
         ["config", "effective"],
+        ["config", "discover"],
         ["schedule", "discover"],
         ["restore", "preview", "latest", "--target", "restore"],
         ["repository", "status"],
-        ["stats"],
-        ["check"],
-        ["progress"],
+        ["repository", "stats"],
+        ["repository", "check"],
     ],
 )
 def test_migrated_or_canonical_commands_use_application(arguments: list[str]) -> None:
