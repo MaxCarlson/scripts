@@ -27,8 +27,19 @@
 - [ ] Complete static review
 - [ ] Pass local Windows validation
 
-## Stage 2 — Compatibility Merge
+## Stage 2 — Compatibility Merge and CLI
 
+- [x] Define six-area CLI architecture
+- [x] Map useful consolidation shell audits to first-class commands
+- [x] Define `backup view audit` contract
+- [ ] Add canonical `backup` entry point and required major version bump
+- [ ] Add `backup run`
+- [ ] Add `backup view`
+- [ ] Add `backup config`
+- [ ] Add `backup edit` alias
+- [ ] Add `backup schedule`
+- [ ] Add `backup restore`
+- [ ] Add `backup repository`
 - [ ] Preserve `rrb`
 - [ ] Preserve `rrbackup`
 - [ ] Preserve `backup_module`
@@ -36,6 +47,15 @@
 - [ ] Preserve legacy underscore options
 - [ ] Add canonical hyphenated options
 - [ ] Import legacy JSON/default configuration
+- [ ] Add root and nested help-contract tests
+- [ ] Add JSON stdout-purity tests
+- [ ] Add secret-redaction tests
+- [ ] Add `backup config discover`
+- [ ] Add executable/wrapper/environment diagnostics
+- [ ] Add known and relocated artifact discovery
+- [ ] Add scheduler and launcher discovery
+- [ ] Add repository key/stats/check/cache/lock inspection
+- [ ] Add optional legacy shell-history evidence adapter
 - [ ] Verify known snapshots through merged CLI
 - [ ] Reduce `modules/backup_module` to a compatibility shim
 - [ ] Remove duplicate engine only after compatibility tests pass
@@ -45,7 +65,9 @@
 - [ ] Windows Task Scheduler CRUD
 - [ ] systemd user timer CRUD
 - [ ] cron compatibility CRUD
+- [ ] Startup-command and service launcher discovery
 - [ ] Schedule health
+- [ ] Schedule history
 - [ ] No-overlap behavior
 - [ ] Retry/start-when-available behavior
 - [ ] Export before replacement
@@ -56,12 +78,19 @@
 - [ ] Dashboard
 - [ ] Timeline
 - [ ] Snapshots
+- [ ] Snapshot details
+- [ ] Files and search
 - [ ] Runs
+- [ ] Logs
 - [ ] Sets
 - [ ] Schedules
+- [ ] Setup and system diagnostics
+- [ ] Provenance
+- [ ] Comprehensive audit
 - [ ] Gaps
 - [ ] Storage
-- [ ] Details
+- [ ] Health
+- [ ] Alerts
 - [ ] JSON/JSONL/CSV/Markdown output
 - [ ] Missed-backup engine
 
@@ -75,6 +104,7 @@
 - [ ] Webhook
 - [ ] Windows notification
 - [ ] Email/external command
+- [ ] Schedule-compatible health check
 
 ## Stage 6 — Retention
 
@@ -92,6 +122,7 @@
 - [ ] Small restore and hash verification
 - [ ] Scheduled execution
 - [ ] Viewer acceptance
+- [ ] Audit-command acceptance
 - [ ] Alert acceptance
 - [ ] Documentation cleanup
 - [ ] Compatibility-period documentation
