@@ -52,11 +52,11 @@ try {
 
     $ImportOutput = & $PythonExecutable -c "import rrbackup; print(rrbackup.__file__); print(rrbackup.__version__)" 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message "Unable to import rrbackup without injected PYTHONPATH: $($ImportOutput -join ' ')"
-    Assert-True -Condition (($ImportOutput -join "`n") -match '0\.3\.0') -Message 'RRBackup package version was not 0.3.0.'
+    Assert-True -Condition (($ImportOutput -join "`n") -match '1\.0\.0') -Message 'RRBackup package version was not 1.0.0.'
     Write-Output "rrbackup import without PYTHONPATH: $($ImportOutput -join ' | ')"
 
     $ScriptsRoot = Split-Path -Parent $PythonExecutable
-    foreach ($EntryPointName in @('rrb', 'rrbackup')) {
+    foreach ($EntryPointName in @('backup', 'rrb', 'rrbackup')) {
         $Candidate = Join-Path $ScriptsRoot "$EntryPointName.exe"
         if (-not (Test-Path -LiteralPath $Candidate -PathType Leaf)) {
             $Candidate = Join-Path $ScriptsRoot $EntryPointName
@@ -66,6 +66,9 @@ try {
         $HelpOutput = & $Candidate --help 2>&1
         Assert-True -Condition ($LASTEXITCODE -eq 0) -Message "$EntryPointName --help failed: $($HelpOutput -join ' ')"
         Assert-True -Condition (($HelpOutput -join "`n") -match '(?i)usage') -Message "$EntryPointName --help did not contain a usage line."
+        foreach ($Area in @('run', 'view', 'config', 'schedule', 'restore', 'repository')) {
+            Assert-True -Condition (($HelpOutput -join "`n") -match "(?m)\b$Area\b") -Message "$EntryPointName --help did not list '$Area'."
+        }
         Write-Output "$EntryPointName installed entry point: PASS ($Candidate)"
     }
 }
