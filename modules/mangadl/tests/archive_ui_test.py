@@ -2,6 +2,7 @@ import sqlite3
 from pathlib import Path
 
 from mangadl.archive_ui import filter_records, load_archive, render_archive_browser
+from mangadl.ui import visible_len
 
 
 def test_archive_reader_filter_and_render(tmp_path: Path) -> None:
@@ -39,7 +40,7 @@ def test_archive_reader_filter_and_render(tmp_path: Path) -> None:
     assert "Example One" in output
     assert "Different Work" not in output
     assert "Records 1/2" in output
-    assert all(len(line) <= 140 for line in output.splitlines())
+    assert all(visible_len(line) <= 140 for line in output.splitlines())
 
 
 def test_archive_reader_handles_database_without_archive_table(tmp_path: Path) -> None:
