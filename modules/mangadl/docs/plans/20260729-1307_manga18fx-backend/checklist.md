@@ -13,12 +13,18 @@
 - [x] Skip image files already present in the partial or final destination.
 - [x] Pass the existing cookies-file option to the native backend.
 - [x] Add offline parser/routing/worker tests.
-- [x] Bump the module minor version.
+- [x] Bump the module minor version for the initial backend.
 - [x] Confirm a live Manga18FX URL file routes and downloads correctly on Windows 11.
 - [x] Fix module-local pytest base-temp creation on Windows.
 - [x] Make gallery-dl routing tests independent of the installed extractor catalog.
-- [x] Run isolated regression checks for the test fixes: 11 passed.
+- [x] Add `-I/--image-workers` with default `4` and range `1-8`.
+- [x] Download missing images concurrently within each Manga18FX chapter.
+- [x] Preserve deterministic names, `.part` files, atomic renames, cookies, and existing-file skipping under concurrency.
+- [x] Add offline CLI and concurrency tests.
+- [x] Bump `mangadl` to 1.8.0 for the concurrency feature.
 - [ ] Rerun the complete mangadl pytest suite in the user's Windows checkout.
+- [ ] Compare live throughput using `-w 2 -I 4` against the serial baseline.
 - [ ] Verify a second live run skips existing files and exits successfully.
 - [ ] Complete the full URL-file batch and review the run summary.
+- [ ] Update the scripts-help registry version to 1.8.0 before merge.
 - [ ] Merge into `main` only after the complete pytest suite passes.
