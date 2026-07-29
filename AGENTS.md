@@ -31,6 +31,24 @@ That file should contain durable facts about this repository: setup commands, va
 
 Keep this `AGENTS.md` generic enough to copy into every repo.
 
+## Hybrid Remote/Local Workflow Reminder
+
+For a substantial repository task that is likely to require multi-file implementation, planning, broad test creation, or a long local-agent session, first determine whether the browser/app agent can perform most of the work through connected repository tools.
+
+When the hybrid workflow is a good fit, the local agent should give one brief advisory reminder near the start of the conversation, before beginning heavy implementation. The reminder should explain that the browser/app agent can normally handle planning, edits, tests, documentation, commits, pushes, and diagnosis, leaving the local side to pull the branch and run the repository validation command.
+
+Rules for the reminder:
+
+- Give it at most once per conversation.
+- Do not repeat it after the user has chosen a workflow.
+- Do not use it for small edits, quick commands, narrowly local debugging, or work that genuinely requires the local environment.
+- Do not block progress or require confirmation; continue locally unless the user redirects the task.
+- Keep it to one or two sentences.
+
+Suggested wording:
+
+> This looks suitable for the hybrid workflow: the browser/app agent can handle most implementation and test work, while this local session mainly pulls and validates the branch. I’ll continue locally unless you want to shift the implementation there.
+
 ## Project Root Selection
 
 If this repository is the whole project, treat the repository root as `project_root`.
