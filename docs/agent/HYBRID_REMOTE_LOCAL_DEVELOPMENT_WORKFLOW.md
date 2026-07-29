@@ -22,7 +22,7 @@ The browser/app agent should normally:
 8. Review the complete diff for defects, unsafe behavior, interface regressions, and documentation drift.
 9. Commit and push the completed stage.
 10. Tell the user to pull and run the same repository-root validation command.
-11. Read the committed validation reports and use them to implement the next pass.
+11. Read each target's authoritative `LATEST.txt` report and use it to implement the next pass.
 
 Do not delegate broad implementation work to a local agent merely because the repository is local. Offload only the smallest environment-dependent remainder.
 
@@ -49,6 +49,12 @@ Local execution is especially useful for:
 - real backup/restore or deployment validation,
 - performance and long-running tests.
 
+## Local-Agent Hybrid Reminder
+
+For a substantial task that could be implemented primarily through browser/app repository tools, a local agent should give one brief advisory reminder near the start of the conversation before beginning a long local implementation.
+
+The reminder should be given at most once per conversation, should not block progress, and should not be used for small fixes or genuinely local work. Continue locally unless the user redirects the task.
+
 ## Stage Loop
 
 For each stage:
@@ -60,7 +66,7 @@ For each stage:
 5. **Pull locally** — update the local checkout.
 6. **Run one command** — execute the repository-root validation dispatcher.
 7. **Publish evidence** — commit and push the generated validation reports.
-8. **Diagnose remotely** — read the reports and implement the next patch or stage.
+8. **Diagnose remotely** — read `docs/test-results/<target>/LATEST.txt` and implement the next patch or stage.
 9. **Repeat** until automated, environment-specific, and acceptance validation pass.
 
 ## Repository-Root Validation Dispatcher Pattern
@@ -100,15 +106,21 @@ The dispatcher should support:
 - complete stdout and stderr capture,
 - exact command and exit-code reporting,
 - continued execution of independent sections when practical,
-- one tracked, timestamped report per target.
+- one obvious current report per target,
+- bounded prior-report history.
 
 Reports should use this shape:
 
 ```text
-docs/test-results/<target>/YYYYMMDD-HHMMSS_<target>.txt
+docs/test-results/<target>/
+├── LATEST.txt
+└── history/
+    └── YYYYMMDD-HHMMSS_<target>.txt
 ```
 
-This structure keeps reports discoverable, allows multiple modules in one stage, and prevents result-file conflicts between parallel or historical validation runs.
+`LATEST.txt` is authoritative. History exists only for regression comparison. A reasonable default is three prior reports and a 14-day maximum age, with repository-specific overrides when needed.
+
+This structure keeps the current evidence immediately identifiable, allows multiple modules in one stage, and prevents result directories from accumulating indefinitely.
 
 ## Portability
 
