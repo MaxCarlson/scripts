@@ -1,8 +1,8 @@
 # mangadl
 
-`mangadl` is a concurrent, resumable manager for manga and image-gallery downloads. It uses gallery-dl as its broad primary backend, routes HDPornComics manhwa URLs to its dedicated downloader, and can fall back to an installed native `nhentai` CLI for nhentai URLs.
+`mangadl` is a concurrent, resumable manager for manga and image-gallery downloads. It uses gallery-dl as its broad primary backend, routes HDPornComics manhwa URLs to its dedicated downloader, provides a native Manga18FX series downloader, and can fall back to an installed native `nhentai` CLI for nhentai URLs.
 
-The dashboard replaces gallery-dl's line-per-image transcript. Each worker reports a compact site/URL identifier, image and byte counts, current and per-URL average rates, elapsed time, retries, and failures. Statuses, site tags, progress, rates, and log outcomes use semantic colors. Press `l` for the selected worker's inline activity log, `f` for its fullscreen log, and `r` to switch between concise activity records and raw gallery-dl output.
+The dashboard replaces gallery-dl's line-per-image transcript. Each worker reports a compact site/URL identifier, image and byte counts, current and per-URL average rates, elapsed time, retries, and failures. Statuses, site tags, progress, rates, and log outcomes use semantic colors. Press `l` for the selected worker's inline activity log, `f` for its fullscreen log, and `r` to switch between concise activity records and raw backend output.
 
 ## Install
 
@@ -21,10 +21,13 @@ Multiple `-i/--input-file` and `-u/--url` options are accepted. Blank lines and 
 
 `https://hdporncomics.com/manhwa/...` and `https://www.hdporncomics.com/manhwa/...` URLs automatically use `hdporncomics --directory <destination> --threads 8 --force --manhwa <url>`. Their title directories are created directly under the destination; mangadl does not add another title layer. Use `-e/--hdporncomics-executable` to override executable discovery and `-H/--hdporncomics-threads` to change only the downloader's internal concurrency.
 
+`https://manga18fx.com/manga/...` and `https://www.manga18fx.com/manga/...` URLs automatically use mangadl's native Manga18FX backend. It creates one top-level folder per series, stable naturally ordered chapter folders, and zero-padded image files. Failed jobs remain under `_partial/<job-id>/`; successful jobs merge into the destination. Reruns inspect the final library and skip images already present. Use `-C/--cookies` with a Netscape/Mozilla cookies export if anonymous requests are blocked.
+
 ## Operations
 
 ```powershell
 mangadl inspect -u https://nhentai.net/g/123456/
+mangadl inspect -u https://manga18fx.com/manga/example/
 mangadl status -s .\mangadl-state.sqlite3
 mangadl retry -s .\mangadl-state.sqlite3 -f
 mangadl archive -a .\gallery-dl-archive.sqlite3
@@ -42,7 +45,7 @@ The command extracts each nhentai ID from loose filenames, performs a metadata-o
 
 `patch-hdporncomics` reports whether the installed HDPornComics package has the Windows filename compatibility patch. `-f/--apply` saves a one-time `.bak` copy of its CLI module and applies a safe filename sanitizer (invalid characters, reserved names, and long paths). This is intentionally explicit: package updates can replace the patched file. A known Windows path error from the backend reports the recovery command in the failed job message.
 
-Worker rows show a compact colored backend badge: `GD` for gallery-dl, `NH` for native nhentai, and `HD` for HDPornComics.
+Worker rows show a compact colored backend badge: `GD` for gallery-dl, `NH` for native nhentai, and `HD` for HDPornComics. Unknown or newly added backends use the neutral fallback badge until explicitly styled.
 
 ## Audit destination roots
 
@@ -56,7 +59,7 @@ mangadl audit -i .\urls*.txt `
 
 `missing-urls.txt` receives URLs not identified in any root. `duplicate-folders.json` records identical populated top-level folder names and every location. Matching uses URL metadata where available, stable nhentai gallery IDs, and normalized HDPornComics manhwa title slugs; it does not guess for unrelated folders with similar names.
 
-Manager state and gallery-dl's archive are separate. The manager database owns URL jobs, attempts, leases, outcomes, and restart recovery. The gallery-dl archive owns per-image deduplication.
+Manager state and gallery-dl's archive are separate. The manager database owns URL jobs, attempts, leases, outcomes, and restart recovery. The gallery-dl archive owns per-image deduplication; the Manga18FX backend deduplicates against existing image files in the destination and current partial job.
 
 Each run writes `manager.log`, `events.jsonl`, `summary.json`, structured per-worker logs, and raw backend logs under `<log-dir>/<run-id>/`. Partial downloads remain under `<destination>/_partial/<job-id>/` after failure and are merged into the destination after success.
 
@@ -64,5 +67,7 @@ Each run writes `manager.log`, `events.jsonl`, `summary.json`, structured per-wo
 
 - Image and byte totals remain unknown until exposed by the backend or completion; the dashboard does not fabricate percentages.
 - Pause is a scheduling/drain pause and does not suspend an in-progress HTTP request.
-- `--config` and `--anonymize-logs` are reserved compatibility options in 1.3.0. Cookies files and browser cookie sources are passed through to gallery-dl.
+- `--config` and `--anonymize-logs` are reserved compatibility options in 1.7.0.
+- Browser-cookie extraction is passed through to gallery-dl only. The native Manga18FX backend supports `-C/--cookies` Netscape/Mozilla files.
+- Manga18FX HTML or anti-bot changes may require backend maintenance.
 - No legacy downloader is migrated, modified, or deleted.
