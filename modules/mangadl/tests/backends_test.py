@@ -1,3 +1,6 @@
+import sys
+from types import ModuleType
+
 import pytest
 
 from mangadl.backends import (
@@ -10,14 +13,15 @@ from mangadl.backends import (
 
 
 def test_gallery_dl_backend_uses_extractor_registry(monkeypatch: pytest.MonkeyPatch) -> None:
-    from gallery_dl import extractor
-
     supported_url = "https://nhentai.net/g/123/"
+    extractor_module = ModuleType("gallery_dl.extractor")
+    extractor_module.find = lambda url: object() if url == supported_url else None  # type: ignore[attr-defined]
 
-    def fake_find(url: str) -> object | None:
-        return object() if url == supported_url else None
+    gallery_dl_module = ModuleType("gallery_dl")
+    gallery_dl_module.extractor = extractor_module  # type: ignore[attr-defined]
 
-    monkeypatch.setattr(extractor, "find", fake_find)
+    monkeypatch.setitem(sys.modules, "gallery_dl", gallery_dl_module)
+    monkeypatch.setitem(sys.modules, "gallery_dl.extractor", extractor_module)
 
     assert GalleryDlBackend().score(supported_url) == 100
     assert choose_backend(supported_url) == "gallery-dl"
