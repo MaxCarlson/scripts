@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 
-def test_modules_path_import_resolves_regular_package_and_cli(tmp_path: Path) -> None:
+def test_modules_path_import_resolves_regular_package_and_clis(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[3]
     modules_root = repo_root / "modules"
     environment = os.environ.copy()
@@ -16,10 +16,11 @@ def test_modules_path_import_resolves_regular_package_and_cli(tmp_path: Path) ->
         "import rrbackup; "
         "from rrbackup import __version__; "
         "from rrbackup.application import build_parser; "
+        "from rrbackup.cli import build_parser as build_legacy_parser; "
         "assert rrbackup.__file__; "
         "assert __version__ == '1.0.0'; "
-        "parser = build_parser('backup'); "
-        "assert parser.prog == 'backup'; "
+        "assert build_parser('backup').prog == 'backup'; "
+        "assert build_legacy_parser().prog == 'rrb'; "
         "print(rrbackup.__file__)"
     )
     result = subprocess.run(
