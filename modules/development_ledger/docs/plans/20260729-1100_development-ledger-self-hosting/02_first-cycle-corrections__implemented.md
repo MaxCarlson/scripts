@@ -10,6 +10,7 @@ Correct only the defects directly exposed by the first self-host validation cycl
 - Canonical pytest JUnit IDs when pytest 9 omits the `file` attribute.
 - Regression coverage for classname-only function and test-class cases.
 - Plan revision `2` with routine local validation removed from unresolved environment dependencies.
+- Dispatcher transcript evidence replaces the redundant manual acceptance check.
 - Package patch version `1.1.1`.
 
 ## Preserved
@@ -18,7 +19,7 @@ Correct only the defects directly exposed by the first self-host validation cycl
 - Dispatcher adapter behavior.
 - Root target ordering.
 - Existing immutable run history and generated projections.
-- The pending user acceptance check.
+- One-command local validation and automatic evidence projection.
 
 ## Verification boundary
 
