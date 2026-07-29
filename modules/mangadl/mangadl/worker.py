@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,12 @@ from .naming import DIRECTORY_TEMPLATE, FILENAME_TEMPLATE
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp"}
 STATS_INTERVAL = 1.0
 HEARTBEAT_INTERVAL = 0.5
+MANGA18FX_CHAPTER_RE = re.compile(
+    r"^chapter=(?P<index>\d+)/(?P<total>\d+)\s+title=(?P<title>.+?)\s+images=(?P<images>\d+)$"
+)
+MANGA18FX_COMPLETE_RE = re.compile(
+    r"^complete\s+destination=.*?\s+downloaded=(?P<downloaded>\d+)\s+skipped=(?P<skipped>\d+)$"
+)
 
 
 def _tree_stats(root: Path) -> tuple[int, int]:
@@ -45,6 +52,46 @@ def _identity(root: Path) -> tuple[str, str]:
             site = relative.parts[0] if len(relative.parts) > 1 else "gallery"
             return site, path.parent.name
     return "", ""
+
+
+def _parse_manga18fx_output(line: str) -> dict[str, Any] | None:
+    """Parse stable native-backend status lines without interpreting arbitrary output."""
+    chapter = MANGA18FX_CHAPTER_RE.match(line)
+    if chapter:
+        title = chapter.group("title").strip()
+        if len(title) >= 2 and title[0] == title[-1] and title[0] in {"'", '"'}:
+            title = title[1:-1]
+        return {
+            "kind": "chapter",
+            "chapter_index": int(chapter.group("index")),
+            "chapters_total": int(chapter.group("total")),
+            "chapter_title": title,
+            "chapter_images": int(chapter.group("images")),
+        }
+
+    complete = MANGA18FX_COMPLETE_RE.match(line)
+    if complete:
+        downloaded = int(complete.group("downloaded"))
+        skipped = int(complete.group("skipped"))
+        return {
+            "kind": "complete",
+            "downloaded": downloaded,
+            "skipped": skipped,
+            "images_total": downloaded + skipped,
+        }
+    return None
+
+
+def _manga18fx_completion(downloaded: int, skipped: int) -> tuple[str, int, str]:
+    """Classify a native Manga18FX completion using backend-reported counts."""
+    total = downloaded + skipped
+    if total <= 0:
+        raise ValueError("Manga18FX reported zero downloaded or existing images")
+    if downloaded == 0:
+        return "skipped_archive", total, f"already complete: {skipped} images were present in the library"
+    if skipped:
+        return "succeeded", total, f"completed: {downloaded} downloaded, {skipped} already present"
+    return "succeeded", total, ""
 
 
 def _emit(args: argparse.Namespace, name: str, **data: Any) -> None:
@@ -182,8 +229,12 @@ def run(args: argparse.Namespace) -> int:
     baseline_images, baseline_size = _tree_stats(output_root)
     images, size = baseline_images, baseline_size
     site, title = _identity(output_root)
+    if args.backend == "manga18fx":
+        site = "M18"
     samples: deque[tuple[float, int, int]] = deque([(started, size, images)], maxlen=30)
     tail: deque[str] = deque(maxlen=100)
+    backend_progress: dict[str, Any] = {}
+    backend_progress_lock = threading.Lock()
     _emit(args, "worker_ready", state="running", destination=str(output_root), backend=args.backend)
     try:
         command = _command(args, partial)
@@ -211,7 +262,24 @@ def run(args: argparse.Namespace) -> int:
             for line in process.stdout:
                 raw.write(line)
                 raw.flush()
-                tail.append(line.rstrip())
+                text = line.rstrip()
+                tail.append(text)
+                if args.backend != "manga18fx":
+                    continue
+                parsed = _parse_manga18fx_output(text)
+                if parsed is None:
+                    continue
+                with backend_progress_lock:
+                    backend_progress.update(parsed)
+                    if parsed["kind"] == "chapter":
+                        backend_progress["message"] = (
+                            f"chapter {parsed['chapter_index']}/{parsed['chapters_total']}: "
+                            f"{parsed['chapter_title']} ({parsed['chapter_images']} images)"
+                        )
+                    elif parsed["kind"] == "complete":
+                        backend_progress["message"] = (
+                            f"complete: {parsed['downloaded']} downloaded, {parsed['skipped']} already present"
+                        )
 
         thread = threading.Thread(target=capture, daemon=True)
         thread.start()
@@ -222,7 +290,10 @@ def run(args: argparse.Namespace) -> int:
             if now - last_stats >= STATS_INTERVAL:
                 images, size = _tree_stats(output_root)
                 if not title:
-                    site, title = _identity(output_root)
+                    discovered_site, discovered_title = _identity(output_root)
+                    if discovered_site:
+                        site = discovered_site
+                    title = discovered_title
                 samples.append((now, size, images))
                 while len(samples) > 2 and now - samples[0][0] > 5.0:
                     samples.popleft()
@@ -230,12 +301,18 @@ def run(args: argparse.Namespace) -> int:
             old_t, old_size, old_images = samples[0]
             delta = max(now - old_t, 0.001)
             elapsed = max(now - started, 0.001)
+            with backend_progress_lock:
+                progress = dict(backend_progress)
+            reported_images = int(progress.get("images_total", images)) if progress.get("kind") == "complete" else images
+            reported_total = progress.get("images_total") if progress.get("kind") == "complete" else None
+            message = str(progress.get("message") or (tail[-1] if tail else f"starting {args.backend}"))
             if now - last_emit >= HEARTBEAT_INTERVAL:
                 _emit(
                     args,
                     "heartbeat",
                     state="running",
-                    images_done=images,
+                    images_done=reported_images,
+                    images_total=reported_total,
                     bytes_done=size,
                     current_bps=max(0.0, (size - old_size) / delta),
                     average_bps=max(0.0, (size - baseline_size) / elapsed),
@@ -244,32 +321,80 @@ def run(args: argparse.Namespace) -> int:
                     site=site,
                     title=title,
                     elapsed=elapsed,
-                    message=tail[-1] if tail else f"starting {args.backend}",
+                    message=message,
                 )
                 last_emit = now
             time.sleep(0.1)
         thread.join(timeout=5)
         returncode = process.returncode or 0
     images, size = _tree_stats(output_root)
+    with backend_progress_lock:
+        final_progress = dict(backend_progress)
+
     if returncode == 0:
+        manga18fx_downloaded = int(final_progress.get("downloaded", 0))
+        manga18fx_skipped = int(final_progress.get("skipped", 0))
+        manga18fx_total = manga18fx_downloaded + manga18fx_skipped
+
+        manga18fx_state = "succeeded"
+        manga18fx_message = ""
+        if args.backend == "manga18fx":
+            try:
+                manga18fx_state, manga18fx_total, manga18fx_message = _manga18fx_completion(
+                    manga18fx_downloaded,
+                    manga18fx_skipped,
+                )
+            except ValueError as exc:
+                _emit(
+                    args,
+                    "job_terminal_failure",
+                    state="failed_backend",
+                    category="backend",
+                    message=str(exc),
+                    images_done=0,
+                    images_total=0,
+                    bytes_done=size,
+                    elapsed=time.monotonic() - started,
+                )
+                return 1
+
         if args.backend != "hdporncomics":
             _merge_partial(partial, Path(args.destination))
-        skipped = (
-            images == baseline_images and size == baseline_size and any("archive" in line.lower() for line in tail)
+
+        gallery_skipped = (
+            args.backend != "manga18fx"
+            and images == baseline_images
+            and size == baseline_size
+            and any("archive" in line.lower() for line in tail)
         )
         incomplete = args.backend == "hdporncomics" and images == 0
+
+        final_images = manga18fx_total if args.backend == "manga18fx" else images
+        message = manga18fx_message
+        if incomplete:
+            message = "hdporncomics exited successfully but no chapter images were found"
+
         _emit(
             args,
             "job_complete",
-            state="succeeded_incomplete" if incomplete else "skipped_archive" if skipped else "succeeded",
-            images_done=images,
-            images_total=images,
+            state=(
+                "succeeded_incomplete"
+                if incomplete
+                else manga18fx_state
+                if args.backend == "manga18fx"
+                else "skipped_archive"
+                if gallery_skipped
+                else "succeeded"
+            ),
+            images_done=final_images,
+            images_total=final_images,
             bytes_done=size,
             bytes_total=size,
             elapsed=time.monotonic() - started,
-            message="hdporncomics exited successfully but no chapter images were found" if incomplete else "",
+            message=message,
         )
         return 0
+
     output = "\n".join(tail)
     category, retryable = _classify(returncode, output)
     hint = patch_recovery_hint(output) if args.backend == "hdporncomics" else None
