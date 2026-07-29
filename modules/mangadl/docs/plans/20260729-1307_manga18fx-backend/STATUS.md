@@ -2,7 +2,7 @@
 
 ## Current State
 
-Implementation is present on `agent/add-manga18fx-backend`.
+Implementation is present on `agent/add-manga18fx-backend`. The user confirmed that a Manga18FX URL file is routing and downloading correctly on Windows 11.
 
 ## Completed
 
@@ -13,15 +13,23 @@ Implementation is present on `agent/add-manga18fx-backend`.
 - Added stable chapter folder prefixes, including fractional chapter numbers such as `215.5`.
 - Added offline tests for parsing, natural chapter ordering, lazy image extraction, URL validation, Windows-safe names, stable chapter names, and worker command construction.
 - Bumped `mangadl` from 1.6.0 to 1.7.0.
-- Independently executed the new parser/naming tests in an isolated Python 3 environment: 6 passed.
 - Confirmed through current web indexing that Manga18FX still exposes series chapter lists and `/manga/<slug>/chapter-<n>` chapter pages.
+- Confirmed through the user's live run that the URL-file workflow downloads Manga18FX series correctly.
+- Fixed the Windows pytest base-temp setup so the parent directory is created before `tmp_path` fixtures initialize.
+- Moved base-temp selection into a module-local pytest hook so tests remain under `modules/mangadl/.pytest_tmp_root` regardless of the shell working directory.
+- Replaced the gallery-dl routing test's dependency on the installed extractor catalog with a deterministic mocked extractor registry.
+- Executed an isolated regression replica covering the pytest hook and backend routing tests: 11 passed.
+
+## Validation Evidence
+
+The user's pre-fix full-suite run showed that production downloading worked, while test setup failed before affected tests executed because `.pytest_tmp_root` did not exist. The only assertion failure depended on whether the installed gallery-dl build currently registered nhentai. Both root causes have been corrected.
 
 ## Unverified
 
-- Full repository/module pytest run has not been executed in the user's checkout.
-- Live image downloads cannot be tested from the remote execution environment.
+- The complete mangadl pytest suite has not yet been rerun in the user's Windows checkout after the fixes.
+- A second live run has not yet confirmed that all existing Manga18FX image files are skipped.
 - Site age-verification, anti-bot, or cookie requirements remain environment-dependent.
 
 ## Next Action
 
-Pull this branch, reinstall the editable module, run the complete mangadl test suite, then run the controlled one-series smoke test from the implementation plan.
+Pull the latest branch and run `pytest --tb=short -q .\tests\` from `modules/mangadl`. If it passes, review the branch diff and merge it into `main` as the next separate action.
