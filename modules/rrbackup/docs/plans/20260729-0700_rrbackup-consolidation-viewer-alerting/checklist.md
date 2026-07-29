@@ -30,7 +30,7 @@
 
 Stage 2 is split into bounded checkpoints. Do not begin the next checkpoint until the current checkpoint's automated and manual evidence has been reviewed.
 
-### Checkpoint 2A — Single-CLI UX Foundation — Awaiting Local Validation
+### Checkpoint 2A — Single-CLI UX Foundation — Accepted
 
 #### Validation and progress evidence
 
@@ -43,8 +43,8 @@ Stage 2 is split into bounded checkpoints. Do not begin the next checkpoint unti
 - [x] Record manual feedback on view fragmentation, raw JSON, scheduler noise, and slow storage statistics
 - [x] Add bounded Checkpoint 2A scope and stop rule to the active plan
 - [x] Add compile, focused lint, help, pytest/coverage, and PowerShell gates for Checkpoint 2A
-- [ ] Pass corrected Windows validation for Checkpoint 2A
-- [ ] Complete Checkpoint 2A manual acceptance
+- [x] Pass corrected Windows validation: 288 passed, 7 skipped
+- [x] Complete the bounded 2A manual review and record follow-up UX checkpoints
 
 #### Public command surface
 
@@ -117,7 +117,7 @@ Stage 2 is split into bounded checkpoints. Do not begin the next checkpoint unti
 - [x] Preserve preview, dry-run, CPU-policy bypass, extra tags, exclusions, and raw Restic arguments
 - [x] Keep print-command-only as a hard no-side-effect barrier
 - [x] Add run-selection, direct-run, skipped-exit, and no-materialization preview tests
-- [ ] Manually verify chooser cancellation and selected-run confirmation behavior
+- [ ] Add and manually verify final selected-run confirmation
 
 #### `backup schedule`
 
@@ -161,7 +161,65 @@ Stage 2 is split into bounded checkpoints. Do not begin the next checkpoint unti
 - [x] Add formatter, details, selection callback, color, and ANSI-stripping tests
 - [ ] Manually verify fallback behavior when curses cannot initialize
 
-### Checkpoint 2B — Create and Schedule Wizard Preview — Deferred Until 2A Passes
+### Checkpoint 2A.1a — Completed Versus Attempted Run Visibility — Accepted
+
+- [x] Show Last complete independently from Last attempt
+- [x] Show attempt state for queued/waiting/running/success/failure/interrupted/skipped/dry-run
+- [x] Preserve snapshots as completed-backup evidence for pre-merge history
+- [x] Add run ID, timestamps, exit code, reason, and snapshot ID to details
+- [x] Distinguish attempted runs from completed snapshots in History
+- [x] Pass local validation: 289 passed, 7 skipped
+- [x] Manually verify the July interrupted attempt and April completed snapshot appear separately
+
+### Checkpoint 2A.1b — Interactive Viewer Carousel — Awaiting Local Validation
+
+- [x] Add six-page interactive viewer controller
+- [x] Add persistent `View: <PAGE> — pg. n/6` header
+- [x] Add `[`/`]`, Tab, and `1`–`6` page switching
+- [x] Preserve navigation, filtering, details, paging, horizontal scrolling, and resize behavior
+- [x] Make `--section` select the starting interactive page
+- [x] Keep explicit plain, JSON, and Markdown noninteractive modes
+- [x] Load repository and diagnostics pages lazily
+- [x] Replace default diagnostics JSON/Markdown dump with compact human rows and details
+- [x] Replace default audit dump with a compact human index
+- [x] Add `backup view --demo` safe synthetic visual fixtures
+- [x] Include healthy, warning, failed, interrupted, running, disabled-schedule, multi-repository, and multi-source demo states
+- [x] Ensure demo mode does not load real configuration, inspect host state, invoke Restic, or write files
+- [x] Remove redundant inline `complete`, `attempt`, `next`, and `missed` row labels
+- [x] Route `backup run auto` through the concise selector
+- [x] Add non-curses tests for page builders, switching, lazy loading, demo diversity, diagnostics, audit summary, and selector formatting
+- [x] Add new viewer/runtime modules and tests to root compilation/lint/pytest validation
+- [ ] Pass local automated validation
+- [ ] Manually accept demo carousel visuals, hotkeys, details, filters, and resizing
+- [ ] Manually accept real carousel and compact diagnostics
+- [ ] Manually accept concise run-selector formatting without pressing `R`
+
+### Checkpoint 2A.2 — Confirmed In-TUI Run Monitor — Deferred
+
+- [ ] Add a final confirmation page before real execution
+- [ ] Keep execution inside the themed TUI
+- [ ] Parse Restic JSON status rather than printing it raw
+- [ ] Show aggregate percentage, files, bytes, elapsed time, ETA, and current files
+- [ ] Show active-run state from both `backup run auto` and `backup view`
+- [ ] Add richer live/persisted details pages
+- [ ] Show completion state and snapshot ID without leaving the TUI
+- [ ] Add confirmed graceful Stop
+- [ ] Preserve Ctrl+C as an emergency graceful-stop path
+- [ ] Investigate trustworthy per-source/per-drive instrumentation without changing snapshot semantics
+
+### Checkpoint 2A.3 — Pause, Resume, and Scheduled Resume — Deferred
+
+- [ ] Design a safe Windows process-suspension boundary
+- [ ] Preserve process identity and repository lock ownership
+- [ ] Persist and display paused state
+- [ ] Add manual resume
+- [ ] Add pause-now/resume-after-duration
+- [ ] Define UI-exit and reboot behavior for scheduled resume
+- [ ] Add crash/stale-process recovery
+- [ ] Add stop-while-paused handling
+- [ ] Add injected-clock and Windows controlled-acceptance tests
+
+### Checkpoint 2B — Create and Schedule Wizard Preview — Deferred Until Viewer/Monitor Work Passes
 
 - [x] Add preview-first wizard data and scheduler-plan scaffolding
 - [ ] Validate the creation wizard interactively without applying
