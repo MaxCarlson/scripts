@@ -144,6 +144,7 @@ function Invoke-ManifestCommand {
         [hashtable]$Tokens,
 
         [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
         [System.Collections.Generic.List[string]]$TargetFailures
     )
 

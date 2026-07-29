@@ -21,6 +21,7 @@
             "pip",
             "install",
             "--disable-pip-version-check",
+            "--no-build-isolation",
             "-e",
             "{target_root}[dev]"
           ]

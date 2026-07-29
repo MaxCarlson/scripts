@@ -1,0 +1,337 @@
+
+
+====================================================================================================
+VALIDATION TARGET: rrbackup
+====================================================================================================
+Timestamp: 2026-07-29T08:27:31.0272555-07:00
+Description: RRBackup consolidation, compatibility, viewer, scheduler, and alerting validation.
+Repository root: C:\Users\mcarls\src\scripts
+Working directory: C:\Users\mcarls\src\scripts\modules\rrbackup
+Python: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe
+PowerShell: 7.6.1
+Platform: Microsoft Windows 10.0.26200
+Bootstrap enabled: True
+Production read-only checks: False
+Git branch: agent/merge-restic-backup-modules
+Git commit: b16b7ee1518ead60e37d5b6884317d9872dc3b1d
+Git status before validation:
+ M Invoke-Tests.ps1
+ M modules/rrbackup/tests/integration_test.py
+ M modules/rrbackup/tests/powershell/environment_smoke_test.ps1
+ M validation-targets.json
+?? docs/test-results/rrbackup/
+
+====================================================================================================
+Install RRBackup editable development dependencies
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\rrbackup
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pip install --disable-pip-version-check --no-build-isolation -e C:\Users\mcarls\src\scripts\modules\rrbackup[dev]
+WARNING: Ignoring invalid distribution ~%bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~-bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~=bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ebndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~~bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+Obtaining file:///C:/Users/mcarls/src/scripts/modules/rrbackup
+  Checking if build backend supports build_editable: started
+  Checking if build backend supports build_editable: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Preparing editable metadata (pyproject.toml): finished with status 'done'
+Requirement already satisfied: tomli-w in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from rrbackup==0.2.0) (1.2.0)
+Requirement already satisfied: pytest>=7.0 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from rrbackup==0.2.0) (9.0.3)
+Requirement already satisfied: pytest-cov>=4.0 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from rrbackup==0.2.0) (7.0.0)
+Requirement already satisfied: pytest-mock>=3.10 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from rrbackup==0.2.0) (3.15.1)
+Requirement already satisfied: mypy>=1.0 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from rrbackup==0.2.0) (1.20.2)
+Requirement already satisfied: ruff>=0.1.0 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from rrbackup==0.2.0) (0.14.8)
+Requirement already satisfied: typing_extensions>=4.6.0 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from mypy>=1.0->rrbackup==0.2.0) (4.15.0)
+Requirement already satisfied: mypy_extensions>=1.0.0 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from mypy>=1.0->rrbackup==0.2.0) (1.1.0)
+Requirement already satisfied: pathspec>=1.0.0 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from mypy>=1.0->rrbackup==0.2.0) (1.1.1)
+Requirement already satisfied: librt>=0.8.0 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from mypy>=1.0->rrbackup==0.2.0) (0.9.0)
+Requirement already satisfied: colorama>=0.4 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from pytest>=7.0->rrbackup==0.2.0) (0.4.6)
+Requirement already satisfied: iniconfig>=1.0.1 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from pytest>=7.0->rrbackup==0.2.0) (2.3.0)
+Requirement already satisfied: packaging>=22 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from pytest>=7.0->rrbackup==0.2.0) (25.0)
+Requirement already satisfied: pluggy<2,>=1.5 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from pytest>=7.0->rrbackup==0.2.0) (1.6.0)
+Requirement already satisfied: pygments>=2.7.2 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from pytest>=7.0->rrbackup==0.2.0) (2.19.2)
+Requirement already satisfied: coverage>=7.10.6 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from coverage[toml]>=7.10.6->pytest-cov>=4.0->rrbackup==0.2.0) (7.13.0)
+Building wheels for collected packages: rrbackup
+  Building editable for rrbackup (pyproject.toml): started
+  Building editable for rrbackup (pyproject.toml): finished with status 'done'
+  Created wheel for rrbackup: filename=rrbackup-0.2.0-0.editable-py3-none-any.whl size=6158 sha256=be607583dcb4eb1659efb859f5ab02f7884f65863baabd10ac0fae714b4a7bbf
+  Stored in directory: C:\Users\mcarls\AppData\Local\Temp\pip-ephem-wheel-cache-iwljedbi\wheels\8c\5d\d7\3308138532b7624f56969ac10a1a7e70bff0bfeb301caeee82
+Successfully built rrbackup
+WARNING: Ignoring invalid distribution ~%bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~-bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~=bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ebndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~~bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+Installing collected packages: rrbackup
+  Attempting uninstall: rrbackup
+    Found existing installation: rrbackup 0.2.0
+    Not uninstalling rrbackup at c:\users\mcarls\src\scripts\modules\rrbackup, outside environment C:\Users\mcarls\src\scripts\.venv
+    Can't uninstall 'rrbackup'. No files were found to uninstall.
+WARNING: Ignoring invalid distribution ~%bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~-bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~=bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ebndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~~bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+Successfully installed rrbackup-0.2.0
+RESULT: PASS - Install RRBackup editable development dependencies
+
+====================================================================================================
+RRBackup pytest and coverage suite
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\rrbackup
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest tests -vv -ra --tb=short --durations=25 --strict-config --strict-markers --import-mode=importlib --rootdir C:\Users\mcarls\src\scripts\modules\rrbackup --basetemp C:\Users\mcarls\src\scripts\modules\rrbackup\.pytest_tmp_root\validation-20260729-082730 --cov=rrbackup --cov-branch --cov-report=term-missing
+
+============================================================
+RRBackup Test Environment Status
+============================================================
+User config: [SKIP] Not found at C:\Users\mcarls\AppData\Roaming\rrbackup\config.toml
+Google Drive: [SKIP] set RRBACKUP_RUN_GDRIVE_TESTS=1 to enable live Google Drive tests
+============================================================
+
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.0.3, pluggy-1.6.0 -- C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\mcarls\src\scripts\modules\rrbackup
+configfile: pytest.ini
+plugins: anyio-4.12.1, libtmux-0.47.0, asyncio-1.3.0, cov-7.0.0, mock-3.15.1
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 134 items
+
+tests/cli_test.py::TestBuildParser::test_parser_created PASSED           [  0%]
+tests/cli_test.py::TestBuildParser::test_version_flags[--version] PASSED [  1%]
+tests/cli_test.py::TestBuildParser::test_version_flags[-V] PASSED        [  2%]
+tests/cli_test.py::TestBuildParser::test_global_flags[arguments0-config-/tmp/config.toml] PASSED [  2%]
+tests/cli_test.py::TestBuildParser::test_global_flags[arguments1-config-/tmp/config.toml] PASSED [  3%]
+tests/cli_test.py::TestBuildParser::test_global_flags[arguments2-verbose-True] PASSED [  4%]
+tests/cli_test.py::TestBuildParser::test_global_flags[arguments3-verbose-True] PASSED [  5%]
+tests/cli_test.py::TestBuildParser::test_invalid_command_exits_nonzero PASSED [  5%]
+tests/cli_test.py::TestSetupCommand::test_setup_command_parsed PASSED    [  6%]
+tests/cli_test.py::TestSetupCommand::test_setup_flags[arguments0-password_file-/tmp/pwd.txt] PASSED [  7%]
+tests/cli_test.py::TestSetupCommand::test_setup_flags[arguments1-password_file-/tmp/pwd.txt] PASSED [  8%]
+tests/cli_test.py::TestSetupCommand::test_setup_flags[arguments2-remote_check-True] PASSED [  8%]
+tests/cli_test.py::TestSetupCommand::test_setup_flags[arguments3-remote_check-True] PASSED [  9%]
+tests/cli_test.py::TestSetupCommand::test_setup_flags[arguments4-wizard-True] PASSED [ 10%]
+tests/cli_test.py::TestSetupCommand::test_setup_flags[arguments5-wizard-True] PASSED [ 11%]
+tests/cli_test.py::TestListCommand::test_list_command_parsed PASSED      [ 11%]
+tests/cli_test.py::TestListCommand::test_list_filters_and_short_forms PASSED [ 12%]
+tests/cli_test.py::TestBackupCommand::test_backup_requires_set PASSED    [ 13%]
+tests/cli_test.py::TestBackupCommand::test_set_option[--set] PASSED      [ 14%]
+tests/cli_test.py::TestBackupCommand::test_set_option[-s] PASSED         [ 14%]
+tests/cli_test.py::TestBackupCommand::test_dry_run_option[--dry-run] PASSED [ 15%]
+tests/cli_test.py::TestBackupCommand::test_dry_run_option[-n] PASSED     [ 16%]
+tests/cli_test.py::TestBackupCommand::test_repeatable_overrides_and_raw_restic_arg PASSED [ 17%]
+tests/cli_test.py::TestSimpleCommands::test_command_parsed[stats] PASSED [ 17%]
+tests/cli_test.py::TestSimpleCommands::test_command_parsed[check] PASSED [ 18%]
+tests/cli_test.py::TestSimpleCommands::test_command_parsed[prune] PASSED [ 19%]
+tests/cli_test.py::TestSimpleCommands::test_command_parsed[progress] PASSED [ 20%]
+tests/cli_test.py::TestConfigSubcommands::test_init PASSED               [ 20%]
+tests/cli_test.py::TestConfigSubcommands::test_wizard PASSED             [ 21%]
+tests/cli_test.py::TestConfigSubcommands::test_show PASSED               [ 22%]
+tests/cli_test.py::TestConfigSubcommands::test_list_sets PASSED          [ 23%]
+tests/cli_test.py::TestConfigSubcommands::test_add_set PASSED            [ 23%]
+tests/cli_test.py::TestConfigSubcommands::test_remove_set PASSED         [ 24%]
+tests/cli_test.py::TestConfigSubcommands::test_set_values PASSED         [ 25%]
+tests/cli_test.py::TestConfigSubcommands::test_retention_values PASSED   [ 26%]
+tests/cli_test.py::TestConfigSubcommands::test_retention_flags[-u-use_defaults] PASSED [ 26%]
+tests/cli_test.py::TestConfigSubcommands::test_retention_flags[--use-defaults-use_defaults] PASSED [ 27%]
+tests/cli_test.py::TestConfigSubcommands::test_retention_flags[-X-clear] PASSED [ 28%]
+tests/cli_test.py::TestConfigSubcommands::test_retention_flags[--clear-clear] PASSED [ 29%]
+tests/cli_test.py::TestMainFunction::test_no_arguments_exits_nonzero PASSED [ 29%]
+tests/cli_test.py::TestMainFunction::test_list_dispatches_with_loaded_config PASSED [ 30%]
+tests/cli_test.py::TestMainFunction::test_missing_config_returns_stable_error PASSED [ 31%]
+tests/cli_test.py::test_every_public_long_option_has_a_short_form PASSED [ 32%]
+tests/command_contract_test.py::test_canonical_and_compatibility_programs PASSED [ 32%]
+tests/command_contract_test.py::test_exact_six_major_command_areas PASSED [ 33%]
+tests/command_contract_test.py::test_edit_alias_resolves_to_config PASSED [ 34%]
+tests/command_contract_test.py::test_unknown_major_command_raises PASSED [ 35%]
+tests/command_contract_test.py::test_audit_sections_are_unique_and_complete PASSED [ 35%]
+tests/command_contract_test.py::test_sensitive_and_optional_audit_sections_are_explicit PASSED [ 36%]
+tests/command_contract_test.py::test_get_audit_section_normalizes_names PASSED [ 37%]
+tests/command_contract_test.py::test_unknown_audit_section_raises PASSED [ 38%]
+tests/config_test.py::TestPlatformConfigDefault::test_native_config_path PASSED [ 38%]
+tests/config_test.py::TestRepo::test_creation_with_password_file PASSED  [ 39%]
+tests/config_test.py::TestRepo::test_creation_with_password_environment PASSED [ 40%]
+tests/config_test.py::TestRepo::test_expand_uses_native_user_home PASSED [ 41%]
+tests/config_test.py::TestSchedule::test_manual_schedule_serializes_minimally PASSED [ 41%]
+tests/config_test.py::TestSchedule::test_full_schedule_serialization PASSED [ 42%]
+tests/config_test.py::TestSchedule::test_parse_mapping PASSED            [ 43%]
+tests/config_test.py::TestSchedule::test_parse_legacy_string PASSED      [ 44%]
+tests/config_test.py::TestSchedule::test_parse_missing_value_returns_manual PASSED [ 44%]
+tests/config_test.py::TestRetentionPolicy::test_defaults PASSED          [ 45%]
+tests/config_test.py::TestRetentionPolicy::test_custom_to_dict PASSED    [ 46%]
+tests/config_test.py::TestRetentionPolicy::test_size_parsing[None-expected0] PASSED [ 47%]
+tests/config_test.py::TestRetentionPolicy::test_size_parsing[-expected1] PASSED [ 47%]
+tests/config_test.py::TestRetentionPolicy::test_size_parsing[1024-expected2] PASSED [ 48%]
+tests/config_test.py::TestRetentionPolicy::test_size_parsing[1KB-expected3] PASSED [ 49%]
+tests/config_test.py::TestRetentionPolicy::test_size_parsing[1.5MB-expected4] PASSED [ 50%]
+tests/config_test.py::TestRetentionPolicy::test_size_parsing[2GB-expected5] PASSED [ 50%]
+tests/config_test.py::TestRetentionPolicy::test_size_parsing[1TB-expected6] PASSED [ 51%]
+tests/config_test.py::TestRetentionPolicy::test_invalid_size_raises PASSED [ 52%]
+tests/config_test.py::TestRetentionPolicy::test_retention_mapping_parses_size PASSED [ 52%]
+tests/config_test.py::TestRetentionPolicy::test_existing_retention_is_returned PASSED [ 53%]
+tests/config_test.py::TestRetentionPolicy::test_invalid_retention_type_raises PASSED [ 54%]
+tests/config_test.py::TestBackupSetAndSettings::test_minimal_backup_set PASSED [ 55%]
+tests/config_test.py::TestBackupSetAndSettings::test_full_backup_set PASSED [ 55%]
+tests/config_test.py::TestBackupSetAndSettings::test_settings_defaults PASSED [ 56%]
+tests/config_test.py::TestBackupSetAndSettings::test_settings_expand_resolves_native_defaults PASSED [ 57%]
+tests/config_test.py::TestResolveConfigPath::test_explicit_path_takes_precedence PASSED [ 58%]
+tests/config_test.py::TestResolveConfigPath::test_environment_precedes_default PASSED [ 58%]
+tests/config_test.py::TestResolveConfigPath::test_default_used_without_override PASSED [ 59%]
+tests/config_test.py::TestLoadConfig::test_load_valid_config PASSED      [ 60%]
+tests/config_test.py::TestLoadConfig::test_missing_config_raises PASSED  [ 61%]
+tests/config_test.py::TestLoadConfig::test_missing_binaries_warn PASSED  [ 61%]
+tests/config_test.py::TestLoadConfig::test_no_expand_preserves_explicit_values PASSED [ 62%]
+tests/config_test.py::TestLoadConfig::test_legacy_max_snapshots_maps_to_retention PASSED [ 63%]
+tests/config_test.py::TestSettingsSerialization::test_minimal_settings_to_dict PASSED [ 64%]
+tests/config_test.py::TestSettingsSerialization::test_full_settings_to_dict PASSED [ 64%]
+tests/config_test.py::TestSettingsSerialization::test_save_creates_parent_and_round_trips PASSED [ 65%]
+tests/config_test.py::TestSettingsSerialization::test_save_refuses_existing_file_without_overwrite PASSED [ 66%]
+tests/config_test.py::TestSettingsSerialization::test_save_overwrites_when_explicit PASSED [ 67%]
+tests/config_test.py::TestSettingsSerialization::test_unicode_paths_round_trip PASSED [ 67%]
+tests/integration_test.py::TestWithUserConfig::test_user_config_exists_and_loads SKIPPEDig.toml; the default suite
+does not require user configuration.)                                    [ 68%]
+tests/integration_test.py::TestWithUserConfig::test_user_config_has_valid_repository SKIPPEDig.toml; the default suite
+does not require user configuration.)                                    [ 69%]
+tests/integration_test.py::TestWithUserConfig::test_user_config_has_backup_sets SKIPPEDig.toml; the default suite
+does not require user configuration.)                                    [ 70%]
+tests/integration_test.py::TestWithUserConfig::test_user_config_has_retention_policy SKIPPEDig.toml; the default suite
+does not require user configuration.)                                    [ 70%]
+tests/integration_test.py::TestWithGoogleDrive::test_rclone_gdrive_configured SKIPPED [ 71%]
+tests/integration_test.py::TestWithGoogleDrive::test_rclone_gdrive_connectivity SKIPPED [ 72%]
+tests/integration_test.py::TestWithGoogleDrive::test_rclone_can_create_directory SKIPPED [ 73%]
+tests/integration_test.py::TestWithGoogleDrive::test_rclone_upload_download SKIPPED [ 73%]
+tests/integration_test.py::TestResticBinaryAvailability::test_restic_binary_exists SKIPPEDccess is denied) [ 74%]
+tests/integration_test.py::TestResticBinaryAvailability::test_rclone_binary_exists SKIPPEDccess is denied) [ 75%]
+tests/integration_test.py::TestEndToEndBackupRestore::test_full_backup_restore_cycle SKIPPEDccess is denied) [ 76%]
+tests/integration_test.py::TestCLIHelpOutput::test_main_help_output PASSED [ 76%]
+tests/integration_test.py::TestCLIHelpOutput::test_backup_help_output PASSED [ 77%]
+tests/integration_test.py::TestCLIHelpOutput::test_config_help_output PASSED [ 78%]
+tests/integration_test.py::TestErrorMessages::test_missing_config_error_message PASSED [ 79%]
+tests/integration_test.py::TestErrorMessages::test_invalid_backup_set_error_message PASSED [ 79%]
+tests/runner_test.py::TestHelperFunctions::test_now_stamp_format PASSED  [ 80%]
+tests/runner_test.py::TestHelperFunctions::test_logfile_path PASSED      [ 81%]
+tests/runner_test.py::TestHelperFunctions::test_pidfile_path PASSED      [ 82%]
+tests/runner_test.py::TestHelperFunctions::test_repo_url PASSED          [ 82%]
+tests/runner_test.py::TestEnvForRepo::test_env_with_password_file PASSED [ 83%]
+tests/runner_test.py::TestEnvForRepo::test_env_with_password_env PASSED  [ 84%]
+tests/runner_test.py::TestEnvForRepo::test_env_missing_password_env_raises_error PASSED [ 85%]
+tests/runner_test.py::TestEnvForRepo::test_env_no_repo_raises_error PASSED [ 85%]
+tests/runner_test.py::TestRunRestic::test_run_restic_success PASSED      [ 86%]
+tests/runner_test.py::TestRunRestic::test_run_restic_failure_raises_error PASSED [ 87%]
+tests/runner_test.py::TestRunRestic::test_run_restic_creates_log_file PASSED [ 88%]
+tests/runner_test.py::TestStartBackup::test_start_backup_creates_pid_file PASSED [ 88%]
+tests/runner_test.py::TestStartBackup::test_start_backup_includes_tags PASSED [ 89%]
+tests/runner_test.py::TestStartBackup::test_start_backup_includes_excludes PASSED [ 90%]
+tests/runner_test.py::TestStartBackup::test_start_backup_dry_run PASSED  [ 91%]
+tests/runner_test.py::TestStartBackup::test_start_backup_one_file_system PASSED [ 91%]
+tests/runner_test.py::TestStartBackup::test_start_backup_cleans_up_pid_on_error PASSED [ 92%]
+tests/runner_test.py::TestListSnapshots::test_list_snapshots_no_filters PASSED [ 93%]
+tests/runner_test.py::TestListSnapshots::test_list_snapshots_with_filters PASSED [ 94%]
+tests/runner_test.py::TestRepoStats::test_repo_stats PASSED              [ 94%]
+tests/runner_test.py::TestRunCheck::test_run_check PASSED                [ 95%]
+tests/runner_test.py::TestRunForgetPrune::test_forget_prune_with_RetentionPolicy PASSED [ 96%]
+tests/runner_test.py::TestRunForgetPrune::test_forget_prune_skips_none_values PASSED [ 97%]
+tests/runner_test.py::TestShowInProgress::test_show_in_progress_no_pidfiles PASSED [ 97%]
+tests/runner_test.py::TestShowInProgress::test_show_in_progress_with_pidfiles PASSED [ 98%]
+tests/runner_test.py::TestErrorHandling::test_backup_with_missing_include_paths PASSED [ 99%]
+tests/runner_test.py::TestErrorHandling::test_restic_timeout_handling PASSED [100%]
+
+============================== warnings summary ===============================
+..\..\.venv\Lib\site-packages\_pytest\cacheprovider.py:475
+  C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\_pytest\cacheprovider.py:475: PytestCacheWarning: could not create cache path C:\Users\mcarls\src\scripts\modules\rrbackup\.pytest_cache\v\cache\nodeids: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\src\\scripts\\modules\\rrbackup\\.pytest_cache\\v\\cache'
+    config.cache.set("cache/nodeids", sorted(self.cached_nodeids))
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=============================== tests coverage ================================
+______________ coverage: platform win32, python 3.12.10-final-0 _______________
+
+Name                           Stmts   Miss Branch BrPart  Cover   Missing
+--------------------------------------------------------------------------
+rrbackup\__init__.py               3      0      0      0   100%
+rrbackup\cli.py                  190     60     22      5    65%   166-189, 196-197, 199-200, 202, 207-209, 215, 223-236, 240-246, 250-256, 260-266, 270-272, 288
+rrbackup\command_contract.py      28      0      6      0   100%
+rrbackup\config.py               223      9     92     10    94%   44, 58-59, 165, 309, 337, 338->340, 351->354, 366, 368, 370, 376->378
+rrbackup\config_cli.py           355    324    108      0     7%   35, 43-45, 50-52, 57-62, 67-79, 84-96, 101-125, 129-130, 135-138, 142-144, 149-192, 197-216, 221-265, 270-321, 325-331, 335-368, 372-393, 397-538, 542-581, 594-618
+rrbackup\interactive.py          110     99     38      0     7%   13-28, 35-50, 62-86, 98-115, 122-140, 148-157
+rrbackup\runner.py               110      8     46     10    88%   28->34, 81-82, 100->103, 103->106, 109, 116-117, 144, 145->147, 147->149, 149->151, 151->153, 174-175
+rrbackup\setup_wizard.py         530    471    202      0     8%   37, 46-48, 52-53, 57-65, 69-76, 80-86, 91-99, 110-124, 128-144, 149-173, 176-186, 189-200, 203-209, 216-249, 252-301, 304-313, 316-353, 356-391, 394-415, 418-437, 440-472, 476-504, 507-517, 520-526, 529-535, 538-543, 548-553, 556-559, 562-579, 582, 591-601, 604-606, 611-632, 647-654, 657-684, 687-706, 709-711, 714-752, 755-764, 767-791, 794-805, 808-813, 822-823
+--------------------------------------------------------------------------
+TOTAL                           1549    971    514     25    34%
+Coverage HTML written to dir htmlcov
+============================ slowest 25 durations =============================
+0.16s call     tests/integration_test.py::TestCLIHelpOutput::test_main_help_output
+0.13s call     tests/integration_test.py::TestCLIHelpOutput::test_config_help_output
+0.13s call     tests/integration_test.py::TestCLIHelpOutput::test_backup_help_output
+0.04s call     tests/runner_test.py::TestErrorHandling::test_restic_timeout_handling
+0.02s call     tests/integration_test.py::TestErrorMessages::test_invalid_backup_set_error_message
+0.01s call     tests/cli_test.py::TestMainFunction::test_list_dispatches_with_loaded_config
+0.01s call     tests/config_test.py::TestLoadConfig::test_missing_binaries_warn
+0.01s call     tests/config_test.py::TestLoadConfig::test_load_valid_config
+0.01s call     tests/config_test.py::TestSettingsSerialization::test_save_creates_parent_and_round_trips
+0.01s call     tests/config_test.py::TestSettingsSerialization::test_unicode_paths_round_trip
+0.01s call     tests/config_test.py::TestSettingsSerialization::test_save_overwrites_when_explicit
+0.01s call     tests/config_test.py::TestLoadConfig::test_no_expand_preserves_explicit_values
+0.00s call     tests/config_test.py::TestLoadConfig::test_legacy_max_snapshots_maps_to_retention
+0.00s call     tests/integration_test.py::TestResticBinaryAvailability::test_restic_binary_exists
+0.00s setup    tests/cli_test.py::TestBuildParser::test_parser_created
+0.00s call     tests/cli_test.py::TestBuildParser::test_invalid_command_exits_nonzero
+0.00s setup    tests/runner_test.py::TestRunRestic::test_run_restic_failure_raises_error
+0.00s call     tests/cli_test.py::TestBackupCommand::test_dry_run_option[-n]
+0.00s setup    tests/runner_test.py::TestErrorHandling::test_restic_timeout_handling
+0.00s call     tests/runner_test.py::TestStartBackup::test_start_backup_creates_pid_file
+0.00s setup    tests/runner_test.py::TestShowInProgress::test_show_in_progress_with_pidfiles
+0.00s call     tests/runner_test.py::TestStartBackup::test_start_backup_one_file_system
+0.00s call     tests/cli_test.py::TestConfigSubcommands::test_set_values
+0.00s call     tests/cli_test.py::TestBuildParser::test_parser_created
+0.00s call     tests/cli_test.py::TestConfigSubcommands::test_retention_flags[-X-clear]
+=========================== short test summary info ===========================
+SKIPPED [4] tests\conftest.py:106: User config not found at C:\Users\mcarls\AppData\Roaming\rrbackup\config.toml; the default suite does not require user configuration.
+SKIPPED [4] tests\conftest.py:114: set RRBACKUP_RUN_GDRIVE_TESTS=1 to enable live Google Drive tests
+SKIPPED [2] tests\integration_test.py:21: restic is unavailable for local integration validation: [WinError 5] Access is denied
+SKIPPED [1] tests\integration_test.py:21: rclone is unavailable for local integration validation: [WinError 5] Access is denied
+================= 123 passed, 11 skipped, 1 warning in 1.18s ==================
+RESULT: PASS - RRBackup pytest and coverage suite
+
+====================================================================================================
+PowerShell test: tests\powershell\environment_smoke_test.ps1
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\rrbackup
+Command: pwsh -NoLogo -NoProfile -File C:\Users\mcarls\src\scripts\modules\rrbackup\tests\powershell\environment_smoke_test.ps1 -RepoRoot C:\Users\mcarls\src\scripts -PythonExecutable C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -IncludeProductionReadOnly:False
+RepoRoot=C:\Users\mcarls\src\scripts
+PythonExecutable=C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe
+PowerShellVersion=7.6.1
+IncludeProductionReadOnly=False
+Python 3.12.10
+rrbackup import: C:\Users\mcarls\src\scripts\modules\rrbackup\rrbackup\__init__.py
+rrbackup CLI help: PASS
+restic: NOT USABLE (Program 'restic.exe' failed to run: StandardOutputEncoding is only supported when standard output is redirected.At C:\Users\mcarls\src\scripts\modules\rrbackup\tests\powershell\environment_smoke_test.ps1:59 char:26
++         $ResticVersion = & $ResticCommand.Source version 2>&1
++                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~.; allowed for unit-only validation)
+Environment smoke test completed successfully.
+RESULT: PASS - PowerShell test: tests\powershell\environment_smoke_test.ps1
+
+====================================================================================================
+PowerShell test: tests\powershell\production_read_only_test.ps1
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\rrbackup
+Command: pwsh -NoLogo -NoProfile -File C:\Users\mcarls\src\scripts\modules\rrbackup\tests\powershell\production_read_only_test.ps1 -RepoRoot C:\Users\mcarls\src\scripts -PythonExecutable C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -IncludeProductionReadOnly:False
+SKIP: Production read-only checks were not explicitly enabled.
+RESULT: PASS - PowerShell test: tests\powershell\production_read_only_test.ps1
+
+====================================================================================================
+TARGET SUMMARY
+====================================================================================================
+Report: C:\Users\mcarls\src\scripts\docs\test-results\rrbackup\20260729-082730_rrbackup.txt
+TARGET RESULT: PASS
+All requested validation sections passed.
+
+Git status after validation:
+ M Invoke-Tests.ps1
+ M modules/rrbackup/tests/integration_test.py
+ M modules/rrbackup/tests/powershell/environment_smoke_test.ps1
+ M validation-targets.json
+?? docs/test-results/rrbackup/
