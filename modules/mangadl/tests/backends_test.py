@@ -9,9 +9,19 @@ from mangadl.backends import (
 )
 
 
-def test_gallery_dl_recognizes_nhentai() -> None:
-    assert GalleryDlBackend().score("https://nhentai.net/g/123/") == 100
-    assert choose_backend("https://nhentai.net/g/123/") == "gallery-dl"
+def test_gallery_dl_backend_uses_extractor_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    from gallery_dl import extractor
+
+    supported_url = "https://nhentai.net/g/123/"
+
+    def fake_find(url: str) -> object | None:
+        return object() if url == supported_url else None
+
+    monkeypatch.setattr(extractor, "find", fake_find)
+
+    assert GalleryDlBackend().score(supported_url) == 100
+    assert choose_backend(supported_url) == "gallery-dl"
+    assert GalleryDlBackend().score("https://example.com/not-supported") == 0
 
 
 def test_unknown_backend_rejected() -> None:
