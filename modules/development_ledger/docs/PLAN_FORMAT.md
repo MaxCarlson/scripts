@@ -2,13 +2,13 @@
 
 ## Goal
 
-The working LLM should update one small machine-readable block inside the active Markdown plan. The rest of the plan remains normal technical prose.
+The working LLM updates one small machine-readable block inside the active Markdown plan. The surrounding plan remains normal technical prose for architecture, tradeoffs, and implementation detail.
 
-The ledger block is the only recurring structured progress input the LLM must maintain. Generated history and validation documents must not be edited manually.
+This block is the only recurring structured progress input the LLM maintains. Validation outcomes, history, progress classifications, and handoff projections are generated automatically.
 
 ## Required markers
 
-```markdown
+~~~markdown
 <!-- development-ledger:state:start -->
 ```json
 {
@@ -16,28 +16,28 @@ The ledger block is the only recurring structured progress input the LLM must ma
 }
 ```
 <!-- development-ledger:state:end -->
-```
+~~~
 
-The markers and JSON fence are exact. Only one state block is allowed per active plan.
+The markers and JSON fence are exact. An active plan contains one state block.
 
-## Complete schema example
+## Complete example
 
 ```json
 {
     "schema_version": 1,
-    "plan_id": "rrbackup-consolidation",
-    "title": "RRBackup Consolidation",
-    "project_root": "modules/rrbackup",
+    "plan_id": "backup-consolidation",
+    "title": "Backup Consolidation",
+    "project_root": "modules/backup",
     "stage": {
         "id": "S2",
-        "title": "Compatibility Merge and CLI",
+        "title": "Compatibility and CLI",
         "status": "in_progress"
     },
     "session": {
         "actor": "remote_llm",
         "mode": "hybrid",
-        "objective": "Add the canonical backup entry point while preserving legacy CLIs.",
-        "hypothesis": "A shared parser can preserve aliases without duplicating command implementations.",
+        "objective": "Add the canonical entry point while preserving legacy CLIs.",
+        "hypothesis": "A shared parser can preserve aliases without duplicate command implementations.",
         "target_ids": [
             "AC-S2-001",
             "AC-S2-002"
@@ -45,7 +45,7 @@ The markers and JSON fence are exact. Only one state block is allowed per active
         "environment_dependencies": [],
         "diagnostic_complexity": "normal",
         "relevant_files": [
-            "rrbackup/cli.py",
+            "backup/cli.py",
             "tests/cli_test.py"
         ]
     },
@@ -53,23 +53,23 @@ The markers and JSON fence are exact. Only one state block is allowed per active
         {
             "id": "AC-S2-001",
             "kind": "criterion",
-            "title": "The backup entry point exposes the canonical command hierarchy.",
+            "title": "The canonical entry point exposes the required command hierarchy.",
             "implementation": "implemented",
             "tests": [
-                "pytest:tests/cli_test.py::test_backup_root_help",
-                "glob:pytest:tests/cli_test.py::test_backup_*"
+                "pytest:tests/cli_test.py::test_root_help",
+                "glob:pytest:tests/cli_test.py::test_command_*"
             ],
             "manual_checks": [],
             "blocked_by": [],
             "relevant_files": [
-                "rrbackup/cli.py",
+                "backup/cli.py",
                 "pyproject.toml"
             ]
         },
         {
             "id": "AC-S2-002",
             "kind": "criterion",
-            "title": "Legacy rrb and rrbackup entry points retain compatible behavior.",
+            "title": "Legacy entry points retain compatible behavior.",
             "implementation": "in_progress",
             "tests": [
                 "glob:pytest:tests/compatibility_test.py::test_legacy_*",
@@ -80,7 +80,7 @@ The markers and JSON fence are exact. Only one state block is allowed per active
             ],
             "blocked_by": [],
             "relevant_files": [
-                "rrbackup/compatibility.py"
+                "backup/compatibility.py"
             ]
         }
     ],
@@ -94,10 +94,10 @@ The markers and JSON fence are exact. Only one state block is allowed per active
             "platform": "windows",
             "instructions": [
                 "Activate the repository virtual environment.",
-                "Run rrb --help and rrbackup --help.",
-                "Confirm both commands resolve to the current editable installation."
+                "Run each legacy command with --help.",
+                "Confirm every command resolves to the current editable installation."
             ],
-            "expected": "Both wrappers execute successfully and expose the compatible hierarchy.",
+            "expected": "All wrappers execute successfully and expose compatible commands.",
             "status": "pending",
             "safety": "non_destructive",
             "notes": "This verifies generated wrappers and PATH behavior that pytest cannot fully prove."
@@ -105,24 +105,22 @@ The markers and JSON fence are exact. Only one state block is allowed per active
     ],
     "relevant_docs": [
         "docs/HANDOFF.md",
-        "docs/CLI_ARCHITECTURE_AND_AUDIT_COVERAGE.md"
+        "docs/CLI_ARCHITECTURE.md"
     ]
 }
 ```
 
 ## Stable IDs
 
-Use stable IDs that survive wording and file changes.
-
-Recommended prefixes:
+Use stable IDs that survive wording and file changes:
 
 - `F-...`: feature
 - `R-...`: requirement
 - `AC-...`: acceptance criterion
-- `T-...`: implementation task when it must be tracked
+- `T-...`: implementation task when task-level tracking is useful
 - `MC-...`: manual check
 
-Do not renumber existing IDs merely to make a list visually contiguous.
+Do not renumber existing IDs merely to make a list contiguous.
 
 ## Implementation states
 
@@ -134,59 +132,82 @@ Allowed values:
 - `blocked`
 - `deferred`
 
-`implemented` means source work is present. It does not mean the item has passed automated or manual verification.
+`implemented` means source work is present. It does not mean automated or manual verification passed.
 
-## Test pattern syntax
+## Session fields
 
-An item may be linked to tests in three ways:
+The source-editing agent updates:
 
-1. Exact normalized ID:
+- `actor`: `remote_llm`, `local_llm`, `user`, or another repository-defined actor
+- `mode`: normally `hybrid`, `local`, `remote`, or `manual`
+- `objective`: the bounded work completed or attempted in this pass
+- `hypothesis`: the distinct diagnostic theory tested, when applicable
+- `target_ids`: only the plan items addressed by this pass
+- `environment_dependencies`: local facts needed to diagnose or verify the work
+- `diagnostic_complexity`: `mechanical`, `normal`, `complex`, `deep`, or `critical`
+- `relevant_files`: the narrow source/test area associated with the pass
+
+## Test mappings
+
+An item may identify expected tests in three ways.
+
+### Exact normalized test ID
 
 ```text
 pytest:tests/engine_test.py::test_preview
 ```
 
-2. Glob pattern:
+### Glob pattern
 
 ```text
 glob:pytest:tests/engine_test.py::test_preview_*
 ```
 
-3. Whole suite:
+### Whole validation suite
 
 ```text
 suite:entrypoint-smoke
 ```
 
-Tests may also declare item IDs directly in JUnit properties or generic script-result JSON. Either direction is sufficient for matching; using both provides traceability validation.
+Tests may also declare item IDs directly through JUnit properties or generic script-result JSON. Using both plan-to-test and test-to-plan links enables bidirectional traceability checks.
 
-## LLM update procedure
+## Manual checks
 
-Before finishing a source-editing pass, the working LLM must update:
+A manual check requires:
 
-1. `stage.status` when stage state changes.
-2. `session.actor` and `session.mode`.
-3. `session.objective` with the bounded work just performed.
-4. `session.hypothesis` when the pass is diagnostic.
-5. `session.target_ids` with only the items addressed by the pass.
-6. `session.environment_dependencies` when local evidence is required.
-7. Each affected item’s `implementation` state.
-8. Test patterns for newly added or renamed validation.
-9. Manual checks for behavior automation cannot verify.
-10. Relevant files and documents needed by the next agent.
+- stable ID,
+- linked plan-item IDs,
+- platform or environment,
+- exact instructions,
+- expected result,
+- safety classification,
+- state: `pending`, `passed`, `failed`, `blocked`, or `waived`.
 
-The LLM must not manually add test results, progress scores, run-history entries, or routing decisions to this block.
+Do not mark a check passed in the plan merely because an LLM believes it should work. Record the result through an immutable manual-check event after execution.
 
-## Keep the block small
+## Required LLM update procedure
 
-Do not place the following in the state block:
+Before finishing a source-editing pass, update:
 
-- architectural essays,
-- complete source diffs,
-- full error logs,
-- test stdout,
-- repeated historical attempts,
-- generated summaries,
-- transient commentary.
+1. Stage state when it changed.
+2. Session actor and mode.
+3. Bounded objective.
+4. Diagnostic hypothesis when applicable.
+5. Target item IDs.
+6. Affected implementation states.
+7. Test mappings for new or renamed tests.
+8. Environment dependencies.
+9. Manual checks for behavior automation cannot establish.
+10. Relevant files and documents for the next agent.
 
-Those belong in normal plan prose, raw artifacts, or generated ledger outputs.
+Do not manually add:
+
+- test outcomes,
+- progress scores,
+- failure fingerprints,
+- run-history entries,
+- routing decisions,
+- complete logs,
+- source diffs.
+
+Those are generated or retained as supporting artifacts.
