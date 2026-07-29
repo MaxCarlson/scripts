@@ -2,25 +2,44 @@
 
 ## Overall
 
-Stage 1 implementation is complete on `agent/add-development-ledger-module` and awaits the first local repository-root validation run.
+The first self-hosting run completed end to end and produced authoritative evidence. The target correctly failed because pytest reported one failing test, while the final ledger-recording command still passed and wrote all projections.
 
-## Implemented
+A focused correction pass is implemented and awaits one rerun of the same root target.
 
-- `development-ledger` version advanced to `1.1.0`.
-- Added `python -m development_ledger.dispatcher_record` as a narrow integration adapter.
-- The adapter maps only the normal record command's post-write failed-test result `1` to success.
-- Actual plan, parse, Git, duplicate-event, and write failures remain nonzero.
-- `validation-targets.json` contains a dedicated self-hosting target.
-- The target compiles, lints, validates the plan, checks help, runs pytest with JUnit XML, and records the event last.
-- Focused tests cover adapter result mapping and the manifest contract.
+## First-run evidence
 
-## Awaiting local evidence
+- Bootstrap/install: passed.
+- Compile: passed.
+- Ruff correctness lint: passed.
+- Structured plan validation: passed.
+- CLI help contract: passed.
+- Pytest: 56 passed, 1 failed.
+- Branch coverage: 81%.
+- Ledger recording: passed after the pytest failure.
+- Root target result: failed, preserving the original validation failure.
+
+## Root causes corrected
+
+1. `run-event.schema.json` is valid through top-level `oneOf`; the schema test accessed `payload["type"]` before checking `oneOf`.
+2. Pytest 9 emitted dotted `classname` values without `file`, producing IDs such as `pytest:tests.dispatcher_record_test::...` instead of the documented `pytest:tests/dispatcher_record_test.py::...`.
+3. Routine Windows validation prerequisites were listed as unresolved environment dependencies, causing a false generated `handoff_local` recommendation.
+
+## Correction implementation
+
+- `development-ledger` version advanced to `1.1.1`.
+- Schema validation uses a safe object-or-`oneOf` assertion.
+- Pytest classname-only JUnit cases normalize to stable forward-slash file paths.
+- Regression coverage includes function and test-class classname forms.
+- Active plan revision advanced to `2` with no unresolved environment dependency.
+- Existing dispatcher adapter and manifest target remain unchanged.
+
+## Awaiting corrected evidence
 
 ```powershell
 ./Invoke-Tests.ps1 -Target development-ledger
 ```
 
-Commit and push the generated changes under:
+Commit and push the regenerated changes under:
 
 ```text
 docs/test-results/development-ledger/
@@ -29,4 +48,4 @@ modules/development_ledger/docs/plans/20260729-1100_development-ledger-self-host
 
 ## Next decision
 
-Read the first `LATEST.txt` and generated `PROGRESS.md`, then patch attributable failures or choose the next integration stage.
+After the corrected run, inspect `PROGRESS.md` and `TRACEABILITY.md`. If automated evidence is clean and mapped, record `MC-S1-001`, then decide whether to promote generic dispatcher integration or migrate RRBackup.
