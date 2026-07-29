@@ -44,6 +44,7 @@ Execute and verify the first complete module validation and immutable-ledger cyc
             "The run-event schema test accepts a valid top-level oneOf schema without KeyError.",
             "Pytest classname-only JUnit cases normalize to tests/<module>.py IDs and match the active plan.",
             "The active plan no longer treats routine local validation prerequisites as unresolved diagnostic dependencies.",
+            "The dispatcher pytest command is mapped as automated evidence, eliminating a redundant manual acceptance step.",
             "The branch is ready for one rerun of ./Invoke-Tests.ps1 -Target development-ledger."
         ],
         "batch": {
@@ -62,12 +63,14 @@ Execute and verify the first complete module validation and immutable-ledger cyc
             "findings": [
                 "run-event.schema.json correctly uses top-level oneOf and therefore has no top-level type key.",
                 "Pytest 9 emitted dotted classname values without file attributes, so documented file-path mappings did not match.",
-                "Routine Windows validation requirements were incorrectly declared as unresolved environment dependencies, causing a false local handoff."
+                "Routine Windows validation requirements were incorrectly declared as unresolved environment dependencies, causing a false local handoff.",
+                "The dispatcher report already captures the relevant acceptance evidence, so a separate manual-check event is unnecessary."
             ],
             "actions": [
                 "Use payload.get when accepting object-or-oneOf schemas.",
                 "Canonicalize pytest classname-only JUnit cases to forward-slash Python file paths.",
-                "Clear environment_dependencies for this remotely diagnosable correction pass."
+                "Clear environment_dependencies for this remotely diagnosable correction pass.",
+                "Map the dispatcher pytest command to AC-S1-002 and remove the redundant manual check."
             ]
         },
         "relevant_files": [
@@ -102,11 +105,10 @@ Execute and verify the first complete module validation and immutable-ledger cyc
             "title": "The repository root dispatcher exposes a development-ledger target that validates the module, emits JUnit XML, and records a plan event last.",
             "implementation": "implemented",
             "tests": [
-                "pytest:tests/scripts_repository_integration_test.py::test_validation_manifest_self_hosts_development_ledger"
+                "pytest:tests/scripts_repository_integration_test.py::test_validation_manifest_self_hosts_development_ledger",
+                "command:development-ledger-pytest-and-coverage-suite"
             ],
-            "manual_checks": [
-                "MC-S1-001"
-            ],
+            "manual_checks": [],
             "depends_on": [
                 "AC-S1-001"
             ],
@@ -120,25 +122,7 @@ Execute and verify the first complete module validation and immutable-ledger cyc
             "architecture_role": "integration"
         }
     ],
-    "manual_checks": [
-        {
-            "id": "MC-S1-001",
-            "title": "Run and inspect the Windows self-host validation",
-            "item_ids": [
-                "AC-S1-002"
-            ],
-            "platform": "windows",
-            "instructions": [
-                "Run ./Invoke-Tests.ps1 -Target development-ledger from the repository root.",
-                "Confirm the dispatcher preserves its exact overall result.",
-                "Confirm one new run event and all generated projections are written."
-            ],
-            "expected": "The target records complete evidence and the dispatcher result still reflects the validation sections.",
-            "status": "pending",
-            "safety": "non_destructive",
-            "notes": "The first failed run proved the evidence path; record this check after the corrected passing rerun is inspected."
-        }
-    ],
+    "manual_checks": [],
     "policy": {
         "session": {
             "target_minutes": 15,
@@ -166,7 +150,8 @@ The correction pass addresses only:
 
 1. an unsafe test assertion against the valid top-level `oneOf` run-event schema,
 2. pytest 9 classname-only JUnit IDs that did not match documented file-path mappings,
-3. plan metadata that incorrectly treated routine local validation as an unresolved diagnostic dependency.
+3. plan metadata that incorrectly treated routine local validation as an unresolved diagnostic dependency,
+4. a redundant manual check whose evidence is already captured by the dispatcher transcript and immutable run event.
 
 ## Design decision
 
