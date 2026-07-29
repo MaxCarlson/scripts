@@ -24,8 +24,8 @@ from .viewer import (
     build_repository_page,
     render_audit_summary,
     render_viewer_page_plain,
-    run_viewer_carousel,
 )
+from .viewer_controller import build_summary_overview_page, run_viewer_dashboard
 
 _DIAGNOSTIC_SECTIONS = (
     "configuration",
@@ -103,10 +103,10 @@ def handle_view(args: Any) -> int:
         inventory, selected = cli_runtime.records(args)
         payload = inventory.to_dict()
 
-    section = args.section
+    section = getattr(args, "section", None) or "overview"
     structured = args.json or args.markdown or args.plain
     if not structured and section != "audit" and interactive_available():
-        run_viewer_carousel(
+        run_viewer_dashboard(
             selected,
             start_page=section if section in VIEWER_PAGE_NAMES else "overview",
             repository_loader=(
@@ -123,7 +123,21 @@ def handle_view(args: Any) -> int:
         )
         return cli_runtime.EXIT_OK
 
-    if section in {"overview", "backups"}:
+    if section == "overview":
+        page = build_summary_overview_page(selected)
+        cli_runtime.emit(
+            {"section": section, "inventory": payload},
+            args,
+            text=render_viewer_page_plain(page),
+            markdown=cli_runtime.inventory_markdown(selected),
+        )
+        return (
+            cli_runtime.EXIT_UNHEALTHY
+            if any(not record.health.healthy for record in selected)
+            else cli_runtime.EXIT_OK
+        )
+
+    if section == "backups":
         cli_runtime.emit(
             {"section": section, "inventory": payload},
             args,
