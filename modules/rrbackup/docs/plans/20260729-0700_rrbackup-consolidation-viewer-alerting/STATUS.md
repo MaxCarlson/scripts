@@ -4,134 +4,109 @@
 
 Stage 1 is verified. The Windows checkpoint passed package compilation, focused correctness lint, 199 tests, and both PowerShell checks; 8 environment-dependent tests skipped intentionally. The repository-root validation evidence workflow also works as intended.
 
-Stage 2 is in progress. The first canonical CLI/data slice proved that the merged engine can inspect the production repository, snapshots, health, provenance, configuration, and scheduler state. The latest automated checkpoint collected 266 tests: 256 passed, 8 skipped, and 2 failed because inherited integration assertions still expected obsolete `rrb` help text. Installed entry-point smoke checks passed.
+Stage 2 is split into bounded checkpoints. The current checkpoint is **2A — Single-CLI UX Foundation**, and it is ready for local automated and manual validation. No additional Stage 2 feature group should begin until the resulting evidence is reviewed.
 
-Manual acceptance then identified design defects that automated tests did not reveal:
+The prior Stage 2 checkpoint collected 266 tests: 256 passed, 8 skipped, and 2 failed because inherited integration assertions still expected obsolete `rrb` help text. Those assertions have been replaced with canonical `backup` checks in Checkpoint 2A.
 
-- `backup view` is over-fragmented into too many display-specific commands.
-- Human-facing repository and diagnostic output defaults to raw JSON.
-- `backup schedule list` matches unrelated Windows tasks containing the word `Backup`.
-- `backup view storage` silently performs an expensive full restore-size calculation and took about 72 seconds on the production repository.
-- `backup run` requires too much knowledge of sources, tags, and paths instead of presenting configured backups.
-- A creation wizard, backup-centric schedule wizard, consistent color policy, and shared interactive UI were missing from the validated build.
+Manual acceptance of the prior CLI identified:
 
-The active Stage 2 plan and checklist contain the complete requested UX, command, wizard, schedule, retention, repository, and TUI specification so the requirements are not lost.
+- an over-fragmented `backup view` command tree,
+- raw JSON as default human-facing repository/diagnostic output,
+- unrelated Windows tasks in schedule discovery,
+- an implicit restore-size calculation that took about 72 seconds,
+- a run command that required too much Restic/configuration knowledge,
+- missing shared color and interactive presentation conventions.
+
+Checkpoint 2A directly targets those findings.
 
 ## Checkpoint Guardrail
 
-Stage 2 is split into bounded checkpoints sized for roughly 10–20 minutes between local pull/test/push cycles.
+Each checkpoint contains one closely related feature/correction group and should result in approximately 10–20 minutes between local pull/test/push cycles.
 
-The current checkpoint is **2A — Single-CLI UX Foundation**. Work stops for local validation after its tests and documentation are complete. No additional Stage 2 feature group begins until the newest automated and manual results are reviewed.
+For every checkpoint:
 
-Checkpoint 2A includes:
+1. source, tests, planning state, and static review are completed together,
+2. implementation stops for local validation,
+3. automated and manual results are reviewed before the next checkpoint,
+4. failures must remain attributable to the newest bounded change set.
 
-1. one installed `backup` command,
-2. seven task-oriented root areas,
-3. unified configured-backup inventory,
-4. concise human tables and shared color policy,
-5. condensed `view`,
-6. configured-backup selection for `run`,
-7. backup-centric schedule display and strict task filtering,
-8. combined repository summary with explicit cached storage refresh,
-9. tests for these exact boundaries.
-
-Checkpoint 2A excludes production configuration writes, scheduler mutation acceptance, retention execution, and duplicate-engine removal. Create/schedule wizard and scheduler-apply code currently present on the branch is unaccepted scaffolding for later checkpoints and must not be manually applied during 2A validation.
+Create/schedule wizard acceptance, scheduler/configuration apply, compatibility-shim removal, and production-write work are not part of Checkpoint 2A.
 
 ## Progress Assessment
 
-### Successfully implemented and verified
+### Successfully implemented and previously verified
 
 - Shared safety engine and terminal-state handling
-- Canonical `backup` executable in the last validated package
-- Installed-entry-point packaging/import correction
 - Production repository and snapshot read-only access
 - Snapshot timeline and health data
-- Provenance and comprehensive audit data collection
+- Provenance and comprehensive audit collection
 - Configuration/source attribution
-- Initial repository and schedule adapters
 - Root validation dispatcher and authoritative evidence handoff
-- 256 passing tests in the latest Stage 2 checkpoint
+- 256 passing tests in the last Stage 2 report
 
-### Implemented but not yet locally verified
+### Implemented in Checkpoint 2A and awaiting local validation
 
-- Package configuration with only the `backup` console entry point
-- Seven-area task-oriented parser: `create`, `run`, `view`, `schedule`, `restore`, `repo`, and `config`
-- Expanded schedule model for minute/hour/day/week/month/year/custom/manual schedules
-- Schedule description, next-run, and missed-run calculations
-- Unified inventory for canonical TOML sets and legacy `local-main`
-- Inventory enrichment with snapshots, runs, health, scheduler state, next run, and missed runs
-- Strict scheduler ownership matching for canonical `backup` invocations and `RRBackup::` tasks
-- Shared ANSI-aware human tables, status palette, plain fallback, and TermDash selection/details adapter
-- Condensed view sections and configured-backup run selection
-- Backup-centric schedule rendering
-- Combined repository summary and explicit cached storage refresh
-- Canonical TOML preservation of VSS, cache exclusion, one-file-system, tags, and raw Restic options
-- Preview-oriented create/schedule wizard and scheduler-management scaffolding
+- Package version `2.0.0`
+- Only one declared public console entry point: `backup`
+- Uninstall/reinstall validation that removes retired `rrb` and `rrbackup` wrappers
+- Seven task-oriented areas: `create`, `run`, `view`, `schedule`, `restore`, `repo`, and `config`
+- Condensed `view --section` interface
+- Unified canonical-TOML/legacy backup inventory
+- Canonical backup-set conversion through the shared engine
+- Preservation of VSS/fs-snapshot, cache exclusion, one-filesystem, dry-run, tags, and raw Restic options
+- Read-only inventory loading without creating generated state/input directories
+- Configured-backup `run auto` chooser and direct named execution
+- Hard print-only no-materialization/no-execution behavior
+- Backup-centric schedule table
+- Strict scheduler ownership filtering
+- Shared TermDash dependency and Windows curses dependency
+- Shared color policy, ANSI-aware tables, compact rows, details, filtering, paging, scrolling, and multi-select adapter
+- Combined human-readable repository summary
+- Explicit `--refresh-storage` and atomic storage-statistics cache
+- Focused tests for parser, packaging, inventory, schedule math, presentation, repository caching, scheduler filtering, and integration behavior
+- Updated compile, lint, help, pytest/coverage, and PowerShell validation gates
 
-### Remaining before Checkpoint 2A validation handoff
+### Deferred until Checkpoint 2A evidence is reviewed
 
-- Complete focused unit tests for inventory, presentation, repository summary/cache, scheduler filtering, and preview safety
-- Update validation manifest lint targets and smoke commands
-- Complete static review of new parser/runtime modules
-- Update checklist/handoff state
-- Stop implementation and request one local root validation run
-
-### Deferred to later checkpoints
-
-- Interactive create and schedule wizard acceptance
-- Production configuration writes
-- Scheduler create/update/delete acceptance
+- Interactive create-wizard acceptance
+- Interactive schedule-wizard acceptance
+- Configuration and scheduler mutation
 - Retention execution
 - Cross-platform scheduler CRUD completion
-- Removal of duplicate `backup_module` engine
+- `backup_module` compatibility-shim conversion and duplicate-engine removal
+- Production backup/restore mutation
 
-### Bugs and failing tests from the last pushed report
+### Current bugs and uncertainty
 
-- Two inherited integration tests assert obsolete `rrb` help wording and wizard exposure.
-- No current evidence of a functional engine regression.
-- The new Checkpoint 2A implementation has not yet been run locally.
+- No Checkpoint 2A code has yet run in the local Windows environment.
+- The module root `README.md` still documents the historical `rrb` interface and is intentionally deferred until the new UX passes acceptance.
+- TUI resizing and curses-failure fallback require manual Windows verification.
+- General CLI repository/password overrides are not yet covered by a non-default-repository manual test.
 
 ### Progress and loop assessment
 
-Measurable progress occurred. The work is not looping: Stage 1 is complete, the Stage 2 data layer works against production, and manual feedback redirected Checkpoint 2A toward visible usability improvements. The scope is now frozen until local validation; continuing into another feature group before that run would violate the checkpoint guardrail.
+Measurable progress occurred. This is not a repeated safety-engine pass: Checkpoint 2A visibly changes the public command surface, human output, schedule filtering, run selection, and repository behavior in response to manual feedback. The checkpoint is now frozen. Continuing feature work before local validation would constitute poor progress control.
 
-## Active Stage 2 Command Target
-
-Only one public executable is required:
-
-```text
-backup
-```
-
-Target root areas:
-
-```text
-backup create
-backup run
-backup view
-backup schedule
-backup restore
-backup repo
-backup config
-```
-
-`repo` replaces the public `repository` spelling. The internal package may retain the `rrbackup` name during migration.
-
-## Last Known Production State
-
-- Repository: `B:\ResticRepos\PC-Local`
-- Known snapshots: `a1609113`, `022aad5b`
-- Latest snapshot: 2026-04-14
-- Current module-owned backup schedule: absent
-- Automated production mutation: prohibited
-
-## Validation
+## Checkpoint 2A Validation Target
 
 From the repository root:
 
 ```powershell
 ./Invoke-Tests.ps1
 ```
+
+The target performs:
+
+1. RRBackup metadata cleanup,
+2. RRBackup uninstall to remove stale entry points,
+3. editable TermDash installation,
+4. editable RRBackup `2.0.0` installation,
+5. package/test compilation,
+6. focused correctness lint,
+7. root help validation,
+8. condensed view-help validation,
+9. full pytest and branch coverage,
+10. PowerShell installed-entry-point and environment checks.
 
 Authoritative evidence:
 
@@ -140,3 +115,11 @@ docs/test-results/rrbackup/LATEST.txt
 docs/test-results/rrbackup/LATEST_CONTEXT.md
 docs/test-results/rrbackup/LATEST_PROGRESS.diff
 ```
+
+## Last Known Production State
+
+- Repository: `B:\ResticRepos\PC-Local`
+- Known snapshots: `a1609113`, `022aad5b`
+- Latest snapshot: 2026-04-14
+- Current module-owned backup schedule: absent
+- Automated production mutation: prohibited
