@@ -2,7 +2,7 @@
 
 `mangadl` is a concurrent, resumable manager for manga and image-gallery downloads. It uses gallery-dl as its broad primary backend, routes HDPornComics manhwa URLs to its dedicated downloader, provides a native Manga18FX series downloader, and can fall back to an installed native `nhentai` CLI for nhentai URLs.
 
-The dashboard replaces gallery-dl's line-per-image transcript. Each worker reports a compact site/URL identifier, image and byte counts, current and per-URL average rates, elapsed time, retries, and failures. Statuses, site tags, progress, rates, and log outcomes use semantic colors. Press `l` for the selected worker's inline activity log, `f` for its fullscreen log, and `r` to switch between concise activity records and raw backend output.
+The dashboard replaces gallery-dl's line-per-image transcript. Each worker gets a fixed-width status row plus a second progress/activity-bar row. The header reports active/target workers, Manga18FX image threads per worker, aggregate active concurrency, and the logical-CPU budget. Press `+` or `-` to raise or lower the outer-worker target, `]` or `[` to change image threads for newly started Manga18FX jobs, `l` for the selected worker's inline activity log, `f` for its fullscreen log, `r` to switch between concise activity records and raw backend output, and `q` to stop immediately through the same cleanup path as Ctrl+C.
 
 ## Install
 
@@ -23,13 +23,32 @@ Multiple `-i/--input-file` and `-u/--url` options are accepted. Blank lines and 
 
 `https://manga18fx.com/manga/...` and `https://www.manga18fx.com/manga/...` URLs automatically use mangadl's native Manga18FX backend. It creates one top-level folder per series, stable naturally ordered chapter folders, and zero-padded image files. Failed jobs remain under `_partial/<job-id>/`; successful jobs merge into the destination. Reruns inspect the final library and skip images already present. Use `-C/--cookies` with a Netscape/Mozilla cookies export if anonymous requests are blocked.
 
-Manga18FX downloads use two concurrency levels. `-w/--workers` controls simultaneous series jobs, while `-I/--image-workers` controls simultaneous image transfers inside each Manga18FX series. The image-worker default is `4`, and the accepted range is `1` through `8`.
+Manga18FX downloads use two concurrency levels. `-w/--workers` controls simultaneous series jobs, while `-I/--image-workers` controls simultaneous image transfers inside each Manga18FX series. Image workers default to `4` and accept `1` through `8`.
 
 ```powershell
-mangadl run -i .\manga18fx-urls.txt -d .\downloads -a .\gallery-dl-archive.sqlite3 -s .\mangadl-state.sqlite3 -w 2 -I 4
+mangadl run -i .\manga18fx-urls.txt -d .\downloads -a .\gallery-dl-archive.sqlite3 -s .\mangadl-state.sqlite3 -w 4 -I 4
 ```
 
-The maximum Manga18FX image-transfer concurrency is approximately `workers × image-workers`; for example, `-w 2 -I 4` permits up to eight active image transfers. Start with the default and increase to `-I 6` or `-I 8` only when the source remains responsive and does not return rate-limit or transient server errors.
+The observed safe outer-worker ceiling for the current disk workload is four. `-m/--max-workers` therefore defaults to `4`; a requested `-w` above that ceiling is reduced before workers start. Experimental values up to eight require an explicit override such as `-m 5 -w 5`. `-U/--worker-start-delay` staggers worker process launches and defaults to two seconds. Use `-U 0` only when simultaneous startup is known to be safe.
+
+Aggregate Manga18FX image concurrency is bounded below the detected logical processor count, with one logical processor reserved for the manager, dashboard, OS, and filesystem work. Increasing `-I` is generally cheaper than adding outer workers because each outer worker also performs chapter discovery, directory work, logging, and progress sampling.
+
+## Automatic Manga18FX tuning
+
+`-T/--auto-tune` runs a bounded preflight benchmark, records every tested combination, selects the highest aggregate throughput, and then starts the normal resumable run with the selected `-w` and `-I` values. Candidate startup and stagger time are included in the score, so combinations that take too long to become productive rank poorly.
+
+```powershell
+mangadl run -i .\manga18fx-urls.txt -d .\downloads -a .\gallery-dl-archive.sqlite3 -s .\mangadl-state.sqlite3 -T -W 1:4 -Y 1:8 -D 8 -Q 2 -K 24
+```
+
+- `-W/--tune-workers MIN:MAX` sets the inclusive outer-worker range. It defaults to `1:<max-workers>` and cannot exceed `-m/--max-workers`.
+- `-Y/--tune-image-workers MIN:MAX` sets the inclusive inner image-thread range.
+- `-D/--tune-seconds` sets the target sample duration per combination.
+- `-Q/--tune-rounds` controls repeated measurements; rates are averaged.
+- `-K/--tune-sample-images` limits representative image transfers per active series and candidate.
+- `-O/--tune-report` selects the JSON report path. The default is timestamped under the log root.
+
+The tuner uses temporary probe downloads and deletes them after each candidate. The report preserves raw samples, averages, medians, variance, errors, throughput per aggregate thread, and the selected combination. Near-ties within two percent prefer the lower-concurrency option.
 
 ## Operations
 
@@ -53,7 +72,7 @@ The command extracts each nhentai ID from loose filenames, performs a metadata-o
 
 `patch-hdporncomics` reports whether the installed HDPornComics package has the Windows filename compatibility patch. `-f/--apply` saves a one-time `.bak` copy of its CLI module and applies a safe filename sanitizer (invalid characters, reserved names, and long paths). This is intentionally explicit: package updates can replace the patched file. A known Windows path error from the backend reports the recovery command in the failed job message.
 
-Worker rows show a compact colored backend badge: `GD` for gallery-dl, `NH` for native nhentai, and `HD` for HDPornComics. Unknown or newly added backends use the neutral fallback badge until explicitly styled.
+Worker rows show compact colored backend badges: `GD` for gallery-dl, `NH` for native nhentai, `HD` for HDPornComics, and `M18` for Manga18FX.
 
 ## Audit destination roots
 
@@ -73,9 +92,11 @@ Each run writes `manager.log`, `events.jsonl`, `summary.json`, structured per-wo
 
 ## Limitations
 
-- Image and byte totals remain unknown until exposed by the backend or completion; the dashboard does not fabricate percentages.
+- Image and byte totals remain unknown until exposed by the backend or completion. When totals are unavailable, the second worker row shows an activity bar rather than fabricating a percentage.
+- Runtime `[` and `]` changes apply to newly started Manga18FX jobs; an already-running series retains the thread pool created at launch.
+- Lowering the outer-worker target drains excess active workers instead of terminating their current series.
 - Pause is a scheduling/drain pause and does not suspend an in-progress HTTP request.
-- `--config` and `--anonymize-logs` are reserved compatibility options in 1.8.0.
+- `--config` and `--anonymize-logs` are reserved compatibility options.
 - Browser-cookie extraction is passed through to gallery-dl only. The native Manga18FX backend supports `-C/--cookies` Netscape/Mozilla files.
 - Manga18FX HTML or anti-bot changes may require backend maintenance.
 - No legacy downloader is migrated, modified, or deleted.
