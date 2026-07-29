@@ -4,13 +4,13 @@
 
 Stage 1 is verified. The Windows safety-foundation checkpoint passed package compilation, focused correctness lint, 199 tests, and both PowerShell checks; 8 environment-dependent tests skipped intentionally. The repository-root validation evidence workflow also works as intended.
 
-Stage 2 remains split into bounded checkpoints. The current checkpoint is **2A — Single-CLI UX Foundation**. Its second Windows validation run improved to 287 passing tests, 7 intentional skips, and one remaining test-double failure. That final test-double field omission is patched on the branch; the checkpoint now awaits one corrected local run plus manual UX acceptance.
+Stage 2 remains split into bounded checkpoints. The current checkpoint is **2A — Single-CLI UX Foundation**. Its latest Windows validation run reached 287 passing tests, 7 intentional skips, and one remaining test-double failure. That final test-double schedule omission is patched on the branch; the checkpoint now awaits one corrected local run plus manual UX acceptance.
 
 No Checkpoint 2B wizard/apply work should begin until Checkpoint 2A passes and its manual observations are reviewed.
 
 ## Latest Checkpoint 2A Evidence
 
-The pushed Windows run at commit `1b09c80ccffb8d5840ea8861cf7a7ce9a4abd732` recorded:
+The pushed Windows run at commit `9743f4247e78a5f6bf93d782b712fca56ed4b16c` recorded:
 
 - dependency cleanup, uninstall, and editable installation: passed,
 - package/test compilation: passed,
@@ -25,11 +25,11 @@ The pushed Windows run at commit `1b09c80ccffb8d5840ea8861cf7a7ce9a4abd732` reco
 
 The remaining pytest failure was:
 
-1. `test_run_auto_json_lists_configured_backups_without_execution` used an incomplete fake definition that omitted `source_summary`, `schedule_text`, and `retention_text`, which are consumed by the human-table renderer before JSON emission.
+1. `test_run_auto_json_lists_configured_backups_without_execution` used an incomplete fake definition that omitted the `schedule.type` interface consumed by the human-table renderer before JSON emission.
 
 Correction now on the branch:
 
-- the fake definition carries the complete presentation-facing interface used by `render_backup_table`.
+- the fake definition carries `schedule.type = "manual"` in addition to the existing presentation-facing fields.
 
 The prior explicit-config semantic defect is verified fixed. Running:
 
@@ -109,14 +109,14 @@ Create/schedule wizard acceptance, scheduler/configuration apply, compatibility-
 
 ### Current bugs and uncertainty
 
-- The final test-double correction is patched but not yet locally revalidated.
+- The final test-double schedule correction is patched but not yet locally revalidated.
 - TUI navigation, resizing, and curses-failure fallback require manual Windows verification.
 - The module root `README.md` still documents the historical `rrb` interface and remains deferred until the new UX passes acceptance.
 - General CLI repository/password overrides are not yet covered by a non-default-repository manual test.
 
 ### Progress and loop assessment
 
-Measurable progress occurred. Checkpoint 2A advanced from 256 passing tests to 286 and then 287 passing tests. The real missing-config semantic defect is fixed and manually verified; the only remaining failure was a distinct, attributable test-double interface omission. This is not a repeating product failure or stalled loop. The correct next action is one final corrected validation run, not additional feature implementation.
+Measurable progress occurred. Checkpoint 2A advanced from 256 passing tests to 286 and then 287 passing tests. The real missing-config semantic defect is fixed and manually verified; the only remaining failure is an attributable test-double interface omission. This is not a repeating product failure or stalled loop. The correct next action is one final corrected validation run plus the bounded manual UX checks below, not additional feature implementation.
 
 ## Checkpoint 2A Validation Target
 
