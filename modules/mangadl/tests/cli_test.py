@@ -1,4 +1,5 @@
 import argparse
+import json
 
 import pytest
 
@@ -21,6 +22,25 @@ def test_all_public_options_have_short_and_long_forms() -> None:
             ), action.dest
 
 
+def test_run_parser_defaults_to_safe_worker_ceiling_and_stagger(tmp_path) -> None:
+    args = build_parser().parse_args(
+        [
+            "run",
+            "-u",
+            "https://manga18fx.com/manga/example/",
+            "-d",
+            str(tmp_path / "out"),
+            "-a",
+            str(tmp_path / "archive.db"),
+        ]
+    )
+
+    assert args.workers == 2
+    assert args.max_workers == 4
+    assert args.worker_start_delay == 2.0
+    assert args.image_workers == 4
+
+
 def test_dry_run_routes_without_writing(tmp_path, capsys, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         GalleryDlBackend,
@@ -33,6 +53,91 @@ def test_dry_run_routes_without_writing(tmp_path, capsys, monkeypatch: pytest.Mo
     assert result == 0
     assert '"gallery-dl"' in capsys.readouterr().out
     assert not (tmp_path / "archive.db").exists()
+
+
+def test_auto_tune_dry_run_reports_explicit_bounds(
+    tmp_path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MANGADL_MAX_OUTER_WORKERS", raising=False)
+    result = main(
+        [
+            "run",
+            "-u",
+            "https://manga18fx.com/manga/one/",
+            "-u",
+            "https://manga18fx.com/manga/two/",
+            "-u",
+            "https://manga18fx.com/manga/three/",
+            "-u",
+            "https://manga18fx.com/manga/four/",
+            "-d",
+            str(tmp_path / "out"),
+            "-a",
+            str(tmp_path / "archive.db"),
+            "-T",
+            "-W",
+            "2:4",
+            "-Y",
+            "2:5",
+            "-U",
+            "1.5",
+            "-n",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert payload["max_workers"] == 4
+    assert payload["worker_start_delay"] == 1.5
+    assert payload["auto_tune"]["worker_range"] == {"minimum": 2, "maximum": 4}
+    assert payload["auto_tune"]["image_worker_range"] == {"minimum": 2, "maximum": 5}
+
+
+def test_auto_tune_range_cannot_exceed_configured_ceiling(tmp_path) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "run",
+                "-u",
+                "https://manga18fx.com/manga/example/",
+                "-d",
+                str(tmp_path / "out"),
+                "-a",
+                str(tmp_path / "archive.db"),
+                "-T",
+                "-W",
+                "1:5",
+                "-n",
+            ]
+        )
+
+    assert exc_info.value.code == 2
+
+
+def test_explicit_max_workers_override_allows_experimental_bound(tmp_path, capsys) -> None:
+    result = main(
+        [
+            "run",
+            "-u",
+            "https://manga18fx.com/manga/example/",
+            "-d",
+            str(tmp_path / "out"),
+            "-a",
+            str(tmp_path / "archive.db"),
+            "-m",
+            "5",
+            "-w",
+            "5",
+            "-n",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert payload["requested_workers"] == 5
+    assert payload["max_workers"] == 5
 
 
 def test_repair_loose_defaults_to_dry_run_and_supports_explicit_mode(tmp_path, capsys) -> None:
