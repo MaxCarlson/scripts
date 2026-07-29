@@ -33,6 +33,42 @@
       ],
       "commands": [
         {
+          "name": "Compile RRBackup package and tests",
+          "executable": "{python}",
+          "arguments": [
+            "-m",
+            "compileall",
+            "-q",
+            "rrbackup",
+            "tests"
+          ]
+        },
+        {
+          "name": "Lint RRBackup safety foundation",
+          "executable": "{python}",
+          "arguments": [
+            "-m",
+            "ruff",
+            "check",
+            "rrbackup/engine.py",
+            "rrbackup/locking.py",
+            "rrbackup/models.py",
+            "rrbackup/policy.py",
+            "rrbackup/profile.py",
+            "rrbackup/restic.py",
+            "rrbackup/snapshots.py",
+            "rrbackup/state.py",
+            "tests/engine_test.py",
+            "tests/locking_test.py",
+            "tests/models_test.py",
+            "tests/policy_test.py",
+            "tests/profile_test.py",
+            "tests/restic_test.py",
+            "tests/snapshots_test.py",
+            "tests/state_test.py"
+          ]
+        },
+        {
           "name": "RRBackup pytest and coverage suite",
           "executable": "{python}",
           "arguments": [
