@@ -26,9 +26,9 @@ dev = [
 ]
 
 [project.scripts]
-backup = "rrbackup.app:main"
-rrb = "rrbackup.app:main"
-rrbackup = "rrbackup.app:main"
+backup = "rrbackup.application:main"
+rrb = "rrbackup.application:main"
+rrbackup = "rrbackup.application:main"
 
 [tool.setuptools.packages.find]
 # Discover packages from project root (flat layout)
