@@ -25,7 +25,7 @@ from .viewer import (
     render_audit_summary,
     render_viewer_page_plain,
 )
-from .viewer_controller import build_summary_overview_page, run_viewer_dashboard
+from .viewer_dashboard import build_live_overview_page, run_viewer_dashboard
 
 _DIAGNOSTIC_SECTIONS = (
     "configuration",
@@ -124,7 +124,7 @@ def handle_view(args: Any) -> int:
         return cli_runtime.EXIT_OK
 
     if section == "overview":
-        page = build_summary_overview_page(selected)
+        page = build_live_overview_page(selected)
         cli_runtime.emit(
             {"section": section, "inventory": payload},
             args,
