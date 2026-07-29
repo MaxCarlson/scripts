@@ -4,6 +4,7 @@
 
 - [x] Create canonical plan structure
 - [x] Document hybrid remote/local workflow
+- [x] Add one-time substantial-task hybrid reminder for local agents
 - [x] Add repository-root validation dispatcher
 - [x] Add manifest-driven validation targets
 - [x] Register RRBackup as the default target
@@ -12,14 +13,16 @@
 - [x] Isolate target working directory and pytest imports
 - [x] Capture complete pytest stdout/stderr
 - [x] Run all configured `*_test.ps1` scripts from one command
-- [x] Write tracked timestamped reports under `docs/test-results/<target>/`
+- [x] Add authoritative `LATEST.txt` per target
+- [x] Add bounded validation history
 - [x] Add PowerShell environment smoke test
 - [x] Add opt-in production read-only test
 - [x] Run initial local Windows baseline
-- [x] Analyze second local Windows validation failure
+- [x] Diagnose shared-environment pytest collision
+- [x] Validate repository-root dispatcher on Windows
+- [x] Reach a clean inherited baseline: 126 passed, 8 skipped
 - [x] Triage inherited baseline failures
-- [ ] Validate repository-root dispatcher on Windows
-- [ ] Correct or replace remaining environment-dependent inherited tests
+- [ ] Validate latest-first report migration and retention
 - [ ] Add shared models
 - [ ] Add configuration resolver
 - [ ] Add Restic command boundary
@@ -32,7 +35,7 @@
 - [ ] Add Stage 1 tests
 - [ ] Reach agreed Stage 1 coverage threshold
 - [ ] Complete static review
-- [ ] Pass local Windows validation
+- [ ] Pass local Windows validation after safety-foundation implementation
 
 ## Stage 2 — Compatibility Merge and CLI
 
