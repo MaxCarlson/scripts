@@ -194,11 +194,26 @@ def parse_chapter_images(html: str, base_url: str) -> list[str]:
     return parser.images
 
 
-def _chapter_sort_key(chapter: Chapter) -> tuple[int, float, str]:
+def _chapter_number(chapter: Chapter) -> str | None:
     matches = re.findall(r"\d+(?:\.\d+)?", chapter.title)
-    if matches:
-        return 0, float(matches[-1]), chapter.title.casefold()
+    return matches[-1] if matches else None
+
+
+def _chapter_sort_key(chapter: Chapter) -> tuple[int, float, str]:
+    number = _chapter_number(chapter)
+    if number is not None:
+        return 0, float(number), chapter.title.casefold()
     return 1, float("inf"), chapter.title.casefold()
+
+
+def _chapter_directory_name(chapter: Chapter, fallback_index: int) -> str:
+    number = _chapter_number(chapter)
+    if number is None:
+        prefix = f"{fallback_index:04d}"
+    else:
+        whole, separator, fraction = number.partition(".")
+        prefix = whole.zfill(4) + (separator + fraction if separator else "")
+    return f"{prefix} - {sanitize_component(chapter.title, f'Chapter {fallback_index:04d}')}"
 
 
 def _load_cookie_jar(path: Path | None) -> http.cookiejar.CookieJar:
@@ -279,6 +294,7 @@ def download_series(
     url: str,
     destination: Path,
     *,
+    existing_root: Path | None = None,
     cookies: Path | None = None,
     timeout: float = 45.0,
 ) -> tuple[Path, int, int]:
@@ -293,7 +309,9 @@ def download_series(
     if not chapters:
         raise RuntimeError(f"no chapters were found on Manga18FX series page: {url}")
 
-    series_directory = destination / sanitize_component(title, _slug_title(url))
+    series_name = sanitize_component(title, _slug_title(url))
+    series_directory = destination / series_name
+    existing_series_directory = existing_root / series_name if existing_root is not None else None
     downloaded = 0
     skipped = 0
     print(f"series={title!r} chapters={len(chapters)} destination={series_directory}", flush=True)
@@ -304,8 +322,11 @@ def download_series(
         if not images:
             raise RuntimeError(f"no images were found for chapter {chapter.title!r}: {chapter.url}")
 
-        chapter_name = sanitize_component(chapter.title, f"Chapter {chapter_index:04d}")
-        chapter_directory = series_directory / f"{chapter_index:04d} - {chapter_name}"
+        chapter_directory_name = _chapter_directory_name(chapter, chapter_index)
+        chapter_directory = series_directory / chapter_directory_name
+        existing_chapter_directory = (
+            existing_series_directory / chapter_directory_name if existing_series_directory is not None else None
+        )
         print(
             f"chapter={chapter_index}/{len(chapters)} title={chapter.title!r} images={len(images)}",
             flush=True,
@@ -313,12 +334,20 @@ def download_series(
 
         for image_index, image_url in enumerate(images, start=1):
             target_base = chapter_directory / f"{image_index:04d}"
-            existed = any(
+            existed_in_partial = any(
                 target_base.with_suffix(suffix).is_file() and target_base.with_suffix(suffix).stat().st_size > 0
                 for suffix in IMAGE_SUFFIXES
             )
+            existed_in_destination = existing_chapter_directory is not None and any(
+                (existing_chapter_directory / f"{image_index:04d}").with_suffix(suffix).is_file()
+                and (existing_chapter_directory / f"{image_index:04d}").with_suffix(suffix).stat().st_size > 0
+                for suffix in IMAGE_SUFFIXES
+            )
+            if existed_in_destination:
+                skipped += 1
+                continue
             _download_image(opener, image_url, chapter.url, target_base, timeout)
-            if existed:
+            if existed_in_partial:
                 skipped += 1
             else:
                 downloaded += 1
@@ -330,6 +359,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Download one complete Manga18FX series.")
     parser.add_argument("url", help="Manga18FX series-root URL.")
     parser.add_argument("-d", "--destination", type=Path, required=True, help="Output root directory.")
+    parser.add_argument("-E", "--existing-root", type=Path, help="Existing library root used to skip downloaded files.")
     parser.add_argument("-C", "--cookies", type=Path, help="Netscape/Mozilla cookies file.")
     parser.add_argument("-t", "--timeout", type=float, default=45.0, help="HTTP timeout in seconds (default: 45).")
     return parser
@@ -343,6 +373,7 @@ def main(argv: list[str] | None = None) -> int:
         series_directory, downloaded, skipped = download_series(
             args.url,
             args.destination.expanduser().resolve(),
+            existing_root=args.existing_root.expanduser().resolve() if args.existing_root else None,
             cookies=args.cookies.expanduser().resolve() if args.cookies else None,
             timeout=args.timeout,
         )
