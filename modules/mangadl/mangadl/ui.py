@@ -11,6 +11,10 @@ from termdash import utils as td_utils
 from .models import WorkerSnapshot
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+ACTIVITY_LOG_RE = re.compile(
+    r"^(?P<wall>\[[^\]]+\])(?P<elapsed>\[[^\]]+\])\s+"
+    r"(?P<status>\S+)\s+(?P<payload>.*)$"
+)
 STATUS_COLORS = {
     "run": "green",
     "running": "green",
@@ -21,7 +25,14 @@ STATUS_COLORS = {
     "succeeded": "green",
     "skipped_archive": "cyan",
 }
-SITE_COLORS = {"NH": "red", "EH": "magenta", "EX": "magenta", "MD": "cyan", "H2R": "yellow"}
+SITE_COLORS = {
+    "NH": "red",
+    "EH": "magenta",
+    "EX": "magenta",
+    "MD": "cyan",
+    "M18": "blue",
+    "H2R": "yellow",
+}
 BACKEND_BADGES = {
     "gallery-dl": ("GD", "green"),
     "native-nhentai": ("NH", "cyan"),
@@ -98,6 +109,8 @@ def url_identity(url: str, site: str = "") -> tuple[str, str]:
     path = [part for part in parts.path.split("/") if part]
     if host == "nhentai.net":
         return "NH", path[1] if len(path) >= 2 and path[0] == "g" else "search"
+    if host in {"manga18fx.com", "manga18fx.net"}:
+        return "M18", path[-1] if path else host
     if "e-hentai" in host:
         return "EH", path[-1] if path else host
     if "exhentai" in host:
@@ -123,6 +136,18 @@ def color_backend_badge(backend: str) -> str:
     return td_utils.color_text(badge, color)
 
 
+def _image_count(worker: WorkerSnapshot) -> str:
+    if worker.images_total is None:
+        return f"{worker.images_done} img"
+    return f"{worker.images_done}/{worker.images_total} img"
+
+
+def _byte_count(worker: WorkerSnapshot) -> str:
+    if worker.bytes_total is None:
+        return human_bytes(worker.bytes_done)
+    return f"{human_bytes(worker.bytes_done)}/{human_bytes(worker.bytes_total)}"
+
+
 def _progress(worker: WorkerSnapshot, width: int) -> str:
     if worker.images_total:
         ratio = max(0.0, min(1.0, worker.images_done / worker.images_total))
@@ -143,28 +168,31 @@ def _worker_lines(worker: WorkerSnapshot, selected: bool, width: int) -> list[st
     marker = td_utils.color_text(">", "cyan") if selected else " "
     identity = color_identity(worker.url, worker.site) if worker.url else td_utils.color_text("--:-", "gray")
     backend = color_backend_badge(worker.backend)
-    images = f"{worker.images_done}/{worker.images_total if worker.images_total is not None else '?'} img"
-    sizes = f"{human_bytes(worker.bytes_done)}/{human_bytes(worker.bytes_total)}"
-    rates = f"now {human_bytes(worker.current_bps, '/s')} avg {human_bytes(worker.average_bps, '/s')}"
+    images = _image_count(worker)
+    sizes = _byte_count(worker)
+    now_rate = human_bytes(worker.current_bps, "/s")
+    average_rate = human_bytes(worker.average_bps, "/s")
     items = f"{worker.current_ips:.2f} img/s"
     elapsed = td_utils.fmt_hms(worker.elapsed)
     title = worker.title if worker.title and worker.title != "gallery" else ""
     message = worker.message or title or "waiting for progress"
 
     if width >= 160:
-        title_width = width - 145
-        first = (
-            f"{marker}{worker.slot:02d} "
-            f"{fit_field(color_status(worker.state), 12)} "
-            f"{fit_field(backend, 3)} | "
-            f"{fit_field(identity, 28)} | "
-            f"{fit_field(images, 12, 'right')} | "
-            f"{fit_field(sizes, 18, 'right')} | "
-            f"{fit_field(rates, 27, 'right')} | "
-            f"{fit_field(items, 11, 'right')} | "
-            f"{fit_field(elapsed, 8, 'right')} | "
-            f"{fit_field(title, title_width)}"
+        first = " | ".join(
+            (
+                fit_field(f"{marker}{worker.slot:02d}", 3),
+                fit_field(color_status(worker.state), 10),
+                fit_field(backend, 3),
+                fit_field(identity, 34),
+                fit_field(images, 14, "right"),
+                fit_field(sizes, 14, "right"),
+                fit_field(now_rate, 13, "right"),
+                fit_field(average_rate, 13, "right"),
+                fit_field(items, 11, "right"),
+                fit_field(elapsed, 8, "right"),
+            )
         )
+        first = fit_field(first, width)
         bar_width = max(12, min(72, width - 34))
         second = fit_field(
             f"    {_progress(worker, bar_width)} {_progress_label(worker):>8} | {message}",
@@ -174,29 +202,67 @@ def _worker_lines(worker: WorkerSnapshot, selected: bool, width: int) -> list[st
 
     if width >= 78:
         first = clip(
-            f"{marker}{worker.slot:02d} {color_status(worker.state)} {backend} | {identity} | {images} | {sizes} | {elapsed}",
+            f"{marker}{worker.slot:02d} {color_status(worker.state)} {backend} | "
+            f"{identity} | {images} | {sizes} | {elapsed}",
             width,
         )
         bar_width = max(12, min(36, width - 38))
         second = clip(
-            f"    {_progress(worker, bar_width)} {_progress_label(worker):>8} | {rates} | {items}",
+            f"    {_progress(worker, bar_width)} {_progress_label(worker):>8} | "
+            f"now {now_rate} | avg {average_rate} | {items}",
             width,
         )
         return [first, second]
 
     first = clip(
-        f"{marker}{worker.slot:02d} {color_status(worker.state)} {backend} | {identity} | {images} | {elapsed}", width
+        f"{marker}{worker.slot:02d} {color_status(worker.state)} {backend} | "
+        f"{identity} | {images} | {elapsed}",
+        width,
     )
     bar_width = max(8, min(18, width - 26))
     second = clip(
-        f"    {_progress(worker, bar_width)} {_progress_label(worker):>8} | {human_bytes(worker.current_bps, '/s')}",
+        f"    {_progress(worker, bar_width)} {_progress_label(worker):>8} | {now_rate}",
         width,
     )
     return [first, second]
 
 
-def _color_log_line(line: str) -> str:
+def _normalize_unknown_totals(value: str) -> str:
+    value = re.sub(r"\b(\d+)/\?\s+img\b", r"\1 img", value)
+    value = re.sub(r"\b([^|]+?)/\?(?=\s*(?:\||$))", lambda match: match.group(1).rstrip(), value)
+    return value
+
+
+def _format_activity_log_line(line: str) -> str:
+    """Render persisted activity records with stable columns."""
     result = ANSI_RE.sub("", line.rstrip())
+    match = ACTIVITY_LOG_RE.match(result)
+    if match is None:
+        return _normalize_unknown_totals(result)
+
+    payload = _normalize_unknown_totals(match.group("payload").strip())
+    fields = re.split(r"\s{2,}", payload, maxsplit=4) if payload else []
+    identity = fields[0] if fields else ""
+    images = fields[1] if len(fields) > 1 else ""
+    size = fields[2] if len(fields) > 2 else ""
+    rate = fields[3] if len(fields) > 3 else ""
+    detail = fields[4] if len(fields) > 4 else ""
+
+    prefix = match.group("wall") + match.group("elapsed")
+    status = match.group("status")
+    return (
+        f"{fit_field(prefix, 25)} "
+        f"{fit_field(status, 17)} | "
+        f"{fit_field(identity, 38)} | "
+        f"{fit_field(images, 14, 'right')} | "
+        f"{fit_field(size, 12, 'right')} | "
+        f"{fit_field(rate, 16, 'right')}"
+        + (f" | {detail}" if detail else "")
+    ).rstrip()
+
+
+def _color_log_line(line: str) -> str:
+    result = _format_activity_log_line(line)
     for token, color in (
         ("FAILED", "red"),
         ("ERROR", "red"),
@@ -210,7 +276,7 @@ def _color_log_line(line: str) -> str:
         if token in result:
             result = result.replace(token, td_utils.color_text(token, color), 1)
             break
-    if result.startswith("[") and (end := result.find("]")) >= 0:
+    if result.startswith("[") and (end := result.find("]", result.find("]") + 1)) >= 0:
         result = td_utils.color_text(result[: end + 1], "gray") + result[end + 1 :]
     return result
 
@@ -239,21 +305,30 @@ def render_dashboard(
     avg = sum(worker.average_bps for worker in workers.values())
     lines = [
         clip(
-            f"{td_utils.color_text('mangadl', 'bright')} {run_id} | Manga {td_utils.color_text(f'{done}/{total}', 'green')} | Q {counts.get('queued', 0)} Run {td_utils.color_text(str(running), 'green')} Retry {td_utils.color_text(str(counts.get('retry_wait', 0)), 'yellow')} Fail {td_utils.color_text(str(failed), 'red' if failed else 'gray')}",
+            f"{td_utils.color_text('mangadl', 'bright')} {run_id} | "
+            f"Manga {td_utils.color_text(f'{done}/{total}', 'green')} | "
+            f"Q {counts.get('queued', 0)} "
+            f"Run {td_utils.color_text(str(running), 'green')} "
+            f"Retry {td_utils.color_text(str(counts.get('retry_wait', 0)), 'yellow')} "
+            f"Fail {td_utils.color_text(str(failed), 'red' if failed else 'gray')}",
             width,
         )
     ]
     if runtime is not None:
         lines.append(
             clip(
-                f"Workers {runtime.active_workers}/{runtime.target_workers} | Images/worker {runtime.image_workers} | "
-                f"Active concurrency {runtime.aggregate}/{runtime.budget} | Logical CPUs {runtime.logical_cpus}",
+                f"Workers {runtime.active_workers}/{runtime.target_workers} | "
+                f"Images/worker {runtime.image_workers} | "
+                f"Active concurrency {runtime.aggregate}/{runtime.budget} | "
+                f"Logical CPUs {runtime.logical_cpus}",
                 width,
             )
         )
     lines.append(
         clip(
-            f"Speed {td_utils.color_text(human_bytes(speed, '/s'), 'cyan')} | Worker avg {human_bytes(avg, '/s')} | Downloaded {human_bytes(sum(w.bytes_done for w in workers.values()))}",
+            f"Speed {td_utils.color_text(human_bytes(speed, '/s'), 'cyan')} | "
+            f"Worker avg {human_bytes(avg, '/s')} | "
+            f"Downloaded {human_bytes(sum(w.bytes_done for w in workers.values()))}",
             width,
         )
     )
@@ -272,7 +347,8 @@ def render_dashboard(
         [
             "-" * width,
             clip(
-                "Up/Down j/k Select | +/- Workers | [/] Image threads | l Log | f Fullscreen | r Raw | p/P Pause | q Quit",
+                "Up/Down j/k Select | +/- Workers | [/] Image threads | "
+                "l Log | f Fullscreen | r Raw | p/P Pause | q Quit",
                 width,
             ),
         ]
