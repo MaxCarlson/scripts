@@ -39,6 +39,7 @@ def test_run_parser_defaults_to_safe_worker_ceiling_and_stagger(tmp_path) -> Non
     assert args.max_workers == 4
     assert args.worker_start_delay == 2.0
     assert args.image_workers == 4
+    assert args.run_id is None
 
 
 def test_dry_run_routes_without_writing(tmp_path, capsys, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -50,14 +51,28 @@ def test_dry_run_routes_without_writing(tmp_path, capsys, monkeypatch: pytest.Mo
         lambda self, url: 100 if url == "https://nhentai.net/g/123/" else 0,
     )
 
-    result = main(["run", "-u", "123", "-d", str(tmp_path / "out"), "-a", str(tmp_path / "archive.db"), "-n"])
+    result = main(
+        [
+            "run",
+            "config",
+            "-u",
+            "123",
+            "-d",
+            str(tmp_path / "out"),
+            "-a",
+            str(tmp_path / "archive.db"),
+            "-n",
+        ]
+    )
 
+    payload = json.loads(capsys.readouterr().out)
     assert result == 0
-    assert '"gallery-dl"' in capsys.readouterr().out
+    assert payload["mode"] == "normal"
+    assert "gallery-dl" in payload["routes"].values()
     assert not (tmp_path / "archive.db").exists()
 
 
-def test_auto_tune_dry_run_reports_explicit_bounds(
+def test_benchmark_dry_run_reports_explicit_bounds(
     tmp_path,
     capsys,
     monkeypatch: pytest.MonkeyPatch,
@@ -67,6 +82,8 @@ def test_auto_tune_dry_run_reports_explicit_bounds(
     result = main(
         [
             "run",
+            "benchmark",
+            "config",
             "-u",
             "https://manga18fx.com/manga/one/",
             "-u",
@@ -79,11 +96,14 @@ def test_auto_tune_dry_run_reports_explicit_bounds(
             str(tmp_path / "out"),
             "-a",
             str(tmp_path / "archive.db"),
-            "-T",
-            "-W",
-            "2:4",
-            "-Y",
-            "2:5",
+            "-p",
+            "2",
+            "-m",
+            "4",
+            "-P",
+            "2",
+            "-M",
+            "5",
             "-U",
             "1.5",
             "-n",
@@ -91,37 +111,63 @@ def test_auto_tune_dry_run_reports_explicit_bounds(
     )
 
     payload = json.loads(capsys.readouterr().out)
+    optimization = payload["optimization"]
     assert result == 0
+    assert payload["mode"] == "benchmark"
     assert payload["max_workers"] == 4
     assert payload["worker_start_delay"] == 1.5
-    assert payload["auto_tune"]["worker_range"] == {"minimum": 2, "maximum": 4}
-    assert payload["auto_tune"]["image_worker_range"] == {"minimum": 2, "maximum": 5}
+    assert optimization["worker_bounds"] == {"minimum": 2, "maximum": 4}
+    assert optimization["image_worker_bounds"] == {"minimum": 2, "maximum": 5}
+    assert optimization["state_count"] > 0
 
 
-def test_auto_tune_range_cannot_exceed_configured_ceiling(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("MANGADL_MAX_OUTER_WORKERS", raising=False)
-    monkeypatch.delenv("MANGADL_MANGA18FX_IMAGE_WORKERS", raising=False)
+def test_benchmark_bounds_cannot_exceed_hard_worker_limit(tmp_path) -> None:
     with pytest.raises(SystemExit) as exc_info:
         main(
             [
                 "run",
+                "benchmark",
                 "-u",
                 "https://manga18fx.com/manga/example/",
                 "-d",
                 str(tmp_path / "out"),
                 "-a",
                 str(tmp_path / "archive.db"),
-                "-T",
-                "-W",
-                "1:5",
+                "-m",
+                "9",
                 "-n",
             ]
         )
 
     assert exc_info.value.code == 2
+
+
+def test_legacy_auto_tune_aliases_normalize_to_benchmark_preview(tmp_path, capsys) -> None:
+    result = main(
+        [
+            "run",
+            "-u",
+            "https://manga18fx.com/manga/one/",
+            "-u",
+            "https://manga18fx.com/manga/two/",
+            "-d",
+            str(tmp_path / "out"),
+            "-a",
+            str(tmp_path / "archive.db"),
+            "-T",
+            "-W",
+            "1:2",
+            "-Y",
+            "2:4",
+            "-n",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert payload["mode"] == "benchmark"
+    assert payload["optimization"]["worker_bounds"] == {"minimum": 1, "maximum": 2}
+    assert payload["optimization"]["image_worker_bounds"] == {"minimum": 2, "maximum": 4}
 
 
 def test_explicit_max_workers_override_allows_experimental_bound(
@@ -134,6 +180,7 @@ def test_explicit_max_workers_override_allows_experimental_bound(
     result = main(
         [
             "run",
+            "config",
             "-u",
             "https://manga18fx.com/manga/example/",
             "-d",
