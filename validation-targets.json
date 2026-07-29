@@ -6,6 +6,10 @@
     "rrbackup": {
       "description": "RRBackup consolidation, compatibility, viewer, scheduler, and alerting validation.",
       "working_directory": "modules/rrbackup",
+      "context_files": [
+        "docs/plans/20260729-0700_rrbackup-consolidation-viewer-alerting/STATUS.md",
+        "docs/plans/20260729-0700_rrbackup-consolidation-viewer-alerting/checklist.md"
+      ],
       "environment": {
         "PYTHONUTF8": "1",
         "PYTHONUNBUFFERED": "1",
