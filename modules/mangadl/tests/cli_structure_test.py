@@ -1,7 +1,18 @@
+import argparse
+
 import pytest
 
 from mangadl.cli import build_parser
 from mangadl.cli_structure import normalize_command_shape
+
+
+def _run_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    subparsers = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    return subparsers.choices["run"]
 
 
 def test_command_shape_normalizes_run_modes_and_config() -> None:
@@ -22,9 +33,7 @@ def test_command_shape_normalizes_run_modes_and_config() -> None:
 
 
 def test_normal_run_help_hides_expert_options() -> None:
-    parser = build_parser(["run", "--help"])
-    run_parser = parser._subparsers._group_actions[0].choices["run"]
-    help_text = run_parser.format_help()
+    help_text = _run_parser(build_parser(["run", "--help"])).format_help()
 
     assert "--workers" in help_text
     assert "--image-workers" in help_text
@@ -34,10 +43,10 @@ def test_normal_run_help_hides_expert_options() -> None:
 
 
 def test_optimize_and_config_help_expose_relevant_options() -> None:
-    optimize_parser = build_parser(["run", "optimize", "--help"])
-    optimize_help = optimize_parser._subparsers._group_actions[0].choices["run"].format_help()
-    config_parser = build_parser(["run", "optimize", "config", "--help"])
-    config_help = config_parser._subparsers._group_actions[0].choices["run"].format_help()
+    optimize_help = _run_parser(build_parser(["run", "optimize", "--help"])).format_help()
+    config_help = _run_parser(
+        build_parser(["run", "optimize", "config", "--help"])
+    ).format_help()
 
     assert "--min-workers" in optimize_help
     assert "--max-image-workers" in optimize_help
