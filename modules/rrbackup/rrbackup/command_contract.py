@@ -1,26 +1,38 @@
-"""Authoritative command and audit-section contract for the merged backup CLI."""
+"""Authoritative command and audit-section contract for the unified backup CLI."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-
 CANONICAL_PROGRAM = "backup"
-COMPATIBILITY_PROGRAMS = ("rrb", "rrbackup", "backup_module")
+COMPATIBILITY_PROGRAMS = ("backup_module",)
 MAJOR_COMMANDS = (
+    "create",
     "run",
     "view",
-    "config",
     "schedule",
     "restore",
-    "repository",
+    "repo",
+    "config",
 )
-COMMAND_ALIASES = {"edit": "config"}
+COMMAND_ALIASES = {
+    "edit": "config",
+    "repository": "repo",
+}
+VIEW_SECTIONS = (
+    "overview",
+    "backups",
+    "history",
+    "repository",
+    "schedules",
+    "diagnostics",
+    "audit",
+)
 
 
 @dataclass(frozen=True)
 class AuditSection:
-    """Describe one read-only section emitted by ``backup view audit``."""
+    """Describe one read-only section emitted by the audit collector."""
 
     name: str
     description: str
@@ -71,7 +83,6 @@ AUDIT_SECTIONS = (
     AuditSection("recommendations", "Warnings and ordered next actions."),
 )
 
-
 AUDIT_SECTION_NAMES = tuple(section.name for section in AUDIT_SECTIONS)
 SENSITIVE_AUDIT_SECTIONS = frozenset(
     section.name for section in AUDIT_SECTIONS if section.sensitive
@@ -83,6 +94,7 @@ OPTIONAL_AUDIT_SECTIONS = frozenset(
 
 def resolve_major_command(name: str) -> str:
     """Resolve a major command or alias, raising for unsupported names."""
+
     normalized = name.strip().lower()
     resolved = COMMAND_ALIASES.get(normalized, normalized)
     if resolved not in MAJOR_COMMANDS:
@@ -92,6 +104,7 @@ def resolve_major_command(name: str) -> str:
 
 def get_audit_section(name: str) -> AuditSection:
     """Return one audit section by normalized name."""
+
     normalized = name.strip().lower()
     for section in AUDIT_SECTIONS:
         if section.name == normalized:
