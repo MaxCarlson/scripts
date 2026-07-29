@@ -309,6 +309,9 @@ def download_series(
     if not chapters:
         raise RuntimeError(f"no chapters were found on Manga18FX series page: {url}")
 
+    if existing_root is None and destination.parent.name == "_partial":
+        existing_root = destination.parent.parent
+
     series_name = sanitize_component(title, _slug_title(url))
     series_directory = destination / series_name
     existing_series_directory = existing_root / series_name if existing_root is not None else None
