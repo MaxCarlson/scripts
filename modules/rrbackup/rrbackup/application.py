@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
 from . import cli_runtime
@@ -295,6 +296,16 @@ def _translate_hidden_aliases(argv: Sequence[str]) -> List[str]:
     return prefix + [area] + tail
 
 
+def _explicit_config_must_exist(args: argparse.Namespace) -> bool:
+    """Return whether an explicitly supplied config is an input, not an output target."""
+
+    if not args.config_path:
+        return False
+    if args.area == "create":
+        return False
+    return not (args.area == "config" and args.config_command == "migrate")
+
+
 def main(
     argv: Optional[Sequence[str]] = None,
     *,
@@ -306,6 +317,8 @@ def main(
     parser = build_parser(program_name=program_name)
     try:
         args = parser.parse_args(_translate_hidden_aliases(raw))
+        if _explicit_config_must_exist(args) and not Path(args.config_path).exists():
+            raise FileNotFoundError("Config file not found: {0}".format(args.config_path))
         return int(args.handler(args))
     except (OSError, ValueError, json.JSONDecodeError, ResticCommandError, LockError) as exc:
         print("{0}: {1}".format(parser.prog, exc), file=sys.stderr)
