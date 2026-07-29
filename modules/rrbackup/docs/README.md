@@ -77,10 +77,15 @@ validation-targets.json
 The dispatcher currently selects `rrbackup` by default, bootstraps its development dependencies, runs pytest with isolated import handling, runs every configured PowerShell validation script, and records complete output under:
 
 ```text
-docs/test-results/rrbackup/YYYYMMDD-HHMMSS_rrbackup.txt
+docs/test-results/rrbackup/
+├── LATEST.txt
+└── history/
+    └── YYYYMMDD-HHMMSS_rrbackup.txt
 ```
 
-After a local run, stage, commit, and push the generated report so the remote implementation agent can inspect the exact results without manual copy/paste.
+`LATEST.txt` is always the current authoritative result. History is retained only for regression comparison and is bounded by default to three prior reports and 14 days.
+
+After a local run, stage, commit, and push the generated report changes so the remote implementation agent can inspect the exact results without manual copy/paste.
 
 Temporary pytest data and coverage databases remain under `modules/rrbackup/.pytest_tmp_root/` and are ignored.
 
