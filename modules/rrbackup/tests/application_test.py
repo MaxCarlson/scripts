@@ -134,6 +134,9 @@ class FakeDefinition:
     def __init__(self) -> None:
         self.name = "local-main"
         self.profile = SimpleNamespace(
+            repository="repo",
+            password_file="password.txt",
+            restic_executable="restic",
             extra_backup_args=[],
             status_file="status.json",
             name="local-main",
