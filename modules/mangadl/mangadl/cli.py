@@ -11,17 +11,19 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .autotune import TuneRange, generate_candidates, parse_tune_range, run_manga18fx_autotune
+from .archive_ui import ArchiveBrowser, filter_records, load_archive
 from .backends import backend_classification, choose_backend
-from .concurrency import (
-    DEFAULT_MAX_OUTER_WORKERS,
-    HARD_MAX_OUTER_WORKERS,
-    MAX_OUTER_WORKERS_ENV,
-)
+from .cli_structure import add_run_arguments, normalize_command_shape
+from .concurrency import HARD_MAX_OUTER_WORKERS, MAX_OUTER_WORKERS_ENV
 from .destination_audit import audit_destinations, write_audit_outputs
 from .hdporncomics_patch import apply_patch, patch_status
 from .input import collect_inputs
 from .manager import DownloadManager, RunOptions
+from .optimizer import (
+    OptimizationDashboard,
+    generate_optimization_states,
+    run_online_optimization,
+)
 from .repair import apply_repair, plan_loose_images
 from .repair_ui import RepairDashboard
 from .state import StateStore
@@ -36,116 +38,40 @@ def _path(value: str) -> Path:
 
 def _add_state(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "-s", "--state-db", type=_path, default=_path("mangadl-state.sqlite3"), help="Manager state database."
+        "-s",
+        "--state-db",
+        type=_path,
+        default=_path("mangadl-state.sqlite3"),
+        help="Manager state database.",
     )
     parser.add_argument("-R", "--run-id", help="Run identifier; defaults to the latest run where applicable.")
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argparse.ArgumentParser:
+    shape = normalize_command_shape(argv_hint or ())
     parser = argparse.ArgumentParser(
-        prog="mangadl", description="Concurrent, resumable manga/gallery download manager."
+        prog="mangadl",
+        description="Concurrent, resumable manga/gallery download manager.",
     )
     parser.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    run = subparsers.add_parser("run", help="Download URLs from files and command-line values.")
-    run.add_argument("-i", "--input-file", action="append", type=_path, default=[], help="UTF-8 URL file; repeatable.")
-    run.add_argument("-u", "--url", action="append", default=[], help="Direct gallery URL or nhentai ID; repeatable.")
-    run.add_argument("-d", "--destination", type=_path, required=True, help="Destination library root.")
-    run.add_argument("-a", "--archive", type=_path, required=True, help="gallery-dl SQLite archive path.")
-    _add_state(run)
-    run.add_argument("-w", "--workers", type=int, default=2, help="Requested concurrent series workers (default: 2).")
-    run.add_argument(
-        "-m",
-        "--max-workers",
-        type=int,
-        default=DEFAULT_MAX_OUTER_WORKERS,
-        help="Outer-worker safety ceiling (default: 4; experimental maximum: 8).",
+    mode_descriptions = {
+        "normal": "Download URL files with concise concurrency controls.",
+        "optimize": "Adaptively find a fast Manga18FX worker/image-thread state, then run.",
+        "benchmark": "Systematically benchmark bounded Manga18FX concurrency states, then run.",
+    }
+    run = subparsers.add_parser(
+        "run",
+        help="Download normally, optimize adaptively, or benchmark a bounded state matrix.",
+        description=mode_descriptions[shape.run_mode],
     )
-    run.add_argument(
-        "-U",
-        "--worker-start-delay",
-        type=float,
-        default=2.0,
-        help="Seconds between worker process launches (default: 2; use 0 to disable staggering).",
+    add_run_arguments(
+        run,
+        mode=shape.run_mode,
+        advanced=shape.advanced_config,
+        path_type=_path,
     )
-    run.add_argument(
-        "-I",
-        "--image-workers",
-        type=int,
-        default=4,
-        help="Concurrent Manga18FX image downloads per series (default: 4; range: 1-8).",
-    )
-    run.add_argument(
-        "-T",
-        "--auto-tune",
-        action="store_true",
-        help="Benchmark bounded Manga18FX worker combinations before the real run.",
-    )
-    run.add_argument(
-        "-W",
-        "--tune-workers",
-        type=parse_tune_range,
-        metavar="MIN:MAX",
-        help="Inclusive outer-worker range; defaults to 1 through --max-workers.",
-    )
-    run.add_argument(
-        "-Y",
-        "--tune-image-workers",
-        type=parse_tune_range,
-        metavar="MIN:MAX",
-        help="Inclusive Manga18FX image-worker range; default 1:8.",
-    )
-    run.add_argument(
-        "-D",
-        "--tune-seconds",
-        type=float,
-        default=8.0,
-        help="Target sample seconds per combination (default: 8).",
-    )
-    run.add_argument(
-        "-Q",
-        "--tune-rounds",
-        type=int,
-        default=2,
-        help="Benchmark rounds per combination; rates are averaged (default: 2).",
-    )
-    run.add_argument(
-        "-K",
-        "--tune-sample-images",
-        type=int,
-        default=24,
-        help="Maximum representative image transfers per active series and combination (default: 24).",
-    )
-    run.add_argument(
-        "-O",
-        "--tune-report",
-        type=_path,
-        help="Auto-tune JSON report path; defaults to a timestamped file under --log-dir.",
-    )
-    run.add_argument(
-        "-b",
-        "--backend",
-        choices=("auto", "gallery-dl", "native-nhentai", "hdporncomics", "manga18fx"),
-        default="auto",
-    )
-    run.add_argument("-e", "--hdporncomics-executable", help="hdporncomics executable path or name.")
-    run.add_argument(
-        "-H", "--hdporncomics-threads", type=int, default=8, help="Internal hdporncomics threads (default: 8)."
-    )
-    run.add_argument("-c", "--config", type=_path, help="Reserved mangadl TOML configuration path.")
-    run.add_argument("-g", "--gallery-config", type=_path, help="gallery-dl configuration file.")
-    run.add_argument("-l", "--log-dir", type=_path, default=_path("mangadl-logs"), help="Run log root.")
-    run.add_argument("-r", "--retries", type=int, default=3, help="Retry count for transient failures.")
-    run.add_argument("-t", "--retry-wait", type=float, default=5.0, help="Initial retry delay in seconds.")
-    run.add_argument("-x", "--max-rate", help="Per-worker gallery-dl rate limit, for example 2M.")
-    run.add_argument("-C", "--cookies", type=_path, help="Netscape/Mozilla cookies file.")
-    run.add_argument("-B", "--cookies-browser", help="Reserved browser cookie source for gallery-dl configuration.")
-    run.add_argument("-n", "--dry-run", action="store_true", help="Parse, deduplicate, and route without downloading.")
-    run.add_argument("-N", "--no-ui", action="store_true", help="Disable the in-place dashboard.")
-    run.add_argument("-q", "--quiet", action="store_true", help="Only print the final machine-readable summary.")
-    run.add_argument("-v", "--verbose", action="count", default=0, help="Increase manager diagnostics.")
-    run.add_argument("-A", "--anonymize-logs", action="store_true", help="Reserve URL-anonymized log output.")
 
     inspect = subparsers.add_parser("inspect", help="Inspect URL routing or persisted jobs.")
     inspect.add_argument("-u", "--url", action="append", default=[], help="URL to probe; repeatable.")
@@ -167,26 +93,71 @@ def build_parser() -> argparse.ArgumentParser:
     retry.add_argument("-j", "--job-id", action="append", type=int, default=[], help="Job ID to retry; repeatable.")
     retry.add_argument("-f", "--all-failed", action="store_true", help="Requeue all failed jobs.")
 
-    archive = subparsers.add_parser("archive", help="Inspect a gallery-dl SQLite archive.")
+    archive = subparsers.add_parser(
+        "archive",
+        help="Browse a gallery-dl SQLite archive interactively.",
+        description="Open an interactive archive browser; use `archive config` for JSON/export controls.",
+    )
     archive.add_argument("-a", "--archive", required=True, type=_path, help="gallery-dl archive path.")
-    archive.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
+    archive.add_argument(
+        "-j",
+        "--json",
+        action="store_true",
+        help="Emit all archive records as JSON." if shape.archive_config else argparse.SUPPRESS,
+    )
+    archive.add_argument(
+        "-N",
+        "--no-ui",
+        action="store_true",
+        help="Print a summary instead of opening the browser." if shape.archive_config else argparse.SUPPRESS,
+    )
+    archive.add_argument(
+        "-f",
+        "--filter",
+        default="",
+        help="Initial case-insensitive record filter." if shape.archive_config else argparse.SUPPRESS,
+    )
+    archive.add_argument(
+        "-e",
+        "--export",
+        type=_path,
+        help="Export the filtered view to JSON." if shape.archive_config else argparse.SUPPRESS,
+    )
+
     patch = subparsers.add_parser("patch-hdporncomics", help="Check or apply the HDPornComics Windows path patch.")
     patch.add_argument("-f", "--apply", action="store_true", help="Apply the known-safe compatibility patch.")
+
     audit = subparsers.add_parser(
-        "audit", aliases=("audit-destinations",), help="Find URL-list items absent from all destination roots."
+        "audit",
+        aliases=("audit-destinations",),
+        help="Find URL-list items absent from all destination roots.",
     )
     audit.add_argument("-i", "--input-file", action="append", required=True, help="URL file or glob; repeatable.")
     audit.add_argument(
-        "-d", "--destination", action="append", type=_path, required=True, help="Download root to inspect; repeatable."
+        "-d",
+        "--destination",
+        action="append",
+        type=_path,
+        required=True,
+        help="Download root to inspect; repeatable.",
     )
     audit.add_argument(
-        "-o", "--missing-output", type=_path, required=True, help="Write URLs not found in any destination here."
+        "-o",
+        "--missing-output",
+        type=_path,
+        required=True,
+        help="Write URLs not found in any destination here.",
     )
     audit.add_argument(
-        "-p", "--duplicates-output", type=_path, required=True, help="Write duplicate folder locations as JSON here."
+        "-p",
+        "--duplicates-output",
+        type=_path,
+        required=True,
+        help="Write duplicate folder locations as JSON here.",
     )
     audit.add_argument("-j", "--json", action="store_true", help="Emit the audit summary as JSON.")
     audit.add_argument("-q", "--quiet", action="store_true", help="Suppress progress messages on stderr.")
+
     repair = subparsers.add_parser("repair-loose", help="Rebuild per-gallery folders from loose nhentai images.")
     repair.add_argument("-d", "--destination", required=True, type=_path, help="Directory containing loose images.")
     repair_mode = repair.add_mutually_exclusive_group()
@@ -197,42 +168,66 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _resolved_tune_ranges(args: argparse.Namespace) -> tuple[TuneRange, TuneRange]:
-    worker_range = args.tune_workers or TuneRange(1, args.max_workers)
-    image_range = args.tune_image_workers or TuneRange(1, MAX_IMAGE_WORKERS)
-    if worker_range.maximum > args.max_workers:
-        raise ValueError(
-            f"--tune-workers maximum {worker_range.maximum} exceeds --max-workers {args.max_workers}"
-        )
-    if image_range.maximum > MAX_IMAGE_WORKERS:
-        raise ValueError(f"--tune-image-workers maximum must not exceed {MAX_IMAGE_WORKERS}")
-    return worker_range, image_range
+def _inclusive_range(value: str) -> tuple[int, int]:
+    parts = value.split(":", 1)
+    if len(parts) != 2:
+        raise ValueError(f"expected MIN:MAX, got {value!r}")
+    try:
+        minimum, maximum = (int(part.strip()) for part in parts)
+    except ValueError as exc:
+        raise ValueError(f"expected integer MIN:MAX, got {value!r}") from exc
+    if minimum < 1 or maximum < minimum:
+        raise ValueError(f"invalid inclusive range {value!r}; require 1 <= MIN <= MAX")
+    return minimum, maximum
 
 
-def _auto_tune_preview(args: argparse.Namespace, manga18fx_urls: list[str]) -> dict[str, Any]:
-    worker_range, image_range = _resolved_tune_ranges(args)
-    logical_cpus = max(1, int(os.cpu_count() or 1))
-    candidates = generate_candidates(
-        worker_range,
-        image_range,
-        logical_cpus=logical_cpus,
+def _normalize_legacy_autotune(args: argparse.Namespace) -> None:
+    if not getattr(args, "auto_tune", False):
+        return
+    args.run_mode = "benchmark"
+    args.evaluation = "timed"
+    args.trial_seconds = args.tune_seconds
+    args.trials = args.tune_rounds
+    args.optimization_report = args.tune_report
+    args.report_only = False
+    args.seed = None
+    args.min_workers = 1
+    args.min_image_workers = 1
+    args.max_image_workers = MAX_IMAGE_WORKERS
+    if args.tune_workers:
+        args.min_workers, args.max_workers = _inclusive_range(args.tune_workers)
+    if args.tune_image_workers:
+        args.min_image_workers, args.max_image_workers = _inclusive_range(args.tune_image_workers)
+
+
+def _optimization_preview(args: argparse.Namespace, manga18fx_urls: list[str]) -> dict[str, Any]:
+    logical = max(1, int(os.cpu_count() or 1))
+    states = generate_optimization_states(
+        args.min_workers,
+        args.max_workers,
+        args.min_image_workers,
+        args.max_image_workers,
+        logical_cpus=logical,
         available_series=len(manga18fx_urls),
     )
+    trials = args.trials if args.run_mode == "optimize" else len(states) * args.trials
     return {
-        "enabled": True,
-        "worker_range": {"minimum": worker_range.minimum, "maximum": worker_range.maximum},
-        "image_worker_range": {"minimum": image_range.minimum, "maximum": image_range.maximum},
-        "seconds_per_candidate": args.tune_seconds,
-        "rounds": args.tune_rounds,
-        "sample_images_per_series": args.tune_sample_images,
-        "worker_start_delay": args.worker_start_delay,
-        "logical_cpus": logical_cpus,
-        "budget": max(1, logical_cpus - 1),
-        "candidate_count": len(candidates),
+        "mode": args.run_mode,
+        "evaluation": args.evaluation,
+        "worker_bounds": {"minimum": args.min_workers, "maximum": args.max_workers},
+        "image_worker_bounds": {
+            "minimum": args.min_image_workers,
+            "maximum": args.max_image_workers,
+        },
+        "state_count": len(states),
+        "planned_trials": trials,
+        "trial_seconds": args.trial_seconds,
+        "logical_cpus": logical,
+        "budget": max(1, logical - 1),
     }
 
 
-def _run(args: argparse.Namespace) -> int:
+def _validate_run(args: argparse.Namespace) -> None:
     if args.workers < 1:
         raise ValueError("--workers must be at least 1")
     if not 1 <= args.max_workers <= HARD_MAX_OUTER_WORKERS:
@@ -243,17 +238,26 @@ def _run(args: argparse.Namespace) -> int:
         raise ValueError(f"--image-workers must be between 1 and {MAX_IMAGE_WORKERS}")
     if args.hdporncomics_threads < 1:
         raise ValueError("--hdporncomics-threads must be at least 1")
-    if args.tune_seconds <= 0:
-        raise ValueError("--tune-seconds must be greater than zero")
-    if args.tune_rounds < 1:
-        raise ValueError("--tune-rounds must be at least 1")
-    if args.tune_sample_images < 1:
-        raise ValueError("--tune-sample-images must be at least 1")
     if not args.input_file and not args.url:
         raise ValueError("provide at least one --input-file or --url")
 
-    os.environ[MANGA18FX_IMAGE_WORKERS_ENV] = str(args.image_workers)
-    os.environ[MAX_OUTER_WORKERS_ENV] = str(args.max_workers)
+    if args.run_mode in {"optimize", "benchmark"}:
+        if args.min_workers < 1 or args.min_workers > args.max_workers:
+            raise ValueError("require 1 <= --min-workers <= --max-workers")
+        if args.min_image_workers < 1 or args.min_image_workers > args.max_image_workers:
+            raise ValueError("require 1 <= --min-image-workers <= --max-image-workers")
+        if args.max_image_workers > MAX_IMAGE_WORKERS:
+            raise ValueError(f"--max-image-workers must not exceed {MAX_IMAGE_WORKERS}")
+        if args.trials < 1:
+            raise ValueError("--trials must be at least 1")
+        if args.evaluation == "timed" and args.trial_seconds <= 0:
+            raise ValueError("--trial-seconds must be greater than zero for timed evaluation")
+
+
+def _run(args: argparse.Namespace) -> int:
+    _normalize_legacy_autotune(args)
+    _validate_run(args)
+
     inputs, rejected = collect_inputs(args.input_file, args.url)
     routes: dict[str, str] = {}
     unsupported: list[dict[str, Any]] = []
@@ -264,17 +268,20 @@ def _run(args: argparse.Namespace) -> int:
             unsupported.append({"url": item.url, "reason": str(exc)})
     inputs = [item for item in inputs if item.canonical_url in routes]
     manga18fx_urls = [item.canonical_url for item in inputs if routes[item.canonical_url] == "manga18fx"]
+
     preview: dict[str, Any] = {
         "accepted": len(inputs),
         "rejected": rejected,
         "unsupported": unsupported,
         "routes": routes,
+        "mode": args.run_mode,
         "requested_workers": args.workers,
+        "image_workers": args.image_workers,
         "max_workers": args.max_workers,
         "worker_start_delay": args.worker_start_delay,
     }
-    if args.auto_tune:
-        preview["auto_tune"] = _auto_tune_preview(args, manga18fx_urls)
+    if args.run_mode in {"optimize", "benchmark"}:
+        preview["optimization"] = _optimization_preview(args, manga18fx_urls)
     if args.dry_run:
         print(json.dumps(preview, indent=2, sort_keys=True))
         return 1 if unsupported else 0
@@ -282,52 +289,85 @@ def _run(args: argparse.Namespace) -> int:
         print(json.dumps(preview, indent=2, sort_keys=True), file=sys.stderr)
         return 2
 
-    tune_result = None
-    if args.auto_tune:
+    optimization_result = None
+    if args.run_mode in {"optimize", "benchmark"}:
         if not manga18fx_urls:
-            raise ValueError("--auto-tune requires at least one routed Manga18FX series URL")
-        worker_range, image_range = _resolved_tune_ranges(args)
-        report_path = args.tune_report or (args.log_dir / f"autotune-{time.strftime('%Y%m%d-%H%M%S')}.json")
-        progress = None if args.quiet else lambda message: print(f"Auto-tune: {message}", file=sys.stderr, flush=True)
-        tune_result = run_manga18fx_autotune(
+            raise ValueError(f"run {args.run_mode} requires at least one routed Manga18FX series URL")
+        logical = max(1, int(os.cpu_count() or 1))
+        states = generate_optimization_states(
+            args.min_workers,
+            args.max_workers,
+            args.min_image_workers,
+            args.max_image_workers,
+            logical_cpus=logical,
+            available_series=len(manga18fx_urls),
+        )
+        if not states:
+            raise ValueError("optimization bounds produced no valid states")
+        planned_trials = args.trials if args.run_mode == "optimize" else len(states) * args.trials
+        report_path = args.optimization_report or (
+            args.log_dir / f"{args.run_mode}-{time.strftime('%Y%m%d-%H%M%S')}.json"
+        )
+        dashboard = OptimizationDashboard(enabled=not args.no_ui and not args.quiet)
+        optimization_result = run_online_optimization(
             manga18fx_urls,
             args.destination,
             report_path,
-            worker_range=worker_range,
-            image_range=image_range,
-            seconds=args.tune_seconds,
-            rounds=args.tune_rounds,
-            sample_images=args.tune_sample_images,
+            minimum_workers=args.min_workers,
+            maximum_workers=args.max_workers,
+            minimum_image_workers=args.min_image_workers,
+            maximum_image_workers=args.max_image_workers,
+            evaluation=args.evaluation,
+            strategy="adaptive" if args.run_mode == "optimize" else "grid",
+            planned_trials=planned_trials,
+            trial_seconds=args.trial_seconds,
             cookies=args.cookies,
             worker_start_delay=args.worker_start_delay,
-            progress=progress,
+            logical_cpus=logical,
+            seed=args.seed,
+            progress=dashboard.update,
+            stop_requested=dashboard.request_stop,
         )
-        args.workers = tune_result.selected_workers
-        args.image_workers = tune_result.selected_image_workers
-        args.tune_report = tune_result.report_path
-        os.environ[MANGA18FX_IMAGE_WORKERS_ENV] = str(args.image_workers)
+        args.workers = optimization_result.selected_workers
+        args.image_workers = optimization_result.selected_image_workers
+        if dashboard.enabled:
+            print()
+        summary = {
+            "report": str(optimization_result.report_path),
+            "selected_workers": args.workers,
+            "selected_image_workers": args.image_workers,
+            "state_count": len(optimization_result.states),
+            "trial_count": len(optimization_result.trials),
+            "elapsed": optimization_result.elapsed,
+        }
+        if args.report_only:
+            print(json.dumps(summary, indent=2, sort_keys=True))
+            return 0
 
+    os.environ[MANGA18FX_IMAGE_WORKERS_ENV] = str(args.image_workers)
+    os.environ[MAX_OUTER_WORKERS_ENV] = str(args.max_workers)
     store = StateStore(args.state_db)
     try:
         config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
-        run_id = store.create_run(config, args.run_id)
+        run_id = store.create_run(config)
         store.add_jobs(run_id, inputs, routes)
-        if tune_result is not None:
+        if optimization_result is not None:
             run_log = args.log_dir / run_id
             run_log.mkdir(parents=True, exist_ok=True)
-            (run_log / "autotune-selection.json").write_text(
+            (run_log / "optimization-selection.json").write_text(
                 json.dumps(
                     {
-                        "report": str(tune_result.report_path),
-                        "selected_workers": tune_result.selected_workers,
-                        "selected_image_workers": tune_result.selected_image_workers,
-                        "logical_cpus": tune_result.logical_cpus,
-                        "budget": tune_result.budget,
-                        "elapsed": tune_result.elapsed,
+                        "report": str(optimization_result.report_path),
+                        "selected_workers": optimization_result.selected_workers,
+                        "selected_image_workers": optimization_result.selected_image_workers,
+                        "logical_cpus": optimization_result.logical_cpus,
+                        "budget": optimization_result.budget,
+                        "elapsed": optimization_result.elapsed,
                     },
                     indent=2,
                     sort_keys=True,
-                ),
+                )
+                + "\n",
                 encoding="utf-8",
             )
         options = RunOptions(
@@ -423,17 +463,26 @@ def _retry(args: argparse.Namespace) -> int:
 
 
 def _archive(args: argparse.Namespace) -> int:
-    if not args.archive.exists():
-        raise ValueError(f"archive does not exist: {args.archive}")
-    connection = sqlite3.connect(f"file:{args.archive}?mode=ro", uri=True)
-    try:
-        tables = [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")]
-        count = connection.execute("SELECT COUNT(*) FROM archive").fetchone()[0] if "archive" in tables else None
-    finally:
-        connection.close()
-    payload = {"path": str(args.archive), "tables": tables, "archive_records": count}
-    print(json.dumps(payload, indent=2, sort_keys=True) if args.json else f"{args.archive}: {count} archive records")
-    return 0
+    snapshot = load_archive(args.archive)
+    records = filter_records(snapshot.records, args.filter)
+    browser = ArchiveBrowser(snapshot)
+    browser.set_filter(args.filter)
+    if args.export:
+        browser.export(args.export)
+    if args.json:
+        payload = {
+            "path": str(snapshot.path),
+            "tables": list(snapshot.tables),
+            "columns": list(snapshot.columns),
+            "filter": args.filter,
+            "records": [{"rowid": record.rowid, **record.values} for record in records],
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+        return 0
+    if args.no_ui:
+        print(f"{snapshot.path}: {len(records)}/{len(snapshot.records)} archive records")
+        return 0
+    return browser.run()
 
 
 def _patch_hdporncomics(args: argparse.Namespace) -> int:
@@ -534,8 +583,13 @@ def _repair_loose(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    shape = normalize_command_shape(raw_argv)
+    parser = build_parser(raw_argv)
+    args = parser.parse_args(list(shape.argv))
+    if args.command == "run":
+        args.run_mode = shape.run_mode
+        args.advanced_config = shape.advanced_config
     try:
         return {
             "run": _run,
