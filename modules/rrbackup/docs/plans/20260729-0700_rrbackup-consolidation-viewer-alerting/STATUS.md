@@ -2,11 +2,11 @@
 
 ## Overall
 
-Stage 1 is verified. The Windows safety-foundation checkpoint passed package compilation, focused correctness lint, 199 tests, and both PowerShell checks; 8 environment-dependent tests skipped intentionally. The repository-root validation evidence workflow also works as intended.
+Stage 1 is verified. Checkpoint **2A — Single-CLI UX Foundation**, Checkpoint **2A.1a — Completed Versus Attempted Run Visibility**, and Checkpoint **2A.1b — Interactive Viewer Carousel** are accepted.
 
-Checkpoint **2A — Single-CLI UX Foundation**, Checkpoint **2A.1a — Completed Versus Attempted Run Visibility**, and Checkpoint **2A.1b — Interactive Viewer Carousel** are accepted.
+Checkpoint **2A.2a — Expandable Live Viewer and Confirmed Aggregate Monitor** passed automated Windows validation and manual review. The execution plumbing is accepted: Restic JSON is parsed rather than printed, aggregate progress is persisted, `backup view` can observe active progress, and graceful Stop is available.
 
-The current validation-ready patch is **2A.2 — Expandable Live Viewer and Confirmed In-TUI Run Monitor**. It adds inline expansion, reliable alternate page keys, confirmation before execution, aggregate Restic progress, live viewer refresh, and graceful Stop. Pause/resume and delayed resume remain deferred to Checkpoint 2A.3.
+The current validation-ready patch is **2A.2b — Persistent Backup Operations Dashboard**. It corrects the interaction model discovered during manual testing: starting a backup must not replace the inventory with an exclusive monitor. Confirmation, execution, progress, selection, and Stop now remain on one dashboard. A focused single-backup view is available only when explicitly requested. Pause/resume and delayed resume remain deferred to Checkpoint 2A.3.
 
 Detailed scope is tracked in:
 
@@ -14,36 +14,30 @@ Detailed scope is tracked in:
 03_viewer-carousel-and-run-monitor__in-progress.md
 ```
 
-## Latest Automated Evidence
+## Latest Accepted Automated Evidence
 
-The pushed Windows run at commit `a8b2b5fb14f5b015315ae6d03b953921138ae976` recorded:
+The pushed Windows run at commit `2b52dfd4f6bc8d04f37c012fff299da3d123c16a` recorded:
 
 - dependency cleanup, uninstall, and editable installation: passed,
 - package/test compilation: passed,
-- focused correctness lint: passed,
+- focused correctness lint for Checkpoint 2A.2: passed,
 - root `backup` help contract: passed,
 - condensed `backup view` help contract: passed,
-- pytest: 297 passed, 7 skipped, 0 failed,
+- pytest: 310 passed, 7 skipped, 0 failed,
 - PowerShell installed-entry-point/environment smoke test: passed,
 - production read-only test: safely skipped,
 - pytest ANSI color sequences: preserved through the root dispatcher.
 
-`LATEST_PROGRESS.diff` had no prior context snapshot and therefore established a new comparison baseline. This does not reduce the authority of the clean `LATEST.txt` result.
+The progress artifact showed an increase from 297 to 310 passing tests. This is measurable forward progress, not a repeated failure cycle.
 
 ## Accepted Manual Findings
 
-### Completed versus attempted runs
-
-- `backup view` distinguishes the April completed snapshot from the July interrupted attempt.
-- `backup view --section history` shows both the interrupted attempt and completed snapshot `022aad5b`.
-- `backup run auto` shows Last complete, Last attempt, and Attempt state separately.
-
-### Viewer carousel
+### Viewer carousel and expansion
 
 Manual Windows review confirmed:
 
 - bare `backup view` opens `View: OVERVIEW — pg. 1/6`,
-- Overview is an aggregate dashboard rather than a duplicate backup list,
+- Overview is an aggregate dashboard,
 - page 2 shows configured backups,
 - page 3 shows History,
 - page 4 shows Repository,
@@ -51,140 +45,161 @@ Manual Windows review confirmed:
 - page 6 shows compact Diagnostics,
 - `backup view --demo` supplies six varied synthetic backups,
 - `backup view --plain` uses aggregate Overview semantics,
-- `backup view --section history` starts directly on page 3,
 - default Audit output is concise,
-- explicit Audit `--json` remains the complete large machine-readable export,
-- the run selector uses the cleaner unlabeled row layout.
+- explicit Audit `--json` remains the complete machine-readable export,
+- `e`/`c` and `E`/`C` expose useful inline information,
+- the alternate `p`/`n` and `-`/`+` page controls are available,
+- active source and run information can be displayed without raw Restic output.
 
-### Manual interaction gaps found after 2A.1b
+### Confirmed aggregate monitor
 
-- Overview details required Enter and left much of the screen unused.
-- Inline expand/collapse, expand-all, and collapse-all controls were requested.
-- The displayed `[`/`]` page controls were unreliable in the active Windows terminal.
-- Additional previous/next keys were requested.
-- Pressing `R` in `backup run auto` still exited the selector and immediately started Restic.
-- Raw Restic JSON status objects still printed once per line.
-- Real execution needed to remain inside a progress UI with speed, elapsed time, ETA, file/byte counts, current files, and Stop.
-- `backup view` needed to show persisted progress while a backup is running.
+Manual controlled execution confirmed:
 
-## Current Patch — Checkpoint 2A.2
+- pressing `R` no longer starts immediately,
+- a confirmation surface appears before execution,
+- Restic JSON lines are no longer printed to the terminal,
+- the monitor displays aggregate percentage, files, bytes, speed, elapsed time, ETA, and current files,
+- the run transitions from WAITING to RUNNING,
+- progress values update correctly once Restic begins processing.
+
+### Interaction mismatch found after 2A.2a
+
+Manual review also established that the modal monitor is not the desired default UX:
+
+- the confirmation surface did not show enough information about every selected backup,
+- the exclusive monitor hid idle and other configured backups,
+- the user could not select and start another eligible backup while one was running,
+- source/drive activity needed to appear directly below each active backup,
+- the exclusive single-backup presentation should be entered only by explicitly focusing one backup,
+- operational state needed visible color coding.
+
+The desired default is one persistent operations page containing all configured backups, active progress, inline source-drive activity, confirmation, Start, and Stop.
+
+## Current Patch — Checkpoint 2A.2b
 
 Implemented on the branch:
 
-### Expandable viewer
+### Persistent operations dashboard
 
-- `e`: toggle inline details for the selected row.
-- `c`: collapse the selected row.
-- `E`: expand all rows on the current page.
-- `C`: collapse all rows on the current page.
-- Expanded detail rows remain adjacent to their parent and retain the parent's sort values.
-- Enter still opens the complete detail screen.
-- Additional page controls:
-  - `p` or `-`: previous page,
-  - `n`, `+`, or `=`: next page,
-  - existing Tab and `1` through `6` controls remain.
-- Page 2 now includes live State, Progress, Speed, and ETA columns while preserving sources and repository information.
-- Overview Activity details include active progress.
+- `backup run auto` now opens one persistent `RRBackup — Backup Operations` dashboard.
+- The dashboard remains open while backups are idle, waiting, running, stopping, or terminal.
+- Starting a backup does not replace the inventory with another UI.
+- A user may select another eligible backup and press `R` while a locally managed backup is running.
+- Multiple approved backups may be launched from the same dashboard; existing process-lock and engine safety semantics remain authoritative.
+- Interactive named runs use the same dashboard with only the named backup visible.
+- Noninteractive JSON/plain/Markdown, scheduled named runs, and `--print-command-only` retain their prior behavior.
 
-### Live viewer refresh
+### Inline confirmation
 
-- Interactive real-data viewers wake once per second without requiring a key press.
-- Only run-state JSON is refreshed; Restic repository listing and diagnostics are not repeatedly executed.
-- Overview, Backups, and History pages are invalidated only when the persisted run record changes.
-- Demo mode remains deterministic and does not start the refresh thread.
+- `R` opens a confirmation region inside the current dashboard.
+- No backup starts until `Y` is pressed.
+- `N` or Esc cancels without materializing inputs or starting Restic.
+- Confirmation includes every selected backup and shows:
+  - health,
+  - current state,
+  - repository,
+  - schedule,
+  - retention,
+  - last completed backup,
+  - last attempted run,
+  - exclusion count,
+  - tags,
+  - every configured source path.
+- Page Up/Page Down scroll long confirmation content while the inventory remains present.
 
-### Confirmed execution
+### Inline execution and management
 
-- Pressing `R` in the selector now means review/confirm, not immediate execution.
-- A second curses screen lists selected backups, sources, and repositories.
-- `Y` begins execution.
-- `N`, Esc, `q`, or Ctrl+Q cancels before any backup input is materialized or Restic is started.
-- Interactive named runs use the same confirmation monitor.
-- Noninteractive JSON/plain/Markdown, scheduled named runs, and `--print-command-only` retain their existing behavior.
-
-### In-TUI run monitor
-
-- Restic output is consumed without raw terminal echo.
-- JSON status lines are parsed into:
+- Parent rows show:
+  - selection,
+  - backup name,
+  - health,
+  - state,
   - aggregate percentage,
-  - processed/total files,
-  - processed/total bytes,
-  - average bytes per second,
-  - elapsed time,
-  - estimated remaining time,
-  - current files.
-- Progress is shown for each selected backup in one monitor.
-- Multiple selected backups execute sequentially.
-- Progress is persisted into the active run record at a throttled interval for `backup view`.
-- Final progress is preserved in terminal run metadata.
-- `S` opens a Stop confirmation.
-- Confirmed Stop terminates the active Restic process gracefully and cancels remaining selections.
-- Ctrl+C remains an emergency graceful-stop path.
-- The monitor does not allow a normal quit while execution is active.
+  - aggregate speed,
+  - aggregate ETA,
+  - last complete,
+  - last attempt,
+  - source summary.
+- Running jobs automatically add one activity line per configured drive/source group.
+- Source lines show `ACTIVE`, `SEEN`, or `PENDING`.
+- Source lines explicitly state that Restic totals are aggregate; no per-drive percentage is fabricated.
+- `Space` selects or deselects backups.
+- `R` reviews and starts selected or current eligible backups.
+- `S` opens a Stop confirmation for selected locally managed active backups.
+- Ctrl+C requests graceful Stop for all locally managed active backups.
+- `e`/`c` expand or collapse the current backup.
+- `E`/`C` expand or collapse all visible backups.
+- Enter, `i`, or `m` explicitly enters or exits a focused single-backup presentation.
+- `f` filters the dashboard without leaving it.
+- Normal quit is blocked while a locally managed backup remains active.
 
-### Safety and scope boundaries
+### Color and state hierarchy
 
-- Restic still creates one snapshot with the existing source-file semantics.
-- The monitor reports only aggregate Restic progress.
-- Per-drive percentages and ETAs are not fabricated because the Restic status stream does not provide trustworthy source-level totals.
-- No production backup is started by automated tests.
-- Pause/resume, delayed resume, and Windows process suspension are not implemented here.
+- Running rows: magenta.
+- Waiting/queued rows: yellow.
+- Successful rows: green.
+- Failure, interruption, stopping, and critical idle rows: red.
+- Informational and dry-run states: cyan.
+- Secondary source and detail lines: dim unless active or completed.
 
-### Focused tests added
+### Concurrency and safety boundary
 
-- Restic progress parsing, speed, and ETA.
-- Malformed/non-status line rejection.
-- Streaming output callbacks without terminal echo.
-- Stop requested before process creation.
-- Stop requested after process attachment.
-- Monitor worker progress and terminal state handling.
-- Pending-run cancellation.
-- Interactive run routing through confirmation rather than immediate execution.
-- Throttled progress persistence into a running record.
-- Live Overview and Backups progress rendering.
-- Inline expansion materialization.
-- Expand/collapse-all and reliable previous/next navigation.
+- Each approved backup receives its own worker and `ResticExecutionControl`.
+- Progress persistence continues through the existing shared engine and state store.
+- Existing process locks decide whether two backup definitions may execute simultaneously.
+- A persisted run created by another process remains visible but cannot be stopped by this dashboard unless this dashboard owns its control object.
+- Automated tests do not start a production backup.
+- No scheduler, retention, configuration-write, restore, pause/resume, or production-mutation work is mixed into this checkpoint.
+
+### Focused tests added or updated
+
+- Confirmation contains complete information for every selected backup.
+- Confirmation does not execute before approval.
+- Active operation rows include drive activity and explicitly aggregate-only totals.
+- Two selected backups can start from one persistent model.
+- Stop confirmation targets a locally managed active job.
+- Interactive run routing uses the persistent operations dashboard rather than the modal monitor.
+- Existing throttled progress-persistence coverage remains.
+- Root compile, lint, pytest, help, packaging, and PowerShell gates include the new module and tests.
+
+## Current Bugs and Uncertainty
+
+- Checkpoint 2A.2b has not yet been locally compiled, linted, or tested.
+- Windows curses redraw, resizing, filtering, selection, confirmation scrolling, and color rendering require manual review.
+- Starting multiple backups concurrently is subject to their configured process-lock files and repository behavior; a conflicting backup may be safely skipped by the engine.
+- ETA remains based on aggregate average processed bytes and may fluctuate while Restic discovers additional files and bytes.
+- Drive/source rows indicate activity and discovery state only. Restic does not provide trustworthy independent drive totals, so per-drive percentages and ETAs are intentionally absent.
+- Stop during a CPU-policy wait records the request in the dashboard, but the worker cannot fully exit until the CPU waiter returns or Restic starts and honors the pre-requested stop.
+- External runs are observable through persisted state but are not controllable by a dashboard that did not start them.
+- Pause/resume requires a separate Windows process-suspension design that preserves process identity and repository-lock ownership.
+- The historical modal monitor remains in the package for compatibility and tests but is no longer the default interactive run surface.
+- The module root `README.md` still documents the historical `rrb` interface and remains deferred until the new UX passes acceptance.
 
 ## Progress Assessment
 
 ### Accomplished
 
-- Shared safety engine and terminal-state handling
-- Production repository and snapshot read-only access
-- Snapshot timeline and health data
-- Provenance and comprehensive audit collection
-- Configuration/source attribution
-- Root validation dispatcher and authoritative evidence handoff
-- Single installed `backup` entry point
-- Seven task-oriented command areas
+- Stage 1 safety foundation
+- Canonical `backup` executable and seven task-oriented command areas
 - Unified canonical/legacy inventory
-- Strict scheduler ownership filtering
-- Backup-centric schedule table
-- Combined repository summary and explicit cached storage refresh
-- Shared TermDash presentation dependency
-- Colored pytest output through the root dispatcher
-- Explicit missing-config failure semantics
-- Clean Checkpoint 2A validation: 288 passed, 7 skipped
-- Clean Checkpoint 2A.1a validation: 289 passed, 7 skipped
-- Clean initial Checkpoint 2A.1b validation: 295 passed, 7 skipped
-- Clean aggregate-Overview correction validation: 297 passed, 7 skipped
-- Manual acceptance of all six viewer pages, demo mode, plain Overview, compact Diagnostics/Audit, and concise run-selector rows
-
-### Current bugs and uncertainty
-
-- Checkpoint 2A.2 has not yet been locally compiled, linted, or tested.
-- The selector-to-confirmation transition may produce a brief terminal redraw, but must never expose raw Restic JSON.
-- Windows curses behavior for the one-second wake key requires manual validation.
-- Inline expansion density, scrolling, filtering, and resize behavior require visual review.
-- ETA is based on average processed bytes per second and may fluctuate while Restic is still discovering files and total bytes.
-- Stop during a CPU-policy wait is recorded immediately in the monitor but the worker cannot exit until the CPU waiter returns or Restic starts and honors the already-requested stop.
-- The shared state root still assumes one latest active run per profile directory; broader simultaneous multi-profile execution remains outside this checkpoint.
-- Pause/resume feasibility and repository-lock safety require Checkpoint 2A.3.
-- The module root `README.md` still documents the historical `rrb` interface and remains deferred until the new UX passes acceptance.
+- Completed-versus-attempted run visibility
+- Six-page viewer carousel
+- Aggregate Overview and compact Diagnostics/Audit
+- Safe synthetic visual fixtures
+- Inline expansion and reliable page navigation
+- Structured Restic progress parsing and persistence
+- Confirmed execution and graceful Stop plumbing
+- Clean validation milestones:
+  - 288 passed, 7 skipped
+  - 289 passed, 7 skipped
+  - 295 passed, 7 skipped
+  - 297 passed, 7 skipped
+  - 310 passed, 7 skipped
+- Manual verification that the monitor reports real aggregate progress without raw JSON
 
 ### Stall/loop assessment
 
-Measurable progress continues. The 2A.1b correction passed 297 tests and manual review confirmed the new information architecture. The current work addresses two distinct user-observed interaction defects: unused viewer space and unsafe/unusable execution presentation. The project is not repeating the same failure or stuck.
+The project is not stuck. Checkpoint 2A.2a validated the execution and progress plumbing; manual testing then exposed a distinct information-architecture problem. Checkpoint 2A.2b reuses the verified engine, parser, persistence, and Stop control while replacing only the default interactive orchestration surface.
 
 ## Next Validation
 
@@ -194,13 +209,32 @@ From the repository root:
 ./Invoke-Tests.ps1
 ```
 
-After automated validation, manually verify the expandable viewer first. Only then perform a short controlled backup-monitor test and stop it deliberately.
+After automated validation, manually exercise:
+
+```text
+backup run auto
+```
+
+Required manual acceptance:
+
+1. Confirm the dashboard initially shows all configured backups.
+2. Select `local-main`, press `R`, and review the inline confirmation.
+3. Cancel with `N` and verify no attempt is created.
+4. Repeat, approve with `Y`, and confirm the dashboard remains visible.
+5. Verify WAITING and RUNNING colors and aggregate progress.
+6. Verify one automatic source-drive line per configured drive group.
+7. Verify `e` expansion and Enter/`m` focused mode.
+8. While running, select another eligible synthetic or configured backup if available and verify `R` remains usable.
+9. Press `S`, confirm Stop, and verify the row reaches INTERRUPTED without raw JSON.
+10. Verify `backup view` and History reflect the interrupted attempt.
+
+Do not test pause/resume yet; it is not implemented in this checkpoint.
 
 ## Last Known Production State
 
 - Repository: `B:\ResticRepos\PC-Local`
 - Known completed snapshots: `a1609113`, `022aad5b`
 - Latest completed snapshot: 2026-04-14
-- Latest attempted run: interrupted during manual Checkpoint 2A acceptance on 2026-07-29
+- A controlled manual backup attempt was started during 2026-07-29 monitor acceptance; its final terminal state must be confirmed from the next pushed evidence and History view.
 - Current module-owned backup schedule: absent
 - Automated production mutation: prohibited
