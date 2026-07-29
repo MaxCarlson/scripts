@@ -1,6 +1,12 @@
 import pytest
 
-from mangadl.backends import HDPornComicsBackend, GalleryDlBackend, backend_classification, choose_backend
+from mangadl.backends import (
+    HDPornComicsBackend,
+    GalleryDlBackend,
+    Manga18FXBackend,
+    backend_classification,
+    choose_backend,
+)
 
 
 def test_gallery_dl_recognizes_nhentai() -> None:
@@ -30,3 +36,24 @@ def test_hdporncomics_manhwa_routes_without_executable() -> None:
 )
 def test_hdporncomics_rejects_deceptive_or_non_manhwa_urls(url: str) -> None:
     assert HDPornComicsBackend().score(url) == 0
+
+
+def test_manga18fx_series_routes_to_native_backend() -> None:
+    url = "https://manga18fx.com/manga/an-invisible-kiss-uncensored/"
+
+    assert Manga18FXBackend().score(url) == 210
+    assert choose_backend(url) == "manga18fx"
+    assert choose_backend(url, "manga18fx") == "manga18fx"
+    assert backend_classification(url, "manga18fx") == "manhwa"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://manga18fx.com.example/manga/title/",
+        "https://not-manga18fx.com/manga/title/",
+        "https://manga18fx.com/chapter/title-1/",
+    ],
+)
+def test_manga18fx_rejects_deceptive_or_non_series_urls(url: str) -> None:
+    assert Manga18FXBackend().score(url) == 0
