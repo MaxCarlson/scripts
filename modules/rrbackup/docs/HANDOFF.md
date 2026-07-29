@@ -25,31 +25,56 @@ Historical and static analysis established:
 
 ## Collaboration Loop
 
-1. Browser/remote agent updates the active plan before each implementation stage.
-2. Browser/remote agent implements source and tests on the feature branch.
-3. Browser/remote agent performs static review and commits a coherent stage.
-4. User pulls the branch and runs `./Invoke-RRBackupValidation.ps1 -Bootstrap` in PowerShell 7.
-5. User returns the complete generated transcript or pastes its content.
-6. Browser/remote agent updates `STATUS.md`, `checklist.md`, and stage handoff documents before patching.
-7. Repeat until temporary-repository integration, Windows adapter, production read-only, controlled backup, restore, scheduler, viewer, and alert acceptance are verified.
+1. The browser/app agent performs as much planning, implementation, documentation, test authoring, and static review as possible.
+2. The browser/app agent updates the active plan before each implementation stage.
+3. The browser/app agent implements source and tests on the feature branch and pushes a coherent stage.
+4. The user pulls the branch and runs `modules/rrbackup/Invoke-Tests.ps1` in PowerShell 7.
+5. The script overwrites the tracked `modules/rrbackup/TEST_RESULTS.txt` with complete pytest and PowerShell-test output.
+6. The user stages, commits, and pushes `TEST_RESULTS.txt`; manual copy/paste is unnecessary.
+7. The browser/app agent reads the committed result file, updates `STATUS.md`, `checklist.md`, and stage handoff documents, and implements the next pass.
+8. Repeat until temporary-repository integration, Windows adapter, production read-only, controlled backup, restore, scheduler, viewer, and alert acceptance are verified.
 
-Do not have multiple agents edit this branch concurrently. A local agent should run tests and report evidence unless explicitly assigned a separate patch branch.
+The generalized responsibility split and stage loop are documented in:
+
+```text
+docs/HYBRID_REMOTE_LOCAL_DEVELOPMENT_WORKFLOW.md
+```
+
+Do not have multiple agents edit this branch concurrently. A local agent should primarily execute tests and report environment-specific evidence unless explicitly assigned a separate patch branch.
 
 ## Validation Safety
 
 Default validation must not access or mutate the production repository.
 
+From `modules/rrbackup`, run the normal suite with:
+
+```powershell
+./Invoke-Tests.ps1 -Bootstrap
+```
+
 Production read-only checks require the explicit switch:
 
 ```powershell
-./Invoke-RRBackupValidation.ps1 -IncludeProductionReadOnly
+./Invoke-Tests.ps1 -IncludeProductionReadOnly
 ```
 
 No automated validation may run production backup, restore, init, unlock, forget, prune, or retention application.
 
+## Current Baseline Evidence
+
+The first local run collected 130 tests:
+
+- 112 passed
+- 4 skipped
+- 10 failed
+- 4 errored
+- reported coverage: 59%
+
+The failures are baseline defects or outdated tests, not failures introduced by the consolidation branch. The next implementation pass will replace or correct these tests while building the shared safety foundation.
+
 ## Next Stage
 
-Stage 1 establishes the shared safety foundation and validation harness. See:
+Stage 1 establishes the shared safety foundation and corrected validation baseline. See:
 
 ```text
 docs/plans/20260729-0700_rrbackup-consolidation-viewer-alerting/01_safety-foundation__in-progress.md
