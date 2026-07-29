@@ -6,12 +6,14 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Union
 
 from .models import RunRecord, RunState, utc_now
 
+PathInput = Union[os.PathLike[str], str]
 
-def atomic_write_json(path: os.PathLike[str] | str, payload: Dict[str, Any]) -> None:
+
+def atomic_write_json(path: PathInput, payload: Dict[str, Any]) -> None:
     """Atomically replace a JSON file using a temporary file in the same directory."""
 
     target = Path(path)
@@ -39,7 +41,7 @@ def atomic_write_json(path: os.PathLike[str] | str, payload: Dict[str, Any]) -> 
             raise
 
 
-def read_json(path: os.PathLike[str] | str) -> Dict[str, Any]:
+def read_json(path: PathInput) -> Dict[str, Any]:
     """Read a JSON object, returning an empty mapping when the file is absent."""
 
     target = Path(path)
@@ -55,7 +57,7 @@ def read_json(path: os.PathLike[str] | str) -> Dict[str, Any]:
 class RunStateStore:
     """Persist current, historical, and last-success run records."""
 
-    def __init__(self, state_root: os.PathLike[str] | str) -> None:
+    def __init__(self, state_root: PathInput) -> None:
         self.state_root = Path(state_root)
         self.runs_root = self.state_root / "runs"
         self.latest_path = self.state_root / "latest.json"
@@ -103,11 +105,7 @@ class RunStateStore:
         *,
         reason: str = "Previous process ended without recording a terminal state.",
     ) -> Optional[RunRecord]:
-        """Mark a stale running record as interrupted.
-
-        The caller supplies a PID-and-create-time checker so reconciliation can use
-        the same process-identity semantics as the lock implementation.
-        """
+        """Mark a stale running record as interrupted."""
 
         latest = self.load_latest()
         if latest is None or latest.state != RunState.RUNNING:
