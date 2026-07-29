@@ -52,8 +52,32 @@ class HDPornComicsBackend:
         return "manhwa" if self.score(url) else None
 
 
+@dataclass(slots=True)
+class Manga18FXBackend:
+    """Download complete Manga18FX series through mangadl's native backend."""
+
+    name: str = "manga18fx"
+
+    def score(self, url: str) -> int:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower().rstrip(".")
+        return (
+            210
+            if host in {"manga18fx.com", "www.manga18fx.com"} and parts.path.lower().startswith("/manga/")
+            else 0
+        )
+
+    def classification(self, url: str) -> str | None:
+        return "manhwa" if self.score(url) else None
+
+
 def choose_backend(url: str, requested: str = "auto") -> str:
-    backends: list[Backend] = [HDPornComicsBackend(), GalleryDlBackend(), NativeNhentaiBackend()]
+    backends: list[Backend] = [
+        Manga18FXBackend(),
+        HDPornComicsBackend(),
+        GalleryDlBackend(),
+        NativeNhentaiBackend(),
+    ]
     if requested != "auto":
         match = next((backend for backend in backends if backend.name == requested), None)
         if match is None:
@@ -70,4 +94,6 @@ def choose_backend(url: str, requested: str = "auto") -> str:
 def backend_classification(url: str, backend: str) -> str | None:
     if backend == "hdporncomics":
         return HDPornComicsBackend().classification(url)
+    if backend == "manga18fx":
+        return Manga18FXBackend().classification(url)
     return None
