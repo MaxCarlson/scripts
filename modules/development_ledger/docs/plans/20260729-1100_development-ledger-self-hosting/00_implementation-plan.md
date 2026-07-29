@@ -2,7 +2,7 @@
 
 ## Objective
 
-Execute the first complete module validation and immutable-ledger cycle through the merged repository-root dispatcher.
+Execute and verify the first complete module validation and immutable-ledger cycle through the merged repository-root dispatcher.
 
 ## Development Ledger State
 
@@ -13,10 +13,10 @@ Execute the first complete module validation and immutable-ledger cycle through 
     "plan_id": "development-ledger-self-hosting",
     "title": "Development Ledger Self-Hosting",
     "project_root": "modules/development_ledger",
-    "plan_revision": 1,
+    "plan_revision": 2,
     "stage": {
         "id": "S1",
-        "title": "Repository dispatcher self-hosting",
+        "title": "Repository dispatcher self-hosting corrections",
         "status": "awaiting_validation"
     },
     "session": {
@@ -24,7 +24,7 @@ Execute the first complete module validation and immutable-ledger cycle through 
         "mode": "hybrid",
         "request": {
             "status": "incorporated",
-            "summary": "Use the merged repository validation dispatcher to execute and record the first development-ledger validation cycle.",
+            "summary": "Review the pushed first-cycle evidence and correct the attributable schema-test, JUnit-ID, and routing-state defects.",
             "resolution": "compatible",
             "affected_ids": [
                 "AC-S1-001",
@@ -33,17 +33,18 @@ Execute the first complete module validation and immutable-ledger cycle through 
             "supersedes": [],
             "conflicts": []
         },
-        "objective": "Make development_ledger the first self-hosted validation target without masking the root dispatcher result.",
-        "hypothesis": "A narrow adapter around the existing record command is sufficient for the first evidence cycle; public CLI and generic dispatcher changes should wait for real validation evidence.",
+        "objective": "Correct the first-cycle schema assertion and canonicalize pytest JUnit IDs so the same root target can verify implementation and traceability.",
+        "hypothesis": "The failing run-event schema is valid through top-level oneOf, while pytest 9 omits file attributes and requires dotted classnames to be normalized to documented test-file IDs.",
         "target_ids": [
             "AC-S1-001",
             "AC-S1-002"
         ],
-        "selection_rationale": "The adapter and manifest target form one dependency-cohesive integration stage and avoid broad dispatcher or public-CLI changes before the first real run.",
+        "selection_rationale": "Both corrections are directly attributable to the first self-host run and form one bounded evidence-quality pass.",
         "stop_conditions": [
-            "The branch contains the adapter, target, tests, plan, and self-host documentation.",
-            "Static syntax, manifest, plan-state, and adapter behavior checks pass.",
-            "The user can pull and run one repository-root validation command."
+            "The run-event schema test accepts a valid top-level oneOf schema without KeyError.",
+            "Pytest classname-only JUnit cases normalize to tests/<module>.py IDs and match the active plan.",
+            "The active plan no longer treats routine local validation prerequisites as unresolved diagnostic dependencies.",
+            "The branch is ready for one rerun of ./Invoke-Tests.ps1 -Target development-ledger."
         ],
         "batch": {
             "profile": "standard",
@@ -51,31 +52,29 @@ Execute the first complete module validation and immutable-ledger cycle through 
             "max_minutes": 20,
             "max_items": 4
         },
-        "environment_dependencies": [
-            "Windows 11 PowerShell 7 root-dispatcher execution",
-            "editable Python package installation"
-        ],
-        "diagnostic_complexity": "normal",
+        "environment_dependencies": [],
+        "diagnostic_complexity": "mechanical",
         "architecture_impact": "local",
         "architecture_review": {
             "requested": false,
             "performed": true,
-            "summary": "Use a dedicated adapter and existing ordered target commands for the first self-host cycle; defer public CLI and generic dispatcher changes until the evidence is reviewed.",
+            "summary": "Keep the existing adapter and dispatcher contract; patch only the invalid schema assertion, JUnit ID normalization, and plan metadata exposed by the first run.",
             "findings": [
-                "The root dispatcher already preserves prior command failures.",
-                "The existing record command writes evidence before returning result 1 for failed normalized tests.",
-                "A narrow adapter can map only that post-write result without changing current callers."
+                "run-event.schema.json correctly uses top-level oneOf and therefore has no top-level type key.",
+                "Pytest 9 emitted dotted classname values without file attributes, so documented file-path mappings did not match.",
+                "Routine Windows validation requirements were incorrectly declared as unresolved environment dependencies, causing a false local handoff."
             ],
             "actions": [
-                "Add the adapter and its unit test.",
-                "Add one development-ledger validation target."
+                "Use payload.get when accepting object-or-oneOf schemas.",
+                "Canonicalize pytest classname-only JUnit cases to forward-slash Python file paths.",
+                "Clear environment_dependencies for this remotely diagnosable correction pass."
             ]
         },
         "relevant_files": [
-            "development_ledger/dispatcher_record.py",
-            "tests/dispatcher_record_test.py",
-            "../../validation-targets.json",
-            "docs/SELF_HOSTING.md"
+            "development_ledger/results.py",
+            "tests/results_test.py",
+            "tests/schema_test.py",
+            "docs/plans/20260729-1100_development-ledger-self-hosting/00_implementation-plan.md"
         ]
     },
     "items": [
@@ -85,7 +84,7 @@ Execute the first complete module validation and immutable-ledger cycle through 
             "title": "The dispatcher adapter treats a successfully written failed-test event as recording success while preserving actual recording failures.",
             "implementation": "implemented",
             "tests": [
-                "pytest:tests/dispatcher_record_test.py::test_dispatcher_record_preserves_recording_failures*"
+                "glob:pytest:tests/dispatcher_record_test.py::test_dispatcher_record_preserves_recording_failures*"
             ],
             "manual_checks": [],
             "depends_on": [],
@@ -114,7 +113,8 @@ Execute the first complete module validation and immutable-ledger cycle through 
             "blocked_by": [],
             "relevant_files": [
                 "../../validation-targets.json",
-                "tests/scripts_repository_integration_test.py"
+                "tests/scripts_repository_integration_test.py",
+                "development_ledger/results.py"
             ],
             "priority": 10,
             "architecture_role": "integration"
@@ -123,7 +123,7 @@ Execute the first complete module validation and immutable-ledger cycle through 
     "manual_checks": [
         {
             "id": "MC-S1-001",
-            "title": "Run and inspect the first Windows self-host validation",
+            "title": "Run and inspect the Windows self-host validation",
             "item_ids": [
                 "AC-S1-002"
             ],
@@ -131,11 +131,12 @@ Execute the first complete module validation and immutable-ledger cycle through 
             "instructions": [
                 "Run ./Invoke-Tests.ps1 -Target development-ledger from the repository root.",
                 "Confirm the dispatcher preserves its exact overall result.",
-                "Confirm one run event and all generated projections are written."
+                "Confirm one new run event and all generated projections are written."
             ],
             "expected": "The target records complete evidence and the dispatcher result still reflects the validation sections.",
             "status": "pending",
-            "safety": "non_destructive"
+            "safety": "non_destructive",
+            "notes": "The first failed run proved the evidence path; record this check after the corrected passing rerun is inspected."
         }
     ],
     "policy": {
@@ -157,10 +158,20 @@ Execute the first complete module validation and immutable-ledger cycle through 
 ```
 <!-- development-ledger:state:end -->
 
+## First-cycle evidence
+
+The first Windows run proved that the dispatcher continued after a pytest failure, recorded the JUnit and transcript evidence, preserved the target failure, and generated all ledger projections.
+
+The correction pass addresses only:
+
+1. an unsafe test assertion against the valid top-level `oneOf` run-event schema,
+2. pytest 9 classname-only JUnit IDs that did not match documented file-path mappings,
+3. plan metadata that incorrectly treated routine local validation as an unresolved diagnostic dependency.
+
 ## Design decision
 
-Use a dedicated `development_ledger.dispatcher_record` adapter for this first cycle. It changes no existing public CLI semantics and can be removed or promoted after evidence review.
+Keep the dedicated `development_ledger.dispatcher_record` adapter for this cycle. Do not broaden the public CLI or root dispatcher until the corrected evidence is reviewed.
 
 ## Validation boundary
 
-Remote checks cover syntax, manifest/plan consistency, and adapter result mapping. Windows PowerShell execution, editable installation, Ruff, pytest, coverage, and generated tracked artifacts remain local authoritative validation.
+Remote review covers the attributable source, tests, plan state, and generated evidence. Windows PowerShell execution, editable installation, Ruff, pytest, coverage, ledger append behavior, and tracked artifact rotation remain authoritative local validation.
