@@ -25,19 +25,19 @@ Historical and static analysis established:
 
 ## Collaboration Loop
 
-1. The browser/app agent performs as much planning, implementation, documentation, test authoring, and static review as possible.
+1. The browser/app agent performs as much planning, implementation, documentation, test authoring, and static review as connected tools permit.
 2. The browser/app agent updates the active plan before each implementation stage.
 3. The browser/app agent implements source and tests on the feature branch and pushes a coherent stage.
-4. The user pulls the branch and runs `modules/rrbackup/Invoke-Tests.ps1` in PowerShell 7.
-5. The script overwrites the tracked `modules/rrbackup/TEST_RESULTS.txt` with complete pytest and PowerShell-test output.
-6. The user stages, commits, and pushes `TEST_RESULTS.txt`; manual copy/paste is unnecessary.
-7. The browser/app agent reads the committed result file, updates `STATUS.md`, `checklist.md`, and stage handoff documents, and implements the next pass.
+4. The user pulls the branch and runs the repository-root `Invoke-Tests.ps1` dispatcher.
+5. The dispatcher reads `validation-targets.json`, bootstraps dependencies, runs the selected language-native and PowerShell tests, and writes one tracked report per target.
+6. The user stages, commits, and pushes the generated files under `docs/test-results/<target>/`.
+7. The browser/app agent reads the reports, updates `STATUS.md`, `checklist.md`, and stage handoff documents, and implements the next pass.
 8. Repeat until temporary-repository integration, Windows adapter, production read-only, controlled backup, restore, scheduler, viewer, audit, and alert acceptance are verified.
 
-The generalized responsibility split and stage loop are documented in:
+The generalized responsibility split and reusable repository-root dispatcher pattern are documented in:
 
 ```text
-docs/HYBRID_REMOTE_LOCAL_DEVELOPMENT_WORKFLOW.md
+../../../docs/agent/HYBRID_REMOTE_LOCAL_DEVELOPMENT_WORKFLOW.md
 ```
 
 Do not have multiple agents edit this branch concurrently. A local agent should primarily execute tests and report environment-specific evidence unless explicitly assigned a separate patch branch.
@@ -46,13 +46,13 @@ Do not have multiple agents edit this branch concurrently. A local agent should 
 
 Default validation must not access or mutate the production repository.
 
-From `modules/rrbackup`, run the normal suite with:
+From the repository root, run:
 
 ```powershell
-./Invoke-Tests.ps1 -Bootstrap
+./Invoke-Tests.ps1
 ```
 
-Production read-only checks require the explicit switch:
+Production read-only checks require:
 
 ```powershell
 ./Invoke-Tests.ps1 -IncludeProductionReadOnly
@@ -60,29 +60,33 @@ Production read-only checks require the explicit switch:
 
 No automated validation may run production backup, restore, init, unlock, forget, prune, cache cleanup, stale-lock removal, or retention application.
 
-## Committed Baseline Evidence
+## Validation Evidence
 
-The first committed local run collected 130 tests:
+### First committed baseline
 
+- 130 tests collected
 - 112 passed
 - 4 skipped
 - 10 failed
 - 4 errored
 - package-only branch coverage: 32%
 
-The validation pipeline itself passed its intended handoff test: complete pytest and PowerShell output was captured in `TEST_RESULTS.txt`, committed, pushed, and read remotely.
+That run proved the original module-local report handoff could capture full output and be consumed remotely.
 
-The current remote patch has:
+### Second local run
 
-- changed missing-user-config tests to skip instead of fail,
-- made live Google Drive tests explicitly opt-in,
-- returned stable CLI error codes for missing or invalid config,
-- removed the duplicate outer RRBackup initializer,
-- replaced brittle CLI and config tests with isolated parameterized tests,
-- confined fixture paths to the module-local pytest temp root,
-- added a machine-readable command and audit-section contract.
+The module-local runner failed before test collection because pytest imported another module's `tests.conftest` from the shared repository environment. A manual `pytest` invocation used a different interpreter that lacked `pytest-mock` and `tomli-w`, causing missing-fixture and missing-dependency failures. The stale console entry points also required an editable reinstall after removal of the duplicate outer initializer.
 
-These changes require the next local validation run.
+The response is now structural rather than command-specific:
+
+- repository-root `Invoke-Tests.ps1`,
+- manifest-driven target selection,
+- dependency bootstrap enabled by default,
+- repository virtual-environment Python resolution,
+- target working-directory isolation,
+- pytest `--import-mode=importlib`,
+- timestamped tracked reports under `docs/test-results/rrbackup/`,
+- removal of module-local runner and result file.
 
 ## Canonical CLI Contract
 
