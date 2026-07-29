@@ -11,7 +11,11 @@ import mangadl.manga18fx as manga18fx
 from mangadl.cli import MANGA18FX_IMAGE_WORKERS_ENV, build_parser, main
 
 
-def test_public_cli_accepts_image_workers_and_sets_worker_environment(tmp_path: Path) -> None:
+def test_public_cli_accepts_image_workers_and_sets_worker_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv(MANGA18FX_IMAGE_WORKERS_ENV, raising=False)
     args = build_parser().parse_args(
         [
             "run",
