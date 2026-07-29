@@ -6,4 +6,4 @@ Active files: [plan](plans/20260729-1307_manga18fx-backend/00_implementation-pla
 
 The backend recognizes `manga18fx.com/manga/<slug>` series URLs, parses all chapter/image links, downloads into per-job partial directories, and merges successful manga/chapter folders into the destination root. The existing `-C/--cookies` Netscape/Mozilla cookies-file option is supported.
 
-No merge or production migration is authorized. The full mangadl pytest suite and a disposable one-series live smoke test remain required before the full URL-file batch.
+The user confirmed that a Manga18FX URL file downloads correctly on Windows 11. Windows pytest base-temp setup and the environment-dependent gallery-dl routing test have been corrected on the branch. The complete mangadl pytest suite must be rerun after pulling the latest commits; merge into `main` remains unauthorized until that suite passes.
