@@ -1,0 +1,38 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://example.invalid/development-ledger/run-event.schema.json",
+    "title": "Development Ledger Event",
+    "oneOf": [
+        {
+            "type": "object",
+            "required": ["schema_version", "event_type", "event_id", "timestamp", "plan_id", "provenance"],
+            "properties": {
+                "schema_version": {"const": 1},
+                "event_type": {"const": "validation_run"},
+                "event_id": {"type": "string", "minLength": 1},
+                "timestamp": {"type": "string"},
+                "plan_id": {"type": "string"},
+                "provenance": {"type": "object"},
+                "tests": {"type": "array"},
+                "items": {"type": "array"},
+                "progress": {"type": "object"},
+                "routing": {"type": "object"}
+            },
+            "additionalProperties": true
+        },
+        {
+            "type": "object",
+            "required": ["schema_version", "event_type", "event_id", "timestamp", "plan_id", "check_id", "status"],
+            "properties": {
+                "schema_version": {"const": 1},
+                "event_type": {"const": "manual_check"},
+                "event_id": {"type": "string", "minLength": 1},
+                "timestamp": {"type": "string"},
+                "plan_id": {"type": "string"},
+                "check_id": {"type": "string"},
+                "status": {"enum": ["pending", "passed", "failed", "blocked", "waived"]}
+            },
+            "additionalProperties": true
+        }
+    ]
+}
