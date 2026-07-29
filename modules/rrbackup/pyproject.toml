@@ -27,8 +27,6 @@ dev = [
 
 [project.scripts]
 backup = "rrbackup.application:main"
-rrb = "rrbackup.compatibility:main"
-rrbackup = "rrbackup.compatibility:main"
 
 [tool.setuptools.packages.find]
 # Discover packages from project root (flat layout)
