@@ -107,7 +107,7 @@ def _placeholder_page(name: str, message: str) -> ViewerPage:
         row_id="{0}-empty".format(name),
         line=message,
         details=(message,),
-        search_text=message,
+        search_text=message.lower(),
         sort_values={"name": message.lower()},
     )
     return ViewerPage(
@@ -252,7 +252,7 @@ def _run_details(record: BackupInventoryRecord) -> Tuple[str, ...]:
     run = record.latest_run
     if run is None:
         return ("No structured run attempt is available.",)
-    lines = [
+    return (
         "Attempted run",
         "  Backup: {0}".format(record.definition.name),
         "  Run ID: {0}".format(run.run_id),
@@ -263,8 +263,7 @@ def _run_details(record: BackupInventoryRecord) -> Tuple[str, ...]:
         "  Exit code: {0}".format("-" if run.exit_code is None else run.exit_code),
         "  Snapshot ID: {0}".format(run.snapshot_id or "-"),
         "  Reason: {0}".format(run.reason or "-"),
-    ]
-    return tuple(lines)
+    )
 
 
 def build_history_page(records: Sequence[BackupInventoryRecord]) -> ViewerPage:
@@ -365,9 +364,7 @@ def build_repository_page(summaries: Sequence[RepositorySummary]) -> ViewerPage:
             "-" if latest is None else human_datetime(latest.time),
             storage,
         )
-        details = tuple(
-            strip_ansi(render_repository_summary(summary)).splitlines()
-        )
+        details = tuple(strip_ansi(render_repository_summary(summary)).splitlines())
         rows.append(
             ViewerRow(
                 row_id="repository:{0}".format(summary.repository),
@@ -411,14 +408,6 @@ def build_demo_repository_page(records: Sequence[BackupInventoryRecord]) -> View
         snapshots = [value.latest_snapshot for value in values if value.latest_snapshot]
         latest = max((snapshot.time for snapshot in snapshots), default=None)
         storage = (index + 1) * 384 * 1024**3
-        details = (
-            "DEMO repository — no Restic command was executed.",
-            "Location: {0}".format(repository),
-            "Status: AVAILABLE",
-            "Backups: {0}".format(", ".join(value.definition.name for value in values)),
-            "Snapshots represented: {0}".format(len(snapshots)),
-            "Synthetic storage: {0}".format(human_bytes(storage)),
-        )
         rows.append(
             ViewerRow(
                 row_id="demo-repository:{0}".format(repository),
@@ -430,7 +419,14 @@ def build_demo_repository_page(records: Sequence[BackupInventoryRecord]) -> View
                     human_datetime(latest),
                     human_bytes(storage),
                 ),
-                details=details,
+                details=(
+                    "DEMO repository — no Restic command was executed.",
+                    "Location: {0}".format(repository),
+                    "Status: AVAILABLE",
+                    "Backups: {0}".format(", ".join(value.definition.name for value in values)),
+                    "Snapshots represented: {0}".format(len(snapshots)),
+                    "Synthetic storage: {0}".format(human_bytes(storage)),
+                ),
                 search_text="{0} demo available".format(repository).lower(),
                 sort_values={
                     "repository": repository.lower(),
@@ -993,7 +989,7 @@ def build_demo_records(*, now: Optional[datetime] = None) -> Tuple[BackupInvento
             HealthSeverity.WARNING,
             RunState.SKIPPED,
             timedelta(days=6),
-            Schedule(type="weekly", time="04:00", weekday=6),
+            Schedule(type="weekly", time="04:00", day_of_week="Sunday"),
             RetentionPolicy(keep_weekly=8),
             True,
             1,
@@ -1029,7 +1025,7 @@ def build_demo_records(*, now: Optional[datetime] = None) -> Tuple[BackupInvento
             HealthSeverity.INFO,
             RunState.RUNNING,
             timedelta(days=1),
-            Schedule(type="hourly", minute=15),
+            Schedule(type="hourly", time="00:15", interval_hours=1),
             RetentionPolicy(keep_hourly=24),
             True,
             0,
@@ -1041,7 +1037,12 @@ def build_demo_records(*, now: Optional[datetime] = None) -> Tuple[BackupInvento
             HealthSeverity.WARNING,
             None,
             timedelta(days=90),
-            Schedule(type="yearly", time="05:00", month=1, day_of_month=1),
+            Schedule(
+                type="yearly",
+                time="05:00",
+                month_of_year=1,
+                day_of_month=1,
+            ),
             RetentionPolicy(keep_yearly=5),
             False,
             0,
