@@ -16,12 +16,14 @@ from rrbackup.viewer import (
     build_demo_repository_page,
     build_diagnostics_page,
     build_history_page,
-    build_overview_page,
     build_schedules_page,
     render_audit_summary,
     render_viewer_page_plain,
-    run_viewer_carousel,
     select_backups,
+)
+from rrbackup.viewer_controller import (
+    build_summary_overview_page,
+    run_viewer_dashboard,
 )
 
 UTC = timezone.utc
@@ -32,9 +34,11 @@ def test_view_parser_exposes_safe_demo_mode() -> None:
     parser = application.build_parser("backup")
 
     args = parser.parse_args(["view", "--demo", "--section", "history"])
+    default_args = parser.parse_args(["view"])
 
     assert args.demo is True
     assert args.section == "history"
+    assert default_args.section == "overview"
 
 
 def test_demo_records_cover_varied_states_without_touching_real_paths() -> None:
@@ -63,7 +67,7 @@ def test_demo_records_cover_varied_states_without_touching_real_paths() -> None:
 def test_all_carousel_pages_render_demo_data() -> None:
     records = build_demo_records(now=NOW)
     pages = (
-        build_overview_page(records),
+        build_summary_overview_page(records),
         build_backups_page(records),
         build_history_page(records),
         build_demo_repository_page(records),
@@ -73,12 +77,17 @@ def test_all_carousel_pages_render_demo_data() -> None:
 
     assert tuple(page.name for page in pages) == VIEWER_PAGE_NAMES
     assert all(page.rows for page in pages)
-    assert "complete " not in pages[0].rows[0].line.lower()
-    assert "attempt " not in pages[0].rows[0].line.lower()
-    assert "next " not in pages[0].rows[0].line.lower()
-    assert "missed " not in pages[0].rows[0].line.lower()
-    assert "LAST COMPLETE" in pages[0].columns
-    assert "RUNNING" in "\n".join(row.line for row in pages[0].rows)
+    assert pages[0].columns == "CATEGORY           STATUS     SUMMARY"
+    assert [row.row_id for row in pages[0].rows] == [
+        "overview:backups",
+        "overview:activity",
+        "overview:completion",
+        "overview:schedules",
+        "overview:repositories",
+    ]
+    assert "RUNNING" in "\n".join(
+        "\n".join(row.details) for row in pages[0].rows
+    )
 
 
 def test_diagnostics_and_audit_default_human_output_are_compact() -> None:
@@ -114,7 +123,6 @@ def test_diagnostics_and_audit_default_human_output_are_compact() -> None:
 def test_carousel_switches_pages_and_loads_expensive_pages_lazily(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import rrbackup.viewer as viewer
     import termdash.interactive_list as interactive_list
 
     records = build_demo_records(now=NOW)
@@ -154,12 +162,13 @@ def test_carousel_switches_pages_and_loads_expensive_pages_lazily(
 
         def run(self):
             observed_headers.append(self.state.header)
+            assert self.state.columns_line == "CATEGORY           STATUS     SUMMARY"
             self.key_handler(ord("]"), self.state.visible[0], self.state)
             self.key_handler(ord("4"), self.state.visible[0], self.state)
 
     monkeypatch.setattr(interactive_list, "InteractiveList", FakeInteractiveList)
 
-    viewer.run_viewer_carousel(
+    run_viewer_dashboard(
         records,
         repository_loader=repository_loader,
         diagnostics_loader=diagnostics_loader,
@@ -169,6 +178,84 @@ def test_carousel_switches_pages_and_loads_expensive_pages_lazily(
     assert "View: BACKUPS — pg. 2/6" in observed_headers
     assert "View: REPOSITORY — pg. 4/6" in observed_headers
     assert calls == {"repository": 1, "diagnostics": 0}
+
+
+def test_bare_view_routes_to_aggregate_carousel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rrbackup.viewer_runtime as viewer_runtime
+
+    records = list(build_demo_records(now=NOW))
+    captured = {}
+    inventory = SimpleNamespace(to_dict=lambda: {"backups": []})
+    args = SimpleNamespace(
+        demo=False,
+        backup_name=None,
+        section="overview",
+        json=False,
+        markdown=False,
+        plain=False,
+        include_legacy_evidence=False,
+    )
+
+    monkeypatch.setattr(
+        viewer_runtime.cli_runtime,
+        "records",
+        lambda current_args: (inventory, records),
+    )
+    monkeypatch.setattr(viewer_runtime, "interactive_available", lambda: True)
+
+    def capture_dashboard(selected, **kwargs):
+        captured["selected"] = list(selected)
+        captured.update(kwargs)
+
+    monkeypatch.setattr(viewer_runtime, "run_viewer_dashboard", capture_dashboard)
+
+    result = viewer_runtime.handle_view(args)
+
+    assert result == viewer_runtime.cli_runtime.EXIT_OK
+    assert captured["selected"] == records
+    assert captured["start_page"] == "overview"
+    assert captured["demo"] is False
+
+
+def test_plain_overview_is_aggregate_not_duplicate_backup_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rrbackup.viewer_runtime as viewer_runtime
+
+    records = list(build_demo_records(now=NOW))
+    inventory = SimpleNamespace(to_dict=lambda: {"backups": []})
+    emitted = {}
+    args = SimpleNamespace(
+        demo=False,
+        backup_name=None,
+        section="overview",
+        json=False,
+        markdown=False,
+        plain=True,
+        include_legacy_evidence=False,
+    )
+
+    monkeypatch.setattr(
+        viewer_runtime.cli_runtime,
+        "records",
+        lambda current_args: (inventory, records),
+    )
+
+    def capture_emit(payload, current_args, **kwargs):
+        emitted["payload"] = payload
+        emitted["text"] = kwargs["text"]
+
+    monkeypatch.setattr(viewer_runtime.cli_runtime, "emit", capture_emit)
+
+    result = viewer_runtime.handle_view(args)
+
+    assert result == viewer_runtime.cli_runtime.EXIT_UNHEALTHY
+    assert "View: OVERVIEW" in emitted["text"]
+    assert "CATEGORY" in emitted["text"]
+    assert "ACTIVITY" in emitted["text"]
+    assert "LAST COMPLETE" not in emitted["text"]
 
 
 def test_concise_run_selector_uses_unlabeled_row_values(
