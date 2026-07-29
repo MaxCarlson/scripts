@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "development-ledger"
+version = "1.0.0"
+description = "Plan-aware validation ledger and hybrid/local LLM handoff tooling"
+authors = [{name = "mcarls"}]
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+development-ledger = "development_ledger.cli:main"
+
+[tool.setuptools]
+packages = ["development_ledger"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-config --strict-markers"
+
+[tool.ruff]
+line-length = 120
