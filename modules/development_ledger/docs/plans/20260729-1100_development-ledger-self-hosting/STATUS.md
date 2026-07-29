@@ -32,6 +32,7 @@ A focused correction pass is implemented and awaits one rerun of the same root t
 - Regression coverage includes function and test-class classname forms.
 - Active plan revision advanced to `2` with no unresolved environment dependency.
 - Existing dispatcher adapter and manifest target remain unchanged.
+- Dispatcher transcript evidence now replaces the redundant manual acceptance check.
 
 ## Awaiting corrected evidence
 
@@ -48,4 +49,4 @@ modules/development_ledger/docs/plans/20260729-1100_development-ledger-self-host
 
 ## Next decision
 
-After the corrected run, inspect `PROGRESS.md` and `TRACEABILITY.md`. If automated evidence is clean and mapped, record `MC-S1-001`, then decide whether to promote generic dispatcher integration or migrate RRBackup.
+After the corrected run, inspect `PROGRESS.md` and `TRACEABILITY.md`. If automated evidence is clean and both items are verified, decide whether to promote generic dispatcher integration or migrate RRBackup.
