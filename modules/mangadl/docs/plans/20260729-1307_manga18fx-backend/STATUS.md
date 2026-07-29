@@ -17,16 +17,17 @@ Implementation is present on `agent/add-manga18fx-backend`. The user confirmed t
 - Confirmed through the user's live run that the URL-file workflow downloads Manga18FX series correctly.
 - Fixed the Windows pytest base-temp setup so the parent directory is created before `tmp_path` fixtures initialize.
 - Moved base-temp selection into a module-local pytest hook so tests remain under `modules/mangadl/.pytest_tmp_root` regardless of the shell working directory.
-- Replaced the gallery-dl routing test's dependency on the installed extractor catalog with a deterministic mocked extractor registry.
-- Executed an isolated regression replica covering the pytest hook and backend routing tests: 11 passed.
+- Made gallery-dl backend tests independent of whether `gallery-dl` is installed by injecting a deterministic fake `gallery_dl.extractor` module.
+- Preserved the bare nhentai-ID dry-run coverage by mocking `GalleryDlBackend.score` inside the CLI test.
+- Executed an isolated regression replica for the final gallery-dl test doubles with no gallery-dl installation: 2 passed.
 
 ## Validation Evidence
 
-The user's pre-fix full-suite run showed that production downloading worked, while test setup failed before affected tests executed because `.pytest_tmp_root` did not exist. The only assertion failure depended on whether the installed gallery-dl build currently registered nhentai. Both root causes have been corrected.
+The first Windows full-suite run exposed a missing pytest base-temp parent plus one environment-dependent gallery-dl assertion. After fixing the base-temp setup, the second Windows run reached 48 passing tests and only two failures. Both remaining failures were caused by gallery-dl not being installed: one test imported it directly, and the CLI dry-run test expected its extractor to route nhentai. Both tests now use isolated test doubles instead of requiring the optional runtime module.
 
 ## Unverified
 
-- The complete mangadl pytest suite has not yet been rerun in the user's Windows checkout after the fixes.
+- The complete mangadl pytest suite has not yet been rerun in the user's Windows checkout after the final two test fixes.
 - A second live run has not yet confirmed that all existing Manga18FX image files are skipped.
 - Site age-verification, anti-bot, or cookie requirements remain environment-dependent.
 
