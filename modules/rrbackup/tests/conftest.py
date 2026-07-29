@@ -1,10 +1,9 @@
-"""Pytest fixtures and configuration for rrbackup tests."""
+"""Pytest fixtures and configuration for RRBackup tests."""
+
 from __future__ import annotations
 
 import os
-import pathlib
 import subprocess
-import tempfile
 from typing import Any
 
 import pytest
@@ -19,155 +18,127 @@ from rrbackup.config import (
 )
 
 
-# ==================== Environment Detection ====================
+RUN_GDRIVE_ENV = "RRBACKUP_RUN_GDRIVE_TESTS"
 
 
 def check_user_config_exists() -> bool:
-    """Check if user has a valid config file setup."""
-    config_path = platform_config_default()
-    return config_path.exists()
+    """Return whether a user RRBackup config exists in the canonical location."""
+    return platform_config_default().exists()
 
 
 def check_gdrive_configured() -> tuple[bool, str | None]:
-    """
-    Check if Google Drive is configured in rclone.
-    Returns: (is_configured, error_message)
-    """
+    """Return Google Drive test availability without running unless explicitly enabled."""
+    if os.environ.get(RUN_GDRIVE_ENV) != "1":
+        return False, f"set {RUN_GDRIVE_ENV}=1 to enable live Google Drive tests"
+
     try:
         result = subprocess.run(
             ["rclone", "listremotes"],
             capture_output=True,
             text=True,
             timeout=5,
+            check=False,
         )
         if result.returncode != 0:
-            return False, "rclone command failed"
+            return False, "rclone listremotes failed"
 
-        remotes = result.stdout.strip().split("\n")
+        remotes = result.stdout.strip().splitlines()
         if "gdrive:" not in remotes:
-            return False, None  # Not configured, not an error
+            return False, "gdrive: is not configured"
 
-        # Test connectivity
         result = subprocess.run(
             ["rclone", "lsd", "gdrive:", "--max-depth", "1"],
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
         if result.returncode != 0:
-            return True, result.stderr  # Configured but not working
+            return True, result.stderr.strip() or "Google Drive connectivity check failed"
 
-        return True, None  # Configured and working
-
+        return True, None
     except FileNotFoundError:
-        return False, "rclone not found on PATH"
+        return False, "rclone was not found on PATH"
     except subprocess.TimeoutExpired:
-        return True, "rclone timeout (network issue?)"
-    except Exception as e:
-        return False, f"Unexpected error: {e}"
+        return True, "Google Drive connectivity check timed out"
+    except OSError as exc:
+        return False, f"unable to inspect rclone configuration: {exc}"
 
 
 @pytest.fixture(scope="session")
-def user_config_exists():
-    """Session-scoped fixture indicating if user config exists."""
+def user_config_exists() -> bool:
+    """Return whether a user config exists without making it a test prerequisite."""
     return check_user_config_exists()
 
 
 @pytest.fixture(scope="session")
-def gdrive_status():
-    """
-    Session-scoped fixture for Google Drive status.
-    Returns: (is_configured, error_message)
-    """
+def gdrive_status() -> tuple[bool, str | None]:
+    """Return live Google Drive test status."""
     return check_gdrive_configured()
 
 
-def pytest_configure(config):
-    """Print environment status at start of test run."""
+def pytest_configure(config: pytest.Config) -> None:
+    """Print concise environment status at the beginning of a test run."""
+    del config
+
+    config_path = platform_config_default()
+    config_status = "[OK] Found" if config_path.exists() else "[SKIP] Not found"
+
+    gdrive_configured, gdrive_error = check_gdrive_configured()
+    if gdrive_configured and gdrive_error is None:
+        gdrive_status_text = "[OK] Explicitly enabled and reachable"
+    elif gdrive_configured:
+        gdrive_status_text = f"[ERROR] {gdrive_error}"
+    else:
+        gdrive_status_text = f"[SKIP] {gdrive_error or 'not configured'}"
+
     print("\n" + "=" * 60)
     print("RRBackup Test Environment Status")
     print("=" * 60)
-
-    # Check user config
-    config_exists = check_user_config_exists()
-    config_path = platform_config_default()
-    status = "[OK] Found" if config_exists else "[MISSING] Not found"
-    print(f"User config: {status} at {config_path}")
-
-    # Check Google Drive
-    gdrive_configured, gdrive_error = check_gdrive_configured()
-    if gdrive_configured and gdrive_error is None:
-        print("Google Drive: [OK] Configured and working")
-    elif gdrive_configured and gdrive_error:
-        print(f"Google Drive: [ERROR] Configured but not working - {gdrive_error}")
-    else:
-        if gdrive_error:
-            print(f"Google Drive: [ERROR] {gdrive_error}")
-        else:
-            print("Google Drive: [SKIP] Not configured (tests will be skipped)")
-
+    print(f"User config: {config_status} at {config_path}")
+    print(f"Google Drive: {gdrive_status_text}")
     print("=" * 60 + "\n")
 
 
-# ==================== Skip/Fail Markers ====================
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    """Skip optional environment-dependent tests unless prerequisites are explicit."""
+    if item.get_closest_marker("requires_config") and not check_user_config_exists():
+        pytest.skip(
+            f"User config not found at {platform_config_default()}; "
+            "the default suite does not require user configuration."
+        )
 
-
-def pytest_runtest_setup(item):
-    """Custom logic to skip or fail tests based on markers."""
-    # Handle requires_config marker
-    if item.get_closest_marker("requires_config"):
-        if not check_user_config_exists():
-            pytest.fail(
-                f"User config file required but not found at {platform_config_default()}. "
-                "Create config file first (see SETUP_INSTRUCTIONS.md)"
-            )
-
-    # Handle requires_gdrive marker
     if item.get_closest_marker("requires_gdrive"):
         gdrive_configured, gdrive_error = check_gdrive_configured()
-
         if not gdrive_configured:
-            # Not configured - skip with message
-            skip_msg = "Google Drive not configured. "
-            if gdrive_error:
-                skip_msg += f"({gdrive_error}) "
-            skip_msg += "See GOOGLE_DRIVE_SETUP.md to configure."
-            pytest.skip(skip_msg)
-
-        elif gdrive_error:
-            # Configured but not working - fail
-            pytest.fail(
-                f"Google Drive is configured but not working: {gdrive_error}. "
-                "Run 'rclone config reconnect gdrive:' to fix."
-            )
-
-
-# ==================== Test Fixtures ====================
+            pytest.skip(gdrive_error or "Google Drive tests are not enabled.")
+        if gdrive_error:
+            pytest.fail(f"Google Drive is enabled but unavailable: {gdrive_error}")
 
 
 @pytest.fixture
 def temp_dir(tmp_path):
-    """Temporary directory for test files."""
+    """Return a pytest-managed temporary directory."""
     return tmp_path
 
 
 @pytest.fixture
 def temp_config_file(temp_dir):
-    """Path to temporary config file."""
+    """Return a temporary config-file path."""
     return temp_dir / "config.toml"
 
 
 @pytest.fixture
 def temp_password_file(temp_dir):
-    """Create temporary password file with test password."""
-    pwd_file = temp_dir / "restic_password.txt"
-    pwd_file.write_text("test-password-12345", encoding="utf-8")
-    return pwd_file
+    """Create and return a temporary password file."""
+    password_file = temp_dir / "restic_password.txt"
+    password_file.write_text("test-password-12345", encoding="utf-8")
+    return password_file
 
 
 @pytest.fixture
-def sample_repo():
-    """Sample repository configuration."""
+def sample_repo() -> Repo:
+    """Return a sample repository configuration."""
     return Repo(
         url="/tmp/test-repo",
         password_file="/tmp/restic_password.txt",
@@ -175,8 +146,8 @@ def sample_repo():
 
 
 @pytest.fixture
-def sample_backup_set():
-    """Sample backup set configuration."""
+def sample_backup_set() -> BackupSet:
+    """Return a sample backup-set configuration."""
     return BackupSet(
         name="test-set",
         include=["/home/user/documents"],
@@ -186,13 +157,18 @@ def sample_backup_set():
         dry_run_default=False,
         backup_type="incremental",
         schedule=Schedule(type="daily", time="02:00"),
-        retention=RetentionPolicy(keep_daily=7, keep_weekly=4, keep_monthly=6, keep_yearly=2),
+        retention=RetentionPolicy(
+            keep_daily=7,
+            keep_weekly=4,
+            keep_monthly=6,
+            keep_yearly=2,
+        ),
     )
 
 
 @pytest.fixture
-def sample_retention():
-    """Sample retention policy."""
+def sample_retention() -> RetentionPolicy:
+    """Return a sample retention policy."""
     return RetentionPolicy(
         keep_daily=7,
         keep_weekly=4,
@@ -202,8 +178,13 @@ def sample_retention():
 
 
 @pytest.fixture
-def sample_settings(sample_repo, sample_backup_set, sample_retention, temp_dir):
-    """Complete sample settings."""
+def sample_settings(
+    sample_repo: Repo,
+    sample_backup_set: BackupSet,
+    sample_retention: RetentionPolicy,
+    temp_dir,
+) -> Settings:
+    """Return complete sample settings."""
     return Settings(
         restic_bin="restic",
         rclone_bin="rclone",
@@ -217,32 +198,32 @@ def sample_settings(sample_repo, sample_backup_set, sample_retention, temp_dir):
 
 @pytest.fixture
 def mock_subprocess_run(mocker):
-    """Mock subprocess.run for restic/rclone commands."""
-    mock = mocker.patch("subprocess.Popen")
-    mock_proc = mocker.MagicMock()
-    mock_proc.stdout.readline = mocker.MagicMock(return_value=b"")
-    mock_proc.wait = mocker.MagicMock(return_value=0)
-    mock.return_value = mock_proc
-    return mock
+    """Mock subprocess.Popen for Restic/Rclone command tests."""
+    mocked_popen = mocker.patch("subprocess.Popen")
+    process = mocker.MagicMock()
+    process.stdout.readline = mocker.MagicMock(return_value=b"")
+    process.wait = mocker.MagicMock(return_value=0)
+    mocked_popen.return_value = process
+    return mocked_popen
 
 
 @pytest.fixture
 def mock_restic_success(mock_subprocess_run):
-    """Mock successful restic command execution."""
+    """Return a mocked successful Restic execution."""
     mock_subprocess_run.return_value.wait.return_value = 0
     return mock_subprocess_run
 
 
 @pytest.fixture
 def mock_restic_failure(mock_subprocess_run):
-    """Mock failed restic command execution."""
+    """Return a mocked failed Restic execution."""
     mock_subprocess_run.return_value.wait.return_value = 1
     return mock_subprocess_run
 
 
 @pytest.fixture
-def sample_config_dict():
-    """Sample configuration dictionary (TOML format)."""
+def sample_config_dict() -> dict[str, Any]:
+    """Return a sample TOML-compatible configuration dictionary."""
     return {
         "repository": {
             "url": "/tmp/test-repo",
@@ -267,18 +248,21 @@ def sample_config_dict():
                 "one_fs": False,
                 "dry_run_default": False,
                 "schedule": {"type": "daily", "time": "02:00"},
-                "retention": {"keep_daily": 7, "keep_weekly": 4, "keep_monthly": 6, "keep_yearly": 2},
+                "retention": {
+                    "keep_daily": 7,
+                    "keep_weekly": 4,
+                    "keep_monthly": 6,
+                    "keep_yearly": 2,
+                },
             }
         ],
     }
 
 
 @pytest.fixture(autouse=True)
-def reset_environment(monkeypatch, temp_dir):
-    """Reset environment variables for each test."""
-    # Clear RRBACKUP_CONFIG to avoid interference
+def reset_environment(monkeypatch, temp_dir) -> None:
+    """Isolate RRBackup environment variables and state directories per test."""
     monkeypatch.delenv("RRBACKUP_CONFIG", raising=False)
-
-    # Set temp directory for state/logs
+    monkeypatch.delenv(RUN_GDRIVE_ENV, raising=False)
     monkeypatch.setenv("LOCALAPPDATA", str(temp_dir))
     monkeypatch.setenv("APPDATA", str(temp_dir))
