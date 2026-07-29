@@ -12,4 +12,4 @@ def test_all_shipped_json_schemas_are_valid_json():
     for path in paths:
         payload = json.loads(path.read_text(encoding="utf-8"))
         assert payload["$schema"] == "https://json-schema.org/draft/2020-12/schema"
-        assert payload["type"] == "object" or "oneOf" in payload
+        assert payload.get("type") == "object" or "oneOf" in payload
