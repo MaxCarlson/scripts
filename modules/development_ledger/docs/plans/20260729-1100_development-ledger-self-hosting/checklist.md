@@ -29,13 +29,13 @@
 - [x] Advance package version to `1.1.1`.
 - [x] Advance active plan state to revision `2`.
 - [x] Remove routine validation prerequisites from unresolved environment dependencies.
+- [x] Replace the redundant manual acceptance check with dispatcher transcript evidence.
 - [ ] Pull the correction commits.
 - [ ] Rerun `./Invoke-Tests.ps1 -Target development-ledger`.
 - [ ] Confirm every target section passes.
 - [ ] Confirm both plan items receive matched automated evidence.
 - [ ] Confirm the generated routing no longer requests a local-agent handoff for source-level failures.
 - [ ] Commit and push the regenerated report and ledger evidence.
-- [ ] Record `MC-S1-001` after inspecting the corrected run.
 
 ## Follow-up
 
