@@ -28,6 +28,43 @@ function Assert-True {
     }
 }
 
+function Assert-KnownSnapshots {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object[]]$Snapshots,
+
+        [Parameter(Mandatory)]
+        [string]$SourceName
+    )
+
+    Assert-True -Condition ($Snapshots.Count -ge 2) -Message "$SourceName expected at least two snapshots, found $($Snapshots.Count)."
+
+    foreach ($ExpectedId in $ExpectedSnapshotIds) {
+        $Match = $Snapshots | Where-Object {
+            ([string]$_.id).StartsWith($ExpectedId, [System.StringComparison]::OrdinalIgnoreCase) -or
+            ([string]$_.short_id).Equals($ExpectedId, [System.StringComparison]::OrdinalIgnoreCase)
+        }
+        Assert-True -Condition ([bool]$Match) -Message "$SourceName did not include expected snapshot: $ExpectedId"
+    }
+
+    $KnownSnapshots = $Snapshots | Where-Object {
+        $Id = [string]$_.id
+        $ShortId = [string]$_.short_id
+        $ExpectedSnapshotIds | Where-Object {
+            $Id.StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $ShortId.Equals($_, [System.StringComparison]::OrdinalIgnoreCase)
+        }
+    }
+
+    foreach ($Snapshot in $KnownSnapshots) {
+        Assert-True -Condition (@($Snapshot.tags) -contains $ExpectedTag) -Message "$SourceName snapshot $($Snapshot.short_id) is missing tag $ExpectedTag."
+        foreach ($ExpectedPath in $ExpectedPaths) {
+            Assert-True -Condition (@($Snapshot.paths) -contains $ExpectedPath) -Message "$SourceName snapshot $($Snapshot.short_id) is missing path $ExpectedPath."
+        }
+    }
+}
+
 if (-not $IncludeProductionReadOnly) {
     Write-Output 'SKIP: Production read-only checks were not explicitly enabled.'
     exit 0
@@ -54,7 +91,7 @@ Assert-True -Condition ([bool]$ResticCommand) -Message 'restic is not available 
 Write-Output "Repository=$Repository"
 Write-Output "PasswordFile=$PasswordFile"
 Write-Output "Restic=$($ResticCommand.Source)"
-Write-Output 'Operation=snapshots --json (read-only)'
+Write-Output 'Operation=raw restic snapshots --json (read-only)'
 
 $RawSnapshots = & $ResticCommand.Source `
     --repo $Repository `
@@ -65,39 +102,43 @@ $RawSnapshots = & $ResticCommand.Source `
 Assert-True -Condition ($LASTEXITCODE -eq 0) -Message "Restic snapshot listing failed: $($RawSnapshots -join ' ')"
 
 try {
-    $Snapshots = @(($RawSnapshots -join [Environment]::NewLine) | ConvertFrom-Json)
+    $ResticSnapshots = @(($RawSnapshots -join [Environment]::NewLine) | ConvertFrom-Json)
 }
 catch {
     throw "Unable to parse Restic snapshot JSON: $($_.Exception.Message)"
 }
 
-Assert-True -Condition ($Snapshots.Count -ge 2) -Message "Expected at least two snapshots, found $($Snapshots.Count)."
+Assert-KnownSnapshots -Snapshots $ResticSnapshots -SourceName 'Raw Restic'
 
-foreach ($ExpectedId in $ExpectedSnapshotIds) {
-    $Match = $Snapshots | Where-Object {
-        ([string]$_.id).StartsWith($ExpectedId, [System.StringComparison]::OrdinalIgnoreCase) -or
-        ([string]$_.short_id).Equals($ExpectedId, [System.StringComparison]::OrdinalIgnoreCase)
-    }
-    Assert-True -Condition ([bool]$Match) -Message "Expected snapshot was not found: $ExpectedId"
+$ScriptsRoot = Split-Path -Parent $PythonExecutable
+$BackupCommand = Join-Path $ScriptsRoot 'backup.exe'
+if (-not (Test-Path -LiteralPath $BackupCommand -PathType Leaf)) {
+    $BackupCommand = Join-Path $ScriptsRoot 'backup'
+}
+Assert-True -Condition (Test-Path -LiteralPath $BackupCommand -PathType Leaf) -Message "Canonical backup entry point is missing: $BackupCommand"
+
+Write-Output "BackupCommand=$BackupCommand"
+Write-Output 'Operation=backup view snapshots --json (read-only)'
+
+$CanonicalOutput = & $BackupCommand `
+    --repository $Repository `
+    --password-file $PasswordFile `
+    view `
+    snapshots `
+    --json 2>&1
+
+Assert-True -Condition ($LASTEXITCODE -eq 0) -Message "Canonical snapshot listing failed: $($CanonicalOutput -join ' ')"
+
+try {
+    $CanonicalSnapshots = @(($CanonicalOutput -join [Environment]::NewLine) | ConvertFrom-Json)
+}
+catch {
+    throw "Unable to parse canonical snapshot JSON: $($_.Exception.Message)"
 }
 
-$KnownSnapshots = $Snapshots | Where-Object {
-    $Id = [string]$_.id
-    $ShortId = [string]$_.short_id
-    $ExpectedSnapshotIds | Where-Object {
-        $Id.StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase) -or
-        $ShortId.Equals($_, [System.StringComparison]::OrdinalIgnoreCase)
-    }
-}
+Assert-KnownSnapshots -Snapshots $CanonicalSnapshots -SourceName 'Canonical backup CLI'
 
-foreach ($Snapshot in $KnownSnapshots) {
-    Assert-True -Condition (@($Snapshot.tags) -contains $ExpectedTag) -Message "Snapshot $($Snapshot.short_id) is missing tag $ExpectedTag."
-    foreach ($ExpectedPath in $ExpectedPaths) {
-        Assert-True -Condition (@($Snapshot.paths) -contains $ExpectedPath) -Message "Snapshot $($Snapshot.short_id) is missing path $ExpectedPath."
-    }
-}
-
-$Snapshots |
+$CanonicalSnapshots |
     Sort-Object { [datetimeoffset]$_.time } |
     Select-Object @{Name='Id'; Expression={ if ($_.short_id) { $_.short_id } else { ([string]$_.id).Substring(0, 8) } }}, time, hostname, @{Name='Tags'; Expression={ @($_.tags) -join ',' }}, @{Name='Paths'; Expression={ @($_.paths) -join ' | ' }} |
     Format-Table -AutoSize |
@@ -105,4 +146,4 @@ $Snapshots |
     Write-Output
 
 Write-Output 'Production read-only compatibility test completed successfully.'
-Write-Output 'No backup, restore, init, unlock, forget, prune, or retention command was executed.'
+Write-Output 'No backup, restore, init, unlock, forget, prune, cache cleanup, or retention command was executed.'
