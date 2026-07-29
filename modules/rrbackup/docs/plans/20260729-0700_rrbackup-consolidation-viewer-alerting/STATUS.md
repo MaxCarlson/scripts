@@ -2,100 +2,110 @@
 
 ## Overall
 
-Stage 1 is verified. The latest Windows checkpoint passed package compilation, focused correctness lint, 199 tests, and both PowerShell checks; 8 environment-dependent tests skipped intentionally. The `LATEST.txt`, `LATEST_CONTEXT.md`, `LATEST_PROGRESS.diff`, and bounded-history migration also worked.
+Stage 1 is verified. The Windows checkpoint passed package compilation, focused correctness lint, 199 tests, and both PowerShell checks; 8 environment-dependent tests skipped intentionally. The repository-root validation evidence workflow also works as intended.
 
-Stage 2 is now in progress. The branch adds the canonical `backup` entry point, redirects `rrb` and `rrbackup` to one hierarchical application after installation, introduces the first working viewer/audit/repository/schedule-discovery slice, and preserves selected legacy flat commands through translation or temporary delegation.
+Stage 2 is in progress. The first canonical CLI/data slice proved that the merged engine can inspect the production repository, snapshots, health, provenance, configuration, and scheduler state. The latest automated checkpoint collected 266 tests: 256 passed, 8 skipped, and 2 failed because inherited integration assertions still expected obsolete `rrb` help text. Installed entry-point smoke checks passed.
 
-A post-validation manual check exposed a real installed-entry-point namespace failure that the old smoke test masked by injecting `PYTHONPATH`. The repository namespace compatibility shim has been restored, version lookup moved to a dedicated module, and validation now executes the actual installed `backup`, `rrb`, and `rrbackup` entry points with the injected path removed.
+Manual acceptance then identified design defects that automated tests did not reveal:
 
-## Stage 1 — Verified
+- `backup view` is over-fragmented into too many display-specific commands.
+- Human-facing repository and diagnostic output defaults to raw JSON.
+- `backup schedule list` matches unrelated Windows tasks containing the word `Backup`.
+- `backup view storage` silently performs an expensive full restore-size calculation and took about 72 seconds on the production repository.
+- `backup run` requires too much knowledge of sources, tags, and paths instead of presenting configured backups.
+- A creation wizard, backup-centric schedule wizard, consistent color policy, and shared interactive UI are still missing.
 
-- [x] Canonical profile and source-attribution model
-- [x] Legacy `backup_module` JSON/default adapter
-- [x] Production-compatible Restic command builder
-- [x] Hard preview/print-only execution barrier
-- [x] Distinct dry-run state that never updates last success
-- [x] CPU normal/overdue policy with waiting before lock acquisition
-- [x] Process-identity lock with ownership token and stale-lock race protection
-- [x] Atomic run history, latest-run, and last-success state
-- [x] Snapshot and backup-summary JSON parsers
-- [x] Shared backup execution engine
-- [x] Terminal state for wait, lock, execution, interruption, and finalization failures
-- [x] Compile and focused lint gates
-- [x] Local Windows verification
+The active Stage 2 plan and checklist now contain the complete requested UX, command, wizard, schedule, retention, repository, and TUI specification so the requirements are not lost.
 
-### Verified Stage 1 evidence
+## Progress Assessment
 
-- 207 tests collected
-- 199 passed
-- 8 intentionally skipped
-- 0 failed
-- 0 errors
-- package branch coverage: 55%
-- compile: passed
-- focused correctness lint: passed
-- PowerShell environment smoke test: passed
-- production read-only test: safely skipped
+### Successfully implemented and verified
 
-## Stage 2 — Implemented and Awaiting Validation
+- Shared safety engine and terminal-state handling
+- Canonical `backup` executable
+- Installed-entry-point packaging/import correction
+- Production repository and snapshot read-only access
+- Snapshot timeline and health data
+- Provenance and comprehensive audit data collection
+- Configuration/source attribution
+- Initial repository and schedule adapters
+- Root validation dispatcher and authoritative evidence handoff
+- 256 passing tests in the latest Stage 2 checkpoint
 
-- [x] Package version advanced to `1.0.0` for the new entry point
-- [x] `backup`, `rrb`, and `rrbackup` entry points target one canonical application
-- [x] Root help exposes exactly six major areas
-- [x] `backup edit` translates to `backup config`
-- [x] Canonical and underscore-style aliases for migrated options
-- [x] Legacy `backup`, `list`, `stats`, `check`, and `progress` command translation
-- [x] Temporary delegation for legacy setup/prune/config mutation commands
-- [x] `backup run` preview, dry-run, CPU-policy bypass, and distinct skipped exit code
-- [x] `backup view` dashboard, timeline, snapshots, snapshot details, runs, run details, logs, storage, health, schedules, setup, system, provenance, search, audit, and export
-- [x] `backup config` effective, path, validate, discover, import preview, profiles, and sets
-- [x] Read-only Windows Task Scheduler discovery adapter
-- [x] `backup restore` search, preview, explicit `--apply` run gate, and availability reporting
-- [x] `backup repository` status, keys, locks, stats, check, cache status, explicit init gate, and retention preview placeholder
-- [x] Comprehensive audit collector with configuration provenance, path metadata, source/exclusion entries, repository metadata, keys, snapshots, runs, logs, locks, schedules, health, provenance, and recommendations
-- [x] Secret environment values and password contents excluded from audit output
-- [x] Installed-entry-point namespace regression fixed and tested
-- [x] Stale editable metadata cleanup added before validation install
-- [x] Parser, packaging, health, audit, repository, and scheduler tests added
+### Implemented but not yet locally verified
 
-## Stage 2 Remaining
+- Expanded schedule model for minute/hour/day/week/month/year/custom/manual schedules
+- Schedule description, next-run, and missed-run calculations
+- Unified inventory for canonical TOML sets and legacy `local-main`
+- Inventory enrichment with snapshots, runs, health, scheduler state, next run, and missed runs
+- Strict scheduler ownership matching for canonical `backup` invocations and `RRBackup::` tasks
 
-- [ ] Pass the expanded Windows validation checkpoint
-- [ ] Add TOML/named-set conversion to the canonical engine
-- [ ] Preserve all historical `backup_module` commands through the shared engine
-- [ ] Reduce `modules/backup_module` to a compatibility shim
-- [ ] Add snapshot tag/host/path filtering to the canonical viewer
-- [ ] Implement path redaction for `backup view audit --redact-paths`
-- [ ] Add detailed scheduler event history, service, startup, systemd, and cron discovery
-- [ ] Add structured restore history and hash verification
-- [ ] Verify known production snapshots through canonical read-only commands
-- [ ] Run production read-only validation explicitly
+### Not yet implemented
 
-## Canonical CLI
+- One-public-command packaging (`backup` only)
+- Seven-area task-oriented root CLI
+- Condensed interactive `backup view`
+- Interactive/default `backup run` chooser
+- Backup-centric schedule table and schedule editor wizard
+- Themed creation wizard
+- Combined human-readable `backup repo` summary
+- Explicit cached storage refresh
+- Shared color/table/TUI presentation layer
+- Removal of duplicate `backup_module` engine
+
+### Bugs and failing tests
+
+- Two inherited integration tests assert obsolete `rrb` help wording and wizard exposure.
+- No current evidence of a functional engine regression.
+- The newly added inventory/schedule work has not yet been run locally.
+
+### Progress and loop assessment
+
+Measurable progress occurred. The work is not looping: Stage 1 is complete, the Stage 2 data layer works against production, and manual feedback has redirected the next bounded implementation toward usability rather than repeating safety work. The next checkpoint must show visible CLI simplification and human-output improvements; another checkpoint containing only internal refactoring would be insufficient progress.
+
+## Active Stage 2 Command Target
+
+Only one public executable is required:
 
 ```text
+backup
+```
+
+Target root areas:
+
+```text
+backup create
 backup run
 backup view
-backup config
 backup schedule
 backup restore
-backup repository
+backup repo
+backup config
 ```
 
-`backup edit` aliases `backup config`. `rrb` and `rrbackup` expose the same hierarchy after editable installation. `backup_module` and `python -m backup_module` remain compatibility surfaces while their independent engine is removed.
+`repo` replaces the public `repository` spelling. The internal package may retain the `rrbackup` name during migration.
 
-The comprehensive read-only diagnostic command is:
+## Current Implementation Target
 
-```text
-backup view audit
-```
+The current pass is implementing:
+
+1. one unified configured-backup inventory,
+2. strict module-owned scheduler discovery,
+3. shared colored human renderers,
+4. a condensed `view` dashboard,
+5. a configured-backup chooser for `run`,
+6. backup-centric schedule output,
+7. a combined repository summary that never runs expensive statistics implicitly,
+8. parser and packaging changes for the single `backup` command.
+
+The schedule editor and creation wizard models follow immediately after the inventory/presentation checkpoint, using the same shared TUI conventions.
 
 ## Last Known Production State
 
 - Repository: `B:\ResticRepos\PC-Local`
 - Known snapshots: `a1609113`, `022aad5b`
 - Latest snapshot: 2026-04-14
-- Current backup schedule: absent
+- Current module-owned backup schedule: absent
 - Automated production mutation: prohibited
 
 ## Validation
