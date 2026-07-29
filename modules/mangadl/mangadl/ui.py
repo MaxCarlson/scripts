@@ -25,6 +25,7 @@ BACKEND_BADGES = {
     "gallery-dl": ("GD", "green"),
     "native-nhentai": ("NH", "cyan"),
     "hdporncomics": ("HD", "magenta"),
+    "manga18fx": ("M18", "blue"),
 }
 
 
@@ -62,6 +63,15 @@ def clip(value: str, width: int) -> str:
             visible += 1
             index += 1
     return "".join(output) + "…\x1b[0m"
+
+
+def fit_field(value: str, width: int, alignment: str = "left") -> str:
+    """Clip and pad a possibly colored value to an exact visible width."""
+    fitted = clip(value, width)
+    padding = " " * max(0, width - visible_len(fitted))
+    if alignment == "right":
+        return padding + fitted
+    return fitted + padding
 
 
 def color_status(state: str) -> str:
@@ -120,12 +130,19 @@ def _worker_lines(worker: WorkerSnapshot, selected: bool, width: int) -> list[st
     items = f"{worker.current_ips:.2f} img/s"
     elapsed = td_utils.fmt_hms(worker.elapsed)
     title = worker.title if worker.title and worker.title != "gallery" else ""
-    if width >= 140:
+    if width >= 160:
+        title_width = width - 145
         return [
-            clip(
-                f"{marker}{worker.slot:02d} {color_status(worker.state)} {backend} | {identity} | {images} | {sizes} | {rates} | {items} | {elapsed} | {title}",
-                width,
-            )
+            f"{marker}{worker.slot:02d} "
+            f"{fit_field(color_status(worker.state), 12)} "
+            f"{fit_field(backend, 3)} | "
+            f"{fit_field(identity, 28)} | "
+            f"{fit_field(images, 12, 'right')} | "
+            f"{fit_field(sizes, 18, 'right')} | "
+            f"{fit_field(rates, 27, 'right')} | "
+            f"{fit_field(items, 11, 'right')} | "
+            f"{fit_field(elapsed, 8, 'right')} | "
+            f"{fit_field(title, title_width)}"
         ]
     if width >= 78:
         first = clip(
@@ -239,8 +256,8 @@ class ConsoleDashboard:
             self.paused_workers.symmetric_difference_update({self.selected})
         elif key == "P":
             self.paused_all = not self.paused_all
-        elif key == "q":
-            return "quit"
+        elif key in {"q", "\x03"}:
+            raise KeyboardInterrupt
         return None
 
     def _log_path(self) -> Path:
