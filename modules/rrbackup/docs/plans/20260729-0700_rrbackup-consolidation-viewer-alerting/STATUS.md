@@ -2,7 +2,9 @@
 
 ## Overall
 
-Stage 1 is in progress. The remote/local validation loop is proven: the user ran the module-local orchestrator, committed `TEST_RESULTS.txt`, and the complete pytest and PowerShell output was read remotely. The first inherited baseline fixes are committed. The six-area CLI and shell-audit replacement contract are also fixed for Stage 2.
+Stage 1 is in progress. The remote/local validation loop is proven, but the module-local runner exposed shared-repository pytest import collisions and interpreter drift. Validation has therefore been promoted to a reusable repository-root dispatcher with a target manifest, automatic dependency bootstrap, target working-directory isolation, pytest importlib mode, and timestamped tracked reports under `docs/test-results/`.
+
+The six-area CLI and shell-audit replacement contract remain fixed for Stage 2.
 
 ## Completed
 
@@ -11,15 +13,21 @@ Stage 1 is in progress. The remote/local validation loop is proven: the user ran
 - [x] Production compatibility contract
 - [x] Dedicated feature branch
 - [x] Canonical project documentation structure
-- [x] Hybrid remote/local workflow documented
-- [x] Module-local `Invoke-Tests.ps1` orchestrator
-- [x] Tracked `TEST_RESULTS.txt` evidence handoff
+- [x] Hybrid remote/local workflow documented at repository level
+- [x] Repository-root `Invoke-Tests.ps1` dispatcher
+- [x] Manifest-driven validation targets in `validation-targets.json`
+- [x] RRBackup registered as the default validation target
+- [x] Dependency bootstrap enabled by default
+- [x] Repository virtual-environment Python resolution
+- [x] Target working-directory isolation
+- [x] Pytest `--import-mode=importlib`
+- [x] Timestamped tracked reports under `docs/test-results/<target>/`
 - [x] Full stdout/stderr capture for pytest and PowerShell tests
 - [x] PowerShell environment/entry-point smoke test
 - [x] Opt-in production read-only snapshot compatibility test
 - [x] Project-local ignored temporary-test root
 - [x] First Windows validation output committed and consumed remotely
-- [x] Initial failure triage
+- [x] Second Windows validation output analyzed from the user-provided report
 - [x] User-config-dependent tests changed from mandatory failure to optional skip
 - [x] Live Google Drive tests made explicitly opt-in
 - [x] Top-level CLI configuration errors converted to stable nonzero return codes
@@ -30,38 +38,39 @@ Stage 1 is in progress. The remote/local validation loop is proven: the user ran
 
 ## In Progress
 
-- [ ] Correct remaining inherited test defects
+- [ ] Validate the new repository-root dispatcher on Windows
+- [ ] Correct remaining inherited test defects after dependency/bootstrap isolation is confirmed
 - [ ] Shared safety foundation
 - [ ] Stage 1 unit tests and coverage
 - [ ] Temporary-repository integration harness
 
-## Committed Windows Baseline
+## Validation Evidence
 
-The committed `TEST_RESULTS.txt` run collected 130 tests:
+### First committed baseline
 
+- 130 tests collected
 - 112 passed
 - 4 skipped
 - 10 failed
 - 4 errored
 - package-only branch coverage: 32%
 
-The runner itself worked correctly:
+The module-local runner successfully captured complete pytest and PowerShell output, proving the remote evidence handoff.
 
-- editable development install passed,
-- complete pytest output was captured,
-- environment smoke test passed,
-- production read-only test was safely skipped because it was not enabled,
-- the tracked result file was generated and pushed successfully.
+### Second local run
 
-Remaining inherited baseline issues:
+The module-local runner failed before collection with an `ImportPathMismatchError` because pytest resolved another module's `tests.conftest` from the shared repository environment.
 
-- raw Restic options beginning with `-` require unambiguous `--extra=<value>` syntax or a redesigned pass-through interface,
-- one CLI test incorrectly mocks `Path.open`, turning valid binary TOML loading into text-mode loading,
-- one version-short-form test does not catch the expected successful `SystemExit`,
-- platform tests mutate `os.name`, which breaks `pathlib` concrete path selection on Windows,
-- path-expansion tests assume POSIX output on Windows,
-- one no-expansion test contradicts its fixture, which explicitly supplies state and log directories,
-- large legacy config/wizard modules have little coverage and are scheduled for replacement rather than superficial coverage inflation.
+A manual `pytest` command then used a different Python environment than the repository virtual environment. That interpreter lacked `pytest-mock` and `tomli-w`, producing missing `mocker` fixtures and TOML writer failures. Stale editable console entry points also failed after removal of the duplicate outer package initializer.
+
+These are addressed by the new root dispatcher:
+
+- it always resolves the repository `.venv` Python first,
+- bootstraps target development dependencies unless explicitly skipped,
+- runs from the target working directory,
+- sets the target `PYTHONPATH`,
+- uses pytest importlib mode and an explicit root directory,
+- records every command and its complete output in a tracked dated report.
 
 ## CLI Contract
 
@@ -100,10 +109,10 @@ backup view audit
 
 ## Validation Commands
 
-From `modules/rrbackup`:
+From the repository root:
 
 ```powershell
-./Invoke-Tests.ps1 -Bootstrap
+./Invoke-Tests.ps1
 ```
 
 Optional production read-only validation:
@@ -112,8 +121,8 @@ Optional production read-only validation:
 ./Invoke-Tests.ps1 -IncludeProductionReadOnly
 ```
 
-The runner overwrites the tracked file:
+The dispatcher writes reports using:
 
 ```text
-TEST_RESULTS.txt
+docs/test-results/rrbackup/YYYYMMDD-HHMMSS_rrbackup.txt
 ```
