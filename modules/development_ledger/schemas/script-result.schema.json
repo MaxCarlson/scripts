@@ -1,0 +1,32 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://example.invalid/development-ledger/script-result.schema.json",
+    "title": "Development Ledger Generic Script Result",
+    "type": "object",
+    "required": ["schema_version", "source", "suite", "tests"],
+    "properties": {
+        "schema_version": {"const": 1},
+        "source": {"type": "string", "minLength": 1},
+        "suite": {"type": "string", "minLength": 1},
+        "tests": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["id", "name", "status"],
+                "properties": {
+                    "id": {"type": "string", "minLength": 1},
+                    "name": {"type": "string", "minLength": 1},
+                    "status": {"enum": ["passed", "failed", "error", "skipped"]},
+                    "duration_seconds": {"type": "number", "minimum": 0},
+                    "message": {"type": "string"},
+                    "file": {"type": "string"},
+                    "classname": {"type": "string"},
+                    "item_ids": {"type": "array", "items": {"type": "string"}},
+                    "metadata": {"type": "object"}
+                },
+                "additionalProperties": true
+            }
+        }
+    },
+    "additionalProperties": true
+}
