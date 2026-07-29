@@ -3,7 +3,7 @@
 ====================================================================================================
 VALIDATION TARGET: rrbackup
 ====================================================================================================
-Timestamp: 2026-07-29T11:04:36.1153363-07:00
+Timestamp: 2026-07-29T10:57:29.5231774-07:00
 Description: RRBackup consolidation, single-CLI UX, viewer, scheduler, and repository validation.
 Repository root: C:\Users\mcarls\src\scripts
 Working directory: C:\Users\mcarls\src\scripts\modules\rrbackup
@@ -14,7 +14,7 @@ Bootstrap enabled: True
 Production read-only checks: False
 History retention: 3 prior runs, maximum age 14 days
 Git branch: agent/merge-restic-backup-modules
-Git commit: 9743f4247e78a5f6bf93d782b712fca56ed4b16c
+Git commit: 1b09c80ccffb8d5840ea8861cf7a7ce9a4abd732
 Git status before validation:
 (clean)
 
@@ -54,8 +54,8 @@ Obtaining file:///C:/Users/mcarls/src/scripts/modules/termdash
 Building wheels for collected packages: termdash
   Building editable for termdash (pyproject.toml): started
   Building editable for termdash (pyproject.toml): finished with status 'done'
-  Created wheel for termdash: filename=termdash-0.5.0-0.editable-py3-none-any.whl size=4858 sha256=21adb1377fe9be3f239773d6009f03cb261a236f784e378dcafe7293d99ba959
-  Stored in directory: C:\Users\mcarls\src\scripts\modules\rrbackup\.pytest_tmp_root\validation\pip-ephem-wheel-cache-6cu8uv4b\wheels\0c\63\83\1230fd71819077cdd0e2f1c4fd3d10db1a8949cfd53cef1cad
+  Created wheel for termdash: filename=termdash-0.5.0-0.editable-py3-none-any.whl size=4858 sha256=4fdf452cfcb903b18c43836198b883e1845b6c435b440cc933990110ca1ceba6
+  Stored in directory: C:\Users\mcarls\src\scripts\modules\rrbackup\.pytest_tmp_root\validation\pip-ephem-wheel-cache-ggxdz49e\wheels\0c\63\83\1230fd71819077cdd0e2f1c4fd3d10db1a8949cfd53cef1cad
 Successfully built termdash
 WARNING: Ignoring invalid distribution ~%bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
 WARNING: Ignoring invalid distribution ~ (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
@@ -121,8 +121,8 @@ Requirement already satisfied: coverage>=7.10.6 in C:\Users\mcarls\src\scripts\.
 Building wheels for collected packages: rrbackup
   Building editable for rrbackup (pyproject.toml): started
   Building editable for rrbackup (pyproject.toml): finished with status 'done'
-  Created wheel for rrbackup: filename=rrbackup-2.0.0-0.editable-py3-none-any.whl size=6215 sha256=d5233e2bbf5d263c392295dbb6a4ac038ffd9d98c6fbd8df50e07db0950ed5a5
-  Stored in directory: C:\Users\mcarls\src\scripts\modules\rrbackup\.pytest_tmp_root\validation\pip-ephem-wheel-cache-5ieipl64\wheels\8c\5d\d7\3308138532b7624f56969ac10a1a7e70bff0bfeb301caeee82
+  Created wheel for rrbackup: filename=rrbackup-2.0.0-0.editable-py3-none-any.whl size=6215 sha256=09ed100edebc06c9ee0f045580ba25b19ff791aec1ceed771a790f42827bfb6e
+  Stored in directory: C:\Users\mcarls\src\scripts\modules\rrbackup\.pytest_tmp_root\validation\pip-ephem-wheel-cache-6kh7lm2s\wheels\8c\5d\d7\3308138532b7624f56969ac10a1a7e70bff0bfeb301caeee82
 Successfully built rrbackup
 WARNING: Ignoring invalid distribution ~%bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
 WARNING: Ignoring invalid distribution ~ (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
@@ -218,7 +218,7 @@ RESULT: PASS - Condensed backup view help contract
 RRBackup pytest and coverage suite
 ====================================================================================================
 Working directory: C:\Users\mcarls\src\scripts\modules\rrbackup
-Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest tests -vv -ra --color=yes --tb=short --durations=25 --strict-config --strict-markers --import-mode=importlib --rootdir C:\Users\mcarls\src\scripts\modules\rrbackup --basetemp C:\Users\mcarls\src\scripts\modules\rrbackup\.pytest_tmp_root\validation-20260729-110436 --cov=rrbackup --cov-branch --cov-report=term-missing
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest tests -vv -ra --color=yes --tb=short --durations=25 --strict-config --strict-markers --import-mode=importlib --rootdir C:\Users\mcarls\src\scripts\modules\rrbackup --basetemp C:\Users\mcarls\src\scripts\modules\rrbackup\.pytest_tmp_root\validation-20260729-105729 --cov=rrbackup --cov-branch --cov-report=term-missing
 
 ============================================================
 RRBackup Test Environment Status
@@ -538,7 +538,7 @@ tests/state_test.py::test_atomic_write_failure_removes_temporary_file [32mPASSE
 
 ================================== FAILURES ===================================
 [31m[1m________ test_run_auto_json_lists_configured_backups_without_execution ________[0m
-[1m[31mtests\application_test.py[0m:188: in test_run_auto_json_lists_configured_backups_without_execution
+[1m[31mtests\application_test.py[0m:185: in test_run_auto_json_lists_configured_backups_without_execution
     [0mresult = application.main([[33m"[39;49;00m[33mrun[39;49;00m[33m"[39;49;00m, [33m"[39;49;00m[33mauto[39;49;00m[33m"[39;49;00m, [33m"[39;49;00m[33m--json[39;49;00m[33m"[39;49;00m])[90m[39;49;00m
              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
 [1m[31mrrbackup\application.py[0m:322: in main
@@ -546,13 +546,10 @@ tests/state_test.py::test_atomic_write_failure_removes_temporary_file [32mPASSE
                ^^^^^^^^^^^^^^^^^^[90m[39;49;00m
 [1m[31mrrbackup\cli_runtime.py[0m:193: in handle_run
     [0mtext = render_backup_table([90m[39;49;00m
-[1m[31mrrbackup\presentation.py[0m:214: in render_backup_table
-    [0mtheme.muted(_schedule_state(record, theme)),[90m[39;49;00m
-                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
-[1m[31mrrbackup\presentation.py[0m:166: in _schedule_state
-    [0m[94mif[39;49;00m record.definition.schedule.type == [33m"[39;49;00m[33mmanual[39;49;00m[33m"[39;49;00m:[90m[39;49;00m
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
-[1m[31mE   AttributeError: 'FakeDefinition' object has no attribute 'schedule'[0m
+[1m[31mrrbackup\presentation.py[0m:213: in render_backup_table
+    [0mtheme.muted([33m"[39;49;00m[33m  ΓööΓöÇ [39;49;00m[33m{0}[39;49;00m[33m"[39;49;00m.format(record.definition.source_summary)),[90m[39;49;00m
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31mE   AttributeError: 'FakeDefinition' object has no attribute 'source_summary'[0m
 =============================== tests coverage ================================
 ______________ coverage: platform win32, python 3.12.10-final-0 _______________
 
@@ -591,36 +588,36 @@ rrbackup\wizards.py                  213    173     66      0    14%   50, 67, 8
 TOTAL                               4378   1616   1388    178    60%
 Coverage HTML written to dir htmlcov
 ============================ slowest 25 durations =============================
-10.42s call     tests/integration_test.py::TestEndToEndBackupRestore::test_full_backup_restore_cycle
-0.90s call     tests/integration_test.py::TestErrorMessages::test_invalid_backup_name_returns_nonzero
+10.67s call     tests/integration_test.py::TestEndToEndBackupRestore::test_full_backup_restore_cycle
+0.91s call     tests/integration_test.py::TestErrorMessages::test_invalid_backup_name_returns_nonzero
 0.18s call     tests/integration_test.py::TestCLIHelpOutput::test_main_help_output
-0.15s call     tests/packaging_test.py::test_modules_path_import_resolves_regular_package_and_backup_cli
+0.16s call     tests/packaging_test.py::test_modules_path_import_resolves_regular_package_and_backup_cli
 0.15s call     tests/integration_test.py::TestCLIHelpOutput::test_view_help_is_condensed
 0.15s call     tests/integration_test.py::TestCLIHelpOutput::test_run_help_output
-0.14s call     tests/integration_test.py::TestCLIHelpOutput::test_schedule_help_lists_editor
+0.15s call     tests/integration_test.py::TestCLIHelpOutput::test_schedule_help_lists_editor
 0.09s call     tests/integration_test.py::TestBinaryAvailability::test_binary_exists[rclone]
-0.04s call     tests/audit_test.py::test_audit_markdown_contains_selected_sections
-0.03s call     tests/integration_test.py::TestBinaryAvailability::test_binary_exists[restic]
-0.03s call     tests/runner_test.py::TestErrorHandling::test_restic_timeout_handling
-0.02s setup    tests/config_test.py::TestSchedule::test_parse_missing_value_returns_manual
-0.01s call     tests/engine_test.py::test_real_success_records_snapshot_and_last_success
-0.01s call     tests/runner_test.py::TestRunRestic::test_run_restic_success
+0.05s call     tests/audit_test.py::test_audit_markdown_contains_selected_sections
+0.04s call     tests/runner_test.py::TestErrorHandling::test_restic_timeout_handling
+0.04s call     tests/integration_test.py::TestBinaryAvailability::test_binary_exists[restic]
+0.02s call     tests/presentation_test.py::test_browse_backups_uses_shared_termdash_selection_adapter
+0.02s call     tests/engine_test.py::test_real_success_records_snapshot_and_last_success
+0.01s call     tests/state_test.py::test_only_real_success_updates_last_success
 0.01s call     tests/engine_test.py::test_cpu_wait_exception_records_failure
+0.01s call     tests/state_test.py::test_reconcile_stale_running_marks_interrupted
 0.01s call     tests/engine_test.py::test_executor_exception_records_failure_and_releases_lock
+0.01s call     tests/cli_test.py::TestSetupCommand::test_setup_flags[arguments3-remote_check-True]
 0.01s call     tests/engine_test.py::test_cpu_wait_precedes_lock_and_execution
 0.01s call     tests/engine_failure_test.py::test_malformed_summary_records_failure_and_releases_lock
 0.01s call     tests/engine_failure_test.py::test_lock_factory_failure_records_terminal_failure
-0.01s call     tests/state_test.py::test_only_real_success_updates_last_success
-0.01s call     tests/cli_test.py::TestMainFunction::test_list_dispatches_with_loaded_config
-0.01s call     tests/presentation_test.py::test_browse_backups_uses_shared_termdash_selection_adapter
-0.01s call     tests/state_test.py::test_reconcile_stale_running_marks_interrupted
-0.01s call     tests/engine_test.py::test_cpu_skip_occurs_before_lock_or_execution
 0.01s call     tests/engine_test.py::test_dry_run_never_updates_last_success
+0.01s call     tests/cli_test.py::TestMainFunction::test_list_dispatches_with_loaded_config
+0.01s call     tests/locking_test.py::test_release_refuses_foreign_token
+0.01s call     tests/engine_test.py::test_restic_interruption_records_interrupted_result
 [36m[1m=========================== short test summary info ===========================[0m
 [33mSKIPPED[0m [4] tests\conftest.py:106: User config not found at C:\Users\mcarls\AppData\Roaming\rrbackup\config.toml; the default suite does not require user configuration.
 [33mSKIPPED[0m [3] tests\conftest.py:114: set RRBACKUP_RUN_GDRIVE_TESTS=1 to enable live Google Drive tests
-[31mFAILED[0m tests/application_test.py::[1mtest_run_auto_json_lists_configured_backups_without_execution[0m - AttributeError: 'FakeDefinition' object has no attribute 'schedule'
-[31m================== [31m[1m1 failed[0m, [32m287 passed[0m, [33m7 skipped[0m[31m in 14.33s[0m[31m ==================[0m
+[31mFAILED[0m tests/application_test.py::[1mtest_run_auto_json_lists_configured_backups_without_execution[0m - AttributeError: 'FakeDefinition' object has no attribute 'source_summary'
+[31m================== [31m[1m1 failed[0m, [32m287 passed[0m, [33m7 skipped[0m[31m in 15.00s[0m[31m ==================[0m
 RESULT: FAIL - RRBackup pytest and coverage suite
 ERROR: Command returned exit code 1.
 
@@ -665,9 +662,7 @@ Git status after validation:
  M docs/test-results/rrbackup/LATEST.txt
  D docs/test-results/rrbackup/LATEST_CONTEXT.md
  D docs/test-results/rrbackup/LATEST_PROGRESS.diff
- D docs/test-results/rrbackup/history/20260729-090444_rrbackup.txt
- D docs/test-results/rrbackup/history/20260729-090444_rrbackup_context.md
- D docs/test-results/rrbackup/history/20260729-090444_rrbackup_progress.diff
-?? docs/test-results/rrbackup/history/20260729-105729_rrbackup.txt
-?? docs/test-results/rrbackup/history/20260729-105729_rrbackup_context.md
-?? docs/test-results/rrbackup/history/20260729-105729_rrbackup_progress.diff
+ D docs/test-results/rrbackup/history/20260729-082945_rrbackup.txt
+?? docs/test-results/rrbackup/history/20260729-104436_rrbackup.txt
+?? docs/test-results/rrbackup/history/20260729-104436_rrbackup_context.md
+?? docs/test-results/rrbackup/history/20260729-104436_rrbackup_progress.diff
