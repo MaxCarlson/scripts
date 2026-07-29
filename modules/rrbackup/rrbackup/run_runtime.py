@@ -163,7 +163,6 @@ def handle_run(args: Any) -> int:
                 control,
             ),
             dry_run=args.dry_run,
-            initial_confirmation=args.backup_name.lower() != "auto",
         )
         return _exit_code(list(outcome.exit_codes))
 
