@@ -15,6 +15,10 @@ MANAGED_END = "<!-- development-ledger:managed-instructions:end -->"
 GENERATED_MARKER = "<!-- development-ledger:generated-template:v1 -->"
 CONFIG_FILENAME = ".development-ledger.json"
 SUPPORTED_AGENTS = ("codex", "claude", "gemini", "copilot")
+DEFAULT_POLICY = {
+    "session": {"target_minutes": 15, "max_minutes": 20, "max_items": 4},
+    "architecture_review": {"max_validation_runs": 5, "max_plan_revisions": 3},
+}
 
 
 class SetupError(ValueError):
@@ -41,6 +45,7 @@ class SetupResult:
     repo_root: str
     scopes: list[str]
     agents: list[str]
+    policy: dict[str, Any]
     operations: list[SetupOperation]
 
     @property
@@ -56,6 +61,7 @@ class SetupResult:
             "repo_root": self.repo_root,
             "scopes": self.scopes,
             "agents": self.agents,
+            "policy": self.policy,
             "changed_count": self.changed_count,
             "has_conflicts": self.has_conflicts,
             "operations": [operation.to_dict() for operation in self.operations],
@@ -70,6 +76,11 @@ def plan_repository_setup(
     all_modules: bool = False,
     agents: Iterable[str] = (),
     repository_name: str = "",
+    session_target_minutes: int | None = None,
+    session_max_minutes: int | None = None,
+    session_max_items: int | None = None,
+    architecture_review_runs: int | None = None,
+    architecture_review_revisions: int | None = None,
     force: bool = False,
 ) -> SetupResult:
     """Build a non-mutating cross-repository setup plan."""
@@ -78,20 +89,30 @@ def plan_repository_setup(
     if not root.is_dir():
         raise SetupError(f"Repository root does not exist or is not a directory: {root}")
 
+    config_path = root / CONFIG_FILENAME
+    existing_config = _load_existing_config(config_path, force=force)
+    policy = _resolve_policy(
+        existing_config,
+        session_target_minutes=session_target_minutes,
+        session_max_minutes=session_max_minutes,
+        session_max_items=session_max_items,
+        architecture_review_runs=architecture_review_runs,
+        architecture_review_revisions=architecture_review_revisions,
+    )
     selected_agents = _normalize_agents(agents)
     scope_paths = _resolve_scopes(root, scopes=scopes, modules=modules, all_modules=all_modules)
     repo_name = repository_name.strip() or root.name
     operations: list[SetupOperation] = []
 
     workflow_path = root / "docs" / "agent" / "DEVELOPMENT_LEDGER_WORKFLOW.md"
-    root_values = {
-        "REPOSITORY_NAME": repo_name,
-        "SCOPE_PATH": ".",
-        "DOCS_PATH": "docs",
-        "ROOT_WORKFLOW_PATH": "docs/agent/DEVELOPMENT_LEDGER_WORKFLOW.md",
-        "ROOT_WORKFLOW_IMPORT": "./docs/agent/DEVELOPMENT_LEDGER_WORKFLOW.md",
-        "AGENTS_IMPORT": "./AGENTS.md",
-    }
+    root_values = _template_values(
+        repository_name=repo_name,
+        scope_path=".",
+        docs_path="docs",
+        workflow_path="docs/agent/DEVELOPMENT_LEDGER_WORKFLOW.md",
+        workflow_import="./docs/agent/DEVELOPMENT_LEDGER_WORKFLOW.md",
+        policy=policy,
+    )
 
     operations.append(_plan_managed_instruction(root / "AGENTS.md", _template("agents-root.md", root_values)))
     if "claude" in selected_agents:
@@ -119,26 +140,25 @@ def plan_repository_setup(
         scope_text = scope.as_posix()
         docs_path = f"{scope_text}/docs"
         workflow_relative = Path(os.path.relpath(workflow_path, scope_root)).as_posix()
-        values = {
-            "REPOSITORY_NAME": repo_name,
-            "SCOPE_PATH": scope_text,
-            "DOCS_PATH": docs_path,
-            "ROOT_WORKFLOW_PATH": workflow_relative,
-            "ROOT_WORKFLOW_IMPORT": f"./{workflow_relative}" if not workflow_relative.startswith(".") else workflow_relative,
-            "AGENTS_IMPORT": "./AGENTS.md",
-        }
+        values = _template_values(
+            repository_name=repo_name,
+            scope_path=scope_text,
+            docs_path=docs_path,
+            workflow_path=workflow_relative,
+            workflow_import=f"./{workflow_relative}" if not workflow_relative.startswith(".") else workflow_relative,
+            policy=policy,
+        )
         operations.append(_plan_managed_instruction(scope_root / "AGENTS.md", _template("agents-scope.md", values)))
         if "claude" in selected_agents:
             operations.append(_plan_managed_instruction(scope_root / "CLAUDE.md", _template("claude-scope.md", values)))
         if "gemini" in selected_agents:
             operations.append(_plan_managed_instruction(scope_root / "GEMINI.md", _template("gemini-scope.md", values)))
         if "copilot" in selected_agents:
-            slug = _scope_slug(scope)
             copilot_values = dict(values)
             copilot_values["APPLY_TO"] = f"{scope_text}/**"
             operations.append(
                 _plan_owned_file(
-                    root / ".github" / "instructions" / f"development-ledger-{slug}.instructions.md",
+                    root / ".github" / "instructions" / f"development-ledger-{_scope_slug(scope)}.instructions.md",
                     _template("copilot-scope.md", copilot_values),
                     force=force,
                 )
@@ -151,13 +171,12 @@ def plan_repository_setup(
             ]
         )
 
-    config_path = root / CONFIG_FILENAME
     config_content = _merged_config(
-        config_path,
+        existing_config,
         repository_name=repo_name,
         scope_paths=scope_paths,
         agents=selected_agents,
-        force=force,
+        policy=policy,
     )
     operations.append(_plan_json_file(config_path, config_content, force=force))
 
@@ -165,6 +184,7 @@ def plan_repository_setup(
         repo_root=str(root),
         scopes=[scope.as_posix() for scope in scope_paths],
         agents=list(selected_agents),
+        policy=policy,
         operations=_deduplicate_operations(root, operations),
     )
 
@@ -232,6 +252,30 @@ def _normalize_agents(agents: Iterable[str]) -> tuple[str, ...]:
     return values
 
 
+def _template_values(
+    *,
+    repository_name: str,
+    scope_path: str,
+    docs_path: str,
+    workflow_path: str,
+    workflow_import: str,
+    policy: dict[str, Any],
+) -> dict[str, str]:
+    return {
+        "REPOSITORY_NAME": repository_name,
+        "SCOPE_PATH": scope_path,
+        "DOCS_PATH": docs_path,
+        "ROOT_WORKFLOW_PATH": workflow_path,
+        "ROOT_WORKFLOW_IMPORT": workflow_import,
+        "AGENTS_IMPORT": "./AGENTS.md",
+        "SESSION_TARGET_MINUTES": str(policy["session"]["target_minutes"]),
+        "SESSION_MAX_MINUTES": str(policy["session"]["max_minutes"]),
+        "SESSION_MAX_ITEMS": str(policy["session"]["max_items"]),
+        "ARCHITECTURE_REVIEW_RUNS": str(policy["architecture_review"]["max_validation_runs"]),
+        "ARCHITECTURE_REVIEW_REVISIONS": str(policy["architecture_review"]["max_plan_revisions"]),
+    }
+
+
 def _template(name: str, values: dict[str, str]) -> str:
     template = resources.files("development_ledger").joinpath("templates", name).read_text(encoding="utf-8")
     for key, value in values.items():
@@ -281,36 +325,88 @@ def _plan_create_only(path: Path, content: str) -> SetupOperation:
     return SetupOperation(str(path), "create", "Create initial user-maintained scaffold.", content)
 
 
+def _load_existing_config(path: Path, *, force: bool) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        if force:
+            return {}
+        raise SetupError(f"Invalid JSON in existing {path}: {exc}") from exc
+    if not isinstance(loaded, dict):
+        if force:
+            return {}
+        raise SetupError(f"Existing {path} must contain a JSON object.")
+    return loaded
+
+
+def _resolve_policy(
+    existing: dict[str, Any],
+    *,
+    session_target_minutes: int | None,
+    session_max_minutes: int | None,
+    session_max_items: int | None,
+    architecture_review_runs: int | None,
+    architecture_review_revisions: int | None,
+) -> dict[str, Any]:
+    existing_policy = existing.get("policy", {}) if isinstance(existing.get("policy", {}), dict) else {}
+    existing_session = (
+        existing_policy.get("session", {}) if isinstance(existing_policy.get("session", {}), dict) else {}
+    )
+    existing_review = (
+        existing_policy.get("architecture_review", {})
+        if isinstance(existing_policy.get("architecture_review", {}), dict)
+        else {}
+    )
+    policy = {
+        "session": {
+            "target_minutes": session_target_minutes
+            if session_target_minutes is not None
+            else existing_session.get("target_minutes", DEFAULT_POLICY["session"]["target_minutes"]),
+            "max_minutes": session_max_minutes
+            if session_max_minutes is not None
+            else existing_session.get("max_minutes", DEFAULT_POLICY["session"]["max_minutes"]),
+            "max_items": session_max_items
+            if session_max_items is not None
+            else existing_session.get("max_items", DEFAULT_POLICY["session"]["max_items"]),
+        },
+        "architecture_review": {
+            "max_validation_runs": architecture_review_runs
+            if architecture_review_runs is not None
+            else existing_review.get("max_validation_runs", DEFAULT_POLICY["architecture_review"]["max_validation_runs"]),
+            "max_plan_revisions": architecture_review_revisions
+            if architecture_review_revisions is not None
+            else existing_review.get("max_plan_revisions", DEFAULT_POLICY["architecture_review"]["max_plan_revisions"]),
+        },
+    }
+    for section, values in policy.items():
+        for name, value in values.items():
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise SetupError(f"Policy value {section}.{name} must be an integer greater than or equal to 1.")
+    if policy["session"]["max_minutes"] < policy["session"]["target_minutes"]:
+        raise SetupError("session_max_minutes cannot be less than session_target_minutes.")
+    return policy
+
+
 def _merged_config(
-    path: Path,
+    existing: dict[str, Any],
     *,
     repository_name: str,
     scope_paths: list[Path],
     agents: tuple[str, ...],
-    force: bool,
+    policy: dict[str, Any],
 ) -> str:
-    existing: dict[str, Any] = {}
-    if path.exists():
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            if not force:
-                raise SetupError(f"Invalid JSON in existing {path}: {exc}") from exc
-            loaded = {}
-        if not isinstance(loaded, dict):
-            if not force:
-                raise SetupError(f"Existing {path} must contain a JSON object.")
-            loaded = {}
-        existing = loaded
-
-    existing["schema_version"] = 1
-    existing["repository_name"] = repository_name
-    existing["instruction_strategy"] = "essential-inline-plus-native-imports"
-    prior_agents = existing.get("agents", []) if isinstance(existing.get("agents", []), list) else []
-    existing["agents"] = list(dict.fromkeys([*(str(value) for value in prior_agents), *agents]))
+    merged = dict(existing)
+    merged["schema_version"] = 1
+    merged["repository_name"] = repository_name
+    merged["instruction_strategy"] = "essential-inline-plus-native-imports"
+    prior_agents = merged.get("agents", []) if isinstance(merged.get("agents", []), list) else []
+    merged["agents"] = list(dict.fromkeys([*(str(value) for value in prior_agents), *agents]))
+    merged["policy"] = policy
     current_scopes = {
         str(item.get("path")): item
-        for item in existing.get("scopes", [])
+        for item in merged.get("scopes", [])
         if isinstance(item, dict) and isinstance(item.get("path"), str)
     }
     for scope in scope_paths:
@@ -320,9 +416,9 @@ def _merged_config(
             "docs_path": "docs" if scope == Path(".") else f"{scope_text}/docs",
             "plan_root": "docs/plans" if scope == Path(".") else f"{scope_text}/docs/plans",
         }
-    existing["scopes"] = [current_scopes[key] for key in sorted(current_scopes, key=lambda value: (value != ".", value))]
-    existing["workflow_document"] = "docs/agent/DEVELOPMENT_LEDGER_WORKFLOW.md"
-    return json.dumps(existing, indent=4, ensure_ascii=False) + "\n"
+    merged["scopes"] = [current_scopes[key] for key in sorted(current_scopes, key=lambda value: (value != ".", value))]
+    merged["workflow_document"] = "docs/agent/DEVELOPMENT_LEDGER_WORKFLOW.md"
+    return json.dumps(merged, indent=4, ensure_ascii=False) + "\n"
 
 
 def _plan_json_file(path: Path, content: str, *, force: bool) -> SetupOperation:
