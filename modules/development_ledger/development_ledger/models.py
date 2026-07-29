@@ -10,6 +10,10 @@ VALID_MANUAL_STATES = {"pending", "passed", "failed", "blocked", "waived"}
 VALID_TEST_STATES = {"passed", "failed", "error", "skipped"}
 VALID_ACTORS = {"remote_llm", "local_llm", "user", "validator", "unknown"}
 VALID_MODES = {"hybrid", "local", "remote", "manual"}
+VALID_REQUEST_STATES = {"no_new_request", "incorporated", "conflict_pending"}
+VALID_REQUEST_RESOLUTIONS = {"none", "compatible", "explicit_user_override", "user_decision_required"}
+VALID_ARCHITECTURE_IMPACTS = {"none", "local", "cross_cutting", "foundational"}
+VALID_ARCHITECTURE_ROLES = {"feature", "foundation", "integration", "verification", "migration"}
 
 
 @dataclass(slots=True)
@@ -42,8 +46,11 @@ class PlanItem:
     implementation: str = "planned"
     tests: list[str] = field(default_factory=list)
     manual_checks: list[str] = field(default_factory=list)
+    depends_on: list[str] = field(default_factory=list)
     blocked_by: list[str] = field(default_factory=list)
     relevant_files: list[str] = field(default_factory=list)
+    priority: int = 0
+    architecture_role: str = "feature"
     notes: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -76,10 +83,12 @@ class PlanState:
     plan_id: str
     title: str
     project_root: str
+    plan_revision: int
     stage: dict[str, Any]
     session: dict[str, Any]
     items: list[PlanItem]
     manual_checks: list[ManualCheck]
+    policy: dict[str, Any] = field(default_factory=dict)
     relevant_docs: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -95,10 +104,12 @@ class PlanState:
             "plan_id": self.plan_id,
             "title": self.title,
             "project_root": self.project_root,
+            "plan_revision": self.plan_revision,
             "stage": self.stage,
             "session": self.session,
             "items": [item.to_dict() for item in self.items],
             "manual_checks": [check.to_dict() for check in self.manual_checks],
+            "policy": self.policy,
             "relevant_docs": self.relevant_docs,
             "metadata": self.metadata,
         }
