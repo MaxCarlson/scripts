@@ -2,7 +2,7 @@
 
 ## Overall
 
-Stage 1 is in progress. The documentation structure and local validation harness are implemented; shared safety-foundation source work and its unit tests are next.
+Stage 1 is in progress. The canonical documentation structure, hybrid remote/local collaboration workflow, module-local test orchestrator, PowerShell smoke tests, and initial Windows baseline run are complete. Shared safety-foundation source work and replacement tests are next.
 
 ## Completed
 
@@ -11,22 +11,45 @@ Stage 1 is in progress. The documentation structure and local validation harness
 - [x] Production compatibility contract
 - [x] Dedicated feature branch
 - [x] Canonical project documentation structure
-- [x] Validation-loop design
-- [x] Root validation orchestrator
+- [x] Hybrid remote/local workflow documented
+- [x] Module-local `Invoke-Tests.ps1` orchestrator
+- [x] Tracked `TEST_RESULTS.txt` evidence handoff
+- [x] Full stdout/stderr capture design for pytest and PowerShell tests
 - [x] PowerShell environment/entry-point smoke test
 - [x] Opt-in production read-only snapshot compatibility test
-- [x] Generated-output isolation under the RRBackup module
-- [x] Initial static review of the validation harness
+- [x] Project-local ignored temporary-test root
+- [x] Initial Windows baseline validation
+- [x] Initial failure triage
 
 ## In Progress
 
+- [ ] Correct or replace inherited tests that depend on user configuration or external services
 - [ ] Shared safety foundation
 - [ ] Stage 1 unit tests and coverage
 - [ ] Temporary-repository integration harness
 
-## Blocked on Local Evidence
+## Initial Windows Baseline
 
-The validation harness itself has not yet been executed on Windows. Its first run may expose environment or packaging assumptions that need adjustment before it becomes the stable validation entry point.
+The first local run collected 130 tests:
+
+- 112 passed
+- 4 skipped
+- 10 failed
+- 4 errored
+- reported coverage: 59%
+
+Primary baseline issues:
+
+- inherited integration tests fail when the user's RRBackup config is absent instead of skipping or using isolated fixtures,
+- raw Restic options beginning with `-` are passed to `--extra` ambiguously in tests,
+- top-level CLI configuration errors escape instead of becoming stable nonzero return codes,
+- platform tests mutate `os.name` and make `pathlib` instantiate an unsupported concrete path type,
+- path-expansion tests assume POSIX behavior while running on Windows,
+- one no-expansion test contradicts the supplied fixture, which explicitly contains state and log directories,
+- a CLI test mocks `Path.open` in a way that converts binary TOML loading into text-mode loading,
+- coverage is inflated by test modules and diluted by large legacy wizard modules that will be rewritten or removed.
+
+The complete baseline supplied by the user is recorded in the current conversation and will be superseded by the tracked `TEST_RESULTS.txt` workflow on the next run.
 
 ## Last Known Production State
 
@@ -36,18 +59,22 @@ The validation harness itself has not yet been executed on Windows. Its first ru
 - Current backup schedule: absent
 - Production mutation during automated validation: prohibited
 
-## Validation Record
+## Validation Commands
 
-No branch validation run has been completed yet.
-
-Initial validation command:
+From `modules/rrbackup`:
 
 ```powershell
-./Invoke-RRBackupValidation.ps1 -Bootstrap
+./Invoke-Tests.ps1 -Bootstrap
 ```
 
 Optional production read-only validation:
 
 ```powershell
-./Invoke-RRBackupValidation.ps1 -IncludeProductionReadOnly
+./Invoke-Tests.ps1 -IncludeProductionReadOnly
+```
+
+The test runner overwrites the tracked file:
+
+```text
+TEST_RESULTS.txt
 ```
