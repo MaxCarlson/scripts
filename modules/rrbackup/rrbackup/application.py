@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
-from . import cli_runtime
+from . import cli_runtime, run_runtime, viewer_runtime
 from .command_contract import MAJOR_COMMANDS, VIEW_SECTIONS
 from .locking import LockError
 from .restic import ResticCommandError
@@ -130,7 +130,7 @@ def _add_run_parser(areas: argparse._SubParsersAction) -> None:
         default=[],
     )
     _add_output_options(parser)
-    parser.set_defaults(handler=cli_runtime.handle_run)
+    parser.set_defaults(handler=run_runtime.handle_run)
 
 
 def _add_view_parser(areas: argparse._SubParsersAction) -> None:
@@ -138,16 +138,22 @@ def _add_view_parser(areas: argparse._SubParsersAction) -> None:
         "view",
         help="Open the backup dashboard or render one combined section.",
         description=(
-            "Interactive sections: Overview, Backups, History, Repository, Schedules, "
-            "and Diagnostics. Use --section for noninteractive output."
+            "Interactive pages: Overview, Backups, History, Repository, Schedules, "
+            "and Diagnostics. --section selects the starting page; combine it with "
+            "--plain, --json, or --markdown for noninteractive output."
         ),
     )
     parser.add_argument("-s", "--section", choices=VIEW_SECTIONS, default="overview")
     parser.add_argument("-b", "--backup", dest="backup_name", help="Limit output to one configured backup.")
     parser.add_argument("-L", "--include-legacy-evidence", action="store_true")
     parser.add_argument("-r", "--redact-paths", action="store_true")
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Use varied synthetic records; never inspect or mutate production state.",
+    )
     _add_output_options(parser)
-    parser.set_defaults(handler=cli_runtime.handle_view)
+    parser.set_defaults(handler=viewer_runtime.handle_view)
 
 
 def _add_schedule_parser(areas: argparse._SubParsersAction) -> None:
