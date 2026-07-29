@@ -61,6 +61,16 @@ def add_run_arguments(
         tune_image_workers=None,
         tune_sample_images=24,
     )
+    if not advanced and mode == "normal":
+        parser.epilog = (
+            "Additional modes: `mangadl run optimize --help`, "
+            "`mangadl run benchmark --help`, and `mangadl run config --help`."
+        )
+    elif not advanced:
+        parser.epilog = (
+            f"Advanced settings: `mangadl run {mode} config --help`."
+        )
+
     parser.add_argument("-i", "--input-file", action="append", type=path_type, default=[], help="UTF-8 URL file; repeatable.")
     parser.add_argument("-u", "--url", action="append", default=[], help="Direct series/gallery URL; repeatable.")
     parser.add_argument("-d", "--destination", type=path_type, required=True, help="Destination library root.")
@@ -194,7 +204,6 @@ def add_run_arguments(
             help=_help("Deterministic adaptive-selection seed.", expert),
         )
 
-    # One-release hidden compatibility aliases for the former flat auto-tune interface.
     if mode == "normal":
         parser.add_argument("-T", "--auto-tune", action="store_true", help=argparse.SUPPRESS)
         parser.add_argument("-W", "--tune-workers", help=argparse.SUPPRESS)
