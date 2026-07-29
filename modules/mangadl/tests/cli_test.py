@@ -38,3 +38,10 @@ def test_inspect_reports_hdporncomics_manhwa_classification(capsys) -> None:
     output = capsys.readouterr().out
     assert '"backend": "hdporncomics"' in output
     assert '"classification": "manhwa"' in output
+
+
+def test_inspect_reports_manga18fx_manhwa_classification(capsys) -> None:
+    assert main(["inspect", "-u", "https://manga18fx.com/manga/title/", "-j"]) == 0
+    output = capsys.readouterr().out
+    assert '"backend": "manga18fx"' in output
+    assert '"classification": "manhwa"' in output
