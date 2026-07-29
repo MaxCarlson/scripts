@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import dataclasses as dc
 import os
-import sys
 import pathlib
 import shutil
+import sys
 import typing as t
 from dataclasses import field
 
@@ -40,8 +40,7 @@ def platform_config_default() -> pathlib.Path:
     if os.name == "nt":
         appdata = os.environ.get("APPDATA") or os.path.expanduser("~\\AppData\\Roaming")
         return pathlib.Path(appdata) / "rrbackup" / "config.toml"
-    else:
-        return pathlib.Path.home() / ".config" / "rrbackup" / "config.toml"
+    return pathlib.Path.home() / ".config" / "rrbackup" / "config.toml"
 
 
 def _parse_size_to_bytes(raw: str | None) -> tuple[str | None, int | None]:
@@ -58,7 +57,6 @@ def _parse_size_to_bytes(raw: str | None) -> tuple[str | None, int | None]:
             except ValueError:
                 raise ValueError(f"Invalid size value: {raw!r}")
             return raw, int(numeric * _SIZE_UNITS[unit])
-    # default assume bytes
     try:
         numeric = float(value)
     except ValueError:
@@ -68,12 +66,9 @@ def _parse_size_to_bytes(raw: str | None) -> tuple[str | None, int | None]:
 
 @dc.dataclass
 class Repo:
-    # Example: "rclone:gdrive:/backups/rrbackup" or "/mnt/d/restic-repo"
     url: str
-
-    # Where Restic password is sourced from. Prefer PASSWORD_FILE for security.
-    password_env: str | None = None          # e.g., "RESTIC_PASSWORD"
-    password_file: str | None = None         # e.g., "~/.config/rrbackup/restic_password.txt"
+    password_env: str | None = None
+    password_file: str | None = None
 
     def expand(self) -> "Repo":
         return Repo(
@@ -85,23 +80,31 @@ class Repo:
 
 @dc.dataclass
 class Schedule:
-    type: str = "manual"          # manual, hourly, daily, weekly, monthly, custom
-    time: str | None = None       # HH:MM 24h time
+    """Portable schedule metadata used by the wizard and platform adapters."""
+
+    type: str = "manual"
+    time: str | None = None
+    interval: int = 1
     interval_hours: int | None = None
     day_of_week: str | None = None
     day_of_month: int | None = None
+    month_of_year: int | None = None
     description: str | None = None
 
     def to_dict(self) -> dict[str, t.Any]:
         data: dict[str, t.Any] = {"type": self.type}
         if self.time:
             data["time"] = self.time
+        if self.interval != 1:
+            data["interval"] = self.interval
         if self.interval_hours is not None:
             data["interval_hours"] = self.interval_hours
         if self.day_of_week:
             data["day_of_week"] = self.day_of_week
         if self.day_of_month is not None:
             data["day_of_month"] = self.day_of_month
+        if self.month_of_year is not None:
+            data["month_of_year"] = self.month_of_year
         if self.description:
             data["description"] = self.description
         return data
@@ -120,7 +123,14 @@ class RetentionPolicy:
 
     def to_dict(self) -> dict[str, t.Any]:
         data: dict[str, t.Any] = {}
-        for field_name in ("keep_last", "keep_hourly", "keep_daily", "keep_weekly", "keep_monthly", "keep_yearly"):
+        for field_name in (
+            "keep_last",
+            "keep_hourly",
+            "keep_daily",
+            "keep_weekly",
+            "keep_monthly",
+            "keep_yearly",
+        ):
             value = getattr(self, field_name)
             if value is not None:
                 data[field_name] = value
@@ -132,11 +142,11 @@ class RetentionPolicy:
 @dc.dataclass
 class BackupSet:
     name: str
-    include: list[str]            # paths to include
+    include: list[str]
     exclude: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
-    one_fs: bool = False          # restic --one-file-system
-    dry_run_default: bool = False # default dry-run behavior for this set
+    one_fs: bool = False
+    dry_run_default: bool = False
     backup_type: str = "incremental"
     encryption: str | None = None
     compression: str | None = None
@@ -148,14 +158,13 @@ class BackupSet:
 class Settings:
     restic_bin: str = "restic"
     rclone_bin: str = "rclone"
-    log_dir: str | None = None  # default resolved from state_dir if not set
-    state_dir: str | None = None  # default: platform-appropriate cache dir
+    log_dir: str | None = None
+    state_dir: str | None = None
     repo: Repo | None = None
     sets: list[BackupSet] = field(default_factory=list)
     retention_defaults: RetentionPolicy = field(default_factory=RetentionPolicy)
 
     def expand(self) -> "Settings":
-        # Resolve state_dir & log_dir with OS-specific defaults.
         state_dir = self.state_dir
         if not state_dir:
             if os.name == "nt":
@@ -167,20 +176,20 @@ class Settings:
         log_dir = self.log_dir or str(pathlib.Path(state_dir) / "logs")
 
         expanded_sets: list[BackupSet] = []
-        for s in self.sets:
+        for backup_set in self.sets:
             expanded_sets.append(
                 BackupSet(
-                    name=s.name,
-                    include=[os.path.expanduser(p) for p in s.include],
-                    exclude=list(s.exclude),
-                    tags=list(s.tags),
-                    one_fs=s.one_fs,
-                    dry_run_default=s.dry_run_default,
-                    backup_type=s.backup_type,
-                    encryption=s.encryption,
-                    compression=s.compression,
-                    schedule=s.schedule,
-                    retention=s.retention,
+                    name=backup_set.name,
+                    include=[os.path.expanduser(path) for path in backup_set.include],
+                    exclude=list(backup_set.exclude),
+                    tags=list(backup_set.tags),
+                    one_fs=backup_set.one_fs,
+                    dry_run_default=backup_set.dry_run_default,
+                    backup_type=backup_set.backup_type,
+                    encryption=backup_set.encryption,
+                    compression=backup_set.compression,
+                    schedule=backup_set.schedule,
+                    retention=backup_set.retention,
                 )
             )
 
@@ -196,10 +205,7 @@ class Settings:
 
 
 def resolve_config_path(path: PathLikeStr | None) -> pathlib.Path:
-    """
-    Resolve the path to the rrbackup configuration file using the standard
-    precedence order (explicit path -> RRBACKUP_CONFIG env -> platform default).
-    """
+    """Resolve explicit path, RRBACKUP_CONFIG, then platform default."""
     if path:
         return pathlib.Path(path)
     env = os.environ.get("RRBACKUP_CONFIG")
@@ -209,94 +215,87 @@ def resolve_config_path(path: PathLikeStr | None) -> pathlib.Path:
 
 
 def load_config(path: PathLikeStr | None, *, expand: bool = True) -> Settings:
-    """
-    Load configuration in TOML. Search order if path is None:
-      1) ENV RRBACKUP_CONFIG
-      2) platform default (see platform_config_default)
-    """
+    """Load the canonical TOML configuration."""
     candidate = resolve_config_path(path)
     if not candidate.exists():
         raise FileNotFoundError(f"Config file not found: {candidate}")
 
-    with candidate.open("rb") as f:
-        data = tomllib.load(f)
+    with candidate.open("rb") as handle:
+        data = tomllib.load(handle)
 
     cfg_model = _parse_config_dict(data)
     cfg = cfg_model.expand() if expand else cfg_model
 
     if expand:
-        # Verify binaries exist (best-effort)
-        for exe in (cfg.restic_bin, cfg.rclone_bin):
-            if shutil.which(exe) is None:
-                print(f"[rrbackup] Warning: '{exe}' not found on PATH.", file=sys.stderr)
-        # Ensure dirs exist
+        for executable in (cfg.restic_bin, cfg.rclone_bin):
+            if shutil.which(executable) is None:
+                print(f"[rrbackup] Warning: '{executable}' not found on PATH.", file=sys.stderr)
         pathlib.Path(cfg.state_dir).mkdir(parents=True, exist_ok=True)
         pathlib.Path(cfg.log_dir).mkdir(parents=True, exist_ok=True)
     return cfg
 
 
-def _parse_config_dict(d: ConfigDict) -> Settings:
-    repo = None
-    if "repository" in d:
-        repo = Repo(**d["repository"])
+def _parse_config_dict(data: ConfigDict) -> Settings:
+    repo = Repo(**data["repository"]) if "repository" in data else None
 
     sets: list[BackupSet] = []
-    for s in d.get("backup_sets", []):
-        schedule_input = s.get("schedule")
-        schedule = _parse_schedule(schedule_input)
-
-        retention_input = s.get("retention")
+    for raw_set in data.get("backup_sets", []):
+        schedule = _parse_schedule(raw_set.get("schedule"))
+        retention_input = raw_set.get("retention")
         retention = _parse_retention(retention_input) if retention_input else None
-
-        # Backwards compatibility for legacy fields
         if not retention:
-            legacy_max = s.get("max_snapshots")
+            legacy_max = raw_set.get("max_snapshots")
             if legacy_max is not None:
                 retention = RetentionPolicy(keep_last=legacy_max)
 
         sets.append(
             BackupSet(
-                name=s["name"],
-                include=s["include"],
-                exclude=s.get("exclude", []),
-                tags=s.get("tags", []),
-                one_fs=bool(s.get("one_fs", False)),
-                dry_run_default=bool(s.get("dry_run_default", False)),
-                backup_type=s.get("backup_type", "incremental"),
-                encryption=s.get("encryption"),
-                compression=s.get("compression"),
+                name=raw_set["name"],
+                include=raw_set["include"],
+                exclude=raw_set.get("exclude", []),
+                tags=raw_set.get("tags", []),
+                one_fs=bool(raw_set.get("one_fs", False)),
+                dry_run_default=bool(raw_set.get("dry_run_default", False)),
+                backup_type=raw_set.get("backup_type", "incremental"),
+                encryption=raw_set.get("encryption"),
+                compression=raw_set.get("compression"),
                 schedule=schedule,
                 retention=retention,
             )
         )
 
     retention_defaults_input = (
-        d.get("retention_defaults")
-        or d.get("retention")  # backwards compatibility
+        data.get("retention_defaults")
+        or data.get("retention")
         or {}
     )
     retention_defaults = _parse_retention(retention_defaults_input)
 
-    settings = Settings(
-        restic_bin=d.get("restic", {}).get("bin", "restic"),
-        rclone_bin=d.get("rclone", {}).get("bin", "rclone"),
-        log_dir=d.get("log", {}).get("dir"),
-        state_dir=d.get("state", {}).get("dir"),
+    return Settings(
+        restic_bin=data.get("restic", {}).get("bin", "restic"),
+        rclone_bin=data.get("rclone", {}).get("bin", "rclone"),
+        log_dir=data.get("log", {}).get("dir"),
+        state_dir=data.get("state", {}).get("dir"),
         repo=repo,
         sets=sets,
         retention_defaults=retention_defaults or RetentionPolicy(),
     )
-    return settings
 
 
 def _parse_schedule(value: t.Any) -> Schedule:
     if isinstance(value, dict):
+        interval = value.get("interval", 1)
+        legacy_interval_hours = value.get("interval_hours")
+        if legacy_interval_hours is not None and "interval" not in value:
+            interval = legacy_interval_hours
         return Schedule(
             type=value.get("type", "manual"),
             time=value.get("time"),
-            interval_hours=value.get("interval_hours"),
+            interval=max(1, int(interval)),
+            interval_hours=legacy_interval_hours,
             day_of_week=value.get("day_of_week"),
             day_of_month=value.get("day_of_month"),
+            month_of_year=value.get("month_of_year"),
             description=value.get("description"),
         )
     if isinstance(value, str):
@@ -326,10 +325,7 @@ def _parse_retention(value: t.Any) -> RetentionPolicy | None:
 
 
 def settings_to_dict(settings: Settings) -> ConfigDict:
-    """
-    Serialize Settings back into the TOML dictionary layout expected by rrbackup.
-    Only non-empty sections are included.
-    """
+    """Serialize settings into the canonical TOML dictionary layout."""
     data: ConfigDict = {}
     if settings.repo:
         repo_dict: dict[str, t.Any] = {"url": settings.repo.url}
@@ -353,26 +349,26 @@ def settings_to_dict(settings: Settings) -> ConfigDict:
 
     if settings.sets:
         backup_sets: list[dict[str, t.Any]] = []
-        for bset in settings.sets:
+        for backup_set in settings.sets:
             entry: dict[str, t.Any] = {
-                "name": bset.name,
-                "include": list(bset.include),
-                "exclude": list(bset.exclude),
-                "tags": list(bset.tags),
-                "one_fs": bool(bset.one_fs),
-                "dry_run_default": bool(bset.dry_run_default),
+                "name": backup_set.name,
+                "include": list(backup_set.include),
+                "exclude": list(backup_set.exclude),
+                "tags": list(backup_set.tags),
+                "one_fs": bool(backup_set.one_fs),
+                "dry_run_default": bool(backup_set.dry_run_default),
             }
-            if bset.backup_type and bset.backup_type != "incremental":
-                entry["backup_type"] = bset.backup_type
-            if bset.encryption:
-                entry["encryption"] = bset.encryption
-            if bset.compression:
-                entry["compression"] = bset.compression
-            schedule_dict = bset.schedule.to_dict()
+            if backup_set.backup_type and backup_set.backup_type != "incremental":
+                entry["backup_type"] = backup_set.backup_type
+            if backup_set.encryption:
+                entry["encryption"] = backup_set.encryption
+            if backup_set.compression:
+                entry["compression"] = backup_set.compression
+            schedule_dict = backup_set.schedule.to_dict()
             if schedule_dict.get("type") != "manual" or len(schedule_dict) > 1:
                 entry["schedule"] = schedule_dict
-            if bset.retention:
-                retention_dict = bset.retention.to_dict()
+            if backup_set.retention:
+                retention_dict = backup_set.retention.to_dict()
                 if retention_dict:
                     entry["retention"] = retention_dict
             backup_sets.append(entry)
@@ -382,10 +378,8 @@ def settings_to_dict(settings: Settings) -> ConfigDict:
 
 
 def save_config(settings: Settings, path: PathLikeStr, *, overwrite: bool = False) -> pathlib.Path:
-    """
-    Persist Settings to a TOML configuration file. Returns the resolved path.
-    """
-    if tomli_w is None:  # pragma: no cover - dependency should exist via pyproject
+    """Persist settings to a TOML configuration file."""
+    if tomli_w is None:  # pragma: no cover
         raise RuntimeError("tomli-w is required to write rrbackup configuration files.")
 
     target = pathlib.Path(path)
@@ -393,7 +387,6 @@ def save_config(settings: Settings, path: PathLikeStr, *, overwrite: bool = Fals
         raise FileExistsError(f"Config file already exists: {target}")
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    payload = settings_to_dict(settings)
-    content = tomli_w.dumps(payload)
+    content = tomli_w.dumps(settings_to_dict(settings))
     target.write_text(content, encoding="utf-8")
     return target
