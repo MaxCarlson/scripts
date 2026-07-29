@@ -11,7 +11,15 @@ param(
     [switch]$SkipBootstrap,
 
     [Parameter()]
-    [switch]$IncludeProductionReadOnly
+    [switch]$IncludeProductionReadOnly,
+
+    [Parameter()]
+    [ValidateRange(1, 100)]
+    [int]$MaxHistoryPerTarget = 3,
+
+    [Parameter()]
+    [ValidateRange(1, 3650)]
+    [int]$MaxHistoryAgeDays = 14
 )
 
 Set-StrictMode -Version Latest
@@ -92,6 +100,90 @@ function Get-ManifestItems {
     }
 
     return @($Container[$Name])
+}
+
+function Get-ReportArchiveStamp {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)]
+        [string]$ReportPath
+    )
+
+    foreach ($Line in @(Get-Content -LiteralPath $ReportPath -TotalCount 40 -ErrorAction SilentlyContinue)) {
+        if ($Line -match '^Timestamp:\s*(.+)$') {
+            $ParsedTimestamp = [DateTimeOffset]::MinValue
+            if ([DateTimeOffset]::TryParse($Matches[1], [ref]$ParsedTimestamp)) {
+                return $ParsedTimestamp.ToString('yyyyMMdd-HHmmss')
+            }
+        }
+    }
+
+    return (Get-Item -LiteralPath $ReportPath).LastWriteTime.ToString('yyyyMMdd-HHmmss')
+}
+
+function Initialize-TargetReportStore {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)]
+        [string]$TargetResultsRoot,
+
+        [Parameter(Mandatory)]
+        [string]$SafeTargetName,
+
+        [Parameter(Mandatory)]
+        [int]$MaxHistoryCount,
+
+        [Parameter(Mandatory)]
+        [int]$MaxHistoryDays
+    )
+
+    $HistoryRoot = Join-Path $TargetResultsRoot 'history'
+    $LatestReportPath = Join-Path $TargetResultsRoot 'LATEST.txt'
+
+    New-Item -ItemType Directory -Path $TargetResultsRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $HistoryRoot -Force | Out-Null
+
+    $LegacyReports = @(
+        Get-ChildItem -LiteralPath $TargetResultsRoot -File -Filter "*_$SafeTargetName.txt" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ne 'LATEST.txt' }
+    )
+    foreach ($LegacyReport in $LegacyReports) {
+        Move-Item -LiteralPath $LegacyReport.FullName -Destination (Join-Path $HistoryRoot $LegacyReport.Name) -Force
+    }
+
+    if (Test-Path -LiteralPath $LatestReportPath -PathType Leaf) {
+        $ArchiveStamp = Get-ReportArchiveStamp -ReportPath $LatestReportPath
+        $ArchiveName = "${ArchiveStamp}_${SafeTargetName}.txt"
+        $ArchivePath = Join-Path $HistoryRoot $ArchiveName
+        $Counter = 1
+
+        while (Test-Path -LiteralPath $ArchivePath) {
+            $ArchiveName = "${ArchiveStamp}-${Counter}_${SafeTargetName}.txt"
+            $ArchivePath = Join-Path $HistoryRoot $ArchiveName
+            $Counter++
+        }
+
+        Move-Item -LiteralPath $LatestReportPath -Destination $ArchivePath
+    }
+
+    $Cutoff = (Get-Date).AddDays(-$MaxHistoryDays)
+    Get-ChildItem -LiteralPath $HistoryRoot -File -Filter '*.txt' -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -lt $Cutoff } |
+        Remove-Item -Force
+
+    $RemainingHistory = @(
+        Get-ChildItem -LiteralPath $HistoryRoot -File -Filter '*.txt' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime, Name -Descending
+    )
+    if ($RemainingHistory.Count -gt $MaxHistoryCount) {
+        $RemainingHistory |
+            Select-Object -Skip $MaxHistoryCount |
+            Remove-Item -Force
+    }
+
+    return $LatestReportPath
 }
 
 function Write-ReportLine {
@@ -257,11 +349,14 @@ foreach ($TargetName in $SelectedTargets) {
     $InitialStatus = @(& git -C $RepoRoot status --short 2>$null)
     $SafeTargetName = $TargetName -replace '[^A-Za-z0-9._-]', '_'
     $TargetResultsRoot = Join-Path $ResultsRoot $SafeTargetName
-    $ReportPath = Join-Path $TargetResultsRoot ("{0}_{1}.txt" -f $Timestamp, $SafeTargetName)
+    $ReportPath = Initialize-TargetReportStore `
+        -TargetResultsRoot $TargetResultsRoot `
+        -SafeTargetName $SafeTargetName `
+        -MaxHistoryCount $MaxHistoryPerTarget `
+        -MaxHistoryDays $MaxHistoryAgeDays
     $TempRoot = Join-Path $WorkingDirectory ('.pytest_tmp_root\validation-{0}' -f $Timestamp)
     $TargetFailures = [System.Collections.Generic.List[string]]::new()
 
-    New-Item -ItemType Directory -Path $TargetResultsRoot -Force | Out-Null
     New-Item -ItemType Directory -Path $TempRoot -Force | Out-Null
     Set-Content -LiteralPath $ReportPath -Value '' -Encoding utf8
     $ReportPaths.Add($ReportPath)
@@ -281,7 +376,7 @@ foreach ($TargetName in $SelectedTargets) {
             foreach ($Entry in $TargetSpec['environment'].GetEnumerator()) {
                 $VariableName = [string]$Entry.Key
                 $PreviousEnvironment[$VariableName] = [Environment]::GetEnvironmentVariable($VariableName, 'Process')
-                $ResolvedValue = Convert-TokenText -Text ([string]$Entry.Value) -Tokens $Tokens
+                $ResolvedValue = Convert-TokenText -Text ([string]$Entry.Value -Tokens $Tokens)
                 [Environment]::SetEnvironmentVariable($VariableName, $ResolvedValue, 'Process')
             }
         }
@@ -303,6 +398,7 @@ foreach ($TargetName in $SelectedTargets) {
         Write-ReportLine -ReportPath $ReportPath -Text "Platform: $([System.Runtime.InteropServices.RuntimeInformation]::OSDescription)"
         Write-ReportLine -ReportPath $ReportPath -Text "Bootstrap enabled: $(-not $SkipBootstrap)"
         Write-ReportLine -ReportPath $ReportPath -Text "Production read-only checks: $([bool]$IncludeProductionReadOnly)"
+        Write-ReportLine -ReportPath $ReportPath -Text "History retention: $MaxHistoryPerTarget prior reports, maximum age $MaxHistoryAgeDays days"
         Write-ReportLine -ReportPath $ReportPath -Text "Git branch: $(& git -C $RepoRoot branch --show-current 2>$null)"
         Write-ReportLine -ReportPath $ReportPath -Text "Git commit: $(& git -C $RepoRoot rev-parse HEAD 2>$null)"
         Write-ReportLine -ReportPath $ReportPath -Text 'Git status before validation:'
@@ -384,7 +480,7 @@ foreach ($TargetName in $SelectedTargets) {
         }
 
         Write-ReportSection -ReportPath $ReportPath -Title 'TARGET SUMMARY'
-        Write-ReportLine -ReportPath $ReportPath -Text "Report: $ReportPath"
+        Write-ReportLine -ReportPath $ReportPath -Text "Latest report: $ReportPath"
         if ($TargetFailures.Count -eq 0) {
             Write-ReportLine -ReportPath $ReportPath -Text 'TARGET RESULT: PASS'
             Write-ReportLine -ReportPath $ReportPath -Text 'All requested validation sections passed.'
@@ -421,7 +517,7 @@ Write-Output ('=' * 100)
 Write-Output 'REPOSITORY VALIDATION SUMMARY'
 Write-Output ('=' * 100)
 foreach ($ReportPath in $ReportPaths) {
-    Write-Output "Report: $ReportPath"
+    Write-Output "Latest report: $ReportPath"
 }
 
 if ($OverallFailures.Count -eq 0) {
