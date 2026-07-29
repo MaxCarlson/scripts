@@ -50,10 +50,11 @@ try {
     [Environment]::SetEnvironmentVariable('PYTHONPATH', $null, 'Process')
     Set-Location -LiteralPath $RepoRoot
 
-    $ImportOutput = & $PythonExecutable -c "import rrbackup; print(rrbackup.__file__); print(rrbackup.__version__)" 2>&1
-    Assert-True -Condition ($LASTEXITCODE -eq 0) -Message "Unable to import rrbackup without injected PYTHONPATH: $($ImportOutput -join ' ')"
-    Assert-True -Condition (($ImportOutput -join "`n") -match '1\.0\.0') -Message 'RRBackup package version was not 1.0.0.'
-    Write-Output "rrbackup import without PYTHONPATH: $($ImportOutput -join ' | ')"
+    $ImportOutput = & $PythonExecutable -c "import rrbackup, termdash; print(rrbackup.__file__); print(rrbackup.__version__); print(termdash.__file__)" 2>&1
+    Assert-True -Condition ($LASTEXITCODE -eq 0) -Message "Unable to import rrbackup and termdash without injected PYTHONPATH: $($ImportOutput -join ' ')"
+    Assert-True -Condition (($ImportOutput -join "`n") -match '2\.0\.0') -Message 'RRBackup package version was not 2.0.0.'
+    Assert-True -Condition (($ImportOutput -join "`n") -match '(?i)termdash') -Message 'TermDash was not importable.'
+    Write-Output "rrbackup and termdash import without PYTHONPATH: $($ImportOutput -join ' | ')"
 
     $ScriptsRoot = Split-Path -Parent $PythonExecutable
     $BackupCommand = Join-Path $ScriptsRoot 'backup.exe'
