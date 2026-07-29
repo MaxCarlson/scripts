@@ -11,9 +11,10 @@
 - [x] Bootstrap target development dependencies by default
 - [x] Use repository virtual-environment Python
 - [x] Isolate target working directory and pytest imports
-- [x] Capture complete pytest stdout/stderr
+- [x] Capture complete compile/lint/pytest/PowerShell stdout and stderr
 - [x] Run all configured `*_test.ps1` scripts from one command
 - [x] Add authoritative `LATEST.txt` per target
+- [x] Add `LATEST_CONTEXT.md` and `LATEST_PROGRESS.diff`
 - [x] Add bounded validation history
 - [x] Add PowerShell environment smoke test
 - [x] Add opt-in production read-only test
@@ -22,20 +23,29 @@
 - [x] Validate repository-root dispatcher on Windows
 - [x] Reach a clean inherited baseline: 126 passed, 8 skipped
 - [x] Triage inherited baseline failures
+- [x] Add canonical profile and source-attribution model
+- [x] Add legacy `backup_module` JSON/default adapter
+- [x] Add Restic command boundary
+- [x] Add print-command-only/preview barrier
+- [x] Correct dry-run state semantics
+- [x] Add CPU normal/overdue policy
+- [x] Ensure CPU waiting occurs before lock acquisition
+- [x] Add atomic state store
+- [x] Add process-identity lock and ownership token
+- [x] Add snapshot and backup-summary parsers
+- [x] Add shared backup execution engine
+- [x] Add terminal-state handling for wait, lock, execution, and finalization failures
+- [x] Add Stage 1 unit and lifecycle regression tests
+- [x] Add compile and focused correctness-lint gates
+- [x] Bump RRBackup to `0.3.0`
+- [x] Add `psutil` runtime dependency
+- [x] Complete remote static review
 - [ ] Validate latest-first report migration and retention
-- [ ] Add shared models
-- [ ] Add configuration resolver
-- [ ] Add Restic command boundary
-- [ ] Add print-command-only barrier
-- [ ] Correct dry-run semantics
-- [ ] Add CPU policy
-- [ ] Add atomic state store
-- [ ] Add process-identity lock
-- [ ] Add snapshot parser
-- [ ] Add Stage 1 tests
-- [ ] Reach agreed Stage 1 coverage threshold
-- [ ] Complete static review
-- [ ] Pass local Windows validation after safety-foundation implementation
+- [ ] Validate generated context snapshot and progress diff
+- [ ] Run Stage 1 local Windows validation
+- [ ] Correct local failures
+- [ ] Evaluate Stage 1 coverage threshold
+- [ ] Mark Stage 1 verified
 
 ## Stage 2 — Compatibility Merge and CLI
 
