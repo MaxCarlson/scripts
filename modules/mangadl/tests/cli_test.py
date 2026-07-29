@@ -1,5 +1,8 @@
 import argparse
 
+import pytest
+
+from mangadl.backends import GalleryDlBackend
 from mangadl.cli import build_parser, main
 
 
@@ -18,8 +21,15 @@ def test_all_public_options_have_short_and_long_forms() -> None:
             ), action.dest
 
 
-def test_dry_run_routes_without_writing(tmp_path, capsys) -> None:
+def test_dry_run_routes_without_writing(tmp_path, capsys, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        GalleryDlBackend,
+        "score",
+        lambda self, url: 100 if url == "https://nhentai.net/g/123/" else 0,
+    )
+
     result = main(["run", "-u", "123", "-d", str(tmp_path / "out"), "-a", str(tmp_path / "archive.db"), "-n"])
+
     assert result == 0
     assert '"gallery-dl"' in capsys.readouterr().out
     assert not (tmp_path / "archive.db").exists()
