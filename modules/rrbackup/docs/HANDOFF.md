@@ -2,44 +2,48 @@
 
 ## Current State
 
-The active branch is:
+Active branch:
 
 ```text
 agent/merge-restic-backup-modules
 ```
 
-The active plan is:
+Active plan:
 
 ```text
 docs/plans/20260729-0700_rrbackup-consolidation-viewer-alerting/
 ```
 
-Stage 1 implementation is complete and awaiting local validation. The inherited public CLI has not yet been redirected to the new engine.
+Active stage:
 
-Historical and static analysis established:
+```text
+docs/plans/20260729-0700_rrbackup-consolidation-viewer-alerting/02_compatibility-merge-and-cli__in-progress.md
+```
 
-- `B:\ResticRepos\PC-Local` contains two known snapshots: `a1609113` and `022aad5b`.
-- The snapshots predate the committed `backup_module` implementation.
-- `backup_module` is the behavioral successor to the direct Restic workflow.
-- The existing `rrbackup` development config targets an unrelated Google Drive repository.
+Stage 1 is verified. Stage 2 now contains the first canonical hierarchical CLI, viewer/audit foundation, repository inspection, Windows schedule discovery, restore preview/run gating, packaging repair, and expanded tests.
+
+Historical facts remain:
+
+- `B:\ResticRepos\PC-Local` contains snapshots `a1609113` and `022aad5b`.
+- Those snapshots predate the committed `backup_module` implementation.
+- The direct-Restic/`backup_module` behavior is the production compatibility authority.
+- The old RRBackup repository config targets an unrelated Google Drive repository.
 - No current local backup schedule is installed.
-- Production retention/prune operations are prohibited during consolidation.
+- Production retention/prune operations remain prohibited during consolidation.
 
 ## Collaboration Loop
 
-1. The browser/app agent performs planning, implementation, documentation, test authoring, commits, pushes, and diagnosis through connected repository tools.
-2. The user pulls the branch and runs the repository-root `Invoke-Tests.ps1` dispatcher.
-3. The dispatcher bootstraps dependencies and runs compilation, focused correctness lint, pytest/coverage, and PowerShell validation scripts.
-4. The user stages, commits, and pushes the generated files under `docs/test-results/<target>/`.
-5. The browser/app agent reads `LATEST.txt`, `LATEST_CONTEXT.md`, and `LATEST_PROGRESS.diff`, then patches failures or begins the next stage.
+1. The browser/app agent implements source, tests, documentation, and static review remotely.
+2. The user pulls with the normal `gl` alias and runs repository-root `Invoke-Tests.ps1`.
+3. The dispatcher cleans stale target metadata, bootstraps dependencies, compiles, lints, runs canonical CLI help, pytest/coverage, and PowerShell checks.
+4. The user commits and pushes generated evidence under `docs/test-results/rrbackup/`.
+5. The browser/app agent reads `LATEST.txt`, `LATEST_CONTEXT.md`, and `LATEST_PROGRESS.diff`, then patches failures or continues the stage.
 
-Do not have multiple agents independently edit this branch. A local agent should primarily execute validation and report environment-specific evidence unless explicitly assigned a separate patch branch.
+Do not have multiple agents independently edit this branch. Local agents should primarily provide authoritative environment-dependent execution evidence unless assigned a separate patch branch.
 
 ## Validation Safety
 
 Default validation must not access or mutate the production repository.
-
-From the repository root, run:
 
 ```powershell
 ./Invoke-Tests.ps1
@@ -51,9 +55,9 @@ Production read-only checks require:
 ./Invoke-Tests.ps1 -IncludeProductionReadOnly
 ```
 
-No automated validation may run production backup, restore, init, unlock, forget, prune, cache cleanup, stale-lock removal, or retention application.
+Automated validation may not run production backup, restore, init, unlock, forget, prune, cache cleanup, stale-lock removal, or retention application.
 
-## Authoritative Validation Evidence
+## Authoritative Evidence
 
 ```text
 ../../../docs/test-results/rrbackup/LATEST.txt
@@ -61,79 +65,42 @@ No automated validation may run production backup, restore, init, unlock, forget
 ../../../docs/test-results/rrbackup/LATEST_PROGRESS.diff
 ```
 
-Prior artifacts under `history/` are comparison-only. The dispatcher retains at most three prior artifacts of each type and removes artifacts older than 14 days by default.
+Prior artifacts under `history/` are comparison-only and bounded to three prior artifacts and 14 days by default.
 
-The repository-wide expansion plan for paired validation/context/diff evidence is:
+## Verified Stage 1 Baseline
 
-```text
-../../../docs/plans/20260729-0900_validation-evidence-context-history/
-```
-
-That subsystem should not be expanded further during RRBackup consolidation unless it blocks validation or loses evidence.
-
-## Latest Proven Baseline
-
-Before the new safety foundation was added, the latest complete local run recorded:
-
-- 134 tests collected
-- 126 passed
+- 207 tests collected
+- 199 passed
 - 8 intentionally skipped
 - 0 failed
 - 0 errors
-- package branch coverage: 36%
-- environment smoke test: passed
-- production read-only test: safely skipped
+- package branch coverage: 55%
+- compilation: passed
+- focused correctness lint: passed
+- PowerShell smoke test: passed
+- production read-only check: safely skipped
 
-The skipped tests require either a user RRBackup configuration or explicitly enabled Google Drive access.
+## Installed Entry-Point Regression
 
-## Stage 1 Implementation Checkpoint
-
-RRBackup is now version `0.3.0` and declares `psutil` as a runtime dependency.
-
-New shared components:
+A manual `rrb -h` after the Stage 1 run failed with:
 
 ```text
-rrbackup/engine.py
-rrbackup/locking.py
-rrbackup/models.py
-rrbackup/policy.py
-rrbackup/profile.py
-rrbackup/restic.py
-rrbackup/snapshots.py
-rrbackup/state.py
+ImportError: cannot import name '__version__' from 'rrbackup' (unknown location)
 ```
 
-Implemented semantics:
+The old smoke test inherited `PYTHONPATH={target_root}`, which masked repository namespace resolution. The branch now:
 
-- canonical legacy profile adapter with source attribution,
-- exact production-compatible Restic backup command construction,
-- hard preview/print-only execution barrier,
-- dry-run state distinct from real success,
-- CPU normal/overdue policy evaluated before lock acquisition,
-- PID-plus-create-time process locking with ownership tokens,
-- invalid-lock protection and active-lock skip behavior,
-- atomic current/history/last-success state,
-- snapshot and backup-summary JSON parsing,
-- snapshot-ID capture after successful backups,
-- terminal state after wait, lock, execution, interruption, or result-finalization failures.
+- restores `modules/rrbackup/__init__.py` as an intentional repository-path compatibility shim,
+- extends the package path to the installable inner package,
+- stores version data in `rrbackup/version.py`,
+- tests both legacy and canonical imports with `modules` on `PYTHONPATH`,
+- removes injected `PYTHONPATH` before installed-entry-point smoke checks,
+- invokes the real `backup`, `rrb`, and `rrbackup` executables,
+- cleans stale `*.egg-info`, `build`, and `dist` artifacts before installation.
 
-New tests cover the individual components and complete engine lifecycles, including preview, CPU skip, lock contention, dry-run, success, nonzero exit, interruption, malformed summaries, and exception paths.
+Before editable reinstall, the old `rrb`/`rrbackup` entry points should import successfully through the shim. After reinstall, all three entry points target `rrbackup.application:main`.
 
-## Next Action
-
-Run the root dispatcher after pulling this checkpoint. The manifest now runs:
-
-1. editable dependency bootstrap,
-2. package/test compilation,
-3. focused correctness lint,
-4. full pytest and branch coverage,
-5. PowerShell smoke tests.
-
-After the generated evidence is pushed, correct any Stage 1 failures. If it passes, mark Stage 1 verified and begin Stage 2 compatibility merge and hierarchical CLI implementation.
-
-## Canonical CLI Contract
-
-The merged module will expose:
+## Canonical CLI Checkpoint
 
 ```text
 backup run
@@ -144,22 +111,48 @@ backup restore
 backup repository
 ```
 
-`backup edit` aliases `backup config`. `rrb` and `rrbackup` will expose the same hierarchy. `backup_module` and `python -m backup_module` will preserve their historical interface through a compatibility adapter.
+`backup edit` translates to `backup config`.
 
-The full CLI and shell-audit replacement contract is:
+Implemented viewer operations include:
 
 ```text
-docs/CLI_ARCHITECTURE_AND_AUDIT_COVERAGE.md
+backup view
+backup view dashboard
+backup view timeline
+backup view snapshots
+backup view snapshot <id>
+backup view runs
+backup view run <id>
+backup view logs
+backup view storage
+backup view gaps
+backup view health
+backup view schedules
+backup view setup
+backup view system
+backup view provenance
+backup view alerts
+backup view audit
+backup view export
+backup view search <pattern>
 ```
 
-The comprehensive read-only replacement for prior PowerShell audits will be:
+The comprehensive read-only diagnostic replacement is:
 
 ```text
 backup view audit
 ```
 
-Stage 2 is planned in:
+Current audit coverage includes executable/runtime resolution, effective configuration and attribution, safe environment metadata, configuration discovery, path metadata, source/exclusion entries, repository config and keys, snapshots, run state, logs, locks, Windows schedules, health, provenance, and recommendations.
 
-```text
-docs/plans/20260729-0700_rrbackup-consolidation-viewer-alerting/02_compatibility-merge-and-cli__planned.md
-```
+## Stage 2 Remaining
+
+- Pass expanded Windows validation.
+- Add TOML/named-set conversion to the canonical engine.
+- Preserve all `backup_module` commands through the shared engine.
+- Reduce `modules/backup_module` to a compatibility shim.
+- Add snapshot tag/host/path filters.
+- Implement audit path redaction.
+- Add detailed scheduler history and other launcher discovery.
+- Add restore history and hash verification.
+- Verify production snapshots through canonical read-only commands.
