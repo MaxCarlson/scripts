@@ -6,18 +6,27 @@
 
 Base: `agent/add-development-ledger-module`
 
+## Current Version
+
+`mangadl 1.11.0`
+
 ## Implemented Scope
 
-- Native Manga18FX parser/downloader and backend routing.
+- Native Manga18FX parser/downloader and automatic backend routing.
 - Destination-aware resume and deterministic chapter/image naming.
 - Bounded per-series image concurrency through `-I/--image-workers`.
 - Logical-CPU aggregate concurrency budgeting with one processor reserved.
-- Safe outer-worker ceiling, runtime tuning controls, and staggered process startup.
-- Fixed-width dashboard rows, per-worker progress/activity rows, runtime concurrency header, and immediate `q` shutdown.
-- Bounded preflight auto-tuning with JSON reports and automatic winner application.
-- Native completion parsing that distinguishes downloaded, already-existing, and empty output.
-- Fixed-width displayed activity-log fields and unknown-total normalization.
-- Offline tests covering backend parsing, routing, concurrency, UI, safety limits, stagger behavior, tuning/scoring, and resume classification.
+- Safe outer-worker ceiling, runtime controls, and staggered process startup.
+- Fixed-width two-row worker dashboard and aligned displayed activity logs.
+- Immediate `q` shutdown through the Ctrl+C cleanup path.
+- Authoritative native Manga18FX cumulative progress during download and resume scans.
+- Native completion classification for downloaded, already-existing, and empty output.
+- Concise `run` CLI with mode-specific `optimize`, `benchmark`, and nested `config` help surfaces.
+- Online adaptive optimizer with decaying exploration, neighboring-state search, UCB selection, convergence reporting, and durable JSON reports.
+- Online exhaustive benchmark with bounded states and alternating ascending/descending rounds.
+- Interactive schema-tolerant gallery-dl archive browser.
+- Compatibility aliases for the former flat auto-tune flags.
+- Offline tests for backend parsing, resume reporting, concurrency, UI, CLI hierarchy, optimization, and archive browsing.
 
 ## Confirmed Live Behavior
 
@@ -30,64 +39,106 @@ The user confirmed correct Manga18FX URL-file downloads on Windows 11. These com
 - `-w 4 -I 4`
 - `-w 4 -I 5`
 
-A fifth outer worker causes immediate 100% disk utilization and no observable progress, even at `-w 5 -I 1` and `-w 5 -I 2`. Six and eight outer workers exhibit the same or worse behavior. Four remains the safe default outer-worker ceiling for this destination.
+A fifth outer worker causes immediate 100% disk utilization and no observable progress, even at `-w 5 -I 1` and `-w 5 -I 2`. Four remains the safe default outer-worker ceiling for this destination.
 
-A later four-worker run reached approximately 15-17 MiB/s aggregate. One series reported zero new files and then success because all of its images were already present in the final library. The 1.10.1 wrapper now reads the native `downloaded` and `skipped` counts and reports that case as already complete/skipped with an exact final image total.
+A four-worker run reached approximately 15-17 MiB/s aggregate. Resume-only workers advanced through many chapters while showing zero bytes because all processed files already existed in the final library. Version 1.10.2 added cumulative native progress so image counts and processing rate advance during that phase while network bytes/s correctly remains zero.
 
-## Concurrency Interface
-
-- `-w/--workers`: requested simultaneous series jobs; default `2`.
-- `-m/--max-workers`: outer-worker safety ceiling; default `4`, hard maximum `8`.
-- `-U/--worker-start-delay`: seconds between worker launches; default `2`.
-- `-I/--image-workers`: image transfers inside each Manga18FX series; default `4`, range `1-8`.
-
-A plain request above the ceiling is reduced before launch:
+## Concise Run Interface
 
 ```powershell
-mangadl run -i .\urls8.txt -d .\downloads -a .\mangadl-archive.sqlite3 -s .\mangadl-state.sqlite3 -w 5 -I 2
+mangadl run -i .\urls8.txt -d .\downloads -a .\mangadl-archive.sqlite3 -w 4 -I 4
 ```
 
-The effective outer-worker count is four. An experimental fifth worker requires an explicit override:
+Normal help exposes only input, destination/archive, and routine concurrency controls. New run IDs are always generated and cannot be supplied manually.
+
+Advanced settings are organized under:
 
 ```powershell
-mangadl run -i .\urls8.txt -d .\downloads -a .\mangadl-archive.sqlite3 -s .\mangadl-state.sqlite3 -m 5 -w 5 -U 5 -I 2
+mangadl run config --help
 ```
 
-Runtime controls:
+The advanced surface contains state/log locations, backend forcing, retries, launch staggering, safety ceilings, gallery-dl configuration/rate limits, cookies, HDPornComics settings, dry-run, no-UI, quiet, verbose, and reserved compatibility settings.
+
+The former flat advanced flags remain accepted but hidden for one transition release.
+
+## Runtime Controls
 
 - `+` / `-`: increase or decrease the target outer-worker count.
-- `]` / `[`: increase or decrease image workers for newly started Manga18FX jobs.
+- `]` / `[`: change image workers for newly started Manga18FX jobs.
+- Existing workers retain the image-worker value with which they started.
 - Lowering outer workers drains excess active jobs rather than terminating them.
+- All adjustments remain bounded by the worker ceiling and logical-CPU budget.
 - `q` interrupts immediately through the same cleanup path as Ctrl+C.
 
 ## Progress and Resume Semantics
 
-During an active Manga18FX run, the final series-wide image total is not known without preloading every chapter. The UI therefore displays `456 img` rather than the misleading `456/? img`; the second row uses an activity bar until an exact total is available.
+During Manga18FX processing:
+
+- `images_done` is cumulative downloaded plus valid already-existing images processed so far.
+- bytes and MiB/s represent only data transferred during the current job.
+- native progress messages show cumulative downloaded, existing, processed, and discovered counts.
+- exact series-wide totals appear at completion; active rows do not display misleading `/?` denominators.
 
 At native completion:
 
 - `downloaded > 0, skipped == 0`: succeeded.
-- `downloaded > 0, skipped > 0`: succeeded with a resumed/existing-file summary.
-- `downloaded == 0, skipped > 0`: already complete, persisted as `skipped_archive` for compatibility.
-- `downloaded == 0, skipped == 0`: backend failure, never silent success.
+- `downloaded > 0, skipped > 0`: succeeded with a resume summary.
+- `downloaded == 0, skipped > 0`: already complete, stored as `skipped_archive` for compatibility.
+- `downloaded == 0, skipped == 0`: backend failure.
 
-Displayed activity logs use fixed timestamp, state, identity, image-count, byte-count, and rate columns. Existing persisted `N/? img` records are normalized to `N img` in the dashboard.
-
-## Auto-Tune Interface
+## Adaptive Optimize Interface
 
 ```powershell
-mangadl run -i .\urls8.txt -d .\downloads -a .\mangadl-archive.sqlite3 -s .\mangadl-state.sqlite3 -T -W 1:4 -Y 1:8 -D 8 -Q 2 -K 24
+mangadl run optimize -i .\urls8.txt -d .\downloads -a .\mangadl-archive.sqlite3 -p 1 -m 4 -P 1 -M 8
 ```
 
-- `-T/--auto-tune`: enable preflight tuning.
-- `-W/--tune-workers MIN:MAX`: inclusive outer-worker bounds; cannot exceed `--max-workers`.
-- `-Y/--tune-image-workers MIN:MAX`: inclusive inner-thread bounds.
-- `-D/--tune-seconds`: target sample time per combination.
-- `-Q/--tune-rounds`: repeated samples per combination.
-- `-K/--tune-sample-images`: representative image cap per active series/candidate.
-- `-O/--tune-report`: JSON report destination.
+Bounds:
 
-Candidate startup and stagger time count against measured throughput. Near-ties within two percent select the lower-concurrency combination.
+- `-p/--min-workers`
+- `-m/--max-workers`
+- `-P/--min-image-workers`
+- `-M/--max-image-workers`
+
+Evaluation modes:
+
+- `-E complete`: workers retain their launch settings until their representative series finishes.
+- `-E timed -D SECONDS`: candidate subprocesses run for a bounded interval, terminate cleanly, and the next state starts.
+
+`-Q/--trials` controls adaptive trial count. Exploration decays exponentially. Selection uses low-to-high warm-up coverage, deliberate exploration, neighboring states around the current best, and UCB exploitation. The dashboard reports total/tried states, completed/planned trials, current and best states, best average speed, exploration, convergence, current trial rate, and active workers.
+
+Advanced optimizer settings use:
+
+```powershell
+mangadl run optimize config --help
+```
+
+## Systematic Benchmark Interface
+
+```powershell
+mangadl run benchmark -i .\urls8.txt -d .\downloads -a .\mangadl-archive.sqlite3 -p 1 -m 4 -P 1 -M 8 -E timed -D 30 -Q 2
+```
+
+Benchmark mode tests each valid state. The first matrix round runs upward by aggregate concurrency, and later rounds alternate direction. `-Q` is the matrix-round count.
+
+Both modes include launch-stagger time in scores, rotate representative URL order, persist every trial, prefer lower aggregate concurrency within two percent of peak throughput, and then prefer fewer outer workers.
+
+The selected state is applied to the normal resumable run unless `-o/--report-only` is supplied.
+
+## Interactive Archive Browser
+
+```powershell
+mangadl archive -a .\mangadl-archive.sqlite3
+```
+
+Default behavior is an interactive paged browser with record details, filtering, navigation, and JSON export. Machine-readable/non-interactive controls are under:
+
+```powershell
+mangadl archive config --help
+```
+
+## Validation Report Status
+
+The connected branch diff does not currently contain a newly added or modified validation-report file beyond the implementation/docs/tests listed in the branch comparison. The report the user said was pushed therefore has not been consumed; verify its branch/path during the next local handoff if it is not included after pull.
 
 ## Required Local Validation
 
@@ -97,32 +148,51 @@ From `modules\mangadl`:
 git pull --ff-only && python -m pip install -e . && pytest --tb=short -q .\tests\
 ```
 
-Verify the installed version:
+Expected version:
 
 ```powershell
 mangadl --version
 ```
 
-Expected: `mangadl 1.10.1`.
+```text
+mangadl 1.11.0
+```
 
-Then rerun one already-complete Manga18FX series and confirm that it finishes as skipped/already complete with an exact image count rather than `FINISH_SUCCESS ... 0 img`.
+Check help organization:
 
-Also confirm that the restarted dashboard shows:
+```powershell
+mangadl run --help
+mangadl run config --help
+mangadl run optimize --help
+mangadl run optimize config --help
+mangadl run benchmark --help
+mangadl run benchmark config --help
+mangadl archive --help
+mangadl archive config --help
+```
 
-- the workers/images-per-worker header,
-- two rows per worker,
-- aligned first-row separators,
-- `M18:<slug>` identities,
-- no `/?` or byte `/?` fields,
-- aligned displayed activity logs.
+Preview a bounded benchmark without downloading:
+
+```powershell
+mangadl run benchmark config -i .\urls8.txt -d .\downloads -a .\mangadl-archive.sqlite3 -p 1 -m 4 -P 1 -M 8 -E timed -D 8 -Q 1 -n
+```
+
+Then run a small report-only live benchmark:
+
+```powershell
+mangadl run benchmark config -i .\urls8.txt -d .\downloads -a .\mangadl-archive.sqlite3 -p 2 -m 4 -P 2 -M 4 -E timed -D 8 -Q 1 -o
+```
 
 ## Merge Gate
 
 Do not merge into `main` until:
 
 1. The full Windows pytest suite passes.
-2. One already-complete series is classified as skipped/already complete.
-3. Worker rows and displayed activity-log columns align in the Windows terminal.
-4. The normal `-w 5` request is visibly reduced to four.
-5. Worker launches visibly stagger rather than all starting at once.
-6. The live auto-tune report completes and applies a valid winner.
+2. One resume-only Manga18FX worker visibly advances processed image counts while byte speed remains honest.
+3. One already-complete series is classified as skipped/already complete.
+4. Normal worker rows and displayed activity-log columns align in Windows Terminal.
+5. `run --help` is concise and nested config help exposes advanced settings.
+6. The normal `-w 5` request is visibly reduced to four.
+7. Worker launches visibly stagger rather than all starting simultaneously.
+8. A bounded live optimize or benchmark report completes and selects a valid state.
+9. The interactive archive browser opens and filters the selected archive.
