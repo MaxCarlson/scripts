@@ -11,7 +11,7 @@ Before modifying the merged backup implementation, read:
 3. `../../../MODULE_STANDARDS.md`
 4. `../../../docs/agent/PYTHON_REPO_STANDARDS.md`
 5. `../../../docs/agent/SCRIPTS_REPO_STANDARDS.md`
-6. `HYBRID_REMOTE_LOCAL_DEVELOPMENT_WORKFLOW.md`
+6. `../../../docs/agent/HYBRID_REMOTE_LOCAL_DEVELOPMENT_WORKFLOW.md`
 7. `CLI_ARCHITECTURE_AND_AUDIT_COVERAGE.md`
 8. `HANDOFF.md`
 9. `plans/HANDOFF.md`
@@ -62,21 +62,27 @@ backup view audit
 
 ## Validation Entry Point
 
-From the module root, run:
+From the repository root, run:
 
 ```powershell
-./Invoke-Tests.ps1 -Bootstrap
+./Invoke-Tests.ps1
 ```
 
-The script runs the complete pytest suite plus every `*_test.ps1` script under `tests/`. It captures full stdout and stderr, including the complete pytest failure and coverage report, into the tracked file:
+The active target manifest is:
 
 ```text
-TEST_RESULTS.txt
+validation-targets.json
 ```
 
-After a local run, stage, commit, and push `TEST_RESULTS.txt` so the remote implementation agent can inspect the exact results without manual copy/paste.
+The dispatcher currently selects `rrbackup` by default, bootstraps its development dependencies, runs pytest with isolated import handling, runs every configured PowerShell validation script, and records complete output under:
 
-Temporary pytest data and coverage databases are written under `.pytest_tmp_root/` and remain ignored.
+```text
+docs/test-results/rrbackup/YYYYMMDD-HHMMSS_rrbackup.txt
+```
+
+After a local run, stage, commit, and push the generated report so the remote implementation agent can inspect the exact results without manual copy/paste.
+
+Temporary pytest data and coverage databases remain under `modules/rrbackup/.pytest_tmp_root/` and are ignored.
 
 Production read-only checks are disabled by default and require:
 
