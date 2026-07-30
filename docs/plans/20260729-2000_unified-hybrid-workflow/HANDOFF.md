@@ -14,47 +14,54 @@ agent/unified
 
 ## Current Stage
 
-Stage S1 implements the repository control-plane self-hosting boundary.
+Stage S2 replaces helper-command orchestration with native modular dispatcher phases.
 
 Implemented:
 
-- canonical `main` / `agent/unified` / `agent/<work>` branch roles and merge gates;
-- repository instruction routing to branch and development-ledger standards;
-- a structured repository-wide active plan;
-- `validation/Invoke-DevelopmentLedger.ps1`, a reusable manifest-driven ledger bridge;
-- `validation/tests/repository_workflow_test.ps1`, which emits generic script-result JSON;
-- the `repository-workflow` root validation target;
-- explicit preview/write safety and required-evidence enforcement;
-- projection verification after an immutable write.
+- all public `Invoke-Tests.ps1` parameters remain available;
+- the root script delegates to `validation/ValidationDispatcher.psm1`;
+- target selection, temp-root resolution, artifact retention, context generation, command execution, and ledger sequencing are separated into focused modules;
+- `file_targets` resolves `path`, `max_depth`, and extension rules inside the dispatcher process;
+- target-specific `temp_root` supports `{system_temp}`, `{target_name}`, and `{timestamp}` tokens;
+- ledger metadata executes after commands and PowerShell test groups without an explicit manifest command;
+- required ledger failures fail the target, while earlier command failures remain authoritative;
+- `repository-workflow` validates native file discovery and final-ledger ordering;
+- `development-ledger` is migrated to the native ledger phase;
+- RRBackup remains behaviorally unchanged and keeps its existing declarative file-target rules.
 
 ## Local Validation
 
-Run:
+Pull and run the default repository workflow target:
 
 ```powershell
-./Invoke-Tests.ps1 -Target repository-workflow
+ gl && .\Invoke-Tests.ps1
 ```
 
 The target should:
 
-1. install the editable development-ledger package;
-2. validate the active plan state;
-3. pass repository workflow contract tests;
-4. write `docs/test-results/repository-workflow/LATEST.txt`;
-5. append one event under `docs/plans/20260729-2000_unified-hybrid-workflow/ledger/`;
-6. generate `LATEST.json`, `PROGRESS.md`, `TRACEABILITY.md`, and `MANUAL_CHECKS.md`;
-7. preserve the root dispatcher's actual target result.
+1. create its temporary root below the current user's system temp directory;
+2. install the editable development-ledger package;
+3. validate plan revision 2;
+4. discover and list top-level `.py` files from the configured package and test folders;
+5. compile those files through the native `file_targets` command;
+6. pass five repository workflow contract checks;
+7. run a `DEVELOPMENT LEDGER` phase after ordinary commands;
+8. append one revision-2 validation event;
+9. generate `LATEST.json`, `PROGRESS.md`, `TRACEABILITY.md`, and `MANUAL_CHECKS.md`;
+10. preserve the root dispatcher's actual target result and live console output.
 
-Commit and push generated validation and ledger evidence on the same feature branch. The remote agent must read the generated progress, traceability, manual checks, and raw transcript before the next source modification.
+Commit and push generated validation and ledger evidence on the same feature branch. The remote agent must read the generated raw report, context, progress diff, and ledger projections before the next source modification.
+
+## Failure Checks
+
+A failed ordinary command must still produce a nonzero root exit even if ledger recording succeeds. Missing required ledger evidence must also produce a nonzero exit and an actionable `Development ledger` failure in `LATEST.txt`.
 
 ## Known Boundary
 
 This stage does not yet:
 
-- move file-target discovery into the `Invoke-Tests.ps1` process;
-- add a native generic ledger phase to the root dispatcher;
-- migrate RRBackup, Manga, or every existing target to ledger metadata;
+- migrate RRBackup to a structured development-ledger plan;
+- remove the transitional `validation/Invoke-FileTargetCommand.ps1` compatibility helper;
 - retire `LATEST_CONTEXT.md` or `LATEST_PROGRESS.diff`;
+- add compact report post-processing;
 - merge the feature branch into `agent/unified`.
-
-Those changes are intentionally ordered after the first repository-wide self-hosting validation cycle.
