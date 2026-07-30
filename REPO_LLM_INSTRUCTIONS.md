@@ -64,6 +64,7 @@ ruff check <file>
 - For standalone `pyscripts/`, embed and bump `__version__` in the file.
 - After adding a new pyscript or module with a CLI, update `modules/scripts_help/scripts_help/registry/registry.py`.
 - Module tests must keep temporary roots inside the owning module directory, normally `modules/<module>/.pytest_tmp_root/`.
+- Repository-wide validation targets may declare an isolated writable `temp_root` when the repository root is unsuitable.
 - Preserve unrelated user state. Do not stage or commit unless explicitly approved.
 
 ## Branch Topology
@@ -165,7 +166,9 @@ Its target manifest is:
 validation-targets.json
 ```
 
-The dispatcher must support one or more named targets, bootstrap declared dependencies by default, run language-native tests and platform-specific validation scripts, capture complete stdout and stderr, preserve exit codes, and write tracked reports under:
+`Invoke-Tests.ps1` preserves the stable public parameters and delegates implementation to focused modules under `validation/`. The dispatcher supports one or more named targets, bootstrap declared dependencies by default, language-native tests, platform-specific PowerShell groups, complete stdout/stderr capture, exact failure ownership, tracked raw reports, bounded history, and context artifacts.
+
+Tracked raw evidence remains under:
 
 ```text
 docs/test-results/<target>/
@@ -176,17 +179,21 @@ docs/test-results/<target>/
 
 `LATEST.txt` remains the current raw diagnostic transcript during ledger migration. History is comparison-only and bounded by default to three prior reports and 14 days.
 
-Validation commands may use declarative `file_command` plus `file_targets` rules. Each rule specifies a target-relative path, maximum depth, and extension set. Do not enumerate every source filename when folder/depth/extension discovery expresses the intent safely.
+Validation commands may use declarative `file_command` plus `file_targets` rules. Each rule specifies a target-relative or tokenized path, maximum depth, and one or more extensions. The dispatcher resolves, sorts, deduplicates, and appends matching files inside the root process. A missing path or zero-match rule fails clearly. Do not enumerate every source filename when folder/depth/extension discovery expresses the intent safely.
 
-For ledger-enabled targets, the dispatcher should eventually:
+A target may define `temp_root` with `{repo_root}`, `{target_root}`, `{target_name}`, `{timestamp}`, or `{system_temp}` tokens. Without it, the default remains `<target_root>/.pytest_tmp_root/validation-<timestamp>`.
 
-1. resolve the active plan and ledger output;
-2. emit JUnit and generic script-result evidence;
-3. run all normal validation phases;
-4. invoke development-ledger recording last;
-5. preserve the original validation failure status;
-6. fail successful validation when required evidence cannot be recorded;
-7. display generated progress, routing, and pending manual checks.
+For a target with an enabled `ledger` object, the dispatcher natively:
+
+1. runs bootstrap, ordinary commands, and PowerShell test groups;
+2. resolves the active plan, output directory, JUnit, script-result, and transcript evidence;
+3. invokes development-ledger recording as the final target phase;
+4. preserves every earlier validation failure even when recording succeeds;
+5. fails otherwise successful validation when required evidence or recording fails;
+6. verifies generated ledger projections;
+7. displays generated progress and manual-check locations.
+
+Do not add an explicit `Record ... ledger event` command to a ledger-enabled target. Put recording configuration in the target's `ledger` object.
 
 The active remote agent updates `validation-targets.json` whenever the current stage requires different modules, commands, scripts, setup steps, evidence paths, or read-only environment checks. The user should normally only need to pull and run the same root command.
 
