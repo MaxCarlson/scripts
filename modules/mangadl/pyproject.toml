@@ -18,7 +18,7 @@ where = ["."]
 include = ["mangadl*"]
 
 [tool.pytest.ini_options]
-addopts = "-q"
+addopts = "-q -p no:cacheprovider"
 testpaths = ["tests"]
 pythonpath = ["."]
 tmp_path_retention_policy = "none"
