@@ -4,8 +4,9 @@
     ],
     "targets": {
         "repository-workflow": {
-            "description": "Repository branch integration, hybrid workflow, validation bridge, and development-ledger self-hosting.",
+            "description": "Repository branch integration, hybrid workflow, native validation phases, and development-ledger self-hosting.",
             "working_directory": "validation",
+            "temp_root": "{system_temp}/scripts-validation/{target_name}/{timestamp}",
             "context_files": [
                 "../docs/plans/20260729-2000_unified-hybrid-workflow/00_implementation-plan.md",
                 "../docs/plans/20260729-2000_unified-hybrid-workflow/HANDOFF.md"
@@ -52,6 +53,32 @@
                     ]
                 },
                 {
+                    "name": "Compile development-ledger files through native file targets",
+                    "file_command": {
+                        "executable": "{python}",
+                        "arguments": [
+                            "-m",
+                            "py_compile"
+                        ]
+                    },
+                    "file_targets": [
+                        {
+                            "path": "{repo_root}/modules/development_ledger/development_ledger",
+                            "max_depth": 1,
+                            "extensions": [
+                                ".py"
+                            ]
+                        },
+                        {
+                            "path": "{repo_root}/modules/development_ledger/tests",
+                            "max_depth": 1,
+                            "extensions": [
+                                ".py"
+                            ]
+                        }
+                    ]
+                },
+                {
                     "name": "Repository workflow contract tests",
                     "executable": "pwsh",
                     "arguments": [
@@ -67,32 +94,6 @@
                         "{temp_root}/repository-workflow.json",
                         "-TempRoot",
                         "{temp_root}/repository-workflow"
-                    ]
-                },
-                {
-                    "name": "Record repository workflow ledger event",
-                    "executable": "pwsh",
-                    "arguments": [
-                        "-NoLogo",
-                        "-NoProfile",
-                        "-File",
-                        "{repo_root}/validation/Invoke-DevelopmentLedger.ps1",
-                        "-ManifestPath",
-                        "{repo_root}/validation-targets.json",
-                        "-TargetName",
-                        "repository-workflow",
-                        "-RepoRoot",
-                        "{repo_root}",
-                        "-TargetRoot",
-                        "{target_root}",
-                        "-TempRoot",
-                        "{temp_root}",
-                        "-ReportPath",
-                        "{repo_root}/docs/test-results/repository-workflow/LATEST.txt",
-                        "-PythonExecutable",
-                        "{python}",
-                        "-Write",
-                        "-Confirm:$false"
                     ]
                 }
             ],
@@ -376,31 +377,22 @@
                         "--cov-branch",
                         "--cov-report=term-missing"
                     ]
-                },
-                {
-                    "name": "Record development-ledger validation event",
-                    "executable": "{python}",
-                    "arguments": [
-                        "-m",
-                        "development_ledger.dispatcher_record",
-                        "-p",
-                        "docs/plans/20260729-1100_development-ledger-self-hosting/00_implementation-plan.md",
-                        "-o",
-                        "docs/plans/20260729-1100_development-ledger-self-hosting/ledger",
-                        "-r",
-                        "{repo_root}",
-                        "-j",
-                        "{temp_root}/pytest.xml",
-                        "-t",
-                        "{repo_root}/docs/test-results/development-ledger/LATEST.txt",
-                        "-a",
-                        "remote_llm",
-                        "-m",
-                        "hybrid",
-                        "-w"
-                    ]
                 }
-            ]
+            ],
+            "ledger": {
+                "enabled": true,
+                "required": true,
+                "active_plan": "docs/plans/20260729-1100_development-ledger-self-hosting/00_implementation-plan.md",
+                "output_directory": "docs/plans/20260729-1100_development-ledger-self-hosting/ledger",
+                "junit_outputs": [
+                    "{temp_root}/pytest.xml"
+                ],
+                "transcript_outputs": [
+                    "{report_path}"
+                ],
+                "actor": "remote_llm",
+                "mode": "hybrid"
+            }
         }
     }
 }
