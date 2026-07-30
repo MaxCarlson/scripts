@@ -1,0 +1,127 @@
+
+
+====================================================================================================
+VALIDATION TARGET: repository-workflow
+====================================================================================================
+Timestamp: 2026-07-29T21:10:37.7876517-07:00
+Description: Repository branch integration, hybrid workflow, validation bridge, and development-ledger self-hosting.
+Repository root: C:\Users\mcarls\src\scripts
+Working directory: C:\Users\mcarls\src\scripts\validation
+Python: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe
+PowerShell: 7.6.1
+Platform: Microsoft Windows 10.0.26200
+Bootstrap enabled: True
+Production read-only checks: False
+History retention: 3 prior runs, maximum age 14 days
+Git branch: agent/unified-workflow-ledger
+Git commit: 41e3ac6ba21156acdc9733a76b751730731d1d95
+Git status before validation:
+(clean)
+
+====================================================================================================
+Clean stale development-ledger editable metadata
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\validation
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -c import shutil; from pathlib import Path; root=Path(r'C:\Users\mcarls\src\scripts')/'modules'/'development_ledger'; targets=list(root.glob('*.egg-info'))+[root/'build', root/'dist']; [shutil.rmtree(str(path), ignore_errors=True) for path in targets if path.exists()]
+RESULT: PASS - Clean stale development-ledger editable metadata
+
+====================================================================================================
+Install development-ledger for repository workflow validation
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\validation
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pip install --disable-pip-version-check --no-build-isolation -e C:\Users\mcarls\src\scripts/modules/development_ledger[dev]
+WARNING: Ignoring invalid distribution ~%bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~-bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~=bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ebndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~~bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+Obtaining file:///C:/Users/mcarls/src/scripts/modules/development_ledger
+  Checking if build backend supports build_editable: started
+  Checking if build backend supports build_editable: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Preparing editable metadata (pyproject.toml): finished with status 'done'
+Requirement already satisfied: pytest>=8.0 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from development-ledger==1.1.1) (9.0.3)
+Requirement already satisfied: pytest-cov>=5.0 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from development-ledger==1.1.1) (7.0.0)
+Requirement already satisfied: ruff>=0.5 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from development-ledger==1.1.1) (0.14.8)
+Requirement already satisfied: colorama>=0.4 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from pytest>=8.0->development-ledger==1.1.1) (0.4.6)
+Requirement already satisfied: iniconfig>=1.0.1 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from pytest>=8.0->development-ledger==1.1.1) (2.3.0)
+Requirement already satisfied: packaging>=22 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from pytest>=8.0->development-ledger==1.1.1) (25.0)
+Requirement already satisfied: pluggy<2,>=1.5 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from pytest>=8.0->development-ledger==1.1.1) (1.6.0)
+Requirement already satisfied: pygments>=2.7.2 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from pytest>=8.0->development-ledger==1.1.1) (2.19.2)
+Requirement already satisfied: coverage>=7.10.6 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from coverage[toml]>=7.10.6->pytest-cov>=5.0->development-ledger==1.1.1) (7.13.0)
+Building wheels for collected packages: development-ledger
+  Building editable for development-ledger (pyproject.toml): started
+  Building editable for development-ledger (pyproject.toml): finished with status 'done'
+  Created wheel for development-ledger: filename=development_ledger-1.1.1-0.editable-py3-none-any.whl size=3254 sha256=7754e02fa9a683b25820ed8b655dfb1c051856a34fc287b46b3a13422290789d
+  Stored in directory: C:\Users\mcarls\AppData\Local\Temp\pip-ephem-wheel-cache-mafwt1_u\wheels\03\d1\81\c94685f37c53288e386e7dae1637611d1ddb2b56f82bce6f2c
+Successfully built development-ledger
+WARNING: Ignoring invalid distribution ~%bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~-bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~=bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ebndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~~bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+Installing collected packages: development-ledger
+  Attempting uninstall: development-ledger
+    Found existing installation: development-ledger 1.1.0
+    Uninstalling development-ledger-1.1.0:
+      Successfully uninstalled development-ledger-1.1.0
+WARNING: Ignoring invalid distribution ~%bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~-bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~=bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ebndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~~bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+Successfully installed development-ledger-1.1.1
+RESULT: PASS - Install development-ledger for repository workflow validation
+
+====================================================================================================
+Validate unified hybrid workflow active plan
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\validation
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m development_ledger validate-plan -p C:\Users\mcarls\src\scripts/docs/plans/20260729-2000_unified-hybrid-workflow/00_implementation-plan.md
+VALID: unified-hybrid-workflow ┬╖ 3 item(s) ┬╖ 1 manual check(s)
+RESULT: PASS - Validate unified hybrid workflow active plan
+
+====================================================================================================
+Repository workflow contract tests
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\validation
+Command: pwsh -NoLogo -NoProfile -File C:\Users\mcarls\src\scripts/validation/tests/repository_workflow_test.ps1 -RepoRoot C:\Users\mcarls\src\scripts -PythonExecutable C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -ResultPath C:\Users\mcarls\src\scripts\validation\.pytest_tmp_root\validation-20260729-211037/repository-workflow.json -TempRoot C:\Users\mcarls\src\scripts\validation\.pytest_tmp_root\validation-20260729-211037/repository-workflow
+PASSED  powershell:repository-workflow::policy - Branch and ledger policy is discoverable
+PASSED  powershell:repository-workflow::plan - Unified workflow plan is valid
+PASSED  powershell:repository-workflow::bridge - Ledger bridge previews and writes projections
+PASSED  powershell:repository-workflow::missing-evidence - Required evidence fails clearly
+Repository-workflow checks passed: 4.
+RESULT: PASS - Repository workflow contract tests
+
+====================================================================================================
+Record repository workflow ledger event
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\validation
+Command: pwsh -NoLogo -NoProfile -File C:\Users\mcarls\src\scripts/validation/Invoke-DevelopmentLedger.ps1 -ManifestPath C:\Users\mcarls\src\scripts/validation-targets.json -TargetName repository-workflow -RepoRoot C:\Users\mcarls\src\scripts -TargetRoot C:\Users\mcarls\src\scripts\validation -TempRoot C:\Users\mcarls\src\scripts\validation\.pytest_tmp_root\validation-20260729-211037 -ReportPath C:\Users\mcarls\src\scripts/docs/test-results/repository-workflow/LATEST.txt -PythonExecutable C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -Write -Confirm:$false
+Development ledger: WRITE
+Plan: C:\Users\mcarls\src\scripts\docs\plans\20260729-2000_unified-hybrid-workflow\00_implementation-plan.md
+Output: C:\Users\mcarls\src\scripts\docs\plans\20260729-2000_unified-hybrid-workflow\ledger
+RUN: run-20260730T041044973067Z-41e3ac6b-c690d4
+TESTS: 8 passed ┬╖ 0 failed ┬╖ 0 errors ┬╖ 0 skipped
+PROGRESS: baseline
+ROUTING: continue_remote
+SUMMARY: C:\Users\mcarls\src\scripts\docs\plans\20260729-2000_unified-hybrid-workflow\ledger\PROGRESS.md
+Progress: C:\Users\mcarls\src\scripts\docs\plans\20260729-2000_unified-hybrid-workflow\ledger\PROGRESS.md
+Manual checks: C:\Users\mcarls\src\scripts\docs\plans\20260729-2000_unified-hybrid-workflow\ledger\MANUAL_CHECKS.md
+RESULT: PASS - Record repository workflow ledger event
+
+====================================================================================================
+TARGET SUMMARY
+====================================================================================================
+Latest report: C:\Users\mcarls\src\scripts\docs\test-results\repository-workflow\LATEST.txt
+Context snapshot: C:\Users\mcarls\src\scripts\docs\test-results\repository-workflow\LATEST_CONTEXT.md
+Progress diff: C:\Users\mcarls\src\scripts\docs\test-results\repository-workflow\LATEST_PROGRESS.diff
+TARGET RESULT: PASS
+All requested validation sections passed.
+
+Git status after validation:
+?? docs/plans/20260729-2000_unified-hybrid-workflow/ledger/
+?? docs/test-results/repository-workflow/

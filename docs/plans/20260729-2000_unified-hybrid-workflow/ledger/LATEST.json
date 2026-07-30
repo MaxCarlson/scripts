@@ -1,0 +1,376 @@
+{
+    "schema_version": 1,
+    "event_type": "validation_run",
+    "event_id": "run-20260730T041044973067Z-41e3ac6b-c690d4",
+    "timestamp": "2026-07-30T04:10:44.973067+00:00",
+    "plan_id": "unified-hybrid-workflow",
+    "plan_title": "Unified Hybrid Workflow and Validation Ledger",
+    "project_root": ".",
+    "plan_revision": 1,
+    "stage": {
+        "id": "S1",
+        "title": "Repository control-plane self-hosting",
+        "status": "awaiting_validation"
+    },
+    "actor": "remote_llm",
+    "mode": "hybrid",
+    "request": {
+        "status": "incorporated",
+        "summary": "Implement the connected hybrid-workflow design after the feature branches were merged and agent/unified was established.",
+        "resolution": "compatible",
+        "affected_ids": [
+            "AC-S1-001",
+            "AC-S1-002",
+            "AC-S1-003"
+        ],
+        "supersedes": [],
+        "conflicts": []
+    },
+    "intent": {
+        "objective": "Establish branch integration policy and self-host one repository-wide validation-ledger cycle.",
+        "hypothesis": "A thin manifest-driven bridge can reuse the accepted development-ledger module before ledger recording becomes a native dispatcher phase.",
+        "target_ids": [
+            "AC-S1-001",
+            "AC-S1-002",
+            "AC-S1-003"
+        ],
+        "selection_rationale": "Branch policy, ledger routing, and one self-hosting target form the minimum independently verifiable control-plane batch.",
+        "stop_conditions": [
+            "Branch roles are discoverable without conversation memory.",
+            "The ledger bridge previews safely and records required projections when write is explicit.",
+            "The repository-workflow target emits generic evidence and records its event last.",
+            "The branch is ready for ./Invoke-Tests.ps1 -Target repository-workflow."
+        ],
+        "batch": {
+            "profile": "standard",
+            "target_minutes": 20,
+            "max_minutes": 30,
+            "max_items": 4
+        },
+        "environment_dependencies": [
+            "PowerShell 7+",
+            "Git",
+            "repository Python virtual environment"
+        ],
+        "architecture_impact": "cross_cutting",
+        "relevant_files": [
+            "AGENTS.md",
+            "REPO_LLM_INSTRUCTIONS.md",
+            "docs/agent/BRANCH_INTEGRATION_WORKFLOW.md",
+            "validation/DevelopmentLedgerBridge.psm1",
+            "validation/Invoke-DevelopmentLedger.ps1",
+            "validation/tests/repository_workflow_test.ps1",
+            "validation-targets.json"
+        ]
+    },
+    "provenance": {
+        "repo_root": "C:\\Users\\mcarls\\src\\scripts",
+        "branch": "agent/unified-workflow-ledger",
+        "commit": "41e3ac6ba21156acdc9733a76b751730731d1d95",
+        "baseline_commit": "",
+        "working_tree_clean": false,
+        "working_tree_status": [
+            "?? docs/test-results/repository-workflow/"
+        ],
+        "changed_files": [],
+        "diff_stat": ""
+    },
+    "tests": [
+        {
+            "id": "powershell:repository-workflow::policy",
+            "name": "Branch and ledger policy is discoverable",
+            "status": "passed",
+            "suite": "repository-workflow",
+            "source": "powershell",
+            "file": "",
+            "classname": "",
+            "duration_seconds": 0.037127,
+            "message": "",
+            "item_ids": [
+                "AC-S1-001"
+            ],
+            "metadata": {}
+        },
+        {
+            "id": "powershell:repository-workflow::plan",
+            "name": "Unified workflow plan is valid",
+            "status": "passed",
+            "suite": "repository-workflow",
+            "source": "powershell",
+            "file": "",
+            "classname": "",
+            "duration_seconds": 0.149421,
+            "message": "",
+            "item_ids": [
+                "AC-S1-001",
+                "AC-S1-003"
+            ],
+            "metadata": {}
+        },
+        {
+            "id": "powershell:repository-workflow::bridge",
+            "name": "Ledger bridge previews and writes projections",
+            "status": "passed",
+            "suite": "repository-workflow",
+            "source": "powershell",
+            "file": "",
+            "classname": "",
+            "duration_seconds": 1.230036,
+            "message": "",
+            "item_ids": [
+                "AC-S1-002",
+                "AC-S1-003"
+            ],
+            "metadata": {}
+        },
+        {
+            "id": "powershell:repository-workflow::missing-evidence",
+            "name": "Required evidence fails clearly",
+            "status": "passed",
+            "suite": "repository-workflow",
+            "source": "powershell",
+            "file": "",
+            "classname": "",
+            "duration_seconds": 0.377546,
+            "message": "",
+            "item_ids": [
+                "AC-S1-002"
+            ],
+            "metadata": {}
+        },
+        {
+            "id": "command:clean-stale-development-ledger-editable-metadata",
+            "name": "Clean stale development-ledger editable metadata",
+            "status": "passed",
+            "suite": "validation-transcript",
+            "source": "transcript",
+            "file": "",
+            "classname": "",
+            "duration_seconds": 0.0,
+            "message": "",
+            "item_ids": [],
+            "metadata": {}
+        },
+        {
+            "id": "command:install-development-ledger-for-repository-workflow-validation",
+            "name": "Install development-ledger for repository workflow validation",
+            "status": "passed",
+            "suite": "validation-transcript",
+            "source": "transcript",
+            "file": "",
+            "classname": "",
+            "duration_seconds": 0.0,
+            "message": "",
+            "item_ids": [],
+            "metadata": {}
+        },
+        {
+            "id": "command:validate-unified-hybrid-workflow-active-plan",
+            "name": "Validate unified hybrid workflow active plan",
+            "status": "passed",
+            "suite": "validation-transcript",
+            "source": "transcript",
+            "file": "",
+            "classname": "",
+            "duration_seconds": 0.0,
+            "message": "",
+            "item_ids": [],
+            "metadata": {}
+        },
+        {
+            "id": "command:repository-workflow-contract-tests",
+            "name": "Repository workflow contract tests",
+            "status": "passed",
+            "suite": "validation-transcript",
+            "source": "transcript",
+            "file": "",
+            "classname": "",
+            "duration_seconds": 0.0,
+            "message": "",
+            "item_ids": [],
+            "metadata": {}
+        }
+    ],
+    "test_summary": {
+        "total": 8,
+        "passed": 8,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "duration_seconds": 1.79413,
+        "transcript_metrics": {
+            "passed": 0,
+            "failed": 0,
+            "skipped": 0,
+            "errors": 0
+        }
+    },
+    "failure_fingerprints": [],
+    "items": [
+        {
+            "id": "AC-S1-001",
+            "title": "Repository instructions define the main, agent/unified, and agent/<work> lifecycle and merge gates.",
+            "kind": "criterion",
+            "implementation": "implemented",
+            "automated": "passed",
+            "manual": "not_required",
+            "verification": "verified",
+            "matched_test_ids": [
+                "powershell:repository-workflow::policy",
+                "powershell:repository-workflow::plan"
+            ],
+            "manual_check_states": {},
+            "depends_on": [],
+            "blocked_by": [],
+            "relevant_files": [
+                "AGENTS.md",
+                "REPO_LLM_INSTRUCTIONS.md",
+                "docs/agent/BRANCH_INTEGRATION_WORKFLOW.md"
+            ],
+            "priority": 10,
+            "architecture_role": "foundation"
+        },
+        {
+            "id": "AC-S1-002",
+            "title": "A reusable bridge resolves target ledger metadata and invokes dispatcher-safe recording with exact evidence paths.",
+            "kind": "criterion",
+            "implementation": "implemented",
+            "automated": "passed",
+            "manual": "not_required",
+            "verification": "verified",
+            "matched_test_ids": [
+                "powershell:repository-workflow::bridge",
+                "powershell:repository-workflow::missing-evidence"
+            ],
+            "manual_check_states": {},
+            "depends_on": [
+                "AC-S1-001"
+            ],
+            "blocked_by": [],
+            "relevant_files": [
+                "validation/DevelopmentLedgerBridge.psm1",
+                "validation/Invoke-DevelopmentLedger.ps1"
+            ],
+            "priority": 10,
+            "architecture_role": "integration"
+        },
+        {
+            "id": "AC-S1-003",
+            "title": "The root dispatcher exposes a repository-workflow target that records generic evidence and a permanent event last.",
+            "kind": "criterion",
+            "implementation": "implemented",
+            "automated": "passed",
+            "manual": "pending",
+            "verification": "manual_pending",
+            "matched_test_ids": [
+                "powershell:repository-workflow::policy",
+                "powershell:repository-workflow::plan",
+                "powershell:repository-workflow::bridge",
+                "powershell:repository-workflow::missing-evidence"
+            ],
+            "manual_check_states": {
+                "MC-S1-001": "pending"
+            },
+            "depends_on": [
+                "AC-S1-002"
+            ],
+            "blocked_by": [],
+            "relevant_files": [
+                "validation-targets.json",
+                "validation/tests/repository_workflow_test.ps1"
+            ],
+            "priority": 10,
+            "architecture_role": "integration"
+        }
+    ],
+    "manual_checks": [
+        {
+            "id": "MC-S1-001",
+            "title": "Run the repository-workflow target through the Windows root dispatcher",
+            "item_ids": [
+                "AC-S1-003"
+            ],
+            "instructions": [
+                "Switch to agent/unified-workflow-ledger and pull.",
+                "Run ./Invoke-Tests.ps1 -Target repository-workflow.",
+                "Confirm the target passes and generates raw validation plus ledger projections.",
+                "Commit and push generated evidence."
+            ],
+            "expected": "One immutable validation event is recorded without hiding the root target result.",
+            "platform": "windows",
+            "status": "pending",
+            "safety": "non_destructive",
+            "notes": "This is the first repository-wide self-hosting cycle."
+        }
+    ],
+    "planning_gate": {
+        "passed": true,
+        "issues": [],
+        "warnings": [],
+        "selected_ids": [
+            "AC-S1-001",
+            "AC-S1-002",
+            "AC-S1-003"
+        ],
+        "dependency_order": [
+            "AC-S1-001",
+            "AC-S1-002",
+            "AC-S1-003"
+        ],
+        "recommended_candidates": [],
+        "batch": {
+            "profile": "standard",
+            "target_minutes": 20,
+            "max_minutes": 30,
+            "max_items": 4
+        }
+    },
+    "comparison": {
+        "baseline": true,
+        "new_failures": [],
+        "persistent_failures": [],
+        "resolved_failures": [],
+        "item_transitions": [],
+        "test_count_delta": {},
+        "verified_delta": 2
+    },
+    "progress": {
+        "classification": "baseline",
+        "material_progress": true,
+        "reasons": [
+            "Established baseline."
+        ]
+    },
+    "architecture_review": {
+        "due": false,
+        "performed": true,
+        "depth": "completed",
+        "triggers": [
+            "The user or working agent explicitly requested an architecture review.",
+            "The current change declares cross_cutting architecture impact."
+        ],
+        "runs_since_last_review": 0,
+        "plan_revisions_since_last_review": 0,
+        "summary": "Reuse the existing ledger module, preserve raw LATEST.txt evidence during migration, and validate one repository-wide target before changing every module target.",
+        "findings": [
+            "Development-ledger recording already has a dispatcher-safe Python adapter.",
+            "The root manifest lacked a repository-wide self-hosting target.",
+            "File-target discovery remains declarative but still uses a subprocess helper."
+        ],
+        "actions": [
+            "Add branch and evidence-routing instructions.",
+            "Add a reusable manifest-driven ledger bridge and contract test.",
+            "Defer native file-target and native ledger phases until this cycle validates."
+        ]
+    },
+    "routing": {
+        "decision": "continue_remote",
+        "reason": "Evidence shows useful progress or establishes the first baseline.",
+        "model": "",
+        "reasoning": ""
+    },
+    "artifacts": [
+        "C:\\Users\\mcarls\\src\\scripts\\validation\\.pytest_tmp_root\\validation-20260729-211037\\repository-workflow.json",
+        "C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\repository-workflow\\LATEST.txt"
+    ]
+}
