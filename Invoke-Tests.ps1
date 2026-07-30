@@ -65,18 +65,30 @@ if (-not (Test-Path -LiteralPath $DispatcherModule -PathType Leaf)) {
 
 Import-Module -Name $DispatcherModule -Force
 try {
-    $ExitCode = Invoke-RepositoryValidation `
+    $ExitCode = $null
+    Invoke-RepositoryValidation `
         -RepoRoot $PSScriptRoot `
         -Target $Target `
         -ListTargets:$ListTargets `
         -SkipBootstrap:$SkipBootstrap `
         -IncludeProductionReadOnly:$IncludeProductionReadOnly `
         -MaxHistoryPerTarget $MaxHistoryPerTarget `
-        -MaxHistoryAgeDays $MaxHistoryAgeDays
+        -MaxHistoryAgeDays $MaxHistoryAgeDays |
+        ForEach-Object {
+            if ($_ -is [int]) {
+                $ExitCode = [int]$_
+            }
+            else {
+                Write-Output $_
+            }
+        }
+    if ($null -eq $ExitCode) {
+        throw 'Validation dispatcher did not return an exit code.'
+    }
 }
 catch {
     [Console]::Error.WriteLine("ERROR: $($_.Exception.Message)")
     exit 1
 }
 
-exit [int]$ExitCode
+exit $ExitCode
