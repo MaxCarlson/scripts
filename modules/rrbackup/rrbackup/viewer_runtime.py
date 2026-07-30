@@ -1,10 +1,10 @@
-"""Runtime routing for the interactive multi-page backup viewer."""
+"""Runtime routing for operations-first view and explicit reference sections."""
 
 from __future__ import annotations
 
 from typing import Any, List, Sequence
 
-from . import cli_runtime
+from . import cli_runtime, run_runtime
 from .audit import AuditReport, collect_audit
 from .inventory import BackupInventoryRecord
 from .presentation import (
@@ -89,7 +89,7 @@ def _full_audit(record: BackupInventoryRecord, args: Any) -> AuditReport:
 
 
 def handle_view(args: Any) -> int:
-    """Open the carousel or render one explicitly requested output section."""
+    """Open the operations/history hub or render an explicit reference section."""
 
     demo = bool(getattr(args, "demo", False))
     if demo:
@@ -103,8 +103,18 @@ def handle_view(args: Any) -> int:
         inventory, selected = cli_runtime.records(args)
         payload = inventory.to_dict()
 
-    section = getattr(args, "section", None) or "overview"
-    structured = args.json or args.markdown or args.plain
+    requested_section = getattr(args, "section", None)
+    structured = bool(args.json or args.markdown or args.plain)
+
+    if (
+        not demo
+        and requested_section is None
+        and not structured
+        and interactive_available()
+    ):
+        return run_runtime.open_operations_hub(selected, args, initial_tab="operations")
+
+    section = requested_section or "overview"
     if not structured and section != "audit" and interactive_available():
         run_viewer_dashboard(
             selected,
