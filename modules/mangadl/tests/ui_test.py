@@ -29,6 +29,7 @@ def test_dashboard_contains_compact_identity_rates_and_colors() -> None:
         current_bps=1024,
         average_bps=512,
         current_ips=1.5,
+        average_ips=1.0,
     )
     output = render_dashboard("run", {"running": 1}, {1: worker}, width=120)
     assert "NH" in output and ":123" in output
@@ -39,6 +40,8 @@ def test_dashboard_contains_compact_identity_rates_and_colors() -> None:
     assert "2/10" in output
     assert "\x1b[32mGD\x1b[0m" in output
     assert "20.0%" in output
+    assert "Transfer now" in output
+    assert "Processing now" in output
     assert all(visible_len(line) <= 120 for line in output.splitlines())
 
 
@@ -80,6 +83,47 @@ def test_unknown_totals_are_not_rendered_as_question_mark_denominators() -> None
     assert "456/?" not in output
     assert "149.0 MiB" in output
     assert "149.0 MiB/?" not in output
+
+
+def test_transfer_and_processing_metrics_are_separate() -> None:
+    workers = {
+        1: WorkerSnapshot(
+            1,
+            state="run",
+            url="https://manga18fx.com/manga/downloading/",
+            backend="manga18fx",
+            images_done=488,
+            bytes_done=40 * 1024 * 1024,
+            current_bps=100 * 1024,
+            average_bps=600 * 1024,
+            current_ips=18.5,
+            average_ips=12.0,
+        ),
+        2: WorkerSnapshot(
+            2,
+            state="run",
+            url="https://manga18fx.com/manga/existing-only/",
+            backend="manga18fx",
+            images_done=1876,
+            bytes_done=0,
+            current_bps=0,
+            average_bps=0,
+            current_ips=74.6,
+            average_ips=53.0,
+            message="1876 processed: 0 downloaded, 1876 existing",
+        ),
+    }
+
+    output = ANSI_RE.sub("", render_dashboard("run", {"running": 2}, workers, width=180))
+
+    assert "Transfer now 100.0 KiB/s" in output
+    assert "Active aggregate avg 600.0 KiB/s" in output
+    assert "Active transferred 40.0 MiB" in output
+    assert "Processing now 93.10 img/s" in output
+    assert "Active aggregate avg 65.00 img/s" in output
+    assert "Active processed 2364 img" in output
+    existing_row = next(line for line in output.splitlines() if "M18:existing-only" in line)
+    assert "0.0 B/s" in existing_row
 
 
 def test_wide_dashboard_worker_columns_align_and_show_progress_rows() -> None:
@@ -129,6 +173,10 @@ def test_wide_dashboard_worker_columns_align_and_show_progress_rows() -> None:
     assert "Images/worker 5" in output
     assert "Active concurrency 10/23" in output
     assert "Logical CPUs 24" in output
+    assert "PROCESSED" in output
+    assert "TRANSFERRED" in output
+    assert "XFER NOW" in output
+    assert "PROC NOW" in output
     assert "M18" in first_rows[0]
 
 
