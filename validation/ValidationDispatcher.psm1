@@ -6,7 +6,7 @@ Import-Module -Name (Join-Path $PSScriptRoot 'ValidationTarget.psm1') -Force
 
 function Invoke-RepositoryValidation {
     [CmdletBinding()]
-    [OutputType([int])]
+    [OutputType([object[]])]
     param(
         [Parameter(Mandatory)]
         [string]$RepoRoot,
@@ -52,7 +52,8 @@ function Invoke-RepositoryValidation {
             }
             Write-Output ("{0,-24} {1}" -f $Name, $Description)
         }
-        return 0
+        Write-Output 0
+        return
     }
 
     $SelectedTargets = if ($Target -and $Target.Count -gt 0) {
@@ -85,7 +86,8 @@ function Invoke-RepositoryValidation {
 
     foreach ($TargetName in $SelectedTargets) {
         try {
-            $TargetResult = Invoke-ValidationTarget `
+            $TargetResult = $null
+            Invoke-ValidationTarget `
                 -RepoRoot $ResolvedRepoRoot `
                 -ManifestPath $ManifestPath `
                 -ResultsRoot $ResultsRoot `
@@ -97,13 +99,24 @@ function Invoke-RepositoryValidation {
                 -IncludeProductionReadOnly ([bool]$IncludeProductionReadOnly) `
                 -MaxHistoryPerTarget $MaxHistoryPerTarget `
                 -MaxHistoryAgeDays $MaxHistoryAgeDays `
-                -OverallFailures $OverallFailures
+                -OverallFailures $OverallFailures |
+                ForEach-Object {
+                    if ($_ -is [hashtable] -and $_.Contains('ReportPath')) {
+                        $TargetResult = $_
+                    }
+                    else {
+                        Write-Output $_
+                    }
+                }
+            if ($null -eq $TargetResult) {
+                throw "Target '$TargetName' did not return a validation result."
+            }
             $Results.Add($TargetResult)
         }
         catch {
             $Failure = "$TargetName - dispatcher failure: $($_.Exception.Message)"
             $OverallFailures.Add($Failure)
-            Write-Error $Failure
+            [Console]::Error.WriteLine("ERROR: $Failure")
         }
     }
 
@@ -118,7 +131,8 @@ function Invoke-RepositoryValidation {
     }
     if ($OverallFailures.Count -eq 0) {
         Write-Output 'OVERALL RESULT: PASS'
-        return 0
+        Write-Output 0
+        return
     }
 
     Write-Output 'OVERALL RESULT: FAIL'
@@ -126,7 +140,7 @@ function Invoke-RepositoryValidation {
     foreach ($Failure in $OverallFailures) {
         Write-Output "- $Failure"
     }
-    return 1
+    Write-Output 1
 }
 
 Export-ModuleMember -Function 'Invoke-RepositoryValidation'
