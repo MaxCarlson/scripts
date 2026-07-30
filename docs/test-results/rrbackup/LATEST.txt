@@ -3,7 +3,7 @@
 ====================================================================================================
 VALIDATION TARGET: rrbackup
 ====================================================================================================
-Timestamp: 2026-07-29T14:36:17.7728840-07:00
+Timestamp: 2026-07-29T17:23:07.0960896-07:00
 Description: RRBackup consolidation, single-CLI UX, viewer, scheduler, and repository validation.
 Repository root: C:\Users\mcarls\src\scripts
 Working directory: C:\Users\mcarls\src\scripts\modules\rrbackup
@@ -14,7 +14,7 @@ Bootstrap enabled: True
 Production read-only checks: False
 History retention: 3 prior runs, maximum age 14 days
 Git branch: agent/merge-restic-backup-modules
-Git commit: 16f96f8a2b1d72cddc7175ed657ec39aa1d2ed64
+Git commit: 138a50d3a02220f8a0fcaef53b3e6332a06e64f6
 Git status before validation:
 (clean)
 
@@ -54,8 +54,8 @@ Obtaining file:///C:/Users/mcarls/src/scripts/modules/termdash
 Building wheels for collected packages: termdash
   Building editable for termdash (pyproject.toml): started
   Building editable for termdash (pyproject.toml): finished with status 'done'
-  Created wheel for termdash: filename=termdash-0.5.0-0.editable-py3-none-any.whl size=4858 sha256=18d6e976d5acb4135ba116ea36dc70f14d7db66e7d49af50a7105a617c0afd33
-  Stored in directory: C:\Users\mcarls\src\scripts\modules\rrbackup\.pytest_tmp_root\validation\pip-ephem-wheel-cache-no0t80oa\wheels\0c\63\83\1230fd71819077cdd0e2f1c4fd3d10db1a8949cfd53cef1cad
+  Created wheel for termdash: filename=termdash-0.5.0-0.editable-py3-none-any.whl size=4858 sha256=50decae55fab869e3cadafc30931eb2870d15c968397fc6914c7a6295ab90cae
+  Stored in directory: C:\Users\mcarls\AppData\Local\Temp\pip-ephem-wheel-cache-6ha5muvh\wheels\0c\63\83\1230fd71819077cdd0e2f1c4fd3d10db1a8949cfd53cef1cad
 Successfully built termdash
 WARNING: Ignoring invalid distribution ~%bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
 WARNING: Ignoring invalid distribution ~ (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
@@ -121,8 +121,8 @@ Requirement already satisfied: coverage>=7.10.6 in C:\Users\mcarls\src\scripts\.
 Building wheels for collected packages: rrbackup
   Building editable for rrbackup (pyproject.toml): started
   Building editable for rrbackup (pyproject.toml): finished with status 'done'
-  Created wheel for rrbackup: filename=rrbackup-2.0.0-0.editable-py3-none-any.whl size=6215 sha256=67f66a03f0714d0735717ce5d48c9422ddba596fa88402b72065b70f32354e0f
-  Stored in directory: C:\Users\mcarls\src\scripts\modules\rrbackup\.pytest_tmp_root\validation\pip-ephem-wheel-cache-vah1rabl\wheels\8c\5d\d7\3308138532b7624f56969ac10a1a7e70bff0bfeb301caeee82
+  Created wheel for rrbackup: filename=rrbackup-2.0.0-0.editable-py3-none-any.whl size=6215 sha256=dda73d7f0b8c8a9599c6a41e105986b9dac4e8b8360860cf945f9af6080353a0
+  Stored in directory: C:\Users\mcarls\AppData\Local\Temp\pip-ephem-wheel-cache-mtnntr_z\wheels\8c\5d\d7\3308138532b7624f56969ac10a1a7e70bff0bfeb301caeee82
 Successfully built rrbackup
 WARNING: Ignoring invalid distribution ~%bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
 WARNING: Ignoring invalid distribution ~ (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
@@ -221,7 +221,7 @@ RESULT: PASS - Condensed backup view help contract
 RRBackup pytest and coverage suite
 ====================================================================================================
 Working directory: C:\Users\mcarls\src\scripts\modules\rrbackup
-Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest tests -vv -ra --color=yes --tb=short --durations=25 --strict-config --strict-markers --import-mode=importlib --rootdir C:\Users\mcarls\src\scripts\modules\rrbackup --basetemp C:\Users\mcarls\src\scripts\modules\rrbackup\.pytest_tmp_root\validation-20260729-143617 --cov=rrbackup --cov-branch --cov-report=term-missing
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest tests -vv -ra --color=yes --tb=short --durations=25 --strict-config --strict-markers --import-mode=importlib --rootdir C:\Users\mcarls\src\scripts\modules\rrbackup --basetemp C:\Users\mcarls\src\scripts\modules\rrbackup\.pytest_tmp_root\validation-20260729-172306 --cov=rrbackup --cov-branch --cov-report=term-missing
 
 ============================================================
 RRBackup Test Environment Status
@@ -388,183 +388,215 @@ tests/integration_test.py::TestWithGoogleDrive::test_rclone_gdrive_connectivity 
 tests/integration_test.py::TestWithGoogleDrive::test_rclone_can_create_directory [33mSKIPPED[0m[32m [ 44%][0m
 tests/integration_test.py::TestBinaryAvailability::test_binary_exists[restic] [32mPASSED[0m[32m [ 44%][0m
 tests/integration_test.py::TestBinaryAvailability::test_binary_exists[rclone] [32mPASSED[0m[32m [ 45%][0m
-tests/integration_test.py::TestEndToEndBackupRestore::test_full_backup_restore_cycle [32mPASSED[0m[32m [ 45%][0m
-tests/integration_test.py::TestCLIHelpOutput::test_main_help_output [32mPASSED[0m[32m [ 45%][0m
-tests/integration_test.py::TestCLIHelpOutput::test_run_help_output [32mPASSED[0m[32m [ 46%][0m
-tests/integration_test.py::TestCLIHelpOutput::test_view_help_is_condensed [32mPASSED[0m[32m [ 46%][0m
-tests/integration_test.py::TestCLIHelpOutput::test_schedule_help_lists_editor [32mPASSED[0m[32m [ 46%][0m
-tests/integration_test.py::TestErrorMessages::test_missing_config_error_message [32mPASSED[0m[32m [ 47%][0m
-tests/integration_test.py::TestErrorMessages::test_invalid_backup_name_returns_nonzero [32mPASSED[0m[32m [ 47%][0m
-tests/inventory_test.py::test_load_definitions_is_read_only_and_preserves_engine_options [32mPASSED[0m[32m [ 47%][0m
-tests/inventory_test.py::test_build_inventory_caches_repository_and_enriches_each_backup [32mPASSED[0m[32m [ 47%][0m
-tests/inventory_test.py::test_inventory_by_name_requires_one_exact_case_insensitive_match [32mPASSED[0m[32m [ 48%][0m
-tests/locking_test.py::test_acquire_and_release_round_trip [32mPASSED[0m[32m        [ 48%][0m
-tests/locking_test.py::test_context_manager_releases_after_error [32mPASSED[0m[32m  [ 48%][0m
-tests/locking_test.py::test_live_matching_process_blocks_acquisition [32mPASSED[0m[32m [ 49%][0m
-tests/locking_test.py::test_stale_process_lock_is_replaced [32mPASSED[0m[32m        [ 49%][0m
-tests/locking_test.py::test_stale_lock_is_not_removed_after_token_changes [32mPASSED[0m[32m [ 49%][0m
-tests/locking_test.py::test_invalid_lock_is_not_removed_automatically [32mPASSED[0m[32m [ 50%][0m
-tests/locking_test.py::test_release_refuses_foreign_token [32mPASSED[0m[32m         [ 50%][0m
-tests/locking_test.py::test_inspect_reports_invalid_and_missing_locks [32mPASSED[0m[32m [ 50%][0m
-tests/models_test.py::test_ensure_utc_handles_naive_and_aware_values [32mPASSED[0m[32m [ 51%][0m
-tests/models_test.py::test_datetime_text_round_trip [32mPASSED[0m[32m               [ 51%][0m
-tests/models_test.py::test_create_run_record_uses_supplied_identity [32mPASSED[0m[32m [ 51%][0m
-tests/models_test.py::test_transition_sets_start_and_finish_times [32mPASSED[0m[32m [ 52%][0m
-tests/models_test.py::test_invalid_transition_is_rejected [32mPASSED[0m[32m         [ 52%][0m
-tests/models_test.py::test_terminal_state_cannot_transition_again [32mPASSED[0m[32m [ 52%][0m
-tests/models_test.py::test_run_record_json_round_trip_is_independent [32mPASSED[0m[32m [ 52%][0m
-tests/models_test.py::test_run_record_requires_created_time [32mPASSED[0m[32m       [ 53%][0m
-tests/monitored_restic_test.py::test_monitored_executor_streams_lines_without_terminal_echo [32mPASSED[0m[32m [ 53%][0m
-tests/monitored_restic_test.py::test_stop_requested_before_process_start_is_honored_on_attach [32mPASSED[0m[32m [ 53%][0m
-tests/monitored_restic_test.py::test_active_process_can_be_stopped_through_control [32mPASSED[0m[32m [ 54%][0m
-tests/operations_dashboard_test.py::test_confirmation_contains_full_information_for_every_selected_backup [32mPASSED[0m[32m [ 54%][0m
-tests/operations_dashboard_test.py::test_active_operation_lines_include_drive_activity_without_fake_percentages [32mPASSED[0m[32m [ 54%][0m
-tests/operations_dashboard_test.py::test_confirmation_can_start_two_backups_without_leaving_dashboard [32mPASSED[0m[32m [ 55%][0m
-tests/operations_dashboard_test.py::test_stop_confirmation_targets_locally_managed_active_job [32mPASSED[0m[32m [ 55%][0m
-tests/packaging_test.py::test_modules_path_import_resolves_regular_package_and_backup_cli [32mPASSED[0m[32m [ 55%][0m
-tests/policy_test.py::test_policy_validation_rejects_invalid_thresholds [32mPASSED[0m[32m [ 56%][0m
-tests/policy_test.py::test_recent_backup_uses_normal_threshold [32mPASSED[0m[32m    [ 56%][0m
-tests/policy_test.py::test_overdue_backup_uses_overdue_threshold [32mPASSED[0m[32m  [ 56%][0m
-tests/policy_test.py::test_missing_success_is_always_overdue [32mPASSED[0m[32m      [ 57%][0m
-tests/policy_test.py::test_future_success_time_is_clamped_to_zero_age [32mPASSED[0m[32m [ 57%][0m
-tests/policy_test.py::test_wait_returns_immediately_when_first_sample_is_acceptable [32mPASSED[0m[32m [ 57%][0m
-tests/policy_test.py::test_wait_retries_without_holding_execution_state [32mPASSED[0m[32m [ 57%][0m
-tests/policy_test.py::test_wait_reports_deadline_after_final_rejected_sample [32mPASSED[0m[32m [ 58%][0m
-tests/presentation_test.py::test_palette_and_strip_ansi_are_deterministic [32mPASSED[0m[32m [ 58%][0m
-tests/presentation_test.py::test_backup_and_schedule_tables_show_complete_and_attempted_runs [32mPASSED[0m[32m [ 58%][0m
-tests/presentation_test.py::test_backup_detail_contains_complete_and_attempted_run_information [32mPASSED[0m[32m [ 59%][0m
-tests/presentation_test.py::test_history_distinguishes_completed_snapshot_and_attempted_run [32mPASSED[0m[32m [ 59%][0m
-tests/presentation_test.py::test_repository_summary_is_labeled_human_output [32mPASSED[0m[32m [ 59%][0m
-tests/presentation_test.py::test_browse_backups_uses_shared_termdash_selection_adapter [32mPASSED[0m[32m [ 60%][0m
-tests/profile_test.py::test_defaults_produce_production_compatible_profile [32mPASSED[0m[32m [ 60%][0m
-tests/profile_test.py::test_environment_overrides_defaults [32mPASSED[0m[32m        [ 60%][0m
-tests/profile_test.py::test_json_config_overrides_environment_and_resolves_relative_paths [32mPASSED[0m[32m [ 61%][0m
-tests/profile_test.py::test_explicit_overrides_have_highest_precedence [32mPASSED[0m[32m [ 61%][0m
-tests/profile_test.py::test_unknown_override_is_rejected [32mPASSED[0m[32m          [ 61%][0m
-tests/profile_test.py::test_discovery_precedence_and_explicit_missing_path [32mPASSED[0m[32m [ 61%][0m
-tests/profile_test.py::test_remote_repository_is_not_converted_to_local_path [32mPASSED[0m[32m [ 62%][0m
-tests/profile_test.py::test_public_dict_contains_values_and_source_attribution [32mPASSED[0m[32m [ 62%][0m
-tests/profile_test.py::test_read_path_list_ignores_blank_lines_comments_and_bom [32mPASSED[0m[32m [ 62%][0m
-tests/profile_test.py::test_profile_validation_rejects_invalid_policy [32mPASSED[0m[32m [ 63%][0m
-tests/repository_ops_test.py::test_snapshots_are_parsed_and_returned_newest_first [32mPASSED[0m[32m [ 63%][0m
-tests/repository_ops_test.py::test_status_and_stats_parse_json [32mPASSED[0m[32m    [ 63%][0m
-tests/repository_ops_test.py::test_keys_locks_and_cache_preserve_lines [32mPASSED[0m[32m [ 64%][0m
-tests/repository_ops_test.py::test_nonzero_snapshot_result_does_not_parse_output [32mPASSED[0m[32m [ 64%][0m
-tests/repository_summary_test.py::test_default_repository_summary_never_runs_expensive_stats [32mPASSED[0m[32m [ 64%][0m
-tests/repository_summary_test.py::test_explicit_storage_refresh_runs_once_and_writes_cache [32mPASSED[0m[32m [ 65%][0m
-tests/repository_summary_test.py::test_default_summary_reuses_cache_without_refreshing [32mPASSED[0m[32m [ 65%][0m
-tests/restic_test.py::test_build_command_uses_environment_for_password_file [32mPASSED[0m[32m [ 65%][0m
-tests/restic_test.py::test_build_command_rejects_multiple_credential_sources [32mPASSED[0m[32m [ 66%][0m
-tests/restic_test.py::test_redaction_handles_secret_options_and_literals [32mPASSED[0m[32m [ 66%][0m
-tests/restic_test.py::test_ensure_dry_run_adds_flag_exactly_once [32mPASSED[0m[32m  [ 66%][0m
-tests/restic_test.py::test_ensure_dry_run_rejects_non_backup_command [32mPASSED[0m[32m [ 66%][0m
-tests/restic_test.py::test_preview_is_hard_execution_barrier [32mPASSED[0m[32m      [ 67%][0m
-tests/restic_test.py::test_dry_run_executes_with_flag_and_preserves_mode [32mPASSED[0m[32m [ 67%][0m
-tests/restic_test.py::test_nonzero_return_is_reported_without_being_successful [32mPASSED[0m[32m [ 67%][0m
-tests/restic_test.py::test_start_failure_raises_actionable_error [32mPASSED[0m[32m  [ 68%][0m
-tests/restic_test.py::test_keyboard_interrupt_terminates_child_and_returns_result [32mPASSED[0m[32m [ 68%][0m
-tests/run_monitor_test.py::test_monitor_worker_tracks_progress_and_terminal_results [32mPASSED[0m[32m [ 68%][0m
-tests/run_monitor_test.py::test_monitor_stop_marks_pending_jobs_cancelled [32mPASSED[0m[32m [ 69%][0m
-tests/run_progress_test.py::test_parse_progress_line_normalizes_status_and_estimates_speed [32mPASSED[0m[32m [ 69%][0m
-tests/run_progress_test.py::test_progress_mapping_rejects_non_status_and_invalid_values [32mPASSED[0m[32m [ 69%][0m
-tests/run_progress_test.py::test_eta_is_unknown_until_speed_and_total_are_available [32mPASSED[0m[32m [ 70%][0m
-tests/run_runtime_test.py::test_interactive_named_run_routes_through_persistent_operations_dashboard [32mPASSED[0m[32m [ 70%][0m
-tests/run_runtime_test.py::test_progress_persistence_updates_running_record_metadata [32mPASSED[0m[32m [ 70%][0m
-tests/runner_test.py::TestHelperFunctions::test_now_stamp_format [32mPASSED[0m[32m  [ 71%][0m
-tests/runner_test.py::TestHelperFunctions::test_logfile_path [32mPASSED[0m[32m      [ 71%][0m
-tests/runner_test.py::TestHelperFunctions::test_pidfile_path [32mPASSED[0m[32m      [ 71%][0m
-tests/runner_test.py::TestHelperFunctions::test_repo_url [32mPASSED[0m[32m          [ 71%][0m
-tests/runner_test.py::TestEnvForRepo::test_env_with_password_file [32mPASSED[0m[32m [ 72%][0m
-tests/runner_test.py::TestEnvForRepo::test_env_with_password_env [32mPASSED[0m[32m  [ 72%][0m
-tests/runner_test.py::TestEnvForRepo::test_env_missing_password_env_raises_error [32mPASSED[0m[32m [ 72%][0m
-tests/runner_test.py::TestEnvForRepo::test_env_no_repo_raises_error [32mPASSED[0m[32m [ 73%][0m
-tests/runner_test.py::TestRunRestic::test_run_restic_success [32mPASSED[0m[32m      [ 73%][0m
-tests/runner_test.py::TestRunRestic::test_run_restic_failure_raises_error [32mPASSED[0m[32m [ 73%][0m
-tests/runner_test.py::TestRunRestic::test_run_restic_creates_log_file [32mPASSED[0m[32m [ 74%][0m
-tests/runner_test.py::TestStartBackup::test_start_backup_creates_pid_file [32mPASSED[0m[32m [ 74%][0m
-tests/runner_test.py::TestStartBackup::test_start_backup_includes_tags [32mPASSED[0m[32m [ 74%][0m
-tests/runner_test.py::TestStartBackup::test_start_backup_includes_excludes [32mPASSED[0m[32m [ 75%][0m
-tests/runner_test.py::TestStartBackup::test_start_backup_dry_run [32mPASSED[0m[32m  [ 75%][0m
-tests/runner_test.py::TestStartBackup::test_start_backup_one_file_system [32mPASSED[0m[32m [ 75%][0m
-tests/runner_test.py::TestStartBackup::test_start_backup_cleans_up_pid_on_error [32mPASSED[0m[32m [ 76%][0m
-tests/runner_test.py::TestListSnapshots::test_list_snapshots_no_filters [32mPASSED[0m[32m [ 76%][0m
-tests/runner_test.py::TestListSnapshots::test_list_snapshots_with_filters [32mPASSED[0m[32m [ 76%][0m
-tests/runner_test.py::TestRepoStats::test_repo_stats [32mPASSED[0m[32m              [ 76%][0m
-tests/runner_test.py::TestRunCheck::test_run_check [32mPASSED[0m[32m                [ 77%][0m
-tests/runner_test.py::TestRunForgetPrune::test_forget_prune_with_RetentionPolicy [32mPASSED[0m[32m [ 77%][0m
-tests/runner_test.py::TestRunForgetPrune::test_forget_prune_skips_none_values [32mPASSED[0m[32m [ 77%][0m
-tests/runner_test.py::TestShowInProgress::test_show_in_progress_no_pidfiles [32mPASSED[0m[32m [ 78%][0m
-tests/runner_test.py::TestShowInProgress::test_show_in_progress_with_pidfiles [32mPASSED[0m[32m [ 78%][0m
-tests/runner_test.py::TestErrorHandling::test_backup_with_missing_include_paths [32mPASSED[0m[32m [ 78%][0m
-tests/runner_test.py::TestErrorHandling::test_restic_timeout_handling [32mPASSED[0m[32m [ 79%][0m
-tests/schedule_discovery_test.py::test_windows_schedule_discovery_normalizes_records [32mPASSED[0m[32m [ 79%][0m
-tests/schedule_discovery_test.py::test_schedule_ownership_is_strict[record0-True] [32mPASSED[0m[32m [ 79%][0m
-tests/schedule_discovery_test.py::test_schedule_ownership_is_strict[record1-True] [32mPASSED[0m[32m [ 80%][0m
-tests/schedule_discovery_test.py::test_schedule_ownership_is_strict[record2-True] [32mPASSED[0m[32m [ 80%][0m
-tests/schedule_discovery_test.py::test_schedule_ownership_is_strict[record3-False] [32mPASSED[0m[32m [ 80%][0m
-tests/schedule_discovery_test.py::test_schedule_ownership_is_strict[record4-False] [32mPASSED[0m[32m [ 80%][0m
-tests/schedule_discovery_test.py::test_schedule_ownership_is_strict[record5-False] [32mPASSED[0m[32m [ 81%][0m
-tests/schedule_discovery_test.py::test_windows_discovery_drops_unrelated_backup_tasks [32mPASSED[0m[32m [ 81%][0m
-tests/schedule_discovery_test.py::test_windows_discovery_reports_missing_powershell [32mPASSED[0m[32m [ 81%][0m
-tests/schedule_discovery_test.py::test_windows_discovery_reports_command_failure [32mPASSED[0m[32m [ 82%][0m
-tests/schedule_discovery_test.py::test_windows_discovery_reports_invalid_json [32mPASSED[0m[32m [ 82%][0m
-tests/schedule_discovery_test.py::test_non_windows_discovery_is_explicitly_unavailable [32mPASSED[0m[32m [ 82%][0m
-tests/schedule_math_test.py::test_normalize_schedule_type[minutes-minute] [32mPASSED[0m[32m [ 83%][0m
-tests/schedule_math_test.py::test_normalize_schedule_type[hour-hourly] [32mPASSED[0m[32m [ 83%][0m
-tests/schedule_math_test.py::test_normalize_schedule_type[days-daily] [32mPASSED[0m[32m [ 83%][0m
-tests/schedule_math_test.py::test_normalize_schedule_type[week-weekly] [32mPASSED[0m[32m [ 84%][0m
-tests/schedule_math_test.py::test_normalize_schedule_type[months-monthly] [32mPASSED[0m[32m [ 84%][0m
-tests/schedule_math_test.py::test_normalize_schedule_type[year-yearly] [32mPASSED[0m[32m [ 84%][0m
-tests/schedule_math_test.py::test_normalize_schedule_type[manual-manual] [32mPASSED[0m[32m [ 85%][0m
-tests/schedule_math_test.py::test_parse_clock_rejects_invalid_values[24:00] [32mPASSED[0m[32m [ 85%][0m
-tests/schedule_math_test.py::test_parse_clock_rejects_invalid_values[09:60] [32mPASSED[0m[32m [ 85%][0m
-tests/schedule_math_test.py::test_parse_clock_rejects_invalid_values[9] [32mPASSED[0m[32m [ 85%][0m
-tests/schedule_math_test.py::test_parse_clock_rejects_invalid_values[invalid] [32mPASSED[0m[32m [ 86%][0m
-tests/schedule_math_test.py::test_describe_schedule[schedule0-Manual] [32mPASSED[0m[32m [ 86%][0m
-tests/schedule_math_test.py::test_describe_schedule[schedule1-Every 15 minutes] [32mPASSED[0m[32m [ 86%][0m
-tests/schedule_math_test.py::test_describe_schedule[schedule2-Every 2 hours at minute 20] [32mPASSED[0m[32m [ 87%][0m
-tests/schedule_math_test.py::test_describe_schedule[schedule3-Every day at 03:15] [32mPASSED[0m[32m [ 87%][0m
-tests/schedule_math_test.py::test_describe_schedule[schedule4-Every week on Monday at 04:00] [32mPASSED[0m[32m [ 87%][0m
-tests/schedule_math_test.py::test_describe_schedule[schedule5-Every 3 months on day 12 at 05:00] [32mPASSED[0m[32m [ 88%][0m
-tests/schedule_math_test.py::test_describe_schedule[schedule6-Every year on Jul 4 at 06:30] [32mPASSED[0m[32m [ 88%][0m
-tests/schedule_math_test.py::test_describe_retention_is_compact [32mPASSED[0m[32m   [ 88%][0m
-tests/schedule_math_test.py::test_next_scheduled_run[schedule0-expected0] [32mPASSED[0m[32m [ 89%][0m
-tests/schedule_math_test.py::test_next_scheduled_run[schedule1-expected1] [32mPASSED[0m[32m [ 89%][0m
-tests/schedule_math_test.py::test_next_scheduled_run[schedule2-expected2] [32mPASSED[0m[32m [ 89%][0m
-tests/schedule_math_test.py::test_next_scheduled_run[schedule3-expected3] [32mPASSED[0m[32m [ 90%][0m
-tests/schedule_math_test.py::test_next_scheduled_run[schedule4-expected4] [32mPASSED[0m[32m [ 90%][0m
-tests/schedule_math_test.py::test_next_scheduled_run[schedule5-expected5] [32mPASSED[0m[32m [ 90%][0m
-tests/schedule_math_test.py::test_manual_schedule_has_no_next_or_missed_runs [32mPASSED[0m[32m [ 90%][0m
-tests/schedule_math_test.py::test_count_missed_daily_runs_after_last_snapshot [32mPASSED[0m[32m [ 91%][0m
-tests/schedule_math_test.py::test_count_missed_runs_is_unknown_without_history [32mPASSED[0m[32m [ 91%][0m
-tests/snapshots_test.py::test_parse_snapshots_json_sorts_and_normalizes [32mPASSED[0m[32m [ 91%][0m
-tests/snapshots_test.py::test_parse_snapshots_requires_array_and_required_fields [32mPASSED[0m[32m [ 92%][0m
-tests/snapshots_test.py::test_parse_backup_json_lines_returns_last_summary [32mPASSED[0m[32m [ 92%][0m
-tests/snapshots_test.py::test_parse_backup_json_lines_can_be_strict [32mPASSED[0m[32m [ 92%][0m
-tests/snapshots_test.py::test_parse_backup_json_lines_returns_none_without_summary [32mPASSED[0m[32m [ 93%][0m
-tests/snapshots_test.py::test_backup_summary_rejects_wrong_message_type [32mPASSED[0m[32m [ 93%][0m
-tests/snapshots_test.py::test_latest_snapshot_filters_by_tag_and_hostname [32mPASSED[0m[32m [ 93%][0m
-tests/state_test.py::test_atomic_write_json_round_trip [32mPASSED[0m[32m            [ 94%][0m
-tests/state_test.py::test_read_json_returns_empty_when_missing [32mPASSED[0m[32m    [ 94%][0m
-tests/state_test.py::test_read_json_rejects_non_object [32mPASSED[0m[32m            [ 94%][0m
-tests/state_test.py::test_store_saves_latest_and_run_history [32mPASSED[0m[32m      [ 95%][0m
-tests/state_test.py::test_only_real_success_updates_last_success [32mPASSED[0m[32m  [ 95%][0m
-tests/state_test.py::test_reconcile_stale_running_marks_interrupted [32mPASSED[0m[32m [ 95%][0m
-tests/state_test.py::test_reconcile_preserves_live_running_record [32mPASSED[0m[32m [ 95%][0m
-tests/state_test.py::test_reconcile_missing_identity_marks_interrupted [32mPASSED[0m[32m [ 96%][0m
-tests/state_test.py::test_atomic_write_failure_removes_temporary_file [32mPASSED[0m[32m [ 96%][0m
-tests/viewer_dashboard_test.py::test_live_pages_surface_persisted_active_progress [32mPASSED[0m[32m [ 96%][0m
-tests/viewer_dashboard_test.py::test_materialized_expansion_keeps_details_inline_after_parent [32mPASSED[0m[32m [ 97%][0m
-tests/viewer_dashboard_test.py::test_dashboard_hotkeys_expand_collapse_and_use_reliable_page_navigation [32mPASSED[0m[32m [ 97%][0m
-tests/viewer_test.py::test_view_parser_exposes_safe_demo_mode [32mPASSED[0m[32m     [ 97%][0m
-tests/viewer_test.py::test_demo_records_cover_varied_states_without_touching_real_paths [32mPASSED[0m[32m [ 98%][0m
-tests/viewer_test.py::test_all_carousel_pages_render_demo_data [32mPASSED[0m[32m    [ 98%][0m
-tests/viewer_test.py::test_diagnostics_and_audit_default_human_output_are_compact [32mPASSED[0m[32m [ 98%][0m
-tests/viewer_test.py::test_carousel_switches_pages_and_loads_expensive_pages_lazily [32mPASSED[0m[32m [ 99%][0m
-tests/viewer_test.py::test_bare_view_routes_to_aggregate_carousel [32mPASSED[0m[32m [ 99%][0m
-tests/viewer_test.py::test_plain_overview_is_aggregate_not_duplicate_backup_table [32mPASSED[0m[32m [ 99%][0m
-tests/viewer_test.py::test_concise_run_selector_uses_unlabeled_row_values [32mPASSED[0m[32m [100%][0m
+tests/integration_test.py::TestEndToEndBackupRestore::test_full_backup_restore_cycle [31mFAILED[0m[31m [ 45%][0m
+tests/integration_test.py::TestCLIHelpOutput::test_main_help_output [32mPASSED[0m[31m [ 45%][0m
+tests/integration_test.py::TestCLIHelpOutput::test_run_help_output [32mPASSED[0m[31m [ 46%][0m
+tests/integration_test.py::TestCLIHelpOutput::test_view_help_is_condensed [32mPASSED[0m[31m [ 46%][0m
+tests/integration_test.py::TestCLIHelpOutput::test_schedule_help_lists_editor [32mPASSED[0m[31m [ 46%][0m
+tests/integration_test.py::TestErrorMessages::test_missing_config_error_message [32mPASSED[0m[31m [ 47%][0m
+tests/integration_test.py::TestErrorMessages::test_invalid_backup_name_returns_nonzero [32mPASSED[0m[31m [ 47%][0m
+tests/inventory_test.py::test_load_definitions_is_read_only_and_preserves_engine_options [32mPASSED[0m[31m [ 47%][0m
+tests/inventory_test.py::test_build_inventory_caches_repository_and_enriches_each_backup [32mPASSED[0m[31m [ 47%][0m
+tests/inventory_test.py::test_inventory_by_name_requires_one_exact_case_insensitive_match [32mPASSED[0m[31m [ 48%][0m
+tests/locking_test.py::test_acquire_and_release_round_trip [32mPASSED[0m[31m        [ 48%][0m
+tests/locking_test.py::test_context_manager_releases_after_error [32mPASSED[0m[31m  [ 48%][0m
+tests/locking_test.py::test_live_matching_process_blocks_acquisition [32mPASSED[0m[31m [ 49%][0m
+tests/locking_test.py::test_stale_process_lock_is_replaced [32mPASSED[0m[31m        [ 49%][0m
+tests/locking_test.py::test_stale_lock_is_not_removed_after_token_changes [32mPASSED[0m[31m [ 49%][0m
+tests/locking_test.py::test_invalid_lock_is_not_removed_automatically [32mPASSED[0m[31m [ 50%][0m
+tests/locking_test.py::test_release_refuses_foreign_token [32mPASSED[0m[31m         [ 50%][0m
+tests/locking_test.py::test_inspect_reports_invalid_and_missing_locks [32mPASSED[0m[31m [ 50%][0m
+tests/models_test.py::test_ensure_utc_handles_naive_and_aware_values [32mPASSED[0m[31m [ 51%][0m
+tests/models_test.py::test_datetime_text_round_trip [32mPASSED[0m[31m               [ 51%][0m
+tests/models_test.py::test_create_run_record_uses_supplied_identity [32mPASSED[0m[31m [ 51%][0m
+tests/models_test.py::test_transition_sets_start_and_finish_times [32mPASSED[0m[31m [ 52%][0m
+tests/models_test.py::test_invalid_transition_is_rejected [32mPASSED[0m[31m         [ 52%][0m
+tests/models_test.py::test_terminal_state_cannot_transition_again [32mPASSED[0m[31m [ 52%][0m
+tests/models_test.py::test_run_record_json_round_trip_is_independent [32mPASSED[0m[31m [ 52%][0m
+tests/models_test.py::test_run_record_requires_created_time [32mPASSED[0m[31m       [ 53%][0m
+tests/monitored_restic_test.py::test_monitored_executor_streams_lines_without_terminal_echo [32mPASSED[0m[31m [ 53%][0m
+tests/monitored_restic_test.py::test_stop_requested_before_process_start_is_honored_on_attach [32mPASSED[0m[31m [ 53%][0m
+tests/monitored_restic_test.py::test_active_process_can_be_stopped_through_control [32mPASSED[0m[31m [ 54%][0m
+tests/operations_dashboard_test.py::test_confirmation_contains_full_information_for_every_selected_backup [32mPASSED[0m[31m [ 54%][0m
+tests/operations_dashboard_test.py::test_active_operation_lines_include_drive_activity_without_fake_percentages [32mPASSED[0m[31m [ 54%][0m
+tests/operations_dashboard_test.py::test_confirmation_can_start_two_backups_without_leaving_dashboard [32mPASSED[0m[31m [ 55%][0m
+tests/operations_dashboard_test.py::test_stop_confirmation_targets_locally_managed_active_job [32mPASSED[0m[31m [ 55%][0m
+tests/packaging_test.py::test_modules_path_import_resolves_regular_package_and_backup_cli [32mPASSED[0m[31m [ 55%][0m
+tests/policy_test.py::test_policy_validation_rejects_invalid_thresholds [32mPASSED[0m[31m [ 56%][0m
+tests/policy_test.py::test_recent_backup_uses_normal_threshold [32mPASSED[0m[31m    [ 56%][0m
+tests/policy_test.py::test_overdue_backup_uses_overdue_threshold [32mPASSED[0m[31m  [ 56%][0m
+tests/policy_test.py::test_missing_success_is_always_overdue [32mPASSED[0m[31m      [ 57%][0m
+tests/policy_test.py::test_future_success_time_is_clamped_to_zero_age [32mPASSED[0m[31m [ 57%][0m
+tests/policy_test.py::test_wait_returns_immediately_when_first_sample_is_acceptable [32mPASSED[0m[31m [ 57%][0m
+tests/policy_test.py::test_wait_retries_without_holding_execution_state [32mPASSED[0m[31m [ 57%][0m
+tests/policy_test.py::test_wait_reports_deadline_after_final_rejected_sample [32mPASSED[0m[31m [ 58%][0m
+tests/presentation_test.py::test_palette_and_strip_ansi_are_deterministic [32mPASSED[0m[31m [ 58%][0m
+tests/presentation_test.py::test_backup_and_schedule_tables_show_complete_and_attempted_runs [32mPASSED[0m[31m [ 58%][0m
+tests/presentation_test.py::test_backup_detail_contains_complete_and_attempted_run_information [32mPASSED[0m[31m [ 59%][0m
+tests/presentation_test.py::test_history_distinguishes_completed_snapshot_and_attempted_run [32mPASSED[0m[31m [ 59%][0m
+tests/presentation_test.py::test_repository_summary_is_labeled_human_output [32mPASSED[0m[31m [ 59%][0m
+tests/presentation_test.py::test_browse_backups_uses_shared_termdash_selection_adapter [32mPASSED[0m[31m [ 60%][0m
+tests/profile_test.py::test_defaults_produce_production_compatible_profile [32mPASSED[0m[31m [ 60%][0m
+tests/profile_test.py::test_environment_overrides_defaults [32mPASSED[0m[31m        [ 60%][0m
+tests/profile_test.py::test_json_config_overrides_environment_and_resolves_relative_paths [32mPASSED[0m[31m [ 61%][0m
+tests/profile_test.py::test_explicit_overrides_have_highest_precedence [32mPASSED[0m[31m [ 61%][0m
+tests/profile_test.py::test_unknown_override_is_rejected [32mPASSED[0m[31m          [ 61%][0m
+tests/profile_test.py::test_discovery_precedence_and_explicit_missing_path [32mPASSED[0m[31m [ 61%][0m
+tests/profile_test.py::test_remote_repository_is_not_converted_to_local_path [32mPASSED[0m[31m [ 62%][0m
+tests/profile_test.py::test_public_dict_contains_values_and_source_attribution [32mPASSED[0m[31m [ 62%][0m
+tests/profile_test.py::test_read_path_list_ignores_blank_lines_comments_and_bom [32mPASSED[0m[31m [ 62%][0m
+tests/profile_test.py::test_profile_validation_rejects_invalid_policy [32mPASSED[0m[31m [ 63%][0m
+tests/repository_ops_test.py::test_snapshots_are_parsed_and_returned_newest_first [32mPASSED[0m[31m [ 63%][0m
+tests/repository_ops_test.py::test_status_and_stats_parse_json [32mPASSED[0m[31m    [ 63%][0m
+tests/repository_ops_test.py::test_keys_locks_and_cache_preserve_lines [32mPASSED[0m[31m [ 64%][0m
+tests/repository_ops_test.py::test_nonzero_snapshot_result_does_not_parse_output [32mPASSED[0m[31m [ 64%][0m
+tests/repository_summary_test.py::test_default_repository_summary_never_runs_expensive_stats [32mPASSED[0m[31m [ 64%][0m
+tests/repository_summary_test.py::test_explicit_storage_refresh_runs_once_and_writes_cache [32mPASSED[0m[31m [ 65%][0m
+tests/repository_summary_test.py::test_default_summary_reuses_cache_without_refreshing [32mPASSED[0m[31m [ 65%][0m
+tests/restic_test.py::test_build_command_uses_environment_for_password_file [32mPASSED[0m[31m [ 65%][0m
+tests/restic_test.py::test_build_command_rejects_multiple_credential_sources [32mPASSED[0m[31m [ 66%][0m
+tests/restic_test.py::test_redaction_handles_secret_options_and_literals [32mPASSED[0m[31m [ 66%][0m
+tests/restic_test.py::test_ensure_dry_run_adds_flag_exactly_once [32mPASSED[0m[31m  [ 66%][0m
+tests/restic_test.py::test_ensure_dry_run_rejects_non_backup_command [32mPASSED[0m[31m [ 66%][0m
+tests/restic_test.py::test_preview_is_hard_execution_barrier [32mPASSED[0m[31m      [ 67%][0m
+tests/restic_test.py::test_dry_run_executes_with_flag_and_preserves_mode [32mPASSED[0m[31m [ 67%][0m
+tests/restic_test.py::test_nonzero_return_is_reported_without_being_successful [32mPASSED[0m[31m [ 67%][0m
+tests/restic_test.py::test_start_failure_raises_actionable_error [32mPASSED[0m[31m  [ 68%][0m
+tests/restic_test.py::test_keyboard_interrupt_terminates_child_and_returns_result [32mPASSED[0m[31m [ 68%][0m
+tests/run_monitor_test.py::test_monitor_worker_tracks_progress_and_terminal_results [32mPASSED[0m[31m [ 68%][0m
+tests/run_monitor_test.py::test_monitor_stop_marks_pending_jobs_cancelled [32mPASSED[0m[31m [ 69%][0m
+tests/run_progress_test.py::test_parse_progress_line_normalizes_status_and_estimates_speed [32mPASSED[0m[31m [ 69%][0m
+tests/run_progress_test.py::test_progress_mapping_rejects_non_status_and_invalid_values [32mPASSED[0m[31m [ 69%][0m
+tests/run_progress_test.py::test_eta_is_unknown_until_speed_and_total_are_available [32mPASSED[0m[31m [ 70%][0m
+tests/run_runtime_test.py::test_interactive_named_run_routes_through_persistent_operations_dashboard [32mPASSED[0m[31m [ 70%][0m
+tests/run_runtime_test.py::test_progress_persistence_updates_running_record_metadata [32mPASSED[0m[31m [ 70%][0m
+tests/runner_test.py::TestHelperFunctions::test_now_stamp_format [32mPASSED[0m[31m  [ 71%][0m
+tests/runner_test.py::TestHelperFunctions::test_logfile_path [32mPASSED[0m[31m      [ 71%][0m
+tests/runner_test.py::TestHelperFunctions::test_pidfile_path [32mPASSED[0m[31m      [ 71%][0m
+tests/runner_test.py::TestHelperFunctions::test_repo_url [32mPASSED[0m[31m          [ 71%][0m
+tests/runner_test.py::TestEnvForRepo::test_env_with_password_file [32mPASSED[0m[31m [ 72%][0m
+tests/runner_test.py::TestEnvForRepo::test_env_with_password_env [32mPASSED[0m[31m  [ 72%][0m
+tests/runner_test.py::TestEnvForRepo::test_env_missing_password_env_raises_error [32mPASSED[0m[31m [ 72%][0m
+tests/runner_test.py::TestEnvForRepo::test_env_no_repo_raises_error [32mPASSED[0m[31m [ 73%][0m
+tests/runner_test.py::TestRunRestic::test_run_restic_success [32mPASSED[0m[31m      [ 73%][0m
+tests/runner_test.py::TestRunRestic::test_run_restic_failure_raises_error [32mPASSED[0m[31m [ 73%][0m
+tests/runner_test.py::TestRunRestic::test_run_restic_creates_log_file [32mPASSED[0m[31m [ 74%][0m
+tests/runner_test.py::TestStartBackup::test_start_backup_creates_pid_file [32mPASSED[0m[31m [ 74%][0m
+tests/runner_test.py::TestStartBackup::test_start_backup_includes_tags [32mPASSED[0m[31m [ 74%][0m
+tests/runner_test.py::TestStartBackup::test_start_backup_includes_excludes [32mPASSED[0m[31m [ 75%][0m
+tests/runner_test.py::TestStartBackup::test_start_backup_dry_run [32mPASSED[0m[31m  [ 75%][0m
+tests/runner_test.py::TestStartBackup::test_start_backup_one_file_system [32mPASSED[0m[31m [ 75%][0m
+tests/runner_test.py::TestStartBackup::test_start_backup_cleans_up_pid_on_error [32mPASSED[0m[31m [ 76%][0m
+tests/runner_test.py::TestListSnapshots::test_list_snapshots_no_filters [32mPASSED[0m[31m [ 76%][0m
+tests/runner_test.py::TestListSnapshots::test_list_snapshots_with_filters [32mPASSED[0m[31m [ 76%][0m
+tests/runner_test.py::TestRepoStats::test_repo_stats [32mPASSED[0m[31m              [ 76%][0m
+tests/runner_test.py::TestRunCheck::test_run_check [32mPASSED[0m[31m                [ 77%][0m
+tests/runner_test.py::TestRunForgetPrune::test_forget_prune_with_RetentionPolicy [32mPASSED[0m[31m [ 77%][0m
+tests/runner_test.py::TestRunForgetPrune::test_forget_prune_skips_none_values [32mPASSED[0m[31m [ 77%][0m
+tests/runner_test.py::TestShowInProgress::test_show_in_progress_no_pidfiles [32mPASSED[0m[31m [ 78%][0m
+tests/runner_test.py::TestShowInProgress::test_show_in_progress_with_pidfiles [32mPASSED[0m[31m [ 78%][0m
+tests/runner_test.py::TestErrorHandling::test_backup_with_missing_include_paths [32mPASSED[0m[31m [ 78%][0m
+tests/runner_test.py::TestErrorHandling::test_restic_timeout_handling [32mPASSED[0m[31m [ 79%][0m
+tests/schedule_discovery_test.py::test_windows_schedule_discovery_normalizes_records [32mPASSED[0m[31m [ 79%][0m
+tests/schedule_discovery_test.py::test_schedule_ownership_is_strict[record0-True] [32mPASSED[0m[31m [ 79%][0m
+tests/schedule_discovery_test.py::test_schedule_ownership_is_strict[record1-True] [32mPASSED[0m[31m [ 80%][0m
+tests/schedule_discovery_test.py::test_schedule_ownership_is_strict[record2-True] [32mPASSED[0m[31m [ 80%][0m
+tests/schedule_discovery_test.py::test_schedule_ownership_is_strict[record3-False] [32mPASSED[0m[31m [ 80%][0m
+tests/schedule_discovery_test.py::test_schedule_ownership_is_strict[record4-False] [32mPASSED[0m[31m [ 80%][0m
+tests/schedule_discovery_test.py::test_schedule_ownership_is_strict[record5-False] [32mPASSED[0m[31m [ 81%][0m
+tests/schedule_discovery_test.py::test_windows_discovery_drops_unrelated_backup_tasks [32mPASSED[0m[31m [ 81%][0m
+tests/schedule_discovery_test.py::test_windows_discovery_reports_missing_powershell [32mPASSED[0m[31m [ 81%][0m
+tests/schedule_discovery_test.py::test_windows_discovery_reports_command_failure [32mPASSED[0m[31m [ 82%][0m
+tests/schedule_discovery_test.py::test_windows_discovery_reports_invalid_json [32mPASSED[0m[31m [ 82%][0m
+tests/schedule_discovery_test.py::test_non_windows_discovery_is_explicitly_unavailable [32mPASSED[0m[31m [ 82%][0m
+tests/schedule_math_test.py::test_normalize_schedule_type[minutes-minute] [32mPASSED[0m[31m [ 83%][0m
+tests/schedule_math_test.py::test_normalize_schedule_type[hour-hourly] [32mPASSED[0m[31m [ 83%][0m
+tests/schedule_math_test.py::test_normalize_schedule_type[days-daily] [32mPASSED[0m[31m [ 83%][0m
+tests/schedule_math_test.py::test_normalize_schedule_type[week-weekly] [32mPASSED[0m[31m [ 84%][0m
+tests/schedule_math_test.py::test_normalize_schedule_type[months-monthly] [32mPASSED[0m[31m [ 84%][0m
+tests/schedule_math_test.py::test_normalize_schedule_type[year-yearly] [32mPASSED[0m[31m [ 84%][0m
+tests/schedule_math_test.py::test_normalize_schedule_type[manual-manual] [32mPASSED[0m[31m [ 85%][0m
+tests/schedule_math_test.py::test_parse_clock_rejects_invalid_values[24:00] [32mPASSED[0m[31m [ 85%][0m
+tests/schedule_math_test.py::test_parse_clock_rejects_invalid_values[09:60] [32mPASSED[0m[31m [ 85%][0m
+tests/schedule_math_test.py::test_parse_clock_rejects_invalid_values[9] [32mPASSED[0m[31m [ 85%][0m
+tests/schedule_math_test.py::test_parse_clock_rejects_invalid_values[invalid] [32mPASSED[0m[31m [ 86%][0m
+tests/schedule_math_test.py::test_describe_schedule[schedule0-Manual] [32mPASSED[0m[31m [ 86%][0m
+tests/schedule_math_test.py::test_describe_schedule[schedule1-Every 15 minutes] [32mPASSED[0m[31m [ 86%][0m
+tests/schedule_math_test.py::test_describe_schedule[schedule2-Every 2 hours at minute 20] [32mPASSED[0m[31m [ 87%][0m
+tests/schedule_math_test.py::test_describe_schedule[schedule3-Every day at 03:15] [32mPASSED[0m[31m [ 87%][0m
+tests/schedule_math_test.py::test_describe_schedule[schedule4-Every week on Monday at 04:00] [32mPASSED[0m[31m [ 87%][0m
+tests/schedule_math_test.py::test_describe_schedule[schedule5-Every 3 months on day 12 at 05:00] [32mPASSED[0m[31m [ 88%][0m
+tests/schedule_math_test.py::test_describe_schedule[schedule6-Every year on Jul 4 at 06:30] [32mPASSED[0m[31m [ 88%][0m
+tests/schedule_math_test.py::test_describe_retention_is_compact [32mPASSED[0m[31m   [ 88%][0m
+tests/schedule_math_test.py::test_next_scheduled_run[schedule0-expected0] [32mPASSED[0m[31m [ 89%][0m
+tests/schedule_math_test.py::test_next_scheduled_run[schedule1-expected1] [32mPASSED[0m[31m [ 89%][0m
+tests/schedule_math_test.py::test_next_scheduled_run[schedule2-expected2] [32mPASSED[0m[31m [ 89%][0m
+tests/schedule_math_test.py::test_next_scheduled_run[schedule3-expected3] [32mPASSED[0m[31m [ 90%][0m
+tests/schedule_math_test.py::test_next_scheduled_run[schedule4-expected4] [32mPASSED[0m[31m [ 90%][0m
+tests/schedule_math_test.py::test_next_scheduled_run[schedule5-expected5] [32mPASSED[0m[31m [ 90%][0m
+tests/schedule_math_test.py::test_manual_schedule_has_no_next_or_missed_runs [32mPASSED[0m[31m [ 90%][0m
+tests/schedule_math_test.py::test_count_missed_daily_runs_after_last_snapshot [32mPASSED[0m[31m [ 91%][0m
+tests/schedule_math_test.py::test_count_missed_runs_is_unknown_without_history [32mPASSED[0m[31m [ 91%][0m
+tests/snapshots_test.py::test_parse_snapshots_json_sorts_and_normalizes [32mPASSED[0m[31m [ 91%][0m
+tests/snapshots_test.py::test_parse_snapshots_requires_array_and_required_fields [32mPASSED[0m[31m [ 92%][0m
+tests/snapshots_test.py::test_parse_backup_json_lines_returns_last_summary [32mPASSED[0m[31m [ 92%][0m
+tests/snapshots_test.py::test_parse_backup_json_lines_can_be_strict [32mPASSED[0m[31m [ 92%][0m
+tests/snapshots_test.py::test_parse_backup_json_lines_returns_none_without_summary [32mPASSED[0m[31m [ 93%][0m
+tests/snapshots_test.py::test_backup_summary_rejects_wrong_message_type [32mPASSED[0m[31m [ 93%][0m
+tests/snapshots_test.py::test_latest_snapshot_filters_by_tag_and_hostname [32mPASSED[0m[31m [ 93%][0m
+tests/state_test.py::test_atomic_write_json_round_trip [32mPASSED[0m[31m            [ 94%][0m
+tests/state_test.py::test_read_json_returns_empty_when_missing [32mPASSED[0m[31m    [ 94%][0m
+tests/state_test.py::test_read_json_rejects_non_object [32mPASSED[0m[31m            [ 94%][0m
+tests/state_test.py::test_store_saves_latest_and_run_history [32mPASSED[0m[31m      [ 95%][0m
+tests/state_test.py::test_only_real_success_updates_last_success [32mPASSED[0m[31m  [ 95%][0m
+tests/state_test.py::test_reconcile_stale_running_marks_interrupted [32mPASSED[0m[31m [ 95%][0m
+tests/state_test.py::test_reconcile_preserves_live_running_record [32mPASSED[0m[31m [ 95%][0m
+tests/state_test.py::test_reconcile_missing_identity_marks_interrupted [32mPASSED[0m[31m [ 96%][0m
+tests/state_test.py::test_atomic_write_failure_removes_temporary_file [32mPASSED[0m[31m [ 96%][0m
+tests/viewer_dashboard_test.py::test_live_pages_surface_persisted_active_progress [32mPASSED[0m[31m [ 96%][0m
+tests/viewer_dashboard_test.py::test_materialized_expansion_keeps_details_inline_after_parent [32mPASSED[0m[31m [ 97%][0m
+tests/viewer_dashboard_test.py::test_dashboard_hotkeys_expand_collapse_and_use_reliable_page_navigation [32mPASSED[0m[31m [ 97%][0m
+tests/viewer_test.py::test_view_parser_exposes_safe_demo_mode [32mPASSED[0m[31m     [ 97%][0m
+tests/viewer_test.py::test_demo_records_cover_varied_states_without_touching_real_paths [32mPASSED[0m[31m [ 98%][0m
+tests/viewer_test.py::test_all_carousel_pages_render_demo_data [32mPASSED[0m[31m    [ 98%][0m
+tests/viewer_test.py::test_diagnostics_and_audit_default_human_output_are_compact [32mPASSED[0m[31m [ 98%][0m
+tests/viewer_test.py::test_carousel_switches_pages_and_loads_expensive_pages_lazily [32mPASSED[0m[31m [ 99%][0m
+tests/viewer_test.py::test_bare_view_routes_to_aggregate_carousel [32mPASSED[0m[31m [ 99%][0m
+tests/viewer_test.py::test_plain_overview_is_aggregate_not_duplicate_backup_table [32mPASSED[0m[31m [ 99%][0m
+tests/viewer_test.py::test_concise_run_selector_uses_unlabeled_row_values [32mPASSED[0m[31m [100%][0m
 
+================================== FAILURES ===================================
+[31m[1m__________ TestEndToEndBackupRestore.test_full_backup_restore_cycle ___________[0m
+[1m[31mtests\integration_test.py[0m:200: in test_full_backup_restore_cycle
+    [0m[94massert[39;49;00m restored.returncode == [94m0[39;49;00m, restored.stderr[90m[39;49;00m
+[1m[31mE   AssertionError: ignoring error for \C\Users: failed to restore timestamp of "C:\\Users\\mcarls\\src\\scripts\\modules\\rrbackup\\.pytest_tmp_root\\validation-20260729-172306\\test_full_backup_restore_cycle0\\restore\\C\\Users": Access is denied.[0m
+[1m[31mE     Fatal: There were 1 errors[0m
+[1m[31mE     [0m
+[1m[31mE   assert 1 == 0[0m
+[1m[31mE    +  where 1 = CompletedProcess(args=['restic', '-r', 'C:\\Users\\mcarls\\src\\scripts\\modules\\rrbackup\\.pytest_tmp_root\\validation-20260729-172306\\test_full_backup_restore_cycle0\\repo', '--password-file', 'C:\\Users\\mcarls\\src\\scripts\\modules\\rrbackup\\.pytest_tmp_root\\validation-20260729-172306\\test_full_backup_restore_cycle0\\password.txt', 'restore', 'latest', '--target', 'C:\\Users\\mcarls\\src\\scripts\\modules\\rrbackup\\.pytest_tmp_root\\validation-20260729-172306\\test_full_backup_restore_cycle0\\restore'], returncode=1, stdout='restoring snapshot 6a856e4c of [C:\\Users\\mcarls\\src\\scripts\\modules\\rrbackup\\.pytest_tmp_root\\validation-20260729-172306\\test_full_backup_restore_cycle0\\source] at 2026-07-29 17:23:27.887998 -0700 PDT by XERES\\mcarls@Xeres to C:\\Users\\mcarls\\src\\scripts\\modules\\rrbackup\\.pytest_tmp_root\\validation-20260729-172306\\test_full_backup_restore_cycle0\\restore\nSummary: Restored 14 / 15 files/dirs (42 B / 42 B) in 0:00\n', stderr='ignoring error for \\C\\Users: failed to restore timestamp of "C:\\\\Users\\\\mcarls\\\\src\\\\scripts\\\\modules\\\\rrbackup\\\\.pytest_tmp_root\\\\validation-20260729-172306\\\\test_full_backup_restore_cycle0\\\\restore\\\\C\\\\Users": Access is denied.\nFatal: There were 1 errors\n').returncode[0m
+---------------------------- Captured stdout call -----------------------------
+{"message_type":"summary","files_new":3,"files_changed":0,"files_unmodified":0,"dirs_new":12,"dirs_changed":0,"dirs_unmodified":0,"data_blobs":3,"tree_blobs":13,"data_added":12002,"data_added_packed":7508,"total_files_processed":3,"total_bytes_processed":42,"total_duration":0.7322624,"backup_start":"2026-07-29T17:23:27.887998-07:00","backup_end":"2026-07-29T17:23:28.6202604-07:00","snapshot_id":"6a856e4cb3aa12d2c505b2fee9d3ba2cc3ee80cebb101175a6e4fc5e147475af"}
+test-set: success ΓÇö Backup completed successfully.
+Backup History
+ΓùÅ 2026-07-29 17:23  test-set  attempted run dacdf002 (success)
+ΓùÅ 2026-07-29 17:23  test-set  completed snapshot 6a856e4c
+using temporary cache in C:\Users\mcarls\AppData\Local\Temp\restic-check-cache-1527708963
+create exclusive lock for repository
+load indexes
+check all packs
+check snapshots, trees and blobs
+[0:00] 100.00%  1 / 1 snapshots
+no errors were found
+[33m============================== warnings summary ===============================[0m
+..\..\.venv\Lib\site-packages\_pytest\cacheprovider.py:475
+  C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\_pytest\cacheprovider.py:475: PytestCacheWarning: could not create cache path C:\Users\mcarls\src\scripts\modules\rrbackup\.pytest_cache\v\cache\nodeids: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\src\\scripts\\modules\\rrbackup\\.pytest_cache\\v\\cache'
+    config.cache.set("cache/nodeids", sorted(self.cached_nodeids))
+
+..\..\.venv\Lib\site-packages\_pytest\cacheprovider.py:429
+  C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\_pytest\cacheprovider.py:429: PytestCacheWarning: could not create cache path C:\Users\mcarls\src\scripts\modules\rrbackup\.pytest_cache\v\cache\lastfailed: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\src\\scripts\\modules\\rrbackup\\.pytest_cache\\v\\cache'
+    config.cache.set("cache/lastfailed", self.lastfailed)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
 =============================== tests coverage ================================
 ______________ coverage: platform win32, python 3.12.10-final-0 _______________
 
@@ -612,36 +644,42 @@ rrbackup\wizards.py                  213    173     66      0    14%   50, 67, 8
 TOTAL                               6314   2365   2008    260    59%
 Coverage HTML written to dir htmlcov
 ============================ slowest 25 durations =============================
-10.20s call     tests/integration_test.py::TestEndToEndBackupRestore::test_full_backup_restore_cycle
-0.91s call     tests/integration_test.py::TestErrorMessages::test_invalid_backup_name_returns_nonzero
-0.57s call     tests/integration_test.py::TestBinaryAvailability::test_binary_exists[rclone]
+10.86s call     tests/integration_test.py::TestEndToEndBackupRestore::test_full_backup_restore_cycle
+0.80s call     tests/integration_test.py::TestErrorMessages::test_invalid_backup_name_returns_nonzero
+0.55s call     tests/integration_test.py::TestBinaryAvailability::test_binary_exists[rclone]
 0.19s call     tests/integration_test.py::TestCLIHelpOutput::test_main_help_output
-0.16s call     tests/packaging_test.py::test_modules_path_import_resolves_regular_package_and_backup_cli
-0.15s call     tests/integration_test.py::TestCLIHelpOutput::test_view_help_is_condensed
-0.15s call     tests/integration_test.py::TestCLIHelpOutput::test_schedule_help_lists_editor
-0.15s call     tests/integration_test.py::TestCLIHelpOutput::test_run_help_output
-0.04s call     tests/integration_test.py::TestBinaryAvailability::test_binary_exists[restic]
-0.04s call     tests/audit_test.py::test_audit_markdown_contains_selected_sections
-0.03s setup    tests/runner_test.py::TestEnvForRepo::test_env_with_password_env
-0.03s call     tests/state_test.py::test_only_real_success_updates_last_success
+0.17s call     tests/packaging_test.py::test_modules_path_import_resolves_regular_package_and_backup_cli
+0.17s call     tests/integration_test.py::TestCLIHelpOutput::test_schedule_help_lists_editor
+0.17s call     tests/integration_test.py::TestCLIHelpOutput::test_run_help_output
+0.16s call     tests/integration_test.py::TestCLIHelpOutput::test_view_help_is_condensed
+0.09s call     tests/integration_test.py::TestBinaryAvailability::test_binary_exists[restic]
+0.05s call     tests/audit_test.py::test_audit_markdown_contains_selected_sections
+0.05s call     tests/state_test.py::test_only_real_success_updates_last_success
 0.03s call     tests/runner_test.py::TestErrorHandling::test_restic_timeout_handling
-0.03s call     tests/repository_summary_test.py::test_default_summary_reuses_cache_without_refreshing
-0.02s call     tests/engine_test.py::test_cpu_wait_exception_records_failure
-0.02s call     tests/engine_test.py::test_real_success_records_snapshot_and_last_success
-0.02s call     tests/run_runtime_test.py::test_progress_persistence_updates_running_record_metadata
 0.02s call     tests/engine_test.py::test_cpu_wait_precedes_lock_and_execution
-0.02s call     tests/engine_failure_test.py::test_malformed_summary_records_failure_and_releases_lock
-0.02s call     tests/engine_test.py::test_executor_exception_records_failure_and_releases_lock
 0.02s call     tests/state_test.py::test_reconcile_stale_running_marks_interrupted
-0.02s call     tests/engine_test.py::test_restic_interruption_records_interrupted_result
+0.02s call     tests/engine_test.py::test_real_success_records_snapshot_and_last_success
+0.02s call     tests/engine_test.py::test_executor_exception_records_failure_and_releases_lock
+0.02s call     tests/run_runtime_test.py::test_progress_persistence_updates_running_record_metadata
+0.02s call     tests/engine_test.py::test_cpu_wait_exception_records_failure
+0.02s call     tests/engine_failure_test.py::test_malformed_summary_records_failure_and_releases_lock
+0.02s call     tests/engine_test.py::test_dry_run_never_updates_last_success
 0.02s call     tests/engine_failure_test.py::test_lock_factory_failure_records_terminal_failure
-0.02s call     tests/state_test.py::test_reconcile_missing_identity_marks_interrupted
 0.02s call     tests/engine_test.py::test_nonzero_restic_exit_records_failure
+0.02s call     tests/engine_test.py::test_restic_interruption_records_interrupted_result
+0.02s call     tests/engine_test.py::test_cpu_skip_occurs_before_lock_or_execution
+0.02s call     tests/state_test.py::test_reconcile_missing_identity_marks_interrupted
 [36m[1m=========================== short test summary info ===========================[0m
 [33mSKIPPED[0m [4] tests\conftest.py:106: User config not found at C:\Users\mcarls\AppData\Roaming\rrbackup\config.toml; the default suite does not require user configuration.
 [33mSKIPPED[0m [3] tests\conftest.py:114: set RRBACKUP_RUN_GDRIVE_TESTS=1 to enable live Google Drive tests
-[32m======================= [32m[1m314 passed[0m, [33m7 skipped[0m[32m in 15.34s[0m[32m =======================[0m
-RESULT: PASS - RRBackup pytest and coverage suite
+[31mFAILED[0m tests/integration_test.py::[1mTestEndToEndBackupRestore::test_full_backup_restore_cycle[0m - AssertionError: ignoring error for \C\Users: failed to restore timestamp of "C:\\Users\\mcarls\\src\\scripts\\modules\\rrbackup\\.pytest_tmp_root\\validation-20260729-172306\\test_full_backup_restore_cycle0\\restore\\C\\Users": Access is denied.
+  Fatal: There were 1 errors
+  
+assert 1 == 0
+ +  where 1 = CompletedProcess(args=['restic', '-r', 'C:\\Users\\mcarls\\src\\scripts\\modules\\rrbackup\\.pytest_tmp_root\\validation-20260729-172306\\test_full_backup_restore_cycle0\\repo', '--password-file', 'C:\\Users\\mcarls\\src\\scripts\\modules\\rrbackup\\.pytest_tmp_root\\validation-20260729-172306\\test_full_backup_restore_cycle0\\password.txt', 'restore', 'latest', '--target', 'C:\\Users\\mcarls\\src\\scripts\\modules\\rrbackup\\.pytest_tmp_root\\validation-20260729-172306\\test_full_backup_restore_cycle0\\restore'], returncode=1, stdout='restoring snapshot 6a856e4c of [C:\\Users\\mcarls\\src\\scripts\\modules\\rrbackup\\.pytest_tmp_root\\validation-20260729-172306\\test_full_backup_restore_cycle0\\source] at 2026-07-29 17:23:27.887998 -0700 PDT by XERES\\mcarls@Xeres to C:\\Users\\mcarls\\src\\scripts\\modules\\rrbackup\\.pytest_tmp_root\\validation-20260729-172306\\test_full_backup_restore_cycle0\\restore\nSummary: Restored 14 / 15 files/dirs (42 B / 42 B) in 0:00\n', stderr='ignoring error for \\C\\Users: failed to restore timestamp of "C:\\\\Users\\\\mcarls\\\\src\\\\scripts\\\\modules\\\\rrbackup\\\\.pytest_tmp_root\\\\validation-20260729-172306\\\\test_full_backup_restore_cycle0\\\\restore\\\\C\\\\Users": Access is denied.\nFatal: There were 1 errors\n').returncode
+[31m============ [31m[1m1 failed[0m, [32m313 passed[0m, [33m7 skipped[0m, [33m2 warnings[0m[31m in 16.89s[0m[31m ============[0m
+RESULT: FAIL - RRBackup pytest and coverage suite
+ERROR: Command returned exit code 1.
 
 ====================================================================================================
 PowerShell test: tests\powershell\environment_smoke_test.ps1
@@ -676,16 +714,15 @@ TARGET SUMMARY
 Latest report: C:\Users\mcarls\src\scripts\docs\test-results\rrbackup\LATEST.txt
 Context snapshot: C:\Users\mcarls\src\scripts\docs\test-results\rrbackup\LATEST_CONTEXT.md
 Progress diff: C:\Users\mcarls\src\scripts\docs\test-results\rrbackup\LATEST_PROGRESS.diff
-TARGET RESULT: PASS
-All requested validation sections passed.
+TARGET RESULT: FAIL
+Failure count: 1
+- RRBackup pytest and coverage suite: Command returned exit code 1.
 
 Git status after validation:
  M docs/test-results/rrbackup/LATEST.txt
  D docs/test-results/rrbackup/LATEST_CONTEXT.md
  D docs/test-results/rrbackup/LATEST_PROGRESS.diff
- D docs/test-results/rrbackup/history/20260729-110436_rrbackup.txt
- D docs/test-results/rrbackup/history/20260729-110436_rrbackup_context.md
- D docs/test-results/rrbackup/history/20260729-110436_rrbackup_progress.diff
-?? docs/test-results/rrbackup/history/20260729-140638_rrbackup.txt
-?? docs/test-results/rrbackup/history/20260729-140638_rrbackup_context.md
-?? docs/test-results/rrbackup/history/20260729-140638_rrbackup_progress.diff
+ D docs/test-results/rrbackup/history/20260729-114113_rrbackup_context.md
+ D docs/test-results/rrbackup/history/20260729-114113_rrbackup_progress.diff
+?? docs/test-results/rrbackup/history/20260729-143617_rrbackup_context.md
+?? docs/test-results/rrbackup/history/20260729-143617_rrbackup_progress.diff

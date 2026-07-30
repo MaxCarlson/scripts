@@ -1,8 +1,8 @@
 # Validation Context: rrbackup
 
-Generated: 2026-07-29T17:23:39.1904885-07:00
+Generated: 2026-07-29T14:36:45.3959935-07:00
 Branch: agent/merge-restic-backup-modules
-Commit: 138a50d3a02220f8a0fcaef53b3e6332a06e64f6
+Commit: 16f96f8a2b1d72cddc7175ed657ec39aa1d2ed64
 Validation report: docs\test-results\rrbackup\LATEST.txt
 
 ## Validation Highlights
@@ -15,12 +15,11 @@ Validation report: docs\test-results\rrbackup\LATEST.txt
 - RESULT: PASS - Lint RRBackup checkpoint 2A.2b
 - RESULT: PASS - Canonical backup CLI help contract
 - RESULT: PASS - Condensed backup view help contract
-- [31m============ [31m[1m1 failed[0m, [32m313 passed[0m, [33m7 skipped[0m, [33m2 warnings[0m[31m in 16.89s[0m[31m ============[0m
-- RESULT: FAIL - RRBackup pytest and coverage suite
+- [32m======================= [32m[1m314 passed[0m, [33m7 skipped[0m[32m in 15.34s[0m[32m =======================[0m
+- RESULT: PASS - RRBackup pytest and coverage suite
 - RESULT: PASS - PowerShell test: tests\powershell\environment_smoke_test.ps1
 - RESULT: PASS - PowerShell test: tests\powershell\production_read_only_test.ps1
-- TARGET RESULT: FAIL
-- Failure count: 1
+- TARGET RESULT: PASS
 
 ## Working Tree
 
@@ -28,10 +27,12 @@ Validation report: docs\test-results\rrbackup\LATEST.txt
  M docs/test-results/rrbackup/LATEST.txt
  D docs/test-results/rrbackup/LATEST_CONTEXT.md
  D docs/test-results/rrbackup/LATEST_PROGRESS.diff
- D docs/test-results/rrbackup/history/20260729-114113_rrbackup_context.md
- D docs/test-results/rrbackup/history/20260729-114113_rrbackup_progress.diff
-?? docs/test-results/rrbackup/history/20260729-143617_rrbackup_context.md
-?? docs/test-results/rrbackup/history/20260729-143617_rrbackup_progress.diff
+ D docs/test-results/rrbackup/history/20260729-110436_rrbackup.txt
+ D docs/test-results/rrbackup/history/20260729-110436_rrbackup_context.md
+ D docs/test-results/rrbackup/history/20260729-110436_rrbackup_progress.diff
+?? docs/test-results/rrbackup/history/20260729-140638_rrbackup.txt
+?? docs/test-results/rrbackup/history/20260729-140638_rrbackup_context.md
+?? docs/test-results/rrbackup/history/20260729-140638_rrbackup_progress.diff
 ```
 
 ## Project Status Sources
