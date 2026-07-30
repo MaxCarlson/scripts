@@ -5,10 +5,10 @@
     "targets": {
         "repository-workflow": {
             "description": "Repository branch integration, hybrid workflow, validation bridge, and development-ledger self-hosting.",
-            "working_directory": ".",
+            "working_directory": "validation",
             "context_files": [
-                "docs/plans/20260729-2000_unified-hybrid-workflow/00_implementation-plan.md",
-                "docs/plans/20260729-2000_unified-hybrid-workflow/HANDOFF.md"
+                "../docs/plans/20260729-2000_unified-hybrid-workflow/00_implementation-plan.md",
+                "../docs/plans/20260729-2000_unified-hybrid-workflow/HANDOFF.md"
             ],
             "environment": {
                 "PYTHONUTF8": "1",
@@ -48,7 +48,7 @@
                         "development_ledger",
                         "validate-plan",
                         "-p",
-                        "docs/plans/20260729-2000_unified-hybrid-workflow/00_implementation-plan.md"
+                        "{repo_root}/docs/plans/20260729-2000_unified-hybrid-workflow/00_implementation-plan.md"
                     ]
                 },
                 {
@@ -99,8 +99,8 @@
             "ledger": {
                 "enabled": true,
                 "required": true,
-                "active_plan": "docs/plans/20260729-2000_unified-hybrid-workflow/00_implementation-plan.md",
-                "output_directory": "docs/plans/20260729-2000_unified-hybrid-workflow/ledger",
+                "active_plan": "{repo_root}/docs/plans/20260729-2000_unified-hybrid-workflow/00_implementation-plan.md",
+                "output_directory": "{repo_root}/docs/plans/20260729-2000_unified-hybrid-workflow/ledger",
                 "script_result_outputs": [
                     "{temp_root}/repository-workflow.json"
                 ],
