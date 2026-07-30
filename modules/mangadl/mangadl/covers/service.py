@@ -8,7 +8,7 @@ from urllib.error import HTTPError, URLError
 from .files import changed_folders, snapshot_top_level
 from .kavita import KavitaClient, apply_kavita_cover
 from .matching import build_folder_url_index, collect_url_folder, match_folder, series_folders
-from .models import CoverResult, FolderMatch, SeriesPageMetadata
+from .models import CoverResult, SeriesPageMetadata
 from .scraping import fetch_series_metadata, supports_cover_url
 from .storage import with_match, write_cover_for_folder
 
@@ -25,8 +25,6 @@ def install_download_cover(
     changed = changed_folders(before, after)
     metadata = fetch_series_metadata(url, cookies=cookies, timeout=timeout)
     candidate, ambiguous = match_folder(url, changed, metadata=metadata)
-    if candidate is None and len(changed) == 1:
-        candidate = FolderMatch(changed[0], "changed-folder", 99.0)
     if candidate is None:
         candidate, ambiguous = match_folder(url, list(after), metadata=metadata)
     if candidate is None:
