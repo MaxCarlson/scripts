@@ -360,19 +360,44 @@ function Invoke-ManifestCommand {
         [System.Collections.Generic.List[string]]$TargetFailures
     )
 
-    foreach ($RequiredName in @('name', 'executable')) {
-        if (-not $CommandSpec.Contains($RequiredName)) {
-            throw "Validation command for target '$TargetName' is missing '$RequiredName'."
-        }
+    if (-not $CommandSpec.Contains('name')) {
+        throw "Validation command for target '$TargetName' is missing 'name'."
     }
 
     $Name = Convert-TokenText -Text ([string]$CommandSpec['name']) -Tokens $Tokens
-    $Executable = Convert-TokenText -Text ([string]$CommandSpec['executable']) -Tokens $Tokens
-    $Arguments = @(
-        foreach ($Argument in (Get-ManifestItems -Container $CommandSpec -Name 'arguments')) {
-            Convert-TokenText -Text ([string]$Argument) -Tokens $Tokens
+    if ($CommandSpec.Contains('file_targets')) {
+        if (-not $CommandSpec.Contains('file_command')) {
+            throw "File-target validation command '$Name' is missing 'file_command'."
         }
-    )
+
+        $Executable = 'pwsh'
+        $Arguments = @(
+            '-NoLogo'
+            '-NoProfile'
+            '-File'
+            (Join-Path $RepoRoot 'validation\Invoke-FileTargetCommand.ps1')
+            '-ManifestPath'
+            $ManifestPath
+            '-TargetName'
+            $TargetName
+            '-CommandName'
+            $Name
+            '-PythonExecutable'
+            $PythonExecutable
+        )
+    }
+    else {
+        if (-not $CommandSpec.Contains('executable')) {
+            throw "Validation command '$Name' for target '$TargetName' is missing 'executable'."
+        }
+
+        $Executable = Convert-TokenText -Text ([string]$CommandSpec['executable']) -Tokens $Tokens
+        $Arguments = @(
+            foreach ($Argument in (Get-ManifestItems -Container $CommandSpec -Name 'arguments')) {
+                Convert-TokenText -Text ([string]$Argument) -Tokens $Tokens
+            }
+        )
+    }
 
     Write-ReportSection -ReportPath $ReportPath -Title $Name
     Write-ReportLine -ReportPath $ReportPath -Text ('Working directory: {0}' -f $WorkingDirectory)

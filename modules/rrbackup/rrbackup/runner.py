@@ -9,6 +9,9 @@ import typing as t
 
 from .config import Settings, BackupSet
 
+if t.TYPE_CHECKING:
+    from .config import RetentionPolicy
+
 
 class RunError(RuntimeError):
     pass
