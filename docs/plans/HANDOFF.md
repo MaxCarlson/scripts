@@ -14,13 +14,25 @@ Use `modules/<module>/docs/plans/` for work owned by a single module.
 
 ## Current Priority
 
-Validate the first repository-wide self-hosting cycle on `agent/unified-workflow-ledger`:
+Validate Stage S2 on `agent/unified-workflow-ledger`:
 
 ```powershell
-./Invoke-Tests.ps1 -Target repository-workflow
+gl && .\Invoke-Tests.ps1
 ```
 
-After evidence is pushed, review the generated ledger projections and raw transcript before moving file-target expansion and ledger recording into native root-dispatcher phases.
+Stage S2 replaces the monolithic dispatcher internals with focused modules, resolves `file_targets` natively, supports target-specific temp roots, and records ledger metadata as the final native target phase.
+
+After evidence is pushed, review:
+
+```text
+docs/test-results/repository-workflow/LATEST.txt
+docs/test-results/repository-workflow/LATEST_CONTEXT.md
+docs/test-results/repository-workflow/LATEST_PROGRESS.diff
+docs/plans/20260729-2000_unified-hybrid-workflow/ledger/PROGRESS.md
+docs/plans/20260729-2000_unified-hybrid-workflow/ledger/TRACEABILITY.md
+```
+
+Do not begin RRBackup ledger migration or retire transitional context artifacts until this native dispatcher cycle passes.
 
 ## Historical Plan
 
