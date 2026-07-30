@@ -3,14 +3,8 @@
 Records one validation target through the repository development ledger.
 
 .DESCRIPTION
-Reads the selected target's `ledger` object from validation-targets.json,
-resolves configured evidence paths, and invokes the dispatcher-safe
-`development_ledger.dispatcher_record` adapter.
-
-The script preserves dry-run behavior unless -Write is supplied. The adapter
-maps a successfully recorded failed-test event to exit code zero because the
-root validation dispatcher already owns the original validation result.
-Plan, evidence, Git, duplicate-event, and write failures remain nonzero.
+Imports DevelopmentLedgerBridge.psm1 and invokes the manifest-driven ledger
+recording operation. Writes only when -Write is supplied.
 
 .PARAMETER ManifestPath
 Path to validation-targets.json.
@@ -19,35 +13,25 @@ Path to validation-targets.json.
 Validation target whose ledger configuration should be used.
 
 .PARAMETER RepoRoot
-Repository root used for Git provenance and {repo_root} token expansion.
+Repository root used for Git provenance.
 
 .PARAMETER TargetRoot
-Validation target working directory used for relative path resolution and
-{target_root} token expansion.
+Validation target working directory.
 
 .PARAMETER TempRoot
-Current isolated validation directory used for {temp_root} token expansion.
+Current isolated validation directory.
 
 .PARAMETER ReportPath
-Current raw validation transcript used for {report_path} token expansion.
+Current raw validation transcript.
 
 .PARAMETER PythonExecutable
-Python executable containing the installed development_ledger package.
+Python executable containing development_ledger.
 
 .PARAMETER Write
-Append the immutable event and regenerate ledger projections. Without this
-switch, preview the normalized event without modifying ledger files.
+Append the event and regenerate projections.
 
 .EXAMPLE
-./validation/Invoke-DevelopmentLedger.ps1 `
-    -ManifestPath ./validation-targets.json `
-    -TargetName repository-workflow `
-    -RepoRoot . `
-    -TargetRoot . `
-    -TempRoot ./.pytest_tmp_root/validation-example `
-    -ReportPath ./docs/test-results/repository-workflow/LATEST.txt `
-    -PythonExecutable ./.venv/Scripts/python.exe `
-    -Write
+./validation/Invoke-DevelopmentLedger.ps1 -ManifestPath ./validation-targets.json -TargetName repository-workflow -RepoRoot . -TargetRoot . -TempRoot ./tmp -ReportPath ./LATEST.txt -PythonExecutable ./python.exe -Write
 #>
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
 param(
@@ -82,101 +66,33 @@ if (Test-Path -LiteralPath Variable:PSNativeCommandUseErrorActionPreference) {
     $PSNativeCommandUseErrorActionPreference = $false
 }
 
-function Get-ManifestItems {
-    [CmdletBinding()]
-    [OutputType([object[]])]
-    param(
-        [Parameter(Mandatory)]
-        [System.Collections.IDictionary]$Container,
-
-        [Parameter(Mandatory)]
-        [string]$Name
-    )
-
-    if (-not $Container.Contains($Name) -or $null -eq $Container[$Name]) {
-        return @()
-    }
-
-    return @($Container[$Name])
+$ModulePath = Join-Path $PSScriptRoot 'DevelopmentLedgerBridge.psm1'
+if (-not (Test-Path -LiteralPath $ModulePath -PathType Leaf)) {
+    throw "Development-ledger bridge module is missing: $ModulePath"
 }
 
-function Convert-TokenText {
-    [CmdletBinding()]
-    [OutputType([string])]
-    param(
-        [Parameter(Mandatory)]
-        [AllowEmptyString()]
-        [string]$Text,
-
-        [Parameter(Mandatory)]
-        [hashtable]$Tokens
-    )
-
-    $Result = $Text
-    foreach ($Token in $Tokens.GetEnumerator()) {
-        $Result = $Result.Replace([string]$Token.Key, [string]$Token.Value)
+foreach ($Path in @($ManifestPath, $RepoRoot, $TargetRoot, $TempRoot, $ReportPath, $PythonExecutable)) {
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw 'Required path parameters cannot be empty.'
     }
-
-    return $Result
 }
 
-function Resolve-ConfiguredPath {
-    [CmdletBinding()]
-    [OutputType([string])]
-    param(
-        [Parameter(Mandatory)]
-        [string]$ConfiguredPath,
-
-        [Parameter(Mandatory)]
-        [string]$DefaultRoot,
-
-        [Parameter(Mandatory)]
-        [hashtable]$Tokens
-    )
-
-    $ResolvedText = Convert-TokenText -Text $ConfiguredPath -Tokens $Tokens
-    if ([string]::IsNullOrWhiteSpace($ResolvedText)) {
-        throw 'Ledger evidence paths cannot be empty.'
-    }
-
-    if ([System.IO.Path]::IsPathRooted($ResolvedText)) {
-        return [System.IO.Path]::GetFullPath($ResolvedText)
-    }
-
-    return [System.IO.Path]::GetFullPath((Join-Path $DefaultRoot $ResolvedText))
+$ResolvedOutput = Join-Path ([System.IO.Path]::GetFullPath($TargetRoot)) '.development-ledger'
+if ($Write -and -not $PSCmdlet.ShouldProcess($ResolvedOutput, "Record validation target '$TargetName'")) {
+    Write-Output "Development-ledger write cancelled for target '$TargetName'."
+    exit 0
 }
 
-function Add-EvidenceArguments {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [System.Collections.Generic.List[string]]$Arguments,
-
-        [Parameter(Mandatory)]
-        [System.Collections.IDictionary]$LedgerSpec,
-
-        [Parameter(Mandatory)]
-        [string]$FieldName,
-
-        [Parameter(Mandatory)]
-        [string]$ArgumentName,
-
-        [Parameter(Mandatory)]
-        [string]$DefaultRoot,
-
-        [Parameter(Mandatory)]
-        [hashtable]$Tokens,
-
-        [Parameter(Mandatory)]
-        [bool]$Required
-    )
-
-    foreach ($ConfiguredPath in (Get-ManifestItems -Container $LedgerSpec -Name $FieldName)) {
-        $ResolvedPath = Resolve-ConfiguredPath `
-            -ConfiguredPath ([string]$ConfiguredPath) `
-            -DefaultRoot $DefaultRoot `
-            -Tokens $Tokens
-
-        if (-not (Test-Path -LiteralPath $ResolvedPath -PathType Leaf)) {
-            if ($Required) {
-                throw "Required ledger evidence is missing for '$FieldName': $ResolvedPath
+Import-Module -Name $ModulePath -Force
+$Parameters = @{
+    ManifestPath = [System.IO.Path]::GetFullPath($ManifestPath)
+    TargetName = $TargetName
+    RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
+    TargetRoot = [System.IO.Path]::GetFullPath($TargetRoot)
+    TempRoot = [System.IO.Path]::GetFullPath($TempRoot)
+    ReportPath = [System.IO.Path]::GetFullPath($ReportPath)
+    PythonExecutable = [System.IO.Path]::GetFullPath($PythonExecutable)
+    Write = [bool]$Write
+}
+Invoke-TargetDevelopmentLedger @Parameters
+exit 0
