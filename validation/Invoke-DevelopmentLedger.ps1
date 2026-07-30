@@ -35,29 +35,14 @@ Append the event and regenerate projections.
 #>
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
 param(
-    [Parameter(Mandatory)]
-    [string]$ManifestPath,
-
-    [Parameter(Mandatory)]
-    [string]$TargetName,
-
-    [Parameter(Mandatory)]
-    [string]$RepoRoot,
-
-    [Parameter(Mandatory)]
-    [string]$TargetRoot,
-
-    [Parameter(Mandatory)]
-    [string]$TempRoot,
-
-    [Parameter(Mandatory)]
-    [string]$ReportPath,
-
-    [Parameter(Mandatory)]
-    [string]$PythonExecutable,
-
-    [Parameter()]
-    [switch]$Write
+    [Parameter(Mandatory)] [string]$ManifestPath,
+    [Parameter(Mandatory)] [string]$TargetName,
+    [Parameter(Mandatory)] [string]$RepoRoot,
+    [Parameter(Mandatory)] [string]$TargetRoot,
+    [Parameter(Mandatory)] [string]$TempRoot,
+    [Parameter(Mandatory)] [string]$ReportPath,
+    [Parameter(Mandatory)] [string]$PythonExecutable,
+    [Parameter()] [switch]$Write
 )
 
 Set-StrictMode -Version Latest
@@ -77,21 +62,40 @@ foreach ($Path in @($ManifestPath, $RepoRoot, $TargetRoot, $TempRoot, $ReportPat
     }
 }
 
-$ResolvedOutput = Join-Path ([System.IO.Path]::GetFullPath($TargetRoot)) '.development-ledger'
-if ($Write -and -not $PSCmdlet.ShouldProcess($ResolvedOutput, "Record validation target '$TargetName'")) {
+$Resolved = @{
+    ManifestPath = [System.IO.Path]::GetFullPath($ManifestPath)
+    RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
+    TargetRoot = [System.IO.Path]::GetFullPath($TargetRoot)
+    TempRoot = [System.IO.Path]::GetFullPath($TempRoot)
+    ReportPath = [System.IO.Path]::GetFullPath($ReportPath)
+    PythonExecutable = [System.IO.Path]::GetFullPath($PythonExecutable)
+}
+
+foreach ($Name in @('ManifestPath', 'ReportPath', 'PythonExecutable')) {
+    if (-not (Test-Path -LiteralPath $Resolved[$Name] -PathType Leaf)) {
+        throw "$Name does not exist: $($Resolved[$Name])"
+    }
+}
+foreach ($Name in @('RepoRoot', 'TargetRoot', 'TempRoot')) {
+    if (-not (Test-Path -LiteralPath $Resolved[$Name] -PathType Container)) {
+        throw "$Name does not exist: $($Resolved[$Name])"
+    }
+}
+
+if ($Write -and -not $PSCmdlet.ShouldProcess($TargetName, 'Record development-ledger validation event')) {
     Write-Output "Development-ledger write cancelled for target '$TargetName'."
     exit 0
 }
 
 Import-Module -Name $ModulePath -Force
 $Parameters = @{
-    ManifestPath = [System.IO.Path]::GetFullPath($ManifestPath)
+    ManifestPath = $Resolved.ManifestPath
     TargetName = $TargetName
-    RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
-    TargetRoot = [System.IO.Path]::GetFullPath($TargetRoot)
-    TempRoot = [System.IO.Path]::GetFullPath($TempRoot)
-    ReportPath = [System.IO.Path]::GetFullPath($ReportPath)
-    PythonExecutable = [System.IO.Path]::GetFullPath($PythonExecutable)
+    RepoRoot = $Resolved.RepoRoot
+    TargetRoot = $Resolved.TargetRoot
+    TempRoot = $Resolved.TempRoot
+    ReportPath = $Resolved.ReportPath
+    PythonExecutable = $Resolved.PythonExecutable
     Write = [bool]$Write
 }
 Invoke-TargetDevelopmentLedger @Parameters
