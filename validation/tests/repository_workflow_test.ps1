@@ -1,46 +1,9 @@
-<#
-.SYNOPSIS
-Validates the repository-wide hybrid workflow and ledger bridge.
-
-.DESCRIPTION
-Checks instruction routing, branch-policy documentation, active-plan validity,
-manifest-driven ledger preview/write behavior, projection generation, and
-required-evidence failure handling. Writes one development-ledger generic
-script-result JSON file even when one or more checks fail.
-
-.PARAMETER RepoRoot
-Scripts repository root.
-
-.PARAMETER PythonExecutable
-Python executable containing the installed development_ledger package.
-
-.PARAMETER ResultPath
-Destination for the generic script-result JSON artifact.
-
-.PARAMETER TempRoot
-Isolated directory for synthetic manifest, transcript, evidence, and ledger
-output.
-
-.EXAMPLE
-./validation/tests/repository_workflow_test.ps1 `
-    -RepoRoot . `
-    -PythonExecutable ./.venv/Scripts/python.exe `
-    -ResultPath ./.pytest_tmp_root/repository-workflow.json `
-    -TempRoot ./.pytest_tmp_root/repository-workflow
-#>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)]
-    [string]$RepoRoot,
-
-    [Parameter(Mandatory)]
-    [string]$PythonExecutable,
-
-    [Parameter(Mandatory)]
-    [string]$ResultPath,
-
-    [Parameter(Mandatory)]
-    [string]$TempRoot
+    [Parameter(Mandatory)] [string]$RepoRoot,
+    [Parameter(Mandatory)] [string]$PythonExecutable,
+    [Parameter(Mandatory)] [string]$ResultPath,
+    [Parameter(Mandatory)] [string]$TempRoot
 )
 
 Set-StrictMode -Version Latest
@@ -49,80 +12,134 @@ if (Test-Path -LiteralPath Variable:PSNativeCommandUseErrorActionPreference) {
     $PSNativeCommandUseErrorActionPreference = $false
 }
 
-$ResolvedRepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
-$ResolvedPython = [System.IO.Path]::GetFullPath($PythonExecutable)
-$ResolvedResultPath = [System.IO.Path]::GetFullPath($ResultPath)
-$ResolvedTempRoot = [System.IO.Path]::GetFullPath($TempRoot)
-$Results = [System.Collections.Generic.List[hashtable]]::new()
+$Repo = [System.IO.Path]::GetFullPath($RepoRoot)
+$Python = [System.IO.Path]::GetFullPath($PythonExecutable)
+$ResultFile = [System.IO.Path]::GetFullPath($ResultPath)
+$Temp = [System.IO.Path]::GetFullPath($TempRoot)
+$Checks = [System.Collections.Generic.List[hashtable]]::new()
 
-function Add-CheckResult {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]$Id,
+function Test-Condition([bool]$Condition, [string]$Message) {
+    if (-not $Condition) { throw $Message }
+}
 
-        [Parameter(Mandatory)]
-        [string]$Name,
-
-        [Parameter(Mandatory)]
-        [string[]]$ItemIds,
-
-        [Parameter(Mandatory)]
-        [scriptblock]$Action
-    )
-
-    $Started = [System.Diagnostics.Stopwatch]::StartNew()
+function Invoke-Check([string]$Id, [string]$Name, [string[]]$ItemIds, [scriptblock]$Body) {
+    $Timer = [System.Diagnostics.Stopwatch]::StartNew()
     try {
-        & $Action
-        $Started.Stop()
-        $Results.Add(@{
-            id = $Id
-            name = $Name
-            status = 'passed'
-            duration_seconds = [Math]::Round($Started.Elapsed.TotalSeconds, 6)
-            message = ''
-            item_ids = @($ItemIds)
-        })
+        & $Body
+        $Status = 'passed'
+        $Message = ''
     }
     catch {
-        $Started.Stop()
-        $Results.Add(@{
+        $Status = 'failed'
+        $Message = $_.Exception.Message
+    }
+    finally {
+        $Timer.Stop()
+        $Checks.Add(@{
             id = $Id
             name = $Name
-            status = 'failed'
-            duration_seconds = [Math]::Round($Started.Elapsed.TotalSeconds, 6)
-            message = $_.Exception.Message
+            status = $Status
+            duration_seconds = [Math]::Round($Timer.Elapsed.TotalSeconds, 6)
+            message = $Message
             item_ids = @($ItemIds)
         })
     }
 }
 
-function Assert-True {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [bool]$Condition,
-
-        [Parameter(Mandatory)]
-        [string]$Message
-    )
-
-    if (-not $Condition) {
-        throw $Message
+function Test-Text([string]$Path, [string[]]$Patterns) {
+    Test-Condition (Test-Path -LiteralPath $Path -PathType Leaf) "Missing file: $Path"
+    $Text = Get-Content -LiteralPath $Path -Raw
+    foreach ($Pattern in $Patterns) {
+        Test-Condition $Text.Contains($Pattern) "Expected '$Pattern' in $Path"
     }
 }
 
-function Assert-ContainsText {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]$Path,
+$Plan = Join-Path $Repo 'docs/plans/20260729-2000_unified-hybrid-workflow/00_implementation-plan.md'
+$Bridge = Join-Path $Repo 'validation/Invoke-DevelopmentLedger.ps1'
+$Manifest = Join-Path $Temp 'validation-targets.json'
+$Transcript = Join-Path $Temp 'LATEST.txt'
+$Evidence = Join-Path $Temp 'evidence.json'
+$Ledger = Join-Path $Temp 'ledger'
+$Pwsh = (Get-Command pwsh -ErrorAction Stop).Source
 
-        [Parameter(Mandatory)]
-        [string[]]$Patterns
-    )
+New-Item -ItemType Directory -Path $Temp -Force | Out-Null
+New-Item -ItemType Directory -Path (Split-Path -Parent $ResultFile) -Force | Out-Null
 
-    Assert-True -Condition (Test-Path -LiteralPath $Path -PathType Leaf) -Message "Required file is missing: $Path"
-    $Text = Get-Content -LiteralPath $Path -Raw
-    foreach ($Pattern in $Patterns) {
-        Assert-True -Condition ($Text.Contains($Pattern)) -Message "Expected '$Pattern' in $Path
+try {
+    Invoke-Check 'powershell:repository-workflow::policy' 'Branch and ledger policy is discoverable' @('AC-S1-001') {
+        Test-Text (Join-Path $Repo 'docs/agent/BRANCH_INTEGRATION_WORKFLOW.md') @('agent/unified', 'agent/<work>', 'Integration-Branch Loop')
+        Test-Text (Join-Path $Repo 'REPO_LLM_INSTRUCTIONS.md') @('## Branch Topology', '## Development Ledger')
+        Test-Text (Join-Path $Repo 'AGENTS.md') @('ledger/PROGRESS.md', 'BRANCH_INTEGRATION_WORKFLOW.md')
+    }
+
+    Invoke-Check 'powershell:repository-workflow::plan' 'Unified workflow plan is valid' @('AC-S1-001', 'AC-S1-003') {
+        $Output = & $Python -m development_ledger validate-plan -p $Plan 2>&1
+        Test-Condition ($LASTEXITCODE -eq 0) "Plan validation failed: $($Output -join ' ')"
+        Test-Condition (($Output -join "`n") -match 'VALID: unified-hybrid-workflow') "Unexpected plan output: $($Output -join ' ')"
+    }
+
+    @{
+        schema_version = 1
+        source = 'powershell'
+        suite = 'repository-workflow'
+        tests = @(@{
+            id = 'powershell:repository-workflow::bridge-evidence'
+            name = 'Synthetic bridge evidence'
+            status = 'passed'
+            item_ids = @('AC-S1-002')
+        })
+    } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $Evidence -Encoding utf8
+    Set-Content -LiteralPath $Transcript -Value 'Synthetic transcript.' -Encoding utf8
+    @{
+        targets = @{
+            synthetic = @{
+                ledger = @{
+                    enabled = $true
+                    required = $true
+                    active_plan = '{repo_root}/docs/plans/20260729-2000_unified-hybrid-workflow/00_implementation-plan.md'
+                    output_directory = '{temp_root}/ledger'
+                    script_result_outputs = @('{temp_root}/evidence.json')
+                    transcript_outputs = @('{report_path}')
+                    actor = 'remote_llm'
+                    mode = 'hybrid'
+                }
+            }
+        }
+    } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $Manifest -Encoding utf8
+
+    Invoke-Check 'powershell:repository-workflow::bridge' 'Ledger bridge previews and writes projections' @('AC-S1-002', 'AC-S1-003') {
+        Remove-Item -LiteralPath $Ledger -Recurse -Force -ErrorAction SilentlyContinue
+        $Common = @('-NoLogo', '-NoProfile', '-File', $Bridge, '-ManifestPath', $Manifest, '-TargetName', 'synthetic', '-RepoRoot', $Repo, '-TargetRoot', $Temp, '-TempRoot', $Temp, '-ReportPath', $Transcript, '-PythonExecutable', $Python)
+        $Preview = & $Pwsh @Common 2>&1
+        Test-Condition ($LASTEXITCODE -eq 0) "Preview failed: $($Preview -join ' ')"
+        Test-Condition (-not (Test-Path -LiteralPath (Join-Path $Ledger 'RUNS.jsonl'))) 'Preview wrote RUNS.jsonl.'
+        $WriteOutput = & $Pwsh @Common -Write '-Confirm:$false' 2>&1
+        Test-Condition ($LASTEXITCODE -eq 0) "Write failed: $($WriteOutput -join ' ')"
+        foreach ($Name in @('RUNS.jsonl', 'LATEST.json', 'PROGRESS.md', 'TRACEABILITY.md', 'MANUAL_CHECKS.md')) {
+            Test-Condition (Test-Path -LiteralPath (Join-Path $Ledger $Name) -PathType Leaf) "Missing projection: $Name"
+        }
+    }
+
+    Invoke-Check 'powershell:repository-workflow::missing-evidence' 'Required evidence fails clearly' @('AC-S1-002') {
+        $Data = Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json -AsHashtable
+        $Data.targets.synthetic.ledger.script_result_outputs = @('{temp_root}/missing.json')
+        $Data | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $Manifest -Encoding utf8
+        $Output = & $Pwsh -NoLogo -NoProfile -File $Bridge -ManifestPath $Manifest -TargetName synthetic -RepoRoot $Repo -TargetRoot $Temp -TempRoot $Temp -ReportPath $Transcript -PythonExecutable $Python 2>&1
+        Test-Condition ($LASTEXITCODE -ne 0) 'Missing evidence unexpectedly succeeded.'
+        Test-Condition (($Output -join "`n") -match 'Required ledger evidence is missing') "Unexpected missing-evidence output: $($Output -join ' ')"
+    }
+}
+finally {
+    @{ schema_version = 1; source = 'powershell'; suite = 'repository-workflow'; tests = @($Checks) } |
+        ConvertTo-Json -Depth 10 |
+        Set-Content -LiteralPath $ResultFile -Encoding utf8
+}
+
+$Failures = @($Checks | Where-Object status -in @('failed', 'error'))
+$Checks | ForEach-Object { Write-Output ("{0,-7} {1} - {2}" -f $_.status.ToUpperInvariant(), $_.id, $_.name) }
+if ($Failures.Count -gt 0) {
+    Write-Error "$($Failures.Count) repository-workflow check(s) failed."
+    exit 1
+}
+Write-Output "Repository-workflow checks passed: $($Checks.Count)."
+exit 0
