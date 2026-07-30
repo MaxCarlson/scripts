@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import argparse
 import http.cookiejar
+import os
 import re
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -34,6 +37,9 @@ WINDOWS_RESERVED_NAMES = {
     *(f"COM{index}" for index in range(1, 10)),
     *(f"LPT{index}" for index in range(1, 10)),
 }
+MANGA18FX_IMAGE_WORKERS_ENV = "MANGADL_MANGA18FX_IMAGE_WORKERS"
+DEFAULT_IMAGE_WORKERS = 4
+MAX_IMAGE_WORKERS = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,6 +296,15 @@ def _download_image(
         return target
 
 
+def _configured_image_workers() -> int:
+    raw = os.environ.get(MANGA18FX_IMAGE_WORKERS_ENV, str(DEFAULT_IMAGE_WORKERS))
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_IMAGE_WORKERS
+    return value if 1 <= value <= MAX_IMAGE_WORKERS else DEFAULT_IMAGE_WORKERS
+
+
 def download_series(
     url: str,
     destination: Path,
@@ -297,14 +312,26 @@ def download_series(
     existing_root: Path | None = None,
     cookies: Path | None = None,
     timeout: float = 45.0,
+    image_workers: int = DEFAULT_IMAGE_WORKERS,
 ) -> tuple[Path, int, int]:
     parts = urlsplit(url)
     host = (parts.hostname or "").lower().rstrip(".")
     if host not in {"manga18fx.com", "www.manga18fx.com"} or not parts.path.lower().startswith("/manga/"):
         raise ValueError(f"not a supported Manga18FX series URL: {url}")
+    if not 1 <= image_workers <= MAX_IMAGE_WORKERS:
+        raise ValueError(f"--image-workers must be between 1 and {MAX_IMAGE_WORKERS}")
 
-    opener = build_opener(HTTPCookieProcessor(_load_cookie_jar(cookies)))
-    series_html = _read_text(opener, url, None, timeout)
+    page_opener = build_opener(HTTPCookieProcessor(_load_cookie_jar(cookies)))
+    thread_state = threading.local()
+
+    def thread_opener() -> object:
+        opener = getattr(thread_state, "opener", None)
+        if opener is None:
+            opener = build_opener(HTTPCookieProcessor(_load_cookie_jar(cookies)))
+            thread_state.opener = opener
+        return opener
+
+    series_html = _read_text(page_opener, url, None, timeout)
     title, chapters = parse_series(series_html, url)
     if not chapters:
         raise RuntimeError(f"no chapters were found on Manga18FX series page: {url}")
@@ -317,13 +344,18 @@ def download_series(
     existing_series_directory = existing_root / series_name if existing_root is not None else None
     downloaded = 0
     skipped = 0
-    print(f"series={title!r} chapters={len(chapters)} destination={series_directory}", flush=True)
+    discovered = 0
+    print(
+        f"series={title!r} chapters={len(chapters)} image_workers={image_workers} destination={series_directory}",
+        flush=True,
+    )
 
     for chapter_index, chapter in enumerate(chapters, start=1):
-        chapter_html = _read_text(opener, chapter.url, url, timeout)
+        chapter_html = _read_text(page_opener, chapter.url, url, timeout)
         images = parse_chapter_images(chapter_html, chapter.url)
         if not images:
             raise RuntimeError(f"no images were found for chapter {chapter.title!r}: {chapter.url}")
+        discovered += len(images)
 
         chapter_directory_name = _chapter_directory_name(chapter, chapter_index)
         chapter_directory = series_directory / chapter_directory_name
@@ -335,6 +367,7 @@ def download_series(
             flush=True,
         )
 
+        pending: list[tuple[str, Path]] = []
         for image_index, image_url in enumerate(images, start=1):
             target_base = chapter_directory / f"{image_index:04d}"
             existed_in_partial = any(
@@ -346,14 +379,27 @@ def download_series(
                 and (existing_chapter_directory / f"{image_index:04d}").with_suffix(suffix).stat().st_size > 0
                 for suffix in IMAGE_SUFFIXES
             )
-            if existed_in_destination:
+            if existed_in_partial or existed_in_destination:
                 skipped += 1
                 continue
-            _download_image(opener, image_url, chapter.url, target_base, timeout)
-            if existed_in_partial:
-                skipped += 1
-            else:
-                downloaded += 1
+            pending.append((image_url, target_base))
+
+        if pending:
+            def download_pending(item: tuple[str, Path]) -> Path:
+                image_url, target_base = item
+                return _download_image(thread_opener(), image_url, chapter.url, target_base, timeout)
+
+            worker_count = min(image_workers, len(pending))
+            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="manga18fx-image") as executor:
+                for _ in executor.map(download_pending, pending):
+                    downloaded += 1
+
+        print(
+            f"progress chapter={chapter_index}/{len(chapters)} title={chapter.title!r} "
+            f"chapter_images={len(images)} downloaded={downloaded} skipped={skipped} "
+            f"processed={downloaded + skipped} discovered={discovered}",
+            flush=True,
+        )
 
     return series_directory, downloaded, skipped
 
@@ -365,6 +411,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-E", "--existing-root", type=Path, help="Existing library root used to skip downloaded files.")
     parser.add_argument("-C", "--cookies", type=Path, help="Netscape/Mozilla cookies file.")
     parser.add_argument("-t", "--timeout", type=float, default=45.0, help="HTTP timeout in seconds (default: 45).")
+    parser.add_argument(
+        "-I",
+        "--image-workers",
+        type=int,
+        default=_configured_image_workers(),
+        help="Concurrent image downloads per chapter (default: 4; range: 1-8).",
+    )
     return parser
 
 
@@ -379,6 +432,7 @@ def main(argv: list[str] | None = None) -> int:
             existing_root=args.existing_root.expanduser().resolve() if args.existing_root else None,
             cookies=args.cookies.expanduser().resolve() if args.cookies else None,
             timeout=args.timeout,
+            image_workers=args.image_workers,
         )
     except (HTTPError, URLError, OSError, RuntimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr, flush=True)

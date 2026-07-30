@@ -2,35 +2,42 @@
 
 ## Current State
 
-Implementation is present on `agent/add-manga18fx-backend`. The user confirmed that a Manga18FX URL file is routing and downloading correctly on Windows 11.
+Implementation is present on `agent/add-manga18fx-backend`. Manga18FX URL files route and download correctly on Windows 11. Four outer series workers are stable on the current B: destination, while a fifth outer worker immediately drives the disk to 100% utilization and prevents observable progress even with only one or two image threads per series.
+
+Current package version: `mangadl 1.11.0`.
 
 ## Completed
 
-- Added native Manga18FX HTML parsing and image downloading.
-- Added `manga18fx` backend routing for series-root URLs.
-- Integrated the backend with mangadl workers, partial directories, retries, logs, progress sampling, and destination merging.
-- Added destination-aware skipping so reruns do not redownload image files already present in the final library.
-- Added stable chapter folder prefixes, including fractional chapter numbers such as `215.5`.
-- Added offline tests for parsing, natural chapter ordering, lazy image extraction, URL validation, Windows-safe names, stable chapter names, and worker command construction.
-- Bumped `mangadl` from 1.6.0 to 1.7.0.
-- Confirmed through current web indexing that Manga18FX still exposes series chapter lists and `/manga/<slug>/chapter-<n>` chapter pages.
-- Confirmed through the user's live run that the URL-file workflow downloads Manga18FX series correctly.
-- Fixed the Windows pytest base-temp setup so the parent directory is created before `tmp_path` fixtures initialize.
-- Moved base-temp selection into a module-local pytest hook so tests remain under `modules/mangadl/.pytest_tmp_root` regardless of the shell working directory.
-- Made gallery-dl backend tests independent of whether `gallery-dl` is installed by injecting a deterministic fake `gallery_dl.extractor` module.
-- Preserved the bare nhentai-ID dry-run coverage by mocking `GalleryDlBackend.score` inside the CLI test.
-- Executed an isolated regression replica for the final gallery-dl test doubles with no gallery-dl installation: 2 passed.
+- Added native Manga18FX HTML parsing, image downloading, backend routing, retries, partial directories, destination merging, and destination-aware resume.
+- Added deterministic chapter prefixes, including fractional chapters, and zero-padded image names.
+- Added bounded per-chapter image concurrency through `-I/--image-workers`.
+- Confirmed live operation with `-w 2 -I 2`, `-w 2 -I 4`, `-w 4 -I 1`, `-w 4 -I 2`, `-w 4 -I 4`, and `-w 4 -I 5`.
+- Added a default outer-worker ceiling of four, a hard override ceiling of eight, staggered startup, runtime worker/image-thread controls, and logical-CPU-minus-one aggregate budgeting.
+- Reduced recursive filesystem polling and included active `.part` bytes in transfer statistics.
+- Added cumulative native progress records with downloaded, existing, processed, and discovered counts.
+- Classified already-complete and genuine zero-output jobs correctly.
+- Removed misleading unknown-total denominators and aligned worker/activity-log columns.
+- Added the concise `run` interface plus `run config`, `run optimize`, `run benchmark`, and their config variants.
+- Added adaptive online optimization with decaying exploration, state coverage, neighbor search, UCB exploitation, convergence reporting, and durable reports.
+- Added systematic online benchmarking with alternating ascending/descending rounds.
+- Added the interactive schema-tolerant archive browser.
+- Added regression tests for progress, resume classification, CLI organization, optimization, and archive browsing.
 
 ## Validation Evidence
 
-The first Windows full-suite run exposed a missing pytest base-temp parent plus one environment-dependent gallery-dl assertion. After fixing the base-temp setup, the second Windows run reached 48 passing tests and only two failures. Both remaining failures were caused by gallery-dl not being installed: one test imported it directly, and the CLI dry-run test expected its extractor to route nhentai. Both tests now use isolated test doubles instead of requiring the optional runtime module.
+The original serial implementation averaged approximately 800 KiB/s with two outer workers. Inner image concurrency increased observed aggregate throughput to approximately 15-17 MiB/s during a four-worker live run.
+
+Resume-only workers previously appeared frozen at zero because the wrapper only counted newly written partial files. Version 1.10.2 and later consume cumulative native progress, allowing processed-image counts to advance while network byte speed remains honest.
 
 ## Unverified
 
-- The complete mangadl pytest suite has not yet been rerun in the user's Windows checkout after the final two test fixes.
-- A second live run has not yet confirmed that all existing Manga18FX image files are skipped.
-- Site age-verification, anti-bot, or cookie requirements remain environment-dependent.
+- Full Windows `pytest --tb=short -q .\tests\` against 1.11.0.
+- Installed help output for the concise/nested command hierarchy.
+- Live adaptive optimizer convergence and timed candidate termination.
+- Live complete-series optimization.
+- Interactive archive browsing against the user's current archive.
+- The validation report the user said was pushed is not visible in the connected branch comparison.
 
 ## Next Action
 
-Pull the latest branch and run `pytest --tb=short -q .\tests\` from `modules/mangadl`. If it passes, review the branch diff and merge it into `main` as the next separate action.
+Pull the latest feature branch, reinstall editable `mangadl`, run the complete Windows suite, inspect all mode-specific help, run one small report-only timed benchmark, and open the archive browser. Do not merge into `main` until those checks pass.
