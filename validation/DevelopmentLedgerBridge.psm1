@@ -145,38 +145,38 @@ function Invoke-TargetDevelopmentLedger {
         '{target_name}' = $TargetName
     }
     $Required = $Ledger.Contains('required') -and [bool]$Ledger.required
-    $Plan = Resolve-BridgePath -Value ([string]$Ledger.active_plan -as [string]) -BasePath $TargetRoot -Tokens $Tokens
-    $Output = Resolve-BridgePath -Value ([string]$Ledger.output_directory -as [string]) -BasePath $TargetRoot -Tokens $Tokens
+    $Plan = Resolve-BridgePath -Value ([string]$Ledger.active_plan) -BasePath $TargetRoot -Tokens $Tokens
+    $Output = Resolve-BridgePath -Value ([string]$Ledger.output_directory) -BasePath $TargetRoot -Tokens $Tokens
     if (-not (Test-Path -LiteralPath $Plan -PathType Leaf)) {
         throw "Active ledger plan does not exist: $Plan"
     }
 
-    $Args = [System.Collections.Generic.List[string]]::new()
+    $CommandArguments = [System.Collections.Generic.List[string]]::new()
     @('-m', 'development_ledger.dispatcher_record', '-p', $Plan, '-o', $Output, '-r', $RepoRoot) |
-        ForEach-Object { $Args.Add($_) }
-    Add-EvidencePath $Args $Ledger 'junit_outputs' '-j' $TargetRoot $Tokens $Required
-    Add-EvidencePath $Args $Ledger 'script_result_outputs' '-s' $TargetRoot $Tokens $Required
+        ForEach-Object { $CommandArguments.Add($_) }
+    Add-EvidencePath $CommandArguments $Ledger 'junit_outputs' '-j' $TargetRoot $Tokens $Required
+    Add-EvidencePath $CommandArguments $Ledger 'script_result_outputs' '-s' $TargetRoot $Tokens $Required
 
     $Transcripts = @(Get-ListValue $Ledger 'transcript_outputs')
     if ($Transcripts.Count -eq 0) {
         $Transcripts = @('{report_path}')
     }
-    Add-EvidencePath $Args @{ transcript_outputs = $Transcripts } 'transcript_outputs' '-t' $TargetRoot $Tokens $true
+    Add-EvidencePath $CommandArguments @{ transcript_outputs = $Transcripts } 'transcript_outputs' '-t' $TargetRoot $Tokens $true
 
     foreach ($Pair in @(@('actor', '-a'), @('mode', '-m'))) {
         if ($Ledger.Contains($Pair[0]) -and -not [string]::IsNullOrWhiteSpace([string]$Ledger[$Pair[0]])) {
-            $Args.Add($Pair[1])
-            $Args.Add([string]$Ledger[$Pair[0]])
+            $CommandArguments.Add($Pair[1])
+            $CommandArguments.Add([string]$Ledger[$Pair[0]])
         }
     }
     if ($Write) {
-        $Args.Add('-w')
+        $CommandArguments.Add('-w')
     }
 
     Write-Output "Development ledger: $(if ($Write) { 'WRITE' } else { 'PREVIEW' })"
     Write-Output "Plan: $Plan"
     Write-Output "Output: $Output"
-    & $PythonExecutable @Args
+    & $PythonExecutable @CommandArguments
     if ($LASTEXITCODE -ne 0) {
         throw "Development-ledger recording failed with exit code $LASTEXITCODE."
     }
