@@ -11,7 +11,7 @@ import mangadl.manga18fx as manga18fx
 from mangadl.cli import MANGA18FX_IMAGE_WORKERS_ENV, build_parser, main
 
 
-def test_public_cli_accepts_image_workers_and_sets_worker_environment(
+def test_public_cli_accepts_image_workers_without_mutating_environment_in_dry_run(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -46,7 +46,7 @@ def test_public_cli_accepts_image_workers_and_sets_worker_environment(
             "-n",
         ]
     ) == 0
-    assert os.environ[MANGA18FX_IMAGE_WORKERS_ENV] == "7"
+    assert MANGA18FX_IMAGE_WORKERS_ENV not in os.environ
 
 
 def test_public_cli_defaults_to_four_image_workers(tmp_path: Path) -> None:

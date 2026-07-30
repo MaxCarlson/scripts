@@ -164,6 +164,34 @@ def _progress_label(worker: WorkerSnapshot) -> str:
     return "activity"
 
 
+def _wide_columns(values: tuple[str, ...], width: int) -> str:
+    widths = (3, 10, 3, 34, 14, 14, 13, 13, 11, 8)
+    alignments = ("left", "left", "left", "left", "right", "right", "right", "right", "right", "right")
+    row = " | ".join(
+        fit_field(value, field_width, alignment)
+        for value, field_width, alignment in zip(values, widths, alignments, strict=True)
+    )
+    return fit_field(row, width)
+
+
+def _wide_heading(width: int) -> str:
+    return _wide_columns(
+        (
+            "ID",
+            "STATE",
+            "SRC",
+            "SERIES",
+            "PROCESSED",
+            "TRANSFERRED",
+            "XFER NOW",
+            "XFER AVG",
+            "PROC NOW",
+            "ELAPSED",
+        ),
+        width,
+    )
+
+
 def _worker_lines(worker: WorkerSnapshot, selected: bool, width: int) -> list[str]:
     marker = td_utils.color_text(">", "cyan") if selected else " "
     identity = color_identity(worker.url, worker.site) if worker.url else td_utils.color_text("--:-", "gray")
@@ -178,21 +206,21 @@ def _worker_lines(worker: WorkerSnapshot, selected: bool, width: int) -> list[st
     message = worker.message or title or "waiting for progress"
 
     if width >= 160:
-        first = " | ".join(
+        first = _wide_columns(
             (
-                fit_field(f"{marker}{worker.slot:02d}", 3),
-                fit_field(color_status(worker.state), 10),
-                fit_field(backend, 3),
-                fit_field(identity, 34),
-                fit_field(images, 14, "right"),
-                fit_field(sizes, 14, "right"),
-                fit_field(now_rate, 13, "right"),
-                fit_field(average_rate, 13, "right"),
-                fit_field(items, 11, "right"),
-                fit_field(elapsed, 8, "right"),
-            )
+                f"{marker}{worker.slot:02d}",
+                color_status(worker.state),
+                backend,
+                identity,
+                images,
+                sizes,
+                now_rate,
+                average_rate,
+                items,
+                elapsed,
+            ),
+            width,
         )
-        first = fit_field(first, width)
         bar_width = max(12, min(72, width - 34))
         second = fit_field(
             f"    {_progress(worker, bar_width)} {_progress_label(worker):>8} | {message}",
@@ -209,7 +237,7 @@ def _worker_lines(worker: WorkerSnapshot, selected: bool, width: int) -> list[st
         bar_width = max(12, min(36, width - 38))
         second = clip(
             f"    {_progress(worker, bar_width)} {_progress_label(worker):>8} | "
-            f"now {now_rate} | avg {average_rate} | {items}",
+            f"xfer {now_rate} | avg {average_rate} | process {items}",
             width,
         )
         return [first, second]
@@ -221,7 +249,7 @@ def _worker_lines(worker: WorkerSnapshot, selected: bool, width: int) -> list[st
     )
     bar_width = max(8, min(18, width - 26))
     second = clip(
-        f"    {_progress(worker, bar_width)} {_progress_label(worker):>8} | {now_rate}",
+        f"    {_progress(worker, bar_width)} {_progress_label(worker):>8} | xfer {now_rate}",
         width,
     )
     return [first, second]
@@ -301,8 +329,13 @@ def render_dashboard(
     done = counts.get("succeeded", 0) + counts.get("skipped_archive", 0)
     running = counts.get("running", 0) + counts.get("leased", 0)
     failed = sum(value for key, value in counts.items() if key.startswith("failed_"))
-    speed = sum(worker.current_bps for worker in workers.values())
-    avg = sum(worker.average_bps for worker in workers.values())
+    transfer_now = sum(worker.current_bps for worker in workers.values())
+    transfer_average = sum(worker.average_bps for worker in workers.values())
+    active_transferred = sum(worker.bytes_done for worker in workers.values())
+    processing_now = sum(worker.current_ips for worker in workers.values())
+    processing_average = sum(worker.average_ips for worker in workers.values())
+    active_processed = sum(worker.images_done for worker in workers.values())
+
     lines = [
         clip(
             f"{td_utils.color_text('mangadl', 'bright')} {run_id} | "
@@ -326,15 +359,26 @@ def render_dashboard(
         )
     lines.append(
         clip(
-            f"Speed {td_utils.color_text(human_bytes(speed, '/s'), 'cyan')} | "
-            f"Worker avg {human_bytes(avg, '/s')} | "
-            f"Downloaded {human_bytes(sum(w.bytes_done for w in workers.values()))}",
+            f"Transfer now {td_utils.color_text(human_bytes(transfer_now, '/s'), 'cyan')} | "
+            f"Active aggregate avg {human_bytes(transfer_average, '/s')} | "
+            f"Active transferred {human_bytes(active_transferred)}",
+            width,
+        )
+    )
+    lines.append(
+        clip(
+            f"Processing now {td_utils.color_text(f'{processing_now:.2f} img/s', 'cyan')} | "
+            f"Active aggregate avg {processing_average:.2f} img/s | "
+            f"Active processed {active_processed} img",
             width,
         )
     )
     if runtime is not None and runtime.notice:
         lines.append(clip(f"Tuning: {runtime.notice}", width))
     lines.append("-" * width)
+    if width >= 160:
+        lines.append(_wide_heading(width))
+        lines.append("-" * width)
 
     for slot in sorted(workers):
         lines.extend(_worker_lines(workers[slot], slot == selected, width))

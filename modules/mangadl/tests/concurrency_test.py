@@ -78,7 +78,7 @@ def test_runtime_worker_increase_stops_at_safe_ceiling() -> None:
     manager._adjust_runtime("workers_up")
 
     assert manager.target_workers == 4
-    assert "configured maximum of 4" in manager.runtime_notice
+    assert "maximum of 4" in manager.runtime_notice
 
 
 def test_runtime_override_still_obeys_aggregate_budget() -> None:

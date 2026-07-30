@@ -61,6 +61,7 @@ def test_manga18fx_output_parser_reads_chapter_and_completion_counts() -> None:
         "kind": "complete",
         "downloaded": 0,
         "skipped": 8123,
+        "processed": 8123,
         "images_total": 8123,
     }
 

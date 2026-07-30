@@ -103,9 +103,13 @@ def render_archive_browser(
     page = records[page_start : page_start + page_size]
 
     lines = [
-        f"{td_utils.color_text('mangadl archive', 'bright')} | {snapshot.path}",
-        f"Records {len(records)}/{len(snapshot.records)} | Selected {selected + 1 if records else 0} | Filter {query or '-'}",
-        "j/k or arrows Move | PgUp/PgDn Page | Home/End | / Filter | c Clear | e Export JSON | q Quit",
+        clip(f"{td_utils.color_text('mangadl archive', 'bright')} | {snapshot.path}", width),
+        clip(
+            f"Records {len(records)}/{len(snapshot.records)} | "
+            f"Selected {selected + 1 if records else 0} | Filter {query or '-'}",
+            width,
+        ),
+        clip("j/k or arrows Move | PgUp/PgDn Page | Home/End | / Filter | c Clear | e Export JSON | q Quit", width),
         "-" * width,
     ]
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mangadl"
-version = "1.12.0"
+version = "1.12.1"
 description = "Concurrent, resumable manga and gallery download manager."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,7 +18,7 @@ where = ["."]
 include = ["mangadl*"]
 
 [tool.pytest.ini_options]
-addopts = "-q"
+addopts = "-q -p no:cacheprovider"
 testpaths = ["tests"]
 pythonpath = ["."]
 tmp_path_retention_policy = "none"
