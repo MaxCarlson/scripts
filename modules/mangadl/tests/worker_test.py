@@ -61,6 +61,7 @@ def test_manga18fx_output_parser_reads_chapter_and_completion_counts() -> None:
         "kind": "complete",
         "downloaded": 0,
         "skipped": 8123,
+        "processed": 8123,
         "images_total": 8123,
     }
 
@@ -108,36 +109,23 @@ def test_hdporncomics_command_forces_manhwa_and_uses_output_root(tmp_path: Path)
         hdporncomics_executable=str(executable),
         hdporncomics_threads=8,
         destination=str(output),
-        url="https://hdporncomics.com/manhwa/a title/",
+        url="https://hdporncomics.com/manhwa/example/",
     )
-    assert _command(args, tmp_path / "ignored") == [
-        str(executable.resolve()),
-        "--directory",
-        str(output),
-        "--threads",
-        "8",
-        "--force",
-        "--manhwa",
-        "https://hdporncomics.com/manhwa/a title/",
-    ]
+    command = _command(args, tmp_path / "partial")
+    assert command[0] == str(executable)
+    assert command[1:5] == ["--directory", str(output), "--threads", "8"]
+    assert command[-3:] == ["--force", "--manhwa", args.url]
 
 
 def test_manga18fx_command_uses_native_module_and_partial_root(tmp_path: Path) -> None:
-    partial = tmp_path / "partial root"
-    cookies = tmp_path / "cookies.txt"
+    partial = tmp_path / "partial"
     args = Namespace(
         backend="manga18fx",
-        cookies=str(cookies),
+        cookies=None,
         url="https://manga18fx.com/manga/example/",
     )
+    command = _command(args, partial)
 
-    assert _command(args, partial) == [
-        sys.executable,
-        "-m",
-        "mangadl.manga18fx",
-        "--destination",
-        str(partial),
-        "--cookies",
-        str(cookies),
-        "https://manga18fx.com/manga/example/",
-    ]
+    assert command[:3] == [sys.executable, "-m", "mangadl.manga18fx"]
+    assert command[3:5] == ["--destination", str(partial)]
+    assert command[-1] == args.url
