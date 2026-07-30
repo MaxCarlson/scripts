@@ -38,7 +38,7 @@ def test_view_parser_exposes_safe_demo_mode() -> None:
 
     assert args.demo is True
     assert args.section == "history"
-    assert default_args.section == "overview"
+    assert default_args.section is None
 
 
 def test_demo_records_cover_varied_states_without_touching_real_paths() -> None:
@@ -180,7 +180,55 @@ def test_carousel_switches_pages_and_loads_expensive_pages_lazily(
     assert calls == {"repository": 1, "diagnostics": 0}
 
 
-def test_bare_view_routes_to_aggregate_carousel(
+def test_bare_view_routes_to_operations_history_hub(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rrbackup.viewer_runtime as viewer_runtime
+
+    records = list(build_demo_records(now=NOW))
+    captured = {}
+    inventory = SimpleNamespace(to_dict=lambda: {"backups": []})
+    args = SimpleNamespace(
+        demo=False,
+        backup_name=None,
+        section=None,
+        json=False,
+        markdown=False,
+        plain=False,
+        include_legacy_evidence=False,
+    )
+
+    monkeypatch.setattr(
+        viewer_runtime.cli_runtime,
+        "records",
+        lambda current_args: (inventory, records),
+    )
+    monkeypatch.setattr(viewer_runtime, "interactive_available", lambda: True)
+
+    def capture_hub(selected, current_args, *, initial_tab):
+        captured["selected"] = list(selected)
+        captured["args"] = current_args
+        captured["initial_tab"] = initial_tab
+        return viewer_runtime.cli_runtime.EXIT_OK
+
+    monkeypatch.setattr(viewer_runtime.run_runtime, "open_operations_hub", capture_hub)
+    monkeypatch.setattr(
+        viewer_runtime,
+        "run_viewer_dashboard",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("bare view must not open the six-page reference carousel")
+        ),
+    )
+
+    result = viewer_runtime.handle_view(args)
+
+    assert result == viewer_runtime.cli_runtime.EXIT_OK
+    assert captured["selected"] == records
+    assert captured["args"] is args
+    assert captured["initial_tab"] == "operations"
+
+
+def test_explicit_overview_still_routes_to_reference_carousel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import rrbackup.viewer_runtime as viewer_runtime
@@ -216,7 +264,6 @@ def test_bare_view_routes_to_aggregate_carousel(
     assert result == viewer_runtime.cli_runtime.EXIT_OK
     assert captured["selected"] == records
     assert captured["start_page"] == "overview"
-    assert captured["demo"] is False
 
 
 def test_plain_overview_is_aggregate_not_duplicate_backup_table(
@@ -230,7 +277,7 @@ def test_plain_overview_is_aggregate_not_duplicate_backup_table(
     args = SimpleNamespace(
         demo=False,
         backup_name=None,
-        section="overview",
+        section=None,
         json=False,
         markdown=False,
         plain=True,
