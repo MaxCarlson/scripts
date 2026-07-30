@@ -15,6 +15,10 @@ def _run_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     return subparsers.choices["run"]
 
 
+def _normalized_help(parser: argparse.ArgumentParser) -> str:
+    return " ".join(parser.format_help().split())
+
+
 def test_command_shape_normalizes_run_modes_and_config() -> None:
     optimize = normalize_command_shape(["run", "optimize", "config", "-i", "urls.txt"])
     benchmark = normalize_command_shape(["run", "benchmark", "-i", "urls.txt"])
@@ -33,7 +37,7 @@ def test_command_shape_normalizes_run_modes_and_config() -> None:
 
 
 def test_normal_run_help_hides_expert_options_and_advertises_modes() -> None:
-    help_text = _run_parser(build_parser(["run", "--help"])).format_help()
+    help_text = _normalized_help(_run_parser(build_parser(["run", "--help"])))
 
     assert "--workers" in help_text
     assert "--image-workers" in help_text
@@ -46,10 +50,12 @@ def test_normal_run_help_hides_expert_options_and_advertises_modes() -> None:
 
 
 def test_optimize_and_config_help_expose_relevant_options() -> None:
-    optimize_help = _run_parser(build_parser(["run", "optimize", "--help"])).format_help()
-    config_help = _run_parser(
-        build_parser(["run", "optimize", "config", "--help"])
-    ).format_help()
+    optimize_help = _normalized_help(
+        _run_parser(build_parser(["run", "optimize", "--help"]))
+    )
+    config_help = _normalized_help(
+        _run_parser(build_parser(["run", "optimize", "config", "--help"]))
+    )
 
     assert "--min-workers" in optimize_help
     assert "--max-image-workers" in optimize_help
