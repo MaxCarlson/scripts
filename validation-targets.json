@@ -77,7 +77,7 @@
           ]
         },
         {
-          "name": "Lint RRBackup checkpoint 2A.2b",
+          "name": "Lint RRBackup checkpoint 2A.2c",
           "executable": "{python}",
           "arguments": [
             "-m",
@@ -97,6 +97,7 @@
             "rrbackup/models.py",
             "rrbackup/monitored_restic.py",
             "rrbackup/operations_dashboard.py",
+            "rrbackup/operations_hub.py",
             "rrbackup/policy.py",
             "rrbackup/presentation.py",
             "rrbackup/profile.py",
@@ -130,6 +131,7 @@
             "tests/models_test.py",
             "tests/monitored_restic_test.py",
             "tests/operations_dashboard_test.py",
+            "tests/operations_hub_test.py",
             "tests/packaging_test.py",
             "tests/policy_test.py",
             "tests/presentation_test.py",
