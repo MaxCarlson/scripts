@@ -7,34 +7,51 @@ This handoff covers repository-wide infrastructure and conventions that are not 
 ## Active Repository-Wide Plan
 
 ```text
-docs/plans/20260729-0900_validation-evidence-context-history/
+docs/plans/20260729-2000_unified-hybrid-workflow/
 ```
 
-This plan tracks the shared validation evidence system built around:
+This plan implements the merged hybrid-development design around:
 
 ```text
+main
+agent/unified
+agent/<work>
 Invoke-Tests.ps1
 validation-targets.json
+modules/development_ledger/
 docs/test-results/<target>/
 ```
 
 ## Current State
 
-The first implementation provides:
+The active implementation branch provides:
 
-- one repository-root validation dispatcher,
-- manifest-selected validation targets,
-- one authoritative `LATEST.txt` report per target,
-- bounded report history,
-- generated `LATEST_CONTEXT.md` snapshots from existing project status/checklist files,
-- generated `LATEST_PROGRESS.diff` files showing context changes since the prior run.
+- explicit branch and integration roles;
+- repository instruction routing to branch and ledger standards;
+- one structured repository-wide plan state;
+- a manifest-driven development-ledger bridge;
+- a self-hosting `repository-workflow` validation target;
+- generic script-result evidence and permanent generated projections;
+- continued raw `LATEST.txt` evidence during migration.
 
-The current implementation is intentionally lightweight. Future expansion is documented in the active repository-wide plan and should not delay module-specific work unless the validation infrastructure itself is blocking.
+Read the active plan's `HANDOFF.md` and generated `ledger/PROGRESS.md` when present.
+
+## Historical Repository-Wide Plan
+
+The earlier validation evidence/context-diff foundation remains under:
+
+```text
+docs/plans/20260729-0900_validation-evidence-context-history/
+```
+
+Its `LATEST_CONTEXT.md` and `LATEST_PROGRESS.diff` design remains transitional evidence until the ledger workflow has passed multiple real cycles.
 
 ## Module-Specific Work
 
-RRBackup consolidation remains tracked separately under:
+Module-owned plans remain under:
 
 ```text
-modules/rrbackup/docs/plans/20260729-0700_rrbackup-consolidation-viewer-alerting/
+modules/<module>/docs/plans/
 ```
+
+Do not continue work on already merged historical feature branches. Create new coherent branches from current `agent/unified`.
