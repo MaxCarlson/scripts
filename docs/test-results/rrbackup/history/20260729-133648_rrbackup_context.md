@@ -1,8 +1,8 @@
 # Validation Context: rrbackup
 
-Generated: 2026-07-29T10:45:04.7939154-07:00
+Generated: 2026-07-29T13:37:15.1104059-07:00
 Branch: agent/merge-restic-backup-modules
-Commit: 5e5c37a4cb3ae412f0a8848d6c93a27f06d08e21
+Commit: a8b2b5fb14f5b015315ae6d03b953921138ae976
 Validation report: docs\test-results\rrbackup\LATEST.txt
 
 ## Validation Highlights
@@ -12,15 +12,14 @@ Validation report: docs\test-results\rrbackup\LATEST.txt
 - RESULT: PASS - Install shared TermDash dependency
 - RESULT: PASS - Install RRBackup editable development dependencies
 - RESULT: PASS - Compile RRBackup package and tests
-- RESULT: PASS - Lint RRBackup checkpoint 2A
+- RESULT: PASS - Lint RRBackup checkpoint 2A.1b
 - RESULT: PASS - Canonical backup CLI help contract
 - RESULT: PASS - Condensed backup view help contract
-- ================== 2 failed, 286 passed, 7 skipped in 16.60s ==================
-- RESULT: FAIL - RRBackup pytest and coverage suite
+- [32m======================= [32m[1m297 passed[0m, [33m7 skipped[0m[32m in 15.20s[0m[32m =======================[0m
+- RESULT: PASS - RRBackup pytest and coverage suite
 - RESULT: PASS - PowerShell test: tests\powershell\environment_smoke_test.ps1
 - RESULT: PASS - PowerShell test: tests\powershell\production_read_only_test.ps1
-- TARGET RESULT: FAIL
-- Failure count: 1
+- TARGET RESULT: PASS
 
 ## Working Tree
 
@@ -28,9 +27,6 @@ Validation report: docs\test-results\rrbackup\LATEST.txt
  M docs/test-results/rrbackup/LATEST.txt
  D docs/test-results/rrbackup/LATEST_CONTEXT.md
  D docs/test-results/rrbackup/LATEST_PROGRESS.diff
-?? docs/test-results/rrbackup/history/20260729-093813_rrbackup.txt
-?? docs/test-results/rrbackup/history/20260729-093813_rrbackup_context.md
-?? docs/test-results/rrbackup/history/20260729-093813_rrbackup_progress.diff
 ```
 
 ## Project Status Sources
@@ -41,39 +37,115 @@ Validation report: docs\test-results\rrbackup\LATEST.txt
 
 ## Overall
 
-Stage 1 is verified. The Windows checkpoint passed package compilation, focused correctness lint, 199 tests, and both PowerShell checks; 8 environment-dependent tests skipped intentionally. The repository-root validation evidence workflow also works as intended.
+Stage 1 is verified. The Windows safety-foundation checkpoint passed package compilation, focused correctness lint, 199 tests, and both PowerShell checks; 8 environment-dependent tests skipped intentionally. The repository-root validation evidence workflow also works as intended.
 
-Stage 2 is split into bounded checkpoints. The current checkpoint is **2A — Single-CLI UX Foundation**, and it is ready for local automated and manual validation. No additional Stage 2 feature group should begin until the resulting evidence is reviewed.
+Checkpoint **2A — Single-CLI UX Foundation** and Checkpoint **2A.1a — Completed Versus Attempted Run Visibility** are accepted.
 
-The prior Stage 2 checkpoint collected 266 tests: 256 passed, 8 skipped, and 2 failed because inherited integration assertions still expected obsolete `rrb` help text. Those assertions have been replaced with canonical `backup` checks in Checkpoint 2A.
+Checkpoint **2A.1b — Interactive Viewer Carousel** passed automated Windows validation with 295 tests passing and 7 intentional skips. Manual testing confirmed the interactive History page, concise run-selector rows, and compact default Audit summary. Manual testing also showed that the original Overview page duplicated the old per-backup list closely enough that bare `backup view` appeared unchanged.
 
-Manual acceptance of the prior CLI identified:
+The current validation-ready correction keeps the six-page carousel but replaces page 1 with a true aggregate dashboard. Do not begin the live run monitor, Stop action, or pause/resume work until this correction passes automated and manual review.
 
-- an over-fragmented `backup view` command tree,
-- raw JSON as default human-facing repository/diagnostic output,
-- unrelated Windows tasks in schedule discovery,
-- an implicit restore-size calculation that took about 72 seconds,
-- a run command that required too much Restic/configuration knowledge,
-- missing shared color and interactive presentation conventions.
+Detailed scope is tracked in:
 
-Checkpoint 2A directly targets those findings.
+```text
+03_viewer-carousel-and-run-monitor__in-progress.md
+```
 
-## Checkpoint Guardrail
+## Latest Automated Evidence
 
-Each checkpoint contains one closely related feature/correction group and should result in approximately 10–20 minutes between local pull/test/push cycles.
+The pushed Windows run at commit `e9b4aea5c3b51be3a9adaf94394ce0cb33c1d172` recorded:
 
-For every checkpoint:
+- dependency cleanup, uninstall, and editable installation: passed,
+- package/test compilation: passed,
+- focused correctness lint: passed,
+- root `backup` help contract: passed,
+- condensed `backup view` help contract: passed,
+- pytest: 295 passed, 7 skipped, 0 failed,
+- PowerShell installed-entry-point/environment smoke test: passed,
+- production read-only test: safely skipped,
+- package branch coverage: 61%,
+- pytest ANSI color sequences: preserved through the root dispatcher.
 
-1. source, tests, planning state, and static review are completed together,
-2. implementation stops for local validation,
-3. automated and manual results are reviewed before the next checkpoint,
-4. failures must remain attributable to the newest bounded change set.
+## Accepted Manual Findings
 
-Create/schedule wizard acceptance, scheduler/configuration apply, compatibility-shim removal, and production-write work are not part of Checkpoint 2A.
+### Completed versus attempted runs
+
+- `backup view` shows:
+  - Last complete: April snapshot
+  - Last attempt: recent interrupted run
+  - Attempt state: `INTERRUPTED`
+- `backup view --section history` showed both:
+  - attempted interrupted run
+  - completed snapshot `022aad5b`
+- `backup run auto` displayed the same separation.
+- The plain post-selector table was readable and correctly separated completion from attempt state.
+
+### Viewer carousel
+
+- `backup view --section history` entered the interactive carousel on `View: HISTORY — pg. 3/6`.
+- The History page displayed the interrupted attempt and completed snapshot correctly.
+- `backup view --section audit` produced a concise human summary instead of raw Markdown/JSON.
+- `backup view --section audit --json` intentionally produced the complete, large machine-readable audit.
+- `backup run auto` used the cleaner unlabeled row layout.
+- Bare `backup view` appeared unchanged because the original Overview page was another per-backup inventory table rather than an aggregate dashboard.
+
+### Run selector and execution
+
+- `backup run auto` opens the expected selector.
+- Pressing `R` still immediately starts a real backup in the current build.
+- Restic JSON progress messages are printed raw.
+- The future monitor must show aggregate progress, elapsed time, ETA, file/byte counts, current files, active state, and a confirmed Stop action.
+- Active-run information must also be visible from `backup view` and both details pages.
+- Pause/resume and delayed resume remain a separate safety-sensitive checkpoint.
+- Exact per-drive progress cannot be claimed from Restic's aggregate JSON without additional verified instrumentation.
+
+## Current Correction — Checkpoint 2A.1b
+
+Implemented on the branch:
+
+- Bare `backup view` remains page 1 of the six-page carousel.
+- Page 1 is now an aggregate dashboard rather than a duplicate backup list.
+- The aggregate Overview contains expandable rows for:
+  - backup health,
+  - current/recent activity,
+  - completion coverage,
+  - schedule state and missed runs,
+  - repository grouping.
+- Page 2 remains the detailed per-backup inventory.
+- Plain Overview output uses the same aggregate semantics.
+- Runtime regression coverage proves that bare `backup view` routes into the carousel with `start_page="overview"`.
+- Focused tests distinguish the aggregate Overview from the detailed Backups page.
+- The new controller is included in compile, Ruff, and pytest validation.
+
+Already implemented and awaiting complete manual acceptance:
+
+- pages:
+  1. Overview
+  2. Backups
+  3. History
+  4. Repository
+  5. Schedules
+  6. Diagnostics
+- persistent page labels such as `View: OVERVIEW — pg. 1/6`,
+- `[`/`]`, Tab, and `1`–`6` page controls,
+- lazy Repository and Diagnostics loading,
+- safe `backup view --demo` fixtures,
+- compact Diagnostics and default Audit summaries,
+- concise run-selector formatting.
+
+Not implemented in this checkpoint:
+
+- confirmation before pressing `R`,
+- live progress monitor,
+- active-run refresh,
+- explicit Stop action,
+- pause/resume,
+- scheduled resume,
+- global switching between root command areas.
 
 ## Progress Assessment
 
-### Successfully implemented and previously verified
+### Accomplished
 
 - Shared safety engine and terminal-state handling
 - Production repository and snapshot read-only access
@@ -81,52 +153,37 @@ Create/schedule wizard acceptance, scheduler/configuration apply, compatibility-
 - Provenance and comprehensive audit collection
 - Configuration/source attribution
 - Root validation dispatcher and authoritative evidence handoff
-- 256 passing tests in the last Stage 2 report
-
-### Implemented in Checkpoint 2A and awaiting local validation
-
-- Package version `2.0.0`
-- Only one declared public console entry point: `backup`
-- Uninstall/reinstall validation that removes retired `rrb` and `rrbackup` wrappers
-- Seven task-oriented areas: `create`, `run`, `view`, `schedule`, `restore`, `repo`, and `config`
-- Condensed `view --section` interface
-- Unified canonical-TOML/legacy backup inventory
-- Canonical backup-set conversion through the shared engine
-- Preservation of VSS/fs-snapshot, cache exclusion, one-filesystem, dry-run, tags, and raw Restic options
-- Read-only inventory loading without creating generated state/input directories
-- Configured-backup `run auto` chooser and direct named execution
-- Hard print-only no-materialization/no-execution behavior
-- Backup-centric schedule table
+- Single installed `backup` entry point
+- Seven task-oriented command areas
+- Unified canonical/legacy inventory
 - Strict scheduler ownership filtering
-- Shared TermDash dependency and Windows curses dependency
-- Shared color policy, ANSI-aware tables, compact rows, details, filtering, paging, scrolling, and multi-select adapter
-- Combined human-readable repository summary
-- Explicit `--refresh-storage` and atomic storage-statistics cache
-- Focused tests for parser, packaging, inventory, schedule math, presentation, repository caching, scheduler filtering, and integration behavior
-- Updated compile, lint, help, pytest/coverage, and PowerShell validation gates
-
-### Deferred until Checkpoint 2A evidence is reviewed
-
-- Interactive create-wizard acceptance
-- Interactive schedule-wizard acceptance
-- Configuration and scheduler mutation
-- Retention execution
-- Cross-platform scheduler CRUD completion
-- `backup_module` compatibility-shim conversion and duplicate-engine removal
-- Production backup/restore mutation
+- Backup-centric schedule table
+- Combined repository summary and explicit cached storage refresh
+- Shared TermDash presentation dependency
+- Colored pytest output through the root dispatcher
+- Explicit missing-config failure semantics
+- Clean Checkpoint 2A validation: 288 passed, 7 skipped
+- Clean Checkpoint 2A.1a validation: 289 passed, 7 skipped
+- Clean initial Checkpoint 2A.1b validation: 295 passed, 7 skipped
+- Manual acceptance of completed-versus-attempted run visibility
+- Manual acceptance of History carousel entry, compact Audit summary, and concise run-selector rows
 
 ### Current bugs and uncertainty
 
-- No Checkpoint 2A code has yet run in the local Windows environment.
-- The module root `README.md` still documents the historical `rrb` interface and is intentionally deferred until the new UX passes acceptance.
-- TUI resizing and curses-failure fallback require manual Windows verification.
-- General CLI repository/password overrides are not yet covered by a non-default-repository manual test.
+- The aggregate Overview correction has not yet been locally compiled, linted, or tested.
+- `backup view --demo` visual density and all page-switch keys still need manual Windows verification.
+- Repository, Schedules, Diagnostics, terminal resize, filter persistence expectations, and detail usefulness need manual review.
+- Lazy repository collection may pause briefly when the Repository page is first opened; it remains read-only.
+- `R` in `backup run auto` still begins execution immediately. Do not press it during this checkpoint.
+- The installed build still prints raw Restic JSON during execution until Checkpoint 2A.2.
+- Pause/resume feasibility and repository-lock safety require a dedicated design and controlled acceptance.
+- The module root `README.md` still documents the historical `rrb` interface and remains deferred until the new UX passes acceptance.
 
-### Progress and loop assessment
+### Stall/loop assessment
 
-Measurable progress occurred. This is not a repeated safety-engine pass: Checkpoint 2A visibly changes the public command surface, human output, schedule filtering, run selection, and repository behavior in response to manual feedback. The checkpoint is now frozen. Continuing feature work before local validation would constitute poor progress control.
+Measurable progress continues. Automated 2A.1b validation passed, and manual review identified a presentation-model issue rather than a broken carousel. The correction separates aggregate Overview information from detailed Backups information and adds direct runtime coverage. The project is not looping or stuck.
 
-## Checkpoint 2A Validation Target
+## Next Validation
 
 From the repository root:
 
@@ -134,32 +191,26 @@ From the repository root:
 ./Invoke-Tests.ps1
 ```
 
-The target performs:
-
-1. RRBackup metadata cleanup,
-2. RRBackup uninstall to remove stale entry points,
-3. editable TermDash installation,
-4. editable RRBackup `2.0.0` installation,
-5. package/test compilation,
-6. focused correctness lint,
-7. root help validation,
-8. condensed view-help validation,
-9. full pytest and branch coverage,
-10. PowerShell installed-entry-point and environment checks.
-
-Authoritative evidence:
+After automated validation, manually exercise:
 
 ```text
-docs/test-results/rrbackup/LATEST.txt
-docs/test-results/rrbackup/LATEST_CONTEXT.md
-docs/test-results/rrbackup/LATEST_PROGRESS.diff
+backup view
+backup view --demo
+backup view --section backups
+backup view --section repository
+backup view --section schedules
+backup view --section diagnostics
+backup run auto
 ```
+
+Do not press `R` in the run selector during this checkpoint.
 
 ## Last Known Production State
 
 - Repository: `B:\ResticRepos\PC-Local`
-- Known snapshots: `a1609113`, `022aad5b`
-- Latest snapshot: 2026-04-14
+- Known completed snapshots: `a1609113`, `022aad5b`
+- Latest completed snapshot: 2026-04-14
+- Latest attempted run: interrupted during manual Checkpoint 2A acceptance on 2026-07-29
 - Current module-owned backup schedule: absent
 - Automated production mutation: prohibited
 
@@ -197,7 +248,7 @@ docs/test-results/rrbackup/LATEST_PROGRESS.diff
 
 Stage 2 is split into bounded checkpoints. Do not begin the next checkpoint until the current checkpoint's automated and manual evidence has been reviewed.
 
-### Checkpoint 2A — Single-CLI UX Foundation — Awaiting Local Validation
+### Checkpoint 2A — Single-CLI UX Foundation — Accepted
 
 #### Validation and progress evidence
 
@@ -210,8 +261,8 @@ Stage 2 is split into bounded checkpoints. Do not begin the next checkpoint unti
 - [x] Record manual feedback on view fragmentation, raw JSON, scheduler noise, and slow storage statistics
 - [x] Add bounded Checkpoint 2A scope and stop rule to the active plan
 - [x] Add compile, focused lint, help, pytest/coverage, and PowerShell gates for Checkpoint 2A
-- [ ] Pass corrected Windows validation for Checkpoint 2A
-- [ ] Complete Checkpoint 2A manual acceptance
+- [x] Pass corrected Windows validation: 288 passed, 7 skipped
+- [x] Complete the bounded 2A manual review and record follow-up UX checkpoints
 
 #### Public command surface
 
@@ -284,7 +335,7 @@ Stage 2 is split into bounded checkpoints. Do not begin the next checkpoint unti
 - [x] Preserve preview, dry-run, CPU-policy bypass, extra tags, exclusions, and raw Restic arguments
 - [x] Keep print-command-only as a hard no-side-effect barrier
 - [x] Add run-selection, direct-run, skipped-exit, and no-materialization preview tests
-- [ ] Manually verify chooser cancellation and selected-run confirmation behavior
+- [ ] Add and manually verify final selected-run confirmation
 
 #### `backup schedule`
 
@@ -328,7 +379,65 @@ Stage 2 is split into bounded checkpoints. Do not begin the next checkpoint unti
 - [x] Add formatter, details, selection callback, color, and ANSI-stripping tests
 - [ ] Manually verify fallback behavior when curses cannot initialize
 
-### Checkpoint 2B — Create and Schedule Wizard Preview — Deferred Until 2A Passes
+### Checkpoint 2A.1a — Completed Versus Attempted Run Visibility — Accepted
+
+- [x] Show Last complete independently from Last attempt
+- [x] Show attempt state for queued/waiting/running/success/failure/interrupted/skipped/dry-run
+- [x] Preserve snapshots as completed-backup evidence for pre-merge history
+- [x] Add run ID, timestamps, exit code, reason, and snapshot ID to details
+- [x] Distinguish attempted runs from completed snapshots in History
+- [x] Pass local validation: 289 passed, 7 skipped
+- [x] Manually verify the July interrupted attempt and April completed snapshot appear separately
+
+### Checkpoint 2A.1b — Interactive Viewer Carousel — Awaiting Local Validation
+
+- [x] Add six-page interactive viewer controller
+- [x] Add persistent `View: <PAGE> — pg. n/6` header
+- [x] Add `[`/`]`, Tab, and `1`–`6` page switching
+- [x] Preserve navigation, filtering, details, paging, horizontal scrolling, and resize behavior
+- [x] Make `--section` select the starting interactive page
+- [x] Keep explicit plain, JSON, and Markdown noninteractive modes
+- [x] Load repository and diagnostics pages lazily
+- [x] Replace default diagnostics JSON/Markdown dump with compact human rows and details
+- [x] Replace default audit dump with a compact human index
+- [x] Add `backup view --demo` safe synthetic visual fixtures
+- [x] Include healthy, warning, failed, interrupted, running, disabled-schedule, multi-repository, and multi-source demo states
+- [x] Ensure demo mode does not load real configuration, inspect host state, invoke Restic, or write files
+- [x] Remove redundant inline `complete`, `attempt`, `next`, and `missed` row labels
+- [x] Route `backup run auto` through the concise selector
+- [x] Add non-curses tests for page builders, switching, lazy loading, demo diversity, diagnostics, audit summary, and selector formatting
+- [x] Add new viewer/runtime modules and tests to root compilation/lint/pytest validation
+- [ ] Pass local automated validation
+- [ ] Manually accept demo carousel visuals, hotkeys, details, filters, and resizing
+- [ ] Manually accept real carousel and compact diagnostics
+- [ ] Manually accept concise run-selector formatting without pressing `R`
+
+### Checkpoint 2A.2 — Confirmed In-TUI Run Monitor — Deferred
+
+- [ ] Add a final confirmation page before real execution
+- [ ] Keep execution inside the themed TUI
+- [ ] Parse Restic JSON status rather than printing it raw
+- [ ] Show aggregate percentage, files, bytes, elapsed time, ETA, and current files
+- [ ] Show active-run state from both `backup run auto` and `backup view`
+- [ ] Add richer live/persisted details pages
+- [ ] Show completion state and snapshot ID without leaving the TUI
+- [ ] Add confirmed graceful Stop
+- [ ] Preserve Ctrl+C as an emergency graceful-stop path
+- [ ] Investigate trustworthy per-source/per-drive instrumentation without changing snapshot semantics
+
+### Checkpoint 2A.3 — Pause, Resume, and Scheduled Resume — Deferred
+
+- [ ] Design a safe Windows process-suspension boundary
+- [ ] Preserve process identity and repository lock ownership
+- [ ] Persist and display paused state
+- [ ] Add manual resume
+- [ ] Add pause-now/resume-after-duration
+- [ ] Define UI-exit and reboot behavior for scheduled resume
+- [ ] Add crash/stale-process recovery
+- [ ] Add stop-while-paused handling
+- [ ] Add injected-clock and Windows controlled-acceptance tests
+
+### Checkpoint 2B — Create and Schedule Wizard Preview — Deferred Until Viewer/Monitor Work Passes
 
 - [x] Add preview-first wizard data and scheduler-plan scaffolding
 - [ ] Validate the creation wizard interactively without applying

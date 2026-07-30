@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -8,12 +8,13 @@ import pytest
 from rrbackup.config import RetentionPolicy, Schedule
 from rrbackup.health import HealthReport, HealthSeverity
 from rrbackup.inventory import BackupDefinition, BackupInventoryRecord
-from rrbackup.models import ExecutionMode
+from rrbackup.models import ExecutionMode, RunRecord, RunState
 from rrbackup.presentation import (
     Palette,
     backup_detail_lines,
     browse_backups,
     render_backup_table,
+    render_history,
     render_repository_summary,
     render_schedule_table,
     strip_ansi,
@@ -46,6 +47,25 @@ def make_profile(tmp_path) -> BackupProfile:
     )
 
 
+def interrupted_run() -> RunRecord:
+    run = RunRecord.create(
+        profile="daily-documents",
+        backup_set="daily-documents",
+        now=NOW - timedelta(minutes=8),
+        run_id="attempted-run-id",
+    )
+    run = run.transition(
+        RunState.RUNNING,
+        now=NOW - timedelta(minutes=7),
+    )
+    return run.transition(
+        RunState.INTERRUPTED,
+        now=NOW - timedelta(minutes=2),
+        exit_code=130,
+        reason="Backup execution was interrupted.",
+    )
+
+
 def make_record(tmp_path) -> BackupInventoryRecord:
     profile = make_profile(tmp_path)
     snapshot = SnapshotRecord(
@@ -57,6 +77,7 @@ def make_record(tmp_path) -> BackupInventoryRecord:
         tags=("daily-documents",),
         summary={"total_bytes_processed": 1024},
     )
+    latest_run = interrupted_run()
     definition = BackupDefinition(
         name="daily-documents",
         profile=profile,
@@ -72,13 +93,13 @@ def make_record(tmp_path) -> BackupInventoryRecord:
         severity=HealthSeverity.OK,
         generated_utc=NOW,
         latest_snapshot=snapshot,
-        latest_run=None,
+        latest_run=latest_run,
         issues=tuple(),
     )
     return BackupInventoryRecord(
         definition=definition,
         latest_snapshot=snapshot,
-        latest_run=None,
+        latest_run=latest_run,
         scheduler_record=None,
         next_run=datetime(2026, 7, 30, 3, 0, tzinfo=UTC),
         missed_runs=1,
@@ -111,7 +132,7 @@ def test_palette_and_strip_ansi_are_deterministic() -> None:
     assert Palette(False).bad("failed") == "failed"
 
 
-def test_backup_and_schedule_tables_use_compact_two_line_records(tmp_path) -> None:
+def test_backup_and_schedule_tables_show_complete_and_attempted_runs(tmp_path) -> None:
     record = make_record(tmp_path)
 
     backup_text = render_backup_table(
@@ -124,15 +145,20 @@ def test_backup_and_schedule_tables_use_compact_two_line_records(tmp_path) -> No
     assert "Backup" in backup_text
     assert "daily-documents" in backup_text
     assert "+1 more" in backup_text
+    assert "Last complete" in backup_text
+    assert "Last attempt" in backup_text
+    assert "INTERRUPTED" in backup_text
     assert "Every day at 03:00" in backup_text
     assert record.definition.profile.repository in backup_text
-    assert "Schedule" not in schedule_text.splitlines()[0]
+    assert "Last complete" in schedule_text
+    assert "Last attempt" in schedule_text
+    assert "INTERRUPTED" in schedule_text
     assert "daily-documents" in schedule_text
     assert "RRBackup::daily-documents" in schedule_text
     assert "10 daily" in schedule_text
 
 
-def test_backup_detail_contains_sources_schedule_and_health(tmp_path) -> None:
+def test_backup_detail_contains_complete_and_attempted_run_information(tmp_path) -> None:
     lines = backup_detail_lines(make_record(tmp_path))
     text = "\n".join(lines)
 
@@ -141,6 +167,18 @@ def test_backup_detail_contains_sources_schedule_and_health(tmp_path) -> None:
     assert "Schedule: Every day at 03:00" in text
     assert "Retention:" in text
     assert "Missed runs: 1" in text
+    assert "Last complete backup: snapshot aaaaaaaa" in text
+    assert "Last attempted run: INTERRUPTED" in text
+    assert "Run ID: attempted-run-id" in text
+    assert "Exit code: 130" in text
+    assert "Reason: Backup execution was interrupted." in text
+
+
+def test_history_distinguishes_completed_snapshot_and_attempted_run(tmp_path) -> None:
+    text = render_history([make_record(tmp_path)], colors=Palette(False))
+
+    assert "completed snapshot aaaaaaaa" in text
+    assert "attempted run attempte (interrupted)" in text
 
 
 def test_repository_summary_is_labeled_human_output(tmp_path) -> None:
@@ -219,4 +257,6 @@ def test_browse_backups_uses_shared_termdash_selection_adapter(
     assert selected == [record]
     assert captured["multi_select"] is True
     assert captured["detail_formatter"] is backup_detail_lines
+    assert "LAST COMPLETE" in captured["columns_line"]
+    assert "LAST ATTEMPT" in captured["columns_line"]
     assert "PgUp/PgDn" in " ".join(captured["footer_lines"])
