@@ -1,8 +1,116 @@
 {
     "default_targets": [
-        "rrbackup"
+        "repository-workflow"
     ],
     "targets": {
+        "repository-workflow": {
+            "description": "Repository branch integration, hybrid workflow, validation bridge, and development-ledger self-hosting.",
+            "working_directory": ".",
+            "context_files": [
+                "docs/plans/20260729-2000_unified-hybrid-workflow/00_implementation-plan.md",
+                "docs/plans/20260729-2000_unified-hybrid-workflow/HANDOFF.md"
+            ],
+            "environment": {
+                "PYTHONUTF8": "1",
+                "PYTHONUNBUFFERED": "1",
+                "PY_COLORS": "1",
+                "PYTHONPATH": "{repo_root}/modules/development_ledger"
+            },
+            "bootstrap": [
+                {
+                    "name": "Clean stale development-ledger editable metadata",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-c",
+                        "import shutil; from pathlib import Path; root=Path(r'{repo_root}')/'modules'/'development_ledger'; targets=list(root.glob('*.egg-info'))+[root/'build', root/'dist']; [shutil.rmtree(str(path), ignore_errors=True) for path in targets if path.exists()]"
+                    ]
+                },
+                {
+                    "name": "Install development-ledger for repository workflow validation",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "pip",
+                        "install",
+                        "--disable-pip-version-check",
+                        "--no-build-isolation",
+                        "-e",
+                        "{repo_root}/modules/development_ledger[dev]"
+                    ]
+                }
+            ],
+            "commands": [
+                {
+                    "name": "Validate unified hybrid workflow active plan",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "development_ledger",
+                        "validate-plan",
+                        "-p",
+                        "docs/plans/20260729-2000_unified-hybrid-workflow/00_implementation-plan.md"
+                    ]
+                },
+                {
+                    "name": "Repository workflow contract tests",
+                    "executable": "pwsh",
+                    "arguments": [
+                        "-NoLogo",
+                        "-NoProfile",
+                        "-File",
+                        "{repo_root}/validation/tests/repository_workflow_test.ps1",
+                        "-RepoRoot",
+                        "{repo_root}",
+                        "-PythonExecutable",
+                        "{python}",
+                        "-ResultPath",
+                        "{temp_root}/repository-workflow.json",
+                        "-TempRoot",
+                        "{temp_root}/repository-workflow"
+                    ]
+                },
+                {
+                    "name": "Record repository workflow ledger event",
+                    "executable": "pwsh",
+                    "arguments": [
+                        "-NoLogo",
+                        "-NoProfile",
+                        "-File",
+                        "{repo_root}/validation/Invoke-DevelopmentLedger.ps1",
+                        "-ManifestPath",
+                        "{repo_root}/validation-targets.json",
+                        "-TargetName",
+                        "repository-workflow",
+                        "-RepoRoot",
+                        "{repo_root}",
+                        "-TargetRoot",
+                        "{target_root}",
+                        "-TempRoot",
+                        "{temp_root}",
+                        "-ReportPath",
+                        "{repo_root}/docs/test-results/repository-workflow/LATEST.txt",
+                        "-PythonExecutable",
+                        "{python}",
+                        "-Write",
+                        "-Confirm:$false"
+                    ]
+                }
+            ],
+            "ledger": {
+                "enabled": true,
+                "required": true,
+                "active_plan": "docs/plans/20260729-2000_unified-hybrid-workflow/00_implementation-plan.md",
+                "output_directory": "docs/plans/20260729-2000_unified-hybrid-workflow/ledger",
+                "script_result_outputs": [
+                    "{temp_root}/repository-workflow.json"
+                ],
+                "transcript_outputs": [
+                    "{report_path}"
+                ],
+                "actor": "remote_llm",
+                "mode": "hybrid"
+            }
+        },
         "rrbackup": {
             "description": "RRBackup consolidation, single-CLI UX, viewer, scheduler, and repository validation.",
             "working_directory": "modules/rrbackup",
