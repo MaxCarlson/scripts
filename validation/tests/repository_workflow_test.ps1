@@ -56,6 +56,7 @@ function Test-Text([string]$Path, [string[]]$Patterns) {
 
 $Plan = Join-Path $Repo 'docs/plans/20260729-2000_unified-hybrid-workflow/00_implementation-plan.md'
 $Bridge = Join-Path $Repo 'validation/Invoke-DevelopmentLedger.ps1'
+$ExecutionModule = Join-Path $Repo 'validation/ValidationExecution.psm1'
 $RootManifestPath = Join-Path $Repo 'validation-targets.json'
 $Manifest = Join-Path $Temp 'validation-targets.json'
 $Transcript = Join-Path $Temp 'LATEST.txt'
@@ -73,13 +74,13 @@ try {
         Test-Text (Join-Path $Repo 'AGENTS.md') @('ledger/PROGRESS.md', 'BRANCH_INTEGRATION_WORKFLOW.md')
     }
 
-    Invoke-Check 'powershell:repository-workflow::plan' 'Unified workflow plan is valid' @('AC-S1-001', 'AC-S2-001', 'AC-S2-002') {
+    Invoke-Check 'powershell:repository-workflow::plan' 'Unified workflow plan is valid' @('AC-S1-001', 'AC-S2-001', 'AC-S2-002', 'AC-S2-003') {
         $Output = & $Python -m development_ledger validate-plan -p $Plan 2>&1
         Test-Condition ($LASTEXITCODE -eq 0) "Plan validation failed: $($Output -join ' ')"
         Test-Condition (($Output -join "`n") -match 'VALID: unified-hybrid-workflow') "Unexpected plan output: $($Output -join ' ')"
     }
 
-    Invoke-Check 'powershell:repository-workflow::native-dispatcher' 'Root dispatcher owns file discovery and ledger ordering' @('AC-S2-001', 'AC-S2-002') {
+    Invoke-Check 'powershell:repository-workflow::native-dispatcher' 'Root dispatcher owns file discovery and ledger ordering' @('AC-S2-001', 'AC-S2-002', 'AC-S2-003') {
         Test-Text (Join-Path $Repo 'Invoke-Tests.ps1') @('ValidationDispatcher.psm1', 'Invoke-RepositoryValidation')
         Test-Text (Join-Path $Repo 'validation/ValidationCommon.psm1') @('Resolve-ValidationFileTargetRule', 'Resolve-ValidationCommandSpec')
         Test-Text (Join-Path $Repo 'validation/ValidationTarget.psm1') @('Invoke-ValidationLedgerPhase', 'Invoke-ValidationPowerShellGroups')
@@ -122,7 +123,7 @@ try {
         }
     } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $Manifest -Encoding utf8
 
-    Invoke-Check 'powershell:repository-workflow::bridge' 'Ledger bridge previews and writes projections' @('AC-S1-002', 'AC-S2-002') {
+    Invoke-Check 'powershell:repository-workflow::bridge' 'Ledger bridge previews and writes projections' @('AC-S1-002', 'AC-S2-003') {
         Remove-Item -LiteralPath $Ledger -Recurse -Force -ErrorAction SilentlyContinue
         $Common = @('-NoLogo', '-NoProfile', '-File', $Bridge, '-ManifestPath', $Manifest, '-TargetName', 'synthetic', '-RepoRoot', $Repo, '-TargetRoot', $Temp, '-TempRoot', $Temp, '-ReportPath', $Transcript, '-PythonExecutable', $Python)
         $Preview = & $Pwsh @Common 2>&1
@@ -135,13 +136,36 @@ try {
         }
     }
 
-    Invoke-Check 'powershell:repository-workflow::missing-evidence' 'Required evidence fails clearly' @('AC-S1-002', 'AC-S2-002') {
+    Invoke-Check 'powershell:repository-workflow::command-failure' 'Ordinary command failures remain authoritative' @('AC-S2-003') {
+        Import-Module -Name $ExecutionModule -Force
+        $FailureReport = Join-Path $Temp 'command-failure.txt'
+        Set-Content -LiteralPath $FailureReport -Value '' -Encoding utf8
+        $TargetFailures = [System.Collections.Generic.List[string]]::new()
+        $OverallFailures = [System.Collections.Generic.List[string]]::new()
+        $CommandSpec = @{
+            name = 'Synthetic failing command'
+            executable = $Pwsh
+            arguments = @('-NoLogo', '-NoProfile', '-Command', 'exit 7')
+        }
+        Invoke-ValidationCommand -TargetName synthetic -ReportPath $FailureReport -WorkingDirectory $Temp -CommandSpec $CommandSpec -Tokens @{} -TargetFailures $TargetFailures -OverallFailures $OverallFailures | Out-Null
+        Test-Condition ($TargetFailures.Count -eq 1) "Expected one target failure; found $($TargetFailures.Count)."
+        Test-Condition ($OverallFailures.Count -eq 1) "Expected one overall failure; found $($OverallFailures.Count)."
+        Test-Text $FailureReport @('RESULT: FAIL - Synthetic failing command', 'exit code 7')
+    }
+
+    Invoke-Check 'powershell:repository-workflow::required-ledger-failure' 'Required native ledger failures fail the target' @('AC-S2-003') {
+        Import-Module -Name $ExecutionModule -Force
         $Data = Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json -AsHashtable
         $Data.targets.synthetic.ledger.script_result_outputs = @('{temp_root}/missing.json')
         $Data | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $Manifest -Encoding utf8
-        $Output = & $Pwsh -NoLogo -NoProfile -File $Bridge -ManifestPath $Manifest -TargetName synthetic -RepoRoot $Repo -TargetRoot $Temp -TempRoot $Temp -ReportPath $Transcript -PythonExecutable $Python 2>&1
-        Test-Condition ($LASTEXITCODE -ne 0) 'Missing evidence unexpectedly succeeded.'
-        Test-Condition (($Output -join "`n") -match 'Required ledger evidence is missing') "Unexpected missing-evidence output: $($Output -join ' ')"
+        $FailureReport = Join-Path $Temp 'ledger-failure.txt'
+        Set-Content -LiteralPath $FailureReport -Value 'Synthetic transcript.' -Encoding utf8
+        $TargetFailures = [System.Collections.Generic.List[string]]::new()
+        $OverallFailures = [System.Collections.Generic.List[string]]::new()
+        Invoke-ValidationLedgerPhase -ManifestPath $Manifest -TargetName synthetic -RepoRoot $Repo -WorkingDirectory $Temp -TempRoot $Temp -ReportPath $FailureReport -PythonExecutable $Python -TargetSpec $Data.targets.synthetic -TargetFailures $TargetFailures -OverallFailures $OverallFailures | Out-Null
+        Test-Condition ($TargetFailures.Count -eq 1) "Expected one required-ledger target failure; found $($TargetFailures.Count)."
+        Test-Condition ($OverallFailures.Count -eq 1) "Expected one required-ledger overall failure; found $($OverallFailures.Count)."
+        Test-Text $FailureReport @('RESULT: FAIL - Development ledger', 'Required ledger evidence is missing')
     }
 }
 finally {
