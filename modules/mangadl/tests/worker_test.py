@@ -109,23 +109,36 @@ def test_hdporncomics_command_forces_manhwa_and_uses_output_root(tmp_path: Path)
         hdporncomics_executable=str(executable),
         hdporncomics_threads=8,
         destination=str(output),
-        url="https://hdporncomics.com/manhwa/example/",
+        url="https://hdporncomics.com/manhwa/a title/",
     )
-    command = _command(args, tmp_path / "partial")
-    assert command[0] == str(executable)
-    assert command[1:5] == ["--directory", str(output), "--threads", "8"]
-    assert command[-3:] == ["--force", "--manhwa", args.url]
+    assert _command(args, tmp_path / "ignored") == [
+        str(executable.resolve()),
+        "--directory",
+        str(output),
+        "--threads",
+        "8",
+        "--force",
+        "--manhwa",
+        "https://hdporncomics.com/manhwa/a title/",
+    ]
 
 
 def test_manga18fx_command_uses_native_module_and_partial_root(tmp_path: Path) -> None:
-    partial = tmp_path / "partial"
+    partial = tmp_path / "partial root"
+    cookies = tmp_path / "cookies.txt"
     args = Namespace(
         backend="manga18fx",
-        cookies=None,
+        cookies=str(cookies),
         url="https://manga18fx.com/manga/example/",
     )
-    command = _command(args, partial)
 
-    assert command[:3] == [sys.executable, "-m", "mangadl.manga18fx"]
-    assert command[3:5] == ["--destination", str(partial)]
-    assert command[-1] == args.url
+    assert _command(args, partial) == [
+        sys.executable,
+        "-m",
+        "mangadl.manga18fx",
+        "--destination",
+        str(partial),
+        "--cookies",
+        str(cookies),
+        "https://manga18fx.com/manga/example/",
+    ]
