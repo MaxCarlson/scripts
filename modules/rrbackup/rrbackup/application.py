@@ -71,8 +71,9 @@ def build_parser(program_name: str = "backup") -> argparse.ArgumentParser:
         prog=program_name,
         description="Create, run, inspect, schedule, restore, and maintain Restic backups.",
         epilog=(
-            "Start with 'backup view' to inspect configured backups or 'backup create' "
-            "to define a new one. Human output is formatted by default; use --json for automation."
+            "Start with 'backup view' for current operations and recent history, or "
+            "'backup create' to define a new backup. Human output is formatted by "
+            "default; use --json for automation."
         ),
         formatter_class=argparse.RawTextHelpFormatter,
     )
@@ -106,7 +107,7 @@ def _add_run_parser(areas: argparse._SubParsersAction) -> None:
         "backup_name",
         nargs="?",
         default="auto",
-        help="Configured backup name. Omit it or use 'auto' for the chooser.",
+        help="Configured backup name. Omit it or use 'auto' for the operations dashboard.",
     )
     parser.add_argument("-C", "--print-command-only", "--print_command_only", action="store_true")
     parser.add_argument("-n", "--dry-run", "--dry_run", action="store_true")
@@ -136,14 +137,22 @@ def _add_run_parser(areas: argparse._SubParsersAction) -> None:
 def _add_view_parser(areas: argparse._SubParsersAction) -> None:
     parser = areas.add_parser(
         "view",
-        help="Open the backup dashboard or render one combined section.",
+        help="Open current operations and history, or render a reference section.",
         description=(
-            "Interactive pages: Overview, Backups, History, Repository, Schedules, "
-            "and Diagnostics. --section selects the starting page; combine it with "
-            "--plain, --json, or --markdown for noninteractive output."
+            "Without --section, open the interactive Operations/History hub. "
+            "Operations shows what is running now and provides Start/Stop controls; "
+            "History is read-only. --section opens a specific reference page such as "
+            "Overview, Backups, Repository, Schedules, or Diagnostics. Combine "
+            "--section with --plain, --json, or --markdown for noninteractive output."
         ),
     )
-    parser.add_argument("-s", "--section", choices=VIEW_SECTIONS, default="overview")
+    parser.add_argument(
+        "-s",
+        "--section",
+        choices=VIEW_SECTIONS,
+        default=None,
+        help="Open a specific read-only reference page instead of the Operations/History hub.",
+    )
     parser.add_argument("-b", "--backup", dest="backup_name", help="Limit output to one configured backup.")
     parser.add_argument("-L", "--include-legacy-evidence", action="store_true")
     parser.add_argument("-r", "--redact-paths", action="store_true")
