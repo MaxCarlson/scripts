@@ -7,7 +7,7 @@ import pytest
 
 from rrbackup import run_runtime
 from rrbackup.models import RunRecord, RunState
-from rrbackup.operations_dashboard import OperationsOutcome
+from rrbackup.operations_hub import OperationsOutcome
 from rrbackup.state import RunStateStore
 from rrbackup.viewer import build_demo_records
 
@@ -30,7 +30,7 @@ def _args():
     )
 
 
-def test_interactive_named_run_routes_through_persistent_operations_dashboard(
+def test_interactive_named_run_routes_through_operations_history_hub(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     record = build_demo_records(now=NOW)[0]
@@ -44,18 +44,19 @@ def test_interactive_named_run_routes_through_persistent_operations_dashboard(
     )
     monkeypatch.setattr(run_runtime, "interactive_available", lambda: True)
 
-    def dashboard(records, callback, *, dry_run):
+    def dashboard(records, callback, *, dry_run, initial_tab):
         observed["records"] = records
         observed["callback"] = callback
         observed["dry_run"] = dry_run
+        observed["initial_tab"] = initial_tab
         return OperationsOutcome(started_count=0, exit_codes=tuple())
 
-    monkeypatch.setattr(run_runtime, "run_operations_dashboard", dashboard)
+    monkeypatch.setattr(run_runtime, "run_operations_hub", dashboard)
     monkeypatch.setattr(
         run_runtime.cli_runtime,
         "_run_one",
         lambda *args: (_ for _ in ()).throw(
-            AssertionError("interactive execution must remain inside the dashboard")
+            AssertionError("interactive execution must remain inside the hub")
         ),
     )
 
@@ -63,6 +64,16 @@ def test_interactive_named_run_routes_through_persistent_operations_dashboard(
     assert observed["records"] == [record]
     assert callable(observed["callback"])
     assert observed["dry_run"] is False
+    assert observed["initial_tab"] == "operations"
+
+
+def test_view_style_args_receive_safe_run_defaults() -> None:
+    record = build_demo_records(now=NOW)[0]
+    args = SimpleNamespace()
+
+    profile = run_runtime._configured_profile(record, args)
+
+    assert profile.extra_backup_args == record.definition.profile.extra_backup_args
 
 
 def test_progress_persistence_updates_running_record_metadata(tmp_path) -> None:
