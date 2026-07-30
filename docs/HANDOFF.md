@@ -24,17 +24,22 @@ docs/test-results/<target>/
 
 ## Current State
 
-The active implementation branch provides:
+Stage S1 passed its first Windows self-hosting cycle and produced raw plus immutable ledger evidence.
+
+Stage S2 is implemented and awaiting validation. It provides:
 
 - explicit branch and integration roles;
 - repository instruction routing to branch and ledger standards;
-- one structured repository-wide plan state;
-- a manifest-driven development-ledger bridge;
-- a self-hosting `repository-workflow` validation target;
-- generic script-result evidence and permanent generated projections;
-- continued raw `LATEST.txt` evidence during migration.
+- a structured repository-wide plan at revision 2;
+- a thin interface-preserving `Invoke-Tests.ps1` entry point;
+- focused validation modules for common resolution, artifacts, context, execution, target orchestration, and repository dispatch;
+- native `file_targets` expansion from path, depth, and extension rules;
+- optional per-target `temp_root` resolution;
+- a native final development-ledger phase driven by target metadata;
+- required-ledger and prior-command failure preservation tests;
+- continued raw `LATEST.txt`, context, and progress-diff evidence during migration.
 
-Read the active plan's `HANDOFF.md` and generated `ledger/PROGRESS.md` when present.
+Read the active plan's `HANDOFF.md` and generated `ledger/PROGRESS.md` before another source pass.
 
 ## Historical Repository-Wide Plan
 
