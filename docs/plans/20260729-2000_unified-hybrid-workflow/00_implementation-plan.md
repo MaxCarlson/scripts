@@ -13,40 +13,41 @@ Implement the merged repository's hybrid-development design as executable reposi
     "plan_id": "unified-hybrid-workflow",
     "title": "Unified Hybrid Workflow and Validation Ledger",
     "project_root": ".",
-    "plan_revision": 1,
+    "plan_revision": 2,
     "stage": {
-        "id": "S1",
-        "title": "Repository control-plane self-hosting",
+        "id": "S2",
+        "title": "Native dispatcher phases",
         "status": "awaiting_validation"
     },
     "session": {
         "actor": "remote_llm",
         "mode": "hybrid",
         "request": {
-            "status": "incorporated",
-            "summary": "Implement the connected hybrid-workflow design after the feature branches were merged and agent/unified was established.",
-            "resolution": "compatible",
+            "status": "no_new_request",
+            "summary": "Continue the accepted plan after the first repository-workflow baseline passed.",
+            "resolution": "none",
             "affected_ids": [
-                "AC-S1-001",
-                "AC-S1-002",
-                "AC-S1-003"
+                "AC-S2-001",
+                "AC-S2-002",
+                "AC-S2-003"
             ],
             "supersedes": [],
             "conflicts": []
         },
-        "objective": "Establish branch integration policy and self-host one repository-wide validation-ledger cycle.",
-        "hypothesis": "A thin manifest-driven bridge can reuse the accepted development-ledger module before ledger recording becomes a native dispatcher phase.",
+        "objective": "Replace helper-command orchestration with modular native file-target and final-ledger phases while preserving the root interface and evidence contract.",
+        "hypothesis": "A thin root wrapper plus focused validation modules can preserve existing behavior while eliminating manifest inventory churn and explicit ledger commands.",
         "target_ids": [
-            "AC-S1-001",
-            "AC-S1-002",
-            "AC-S1-003"
+            "AC-S2-001",
+            "AC-S2-002",
+            "AC-S2-003"
         ],
-        "selection_rationale": "Branch policy, ledger routing, and one self-hosting target form the minimum independently verifiable control-plane batch.",
+        "selection_rationale": "The first baseline validated the bridge; modular dispatcher ownership, native discovery, and native ledger ordering are the next dependency-cohesive batch.",
         "stop_conditions": [
-            "Branch roles are discoverable without conversation memory.",
-            "The ledger bridge previews safely and records required projections when write is explicit.",
-            "The repository-workflow target emits generic evidence and records its event last.",
-            "The branch is ready for ./Invoke-Tests.ps1 -Target repository-workflow."
+            "Invoke-Tests.ps1 retains every public parameter and streams live output while returning the final dispatcher exit code.",
+            "A file_targets command resolves path, max_depth, and extension rules without launching the legacy helper.",
+            "Ledger metadata runs as the final target phase without an explicit recording command.",
+            "Earlier command failures remain authoritative even when the ledger records successfully.",
+            "The repository-workflow target is ready for one Windows validation cycle."
         ],
         "batch": {
             "profile": "standard",
@@ -64,26 +65,31 @@ Implement the merged repository's hybrid-development design as executable reposi
         "architecture_review": {
             "requested": true,
             "performed": true,
-            "summary": "Reuse the existing ledger module, preserve raw LATEST.txt evidence during migration, and validate one repository-wide target before changing every module target.",
+            "summary": "Decompose the 853-line dispatcher without changing its public command surface, preserve transitional raw/context evidence, and make declarative target metadata drive native phases.",
             "findings": [
-                "Development-ledger recording already has a dispatcher-safe Python adapter.",
-                "The root manifest lacked a repository-wide self-hosting target.",
-                "File-target discovery remains declarative but still uses a subprocess helper."
+                "The old dispatcher mixed target selection, file discovery, command execution, artifact retention, and ledger sequencing in one script.",
+                "PowerShell pipeline output must be streamed separately from the final result object and exit code.",
+                "The accepted bridge can remain reusable while the dispatcher invokes it natively.",
+                "The first S1 manual check was redundant because the Windows dispatcher run produced automated evidence and an immutable validation event."
             ],
             "actions": [
-                "Add branch and evidence-routing instructions.",
-                "Add a reusable manifest-driven ledger bridge and contract test.",
-                "Defer native file-target and native ledger phases until this cycle validates."
+                "Keep Invoke-Tests.ps1 as a thin interface-preserving wrapper.",
+                "Move common, artifact, context, execution, target, and dispatcher responsibilities into focused modules.",
+                "Resolve file_targets inside the dispatcher process.",
+                "Run ledger metadata after all ordinary commands and PowerShell groups.",
+                "Remove the redundant S1 manual-check requirement."
             ]
         },
         "relevant_files": [
-            "AGENTS.md",
-            "REPO_LLM_INSTRUCTIONS.md",
-            "docs/agent/BRANCH_INTEGRATION_WORKFLOW.md",
-            "validation/DevelopmentLedgerBridge.psm1",
-            "validation/Invoke-DevelopmentLedger.ps1",
-            "validation/tests/repository_workflow_test.ps1",
-            "validation-targets.json"
+            "Invoke-Tests.ps1",
+            "validation/ValidationCommon.psm1",
+            "validation/ValidationArtifacts.psm1",
+            "validation/ValidationContext.psm1",
+            "validation/ValidationExecution.psm1",
+            "validation/ValidationTarget.psm1",
+            "validation/ValidationDispatcher.psm1",
+            "validation-targets.json",
+            "validation/tests/repository_workflow_test.ps1"
         ]
     },
     "items": [
@@ -131,14 +137,12 @@ Implement the merged repository's hybrid-development design as executable reposi
         {
             "id": "AC-S1-003",
             "kind": "criterion",
-            "title": "The root dispatcher exposes a repository-workflow target that records generic evidence and a permanent event last.",
+            "title": "The root dispatcher exposes a repository-workflow target that records generic evidence and a permanent event.",
             "implementation": "implemented",
             "tests": [
                 "suite:repository-workflow"
             ],
-            "manual_checks": [
-                "MC-S1-001"
-            ],
+            "manual_checks": [],
             "depends_on": [
                 "AC-S1-002"
             ],
@@ -148,29 +152,78 @@ Implement the merged repository's hybrid-development design as executable reposi
                 "validation/tests/repository_workflow_test.ps1"
             ],
             "priority": 10,
+            "architecture_role": "integration",
+            "notes": "The successful Windows baseline and immutable run event superseded the redundant manual-only acceptance check."
+        },
+        {
+            "id": "AC-S2-001",
+            "kind": "criterion",
+            "title": "Invoke-Tests.ps1 preserves its public interface while delegating repository validation to focused modules.",
+            "implementation": "implemented",
+            "tests": [
+                "powershell:repository-workflow::native-dispatcher",
+                "powershell:repository-workflow::plan"
+            ],
+            "manual_checks": [],
+            "depends_on": [
+                "AC-S1-003"
+            ],
+            "blocked_by": [],
+            "relevant_files": [
+                "Invoke-Tests.ps1",
+                "validation/ValidationDispatcher.psm1",
+                "validation/ValidationTarget.psm1"
+            ],
+            "priority": 10,
+            "architecture_role": "migration"
+        },
+        {
+            "id": "AC-S2-002",
+            "kind": "criterion",
+            "title": "file_targets rules resolve path, maximum depth, and extensions inside the root dispatcher process.",
+            "implementation": "implemented",
+            "tests": [
+                "powershell:repository-workflow::native-dispatcher",
+                "command:compile-development-ledger-files-through-native-file-targets"
+            ],
+            "manual_checks": [],
+            "depends_on": [
+                "AC-S2-001"
+            ],
+            "blocked_by": [],
+            "relevant_files": [
+                "validation/ValidationCommon.psm1",
+                "validation-targets.json"
+            ],
+            "priority": 10,
+            "architecture_role": "integration"
+        },
+        {
+            "id": "AC-S2-003",
+            "kind": "criterion",
+            "title": "Ledger metadata executes as the final native target phase without masking prior validation failures.",
+            "implementation": "implemented",
+            "tests": [
+                "powershell:repository-workflow::native-dispatcher",
+                "powershell:repository-workflow::bridge",
+                "powershell:repository-workflow::missing-evidence",
+                "suite:repository-workflow"
+            ],
+            "manual_checks": [],
+            "depends_on": [
+                "AC-S2-002"
+            ],
+            "blocked_by": [],
+            "relevant_files": [
+                "validation/ValidationExecution.psm1",
+                "validation/ValidationTarget.psm1",
+                "validation-targets.json"
+            ],
+            "priority": 10,
             "architecture_role": "integration"
         }
     ],
-    "manual_checks": [
-        {
-            "id": "MC-S1-001",
-            "title": "Run the repository-workflow target through the Windows root dispatcher",
-            "item_ids": [
-                "AC-S1-003"
-            ],
-            "platform": "windows",
-            "instructions": [
-                "Switch to agent/unified-workflow-ledger and pull.",
-                "Run ./Invoke-Tests.ps1 -Target repository-workflow.",
-                "Confirm the target passes and generates raw validation plus ledger projections.",
-                "Commit and push generated evidence."
-            ],
-            "expected": "One immutable validation event is recorded without hiding the root target result.",
-            "status": "pending",
-            "safety": "non_destructive",
-            "notes": "This is the first repository-wide self-hosting cycle."
-        }
-    ],
+    "manual_checks": [],
     "policy": {
         "session": {
             "target_minutes": 20,
@@ -185,12 +238,13 @@ Implement the merged repository's hybrid-development design as executable reposi
     "relevant_docs": [
         "docs/agent/BRANCH_INTEGRATION_WORKFLOW.md",
         "docs/agent/HYBRID_REMOTE_LOCAL_DEVELOPMENT_WORKFLOW.md",
-        "modules/development_ledger/docs/INTEGRATION.md"
+        "modules/development_ledger/docs/INTEGRATION.md",
+        "modules/development_ledger/docs/PLAN_FORMAT.md"
     ]
 }
 ```
 <!-- development-ledger:state:end -->
 
-## Next Stage
+## Stage Boundary
 
-After this cycle passes, move file-target expansion into `Invoke-Tests.ps1`, then make ledger recording a native final target phase and migrate module targets incrementally.
+Stage S2 makes file discovery and ledger recording native dispatcher phases. It does not yet migrate RRBackup to a structured ledger plan, retire transitional `LATEST_CONTEXT.md` or `LATEST_PROGRESS.diff`, or merge the feature branch into `agent/unified`.
