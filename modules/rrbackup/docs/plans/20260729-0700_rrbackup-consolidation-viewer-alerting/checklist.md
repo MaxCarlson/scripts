@@ -230,7 +230,7 @@ Stage 2 is split into bounded checkpoints. Do not begin the next checkpoint unti
 - [x] Manually verify no raw Restic JSON output
 - [x] Record that modal monitor is not the accepted default information architecture
 
-### Checkpoint 2A.2b — Persistent Backup Operations Dashboard — Awaiting Local Validation
+### Checkpoint 2A.2b — Persistent Backup Operations Dashboard — Automated Validation Accepted; UX Superseded
 
 #### Persistent inventory and confirmation
 
@@ -268,7 +268,7 @@ Stage 2 is split into bounded checkpoints. Do not begin the next checkpoint unti
 - [x] Add operational color hierarchy for running, waiting, success, failure, interruption, stopping, and idle health
 - [x] Add Stop-target regression tests
 
-#### Routing and compatibility
+#### Routing, evidence, and manual findings
 
 - [x] Route interactive `backup run auto` through the persistent operations dashboard
 - [x] Route interactive named runs through the same dashboard
@@ -276,14 +276,62 @@ Stage 2 is split into bounded checkpoints. Do not begin the next checkpoint unti
 - [x] Preserve scheduled named execution
 - [x] Preserve `--print-command-only` as a hard no-side-effect barrier
 - [x] Add the new module and tests to compile, lint, pytest, help, packaging, and PowerShell validation
+- [x] Pass local automated validation: 314 passed, 7 skipped
+- [x] Manually verify the persistent dashboard renders real backup data
+- [x] Manually verify rich inline confirmation and live aggregate execution
+- [x] Manually identify stale terminal progress presented as current activity
+- [x] Manually identify that bare `backup view` must be operations-first
+- [ ] Show successful terminal snapshot ID prominently in the operations hub
+
+### Checkpoint 2A.2c — Operations-First View and Current-versus-Historical Semantics — Awaiting Local Validation
+
+#### Current and historical state separation
+
+- [x] Separate `NOW` operational state from `LAST RESULT`
+- [x] Render terminal attempts as `NOW: IDLE`
+- [x] Hide live percentage, speed, and ETA for terminal attempts
+- [x] Preserve terminal partial progress only as explicitly historical expanded details
+- [x] Label saved terminal data as `Last attempt partial` and `Last observed files`
+- [x] Remove stale `ACTIVE`, `SEEN`, and `PENDING` source states after a run becomes terminal
+- [x] Render idle expanded sources as `CONFIGURED`
+- [x] Preserve ACTIVE/SEEN/PENDING only for genuinely active operations
+- [x] Add regression tests for interrupted and genuinely running records
+
+#### Operations-first hierarchy
+
+- [x] Route bare interactive `backup view` to the shared operations hub
+- [x] Route interactive `backup run` to the same hub
+- [x] Make Operations the default tab
+- [x] Add visible `RUNNING NOW`, `WAITING/STOPPING`, `IDLE`, and `ATTENTION` totals
+- [x] Add an explicit no-running-backups message with latest-attempt context
+- [x] Keep Start, Stop, selection, expansion, focus, filtering, and confirmation on Operations
+- [x] Add Operations routing regression tests
+
+#### Integrated History
+
+- [x] Add History as the second hub tab
+- [x] Switch with `1`/`O` and `2`/`H`
+- [x] Keep History read-only
+- [x] Make `R` or `S` from History return to Operations with an explanatory message
+- [x] Show attempted runs and completed snapshots
+- [x] Add History event detail view
+- [x] Add History-content regression tests
+
+#### Reference and compatibility boundaries
+
+- [x] Keep explicit `backup view --section ...` reference pages available
+- [x] Keep safe synthetic `backup view --demo` behavior
+- [x] Preserve plain, JSON, and Markdown output
+- [x] Preserve scheduled and noninteractive named runs
+- [x] Preserve `--print-command-only` as a hard no-side-effect barrier
+- [x] Add the hub module and tests to compile, lint, pytest, help, packaging, and PowerShell validation
 - [ ] Pass local automated validation
-- [ ] Manually verify colors, resizing, filtering, scrolling, and focused mode
-- [ ] Manually verify rich inline confirmation cancellation creates no attempt
-- [ ] Manually verify live execution remains on the inventory dashboard
-- [ ] Manually verify another eligible backup can be selected while one runs
-- [ ] Manually verify source-drive activity lines
-- [ ] Manually verify graceful Stop and History persistence
-- [ ] Show successful terminal snapshot ID prominently in the operations dashboard
+- [ ] Manually verify bare `backup view` opens Operations 1/2
+- [ ] Manually verify interrupted `local-main` shows IDLE with no live progress or ACTIVE source
+- [ ] Manually verify Operations/History switching and History details
+- [ ] Manually verify confirmation cancellation from bare `backup view`
+- [ ] Manually verify a controlled WAITING/RUNNING/Stop cycle returns to IDLE
+- [ ] Decide whether to consolidate the six reference pages into a smaller System/Reference view after hub acceptance
 
 ### Checkpoint 2A.3 — Pause, Resume, and Scheduled Resume — Deferred
 

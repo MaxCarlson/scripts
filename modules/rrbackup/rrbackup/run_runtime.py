@@ -5,14 +5,14 @@ from __future__ import annotations
 import copy
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import cli_runtime
 from .engine import BackupEngine
 from .inventory import BackupInventoryRecord
 from .models import ExecutionMode, RunState
 from .monitored_restic import ResticExecutionControl, execute_restic_monitored
-from .operations_dashboard import run_operations_dashboard
+from .operations_hub import OperationsOutcome, run_operations_hub
 from .presentation import interactive_available, render_backup_table
 from .run_progress import BackupProgress, parse_progress_line
 from .state import RunStateStore
@@ -22,19 +22,20 @@ ProgressCallback = Callable[[BackupProgress], None]
 
 def _available_records(args: Any) -> tuple[object, List[BackupInventoryRecord]]:
     result = cli_runtime.inventory(args)
-    if args.backup_name.lower() == "auto":
+    backup_name = str(getattr(args, "backup_name", "auto") or "auto")
+    if backup_name.lower() == "auto":
         return result, list(result.records)
-    return result, [result.by_name(args.backup_name)]
+    return result, [result.by_name(backup_name)]
 
 
 def _configured_profile(record: BackupInventoryRecord, args: Any):
     profile = copy.deepcopy(record.definition.profile)
     extra = list(profile.extra_backup_args)
-    for value in args.tag:
+    for value in getattr(args, "tag", []) or []:
         extra.extend(["--tag", value])
-    for value in args.exclude:
+    for value in getattr(args, "exclude", []) or []:
         extra.extend(["--exclude", value])
-    extra.extend(args.restic_arg)
+    extra.extend(getattr(args, "restic_arg", []) or [])
     profile.extra_backup_args = extra
     return profile
 
@@ -112,10 +113,14 @@ def _run_one_monitored(
         state_store=state_store,
         command_executor=executor,
     )
-    mode = ExecutionMode.DRY_RUN if args.dry_run else ExecutionMode.RUN
+    mode = (
+        ExecutionMode.DRY_RUN
+        if bool(getattr(args, "dry_run", False))
+        else ExecutionMode.RUN
+    )
     result = engine.run(
         mode=mode,
-        respect_cpu_policy=not args.ignore_cpu_policy,
+        respect_cpu_policy=not bool(getattr(args, "ignore_cpu_policy", False)),
     )
     persistence.preserve_terminal_progress(result.record)
     payload = {
@@ -131,7 +136,7 @@ def _run_one_monitored(
     return payload, cli_runtime.EXIT_OPERATION_FAILED
 
 
-def _exit_code(values: List[int]) -> int:
+def _exit_code(values: Sequence[int]) -> int:
     if any(value == cli_runtime.EXIT_OPERATION_FAILED for value in values):
         return cli_runtime.EXIT_OPERATION_FAILED
     if any(value == cli_runtime.EXIT_SKIPPED for value in values):
@@ -142,11 +147,33 @@ def _exit_code(values: List[int]) -> int:
 def _interactive_dashboard(args: Any) -> bool:
     return (
         interactive_available()
-        and not args.json
-        and not args.plain
-        and not args.markdown
-        and not args.print_command_only
+        and not bool(getattr(args, "json", False))
+        and not bool(getattr(args, "plain", False))
+        and not bool(getattr(args, "markdown", False))
+        and not bool(getattr(args, "print_command_only", False))
     )
+
+
+def open_operations_hub(
+    records: Sequence[BackupInventoryRecord],
+    args: Any,
+    *,
+    initial_tab: str = "operations",
+) -> int:
+    """Open the shared interactive operations/history hub for existing records."""
+
+    outcome: OperationsOutcome = run_operations_hub(
+        records,
+        lambda selected_record, progress_callback, control: _run_one_monitored(
+            selected_record,
+            args,
+            progress_callback,
+            control,
+        ),
+        dry_run=bool(getattr(args, "dry_run", False)),
+        initial_tab=initial_tab,
+    )
+    return _exit_code(outcome.exit_codes)
 
 
 def handle_run(args: Any) -> int:
@@ -154,25 +181,16 @@ def handle_run(args: Any) -> int:
 
     result, available = _available_records(args)
     if _interactive_dashboard(args):
-        outcome = run_operations_dashboard(
-            available,
-            lambda selected_record, progress_callback, control: _run_one_monitored(
-                selected_record,
-                args,
-                progress_callback,
-                control,
-            ),
-            dry_run=args.dry_run,
-        )
-        return _exit_code(list(outcome.exit_codes))
+        return open_operations_hub(available, args)
 
-    if args.backup_name.lower() == "auto":
+    backup_name = str(getattr(args, "backup_name", "auto") or "auto")
+    if backup_name.lower() == "auto":
         text = render_backup_table(
             result.records,
             colors=cli_runtime.theme(args),
             include_repository=True,
         )
-        if not args.json:
+        if not bool(getattr(args, "json", False)):
             text += "\n\nRun one directly with: backup run <backup-name>"
         cli_runtime.emit(
             result.to_dict(),
