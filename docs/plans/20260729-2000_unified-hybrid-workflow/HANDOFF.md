@@ -34,7 +34,7 @@ Implemented:
 Pull and run the default repository workflow target:
 
 ```powershell
- gl && .\Invoke-Tests.ps1
+gl && .\Invoke-Tests.ps1
 ```
 
 The target should:
@@ -44,7 +44,7 @@ The target should:
 3. validate plan revision 2;
 4. discover and list top-level `.py` files from the configured package and test folders;
 5. compile those files through the native `file_targets` command;
-6. pass five repository workflow contract checks;
+6. pass six repository workflow contract checks;
 7. run a `DEVELOPMENT LEDGER` phase after ordinary commands;
 8. append one revision-2 validation event;
 9. generate `LATEST.json`, `PROGRESS.md`, `TRACEABILITY.md`, and `MANUAL_CHECKS.md`;
