@@ -27,3 +27,15 @@
 - [x] Document the Windows simulation-only validation procedure.
 - [x] Run final offline verification and prepare integration evidence.
 - [x] Complete the user-controlled exact-target Chrome simulation validation.
+
+## S4 — Target Catalog and Visible Refresh
+
+- [x] Add runtime gallery-dl site discovery and `auth sites` output.
+- [x] Add persistent validated site targets and URL replacement.
+- [x] Make Manganelo/Mangakakalot the no-URL refresh default.
+- [x] Prompt for an actual supported URL when a selected site has no target.
+- [x] Default cookie exports to `<domain>-cookies.txt` in the invocation folder.
+- [x] Force exact-target browser navigation on every refresh.
+- [x] Add immediate and periodic refresh progress without secret output.
+- [x] Add focused tests, update docs/version, and run the full suite.
+- [x] Repeat user-controlled no-URL Chrome validation.

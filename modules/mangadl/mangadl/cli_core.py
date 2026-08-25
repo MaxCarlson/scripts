@@ -16,7 +16,17 @@ from .backends import backend_classification, choose_backend
 from .cli_structure import add_run_arguments, normalize_command_shape
 from .concurrency import HARD_MAX_OUTER_WORKERS, MAX_OUTER_WORKERS_ENV
 from .destination_audit import audit_destinations, write_audit_outputs
-from .gallery_auth import BROWSERS, ProfileStore, cookie_summary, domain_for, refresh_profile
+from .gallery_auth import (
+    BROWSERS,
+    DEFAULT_AUTH_SITE,
+    ProfileStore,
+    TargetStore,
+    cookie_summary,
+    domain_for,
+    gallery_sites,
+    refresh_profile,
+    site_for_url,
+)
 from .hdporncomics_patch import apply_patch, patch_status
 from .input import collect_inputs
 from .manager import DownloadManager, RunOptions
@@ -178,12 +188,23 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     auth_status.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
 
     auth_refresh = auth_commands.add_parser("refresh", help="Extract browser cookies and validate them.")
-    auth_refresh.add_argument("-u", "--url", required=True, help="Actual gallery or series URL to validate.")
+    auth_refresh.add_argument(
+        "-u", "--url", help="Actual gallery or series URL; validates and replaces the saved site target."
+    )
+    auth_refresh.add_argument(
+        "-s", "--site", help=f"gallery-dl site/module name (default: {DEFAULT_AUTH_SITE})."
+    )
+    auth_refresh.add_argument(
+        "-S", "--select-site", action="store_true", help="Interactively select from installed gallery-dl sites."
+    )
+    auth_refresh.add_argument(
+        "-q", "--site-filter", help="Filter the interactive gallery-dl site list."
+    )
     auth_refresh.add_argument(
         "-b", "--browser", choices=BROWSERS, default="chrome", help="Cookie source (default: chrome)."
     )
     auth_refresh.add_argument("-p", "--debug-port", type=int, help="Chrome/Edge DevTools port.")
-    auth_refresh.add_argument("-t", "--timeout", type=float, default=120.0, help="Browser verification timeout.")
+    auth_refresh.add_argument("-t", "--timeout", type=float, default=180.0, help="Browser verification timeout.")
     auth_refresh.add_argument("-A", "--auth-dir", type=_path, help="Managed authentication root.")
     auth_refresh.add_argument(
         "-c", "--cookie-file", type=_path, help="Write the generated Netscape cookie file here."
@@ -202,6 +223,12 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     clear_target.add_argument("-d", "--domain", help="Domain profile to remove.")
     auth_clear.add_argument("-A", "--auth-dir", type=_path, help="Managed authentication root.")
     auth_clear.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
+
+    auth_sites = auth_commands.add_parser("sites", help="List sites from the installed gallery-dl registry.")
+    auth_sites.add_argument("-f", "--filter", default="", help="Case-insensitive site-name filter.")
+    auth_sites.add_argument("-k", "--known-only", action="store_true", help="Show only sites with saved targets.")
+    auth_sites.add_argument("-A", "--auth-dir", type=_path, help="Managed authentication root.")
+    auth_sites.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
     return parser
 
 
@@ -623,11 +650,100 @@ def _repair_loose(args: argparse.Namespace) -> int:
     return 0 if plan.valid else 1
 
 
+def _interactive_auth_site(targets: TargetStore, query: str | None) -> str:
+    if not sys.stdin.isatty():
+        raise ValueError("interactive site selection requires a terminal; use --site NAME")
+    selected_query = (query or input("Filter installed gallery-dl sites: ")).strip().lower()
+    choices = [site for site in gallery_sites(targets) if selected_query in site.name]
+    if not choices:
+        raise ValueError(f"no installed gallery-dl sites match {selected_query!r}")
+    if len(choices) > 50:
+        raise ValueError(f"{len(choices)} sites match; use --site-filter to narrow the list to 50 or fewer")
+    for index, site in enumerate(choices, 1):
+        marker = "saved" if site.target_url else "URL needed"
+        example = site.examples[0] if site.examples else "no example"
+        print(f"{index:3}. {site.name:<24} [{marker}] {example}", file=sys.stderr)
+    raw = input("Select site number: ").strip()
+    try:
+        return choices[int(raw) - 1].name
+    except (ValueError, IndexError) as exc:
+        raise ValueError(f"invalid site selection: {raw!r}") from exc
+
+
+def _prompt_auth_target(site: str, targets: TargetStore) -> str:
+    if not sys.stdin.isatty():
+        raise ValueError(
+            f"no saved target URL for gallery-dl site {site!r}; rerun with --url ACTUAL_GALLERY_URL"
+        )
+    print(
+        f"No validated target URL is saved for gallery-dl site {site!r}.\n"
+        "Open the site and paste an actual gallery/series URL that gallery-dl supports; "
+        "a homepage or search page may not work.",
+        file=sys.stderr,
+    )
+    while True:
+        url = input("Target URL: ").strip()
+        try:
+            targets.save(site, url)
+        except ValueError as exc:
+            print(f"Invalid target: {exc}", file=sys.stderr)
+            continue
+        return url
+
+
+def _resolve_auth_target(args: argparse.Namespace, targets: TargetStore) -> tuple[str, str]:
+    if args.select_site and args.site:
+        raise ValueError("--select-site cannot be combined with --site")
+    if args.select_site:
+        site = _interactive_auth_site(targets, args.site_filter)
+    elif args.site:
+        site = targets.resolve_site(args.site)
+    else:
+        site = DEFAULT_AUTH_SITE
+    if args.url:
+        actual_site = site_for_url(args.url)
+        if args.site or args.select_site:
+            if actual_site != site:
+                raise ValueError(f"URL belongs to gallery-dl site {actual_site!r}, not selected site {site!r}")
+        else:
+            site = actual_site
+        targets.save(site, args.url)
+        return site, args.url
+    url = targets.url_for(site)
+    return site, url or _prompt_auth_target(site, targets)
+
+
 def _auth(args: argparse.Namespace) -> int:
     store = ProfileStore(args.auth_dir)
+    targets = TargetStore(store.root)
+    if args.auth_command == "sites":
+        query = args.filter.lower()
+        sites = [
+            site
+            for site in gallery_sites(targets)
+            if query in site.name and (not args.known_only or site.target_url)
+        ]
+        payload = [
+            {
+                "site": site.name,
+                "extractors": site.extractor_count,
+                "target_url": site.target_url,
+                "examples": list(site.examples),
+            }
+            for site in sites
+        ]
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            for site in sites:
+                target = site.target_url or "URL needed"
+                print(f"{site.name:<28} extractors={site.extractor_count:<3} target={target}")
+            print(f"{len(sites)} installed gallery-dl site(s)")
+        return 0
     if args.auth_command == "refresh":
+        site, url = _resolve_auth_target(args, targets)
         profile, probe = refresh_profile(
-            args.url,
+            url,
             store=store,
             browser=args.browser,
             debug_port=args.debug_port,
@@ -638,7 +754,9 @@ def _auth(args: argparse.Namespace) -> int:
             progress=lambda message: print(message, file=sys.stderr, flush=True),
         )
         payload = {
-            "domain": domain_for(args.url),
+            "site": site,
+            "target_url": url,
+            "domain": domain_for(url),
             "browser": args.browser,
             "profile": "present" if profile else "absent",
             "validation": probe.status,

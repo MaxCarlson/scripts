@@ -4,7 +4,7 @@
 
 - Branch: `agent/mangadl-gallery-auth`
 - Base: `agent/unified` at `78f07e6`
-- Current stage: S3 complete; ready for integration commit
+- Current stage: S4 complete; review/commit pending
 
 ## Current Evidence
 
@@ -28,9 +28,16 @@
   one-line input file containing the same URL was then accepted and
   automatically routed to gallery-dl in dry-run mode. No content was
   downloaded and no cookie value was printed or recorded.
+- S4 user validation ran `mangadl auth refresh` with no URL from
+  `B:\Hent\tmphent3`. It opened Chrome, printed browser/probe progress, passed
+  exact-target validation, and wrote
+  `B:\Hent\tmphent3\mangakakalot.gg-cookies.txt`.
+- `mangadl run config -i .\urls20.txt ... -n` accepted and automatically routed
+  all 25 unique URLs to gallery-dl, with one duplicate and no unsupported URLs.
+- Version 1.14.0 is installed editable and `python -m pytest` passes with
+  `143 passed`.
 
 ## Immediate Next Action
 
-Stage only this plan's files, commit and push the completed feature branch, then
-switch to `main` without merging. Integration remains a separate approved
-boundary.
+Review the S4 diff, then stage/commit/push it when approved. Do not merge before
+the separate integration approval boundary.

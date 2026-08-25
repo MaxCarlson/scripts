@@ -1,11 +1,16 @@
 import argparse
+import builtins
 import json
+import sys
+from types import SimpleNamespace
 
 import pytest
 
 from mangadl.backends import GalleryDlBackend
 from mangadl.cli import build_parser, main
+from mangadl.cli_core import _interactive_auth_site, _prompt_auth_target
 from mangadl.gallery_auth import ProfileStore
+from mangadl.gallery_auth import TargetStore
 
 
 def test_all_public_options_have_short_and_long_forms() -> None:
@@ -244,3 +249,68 @@ def test_auth_status_and_clear_do_not_print_cookie_values(tmp_path, capsys) -> N
 
     assert main(["auth", "clear", "-d", "example.com", "-A", str(auth_dir), "-j"]) == 0
     assert '"removed": true' in capsys.readouterr().out
+
+
+def test_auth_sites_uses_installed_gallery_dl_registry(tmp_path, capsys) -> None:
+    assert main(["auth", "sites", "-f", "manganelo", "-A", str(tmp_path / "auth"), "-j"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload[0]["site"] == "manganelo"
+    assert payload[0]["target_url"].endswith("/manga/lets-play-hooky")
+
+
+def test_auth_refresh_without_url_uses_default_saved_target(
+    tmp_path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    captured: list[str] = []
+
+    def fake_refresh(url, *, store, browser, **kwargs):
+        captured.append(url)
+        profile = store.save(
+            url,
+            "# Netscape HTTP Cookie File\n",
+            "Chrome UA",
+            browser,
+            source="test",
+            cookie_file=tmp_path / "mangakakalot.gg-cookies.txt",
+        )
+        from mangadl.gallery_auth import ProbeResult
+
+        return profile, ProbeResult("success", 0, "ok")
+
+    monkeypatch.setattr("mangadl.cli_core.refresh_profile", fake_refresh)
+
+    assert main(["auth", "refresh", "-A", str(tmp_path / "auth"), "-j"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert captured == ["https://www.mangakakalot.gg/manga/lets-play-hooky"]
+    assert payload["site"] == "manganelo"
+    assert payload["cookie_file"].endswith("mangakakalot.gg-cookies.txt")
+
+
+def test_missing_site_target_prompts_until_gallery_dl_accepts_same_site(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    targets = TargetStore(tmp_path / "auth")
+    answers = iter(
+        [
+            "https://www.mangakakalot.gg/search/story/like_no_other",
+            "https://www.mangakakalot.gg/manga/like-no-other",
+        ]
+    )
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(builtins, "input", lambda prompt="": next(answers))
+
+    url = _prompt_auth_target("manganelo", targets)
+
+    assert url.endswith("/manga/like-no-other")
+    assert targets.url_for("manganelo") == url
+
+
+def test_interactive_site_selection_filters_runtime_registry(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    targets = TargetStore(tmp_path / "auth")
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(builtins, "input", lambda prompt="": "1")
+
+    assert _interactive_auth_site(targets, "manganelo") == "manganelo"

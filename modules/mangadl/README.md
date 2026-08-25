@@ -59,18 +59,50 @@ For one transition release, the former flat advanced flags remain accepted direc
 supported. It does not maintain a separate site list, so supported URLs such as
 Mangakakalot series pages continue to route automatically to gallery-dl.
 
-Create and validate a managed profile against the exact series URL:
+Manganelo/Mangakakalot has a built-in validated target, so the normal first-use
+command needs no URL:
 
 ```powershell
-mangadl auth refresh -u https://www.mangakakalot.gg/manga/like-no-other
-mangadl auth status -u https://www.mangakakalot.gg/manga/like-no-other
+mangadl auth refresh
+mangadl auth status -d mangakakalot.gg
 ```
 
 Chrome is the default. Refresh opens or reuses an isolated Chrome debug
 session, opens the exact target URL, waits for any interactive challenge,
 captures all matching-domain cookies plus Chrome's exact User-Agent, writes a
 Netscape cookie file, and validates the same URL with gallery-dl simulation.
-Cookie values are never printed.
+It reports every phase plus periodic remaining-time messages, so a browser wait
+or gallery-dl probe is visibly active. Cookie values are never printed.
+
+The cookie file defaults to `<domain>-cookies.txt` in the directory where the
+command was invoked. For example, running from `B:\Hent\tmphent3` creates:
+
+```text
+B:\Hent\tmphent3\mangakakalot.gg-cookies.txt
+```
+
+Mangadl stores only non-secret profile metadata and saved target URLs under its
+application auth directory. A new valid `-u/--url` value replaces the saved
+target for the gallery-dl site that recognizes it:
+
+```powershell
+mangadl auth refresh -u https://www.mangakakalot.gg/manga/like-no-other
+```
+
+Discover and select sites from the installed gallery-dl version at runtime:
+
+```powershell
+mangadl auth sites
+mangadl auth sites -f manga
+mangadl auth refresh -s manganelo
+mangadl auth refresh -S -q manga
+```
+
+`auth sites` uses gallery-dl's extractor registry rather than a copied support
+list. If a selected site has no saved actual target, mangadl asks for a real
+gallery/series URL, verifies that the selected gallery-dl extractor accepts it,
+and saves it for later no-URL refreshes. Placeholder examples, homepages, and
+search pages are not assumed to be download targets.
 
 Other browser sources and a custom cookie-file destination are explicit:
 
@@ -82,9 +114,10 @@ mangadl auth refresh -u $url -b chrome -p 9222 -n
 mangadl auth clear -d mangakakalot.gg
 ```
 
-Chrome and Edge use the browser's DevTools protocol. Firefox uses gallery-dl's
-Firefox cookie export; `-U/--user-agent` can supply its exact matching UA.
-`-n/--no-launch-browser` requires an already-running Chrome/Edge debugger.
+Chrome and Edge use the browser's DevTools protocol. Firefox is opened at the
+exact target and uses gallery-dl's Firefox cookie export; `-U/--user-agent` can
+supply its exact matching UA. `-n/--no-launch-browser` explicitly opts into an
+already-running browser instead of having mangadl open one.
 Profiles default to `%APPDATA%\mangadl\auth\<domain>` on Windows,
 `~/.config/mangadl/auth/<domain>` on Linux, and
 `~/Library/Application Support/mangadl/auth/<domain>` on macOS. Override the
@@ -104,13 +137,12 @@ its expiry is in the future and the UA is unchanged. The manager performs one
 shared refresh per domain and retries each affected job once; 404, rate-limit,
 filesystem, and unrelated backend failures do not refresh credentials.
 
-For a Windows simulation-only live check, use the actual failing series URL,
-not the site home page or a search-result URL:
+For a Windows simulation-only live check from the desired output folder:
 
 ```powershell
-$url = 'https://www.mangakakalot.gg/manga/like-no-other'
-mangadl auth refresh -u $url -b chrome -p 9222
-mangadl auth status -u $url
+Set-Location B:\Hent\tmphent3
+mangadl auth refresh
+mangadl auth status -d mangakakalot.gg
 ```
 
 Do not commit the auth directory or share its cookie file. A URL such as

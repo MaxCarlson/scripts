@@ -12,12 +12,16 @@ from mangadl.gallery_auth import (
     AuthProfile,
     ProbeResult,
     ProfileStore,
+    TargetStore,
     classify_probe,
     cookie_summary,
+    default_cookie_output,
     domain_for,
+    gallery_sites,
     netscape_cookie_text,
     refresh_profile,
     relevant_cookies,
+    site_for_url,
 )
 
 
@@ -87,13 +91,13 @@ def test_profile_persistence_and_status_summary_are_secret_free(tmp_path: Path) 
     assert not summary.expired
 
 
-def test_external_cookie_file_is_not_deleted_when_profile_is_cleared(tmp_path: Path) -> None:
+def test_profile_cookie_file_is_deleted_when_profile_is_cleared(tmp_path: Path) -> None:
     store = ProfileStore(tmp_path / "auth")
     external = tmp_path / "exported-cookies.txt"
     store.save("example.com", "# Netscape HTTP Cookie File\n", "UA", "edge", source="edge-cdp", cookie_file=external)
 
     assert store.clear("example.com")
-    assert external.is_file()
+    assert not external.exists()
     assert store.load("example.com") is None
 
 
@@ -114,6 +118,7 @@ def test_probe_classification_is_bounded(output: str, status: str) -> None:
 def test_cdp_refresh_captures_matching_ua_and_persists_after_validation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.chdir(tmp_path)
     store = ProfileStore(tmp_path / "auth")
     captures: list[dict[str, object]] = []
 
@@ -125,7 +130,7 @@ def test_cdp_refresh_captures_matching_ua_and_persists_after_validation(
     monkeypatch.setattr(
         gallery_auth,
         "probe_gallery_dl",
-        lambda url, cookie_file, user_agent, timeout=60: ProbeResult("success", 0, "ok"),
+        lambda url, cookie_file, user_agent, timeout=60, progress=None: ProbeResult("success", 0, "ok"),
     )
 
     profile, probe = refresh_profile(
@@ -139,6 +144,7 @@ def test_cdp_refresh_captures_matching_ua_and_persists_after_validation(
     assert profile is not None
     assert profile.user_agent == "Captured Chrome UA"
     assert profile.browser == "chrome"
+    assert profile.cookie_path == tmp_path / "mangakakalot.gg-cookies.txt"
     assert captures[0]["allow_launch"] is True
     assert "secret-cookie-value" not in json.dumps(profile.__dict__ if hasattr(profile, "__dict__") else {})
 
@@ -252,6 +258,7 @@ def test_cdp_browser_launch_includes_exact_target_url(
 def test_firefox_refresh_uses_gallery_dl_cookie_export(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.chdir(tmp_path)
     store = ProfileStore(tmp_path / "auth")
     cookies = netscape_cookie_text(sample_cookies(), "mangakakalot.gg")
     monkeypatch.setattr(
@@ -265,12 +272,70 @@ def test_firefox_refresh_uses_gallery_dl_cookie_export(
         store=store,
         browser="firefox",
         user_agent="Firefox UA",
+        no_launch=True,
     )
 
     assert probe.success
     assert profile is not None
     assert profile.browser == "firefox"
     assert profile.user_agent == "Firefox UA"
+
+
+def test_refresh_forces_target_navigation_and_reports_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    calls = 0
+    messages: list[str] = []
+
+    def fake_capture(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            assert kwargs["force_open"] is True
+            raise RuntimeError("target-opening")
+        assert kwargs["force_open"] is False
+        return sample_cookies(), "Chrome UA"
+
+    monkeypatch.setattr(gallery_auth, "_capture_cdp", fake_capture)
+    monkeypatch.setattr(
+        gallery_auth,
+        "probe_gallery_dl",
+        lambda *args, **kwargs: ProbeResult("success", 0, "ok"),
+    )
+
+    profile, probe = refresh_profile(
+        "https://www.mangakakalot.gg/manga/title",
+        store=ProfileStore(tmp_path / "auth"),
+        timeout=3,
+        progress=messages.append,
+    )
+
+    assert probe.success and profile is not None
+    assert any("preparing chrome authentication" in message for message in messages)
+    assert any("opened the exact target URL" in message for message in messages)
+    assert any("validating the exact target URL" in message for message in messages)
+    assert any("validation succeeded" in message for message in messages)
+
+
+def test_firefox_refresh_launches_exact_target_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    launched: list[str] = []
+    cookies = netscape_cookie_text(sample_cookies(), "mangakakalot.gg")
+    monkeypatch.setattr(gallery_auth, "_launch_firefox", lambda url: launched.append(url))
+    monkeypatch.setattr(
+        gallery_auth,
+        "_refresh_firefox",
+        lambda url, timeout, user_agent: (cookies, "Firefox UA", ProbeResult("success", 0, "ok")),
+    )
+    target = "https://www.mangakakalot.gg/manga/title"
+
+    profile, probe = refresh_profile(target, store=ProfileStore(tmp_path / "auth"), browser="firefox")
+
+    assert probe.success and profile is not None
+    assert launched == [target]
 
 
 def test_profile_metadata_never_contains_cookie_values(tmp_path: Path) -> None:
@@ -284,3 +349,34 @@ def test_profile_metadata_never_contains_cookie_values(tmp_path: Path) -> None:
         source="chrome-cdp",
     )
     assert "secret-cookie-value" not in repr(profile)
+
+
+def test_target_store_seeds_manganelo_and_replaces_valid_url(tmp_path: Path) -> None:
+    targets = TargetStore(tmp_path / "auth")
+    assert targets.url_for("manganelo") == "https://www.mangakakalot.gg/manga/lets-play-hooky"
+
+    replacement = "https://www.mangakakalot.gg/manga/like-no-other"
+    targets.save("manganelo", replacement)
+
+    assert targets.url_for("manganelo") == replacement
+    assert site_for_url(replacement) == "manganelo"
+
+
+def test_target_store_rejects_url_from_different_gallery_site(tmp_path: Path) -> None:
+    targets = TargetStore(tmp_path / "auth")
+    with pytest.raises(ValueError, match="not selected site"):
+        targets.save("manganelo", "https://nhentai.net/g/123/")
+
+
+def test_gallery_sites_come_from_installed_registry_and_include_saved_target(tmp_path: Path) -> None:
+    sites = gallery_sites(TargetStore(tmp_path / "auth"))
+    manganelo = next(site for site in sites if site.name == "manganelo")
+    assert manganelo.extractor_count >= 1
+    assert any("mangakakalot.gg" in example for example in manganelo.examples)
+    assert manganelo.target_url == "https://www.mangakakalot.gg/manga/lets-play-hooky"
+
+
+def test_default_cookie_output_uses_invocation_directory_and_domain_prefix(tmp_path: Path) -> None:
+    assert default_cookie_output("https://www.mangakakalot.gg/manga/title", tmp_path) == (
+        tmp_path / "mangakakalot.gg-cookies.txt"
+    )

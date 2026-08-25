@@ -42,6 +42,10 @@ browser refresh for a recognized authentication challenge.
 3. **S3 — Managed runtime retry:** per-job profile resolution, one bounded
    challenge refresh/retry, per-domain concurrency coordination, regression
    tests, README/manual validation, and merge evidence.
+4. **S4 — Target catalog and visible refresh:** runtime gallery-dl site
+   discovery, persistent validated target URLs, a Mangakakalot default target,
+   current-directory cookie exports, forced exact-target browser navigation,
+   and periodic progress while browser verification is pending.
 
 ## Acceptance Criteria
 
@@ -56,6 +60,11 @@ browser refresh for a recognized authentication challenge.
 | AC-S3-001 | Gallery-dl jobs reuse a managed profile only when explicit credential sources are absent. | S3 |
 | AC-S3-002 | Recognized authentication challenges trigger at most one shared per-domain refresh and retry; 404, rate-limit, parser, and filesystem failures do not. | S3 |
 | AC-S3-003 | Documentation includes the Windows Mangakakalot validation procedure without recording credential material. | S3 |
+| AC-S4-001 | `mangadl auth refresh` works with no URL by using the saved or built-in Manganelo/Mangakakalot target; `--url` validates and replaces the saved target. | S4 |
+| AC-S4-002 | `mangadl auth sites` derives sites/extractors from the installed gallery-dl registry and indicates which sites have usable saved targets. | S4 |
+| AC-S4-003 | Missing target URLs trigger an actionable interactive prompt, and only URLs accepted by the selected gallery-dl site are persisted. | S4 |
+| AC-S4-004 | Refresh always opens the exact target in the selected browser and emits immediate plus periodic challenge/probe progress until success or timeout. | S4 |
+| AC-S4-005 | Generated cookie files default to `<domain>-cookies.txt` in the invocation directory unless `--cookie-file` overrides it. | S4 |
 
 ## Deferred Secondary Fallback
 

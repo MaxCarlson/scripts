@@ -17,6 +17,10 @@ from urllib.request import Request, urlopen
 
 BROWSERS = ("chrome", "edge", "firefox")
 DEFAULT_BROWSER = "chrome"
+DEFAULT_AUTH_SITE = "manganelo"
+BUILTIN_TARGETS = {
+    "manganelo": "https://www.mangakakalot.gg/manga/lets-play-hooky",
+}
 DEFAULT_DEBUG_PORTS = {"chrome": 9222, "edge": 9223}
 CHALLENGE_MARKERS = (
     "challengeerror",
@@ -110,6 +114,108 @@ class ProbeResult:
         return self.status == "success"
 
 
+@dataclass(frozen=True, slots=True)
+class GallerySite:
+    name: str
+    extractor_count: int
+    examples: tuple[str, ...]
+    target_url: str | None = None
+
+
+def site_for_url(url: str) -> str:
+    try:
+        from gallery_dl import extractor
+    except ImportError as exc:  # pragma: no cover - package dependency
+        raise RuntimeError("gallery-dl is required to inspect authentication targets") from exc
+    match = extractor.find(url)
+    if match is None:
+        raise ValueError(f"gallery-dl does not recognize this URL: {url}")
+    return match.__class__.__module__.rsplit(".", 1)[-1].lower()
+
+
+def gallery_sites(targets: "TargetStore | None" = None) -> list[GallerySite]:
+    try:
+        from gallery_dl import extractor
+    except ImportError as exc:  # pragma: no cover - package dependency
+        raise RuntimeError("gallery-dl is required to list supported sites") from exc
+    grouped: dict[str, dict[str, Any]] = {}
+    for cls in extractor.extractors():
+        name = cls.__module__.rsplit(".", 1)[-1].lower()
+        entry = grouped.setdefault(name, {"count": 0, "examples": []})
+        entry["count"] += 1
+        example = getattr(cls, "example", None)
+        values = example if isinstance(example, (tuple, list)) else (example,)
+        for value in values:
+            if isinstance(value, str) and value and value not in entry["examples"]:
+                entry["examples"].append(value)
+    known = targets.all() if targets else {}
+    return [
+        GallerySite(
+            name=name,
+            extractor_count=data["count"],
+            examples=tuple(data["examples"][:3]),
+            target_url=known.get(name),
+        )
+        for name, data in sorted(grouped.items())
+    ]
+
+
+class TargetStore:
+    def __init__(self, root: Path | None = None) -> None:
+        self.root = (root or default_auth_dir()).expanduser().resolve()
+        self.path = self.root / "targets.json"
+
+    def _saved(self) -> dict[str, str]:
+        if not self.path.is_file():
+            return {}
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return {}
+        values = payload.get("targets", {}) if isinstance(payload, dict) else {}
+        return {
+            str(site).lower(): str(url)
+            for site, url in values.items()
+            if isinstance(site, str) and isinstance(url, str)
+        }
+
+    def all(self) -> dict[str, str]:
+        return {**BUILTIN_TARGETS, **self._saved()}
+
+    def url_for(self, site: str) -> str | None:
+        return self.all().get(site.lower())
+
+    def save(self, site: str, url: str) -> None:
+        actual_site = site_for_url(url)
+        requested = site.lower()
+        if actual_site != requested:
+            raise ValueError(
+                f"URL belongs to gallery-dl site {actual_site!r}, not selected site {requested!r}: {url}"
+            )
+        targets = self._saved()
+        targets[requested] = url
+        payload = {"schema": 1, "updated_at": _utc_now(), "targets": dict(sorted(targets.items()))}
+        _atomic_write(self.path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+    def resolve_site(self, value: str) -> str:
+        query = value.lower().strip()
+        sites = gallery_sites(self)
+        names = {site.name for site in sites}
+        if query in names:
+            return query
+        domain_matches = [
+            name for name, url in self.all().items() if domain_for(url) == query.removeprefix("www.")
+        ]
+        if len(domain_matches) == 1:
+            return domain_matches[0]
+        partial = [name for name in names if query in name]
+        if len(partial) == 1:
+            return partial[0]
+        if not partial:
+            raise ValueError(f"the installed gallery-dl has no site matching {value!r}")
+        raise ValueError(f"site {value!r} is ambiguous; matches: {', '.join(sorted(partial)[:12])}")
+
+
 class ProfileStore:
     def __init__(self, root: Path | None = None) -> None:
         self.root = (root or default_auth_dir()).expanduser().resolve()
@@ -167,11 +273,7 @@ class ProfileStore:
         directory = self.profile_dir(value)
         profile = self.load(value)
         removed = False
-        managed_cookie = (
-            profile.cookie_path
-            if profile and profile.cookie_path.parent == directory
-            else self.default_cookie_path(value)
-        )
+        managed_cookie = profile.cookie_path if profile else self.default_cookie_path(value)
         if managed_cookie.is_file():
             managed_cookie.unlink()
             removed = True
@@ -245,6 +347,10 @@ def cookie_summary(path: Path, *, now: float | None = None) -> CookieSummary:
     return CookieSummary(len(names), tuple(sorted(set(names))), min(expiries) if expiries else None, not unexpired)
 
 
+def default_cookie_output(value: str, directory: Path | None = None) -> Path:
+    return (directory or Path.cwd()).resolve() / f"{domain_for(value)}-cookies.txt"
+
+
 def classify_probe(returncode: int, output: str) -> ProbeResult:
     lowered = output.lower()
     last_line = next((line.strip() for line in reversed(output.splitlines()) if line.strip()), "")
@@ -260,7 +366,14 @@ def classify_probe(returncode: int, output: str) -> ProbeResult:
     return ProbeResult("other_failure", returncode, message)
 
 
-def probe_gallery_dl(url: str, cookie_file: Path, user_agent: str, *, timeout: float = 60.0) -> ProbeResult:
+def probe_gallery_dl(
+    url: str,
+    cookie_file: Path,
+    user_agent: str,
+    *,
+    timeout: float = 60.0,
+    progress: Callable[[str], None] | None = None,
+) -> ProbeResult:
     command = [
         sys.executable,
         "-m",
@@ -273,19 +386,37 @@ def probe_gallery_dl(url: str, cookie_file: Path, user_agent: str, *, timeout: f
         user_agent,
         url,
     ]
-    try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return ProbeResult("other_failure", 124, "gallery-dl validation timed out")
-    return classify_probe(result.returncode, f"{result.stdout}\n{result.stderr}")
+    if progress is None:
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return ProbeResult("other_failure", 124, "gallery-dl validation timed out")
+        return classify_probe(result.returncode, f"{result.stdout}\n{result.stderr}")
+
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as output:
+        process = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT, text=True)
+        deadline = time.monotonic() + timeout
+        next_notice = time.monotonic() + 5
+        while process.poll() is None:
+            now = time.monotonic()
+            if now >= deadline:
+                process.kill()
+                process.wait()
+                return ProbeResult("other_failure", 124, "gallery-dl validation timed out")
+            if now >= next_notice:
+                progress(f"gallery-dl validation is still running ({max(0, int(deadline - now))}s remaining)")
+                next_notice = now + 5
+            time.sleep(0.25)
+        output.seek(0)
+        return classify_probe(process.returncode, output.read())
 
 
 def _json_endpoint(port: int, route: str) -> Any:
@@ -305,26 +436,30 @@ def _open_cdp_target(port: int, url: str) -> None:
 
 
 def find_browser(browser: str) -> Path:
-    if browser not in {"chrome", "edge"}:
-        raise ValueError(f"CDP extraction is not supported for {browser}")
+    if browser not in BROWSERS:
+        raise ValueError(f"unsupported browser: {browser}")
     program_files = [os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"), os.environ.get("LOCALAPPDATA")]
-    relative = (
-        Path("Google/Chrome/Application/chrome.exe")
-        if browser == "chrome"
-        else Path("Microsoft/Edge/Application/msedge.exe")
-    )
+    relative = {
+        "chrome": Path("Google/Chrome/Application/chrome.exe"),
+        "edge": Path("Microsoft/Edge/Application/msedge.exe"),
+        "firefox": Path("Mozilla Firefox/firefox.exe"),
+    }[browser]
     candidates = [Path(base) / relative for base in program_files if base]
-    names = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser") if browser == "chrome" else ("msedge", "microsoft-edge", "microsoft-edge-stable")
+    names = {
+        "chrome": ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"),
+        "edge": ("msedge", "microsoft-edge", "microsoft-edge-stable"),
+        "firefox": ("firefox",),
+    }[browser]
     for name in names:
         resolved = shutil.which(name)
         if resolved:
             candidates.append(Path(resolved))
     if sys.platform == "darwin":
-        candidates.append(
-            Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
-            if browser == "chrome"
-            else Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge")
-        )
+        candidates.append({
+            "chrome": Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            "edge": Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+            "firefox": Path("/Applications/Firefox.app/Contents/MacOS/firefox"),
+        }[browser])
     for candidate in candidates:
         if candidate.is_file():
             return candidate.resolve()
@@ -342,6 +477,15 @@ def _launch_cdp_browser(browser: str, url: str, port: int, profile_dir: Path) ->
             "--no-default-browser-check",
             url,
         ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        shell=False,
+    )
+
+
+def _launch_firefox(url: str) -> subprocess.Popen[bytes]:
+    return subprocess.Popen(
+        [str(find_browser("firefox")), "-new-window", url],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         shell=False,
@@ -374,6 +518,7 @@ def _capture_cdp(
     no_launch: bool,
     allow_launch: bool,
     auth_root: Path,
+    force_open: bool = False,
 ) -> tuple[list[dict[str, Any]], str]:
     try:
         version = _json_endpoint(port, "/json/version")
@@ -384,6 +529,9 @@ def _capture_cdp(
             _launch_cdp_browser(browser, url, port, auth_root / ".browser-profiles" / browser)
             raise RuntimeError("browser-starting")
         raise RuntimeError("browser-not-ready")
+    if force_open:
+        _open_cdp_target(port, url)
+        raise RuntimeError("target-opening")
     targets = _json_endpoint(port, "/json")
     requested = urlparse(url)
     requested_domain = domain_for(url)
@@ -451,7 +599,7 @@ def refresh_profile(
     store: ProfileStore,
     browser: str = DEFAULT_BROWSER,
     debug_port: int | None = None,
-    timeout: float = 120.0,
+    timeout: float = 180.0,
     no_launch: bool = False,
     cookie_file: Path | None = None,
     user_agent: str | None = None,
@@ -461,16 +609,57 @@ def refresh_profile(
         raise ValueError(f"browser must be one of: {', '.join(BROWSERS)}")
     notify = progress or (lambda _message: None)
     domain = domain_for(url)
+    destination = (cookie_file or default_cookie_output(domain)).expanduser().resolve()
+    notify(f"[{domain}] preparing {browser} authentication for {url}")
     if browser == "firefox":
-        notify(f"[{domain}] extracting Firefox cookies")
-        cookies, ua, probe = _refresh_firefox(url, timeout, user_agent)
-        if not probe.success or not cookies:
-            return None, probe
-        return store.save(domain, cookies, ua, browser, source="gallery-dl-browser", cookie_file=cookie_file), probe
+        if not no_launch:
+            _launch_firefox(url)
+            notify(f"[{domain}] opened the exact target URL in Firefox; complete any browser verification")
+        else:
+            notify(f"[{domain}] using an existing Firefox session; open the exact target URL if needed")
+        last_firefox_probe = ProbeResult("challenge", 1, "browser authentication is not complete")
+        next_firefox_notice = time.monotonic()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            notify(f"[{domain}] extracting Firefox cookies and validating the exact target URL")
+            cookies, ua, last_firefox_probe = _refresh_firefox(
+                url,
+                min(30.0, max(1.0, deadline - time.monotonic())),
+                user_agent,
+            )
+            if last_firefox_probe.success and cookies:
+                profile = store.save(
+                    domain,
+                    cookies,
+                    ua,
+                    browser,
+                    source="gallery-dl-browser",
+                    cookie_file=destination,
+                )
+                notify(f"[{domain}] validation succeeded; wrote {destination.name}")
+                return profile, last_firefox_probe
+            if last_firefox_probe.status not in {"challenge", "auth_failure", "other_failure"}:
+                return None, last_firefox_probe
+            now = time.monotonic()
+            if now >= next_firefox_notice:
+                notify(
+                    f"[{domain}] waiting for Firefox verification and refreshed cookies "
+                    f"({max(0, int(deadline - now))}s remaining)"
+                )
+                next_firefox_notice = now + 5
+            time.sleep(2)
+        return None, ProbeResult(
+            last_firefox_probe.status,
+            last_firefox_probe.returncode,
+            f"browser authentication was not completed within {timeout:g} seconds",
+        )
 
     port = debug_port or DEFAULT_DEBUG_PORTS[browser]
     deadline = time.monotonic() + timeout
     launched_notice = False
+    target_opened = False
+    next_wait_notice = time.monotonic()
+    phase = "waiting for the browser debugger"
     last_probe = ProbeResult("challenge", 1, "browser authentication is not complete")
     while time.monotonic() < deadline:
         try:
@@ -480,25 +669,52 @@ def refresh_profile(
                 port,
                 no_launch=no_launch,
                 allow_launch=not launched_notice,
+                force_open=not target_opened,
                 auth_root=store.root,
             )
         except RuntimeError as exc:
             if str(exc) == "browser-starting" and not launched_notice:
                 notify(f"[{domain}] opened {browser}; complete any browser verification")
                 launched_notice = True
-            elif str(exc) not in {"browser-starting", "browser-not-ready", "target-not-ready"}:
+                target_opened = True
+                phase = "waiting for the browser to start"
+            elif str(exc) == "target-opening":
+                target_opened = True
+                phase = "waiting for the exact target page and its cookies"
+                notify(f"[{domain}] opened the exact target URL in {browser}")
+            elif str(exc) == "target-not-ready":
+                phase = "waiting for the exact target tab"
+            elif str(exc) == "browser-not-ready":
+                phase = "waiting for the browser debugger"
+            else:
                 raise
-            time.sleep(1)
+            now = time.monotonic()
+            if now >= next_wait_notice:
+                notify(f"[{domain}] {phase} ({max(0, int(deadline - now))}s remaining)")
+                next_wait_notice = now + 5
+            time.sleep(0.5)
             continue
         selected = relevant_cookies(cookies, domain)
         if not selected or not ua:
+            phase = "waiting for relevant browser cookies; complete any visible challenge"
+            now = time.monotonic()
+            if now >= next_wait_notice:
+                notify(f"[{domain}] {phase} ({max(0, int(deadline - now))}s remaining)")
+                next_wait_notice = now + 5
             time.sleep(1)
             continue
         content = netscape_cookie_text(selected, domain)
         with tempfile.TemporaryDirectory(prefix="mangadl-auth-") as folder:
             candidate = Path(folder) / "cookies.txt"
             candidate.write_text(content, encoding="utf-8", newline="\n")
-            last_probe = probe_gallery_dl(url, candidate, user_agent or ua, timeout=min(60.0, timeout))
+            notify(f"[{domain}] captured {len(selected)} relevant cookie(s); validating the exact target URL")
+            last_probe = probe_gallery_dl(
+                url,
+                candidate,
+                user_agent or ua,
+                timeout=min(60.0, max(1.0, deadline - time.monotonic())),
+                progress=lambda message: notify(f"[{domain}] {message}"),
+            )
         if last_probe.success:
             profile = store.save(
                 domain,
@@ -506,10 +722,14 @@ def refresh_profile(
                 user_agent or ua,
                 browser,
                 source=f"{browser}-cdp",
-                cookie_file=cookie_file,
+                cookie_file=destination,
             )
+            notify(f"[{domain}] validation succeeded; wrote {destination.name}")
             return profile, last_probe
         if last_probe.status not in {"challenge", "auth_failure"}:
             return None, last_probe
+        phase = "browser challenge is still active; complete it in the opened target tab"
+        notify(f"[{domain}] {phase} ({max(0, int(deadline - time.monotonic()))}s remaining)")
+        next_wait_notice = time.monotonic() + 5
         time.sleep(2)
     return None, ProbeResult(last_probe.status, last_probe.returncode, f"browser authentication was not completed within {timeout:g} seconds")
