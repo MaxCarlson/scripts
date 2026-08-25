@@ -140,8 +140,15 @@ def _classify(returncode: int, tail: str) -> tuple[str, bool]:
         return "rate_limit", True
     if "database is locked" in lowered or "archive" in lowered and "locked" in lowered:
         return "archive", True
-    if "401" in lowered or "403" in lowered or "authentication" in lowered:
-        return "auth", False
+    auth_status = re.search(
+        r"(?:http(?:/\d(?:\.\d)?)?|status(?: code)?|response)[^\n]{0,20}\b(?:401|403)\b"
+        r"|\b(?:401|403)\b[^\n]{0,20}(?:forbidden|unauthorized)",
+        lowered,
+    )
+    if auth_status or any(
+        marker in lowered for marker in ("challengeerror", "cloudflare challenge", "authentication required")
+    ):
+        return "auth_challenge", False
     if "404" in lowered or "not found" in lowered:
         return "bad_url", False
     if "timeout" in lowered or "connection" in lowered or "http error 5" in lowered:
@@ -239,6 +246,8 @@ def _command(args: argparse.Namespace, partial: Path) -> list[str]:
         command.extend(["--cookies", args.cookies])
     if args.cookies_browser:
         command.extend(["--cookies-from-browser", args.cookies_browser])
+    if getattr(args, "gallery_user_agent", None):
+        command.extend(["--user-agent", args.gallery_user_agent])
     if args.rate:
         command.extend(["--limit-rate", args.rate])
     command.append(args.url)
@@ -461,6 +470,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-g", "--gallery-config")
     parser.add_argument("-c", "--cookies")
     parser.add_argument("-B", "--cookies-browser")
+    parser.add_argument("-U", "--gallery-user-agent")
     parser.add_argument("-x", "--rate")
     parser.add_argument("-e", "--hdporncomics-executable")
     parser.add_argument("-H", "--hdporncomics-threads", type=int, default=8)

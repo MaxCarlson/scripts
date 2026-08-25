@@ -16,6 +16,7 @@ from .backends import backend_classification, choose_backend
 from .cli_structure import add_run_arguments, normalize_command_shape
 from .concurrency import HARD_MAX_OUTER_WORKERS, MAX_OUTER_WORKERS_ENV
 from .destination_audit import audit_destinations, write_audit_outputs
+from .gallery_auth import BROWSERS, ProfileStore, cookie_summary, domain_for, refresh_profile
 from .hdporncomics_patch import apply_patch, patch_status
 from .input import collect_inputs
 from .manager import DownloadManager, RunOptions
@@ -165,6 +166,42 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     repair_mode.add_argument("-f", "--apply", action="store_true", help="Move files after complete validation.")
     repair.add_argument("-N", "--no-ui", action="store_true", help="Disable the in-place progress dashboard.")
     repair.add_argument("-j", "--json", action="store_true", help="Emit JSON repair details.")
+
+    auth = subparsers.add_parser("auth", help="Manage per-domain gallery-dl browser authentication.")
+    auth_commands = auth.add_subparsers(dest="auth_command", required=True)
+
+    auth_status = auth_commands.add_parser("status", help="Show a managed authentication profile.")
+    status_target = auth_status.add_mutually_exclusive_group(required=True)
+    status_target.add_argument("-u", "--url", help="Gallery URL whose domain should be inspected.")
+    status_target.add_argument("-d", "--domain", help="Domain to inspect.")
+    auth_status.add_argument("-A", "--auth-dir", type=_path, help="Managed authentication root.")
+    auth_status.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
+
+    auth_refresh = auth_commands.add_parser("refresh", help="Extract browser cookies and validate them.")
+    auth_refresh.add_argument("-u", "--url", required=True, help="Actual gallery or series URL to validate.")
+    auth_refresh.add_argument(
+        "-b", "--browser", choices=BROWSERS, default="chrome", help="Cookie source (default: chrome)."
+    )
+    auth_refresh.add_argument("-p", "--debug-port", type=int, help="Chrome/Edge DevTools port.")
+    auth_refresh.add_argument("-t", "--timeout", type=float, default=120.0, help="Browser verification timeout.")
+    auth_refresh.add_argument("-A", "--auth-dir", type=_path, help="Managed authentication root.")
+    auth_refresh.add_argument(
+        "-c", "--cookie-file", type=_path, help="Write the generated Netscape cookie file here."
+    )
+    auth_refresh.add_argument(
+        "-U", "--user-agent", help="Override the captured User-Agent (useful with Firefox)."
+    )
+    auth_refresh.add_argument(
+        "-n", "--no-launch-browser", action="store_true", help="Require an existing browser debugger."
+    )
+    auth_refresh.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
+
+    auth_clear = auth_commands.add_parser("clear", help="Remove a managed authentication profile.")
+    clear_target = auth_clear.add_mutually_exclusive_group(required=True)
+    clear_target.add_argument("-u", "--url", help="Gallery URL whose profile should be removed.")
+    clear_target.add_argument("-d", "--domain", help="Domain profile to remove.")
+    auth_clear.add_argument("-A", "--auth-dir", type=_path, help="Managed authentication root.")
+    auth_clear.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
     return parser
 
 
@@ -382,6 +419,10 @@ def _run(args: argparse.Namespace) -> int:
             gallery_config=args.gallery_config,
             cookies=args.cookies,
             cookies_browser=args.cookies_browser,
+            gallery_user_agent=args.gallery_user_agent,
+            auth_dir=args.auth_dir,
+            auth_browser=args.auth_browser,
+            auto_auth_refresh=not args.no_auth_refresh,
             rate=args.max_rate,
             hdporncomics_executable=args.hdporncomics_executable,
             hdporncomics_threads=args.hdporncomics_threads,
@@ -582,6 +623,90 @@ def _repair_loose(args: argparse.Namespace) -> int:
     return 0 if plan.valid else 1
 
 
+def _auth(args: argparse.Namespace) -> int:
+    store = ProfileStore(args.auth_dir)
+    if args.auth_command == "refresh":
+        profile, probe = refresh_profile(
+            args.url,
+            store=store,
+            browser=args.browser,
+            debug_port=args.debug_port,
+            timeout=args.timeout,
+            no_launch=args.no_launch_browser,
+            cookie_file=args.cookie_file,
+            user_agent=args.user_agent,
+            progress=lambda message: print(message, file=sys.stderr, flush=True),
+        )
+        payload = {
+            "domain": domain_for(args.url),
+            "browser": args.browser,
+            "profile": "present" if profile else "absent",
+            "validation": probe.status,
+            "message": probe.message,
+        }
+        if profile:
+            summary = cookie_summary(profile.cookie_path)
+            payload.update(
+                {
+                    "cookie_file": str(profile.cookie_path),
+                    "cookies": summary.count,
+                    "cookie_names": list(summary.names),
+                    "user_agent": "present",
+                    "updated_at": profile.updated_at,
+                }
+            )
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        elif profile:
+            print(
+                f"[{payload['domain']}] credentials captured: {payload['cookies']} cookie(s), "
+                f"browser={args.browser}; validation succeeded\nprofile: {payload['cookie_file']}"
+            )
+        else:
+            print(f"[{payload['domain']}] authentication refresh failed: {probe.message}", file=sys.stderr)
+        return 0 if profile else 1
+
+    value = args.url or args.domain
+    domain = domain_for(value)
+    if args.auth_command == "clear":
+        removed = store.clear(domain)
+        payload = {"domain": domain, "removed": removed}
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(f"[{domain}] managed authentication {'removed' if removed else 'was not present'}")
+        return 0
+
+    profile = store.load(domain)
+    payload: dict[str, Any] = {"domain": domain, "profile": "present" if profile else "absent"}
+    if profile:
+        summary = cookie_summary(profile.cookie_path)
+        payload.update(
+            {
+                "browser": profile.browser,
+                "source": profile.source,
+                "cookie_file": str(profile.cookie_path),
+                "cookies": summary.count,
+                "cookie_names": list(summary.names),
+                "earliest_expiry": summary.earliest_expiry,
+                "expired": summary.expired,
+                "user_agent": "present",
+                "updated_at": profile.updated_at,
+            }
+        )
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    elif not profile:
+        print(f"[{domain}] managed authentication profile: absent")
+    else:
+        print(
+            f"domain: {domain}\nprofile: present\nbrowser: {profile.browser}\n"
+            f"cookies: {payload['cookies']}\nexpired: {payload['expired']}\nuser-agent: present\n"
+            f"cookie file: {profile.cookie_path}"
+        )
+    return 0 if profile else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     shape = normalize_command_shape(raw_argv)
@@ -601,6 +726,7 @@ def main(argv: list[str] | None = None) -> int:
             "audit": _audit_destinations,
             "audit-destinations": _audit_destinations,
             "repair-loose": _repair_loose,
+            "auth": _auth,
         }[args.command](args)
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
         parser.error(str(exc))

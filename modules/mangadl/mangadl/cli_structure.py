@@ -149,6 +149,30 @@ def add_run_arguments(
         "--cookies-browser",
         help=_help("Browser cookie source reserved for gallery-dl configuration.", expert),
     )
+    parser.add_argument(
+        "-k",
+        "--gallery-user-agent",
+        help=_help("Explicit gallery-dl User-Agent; takes precedence over managed auth.", expert),
+    )
+    parser.add_argument(
+        "-z",
+        "--auth-dir",
+        type=path_type,
+        help=_help("Managed per-domain gallery authentication root.", expert),
+    )
+    parser.add_argument(
+        "-y",
+        "--auth-browser",
+        choices=("chrome", "edge", "firefox"),
+        default="chrome",
+        help=_help("Browser used for automatic gallery authentication (default: chrome).", expert),
+    )
+    parser.add_argument(
+        "-f",
+        "--no-auth-refresh",
+        action="store_true",
+        help=_help("Use stored profiles but do not launch a browser after an auth challenge.", expert),
+    )
     parser.add_argument("-n", "--dry-run", action="store_true", help=_help("Parse and route without downloading.", expert))
     parser.add_argument("-N", "--no-ui", action="store_true", help=_help("Disable the terminal dashboard.", expert))
     parser.add_argument("-q", "--quiet", action="store_true", help=_help("Print only the final machine-readable summary.", expert))

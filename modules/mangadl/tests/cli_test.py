@@ -5,6 +5,7 @@ import pytest
 
 from mangadl.backends import GalleryDlBackend
 from mangadl.cli import build_parser, main
+from mangadl.gallery_auth import ProfileStore
 
 
 def test_all_public_options_have_short_and_long_forms() -> None:
@@ -221,3 +222,25 @@ def test_inspect_reports_manga18fx_manhwa_classification(capsys) -> None:
     output = capsys.readouterr().out
     assert '"backend": "manga18fx"' in output
     assert '"classification": "manhwa"' in output
+
+
+def test_auth_status_and_clear_do_not_print_cookie_values(tmp_path, capsys) -> None:
+    auth_dir = tmp_path / "auth"
+    secret = "never-print-this-cookie"
+    ProfileStore(auth_dir).save(
+        "example.com",
+        "# Netscape HTTP Cookie File\n"
+        f".example.com\tTRUE\t/\tTRUE\t4102444800\tsession\t{secret}\n",
+        "Example UA",
+        "chrome",
+        source="chrome-cdp",
+    )
+
+    assert main(["auth", "status", "-d", "example.com", "-A", str(auth_dir), "-j"]) == 0
+    output = capsys.readouterr().out
+    assert '"profile": "present"' in output
+    assert '"session"' in output
+    assert secret not in output
+
+    assert main(["auth", "clear", "-d", "example.com", "-A", str(auth_dir), "-j"]) == 0
+    assert '"removed": true' in capsys.readouterr().out

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .concurrency import MAX_OUTER_WORKERS, Manga18FXConcurrencyPlan, plan_manga18fx_concurrency
+from .gallery_auth import ProfileStore, domain_for, refresh_profile
 from .models import JobState, WorkerSnapshot
 from .state import StateStore
 from .ui import ConsoleDashboard, DashboardRuntime, human_bytes, plain_identity
@@ -34,6 +35,10 @@ class RunOptions:
     gallery_config: Path | None = None
     cookies: Path | None = None
     cookies_browser: str | None = None
+    gallery_user_agent: str | None = None
+    auth_dir: Path | None = None
+    auth_browser: str = "chrome"
+    auto_auth_refresh: bool = True
     rate: str | None = None
     hdporncomics_executable: str | None = None
     hdporncomics_threads: int = 8
@@ -63,6 +68,9 @@ class DownloadManager:
         self.last_worker_status_log: dict[int, float] = {}
         self.snapshots = {slot: WorkerSnapshot(slot) for slot in range(1, self.target_workers + 1)}
         self.stop_requested = False
+        self.auth_store = ProfileStore(options.auth_dir)
+        self.auth_refreshed_domains: set[str] = set()
+        self.auth_retry_jobs: set[int] = set()
         self.runtime_notice = self._initial_concurrency_notice(plan)
         self.run_log = options.log_dir / options.run_id
         for folder in (self.run_log / "workers", self.run_log / "raw"):
@@ -222,18 +230,75 @@ class DownloadManager:
             "--raw-log",
             str(self.run_log / "raw" / f"worker-{slot:02d}-gallery-dl.log"),
         ]
+        managed_profile = None
+        explicit_credentials = bool(
+            self.options.cookies or self.options.cookies_browser or self.options.gallery_config
+        )
+        if job["backend"] == "gallery-dl" and not explicit_credentials:
+            managed_profile = self.auth_store.load(job["canonical_url"])
         if self.options.gallery_config:
             command.extend(["--gallery-config", str(self.options.gallery_config)])
         if self.options.cookies:
             command.extend(["--cookies", str(self.options.cookies)])
         if self.options.cookies_browser:
             command.extend(["--cookies-browser", self.options.cookies_browser])
+        if self.options.gallery_user_agent:
+            command.extend(["--gallery-user-agent", self.options.gallery_user_agent])
+        elif managed_profile:
+            command.extend(["--cookies", str(managed_profile.cookie_path)])
+            command.extend(["--gallery-user-agent", managed_profile.user_agent])
         if self.options.rate:
             command.extend(["--rate", self.options.rate])
         if self.options.hdporncomics_executable:
             command.extend(["--hdporncomics-executable", self.options.hdporncomics_executable])
         command.extend(["--hdporncomics-threads", str(self.options.hdporncomics_threads)])
         return command
+
+    def _can_manage_auth(self, job: dict[str, Any]) -> bool:
+        return bool(
+            job["backend"] == "gallery-dl"
+            and not self.options.cookies
+            and not self.options.cookies_browser
+            and not self.options.gallery_config
+        )
+
+    def _retry_after_auth(self, slot: int, event: dict[str, Any], job: dict[str, Any], message: str) -> bool:
+        if not self._can_manage_auth(job) or event["job_id"] in self.auth_retry_jobs:
+            return False
+        domain = domain_for(event["url"])
+        if domain not in self.auth_refreshed_domains:
+            if not self.options.auto_auth_refresh:
+                return False
+            try:
+                profile, probe = refresh_profile(
+                    event["url"],
+                    store=self.auth_store,
+                    browser=self.options.auth_browser,
+                    progress=lambda text: print(text, file=sys.stderr, flush=True),
+                )
+            except (OSError, RuntimeError, ValueError) as exc:
+                self.logger.warning("managed auth refresh failed domain=%s error=%s", domain, exc)
+                print(f"[{domain}] managed authentication refresh failed: {exc}", file=sys.stderr, flush=True)
+                return False
+            if profile is None:
+                self.logger.warning("managed auth refresh failed domain=%s status=%s", domain, probe.status)
+                return False
+            self.auth_refreshed_domains.add(domain)
+            self.logger.info(
+                "managed auth refreshed domain=%s browser=%s cookies=%s",
+                domain,
+                profile.browser,
+                profile.cookie_path,
+            )
+        self.auth_retry_jobs.add(event["job_id"])
+        self.store.retry(event["job_id"], event["attempt_id"], 0, "auth_challenge", message)
+        self._write_worker_log(
+            slot,
+            "FINISH_RETRY",
+            f"{plain_identity(event['url'])}  auth profile refreshed",
+            elapsed=float(event.get("data", {}).get("elapsed", self.snapshots[slot].elapsed)),
+        )
+        return True
 
     def _start_worker(self, slot: int, job: dict[str, Any]) -> None:
         child_env = os.environ.copy()
@@ -355,7 +420,9 @@ class DownloadManager:
             job = next((row for row in self.store.jobs(self.options.run_id) if row["id"] == event["job_id"]), None)
             category = data.get("category", "backend")
             message = data.get("message", "backend failed")
-            if event["event"] == "job_retryable_failure" and job and job["attempts"] <= self.options.retries:
+            if category == "auth_challenge" and job and self._retry_after_auth(slot, event, job, message):
+                pass
+            elif event["event"] == "job_retryable_failure" and job and job["attempts"] <= self.options.retries:
                 self.store.retry(
                     event["job_id"],
                     event["attempt_id"],

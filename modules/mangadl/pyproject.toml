@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mangadl"
-version = "1.12.1"
+version = "1.13.0"
 description = "Concurrent, resumable manga and gallery download manager."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["gallery-dl>=1.32,<2", "hdporncomics", "termdash>=0.4.0"]
+dependencies = ["gallery-dl>=1.32,<2", "hdporncomics", "termdash>=0.4.0", "websocket-client>=1.8,<2"]
 
 [project.scripts]
 mangadl = "mangadl.cli:main"

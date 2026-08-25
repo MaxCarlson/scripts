@@ -53,6 +53,70 @@ mangadl run config -i .\urls.txt -d .\downloads -a .\gallery-dl-archive.sqlite3 
 
 For one transition release, the former flat advanced flags remain accepted directly under `run`, but they are hidden from normal help.
 
+## Managed gallery-dl browser authentication
+
+`mangadl` asks the installed gallery-dl extractor registry whether a URL is
+supported. It does not maintain a separate site list, so supported URLs such as
+Mangakakalot series pages continue to route automatically to gallery-dl.
+
+Create and validate a managed profile against the exact series URL:
+
+```powershell
+mangadl auth refresh -u https://www.mangakakalot.gg/manga/like-no-other
+mangadl auth status -u https://www.mangakakalot.gg/manga/like-no-other
+```
+
+Chrome is the default. Refresh opens or reuses an isolated Chrome debug
+session, opens the exact target URL, waits for any interactive challenge,
+captures all matching-domain cookies plus Chrome's exact User-Agent, writes a
+Netscape cookie file, and validates the same URL with gallery-dl simulation.
+Cookie values are never printed.
+
+Other browser sources and a custom cookie-file destination are explicit:
+
+```powershell
+mangadl auth refresh -u $url -b edge
+mangadl auth refresh -u $url -b firefox -U $firefoxUserAgent
+mangadl auth refresh -u $url -c D:\private\gallery-cookies.txt
+mangadl auth refresh -u $url -b chrome -p 9222 -n
+mangadl auth clear -d mangakakalot.gg
+```
+
+Chrome and Edge use the browser's DevTools protocol. Firefox uses gallery-dl's
+Firefox cookie export; `-U/--user-agent` can supply its exact matching UA.
+`-n/--no-launch-browser` requires an already-running Chrome/Edge debugger.
+Profiles default to `%APPDATA%\mangadl\auth\<domain>` on Windows,
+`~/.config/mangadl/auth/<domain>` on Linux, and
+`~/Library/Application Support/mangadl/auth/<domain>` on macOS. Override the
+root with `-A/--auth-dir` or `MANGADL_AUTH_DIR`.
+
+After a profile is created, the ordinary command is sufficient:
+
+```powershell
+mangadl run -i .\urls.txt -d .\downloads -a .\gallery-dl-archive.sqlite3
+```
+
+Each gallery-dl job resolves its own domain profile. Explicit
+`-C/--cookies`, `-B/--cookies-browser`, `-g/--gallery-config`, and
+`-k/--gallery-user-agent` settings take precedence. A recognized 401/403,
+`ChallengeError`, or Cloudflare challenge makes the profile stale even when
+its expiry is in the future and the UA is unchanged. The manager performs one
+shared refresh per domain and retries each affected job once; 404, rate-limit,
+filesystem, and unrelated backend failures do not refresh credentials.
+
+For a Windows simulation-only live check, use the actual failing series URL,
+not the site home page or a search-result URL:
+
+```powershell
+$url = 'https://www.mangakakalot.gg/manga/like-no-other'
+mangadl auth refresh -u $url -b chrome -p 9222
+mangadl auth status -u $url
+```
+
+Do not commit the auth directory or share its cookie file. A URL such as
+`/search/story/like_no_other` remains unsupported when gallery-dl's extractor
+registry rejects it.
+
 ## Manga18FX concurrency and resume behavior
 
 Manga18FX series URLs automatically use the native backend. It creates one series folder, naturally ordered chapter folders, and zero-padded images. Downloads use `.part` files followed by atomic completion. Failed jobs remain under `_partial/<job-id>/`; successful jobs merge into the destination.
@@ -169,5 +233,6 @@ Each run writes manager logs, structured events, summaries, worker activity logs
 - Reducing the outer-worker target drains active excess workers instead of killing their current series.
 - Pause affects scheduling and does not suspend an in-progress HTTP request.
 - `--config` and `--anonymize-logs` remain reserved compatibility settings.
-- Browser-cookie extraction is passed through to gallery-dl; native Manga18FX uses Netscape/Mozilla cookie files.
+- Native Manga18FX uses explicit Netscape/Mozilla cookie files; managed browser
+  profiles apply only to gallery-dl-routed jobs.
 - Manga18FX HTML, CDN, or anti-bot changes may require backend maintenance.

@@ -42,6 +42,12 @@ def test_failure_classification() -> None:
     assert _classify(1, "HTTP 429 rate limit") == ("rate_limit", True)
     assert _classify(1, "database is locked") == ("archive", True)
     assert _classify(1, "HTTP 404 not found") == ("bad_url", False)
+    assert _classify(1, "gallery_dl.exception.ChallengeError: Cloudflare challenge") == (
+        "auth_challenge",
+        False,
+    )
+    assert _classify(1, 'GET /manga/title HTTP/1.1" 403') == ("auth_challenge", False)
+    assert _classify(1, "downloaded image 403.jpg") == ("backend", True)
 
 
 def test_manga18fx_output_parser_reads_chapter_and_completion_counts() -> None:
@@ -90,6 +96,7 @@ def test_gallery_command_uses_base_destination_and_shared_naming(tmp_path: Path)
         gallery_config=None,
         cookies=None,
         cookies_browser=None,
+        gallery_user_agent="Matching Browser UA",
         rate=None,
         url="https://nhentai.net/g/123/",
     )
@@ -98,6 +105,7 @@ def test_gallery_command_uses_base_destination_and_shared_naming(tmp_path: Path)
     assert "--directory" not in command
     assert f'directory=["{DIRECTORY_TEMPLATE}"]' in command
     assert f"filename={FILENAME_TEMPLATE}" in command
+    assert command[command.index("--user-agent") + 1] == "Matching Browser UA"
 
 
 def test_hdporncomics_command_forces_manhwa_and_uses_output_root(tmp_path: Path) -> None:
