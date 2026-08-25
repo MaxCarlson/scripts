@@ -11,7 +11,7 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from .hdporncomics_patch import patch_recovery_hint
 from .models import WorkerEvent
@@ -151,11 +151,49 @@ def _classify(returncode: int, tail: str) -> tuple[str, bool]:
         return "auth_challenge", False
     if "404" in lowered or "not found" in lowered:
         return "bad_url", False
-    if "timeout" in lowered or "connection" in lowered or "http error 5" in lowered:
+    server_status = re.search(
+        r"(?:http(?:/\d(?:\.\d)?)?|status(?: code)?|response)[^\n]{0,20}\b5\d\d\b"
+        r"|\b5\d\d\s+<[^>]*>[^\n]{0,20}\bfor\b",
+        lowered,
+    )
+    if (
+        "timeout" in lowered
+        or "connection" in lowered
+        or "http error 5" in lowered
+        or server_status
+    ):
         return "http", True
     if "permission" in lowered or "no space" in lowered or "disk full" in lowered:
         return "filesystem", False
     return ("backend", returncode != 0)
+
+
+def _gallery_naming_options(url: str) -> list[str]:
+    """Return only naming overrides whose extractor metadata is compatible.
+
+    The legacy templates are part of mangadl's nhentai/Kavita layout contract.
+    Applying them globally is unsafe: generic gallery-dl extractors use their
+    own metadata keys and native formats to keep pages and chapters distinct.
+    """
+    try:
+        from gallery_dl import extractor
+
+        selected = extractor.find(url)
+    except Exception:
+        return []
+    if selected is None or getattr(selected, "category", "") != "nhentai":
+        return []
+    return [
+        "--option",
+        f'directory=["{DIRECTORY_TEMPLATE}"]',
+        "--option",
+        f"filename={FILENAME_TEMPLATE}",
+    ]
+
+
+def _effective_gallery_returncode(backend: str, returncode: int, errors: Sequence[str]) -> int:
+    """Turn a zero exit with child-extractor errors into a failed job."""
+    return 1 if backend == "gallery-dl" and returncode == 0 and errors else returncode
 
 
 def _merge_partial(partial: Path, destination: Path) -> None:
@@ -164,7 +202,6 @@ def _merge_partial(partial: Path, destination: Path) -> None:
         target = destination / source.name
         if target.exists() and source.is_dir() and target.is_dir():
             _merge_partial(source, target)
-            source.rmdir()
         elif not target.exists():
             shutil.move(str(source), str(target))
         elif source.is_file():
@@ -233,13 +270,9 @@ def _command(args: argparse.Namespace, partial: Path) -> list[str]:
         "--verbose",
         "--destination",
         str(partial),
-        "--option",
-        f'directory=["{DIRECTORY_TEMPLATE}"]',
-        "--option",
-        f"filename={FILENAME_TEMPLATE}",
-        "--download-archive",
-        args.archive,
     ]
+    command.extend(_gallery_naming_options(args.url))
+    command.extend(["--download-archive", args.archive])
     if args.gallery_config:
         command.extend(["--config", args.gallery_config])
     if args.cookies:
@@ -267,6 +300,7 @@ def run(args: argparse.Namespace) -> int:
         site = "M18"
     samples: deque[tuple[float, int, int]] = deque([(started, size, images)], maxlen=30)
     tail: deque[str] = deque(maxlen=100)
+    gallery_errors: deque[str] = deque(maxlen=100)
     backend_progress: dict[str, Any] = {}
     backend_progress_lock = threading.Lock()
     _emit(args, "worker_ready", state="running", destination=str(output_root), backend=args.backend)
@@ -298,6 +332,8 @@ def run(args: argparse.Namespace) -> int:
                 raw.flush()
                 text = line.rstrip()
                 tail.append(text)
+                if args.backend == "gallery-dl" and "][error]" in text:
+                    gallery_errors.append(text)
                 if args.backend != "manga18fx":
                     continue
                 parsed = _parse_manga18fx_output(text)
@@ -374,6 +410,13 @@ def run(args: argparse.Namespace) -> int:
     with backend_progress_lock:
         final_progress = dict(backend_progress)
 
+    effective_returncode = _effective_gallery_returncode(args.backend, returncode, gallery_errors)
+    if effective_returncode != returncode:
+        # Queue-based gallery-dl extractors can exit zero after individual
+        # child extractors failed. A cover or one chapter is not a successful
+        # series completion, so preserve the partial tree and report failure.
+        returncode = effective_returncode
+
     if returncode == 0:
         manga18fx_downloaded = int(final_progress.get("downloaded", 0))
         manga18fx_skipped = int(final_progress.get("skipped", 0))
@@ -438,19 +481,25 @@ def run(args: argparse.Namespace) -> int:
         )
         return 0
 
+    # Keep the surrounding request lines for classification. The final
+    # ``[download][error]`` line often omits the preceding 429/5xx status.
     output = "\n".join(tail)
     category, retryable = _classify(returncode, output)
     hint = patch_recovery_hint(output) if args.backend == "hdporncomics" else None
     state = "failed_" + ("rate_limit" if category == "rate_limit" else category)
+    failure_message = hint or (
+        gallery_errors[-1] if gallery_errors else tail[-1] if tail else f"backend exited {returncode}"
+    )
     _emit(
         args,
         "job_retryable_failure" if retryable else "job_terminal_failure",
         state=state,
         category=category,
-        message=hint or tail[-1] if tail else f"backend exited {returncode}",
+        message=failure_message,
         returncode=returncode,
         images_done=images,
         bytes_done=size,
+        elapsed=time.monotonic() - started,
     )
     return returncode or 1
 

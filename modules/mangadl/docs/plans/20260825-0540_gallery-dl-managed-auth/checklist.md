@@ -39,3 +39,17 @@
 - [x] Add immediate and periodic refresh progress without secret output.
 - [x] Add focused tests, update docs/version, and run the full suite.
 - [x] Repeat user-controlled no-URL Chrome validation.
+
+## S5 — Generic Gallery-DL Output Integrity
+
+- [x] Reproduce the bad generic naming and HTTP 520 retry storm from raw logs.
+- [x] Prove the refreshed cookie + matching UA downloads one child extractor
+  with native gallery-dl naming (42 images, 1,300,372 bytes, 9.2 seconds).
+- [x] Restrict legacy gallery naming to compatible extractor metadata.
+- [x] Detect gallery-dl child-extractor errors even when its process exits 0.
+- [x] Add focused naming, embedded-error, HTTP 520, and merge-race tests.
+- [x] Run the full mangadl test suite (`146 passed`).
+- [x] Repeat a single-URL download through mangadl and verify 42 distinct
+  images (1,300,372 bytes, 3.7 seconds).
+- [x] Validate four same-domain workers with one bounded retry: 4/4 jobs,
+  702 images, 22,438,146 bytes, 11.9 seconds. No domain cap is required.

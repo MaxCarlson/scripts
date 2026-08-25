@@ -2,7 +2,7 @@
 
 Active branch: `agent/mangadl-gallery-auth`, based on `agent/unified`.
 
-Current version: `mangadl 1.14.0` on the active feature branch.
+Current version: `mangadl 1.14.1` on the active feature branch.
 
 Active planning records:
 
@@ -11,6 +11,7 @@ Active planning records:
 - [Managed gallery-dl auth stage 2](plans/20260825-0540_gallery-dl-managed-auth/02_browser-refresh-and-probe__implemented.md)
 - [Managed gallery-dl auth stage 3](plans/20260825-0540_gallery-dl-managed-auth/03_managed-runtime-retry__in-progress.md)
 - [Managed gallery-dl auth stage 4](plans/20260825-0540_gallery-dl-managed-auth/04_target-catalog-and-progress__planned.md)
+- [Managed gallery-dl auth stage 5](plans/20260825-0540_gallery-dl-managed-auth/05_gallery-dl-output-integrity__planned.md)
 - [Managed gallery-dl auth status](plans/20260825-0540_gallery-dl-managed-auth/STATUS.md)
 - [Managed gallery-dl auth checklist](plans/20260825-0540_gallery-dl-managed-auth/checklist.md)
 
@@ -29,7 +30,7 @@ The user confirmed live Manga18FX downloads and approximately 15-17 MiB/s aggreg
 
 The pre-existing Manga18FX local validation notes remain historical. Generic
 managed gallery-dl authentication S1-S4 is implemented and validated on this
-feature branch. Version 1.14.0 passes 143 tests. The no-URL refresh succeeded
-with visible progress and created the requested invocation-directory cookie
-file; the actual `urls20.txt` dry-run routed all 25 unique URLs to gallery-dl.
-Review/commit remains before the separate merge boundary.
+feature branch. S5 corrected the global naming override, embedded gallery-dl
+errors, HTTP retry classification, and concurrent partial-merge race exposed
+by the first real multi-URL run. Version 1.14.1 passes 146 tests; one-worker and
+four-worker live Mangakakalot downloads now complete with distinct images.

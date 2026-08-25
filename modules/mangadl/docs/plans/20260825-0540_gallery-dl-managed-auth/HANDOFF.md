@@ -4,7 +4,7 @@
 
 - Branch: `agent/mangadl-gallery-auth`
 - Base: `agent/unified` at `78f07e6`
-- Current stage: S4 complete; review/commit pending
+- Current stage: S5 complete; feature-branch publication authorized
 
 ## Current Evidence
 
@@ -36,8 +36,20 @@
   all 25 unique URLs to gallery-dl, with one duplicate and no unsupported URLs.
 - Version 1.14.0 is installed editable and `python -m pytest` passes with
   `143 passed`.
+- The first real `urls20.txt` run revealed that mangadl's global gallery-dl
+  naming override maps Mangakakalot pages to the same `None.webp` path. Four
+  simultaneous jobs subsequently received repeated HTTP 520 chapter errors.
+- After a fresh exact-target auth refresh, direct gallery-dl with native naming
+  and `--child-range 1` downloaded 42 distinct images (1,300,372 bytes) in 9.2
+  seconds. Cookies, matching UA, and the extractor are therefore confirmed;
+  the remaining defect is mangadl worker command/completion handling.
+- S5 fixes that defect and the concurrent merge race. The module suite passes
+  with 146 tests on version 1.14.1. A mangadl single-chapter run downloaded 42
+  distinct images (1,300,372 bytes) in 3.7 seconds, and a four-worker run with
+  one bounded retry completed 4/4 chapters (702 images, 22,438,146 bytes) in
+  11.9 seconds. A fixed same-domain cap is not required.
 
 ## Immediate Next Action
 
-Review the S4 diff, then stage/commit/push it when approved. Do not merge before
-the separate integration approval boundary.
+After publishing S5, switch to `main` as requested. Do not merge the feature
+branch before the separate integration approval boundary.

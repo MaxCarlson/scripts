@@ -8,6 +8,8 @@ from mangadl.naming import DIRECTORY_TEMPLATE, FILENAME_TEMPLATE
 from mangadl.worker import (
     _classify,
     _command,
+    _effective_gallery_returncode,
+    _gallery_naming_options,
     _manga18fx_completion,
     _merge_partial,
     _parse_manga18fx_output,
@@ -25,6 +27,22 @@ def test_tree_stats_and_merge_partial(tmp_path: Path) -> None:
     destination = tmp_path / "destination"
     _merge_partial(partial, destination)
     assert (destination / "nhentai" / "1 title" / "002.webp").exists()
+    assert not partial.exists()
+
+
+def test_merge_partial_handles_existing_nested_destination(tmp_path: Path) -> None:
+    partial = tmp_path / "partial"
+    source_chapter = partial / "mangakakalot" / "Series" / "c002"
+    source_chapter.mkdir(parents=True)
+    (source_chapter / "002.webp").write_bytes(b"new")
+    destination_chapter = tmp_path / "destination" / "mangakakalot" / "Series" / "c001"
+    destination_chapter.mkdir(parents=True)
+    (destination_chapter / "001.webp").write_bytes(b"old")
+
+    _merge_partial(partial, tmp_path / "destination")
+
+    assert (tmp_path / "destination" / "mangakakalot" / "Series" / "c001" / "001.webp").exists()
+    assert (tmp_path / "destination" / "mangakakalot" / "Series" / "c002" / "002.webp").exists()
     assert not partial.exists()
 
 
@@ -48,6 +66,14 @@ def test_failure_classification() -> None:
     )
     assert _classify(1, 'GET /manga/title HTTP/1.1" 403') == ("auth_challenge", False)
     assert _classify(1, "downloaded image 403.jpg") == ("backend", True)
+    assert _classify(1, "HttpError: '520 <none>' for chapter") == ("http", True)
+    assert _classify(1, "downloaded image 520.jpg") == ("backend", True)
+
+
+def test_gallery_child_errors_override_zero_process_exit() -> None:
+    assert _effective_gallery_returncode("gallery-dl", 0, ["[mangakakalot][error] HttpError: 520"]) == 1
+    assert _effective_gallery_returncode("gallery-dl", 0, []) == 0
+    assert _effective_gallery_returncode("manga18fx", 0, ["error text owned by another backend"]) == 0
 
 
 def test_manga18fx_output_parser_reads_chapter_and_completion_counts() -> None:
@@ -89,7 +115,7 @@ def test_manga18fx_completion_distinguishes_resume_from_empty_success() -> None:
         _manga18fx_completion(0, 0)
 
 
-def test_gallery_command_uses_base_destination_and_shared_naming(tmp_path: Path) -> None:
+def test_gallery_command_uses_base_destination_and_nhentai_naming(tmp_path: Path) -> None:
     args = Namespace(
         backend="gallery-dl",
         archive=str(tmp_path / "archive.db"),
@@ -106,6 +132,25 @@ def test_gallery_command_uses_base_destination_and_shared_naming(tmp_path: Path)
     assert f'directory=["{DIRECTORY_TEMPLATE}"]' in command
     assert f"filename={FILENAME_TEMPLATE}" in command
     assert command[command.index("--user-agent") + 1] == "Matching Browser UA"
+
+
+def test_gallery_command_preserves_mangakakalot_native_naming(tmp_path: Path) -> None:
+    args = Namespace(
+        backend="gallery-dl",
+        archive=str(tmp_path / "archive.db"),
+        gallery_config=None,
+        cookies=None,
+        cookies_browser=None,
+        gallery_user_agent="Matching Browser UA",
+        rate=None,
+        url="https://www.mangakakalot.gg/manga/like-no-other",
+    )
+
+    command = _command(args, tmp_path / "partial")
+
+    assert _gallery_naming_options(args.url) == []
+    assert not any(value.startswith("directory=") for value in command)
+    assert not any(value.startswith("filename=") for value in command)
 
 
 def test_hdporncomics_command_forces_manhwa_and_uses_output_root(tmp_path: Path) -> None:

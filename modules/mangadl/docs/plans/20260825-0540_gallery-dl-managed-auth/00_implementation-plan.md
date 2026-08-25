@@ -46,6 +46,11 @@ browser refresh for a recognized authentication challenge.
    discovery, persistent validated target URLs, a Mangakakalot default target,
    current-directory cookie exports, forced exact-target browser navigation,
    and periodic progress while browser verification is pending.
+5. **S5 — Generic gallery-dl output integrity:** preserve each extractor's
+   native naming unless an explicitly compatible site override is required,
+   reject partial-success exits that contain extractor errors, and prevent a
+   same-domain worker burst from turning an authenticated session into a long
+   sequence of per-chapter retries.
 
 ## Acceptance Criteria
 
@@ -65,6 +70,9 @@ browser refresh for a recognized authentication challenge.
 | AC-S4-003 | Missing target URLs trigger an actionable interactive prompt, and only URLs accepted by the selected gallery-dl site are persisted. | S4 |
 | AC-S4-004 | Refresh always opens the exact target in the selected browser and emits immediate plus periodic challenge/probe progress until success or timeout. | S4 |
 | AC-S4-005 | Generated cookie files default to `<domain>-cookies.txt` in the invocation directory unless `--cookie-file` overrides it. | S4 |
+| AC-S5-001 | Mangakakalot and other generic gallery-dl extractors retain their native directory/filename formats so distinct pages cannot collapse onto one path. | S5 |
+| AC-S5-002 | A gallery-dl exit that downloaded a cover or some pages but also reported extractor HTTP errors is not marked as a successful manga completion. | S5 |
+| AC-S5-003 | Live validation downloads multiple distinct images from one authenticated Mangakakalot child extractor without concurrent same-domain interference. | S5 |
 
 ## Deferred Secondary Fallback
 
