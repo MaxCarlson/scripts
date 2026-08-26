@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "saved-game-archiver"
+version = "1.0.0"
+description = "Automatic game save discovery, incremental archival, gameplay tracking, and terminal history visualization"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Max" }]
+license = { text = "MIT" }
+dependencies = [
+    "psutil>=5.9",
+    "PyYAML>=6.0",
+    "termdash>=0.5.0",
+    "watchdog>=4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+saved-game-archiver = "saved_game_archiver.application:main"
+sga = "saved_game_archiver.application:main"
+
+[tool.setuptools.packages.find]
+include = ["saved_game_archiver*"]
+exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+tmp_path_retention_policy = "none"
