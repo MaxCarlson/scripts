@@ -78,49 +78,69 @@ class ArchiveEngine:
         previous = {entry.identity: entry for entry in latest.entries} if latest else {}
         entries: list[ManifestEntry] = []
         bytes_added = 0
+        captured_at = iso_now()
+        pending: list[tuple[SaveSource, Path, str, bytes | None, int, int]] = []
         for source in game.save_sources:
             if not source.enabled:
                 continue
             for path, relative, raw_bytes, mtime_ns in self._iter_source_items(source):
-                identity = f"{source.id}:{relative}"
-                old = previous.get(identity)
                 size = len(raw_bytes) if raw_bytes is not None else path.stat().st_size
-                if raw_bytes is None and old and old.size == size and old.mtime_ns == mtime_ns:
-                    digest = old.blob_sha256
-                else:
-                    digest = hashlib.sha256(raw_bytes).hexdigest() if raw_bytes is not None else sha256_file_stable(
-                        path, self.file_stability_seconds
-                    )
-                blob = self._blob_path(digest)
-                if not blob.exists():
-                    blob.parent.mkdir(parents=True, exist_ok=True)
-                    if raw_bytes is not None:
-                        temp = blob.with_suffix(".tmp")
-                        temp.write_bytes(raw_bytes)
-                        os.replace(temp, blob)
-                    else:
-                        copy_file_stable(path, blob, self.file_stability_seconds)
-                    bytes_added += size
-                state_key = save_state_key(source.id, relative)
-                state_index = ensure_state_index(game, state_key)
-                created = iso_now()
-                extension = Path(relative).suffix or (".reg" if source.kind == "registry" else ".sav")
-                friendly = friendly_save_name(game.name, state_index, created, playtime_seconds or game.effective_playtime_seconds, relative, extension)
-                entries.append(
-                    ManifestEntry(
-                        source_id=source.id,
-                        relative_path=relative,
-                        blob_sha256=digest,
-                        size=size,
-                        mtime_ns=mtime_ns,
-                        state_key=state_key,
-                        state_index=state_index,
-                        original_name=Path(relative).name,
-                        friendly_name=friendly,
-                        captured_at=created,
-                        playtime_seconds=float(playtime_seconds if playtime_seconds is not None else game.effective_playtime_seconds),
-                    )
+                pending.append((source, path, relative, raw_bytes, mtime_ns, size))
+
+        # Preserve existing indices forever. For newly discovered states, assign indices in
+        # earliest-observed-save order rather than filesystem enumeration order.
+        first_seen_by_state: dict[str, tuple[int, str]] = {}
+        for source, _path, relative, _raw_bytes, mtime_ns, _size in pending:
+            state_key = save_state_key(source.id, relative)
+            if state_key in game.save_states or state_key in game.state_overrides:
+                continue
+            candidate = (mtime_ns, f"{source.id}:{relative}".casefold())
+            current = first_seen_by_state.get(state_key)
+            if current is None or candidate < current:
+                first_seen_by_state[state_key] = candidate
+        for state_key, _ in sorted(first_seen_by_state.items(), key=lambda item: (item[1][0], item[1][1], item[0])):
+            ensure_state_index(game, state_key)
+
+        for source, path, relative, raw_bytes, mtime_ns, size in pending:
+            identity = f"{source.id}:{relative}"
+            old = previous.get(identity)
+            if raw_bytes is None and old and old.size == size and old.mtime_ns == mtime_ns:
+                digest = old.blob_sha256
+            else:
+                digest = hashlib.sha256(raw_bytes).hexdigest() if raw_bytes is not None else sha256_file_stable(
+                    path, self.file_stability_seconds
                 )
+            blob = self._blob_path(digest)
+            if not blob.exists():
+                blob.parent.mkdir(parents=True, exist_ok=True)
+                if raw_bytes is not None:
+                    temp = blob.with_suffix(".tmp")
+                    temp.write_bytes(raw_bytes)
+                    os.replace(temp, blob)
+                else:
+                    copy_file_stable(path, blob, self.file_stability_seconds)
+                bytes_added += size
+            state_key = save_state_key(source.id, relative)
+            state_index = ensure_state_index(game, state_key)
+            extension = Path(relative).suffix or (".reg" if source.kind == "registry" else ".sav")
+            friendly = friendly_save_name(
+                game.name, state_index, captured_at, playtime_seconds or game.effective_playtime_seconds, relative, extension
+            )
+            entries.append(
+                ManifestEntry(
+                    source_id=source.id,
+                    relative_path=relative,
+                    blob_sha256=digest,
+                    size=size,
+                    mtime_ns=mtime_ns,
+                    state_key=state_key,
+                    state_index=state_index,
+                    original_name=Path(relative).name,
+                    friendly_name=friendly,
+                    captured_at=captured_at,
+                    playtime_seconds=float(playtime_seconds if playtime_seconds is not None else game.effective_playtime_seconds),
+                )
+            )
         entries.sort(key=lambda item: item.identity.casefold())
         current_hashes = {entry.identity: entry.blob_sha256 for entry in entries}
         previous_hashes = {entry.identity: entry.blob_sha256 for entry in previous.values()}
@@ -138,7 +158,7 @@ class ArchiveEngine:
         manifest = SnapshotManifest(
             snapshot_id=snapshot_id,
             game_id=game.id,
-            created_at=iso_now(),
+            created_at=captured_at,
             reason=reason,
             playtime_seconds=float(playtime_seconds if playtime_seconds is not None else game.effective_playtime_seconds),
             session_id=session_id,
