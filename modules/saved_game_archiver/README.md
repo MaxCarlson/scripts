@@ -1,3 +1,4 @@
+<!-- version: 1.0.0 -->
 # Saved Game Archiver
 
 `Saved Game Archiver` (SGA) discovers Steam and non-Steam games, resolves save locations, tracks gameplay sessions/playtime, and stores every **distinct stable save state** in a content-addressed archive.
