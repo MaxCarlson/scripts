@@ -131,3 +131,24 @@ def test_friendly_name_keeps_requested_prefix_and_collision_suffix() -> None:
     name = friendly_save_name("My:Game", 2, "2026-08-25T20:00:00+00:00", 90, "char/auto01.sav", ".sav")
     assert name.startswith("My_Game_2_")
     assert name.endswith("__auto01.sav")
+
+
+def test_initial_state_indices_follow_earliest_observed_save_timestamp(tmp_path: Path) -> None:
+    import os
+
+    game, save = make_game(tmp_path)
+    later = save / "ZLater"
+    earlier = save / "AEarlier"
+    later.mkdir(); earlier.mkdir()
+    later_file = later / "slot.sav"
+    earlier_file = earlier / "slot.sav"
+    later_file.write_bytes(b"later")
+    earlier_file.write_bytes(b"earlier")
+    os.utime(earlier_file, ns=(1_000_000_000, 1_000_000_000))
+    os.utime(later_file, ns=(2_000_000_000, 2_000_000_000))
+    engine = ArchiveEngine(tmp_path / "archive", file_stability_seconds=0)
+    capture = engine.capture_game(game, reason="manual")
+    manifest = engine.load_manifest(game.id, capture.snapshot_id or "")
+    by_state = {entry.state_key: entry.state_index for entry in manifest.entries}
+    assert by_state["src:aearlier"] == 0
+    assert by_state["src:zlater"] == 1
