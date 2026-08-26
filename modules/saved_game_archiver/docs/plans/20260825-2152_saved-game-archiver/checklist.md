@@ -1,0 +1,34 @@
+# Checklist
+
+- [x] Persistent JSON config and catalog.
+- [x] Append-only event history.
+- [x] Configured game-root discovery.
+- [x] Steam library/app manifest discovery.
+- [x] Steam local playtime import.
+- [x] Executable scoring and manual overrides.
+- [x] Ludusavi filesystem/registry resolution.
+- [x] Steam userdata fallback.
+- [x] First-launch/session-write save-path correlation.
+- [x] Stable logical save-state indices with manual correction.
+- [x] SHA-256 content-addressed incremental archive.
+- [x] No-change snapshot suppression.
+- [x] Deletion history.
+- [x] Running-game change focus and periodic safety rates.
+- [x] Session/playtime recording.
+- [x] Exit checkpoint pinning.
+- [x] GFS + gameplay-cycle + exit retention layers.
+- [x] Safe latest/history export.
+- [x] Stats overview/detail/timelines/playtime/hour-of-day views.
+- [x] Doctor audit.
+- [x] TermDash live watcher adapter.
+- [x] OS scheduler plan/reconciliation layer.
+- [x] Backup-framework post-snapshot hooks.
+- [x] Unit/integration tests in sandbox.
+- [ ] Publish coherent feature commit to `agent/add-saved-game-archiver`.
+- [ ] Add scripts-help registry entry.
+- [ ] Add repository validation target.
+- [ ] Run root Windows validation and commit `LATEST.txt` evidence.
+- [ ] Perform isolated Task Scheduler acceptance.
+- [ ] Validate one real Steam and one real non-Steam game through start/save/exit.
+- [ ] User acceptance.
+- [ ] Merge to `main`.
