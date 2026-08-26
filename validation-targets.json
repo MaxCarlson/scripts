@@ -293,6 +293,139 @@
                     ]
                 }
             ]
+        },
+        "saved-game-archiver": {
+            "description": "Saved Game Archiver discovery, incremental save protection, gameplay tracking, retention, and timeline validation.",
+            "working_directory": "modules/saved_game_archiver",
+            "context_files": [
+                "docs/plans/20260825-2152_saved-game-archiver/STATUS.md",
+                "docs/plans/20260825-2152_saved-game-archiver/checklist.md",
+                "docs/plans/20260825-2152_saved-game-archiver/00_implementation-plan.md"
+            ],
+            "environment": {
+                "PYTHONUTF8": "1",
+                "PYTHONUNBUFFERED": "1",
+                "PY_COLORS": "1",
+                "PYTHONPATH": "{target_root}"
+            },
+            "bootstrap": [
+                {
+                    "name": "Clean stale Saved Game Archiver and TermDash editable metadata",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-c",
+                        "import shutil; from pathlib import Path; roots=[Path(r'{target_root}'), Path(r'{repo_root}')/'modules'/'termdash']; targets=[]; [targets.extend(list(root.glob('*.egg-info'))+[root/'build', root/'dist']) for root in roots]; [shutil.rmtree(str(path), ignore_errors=True) for path in targets if path.exists()]"
+                    ]
+                },
+                {
+                    "name": "Uninstall prior Saved Game Archiver entry points",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "pip",
+                        "uninstall",
+                        "-y",
+                        "saved-game-archiver"
+                    ]
+                },
+                {
+                    "name": "Install shared TermDash dependency",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "pip",
+                        "install",
+                        "--disable-pip-version-check",
+                        "--no-build-isolation",
+                        "-e",
+                        "{repo_root}/modules/termdash"
+                    ]
+                },
+                {
+                    "name": "Install Saved Game Archiver editable development dependencies",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "pip",
+                        "install",
+                        "--disable-pip-version-check",
+                        "--no-build-isolation",
+                        "-e",
+                        "{target_root}[dev]"
+                    ]
+                }
+            ],
+            "commands": [
+                {
+                    "name": "Compile Saved Game Archiver package and tests",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "compileall",
+                        "-q",
+                        "saved_game_archiver",
+                        "tests"
+                    ]
+                },
+                {
+                    "name": "Lint Saved Game Archiver package and tests",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "ruff",
+                        "check",
+                        "--select",
+                        "E4,E7,E9,F821,F822,F823",
+                        "saved_game_archiver",
+                        "tests"
+                    ]
+                },
+                {
+                    "name": "Saved Game Archiver CLI help contract",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "saved_game_archiver",
+                        "--help"
+                    ]
+                },
+                {
+                    "name": "Saved Game Archiver pytest and coverage suite",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "pytest",
+                        "tests",
+                        "-vv",
+                        "-ra",
+                        "--color=yes",
+                        "--tb=short",
+                        "--durations=25",
+                        "--strict-config",
+                        "--strict-markers",
+                        "--import-mode=importlib",
+                        "--rootdir",
+                        "{target_root}",
+                        "--basetemp",
+                        "{temp_root}",
+                        "--cov=saved_game_archiver",
+                        "--cov-branch",
+                        "--cov-report=term-missing"
+                    ]
+                }
+            ],
+            "powershell_tests": [
+                {
+                    "glob": "tests/powershell/*_test.ps1",
+                    "arguments": [
+                        "-RepoRoot",
+                        "{repo_root}",
+                        "-PythonExecutable",
+                        "{python}",
+                        "-IncludeProductionReadOnly:{include_production_read_only_bool}"
+                    ]
+                }
+            ]
         }
     }
 }
