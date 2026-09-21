@@ -4,7 +4,8 @@
 
 - Branch: `agent/mangadl-gallery-auth`
 - Base: `agent/unified` at `78f07e6`
-- Current stage: S6 in progress for destination-root layout and failed live-run acceptance remediation
+- Current stage: S6 code and bounded layout/TUI acceptance complete; stricter
+  S7 dependency acceptance remains
 
 ## Current Evidence
 
@@ -63,11 +64,16 @@
   `-J/--json` is explicit; browser refresh runs outside the dashboard loop and
   same-domain challenge jobs wait for its result. The full suite passes with
   158 tests, compile and Ruff pass, and local dry-runs create no control files.
-- Exact offline commands and results are recorded in `STATUS.md`. The only
-  remaining S6 gate is the user's bounded live validation: cookie refresh,
-  one URL, then a short multi-worker URL-file observation.
+- Version 1.17.0 passes 182 tests plus compile and Ruff. A live isolated
+  chapter-0 run downloaded 42 distinct images (1,300,372 bytes) directly under
+  `Like No Other\c000`; a separate live TTY run switched among activity log,
+  raw backend log, and worker view while downloading and completed successfully.
+- Exact commands and results are recorded in `STATUS.md`. S7's stricter
+  dependency still requires a complete-series and current multi-worker
+  URL-file acceptance run.
 
 ## Immediate Next Action
 
-Have the user live-validate the expanded S6, then publish its coherent patch. Do not merge
-the feature branch before the separate integration approval boundary.
+Finish the remaining S7 dependency acceptance or explicitly defer S7, then
+review the integration branch. Do not merge before the separate final approval
+boundary.

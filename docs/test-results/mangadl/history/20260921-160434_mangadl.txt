@@ -3,7 +3,7 @@
 ====================================================================================================
 VALIDATION TARGET: mangadl
 ====================================================================================================
-Timestamp: 2026-09-21T16:48:07.5764472-07:00
+Timestamp: 2026-09-21T16:04:34.6050360-07:00
 Description: Mangadl guarded collection routing, resumable partial ownership, cleanup, and dashboard validation.
 Repository root: C:\Users\mcarls\src\scripts
 Working directory: C:\Users\mcarls\src\scripts\modules\mangadl
@@ -14,16 +14,25 @@ Bootstrap enabled: False
 Production read-only checks: False
 History retention: 3 prior runs, maximum age 14 days
 Git branch: agent/mangadl-gallery-auth
-Git commit: 8f0d2d83abfc22c36d91d25ce2f7f96ab6c22adb
+Git commit: 33d0b0abc81a39677097f2f4bbc24b6f5aa95a9b
 Git status before validation:
- M modules/mangadl/docs/HANDOFF.md
- M modules/mangadl/docs/plans/20260825-0540_gallery-dl-managed-auth/HANDOFF.md
- M modules/mangadl/docs/plans/20260825-0540_gallery-dl-managed-auth/STATUS.md
- M modules/mangadl/docs/plans/20260825-0540_gallery-dl-managed-auth/checklist.md
- M modules/mangadl/docs/plans/20260921-0943_partial-safety-and-merge-readiness/HANDOFF.md
+ M modules/mangadl/README.md
+ M modules/mangadl/__init__.py
+ M modules/mangadl/docs/plans/20260921-0943_partial-safety-and-merge-readiness/00_implementation-plan.md
  M modules/mangadl/docs/plans/20260921-0943_partial-safety-and-merge-readiness/STATUS.md
  M modules/mangadl/docs/plans/20260921-0943_partial-safety-and-merge-readiness/checklist.md
- M modules/mangadl/docs/plans/HANDOFF.md
+ M modules/mangadl/mangadl/__init__.py
+ M modules/mangadl/mangadl/cli_core.py
+ M modules/mangadl/mangadl/partial_safety.py
+ M modules/mangadl/pyproject.toml
+ M modules/mangadl/tests/cli_test.py
+ M modules/mangadl/tests/partial_safety_test.py
+ M modules/scripts_help/scripts_help/registry/registry.py
+?? modules/mangadl/docs/plans/20260921-0943_partial-safety-and-merge-readiness/03_interactive-cleanup-and-legacy-reconciliation__implemented.md
+?? modules/mangadl/mangadl/partial_reconcile.py
+?? modules/mangadl/mangadl/partial_ui.py
+?? modules/mangadl/tests/partial_reconcile_test.py
+?? modules/mangadl/tests/partial_ui_test.py
 
 ====================================================================================================
 Compile mangadl package and tests
@@ -75,7 +84,7 @@ RESULT: PASS - Mangadl CLI help contract
 Mangadl pytest suite
 ====================================================================================================
 Working directory: C:\Users\mcarls\src\scripts\modules\mangadl
-Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest tests -q --strict-config --strict-markers --basetemp C:\Users\mcarls\src\scripts\modules\mangadl\.pytest_tmp_root\validation-20260921-164807
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest tests -q --strict-config --strict-markers --basetemp C:\Users\mcarls\src\scripts\modules\mangadl\.pytest_tmp_root\validation-20260921-160434
 [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m [ 39%]
 [0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m [ 79%]
 [0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m                                   [100%][0m
@@ -94,17 +103,23 @@ Git status after validation:
  M docs/test-results/mangadl/LATEST.txt
  D docs/test-results/mangadl/LATEST_CONTEXT.md
  D docs/test-results/mangadl/LATEST_PROGRESS.diff
- D docs/test-results/mangadl/history/20260921-100720_mangadl.txt
- D docs/test-results/mangadl/history/20260921-100720_mangadl_context.md
- D docs/test-results/mangadl/history/20260921-100720_mangadl_progress.diff
- M modules/mangadl/docs/HANDOFF.md
- M modules/mangadl/docs/plans/20260825-0540_gallery-dl-managed-auth/HANDOFF.md
- M modules/mangadl/docs/plans/20260825-0540_gallery-dl-managed-auth/STATUS.md
- M modules/mangadl/docs/plans/20260825-0540_gallery-dl-managed-auth/checklist.md
- M modules/mangadl/docs/plans/20260921-0943_partial-safety-and-merge-readiness/HANDOFF.md
+ M modules/mangadl/README.md
+ M modules/mangadl/__init__.py
+ M modules/mangadl/docs/plans/20260921-0943_partial-safety-and-merge-readiness/00_implementation-plan.md
  M modules/mangadl/docs/plans/20260921-0943_partial-safety-and-merge-readiness/STATUS.md
  M modules/mangadl/docs/plans/20260921-0943_partial-safety-and-merge-readiness/checklist.md
- M modules/mangadl/docs/plans/HANDOFF.md
-?? docs/test-results/mangadl/history/20260921-160434_mangadl.txt
-?? docs/test-results/mangadl/history/20260921-160434_mangadl_context.md
-?? docs/test-results/mangadl/history/20260921-160434_mangadl_progress.diff
+ M modules/mangadl/mangadl/__init__.py
+ M modules/mangadl/mangadl/cli_core.py
+ M modules/mangadl/mangadl/partial_safety.py
+ M modules/mangadl/pyproject.toml
+ M modules/mangadl/tests/cli_test.py
+ M modules/mangadl/tests/partial_safety_test.py
+ M modules/scripts_help/scripts_help/registry/registry.py
+?? docs/test-results/mangadl/history/20260921-104414_mangadl.txt
+?? docs/test-results/mangadl/history/20260921-104414_mangadl_context.md
+?? docs/test-results/mangadl/history/20260921-104414_mangadl_progress.diff
+?? modules/mangadl/docs/plans/20260921-0943_partial-safety-and-merge-readiness/03_interactive-cleanup-and-legacy-reconciliation__implemented.md
+?? modules/mangadl/mangadl/partial_reconcile.py
+?? modules/mangadl/mangadl/partial_ui.py
+?? modules/mangadl/tests/partial_reconcile_test.py
+?? modules/mangadl/tests/partial_ui_test.py

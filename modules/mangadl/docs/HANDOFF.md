@@ -33,27 +33,21 @@ Implemented scope includes the native Manga18FX backend; destination-aware resum
 
 The user confirmed live Manga18FX downloads and approximately 15-17 MiB/s aggregate throughput with four outer workers. A fifth outer worker saturates the current destination disk and remains outside the safe default ceiling.
 
-The pre-existing Manga18FX local validation notes remain historical. Generic
-managed gallery-dl authentication S1-S4 is implemented and validated on this
-feature branch. S5 corrected the global naming override, embedded gallery-dl
-errors, HTTP retry classification, and concurrent partial-merge race exposed
-by the first real multi-URL run. Version 1.14.1 passes 146 tests; one-worker and
-four-worker live Mangakakalot downloads now complete with distinct images. S6
-is active to remove gallery-dl's category wrapper during the final merge so
-series folders live directly inside the selected destination. The latest
-25-URL manual acceptance run additionally exposed blocking TUI auth refresh,
-stale same-domain worker credentials after replacement, inconvenient required
-control-path arguments, and raw-JSON-only dry-run output; these are now part of
-the active S6 completion boundary. The code remediation now passes 158 offline
-tests plus compile/Ruff and local no-write dry-run checks; user-controlled live
-acceptance remains pending.
+The pre-existing Manga18FX local validation notes remain historical. Managed
+gallery-dl authentication S1-S5 is implemented and validated on this feature
+branch. S6 removes gallery-dl's category wrapper during successful merge,
+places control paths under the destination by default, provides human-readable
+dry-run output, and coordinates auth refresh without blocking the dashboard.
+The bounded S6 live layout and TUI acceptance now passes. S7 remains planned
+behind its stricter complete-series and current multi-worker gates.
 
-Version 1.16 adds a default refusal for broad gallery-dl collection URLs with
+Version 1.16 added a default refusal for broad gallery-dl collection URLs with
 an explicit `-G/--allow-collection` opt-in. New partials contain versioned
 ownership metadata and exact archive-key/path manifests. `mangadl partials
 clean` previews archive-aware cleanup and applies it only with `--apply`, with
-archive deletion ordered before filesystem deletion. Legacy partials are
-refused unless the user explicitly selects files-only cleanup. The dashboard's
+archive deletion ordered before filesystem deletion. Legacy partials require
+URL recovery or an explicit URL override for archive reconciliation, or an
+explicit files-only cleanup. The dashboard's
 raw-log view now reads a bounded file suffix rather than rereading the entire
 log every refresh, addressing the concrete full-UI freeze path found in the
 September 21 run.
@@ -69,16 +63,20 @@ no-download gallery-dl metadata pass, and delete matching rows from an explicit
 archive before deleting files. It refuses active/recently changing trees and
 rechecks the preview fingerprint immediately before archive mutation.
 
-The live `fc7c3b753cc0` investigation found gallery-dl PIDs 30028/14992 still
-running the broad collection after the manager had been interrupted. The real
-tree grew from the user's 35,276-file preview to more than 36,700 files during
-read-only inspection. Cleanup correctly refuses it as recently active; no
-`B:` archive, state, or partial data was changed.
+The live `fc7c3b753cc0` investigation originally found gallery-dl PIDs
+30028/14992 still running the broad collection after the manager had been
+interrupted. Those processes have since stopped. A final read-only files-only
+preview reported 41,957 files and 17,073,852,121 bytes; no `B:` archive, state,
+or partial data was changed. Version 1.17 can now recover this legacy owner's
+URL and reconstruct exact archive keys when an explicit archive is supplied,
+so files-only cleanup is no longer the only available path.
 
-The 1.16 baseline merge-readiness evidence is green at 170 tests plus compile,
-Ruff, CLI help, and the repository `mangadl` validation target. The 1.17 full
-validation result is recorded in the active stage status. The remaining boundary is
-manual: live-check one normal gallery-dl series for destination-root layout and
-responsive log controls. Staging, commit, push, and continued integration work
-were approved on 2026-09-21; final merge still requires review. S7 remains
-blocked on the existing S6 live acceptance.
+The 1.17 merge-readiness baseline is green at 182 tests plus compile and Ruff.
+Live acceptance on 2026-09-21 downloaded chapter 0 as 42 distinct images
+(1,300,372 bytes) directly under `Like No Other\c000`, with no category
+wrapper. A second live TTY run proved activity-log, raw-log, and worker-view
+switching remained responsive while downloading. The repository `mangadl`
+dispatcher target also passes at 182 tests. Staging, commit,
+push, and continued integration work were approved on 2026-09-21; final merge
+still requires review and explicit approval. S7 remains blocked on its stricter
+complete-series and current multi-worker acceptance gates.

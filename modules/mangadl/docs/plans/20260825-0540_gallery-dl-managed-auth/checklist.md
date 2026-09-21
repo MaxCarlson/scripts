@@ -64,7 +64,7 @@
 - [x] Keep auth-refresh and transient retry budgets independent.
 - [x] Add focused output-layout and regression tests.
 - [x] Run the full mangadl test suite and synchronize the feature version.
-- [ ] Live-validate direct series folders under a selected destination.
+- [x] Live-validate direct series folders under a selected destination.
 - [x] Default archive/state/logs beneath `<destination>/.mangadl` while
   preserving explicit overrides.
 - [x] Replace default dry-run JSON with a concise human report; keep explicit

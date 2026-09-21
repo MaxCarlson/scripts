@@ -2,48 +2,51 @@
 
 ## State
 
-S4 interactive cleanup and legacy archive reconciliation is now active after
-the user extended the merge boundary. The previously committed baseline passed
-(`158 passed`). Source/log evidence shows
-the accidental download was a valid broad collection expansion, not a worker
-loop. The dashboard has a separate unbounded whole-log read on each render.
+S4 interactive cleanup and legacy archive reconciliation is implemented. The
+accidental download was a valid broad collection expansion, not a worker loop.
+The broad-collection guard, bounded dashboard log reader, interactive partial
+browser, and archive-aware legacy reconciliation are all present in 1.17.0.
 
 ## Documentation Freshness
 
-Score: **0/100 (healthy)** for 1.16.0 scope: README, project/plan handoffs,
-status, checklist, CLI behavior, and version sources are synchronized. The root
-validation manifest includes a mangadl target and its dispatcher run passes.
-
-Alert/task: the new interactive UI and legacy reconciliation behavior must be
-documented in README and handoffs and versioned before the next commit. S4 and
-its checklist are the concrete documentation task.
+Score: **0/100 (healthy)** after this sync. Before correction it was **60/100
+(needs review)** because README and code described 1.17.0 while project/plan
+handoffs and validation counts still described the 1.16.0 baseline.
 
 ## Verification
 
 - `python -m ruff check mangadl tests`: pass.
 - `python -m compileall -q mangadl tests`: pass.
-- `python -m pytest tests -q`: **170 passed**.
+- `python -m pytest tests -q`: **182 passed** after the original stashed S4
+  implementation was restored.
 - `pwsh -NoProfile -File .\Invoke-Tests.ps1 -Target mangadl`: pass with
   editable dependency/package installs, compile, Ruff, CLI help, and 169 tests
   at that checkpoint.
 - `pwsh -NoProfile -File .\Invoke-Tests.ps1 -Target mangadl -SkipBootstrap`:
-  pass after the final CLI regression test, **170 passed**.
+  pass on the final 1.17.0 tree, **182 passed**, including compile, Ruff, and
+  CLI help contract checks.
 - Scripts-help registry tests: **42 passed** with basetemp
   `modules/mangadl/.pytest_tmp_root/scripts-help-registry`. Two earlier
   invocations without a known-writable basetemp failed before tests with
   `WinError 5`; no assertion failed.
 - `git diff --check` and `git diff --cached --check`: pass, with only Git's
   existing LF-to-CRLF checkout warnings.
-- Live-data read-only preview:
+- Latest live-data read-only preview:
   `mangadl partials clean -d B:\Hent\tmphent3 -t fc7c3b753cc0 -F -j`
-  reported 34,220 files and 13,694,065,861 bytes; status remained `dry-run`,
-  with zero archive mutation because this legacy partial has no manifest.
+  reported 41,957 files and 17,073,852,121 bytes; status remained `dry-run`
+  and no archive was supplied or mutated.
+- Live network acceptance downloaded chapter 0 into an isolated destination:
+  42 distinct images, 1,300,372 bytes, all under `Like No Other\c000`, with no
+  gallery-dl category wrapper.
+- A live TTY chapter run accepted `l`, `r`, and `l` while downloading, moving
+  through activity log, raw backend log, and the worker view without freezing;
+  the run completed successfully.
 
 ## Next Action
 
-User-run live acceptance remains: one ordinary gallery-dl series should confirm
-direct destination-root layout plus responsive TUI/raw-log switching. The
-legacy accidental partial can be previewed with `--files-only`, but applying
-that deletion and any archive repair remains an explicit user decision. S7
-input-wide auth preflight is still blocked on the pre-existing S6 acceptance.
-No live `B:` download, archive, state, or partial data has been mutated.
+The ordinary gallery-dl layout and responsive TUI/raw-log checks now pass. The
+legacy accidental partial can be reconciled against an explicit archive or
+cleaned with `--files-only`, but applying either deletion remains an explicit
+user decision. S7 input-wide auth preflight remains blocked on its stricter S6
+dependency gate: a complete series and a current multi-worker URL-file run.
+No live `B:` archive, state, or partial data has been mutated.

@@ -29,10 +29,13 @@ and workers 2-4 continued downloading, so this was a coordination/display
 failure rather than lost work. S6 now includes that remediation plus
 destination-local control-path defaults and human-readable dry-run output.
 The remediation was implemented in version 1.15.0 and is included in the
-current 1.16.0 partial-safety release candidate. The full offline suite passes
-with 169 tests; compile and Ruff pass; local human and JSON dry-runs route the
-Mangakakalot target without creating the destination control directory. Live
-single-URL and multi-worker acceptance remain user-controlled and pending.
+current 1.17.0 partial-safety release candidate. The full offline suite passes
+with 182 tests; compile and Ruff pass; local human and JSON dry-runs route the
+Mangakakalot target without creating the destination control directory. A live
+chapter-0 run now confirms direct destination-root layout, and a live TTY run
+confirms responsive activity/raw-log/worker view switching. The stricter S7
+dependency checks for a complete series and a current multi-worker URL file
+remain pending.
 
 Exact verification commands:
 
@@ -45,8 +48,8 @@ mangadl run config -u 'https://www.mangakakalot.gg/manga/like-no-other' -d 'C:\t
 mangadl run config -u 'https://www.mangakakalot.gg/manga/like-no-other' -d 'C:\tmp\mangadl-dry-run-output' -n -J
 ```
 
-Current combined results: `169 passed`; compile exit 0; Ruff `All checks passed!`;
-`mangadl 1.16.0`; both dry-runs exit 0; no destination `.mangadl` directory
+Current combined results: `182 passed`; compile exit 0; Ruff `All checks passed!`;
+`mangadl 1.17.0`; both dry-runs exit 0; no destination `.mangadl` directory
 was created.
 
 Additional offline integrations prove that two same-domain jobs share exactly
@@ -57,9 +60,9 @@ path from `-d` without shell variables.
 
 ## Next Action
 
-User-validate the expanded S6 acceptance remediation. The feature remains
-unmerged pending this acceptance requirement and the existing integration
-boundary.
+Run the remaining complete-series and current multi-worker checks before S7.
+The feature remains unmerged pending the existing integration boundary and
+explicit final merge approval.
 
 S7 input-wide authentication preflight is planned but explicitly blocked on
 S6 live acceptance. It will deduplicate and route the complete input, group

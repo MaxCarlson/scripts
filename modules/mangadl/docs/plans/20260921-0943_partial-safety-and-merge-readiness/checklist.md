@@ -30,8 +30,8 @@
 
 ## Manual Acceptance and Integration (Not Yet Approved)
 
-- [ ] Live-validate one normal gallery-dl series into a disposable destination.
-- [ ] Confirm direct destination-root layout and responsive TUI/log switching.
+- [x] Live-validate one normal gallery-dl chapter into a disposable destination.
+- [x] Confirm direct destination-root layout and responsive TUI/log switching.
 - [x] Preview legacy cleanup for `fc7c3b753cc0` without mutation.
 - [ ] Apply legacy cleanup only on explicit user decision.
 - [x] Obtain approval to stage/commit/push the partial-safety work.
@@ -51,4 +51,4 @@
 - [x] Keep explicit target and `--files-only` CLI behavior compatible.
 - [x] Refuse active/changing targets and recheck the preview fingerprint at apply.
 - [x] Add focused UI/model/reconciliation/CLI tests.
-- [ ] Update README, handoffs, status, version, and validation evidence.
+- [x] Update README, handoffs, status, version, and validation evidence.
