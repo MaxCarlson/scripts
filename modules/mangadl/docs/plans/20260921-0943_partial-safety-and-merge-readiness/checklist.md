@@ -36,3 +36,13 @@
 - [ ] Apply legacy cleanup only on explicit user decision.
 - [x] Obtain approval to stage/commit/push the partial-safety work.
 - [ ] Complete the existing integration-branch and final-merge approvals.
+
+## S4 - Interactive Cleanup and Legacy Reconciliation
+
+- [x] Open a browse/sort/multi-select cleanup UI when no target is supplied.
+- [x] Display URL, ownership, archive, and active gallery-dl details.
+- [x] Recover legacy owner URLs from state or validated overrides.
+- [x] Reconstruct no-download archive keys and delete matching rows first.
+- [x] Refuse active/changing, ambiguous, nested, and empty-key cleanup.
+- [x] Preserve explicit-target and files-only compatibility.
+- [x] Add focused tests and update docs/version metadata.

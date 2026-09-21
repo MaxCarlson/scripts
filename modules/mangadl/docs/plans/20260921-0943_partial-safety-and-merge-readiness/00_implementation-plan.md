@@ -32,6 +32,9 @@ to integrate `agent/mangadl-gallery-auth`.
 3. **S3 - Merge readiness:** update user/handoff documentation, add mangadl to
    the root validation manifest, run focused/full/dispatcher validation, and
    inventory remaining live acceptance and integration approvals.
+4. **S4 - Interactive cleanup and legacy reconciliation:** optional targets
+   open a multi-select tree UI; legacy owners recover their URLs and exact
+   gallery-dl archive keys before archive-consistent deletion.
 
 ## Acceptance Criteria
 

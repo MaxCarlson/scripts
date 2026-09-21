@@ -117,7 +117,7 @@ def test_active_and_legacy_partials_require_explicit_safe_handling(tmp_path: Pat
     legacy = destination / "_partial" / "legacy"
     legacy.mkdir()
     (legacy / "001.jpg").write_bytes(b"image")
-    with pytest.raises(ValueError, match="legacy/untracked"):
+    with pytest.raises(ValueError, match="explicit archive and URL reconciliation"):
         plan_cleanup(destination, ["legacy"])
     _, targets = plan_cleanup(destination, ["legacy"], files_only=True)
     assert targets[0].files_only
@@ -145,3 +145,57 @@ def test_partial_cannot_switch_archives_after_manifest_has_entries(tmp_path: Pat
             attempt_id="attempt-two",
             worker=1,
         )
+
+
+def test_legacy_owner_can_remove_reconstructed_archive_keys(tmp_path: Path) -> None:
+    destination = tmp_path / "library"
+    owner = destination / "_partial" / "legacy-owner"
+    owner.mkdir(parents=True)
+    (owner / "001.jpg").write_bytes(b"image")
+    archive = tmp_path / "archive.sqlite3"
+    _archive(archive, ("legacy-key", "unrelated"))
+    _root, targets = plan_cleanup(destination, [str(owner)], archive_override=archive, legacy_archive_keys={owner.resolve(): {"legacy-key"}})
+    result = apply_cleanup(targets, backup=False)
+    assert result["removed_archive_entries"] == 1 and _keys(archive) == {"unrelated"} and not owner.exists()
+
+
+def test_legacy_reconciliation_refuses_nested_target(tmp_path: Path) -> None:
+    destination = tmp_path / "library"
+    owner = destination / "_partial" / "legacy-owner"
+    nested = owner / "nested"
+    nested.mkdir(parents=True)
+    archive = tmp_path / "archive.sqlite3"
+    _archive(archive, ("legacy-key",))
+    with pytest.raises(ValueError, match="whole partial owner"):
+        plan_cleanup(destination, [str(nested)], archive_override=archive, legacy_archive_keys={owner.resolve(): {"legacy-key"}})
+
+
+def test_cleanup_refuses_gallery_process_writing_selected_owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    destination = tmp_path / "library"
+    owner = destination / "_partial" / "legacy-owner"
+    owner.mkdir(parents=True)
+    (owner / "001.jpg").write_bytes(b"image")
+    monkeypatch.setattr(partial_safety, "_process_commands", lambda: ((1234, f"python -m gallery_dl --destination {owner}"),))
+    with pytest.raises(ValueError, match=r"gallery-dl PID\(s\) 1234"):
+        plan_cleanup(destination, [str(owner)], files_only=True)
+
+
+def test_cleanup_refuses_recent_activity_in_legacy_owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    destination = tmp_path / "library"
+    owner = destination / "_partial" / "legacy-owner"
+    owner.mkdir(parents=True)
+    for number in range(100):
+        (owner / f"{number:03}.jpg").write_bytes(b"image")
+    monkeypatch.setattr(partial_safety, "_process_commands", lambda: None)
+    with pytest.raises(ValueError, match="activity within the last two minutes"):
+        plan_cleanup(destination, [str(owner)], files_only=True)
+
+
+def test_apply_refuses_target_changed_after_preview(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    destination, owner, archive = _tracked_partial(tmp_path)
+    monkeypatch.setattr(partial_safety, "_process_commands", lambda: ())
+    _root, targets = plan_cleanup(destination, ["abc123/site/one"])
+    (owner / "site" / "one" / "002.jpg").write_bytes(b"changed")
+    with pytest.raises(RuntimeError, match="changed after preview"):
+        apply_cleanup(targets, backup=False)
+    assert _keys(archive) == {"site-one", "site-two", "unrelated"}

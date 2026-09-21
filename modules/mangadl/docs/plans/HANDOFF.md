@@ -2,7 +2,7 @@
 
 Active: [20260921-0943 partial safety and merge readiness](20260921-0943_partial-safety-and-merge-readiness/00_implementation-plan.md)
 
-Current stage: S3 documentation, repository validation, and merge-readiness review.
+Current stage: S4 interactive cleanup and legacy archive reconciliation.
 
 Parallel predecessor: [20260825-0540 managed gallery-dl auth](20260825-0540_gallery-dl-managed-auth/00_implementation-plan.md). Its S6 live acceptance and S7 input-wide auth preflight remain open.
 

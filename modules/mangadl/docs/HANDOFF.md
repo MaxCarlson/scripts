@@ -2,7 +2,7 @@
 
 Active branch: `agent/mangadl-gallery-auth`, based on `agent/unified`.
 
-Current version: `mangadl 1.16.0` in the active feature-branch working tree.
+Current version: `mangadl 1.17.0` in the active feature-branch working tree.
 
 Active planning records:
 
@@ -58,12 +58,15 @@ raw-log view now reads a bounded file suffix rather than rereading the entire
 log every refresh, addressing the concrete full-UI freeze path found in the
 September 21 run.
 
-The generic `file_utils` lister remains a viewer for this workflow. Archive
-cleanup stays in mangadl because a generic delete key cannot validate worker
-ownership or update the correct SQLite archive. Paths copied from the lister
-can be supplied to repeatable `mangadl partials clean -t` arguments.
+Version 1.17 adds a mangadl-native interactive partial browser. Omitting
+`-t/--target` opens a tree with expand/collapse, sort, URL/ownership detail,
+and top-level multi-select. Legacy folders recover an unambiguous URL from
+local state or a validated override; gallery-dl then reconstructs exact archive
+keys without downloading media and removes matching keys from an explicit
+archive before deletion. Active or changing targets are refused and rechecked
+at apply time.
 
-Offline merge-readiness evidence is green at 170 tests plus compile, Ruff, CLI
+Offline merge-readiness evidence is green at 182 tests plus compile, Ruff, CLI
 help, and the repository `mangadl` validation target. The remaining boundary is
 manual: live-check one normal gallery-dl series for destination-root layout and
 responsive log controls. Staging, commit, push, and continued integration work

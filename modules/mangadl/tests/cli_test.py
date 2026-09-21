@@ -1,6 +1,7 @@
 import argparse
 import builtins
 import json
+import sqlite3
 import sys
 from types import SimpleNamespace
 
@@ -209,6 +210,28 @@ def test_partials_clean_is_dry_run_first_and_requires_files_only_for_legacy(
     assert apply_result == 0
     assert applied["status"] == "applied"
     assert not legacy.exists()
+
+
+def test_interactive_legacy_cleanup_reconstructs_and_removes_archive_keys(tmp_path, capsys, monkeypatch: pytest.MonkeyPatch) -> None:
+    destination = tmp_path / "library"
+    owner = destination / "_partial" / "legacy-owner"
+    owner.mkdir(parents=True)
+    (owner / "001.jpg").write_bytes(b"image")
+    archive = tmp_path / "archive.sqlite3"
+    connection = sqlite3.connect(archive)
+    try:
+        connection.execute("CREATE TABLE archive(entry TEXT PRIMARY KEY) WITHOUT ROWID")
+        connection.executemany("INSERT INTO archive(entry) VALUES (?)", (("legacy-key",), ("unrelated",)))
+        connection.commit()
+    finally:
+        connection.close()
+    url = "https://example.test/gallery/one"
+    monkeypatch.setattr("mangadl.cli_core.select_partial_owners", lambda *_args, **_kwargs: [owner])
+    monkeypatch.setattr("mangadl.cli_core.resolve_owner_urls", lambda *_args, **_kwargs: {owner.resolve(): url})
+    monkeypatch.setattr("mangadl.cli_core.reconstruct_archive_keys", lambda *_args, **_kwargs: {"legacy-key"})
+    result = main(["partials", "clean", "-d", str(destination), "-a", str(archive), "-f", "-y", "-j"])
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0 and payload["removed_archive_entries"] == 1 and not owner.exists()
 
 
 def test_benchmark_dry_run_reports_explicit_bounds(

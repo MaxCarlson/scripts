@@ -373,7 +373,7 @@ REGISTRY: dict = {
                 "path": "modules/mangadl",
                 "desc": "Concurrent manga/gallery downloader with guarded collections, archive-aware partial cleanup, recovery, dashboard, and logs",
                 "help_cmd": ["mangadl", "--help"],
-                "version": "1.16.0",
+                "version": "1.17.0",
             },
             {
                 "name": "edit_video_file.py",

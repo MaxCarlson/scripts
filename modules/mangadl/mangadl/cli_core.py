@@ -36,6 +36,8 @@ from .optimizer import (
     run_online_optimization,
 )
 from .partial_safety import apply_cleanup, cleanup_preview, plan_cleanup
+from .partial_reconcile import reconstruct_archive_keys, resolve_owner_urls
+from .partial_ui import select_partial_owners
 from .repair import apply_repair, plan_loose_images
 from .repair_ui import RepairDashboard
 from .state import StateStore
@@ -190,8 +192,8 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
         "-t",
         "--target",
         action="append",
-        required=True,
-        help="Path beneath <destination>/_partial to remove; repeatable.",
+        default=[],
+        help="Path beneath <destination>/_partial to remove; repeatable. Omit to open the UI.",
     )
     partial_clean.add_argument(
         "-a",
@@ -200,6 +202,7 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
         help="Require tracked partials to use this exact gallery-dl archive.",
     )
     partial_clean.add_argument("-f", "--apply", action="store_true", help="Apply the cleanup (default: preview only).")
+    partial_clean.add_argument("-y", "--yes", action="store_true", help="Skip the typed DELETE confirmation for interactive apply mode.")
     partial_clean.add_argument(
         "-F",
         "--files-only",
@@ -213,6 +216,13 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
         help="Do not create a timestamped archive backup before applying tracked cleanup.",
     )
     partial_clean.add_argument("-j", "--json", action="store_true", help="Emit JSON cleanup details.")
+    partial_clean.add_argument("-s", "--state-db", action="append", type=_path, default=[], help="Additional mangadl state database used to recover legacy partial URLs; repeatable.")
+    partial_clean.add_argument("-u", "--url", action="append", default=[], help="Legacy URL override as URL or PARTIAL_KEY=URL; repeatable.")
+    partial_clean.add_argument("-g", "--gallery-config", type=_path, help="gallery-dl config for legacy key recovery.")
+    partial_clean.add_argument("-c", "--cookies", type=_path, help="Cookie file for legacy key recovery.")
+    partial_clean.add_argument("-b", "--cookies-browser", help="Browser cookie source for legacy key recovery.")
+    partial_clean.add_argument("-U", "--user-agent", help="User-Agent for legacy key recovery.")
+    partial_clean.add_argument("-A", "--auth-dir", type=_path, help="Managed-auth directory for legacy key recovery.")
 
     auth = subparsers.add_parser("auth", help="Manage per-domain gallery-dl browser authentication.")
     auth_commands = auth.add_subparsers(dest="auth_command", required=True)
@@ -648,13 +658,50 @@ def _archive(args: argparse.Namespace) -> int:
 
 
 def _partials(args: argparse.Namespace) -> int:
+    interactive = not args.target
+    selected_values = list(args.target)
+    if interactive:
+        selected = select_partial_owners(args.destination, state_databases=tuple(args.state_db))
+        if not selected:
+            print("No partial owners selected; nothing to clean.")
+            return 0
+        selected_values = [str(path) for path in selected]
+
+    legacy_keys: dict[Path, set[str]] = {}
+    if not args.files_only:
+        _root, probe_targets = plan_cleanup(args.destination, selected_values, files_only=True)
+        legacy_owners = tuple(dict.fromkeys(
+            target.owner.resolve() for target in probe_targets
+            if not (target.owner / ".mangadl-partial.json").is_file()
+        ))
+        for target in probe_targets:
+            if target.owner.resolve() in legacy_owners and target.path != target.owner:
+                raise ValueError(f"legacy archive reconciliation requires selecting the whole partial owner: {target.owner}")
+        if legacy_owners:
+            if args.archive is None:
+                raise ValueError("legacy partial cleanup requires -a/--archive for exact URL-key reconciliation; use --files-only only when stale archive entries are acceptable")
+            urls = resolve_owner_urls(args.destination, legacy_owners, state_databases=args.state_db, overrides=args.url)
+            for owner, url in urls.items():
+                print(f"Reconstructing archive keys for {owner.name}: {url}", file=sys.stderr)
+                legacy_keys[owner] = reconstruct_archive_keys(
+                    url, gallery_config=args.gallery_config, cookies=args.cookies,
+                    cookies_browser=args.cookies_browser, user_agent=args.user_agent,
+                    auth_dir=args.auth_dir, progress=lambda message: print(message, file=sys.stderr),
+                )
     partial_root, targets = plan_cleanup(
         args.destination,
-        args.target,
+        selected_values,
         archive_override=args.archive,
         files_only=args.files_only,
+        legacy_archive_keys=legacy_keys,
     )
     preview = cleanup_preview(partial_root, targets)
+    if interactive and args.apply and not args.yes:
+        print(f"Selected {len(targets)} partial owner(s): {preview['files']} files, {preview['bytes']} bytes, {preview['archive_matches']} archive entries.", file=sys.stderr)
+        print("Type DELETE to apply this cleanup: ", end="", file=sys.stderr, flush=True)
+        if input().strip() != "DELETE":
+            print("Cleanup cancelled; no files or archive entries were changed.")
+            return 1
     if args.apply:
         payload = {**preview, **apply_cleanup(targets, backup=not args.no_backup), "status": "applied"}
     else:

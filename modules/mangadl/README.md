@@ -60,11 +60,15 @@ mangadl run -u $collectionUrl -d .\downloads -G
 
 ## Safe partial cleanup
 
-Mangadl 1.16 records ownership metadata and the exact gallery-dl archive key
+Mangadl 1.16+ records ownership metadata and the exact gallery-dl archive key
 for each successfully downloaded file retained under `<destination>/_partial`.
+With no `-t/--target`, cleanup opens an interactive tree browser. It expands or
+collapses nested content, sorts by name/size/created/modified/accessed time,
+shows the source URL and ownership details, and multi-selects top-level owners.
 Cleanup is a dry run unless `-f/--apply` is supplied:
 
 ```powershell
+mangadl partials clean -d .\downloads -a .\gallery-dl-archive.sqlite3
 mangadl partials clean -d .\downloads -t fc7c3b753cc0
 mangadl partials clean -d .\downloads -t fc7c3b753cc0\simplyhentai\354074 -f
 ```
@@ -75,12 +79,14 @@ the archive, removes only recorded matching keys, and then deletes the selected
 files. Repeat `-t/--target` for multiple selections. `-B/--no-backup` disables
 the archive backup only when explicitly requested.
 
-Partials created before 1.16 have no ownership manifest, so mangadl cannot
-safely infer which archive rows they created. They are refused by default.
-`-F/--files-only` permits deletion of such legacy data but deliberately leaves
-the archive unchanged and prints a warning. This is the appropriate mode for
-the already-created `fc7c3b753cc0` accidental partial; it cannot retroactively
-perform exact archive reconciliation.
+Partials created before 1.16 have no ownership manifest. For a whole legacy
+owner, mangadl recovers the source URL from destination-local state, or accepts
+`-u PARTIAL_KEY=URL`, then uses a temporary gallery-dl archive and no-download
+metadata traversal to reconstruct exact keys. An explicit `-a/--archive` is
+required; matching rows are backed up and removed before the folder. Missing or
+ambiguous URLs, nested legacy selections, active writers, and changed targets
+are refused. `-F/--files-only` remains an explicit escape hatch that leaves
+stale archive entries behind.
 
 ## Advanced run configuration
 
