@@ -33,9 +33,10 @@ current 1.17.0 partial-safety release candidate. The full offline suite passes
 with 182 tests; compile and Ruff pass; local human and JSON dry-runs route the
 Mangakakalot target without creating the destination control directory. A live
 chapter-0 run now confirms direct destination-root layout, and a live TTY run
-confirms responsive activity/raw-log/worker view switching. The stricter S7
-dependency checks for a complete series and a current multi-worker URL file
-remain pending.
+confirms responsive activity/raw-log/worker view switching. A current
+four-URL/four-worker run also completed 4/4 chapters with 702 images and
+22,438,146 bytes without a retry. Only the potentially large complete-series
+S7 dependency remains pending.
 
 Exact verification commands:
 
@@ -60,9 +61,9 @@ path from `-d` without shell variables.
 
 ## Next Action
 
-Run the remaining complete-series and current multi-worker checks before S7.
-The feature remains unmerged pending the existing integration boundary and
-explicit final merge approval.
+Decide whether to run the potentially large complete-series gate or defer S7
+to a follow-up branch. The feature remains unmerged pending the existing
+integration boundary and explicit final merge approval.
 
 S7 input-wide authentication preflight is planned but explicitly blocked on
 S6 live acceptance. It will deduplicate and route the complete input, group

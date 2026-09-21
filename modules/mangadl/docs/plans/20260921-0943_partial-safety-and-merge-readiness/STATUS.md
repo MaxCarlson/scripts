@@ -41,12 +41,14 @@ handoffs and validation counts still described the 1.16.0 baseline.
 - A live TTY chapter run accepted `l`, `r`, and `l` while downloading, moving
   through activity log, raw backend log, and the worker view without freezing;
   the run completed successfully.
+- A current four-URL/four-worker acceptance completed 4/4 chapters with 702
+  images and 22,438,146 bytes, without retry or authentication failure.
 
 ## Next Action
 
 The ordinary gallery-dl layout and responsive TUI/raw-log checks now pass. The
 legacy accidental partial can be reconciled against an explicit archive or
 cleaned with `--files-only`, but applying either deletion remains an explicit
-user decision. S7 input-wide auth preflight remains blocked on its stricter S6
-dependency gate: a complete series and a current multi-worker URL-file run.
-No live `B:` archive, state, or partial data has been mutated.
+user decision. S7 input-wide auth preflight remains blocked only on its
+potentially large complete-series dependency gate. No live `B:` archive,
+state, or partial data has been mutated.

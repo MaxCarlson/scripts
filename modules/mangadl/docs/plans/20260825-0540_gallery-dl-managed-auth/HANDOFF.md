@@ -68,12 +68,13 @@
   chapter-0 run downloaded 42 distinct images (1,300,372 bytes) directly under
   `Like No Other\c000`; a separate live TTY run switched among activity log,
   raw backend log, and worker view while downloading and completed successfully.
+- A current four-URL/four-worker acceptance run completed 4/4 chapters with
+  702 images and 22,438,146 bytes, without retry or auth-refresh failure.
 - Exact commands and results are recorded in `STATUS.md`. S7's stricter
-  dependency still requires a complete-series and current multi-worker
-  URL-file acceptance run.
+  dependency now only lacks a complete-series acceptance run.
 
 ## Immediate Next Action
 
-Finish the remaining S7 dependency acceptance or explicitly defer S7, then
-review the integration branch. Do not merge before the separate final approval
-boundary.
+Run the potentially large complete-series acceptance or explicitly defer S7,
+then review the integration branch. Do not merge before the separate final
+approval boundary.
