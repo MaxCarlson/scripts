@@ -32,9 +32,10 @@ to integrate `agent/mangadl-gallery-auth`.
 3. **S3 - Merge readiness:** update user/handoff documentation, add mangadl to
    the root validation manifest, run focused/full/dispatcher validation, and
    inventory remaining live acceptance and integration approvals.
-4. **S4 - Interactive cleanup and legacy reconciliation:** optional targets
-   open a multi-select tree UI; legacy owners recover their URLs and exact
-   gallery-dl archive keys before archive-consistent deletion.
+4. **S4 - Interactive cleanup and legacy reconciliation:** make targets optional
+   so `partials clean` opens a multi-select tree UI, display partial ownership
+   URLs and state, and reconstruct exact gallery-dl archive keys for selected
+   legacy owner folders before archive-consistent deletion.
 
 ## Acceptance Criteria
 
@@ -49,6 +50,9 @@ to integrate `agent/mangadl-gallery-auth`.
 - Log view time and memory are bounded by the requested tail size rather than
   total raw-log size.
 - The full module suite, compile, Ruff, and repository validation target pass.
+- Interactive selection is limited to top-level partial owners while nested
+  files remain browsable, and archive-aware legacy apply refuses unresolved or
+  ambiguous URL ownership rather than falling back to files-only deletion.
 
 ## Merge Boundary
 

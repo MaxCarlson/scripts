@@ -58,16 +58,26 @@ raw-log view now reads a bounded file suffix rather than rereading the entire
 log every refresh, addressing the concrete full-UI freeze path found in the
 September 21 run.
 
-Version 1.17 adds a mangadl-native interactive partial browser. Omitting
-`-t/--target` opens a tree with expand/collapse, sort, URL/ownership detail,
-and top-level multi-select. Legacy folders recover an unambiguous URL from
-local state or a validated override; gallery-dl then reconstructs exact archive
-keys without downloading media and removes matching keys from an explicit
-archive before deletion. Active or changing targets are refused and rechecked
-at apply time.
+`mangadl partials clean` now owns its interactive TermDash tree rather than
+delegating deletion to `file_utils`. With no explicit target it supports
+expand/collapse, hierarchical sorting, URL/ownership details, and multi-select
+of top-level partial owners. Explicit repeatable `-t` targets remain available.
 
-Offline merge-readiness evidence is green at 182 tests plus compile, Ruff, CLI
-help, and the repository `mangadl` validation target. The remaining boundary is
+For legacy owners without manifests, the command can recover URLs from local
+state (or validated URL overrides), enumerate exact archive keys through a
+no-download gallery-dl metadata pass, and delete matching rows from an explicit
+archive before deleting files. It refuses active/recently changing trees and
+rechecks the preview fingerprint immediately before archive mutation.
+
+The live `fc7c3b753cc0` investigation found gallery-dl PIDs 30028/14992 still
+running the broad collection after the manager had been interrupted. The real
+tree grew from the user's 35,276-file preview to more than 36,700 files during
+read-only inspection. Cleanup correctly refuses it as recently active; no
+`B:` archive, state, or partial data was changed.
+
+The 1.16 baseline merge-readiness evidence is green at 170 tests plus compile,
+Ruff, CLI help, and the repository `mangadl` validation target. The 1.17 full
+validation result is recorded in the active stage status. The remaining boundary is
 manual: live-check one normal gallery-dl series for destination-root layout and
 responsive log controls. Staging, commit, push, and continued integration work
 were approved on 2026-09-21; final merge still requires review. S7 remains

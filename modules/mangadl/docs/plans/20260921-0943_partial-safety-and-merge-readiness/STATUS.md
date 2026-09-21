@@ -2,17 +2,21 @@
 
 ## State
 
-S4 interactive cleanup and legacy archive reconciliation is implemented.
-The 1.17.0 module suite and repository dispatcher validation are recorded
-before commit. Source/log evidence shows
+S4 interactive cleanup and legacy archive reconciliation is now active after
+the user extended the merge boundary. The previously committed baseline passed
+(`158 passed`). Source/log evidence shows
 the accidental download was a valid broad collection expansion, not a worker
 loop. The dashboard has a separate unbounded whole-log read on each render.
 
 ## Documentation Freshness
 
-Score: **0/100 (healthy)** for 1.17.0 scope: README, project/plan handoffs,
+Score: **0/100 (healthy)** for 1.16.0 scope: README, project/plan handoffs,
 status, checklist, CLI behavior, and version sources are synchronized. The root
 validation manifest includes a mangadl target and its dispatcher run passes.
+
+Alert/task: the new interactive UI and legacy reconciliation behavior must be
+documented in README and handoffs and versioned before the next commit. S4 and
+its checklist are the concrete documentation task.
 
 ## Verification
 
@@ -32,15 +36,14 @@ validation manifest includes a mangadl target and its dispatcher run passes.
   existing LF-to-CRLF checkout warnings.
 - Live-data read-only preview:
   `mangadl partials clean -d B:\Hent\tmphent3 -t fc7c3b753cc0 -F -j`
-  later refused the active legacy owner by recent filesystem activity. Separate
-  process inspection found gallery-dl PIDs 30028/14992 still writing the broad
-  collection. No `B:` data was mutated.
+  reported 34,220 files and 13,694,065,861 bytes; status remained `dry-run`,
+  with zero archive mutation because this legacy partial has no manifest.
 
 ## Next Action
 
 User-run live acceptance remains: one ordinary gallery-dl series should confirm
 direct destination-root layout plus responsive TUI/raw-log switching. The
-legacy accidental partial must be stopped before archive-aware preview/apply.
-S7
+legacy accidental partial can be previewed with `--files-only`, but applying
+that deletion and any archive repair remains an explicit user decision. S7
 input-wide auth preflight is still blocked on the pre-existing S6 acceptance.
 No live `B:` download, archive, state, or partial data has been mutated.

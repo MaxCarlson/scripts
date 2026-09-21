@@ -212,7 +212,9 @@ def test_partials_clean_is_dry_run_first_and_requires_files_only_for_legacy(
     assert not legacy.exists()
 
 
-def test_interactive_legacy_cleanup_reconstructs_and_removes_archive_keys(tmp_path, capsys, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_interactive_legacy_cleanup_reconstructs_and_removes_archive_keys(
+    tmp_path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
     destination = tmp_path / "library"
     owner = destination / "_partial" / "legacy-owner"
     owner.mkdir(parents=True)
@@ -221,17 +223,43 @@ def test_interactive_legacy_cleanup_reconstructs_and_removes_archive_keys(tmp_pa
     connection = sqlite3.connect(archive)
     try:
         connection.execute("CREATE TABLE archive(entry TEXT PRIMARY KEY) WITHOUT ROWID")
-        connection.executemany("INSERT INTO archive(entry) VALUES (?)", (("legacy-key",), ("unrelated",)))
+        connection.executemany(
+            "INSERT INTO archive(entry) VALUES (?)",
+            (("legacy-key",), ("unrelated",)),
+        )
         connection.commit()
     finally:
         connection.close()
+
     url = "https://example.test/gallery/one"
-    monkeypatch.setattr("mangadl.cli_core.select_partial_owners", lambda *_args, **_kwargs: [owner])
-    monkeypatch.setattr("mangadl.cli_core.resolve_owner_urls", lambda *_args, **_kwargs: {owner.resolve(): url})
-    monkeypatch.setattr("mangadl.cli_core.reconstruct_archive_keys", lambda *_args, **_kwargs: {"legacy-key"})
-    result = main(["partials", "clean", "-d", str(destination), "-a", str(archive), "-f", "-y", "-j"])
+    monkeypatch.setattr(
+        "mangadl.cli_core.select_partial_owners", lambda *_args, **_kwargs: [owner]
+    )
+    monkeypatch.setattr(
+        "mangadl.cli_core.resolve_owner_urls", lambda *_args, **_kwargs: {owner.resolve(): url}
+    )
+    monkeypatch.setattr(
+        "mangadl.cli_core.reconstruct_archive_keys", lambda *_args, **_kwargs: {"legacy-key"}
+    )
+
+    result = main(
+        [
+            "partials", "clean", "-d", str(destination), "-a", str(archive),
+            "-f", "-y", "-j",
+        ]
+    )
     payload = json.loads(capsys.readouterr().out)
-    assert result == 0 and payload["removed_archive_entries"] == 1 and not owner.exists()
+    connection = sqlite3.connect(archive)
+    try:
+        keys = {row[0] for row in connection.execute("SELECT entry FROM archive")}
+    finally:
+        connection.close()
+
+    assert result == 0
+    assert payload["status"] == "applied"
+    assert payload["removed_archive_entries"] == 1
+    assert keys == {"unrelated"}
+    assert not owner.exists()
 
 
 def test_benchmark_dry_run_reports_explicit_bounds(

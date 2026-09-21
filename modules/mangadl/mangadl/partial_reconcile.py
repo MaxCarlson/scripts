@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import subprocess
 import sys
@@ -25,19 +26,27 @@ def candidate_state_databases(destination: Path, supplied: Iterable[Path] = ()) 
         destination / ".mangadl" / "state.sqlite3",
         destination / "mangadl-state.sqlite3",
     ]
-    return tuple(dict.fromkeys(candidate for candidate in candidates if candidate.is_file()))
+    unique: list[Path] = []
+    for candidate in candidates:
+        if candidate not in unique and candidate.is_file():
+            unique.append(candidate)
+    return tuple(unique)
 
 
-def state_url_candidates(destination: Path, supplied: Iterable[Path] = ()) -> dict[str, tuple[str, ...]]:
+def state_url_candidates(
+    destination: Path,
+    supplied: Iterable[Path] = (),
+) -> dict[str, tuple[str, ...]]:
     matches: dict[str, set[str]] = {}
     for database in candidate_state_databases(destination, supplied):
         for query in ("?mode=ro", "?mode=ro&immutable=1"):
             connection: sqlite3.Connection | None = None
             try:
                 connection = sqlite3.connect(database.as_uri() + query, uri=True)
-                if connection.execute(
+                table = connection.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='jobs'"
-                ).fetchone() is None:
+                ).fetchone()
+                if table is None:
                     break
                 for (url,) in connection.execute(
                     "SELECT DISTINCT canonical_url FROM jobs WHERE canonical_url <> ''"
@@ -63,7 +72,9 @@ def parse_url_overrides(values: Iterable[str]) -> tuple[dict[str, str], tuple[st
         elif value.startswith(("http://", "https://")):
             unkeyed.append(value)
         else:
-            raise ValueError("legacy URL overrides must be URL or PARTIAL_KEY=URL: " + value)
+            raise ValueError(
+                "legacy URL overrides must be URL or PARTIAL_KEY=URL: " + value
+            )
     return keyed, tuple(unkeyed)
 
 
@@ -77,10 +88,12 @@ def resolve_owner_urls(
     selected = tuple(owner.expanduser().resolve() for owner in owners)
     keyed, unkeyed = parse_url_overrides(overrides)
     if unkeyed:
-        unresolved = [owner for owner in selected if owner.name not in keyed]
-        if len(unkeyed) != 1 or len(unresolved) != 1:
-            raise ValueError("an unkeyed --url override requires exactly one unresolved selected partial")
-        keyed[unresolved[0].name] = unkeyed[0]
+        unresolved_for_override = [owner for owner in selected if owner.name not in keyed]
+        if len(unkeyed) != 1 or len(unresolved_for_override) != 1:
+            raise ValueError(
+                "an unkeyed --url override requires exactly one unresolved selected partial"
+            )
+        keyed[unresolved_for_override[0].name] = unkeyed[0]
 
     state_matches = state_url_candidates(destination, state_databases)
     resolved: dict[Path, str] = {}
@@ -88,7 +101,9 @@ def resolve_owner_urls(
         if owner.name in keyed:
             url = keyed[owner.name]
             if partial_key(url) != owner.name:
-                raise ValueError(f"URL does not match partial key {owner.name}: {url}")
+                raise ValueError(
+                    f"URL does not match partial key {owner.name}: {url}"
+                )
             resolved[owner] = url
             continue
         candidates = state_matches.get(owner.name, ())
@@ -99,7 +114,9 @@ def resolve_owner_urls(
                 f"no URL was found for legacy partial {owner.name}; supply --url {owner.name}=URL"
             )
         else:
-            raise ValueError(f"legacy partial {owner.name} has ambiguous URLs: {', '.join(candidates)}")
+            raise ValueError(
+                f"legacy partial {owner.name} has ambiguous URLs: {', '.join(candidates)}"
+            )
     return resolved
 
 
@@ -117,8 +134,15 @@ def reconstruct_archive_keys(
     with tempfile.TemporaryDirectory(prefix="mangadl-reconcile-") as temporary:
         root = Path(temporary)
         command = [
-            sys.executable, "-m", "gallery_dl", "--no-input", "--destination", str(root / "output"),
-            "--download-archive", str(root / "empty-archive.sqlite3"), "--print",
+            sys.executable,
+            "-m",
+            "gallery_dl",
+            "--no-input",
+            "--destination",
+            str(root / "output"),
+            "--download-archive",
+            str(root / "empty-archive.sqlite3"),
+            "--print",
             f"prepare-after:{RECONCILE_MARKER}{{_archive_key}}",
         ]
         if gallery_config:
@@ -138,8 +162,12 @@ def reconstruct_archive_keys(
         command.append(url)
 
         process = subprocess.Popen(
-            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace",
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         keys: set[str] = set()
         tail: deque[str] = deque(maxlen=12)
@@ -163,3 +191,18 @@ def reconstruct_archive_keys(
         if progress:
             progress(f"Reconstructed {len(keys):,} archive keys for {url}")
         return keys
+
+
+def metadata_url(owner: Path) -> tuple[str | None, str | None, str | None]:
+    path = owner / ".mangadl-partial.json"
+    if not path.is_file():
+        return None, None, None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None, None, None
+    return (
+        str(payload.get("url") or "") or None,
+        str(payload.get("backend") or "") or None,
+        str(payload.get("archive") or "") or None,
+    )

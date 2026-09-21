@@ -62,16 +62,20 @@ mangadl run -u $collectionUrl -d .\downloads -G
 
 Mangadl 1.16+ records ownership metadata and the exact gallery-dl archive key
 for each successfully downloaded file retained under `<destination>/_partial`.
-With no `-t/--target`, cleanup opens an interactive tree browser. It expands or
-collapses nested content, sorts by name/size/created/modified/accessed time,
-shows the source URL and ownership details, and multi-selects top-level owners.
-Cleanup is a dry run unless `-f/--apply` is supplied:
+With no `-t/--target`, cleanup opens an interactive tree browser. It can
+expand/collapse nested content, sort by name/size/created/modified/accessed
+time, show the source URL and ownership details, and multi-select top-level
+partial owners. Cleanup remains a dry run unless `-f/--apply` is supplied:
 
 ```powershell
 mangadl partials clean -d .\downloads -a .\gallery-dl-archive.sqlite3
 mangadl partials clean -d .\downloads -t fc7c3b753cc0
 mangadl partials clean -d .\downloads -t fc7c3b753cc0\simplyhentai\354074 -f
 ```
+
+In the browser, Space selects an owner, Enter expands/collapses it, `i` shows
+details, `c/m/a/s/n` sort, and `D` continues. Interactive apply requires typing
+`DELETE`; `-y/--yes` skips that confirmation for automation.
 
 Tracked cleanup validates that the target remains inside `_partial`, refuses a
 partial owned by a running worker, optionally verifies `-a/--archive`, backs up
@@ -81,12 +85,22 @@ the archive backup only when explicitly requested.
 
 Partials created before 1.16 have no ownership manifest. For a whole legacy
 owner, mangadl recovers the source URL from destination-local state, or accepts
-`-u PARTIAL_KEY=URL`, then uses a temporary gallery-dl archive and no-download
-metadata traversal to reconstruct exact keys. An explicit `-a/--archive` is
-required; matching rows are backed up and removed before the folder. Missing or
-ambiguous URLs, nested legacy selections, active writers, and changed targets
-are refused. `-F/--files-only` remains an explicit escape hatch that leaves
-stale archive entries behind.
+`-u PARTIAL_KEY=URL`, then uses gallery-dl metadata traversal with a temporary
+empty archive to reconstruct the exact archive keys without downloading media.
+Supplying `-a/--archive` is mandatory: matching rows are backed up and removed
+before the folder is deleted. Repeat `-s/--state-db` to add state databases.
+Missing/ambiguous URLs, nested legacy selections, extractor failures, empty
+key sets, active gallery-dl processes, and recently changing large legacy
+trees are refused. The tree is fingerprinted again immediately before archive
+mutation so a target changed since preview is also refused.
+
+```powershell
+mangadl partials clean -d B:\Hent\tmphent3 -t fc7c3b753cc0 `
+  -a B:\Hent\tmphent3\mangadl-archive.sqlite3
+```
+
+`-F/--files-only` remains an explicit escape hatch. It deletes files without
+archive reconciliation and warns that stale archive entries remain.
 
 ## Advanced run configuration
 

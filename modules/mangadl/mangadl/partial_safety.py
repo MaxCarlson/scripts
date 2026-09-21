@@ -160,45 +160,60 @@ def _process_commands() -> tuple[tuple[int, str], ...] | None:
         executable = shutil.which("pwsh") or shutil.which("powershell")
         if executable is None:
             return None
+        command = [
+            executable,
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
+        ]
         try:
             result = subprocess.run(
-                [executable, "-NoProfile", "-Command", "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15, check=False,
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+                check=False,
             )
             if result.returncode != 0 or not result.stdout.strip():
                 return None
             payload = json.loads(result.stdout)
-            if payload is None:
-                return ()
             rows = payload if isinstance(payload, list) else [payload]
             return tuple(
                 (int(row["ProcessId"]), str(row.get("CommandLine") or ""))
-                for row in rows if isinstance(row, dict) and row.get("ProcessId") is not None
+                for row in rows
+                if row.get("ProcessId") is not None
             )
         except (OSError, subprocess.SubprocessError, ValueError, TypeError, json.JSONDecodeError):
             return None
+
     proc = Path("/proc")
-    if not proc.is_dir():
-        return None
-    commands: list[tuple[int, str]] = []
-    for candidate in proc.iterdir():
-        if not candidate.name.isdigit():
-            continue
-        try:
-            raw = (candidate / "cmdline").read_bytes()
-        except OSError:
-            continue
-        commands.append((int(candidate.name), raw.replace(b"\0", b" ").decode(errors="replace")))
-    return tuple(commands)
+    if proc.is_dir():
+        commands: list[tuple[int, str]] = []
+        for candidate in proc.iterdir():
+            if not candidate.name.isdigit():
+                continue
+            try:
+                raw = (candidate / "cmdline").read_bytes()
+            except OSError:
+                continue
+            commands.append((int(candidate.name), raw.replace(b"\0", b" ").decode(errors="replace")))
+        return tuple(commands)
+    return None
 
 
-def _gallery_processes_for_path(path: Path, commands: tuple[tuple[int, str], ...]) -> tuple[int, ...]:
+def _gallery_processes_for_path(
+    path: Path,
+    commands: tuple[tuple[int, str], ...],
+) -> tuple[int, ...]:
     needle = str(path.resolve()).replace("\\", "/").casefold()
-    return tuple(sorted({
-        pid for pid, command in commands
-        if needle in command.replace("\\", "/").casefold()
-        and ("gallery_dl" in command.casefold() or "gallery-dl" in command.casefold())
-    }))
+    matches: list[int] = []
+    for pid, command in commands:
+        normalized = command.replace("\\", "/").casefold()
+        if needle in normalized and ("gallery_dl" in normalized or "gallery-dl" in normalized):
+            matches.append(pid)
+    return tuple(sorted(set(matches)))
 
 
 def _tree_snapshot(path: Path) -> tuple[int, int, float]:
@@ -210,8 +225,8 @@ def _tree_snapshot(path: Path) -> tuple[int, int, float]:
     for root, directories, names in os.walk(path, followlinks=False):
         root_path = Path(root)
         try:
-            stat = root_path.stat()
-            last_activity = max(last_activity, stat.st_ctime, stat.st_mtime)
+            root_stat = root_path.stat()
+            last_activity = max(last_activity, root_stat.st_ctime, root_stat.st_mtime)
         except OSError:
             pass
         for name in names:
@@ -225,6 +240,11 @@ def _tree_snapshot(path: Path) -> tuple[int, int, float]:
                 pass
         directories[:] = [name for name in directories if not (root_path / name).is_symlink()]
     return files, size, last_activity
+
+
+def _tree_size(path: Path) -> tuple[int, int]:
+    files, size, _last_activity = _tree_snapshot(path)
+    return files, size
 
 
 def _normalize_targets(partial_root: Path, values: Iterable[str]) -> list[Path]:
@@ -297,7 +317,10 @@ def plan_cleanup(
         owner = partial_root / relative_to_root.parts[0]
         active_pids = _gallery_processes_for_path(owner, process_commands or ())
         if active_pids:
-            raise ValueError(f"partial is still being written by gallery-dl PID(s) {', '.join(map(str, active_pids))}: {owner}")
+            joined = ", ".join(str(pid) for pid in active_pids)
+            raise ValueError(
+                f"partial is still being written by gallery-dl PID(s) {joined}: {owner}"
+            )
         relative_to_owner = target.relative_to(owner) if target != owner else Path(".")
         entries: tuple[ManifestEntry, ...] = ()
         archive: Path | None = None
@@ -305,17 +328,25 @@ def plan_cleanup(
         meta = _read_meta(owner) if meta_path.exists() else None
         if not files_only:
             if meta is None:
-                supplied_keys = set((legacy_archive_keys or {}).get(owner.resolve(), ()))
+                resolved_owner = owner.resolve()
+                supplied_keys = set((legacy_archive_keys or {}).get(resolved_owner, ()))
                 if target != owner:
-                    raise ValueError(f"legacy archive reconciliation requires selecting the whole partial owner: {owner}")
+                    raise ValueError(
+                        "legacy archive reconciliation requires selecting the whole partial owner: "
+                        f"{owner}"
+                    )
                 if archive_override is None:
-                    raise ValueError(f"legacy partial requires an explicit archive and URL reconciliation: {owner}")
+                    raise ValueError(
+                        f"legacy partial requires an explicit archive and URL reconciliation: {owner}"
+                    )
                 if not supplied_keys:
                     raise ValueError(f"legacy partial has no reconstructed archive keys: {owner}")
                 archive = archive_override.expanduser().resolve()
                 if not archive.is_file():
                     raise ValueError(f"tracked archive does not exist: {archive}")
-                entries = tuple(ManifestEntry(key, ".") for key in sorted(supplied_keys))
+                entries = tuple(
+                    ManifestEntry(key, ".") for key in sorted(supplied_keys)
+                )
             elif meta.get("backend") == "gallery-dl":
                 entries = _entries_for_target(load_manifest(owner), relative_to_owner)
                 archive = Path(str(meta.get("archive", ""))).expanduser().resolve()
@@ -326,10 +357,29 @@ def plan_cleanup(
                 if not archive.is_file():
                     raise ValueError(f"tracked archive does not exist: {archive}")
         files, size, last_activity = _tree_snapshot(target)
-        if meta is None and process_commands is None and files >= 100 and last_activity and time.time() - last_activity < 120:
-            raise ValueError(f"legacy partial has filesystem activity within the last two minutes; stop its writer and retry: {owner}")
+        if (
+            meta is None
+            and process_commands is None
+            and files >= 100
+            and last_activity
+            and time.time() - last_activity < 120
+        ):
+            raise ValueError(
+                "legacy partial has filesystem activity within the last two minutes; "
+                f"stop its writer and retry: {owner}"
+            )
         planned.append(
-            CleanupTarget(target, owner, relative_to_owner, files, size, last_activity, entries, archive, files_only)
+            CleanupTarget(
+                target,
+                owner,
+                relative_to_owner,
+                files,
+                size,
+                last_activity,
+                entries,
+                archive,
+                files_only,
+            )
         )
     return partial_root, tuple(planned)
 
@@ -445,14 +495,26 @@ def apply_cleanup(targets: tuple[CleanupTarget, ...], *, backup: bool = True) ->
     for target in targets:
         active_pids = _gallery_processes_for_path(target.owner, process_commands or ())
         if active_pids:
-            raise RuntimeError(f"partial became active under gallery-dl PID(s) {', '.join(map(str, active_pids))}: {target.owner}")
-        if (target.owner / PARTIAL_META_NAME).is_file():
+            joined = ", ".join(str(pid) for pid in active_pids)
+            raise RuntimeError(
+                f"partial became active under gallery-dl PID(s) {joined}: {target.owner}"
+            )
+        meta_path = target.owner / PARTIAL_META_NAME
+        if meta_path.is_file():
             _read_meta(target.owner)
         if not target.path.exists() and not target.path.is_symlink():
             raise RuntimeError(f"cleanup target disappeared after preview: {target.path}")
-        files, size, last_activity = _tree_snapshot(target.path)
-        if (files, size, last_activity) != (target.files, target.bytes, target.last_activity):
-            raise RuntimeError(f"cleanup target changed after preview; rerun cleanup before applying: {target.path}")
+        current_files, current_bytes, current_activity = _tree_snapshot(target.path)
+        if (current_files, current_bytes, current_activity) != (
+            target.files,
+            target.bytes,
+            target.last_activity,
+        ):
+            raise RuntimeError(
+                "cleanup target changed after preview; rerun cleanup before applying: "
+                f"{target.path} (was {target.files} files/{target.bytes} bytes, "
+                f"now {current_files} files/{current_bytes} bytes)"
+            )
 
     archive_keys: dict[Path, set[str]] = {}
     for target in targets:

@@ -39,10 +39,16 @@
 
 ## S4 - Interactive Cleanup and Legacy Reconciliation
 
-- [x] Open a browse/sort/multi-select cleanup UI when no target is supplied.
-- [x] Display URL, ownership, archive, and active gallery-dl details.
-- [x] Recover legacy owner URLs from state or validated overrides.
-- [x] Reconstruct no-download archive keys and delete matching rows first.
-- [x] Refuse active/changing, ambiguous, nested, and empty-key cleanup.
-- [x] Preserve explicit-target and files-only compatibility.
-- [x] Add focused tests and update docs/version metadata.
+- [x] Open the cleanup UI when no `-t/--target` is supplied.
+- [x] Browse nested files with expand/collapse and hierarchical sorting.
+- [x] Multi-select one or more top-level partial owner folders.
+- [x] Show URL, backend, archive, tracking, and active-worker details.
+- [x] Recover legacy URLs from destination-local state databases.
+- [x] Accept explicit URL overrides for unresolved legacy owners.
+- [x] Reconstruct exact gallery-dl keys without downloading media.
+- [x] Remove reconstructed matching keys from explicit `-a/--archive` first.
+- [x] Refuse unresolved, ambiguous, partial-subtree, and empty-key reconciliation.
+- [x] Keep explicit target and `--files-only` CLI behavior compatible.
+- [x] Refuse active/changing targets and recheck the preview fingerprint at apply.
+- [x] Add focused UI/model/reconciliation/CLI tests.
+- [ ] Update README, handoffs, status, version, and validation evidence.
