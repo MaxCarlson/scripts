@@ -6,6 +6,25 @@ from typing import Protocol
 from urllib.parse import urlsplit
 
 
+BROAD_COLLECTION_SUBCATEGORIES = frozenset(
+    {
+        "artist",
+        "category",
+        "collection",
+        "favorite",
+        "favorites",
+        "search",
+        "tag",
+        "user",
+    }
+)
+BROAD_COLLECTION_EXTRACTORS = frozenset(
+    {
+        ("simplyhentai", "series"),
+    }
+)
+
+
 class Backend(Protocol):
     name: str
 
@@ -69,6 +88,33 @@ class Manga18FXBackend:
 
     def classification(self, url: str) -> str | None:
         return "manhwa" if self.score(url) else None
+
+
+@dataclass(frozen=True, slots=True)
+class GalleryDlScope:
+    category: str
+    subcategory: str
+    extractor: str
+    broad_collection: bool
+
+
+def gallery_dl_scope(url: str) -> GalleryDlScope | None:
+    """Describe an installed gallery-dl route without making a request."""
+    try:
+        from gallery_dl import extractor
+
+        selected = extractor.find(url)
+    except Exception:
+        return None
+    if selected is None:
+        return None
+    category = str(getattr(selected, "category", ""))
+    subcategory = str(getattr(selected, "subcategory", ""))
+    broad = (
+        subcategory in BROAD_COLLECTION_SUBCATEGORIES
+        or (category, subcategory) in BROAD_COLLECTION_EXTRACTORS
+    )
+    return GalleryDlScope(category, subcategory, type(selected).__name__, broad)
 
 
 def choose_backend(url: str, requested: str = "auto") -> str:

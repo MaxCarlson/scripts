@@ -51,6 +51,17 @@ browser refresh for a recognized authentication challenge.
    reject partial-success exits that contain extractor errors, and prevent a
    same-domain worker burst from turning an authenticated session into a long
    sequence of per-chapter retries.
+6. **S6 — Destination-root series layout:** retain extractor-native staging
+   names, then remove the gallery-dl category wrapper during the successful
+   merge so series directories live directly inside the user-selected
+   destination. The same acceptance pass also makes normal runs self-contained,
+   gives dry-run human-readable output, and prevents managed-auth refresh from
+   blocking or corrupting the interactive dashboard.
+7. **S7 — Input-wide authentication preflight:** after S6's single-domain
+   acceptance gates pass, parse an entire input set before worker launch,
+   discover gallery-dl routes at runtime, group them by auth domain, and
+   visibly create or replace one managed browser session per represented
+   domain with explicit single/all force-refresh controls.
 
 ## Acceptance Criteria
 
@@ -73,6 +84,18 @@ browser refresh for a recognized authentication challenge.
 | AC-S5-001 | Mangakakalot and other generic gallery-dl extractors retain their native directory/filename formats so distinct pages cannot collapse onto one path. | S5 |
 | AC-S5-002 | A gallery-dl exit that downloaded a cover or some pages but also reported extractor HTTP errors is not marked as a successful manga completion. | S5 |
 | AC-S5-003 | Live validation downloads multiple distinct images from one authenticated Mangakakalot child extractor without concurrent same-domain interference. | S5 |
+| AC-S6-001 | For `-d TARGET`, a Mangakakalot series is merged as `TARGET/<series>/<chapter>/<image>` rather than `TARGET/mangakakalot/<series>/...`. | S6 |
+| AC-S6-002 | Category-wrapper removal is derived from gallery-dl's selected extractor and does not reintroduce global metadata templates. | S6 |
+| AC-S6-003 | Legacy nhentai/Kavita naming and concurrent merge safety remain intact. | S6 |
+| AC-S6-004 | A normal run needs only input and destination; archive, state, and log paths default under a destination-local `.mangadl` control directory while explicit paths remain supported. | S6 |
+| AC-S6-005 | Dry-run prints a concise human preflight by default and emits machine JSON only when explicitly requested. | S6 |
+| AC-S6-006 | Runtime authentication refresh does not block dashboard rendering or keyboard handling, does not print outside the TUI, and restarts every same-domain attempt that reports a challenge with the refreshed profile. | S6 |
+| AC-S7-001 | Input preflight reports canonical unique URLs, gallery-dl-routed URLs, and unique normalized auth domains before dispatch. | S7 |
+| AC-S7-002 | Each represented gallery-dl domain is refreshed at most once per preflight using a representative exact supported URL, with clear new/replaced/failed status. | S7 |
+| AC-S7-003 | CLI controls can force replacement for one selected domain or every gallery-dl domain represented by one or more input files. | S7 |
+| AC-S7-004 | Cookie secrets remain outside the repository/module in the standard per-user auth store or an explicit auth directory. | S7 |
+| AC-S7-005 | A domain's validated target URL persists independently from cookies; it is reused without prompting and replaced only by an explicit validated URL or target-removal action. | S7 |
+| AC-S7-006 | `modules/mangadl/AUTH_TARGETS.md` provides a deterministic non-secret catalog of known domain/target/config information and can be explicitly synchronized from runtime target metadata. | S7 |
 
 ## Deferred Secondary Fallback
 

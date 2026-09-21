@@ -2,7 +2,9 @@
 
 ## State
 
-S1-S5 are complete. S5 corrected the generic gallery-dl output-integrity
+S1-S5 are complete. S6 is in progress to make series directories direct
+children of every user-selected destination and close the failed manual-run
+acceptance findings. S5 corrected the generic gallery-dl output-integrity
 regressions found by the first real multi-URL download. The silent timeout was replaced with phase/remaining-time
 progress, no-URL Mangakakalot refresh works, runtime site discovery/selection
 and saved validated targets are implemented, cookie exports default to the
@@ -14,14 +16,52 @@ refresh` with no URL succeeded from `B:\Hent\tmphent3`, wrote
 `urls20.txt` accepted 25 unique URLs, routed all 25 to gallery-dl, reported one
 duplicate, and reported no unsupported URLs.
 
-The controlled live baseline now passes: after exact-target refresh,
+The earlier controlled live baseline passed: after exact-target refresh,
 gallery-dl downloaded 42 distinct images (1,300,372 bytes) from the first
 `like-no-other` chapter in 9.2 seconds; mangadl downloaded the same 42 images
 in 3.7 seconds. A four-worker mangadl run completed 4/4 chapters with 702
-images (22,438,146 bytes) in 11.9 seconds using one bounded retry. The full
-offline suite passes with 146 tests on version 1.14.1.
+images (22,438,146 bytes) in 11.9 seconds using one bounded retry. A later
+25-URL run disproved that small-run concurrency conclusion: synchronous auth
+refresh blocked TUI input/rendering, refresh messages escaped the dashboard,
+and already-running same-domain workers continued with credentials loaded
+before the shared profile replacement. The activity/raw logs remained present
+and workers 2-4 continued downloading, so this was a coordination/display
+failure rather than lost work. S6 now includes that remediation plus
+destination-local control-path defaults and human-readable dry-run output.
+The remediation was implemented in version 1.15.0 and is included in the
+current 1.16.0 partial-safety release candidate. The full offline suite passes
+with 169 tests; compile and Ruff pass; local human and JSON dry-runs route the
+Mangakakalot target without creating the destination control directory. Live
+single-URL and multi-worker acceptance remain user-controlled and pending.
+
+Exact verification commands:
+
+```powershell
+python -m pytest tests -q -o addopts=""
+python -m compileall -q mangadl tests
+python -m ruff check mangadl tests
+mangadl --version
+mangadl run config -u 'https://www.mangakakalot.gg/manga/like-no-other' -d 'C:\tmp\mangadl-dry-run-output' -n
+mangadl run config -u 'https://www.mangakakalot.gg/manga/like-no-other' -d 'C:\tmp\mangadl-dry-run-output' -n -J
+```
+
+Current combined results: `169 passed`; compile exit 0; Ruff `All checks passed!`;
+`mangadl 1.16.0`; both dry-runs exit 0; no destination `.mangadl` directory
+was created.
+
+Additional offline integrations prove that two same-domain jobs share exactly
+one background refresh and both succeed on their second attempts, a streamed
+Cloudflare challenge terminates a stale backend process promptly rather than
+waiting through its retry walk, and an ordinary run constructs every control
+path from `-d` without shell variables.
 
 ## Next Action
 
-Publish the completed S5 patch and switch to `main` as requested. The feature
-remains unmerged pending the existing integration boundary.
+User-validate the expanded S6 acceptance remediation. The feature remains
+unmerged pending this acceptance requirement and the existing integration
+boundary.
+
+S7 input-wide authentication preflight is planned but explicitly blocked on
+S6 live acceptance. It will deduplicate and route the complete input, group
+gallery-dl URLs by auth domain, visibly create/replace one profile per domain,
+and expose force-one/force-all controls without storing secrets in the repo.

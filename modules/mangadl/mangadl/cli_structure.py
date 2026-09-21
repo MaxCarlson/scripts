@@ -74,7 +74,18 @@ def add_run_arguments(
     parser.add_argument("-i", "--input-file", action="append", type=path_type, default=[], help="UTF-8 URL file; repeatable.")
     parser.add_argument("-u", "--url", action="append", default=[], help="Direct series/gallery URL; repeatable.")
     parser.add_argument("-d", "--destination", type=path_type, required=True, help="Destination library root.")
-    parser.add_argument("-a", "--archive", type=path_type, required=True, help="Download archive database.")
+    parser.add_argument(
+        "-G",
+        "--allow-collection",
+        action="store_true",
+        help="Allow broad feed/search/tag/collection URLs that can expand into many galleries.",
+    )
+    parser.add_argument(
+        "-a",
+        "--archive",
+        type=path_type,
+        help="Download archive database (default: <destination>/.mangadl/archive.sqlite3).",
+    )
     parser.add_argument("-w", "--workers", type=int, default=2, help="Initial concurrent series workers (default: 2).")
     parser.add_argument(
         "-I",
@@ -89,8 +100,7 @@ def add_run_arguments(
         "-s",
         "--state-db",
         type=path_type,
-        default=path_type("mangadl-state.sqlite3"),
-        help=_help("Manager state database.", expert),
+        help=_help("Manager state database (default: <destination>/.mangadl/state.sqlite3).", expert),
     )
     parser.add_argument(
         "-m",
@@ -131,8 +141,7 @@ def add_run_arguments(
         "-l",
         "--log-dir",
         type=path_type,
-        default=path_type("mangadl-logs"),
-        help=_help("Run log root.", expert),
+        help=_help("Run log root (default: <destination>/.mangadl/logs).", expert),
     )
     parser.add_argument("-r", "--retries", type=int, default=3, help=_help("Transient retry count.", expert))
     parser.add_argument(
@@ -174,6 +183,12 @@ def add_run_arguments(
         help=_help("Use stored profiles but do not launch a browser after an auth challenge.", expert),
     )
     parser.add_argument("-n", "--dry-run", action="store_true", help=_help("Parse and route without downloading.", expert))
+    parser.add_argument(
+        "-J",
+        "--json",
+        action="store_true",
+        help=_help("Emit machine-readable JSON (including for dry-run).", expert),
+    )
     parser.add_argument("-N", "--no-ui", action="store_true", help=_help("Disable the terminal dashboard.", expert))
     parser.add_argument("-q", "--quiet", action="store_true", help=_help("Print only the final machine-readable summary.", expert))
     parser.add_argument("-v", "--verbose", action="count", default=0, help=_help("Increase diagnostics.", expert))

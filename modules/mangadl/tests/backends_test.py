@@ -9,6 +9,7 @@ from mangadl.backends import (
     Manga18FXBackend,
     backend_classification,
     choose_backend,
+    gallery_dl_scope,
 )
 
 
@@ -31,6 +32,18 @@ def test_gallery_dl_backend_uses_extractor_registry(monkeypatch: pytest.MonkeyPa
 def test_unknown_backend_rejected() -> None:
     with pytest.raises(ValueError, match="unknown backend"):
         choose_backend("https://example.com", "missing")
+
+
+def test_gallery_dl_scope_distinguishes_broad_collection_from_manga() -> None:
+    collection = gallery_dl_scope("https://www.simply-hentai.com/series/8-original-work")
+    manga = gallery_dl_scope("https://www.mangakakalot.gg/manga/like-no-other")
+
+    assert collection is not None
+    assert (collection.category, collection.subcategory) == ("simplyhentai", "series")
+    assert collection.broad_collection
+    assert manga is not None
+    assert (manga.category, manga.subcategory) == ("mangakakalot", "manga")
+    assert not manga.broad_collection
 
 
 def test_hdporncomics_manhwa_routes_without_executable() -> None:

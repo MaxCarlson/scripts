@@ -55,3 +55,27 @@ def test_stale_event_is_ignored(tmp_path: Path) -> None:
         assert store.jobs(run_id)[0]["bytes_done"] == 0
     finally:
         store.close()
+
+
+def test_events_from_held_retry_attempt_cannot_restore_running_state(tmp_path: Path) -> None:
+    store, run_id = _store(tmp_path)
+    try:
+        job = store.lease(run_id, 1)
+        assert job is not None
+        assert store.retry(job["id"], job["attempt_id"], 60, "auth_challenge", "waiting for refresh")
+        event = {
+            "run_id": run_id,
+            "job_id": job["id"],
+            "attempt_id": job["attempt_id"],
+            "worker": 1,
+            "event": "heartbeat",
+            "wall_time": time.time(),
+            "data": {"state": "running", "bytes_done": 10},
+        }
+
+        assert not store.apply_event(event)
+        held = store.jobs(run_id)[0]
+        assert held["state"] == "retry_wait"
+        assert held["bytes_done"] == 0
+    finally:
+        store.close()

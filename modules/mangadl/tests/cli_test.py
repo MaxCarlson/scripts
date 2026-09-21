@@ -36,8 +36,6 @@ def test_run_parser_defaults_to_safe_worker_ceiling_and_stagger(tmp_path) -> Non
             "https://manga18fx.com/manga/example/",
             "-d",
             str(tmp_path / "out"),
-            "-a",
-            str(tmp_path / "archive.db"),
         ]
     )
 
@@ -46,6 +44,9 @@ def test_run_parser_defaults_to_safe_worker_ceiling_and_stagger(tmp_path) -> Non
     assert args.worker_start_delay == 2.0
     assert args.image_workers == 4
     assert args.run_id is None
+    assert args.archive is None
+    assert args.state_db is None
+    assert args.log_dir is None
 
 
 def test_dry_run_routes_without_writing(tmp_path, capsys, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -68,6 +69,7 @@ def test_dry_run_routes_without_writing(tmp_path, capsys, monkeypatch: pytest.Mo
             "-a",
             str(tmp_path / "archive.db"),
             "-n",
+            "-J",
         ]
     )
 
@@ -76,6 +78,137 @@ def test_dry_run_routes_without_writing(tmp_path, capsys, monkeypatch: pytest.Mo
     assert payload["mode"] == "normal"
     assert "gallery-dl" in payload["routes"].values()
     assert not (tmp_path / "archive.db").exists()
+
+
+def test_broad_collection_requires_explicit_opt_in(tmp_path, capsys) -> None:
+    url = "https://www.simply-hentai.com/series/8-original-work"
+
+    blocked = main(["run", "-u", url, "-d", str(tmp_path / "blocked"), "-n", "-J"])
+    blocked_payload = json.loads(capsys.readouterr().out)
+    allowed = main(
+        [
+            "run", "-u", url, "-d", str(tmp_path / "allowed"),
+            "--allow-collection", "-n", "-J",
+        ]
+    )
+    allowed_payload = json.loads(capsys.readouterr().out)
+
+    assert blocked == 1
+    assert blocked_payload["accepted"] == 0
+    assert "requires --allow-collection" in blocked_payload["unsupported"][0]["reason"]
+    assert allowed == 0
+    assert allowed_payload["accepted"] == 1
+
+
+def test_broad_collection_aborts_real_run_before_other_urls_start(
+    tmp_path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = False
+
+    def fake_run(_manager):
+        nonlocal started
+        started = True
+        return 0
+
+    monkeypatch.setattr("mangadl.cli_core.DownloadManager.run", fake_run)
+    with pytest.raises(SystemExit, match="2"):
+        main(
+            [
+                "run",
+                "-u", "https://www.simply-hentai.com/series/8-original-work",
+                "-u", "https://manga18fx.com/manga/example/",
+                "-d", str(tmp_path / "library"),
+                "-N",
+            ]
+        )
+
+    assert not started
+    assert "refusing broad collection" in capsys.readouterr().err
+
+
+def test_dry_run_is_human_readable_and_uses_destination_local_defaults(
+    tmp_path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(GalleryDlBackend, "score", lambda self, url: 100)
+    destination = tmp_path / "library"
+
+    result = main(
+        [
+            "run",
+            "config",
+            "-u",
+            "https://example.invalid/gallery/1",
+            "-d",
+            str(destination),
+            "-n",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert result == 0
+    assert "mangadl dry run" in output
+    assert "Accepted: 1 unique URL(s)" in output
+    assert f"Control directory: {destination / '.mangadl'}" in output
+    assert not (destination / ".mangadl").exists()
+
+
+def test_real_run_constructs_destination_local_control_paths_without_shell_variables(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(GalleryDlBackend, "score", lambda self, url: 100)
+    captured = {}
+
+    def fake_run(manager):
+        captured["options"] = manager.options
+        return 0
+
+    monkeypatch.setattr("mangadl.cli_core.DownloadManager.run", fake_run)
+    destination = tmp_path / "library"
+
+    result = main(
+        [
+            "run",
+            "-u",
+            "https://example.invalid/gallery/1",
+            "-d",
+            str(destination),
+            "-N",
+        ]
+    )
+
+    options = captured["options"]
+    assert result == 0
+    assert options.archive == destination / ".mangadl" / "archive.sqlite3"
+    assert options.state_db == destination / ".mangadl" / "state.sqlite3"
+    assert options.log_dir == destination / ".mangadl" / "logs"
+
+
+def test_partials_clean_is_dry_run_first_and_requires_files_only_for_legacy(
+    tmp_path, capsys
+) -> None:
+    destination = tmp_path / "library"
+    legacy = destination / "_partial" / "legacy"
+    legacy.mkdir(parents=True)
+    (legacy / "001.jpg").write_bytes(b"image")
+
+    preview_result = main(
+        ["partials", "clean", "-d", str(destination), "-t", "legacy", "-F", "-j"]
+    )
+    preview = json.loads(capsys.readouterr().out)
+    apply_result = main(
+        [
+            "partials", "clean", "-d", str(destination), "-t", "legacy",
+            "-F", "-f", "-j",
+        ]
+    )
+    applied = json.loads(capsys.readouterr().out)
+
+    assert preview_result == 0
+    assert preview["status"] == "dry-run"
+    assert preview["files_only"]
+    assert apply_result == 0
+    assert applied["status"] == "applied"
+    assert not legacy.exists()
 
 
 def test_benchmark_dry_run_reports_explicit_bounds(
@@ -113,6 +246,7 @@ def test_benchmark_dry_run_reports_explicit_bounds(
             "-U",
             "1.5",
             "-n",
+            "-J",
         ]
     )
 
@@ -166,6 +300,7 @@ def test_legacy_auto_tune_aliases_normalize_to_benchmark_preview(tmp_path, capsy
             "-Y",
             "2:4",
             "-n",
+            "-J",
         ]
     )
 
@@ -198,6 +333,7 @@ def test_explicit_max_workers_override_allows_experimental_bound(
             "-w",
             "5",
             "-n",
+            "-J",
         ]
     )
 

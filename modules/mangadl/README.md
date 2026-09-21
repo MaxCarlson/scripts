@@ -25,21 +25,62 @@ python -m pip install -e .\modules\mangadl
 ## Concise normal run
 
 ```powershell
-mangadl run -i .\urls.txt -d .\downloads -a .\gallery-dl-archive.sqlite3 -w 2 -I 4
+mangadl run -i .\urls.txt -d .\downloads -w 2 -I 4
 ```
 
-The normal `run --help` surface contains only routine input, destination/archive, and concurrency controls:
+The normal `run --help` surface contains only routine input, destination, and concurrency controls:
 
 - `-i/--input-file`: repeatable UTF-8 URL file.
 - `-u/--url`: repeatable direct URL or supported shorthand.
 - `-d/--destination`: output library root.
-- `-a/--archive`: gallery-dl archive database.
+- `-G/--allow-collection`: explicitly permit broad feeds, searches, tags, or
+  series collections that may expand into many galleries.
+- `-a/--archive`: optional gallery-dl archive override.
 - `-w/--workers`: initial simultaneous series workers.
 - `-I/--image-workers`: image transfers inside each newly started Manga18FX worker.
 
-Run IDs are always generated automatically. Manager state defaults to `mangadl-state.sqlite3`, and logs default to `mangadl-logs`.
+Run IDs are always generated automatically. Archive, state, and logs default to
+`<destination>/.mangadl/archive.sqlite3`,
+`<destination>/.mangadl/state.sqlite3`, and
+`<destination>/.mangadl/logs`. Explicit `-a/--archive`, `-s/--state-db`, and
+`-l/--log-dir` values still override those paths, but ordinary use needs no
+PowerShell variables or manual control-directory setup.
 
 Blank lines and lines beginning with `#` or `;` are ignored. Duplicate and unsupported URLs are reported before workers start.
+
+Broad collection URLs are refused before any worker starts unless
+`-G/--allow-collection` is present. This specifically prevents a collection
+such as `https://www.simply-hentai.com/series/8-original-work` from silently
+expanding into hundreds of galleries. Use a no-write preview before opting in:
+
+```powershell
+mangadl run -u $collectionUrl -d .\downloads -n
+mangadl run -u $collectionUrl -d .\downloads -G
+```
+
+## Safe partial cleanup
+
+Mangadl 1.16 records ownership metadata and the exact gallery-dl archive key
+for each successfully downloaded file retained under `<destination>/_partial`.
+Cleanup is a dry run unless `-f/--apply` is supplied:
+
+```powershell
+mangadl partials clean -d .\downloads -t fc7c3b753cc0
+mangadl partials clean -d .\downloads -t fc7c3b753cc0\simplyhentai\354074 -f
+```
+
+Tracked cleanup validates that the target remains inside `_partial`, refuses a
+partial owned by a running worker, optionally verifies `-a/--archive`, backs up
+the archive, removes only recorded matching keys, and then deletes the selected
+files. Repeat `-t/--target` for multiple selections. `-B/--no-backup` disables
+the archive backup only when explicitly requested.
+
+Partials created before 1.16 have no ownership manifest, so mangadl cannot
+safely infer which archive rows they created. They are refused by default.
+`-F/--files-only` permits deletion of such legacy data but deliberately leaves
+the archive unchanged and prints a warning. This is the appropriate mode for
+the already-created `fc7c3b753cc0` accidental partial; it cannot retroactively
+perform exact archive reconciliation.
 
 ## Advanced run configuration
 
@@ -50,6 +91,15 @@ mangadl run config -i .\urls.txt -d .\downloads -a .\gallery-dl-archive.sqlite3 
 ```
 
 `run config --help` exposes backend forcing, state/log paths, retries, retry delay, worker ceiling/stagger, gallery-dl configuration and rate limiting, cookies, HDPornComics executable/threads, dry-run, no-UI, quiet, verbose, and log-anonymization compatibility settings.
+
+Dry-run is a human-readable preflight and writes no archive, state, log, or
+download files:
+
+```powershell
+mangadl run config -i .\urls.txt -d . -w 4 -n
+```
+
+Add `-J/--json` when structured dry-run output is required.
 
 For one transition release, the former flat advanced flags remain accepted directly under `run`, but they are hidden from normal help.
 
@@ -126,7 +176,7 @@ root with `-A/--auth-dir` or `MANGADL_AUTH_DIR`.
 After a profile is created, the ordinary command is sufficient:
 
 ```powershell
-mangadl run -i .\urls.txt -d .\downloads -a .\gallery-dl-archive.sqlite3
+mangadl run -i .\urls.txt -d .\downloads
 ```
 
 Each gallery-dl job resolves its own domain profile. Explicit
@@ -134,8 +184,11 @@ Each gallery-dl job resolves its own domain profile. Explicit
 `-k/--gallery-user-agent` settings take precedence. A recognized 401/403,
 `ChallengeError`, or Cloudflare challenge makes the profile stale even when
 its expiry is in the future and the UA is unchanged. The manager performs one
-shared refresh per domain and retries each affected job once; 404, rate-limit,
+shared background refresh per domain and retries each affected job once; 404, rate-limit,
 filesystem, and unrelated backend failures do not refresh credentials.
+Refresh progress appears in the dashboard notice without blocking rendering or
+keyboard controls. Jobs that report the same challenge wait for the single
+domain refresh and restart with the replacement cookie/UA pair.
 
 For a Windows simulation-only live check from the desired output folder:
 

@@ -4,7 +4,7 @@
 
 - Branch: `agent/mangadl-gallery-auth`
 - Base: `agent/unified` at `78f07e6`
-- Current stage: S5 complete; feature-branch publication authorized
+- Current stage: S6 in progress for destination-root layout and failed live-run acceptance remediation
 
 ## Current Evidence
 
@@ -48,8 +48,26 @@
   distinct images (1,300,372 bytes) in 3.7 seconds, and a four-worker run with
   one bounded retry completed 4/4 chapters (702 images, 22,438,146 bytes) in
   11.9 seconds. A fixed same-domain cap is not required.
+- A later 25-URL/four-worker acceptance run showed that runtime auth refresh
+  blocks the manager/TUI loop, prints over the dashboard, and only restarts the
+  triggering job while other same-domain gallery-dl processes retain their
+  startup cookies. Worker logs were not lost: worker 1 had 24 activity lines
+  ending at `FINISH_RETRY`; workers 2-4 had 62-64 lines and continued through
+  270-391 images. This supersedes the earlier no-coordination conclusion.
+- The user also rejected shell-variable-dependent control paths and raw JSON
+  as the default terminal dry-run. S6 now includes destination-local defaults,
+  a human dry-run, and nonblocking domain-wide refresh coordination.
+- Version 1.15.0 implemented those remediations; they are included in the
+  current 1.16.0 partial-safety release candidate. Archive/state/logs default
+  beneath `<destination>/.mangadl`; `--dry-run` is human-readable and
+  `-J/--json` is explicit; browser refresh runs outside the dashboard loop and
+  same-domain challenge jobs wait for its result. The full suite passes with
+  158 tests, compile and Ruff pass, and local dry-runs create no control files.
+- Exact offline commands and results are recorded in `STATUS.md`. The only
+  remaining S6 gate is the user's bounded live validation: cookie refresh,
+  one URL, then a short multi-worker URL-file observation.
 
 ## Immediate Next Action
 
-After publishing S5, switch to `main` as requested. Do not merge the feature
-branch before the separate integration approval boundary.
+Have the user live-validate the expanded S6, then publish its coherent patch. Do not merge
+the feature branch before the separate integration approval boundary.

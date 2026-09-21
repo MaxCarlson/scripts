@@ -12,7 +12,7 @@ from typing import Any
 
 from . import __version__
 from .archive_ui import ArchiveBrowser, filter_records, load_archive
-from .backends import backend_classification, choose_backend
+from .backends import backend_classification, choose_backend, gallery_dl_scope
 from .cli_structure import add_run_arguments, normalize_command_shape
 from .concurrency import HARD_MAX_OUTER_WORKERS, MAX_OUTER_WORKERS_ENV
 from .destination_audit import audit_destinations, write_audit_outputs
@@ -35,6 +35,7 @@ from .optimizer import (
     generate_optimization_states,
     run_online_optimization,
 )
+from .partial_safety import apply_cleanup, cleanup_preview, plan_cleanup
 from .repair import apply_repair, plan_loose_images
 from .repair_ui import RepairDashboard
 from .state import StateStore
@@ -177,6 +178,42 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     repair.add_argument("-N", "--no-ui", action="store_true", help="Disable the in-place progress dashboard.")
     repair.add_argument("-j", "--json", action="store_true", help="Emit JSON repair details.")
 
+    partials = subparsers.add_parser("partials", help="Inspect or safely remove resumable partial data.")
+    partial_commands = partials.add_subparsers(dest="partials_command", required=True)
+    partial_clean = partial_commands.add_parser(
+        "clean",
+        aliases=("cleanup",),
+        help="Remove selected partial data and its recorded gallery-dl archive entries.",
+    )
+    partial_clean.add_argument("-d", "--destination", required=True, type=_path, help="Destination library root.")
+    partial_clean.add_argument(
+        "-t",
+        "--target",
+        action="append",
+        required=True,
+        help="Path beneath <destination>/_partial to remove; repeatable.",
+    )
+    partial_clean.add_argument(
+        "-a",
+        "--archive",
+        type=_path,
+        help="Require tracked partials to use this exact gallery-dl archive.",
+    )
+    partial_clean.add_argument("-f", "--apply", action="store_true", help="Apply the cleanup (default: preview only).")
+    partial_clean.add_argument(
+        "-F",
+        "--files-only",
+        action="store_true",
+        help="Allow legacy cleanup without changing an archive; may leave stale archive entries.",
+    )
+    partial_clean.add_argument(
+        "-B",
+        "--no-backup",
+        action="store_true",
+        help="Do not create a timestamped archive backup before applying tracked cleanup.",
+    )
+    partial_clean.add_argument("-j", "--json", action="store_true", help="Emit JSON cleanup details.")
+
     auth = subparsers.add_parser("auth", help="Manage per-domain gallery-dl browser authentication.")
     auth_commands = auth.add_subparsers(dest="auth_command", required=True)
 
@@ -318,16 +355,62 @@ def _validate_run(args: argparse.Namespace) -> None:
             raise ValueError("--trial-seconds must be greater than zero for timed evaluation")
 
 
+def _resolve_run_paths(args: argparse.Namespace) -> None:
+    """Fill control paths from the selected destination without shell setup."""
+    control_root = args.destination / ".mangadl"
+    args.archive = args.archive or control_root / "archive.sqlite3"
+    args.state_db = args.state_db or control_root / "state.sqlite3"
+    args.log_dir = args.log_dir or control_root / "logs"
+
+
+def _format_run_preview(preview: dict[str, Any]) -> str:
+    routes = preview["routes"]
+    route_counts: dict[str, int] = {}
+    for backend in routes.values():
+        route_counts[backend] = route_counts.get(backend, 0) + 1
+    lines = [
+        "mangadl dry run — no downloads or control files were created",
+        f"Accepted: {preview['accepted']} unique URL(s)",
+        f"Rejected: {len(preview['rejected'])} duplicate/invalid line(s)",
+        f"Unsupported: {len(preview['unsupported'])} URL(s)",
+        f"Destination: {preview['destination']}",
+        f"Control directory: {preview['control_directory']}",
+        f"Workers: {preview['requested_workers']} (maximum {preview['max_workers']}); "
+        f"image workers: {preview['image_workers']}",
+        "Routes: " + (", ".join(f"{name}={count}" for name, count in sorted(route_counts.items())) or "none"),
+    ]
+    if preview["rejected"]:
+        lines.append("Rejected input:")
+        lines.extend(
+            f"  line {item.get('line', '?')}: {item.get('reason', 'rejected')} — {item.get('value', '')}"
+            for item in preview["rejected"]
+        )
+    if preview["unsupported"]:
+        lines.append("Unsupported input:")
+        lines.extend(f"  {item['url']} — {item['reason']}" for item in preview["unsupported"])
+    return "\n".join(lines)
+
+
 def _run(args: argparse.Namespace) -> int:
     _normalize_legacy_autotune(args)
     _validate_run(args)
+    _resolve_run_paths(args)
 
     inputs, rejected = collect_inputs(args.input_file, args.url)
     routes: dict[str, str] = {}
     unsupported: list[dict[str, Any]] = []
+    blocked_collections: list[str] = []
     for item in inputs:
         try:
-            routes[item.canonical_url] = choose_backend(item.canonical_url, args.backend)
+            backend = choose_backend(item.canonical_url, args.backend)
+            scope = gallery_dl_scope(item.canonical_url) if backend == "gallery-dl" else None
+            if scope is not None and scope.broad_collection and not args.allow_collection:
+                blocked_collections.append(item.canonical_url)
+                raise ValueError(
+                    f"broad gallery-dl collection ({scope.category}:{scope.subcategory}, "
+                    f"{scope.extractor}) requires --allow-collection"
+                )
+            routes[item.canonical_url] = backend
         except ValueError as exc:
             unsupported.append({"url": item.url, "reason": str(exc)})
     inputs = [item for item in inputs if item.canonical_url in routes]
@@ -343,12 +426,23 @@ def _run(args: argparse.Namespace) -> int:
         "image_workers": args.image_workers,
         "max_workers": args.max_workers,
         "worker_start_delay": args.worker_start_delay,
+        "destination": str(args.destination),
+        "control_directory": str(args.destination / ".mangadl"),
+        "archive": str(args.archive),
+        "state_db": str(args.state_db),
+        "log_dir": str(args.log_dir),
     }
     if args.run_mode in {"optimize", "benchmark"}:
         preview["optimization"] = _optimization_preview(args, manga18fx_urls)
     if args.dry_run:
-        print(json.dumps(preview, indent=2, sort_keys=True))
+        print(json.dumps(preview, indent=2, sort_keys=True) if args.json else _format_run_preview(preview))
         return 1 if unsupported else 0
+    if blocked_collections:
+        raise ValueError(
+            "refusing broad collection URL(s) because they may expand into thousands of images; "
+            "inspect with --dry-run, then rerun with --allow-collection if intentional: "
+            + ", ".join(blocked_collections)
+        )
     if not inputs:
         print(json.dumps(preview, indent=2, sort_keys=True), file=sys.stderr)
         return 2
@@ -551,6 +645,35 @@ def _archive(args: argparse.Namespace) -> int:
         print(f"{snapshot.path}: {len(records)}/{len(snapshot.records)} archive records")
         return 0
     return browser.run()
+
+
+def _partials(args: argparse.Namespace) -> int:
+    partial_root, targets = plan_cleanup(
+        args.destination,
+        args.target,
+        archive_override=args.archive,
+        files_only=args.files_only,
+    )
+    preview = cleanup_preview(partial_root, targets)
+    if args.apply:
+        payload = {**preview, **apply_cleanup(targets, backup=not args.no_backup), "status": "applied"}
+    else:
+        payload = {**preview, "status": "dry-run"}
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        action = "REMOVED" if args.apply else "DRY-RUN"
+        print(
+            f"{action}: {payload['files']} file(s), {payload['bytes']} byte(s), "
+            f"{payload['archive_matches']} matching archive entry/entries"
+        )
+        for target in payload["targets"]:
+            print(f"  {target}")
+        if args.files_only:
+            print("WARNING: files-only cleanup does not remove stale gallery-dl archive entries.")
+        for backup in payload.get("archive_backups", []):
+            print(f"Archive backup: {backup}")
+    return 0
 
 
 def _patch_hdporncomics(args: argparse.Namespace) -> int:
@@ -844,6 +967,7 @@ def main(argv: list[str] | None = None) -> int:
             "audit": _audit_destinations,
             "audit-destinations": _audit_destinations,
             "repair-loose": _repair_loose,
+            "partials": _partials,
             "auth": _auth,
         }[args.command](args)
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:

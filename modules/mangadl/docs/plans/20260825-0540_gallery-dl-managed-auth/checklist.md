@@ -53,3 +53,45 @@
   images (1,300,372 bytes, 3.7 seconds).
 - [x] Validate four same-domain workers with one bounded retry: 4/4 jobs,
   702 images, 22,438,146 bytes, 11.9 seconds. No domain cap is required.
+
+## S6 — Destination-Root Series Layout
+
+- [x] Confirm the required `<destination>/<series>/...` library contract.
+- [x] Resolve gallery-dl category wrappers without a network request.
+- [x] Flatten only the native category wrapper during successful merge.
+- [x] Preserve nhentai naming and fallback behavior.
+- [x] Use stable URL-hash partial folders for collision-free cross-run resume.
+- [x] Keep auth-refresh and transient retry budgets independent.
+- [x] Add focused output-layout and regression tests.
+- [x] Run the full mangadl test suite and synchronize the feature version.
+- [ ] Live-validate direct series folders under a selected destination.
+- [x] Default archive/state/logs beneath `<destination>/.mangadl` while
+  preserving explicit overrides.
+- [x] Replace default dry-run JSON with a concise human report; keep explicit
+  JSON output.
+- [x] Run managed-auth refresh outside the dashboard/input loop and surface
+  progress inside the dashboard.
+- [x] Hold every same-domain attempt that reports a challenge for the shared
+  refresh, then restart it with the replacement profile.
+- [x] Add focused CLI-default, dry-run, TUI-progress, and domain-refresh tests.
+- [x] Abort stale gallery-dl backend attempts promptly on authoritative
+  challenge output so they reach the one shared refresh without a retry storm.
+
+## S7 — Input-Wide Authentication Preflight (Blocked on S6 Acceptance)
+
+- [ ] Parse and report unique canonical URLs before worker launch.
+- [ ] Discover gallery-dl routes from the installed extractor registry.
+- [ ] Group represented gallery-dl URLs by normalized auth domain.
+- [ ] Create/replace one profile per domain using an exact representative URL.
+- [ ] Reuse a saved domain URL automatically; prompt only for never-known domains.
+- [ ] Make explicit URLs validate and replace the saved domain target.
+- [ ] Keep saved target URLs when cookies/profiles are cleared or replaced.
+- [ ] Clearly report created, replaced, reused, and failed profile outcomes.
+- [ ] Add forced single-domain and all-input-domain replacement controls.
+- [ ] Add explicit reuse/no-browser-preflight control.
+- [ ] Keep all secret-bearing auth artifacts outside the source module/repo.
+- [ ] Add `modules/mangadl/AUTH_TARGETS.md` as the non-secret site/URL/config catalog.
+- [ ] Add explicit runtime-target-to-Markdown catalog synchronization/export.
+- [ ] Prove catalog export excludes cookies, headers, and raw browser data.
+- [ ] Add mocked multi-domain, failure, concurrency, and secret-leak tests.
+- [ ] Begin implementation only after every S6 acceptance gate passes.
