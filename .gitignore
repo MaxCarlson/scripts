@@ -210,6 +210,9 @@ codex_tmp_test/
 .tmp-*/
 logs/
 modules/ytaedl/stars/
+.mangadl-auth/
+mangadl-auth/
+*-cookies.txt
 .codex
 NUL
 

@@ -54,6 +54,19 @@ def test_human_bytes_identity_and_tail(tmp_path: Path) -> None:
     assert read_log_lines(log, 2) == ["two", "three"]
 
 
+def test_log_tail_is_bounded_for_large_raw_logs(tmp_path: Path) -> None:
+    log = tmp_path / "worker.log"
+    with log.open("wb") as stream:
+        for index in range(50_000):
+            stream.write(f"{index:05d} ".encode() + (b"x" * 200) + b"\n")
+
+    assert read_log_lines(log, 3) == [
+        "49997 " + ("x" * 200),
+        "49998 " + ("x" * 200),
+        "49999 " + ("x" * 200),
+    ]
+
+
 def test_narrow_dashboard_uses_two_rows_per_worker() -> None:
     worker = WorkerSnapshot(1, state="run", url="https://nhentai.net/g/123/", images_done=4, bytes_done=2048)
     output = render_dashboard("run", {"running": 1}, {1: worker}, width=60)

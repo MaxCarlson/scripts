@@ -12,13 +12,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .concurrency import MAX_OUTER_WORKERS, Manga18FXConcurrencyPlan, plan_manga18fx_concurrency
+from .concurrency import Manga18FXConcurrencyPlan, plan_manga18fx_concurrency
+from .gallery_auth import ProfileStore, domain_for, refresh_profile
 from .models import JobState, WorkerSnapshot
 from .state import StateStore
 from .ui import ConsoleDashboard, DashboardRuntime, human_bytes, plain_identity
 
 MANGA18FX_IMAGE_WORKERS_ENV = "MANGADL_MANGA18FX_IMAGE_WORKERS"
 MAX_IMAGE_WORKERS = 8
+AUTH_REFRESH_HOLD_SECONDS = 24 * 60 * 60
 
 
 @dataclass(slots=True)
@@ -34,6 +36,10 @@ class RunOptions:
     gallery_config: Path | None = None
     cookies: Path | None = None
     cookies_browser: str | None = None
+    gallery_user_agent: str | None = None
+    auth_dir: Path | None = None
+    auth_browser: str = "chrome"
+    auto_auth_refresh: bool = True
     rate: str | None = None
     hdporncomics_executable: str | None = None
     hdporncomics_threads: int = 8
@@ -63,6 +69,13 @@ class DownloadManager:
         self.last_worker_status_log: dict[int, float] = {}
         self.snapshots = {slot: WorkerSnapshot(slot) for slot in range(1, self.target_workers + 1)}
         self.stop_requested = False
+        self.auth_store = ProfileStore(options.auth_dir)
+        self.auth_refreshed_domains: set[str] = set()
+        self.auth_refreshing_domains: set[str] = set()
+        self.auth_retry_jobs: set[int] = set()
+        self.auth_waiting_jobs: dict[str, list[tuple[int, str, int, str, float]]] = {}
+        self.auth_updates: queue.Queue[tuple[str, str, Any]] = queue.Queue()
+        self.auth_threads: dict[str, threading.Thread] = {}
         self.runtime_notice = self._initial_concurrency_notice(plan)
         self.run_log = options.log_dir / options.run_id
         for folder in (self.run_log / "workers", self.run_log / "raw"):
@@ -222,18 +235,142 @@ class DownloadManager:
             "--raw-log",
             str(self.run_log / "raw" / f"worker-{slot:02d}-gallery-dl.log"),
         ]
+        managed_profile = None
+        explicit_credentials = bool(
+            self.options.cookies or self.options.cookies_browser or self.options.gallery_config
+        )
+        if job["backend"] == "gallery-dl" and not explicit_credentials:
+            managed_profile = self.auth_store.load(job["canonical_url"])
         if self.options.gallery_config:
             command.extend(["--gallery-config", str(self.options.gallery_config)])
         if self.options.cookies:
             command.extend(["--cookies", str(self.options.cookies)])
         if self.options.cookies_browser:
             command.extend(["--cookies-browser", self.options.cookies_browser])
+        if self.options.gallery_user_agent:
+            command.extend(["--gallery-user-agent", self.options.gallery_user_agent])
+        elif managed_profile:
+            command.extend(["--cookies", str(managed_profile.cookie_path)])
+            command.extend(["--gallery-user-agent", managed_profile.user_agent])
         if self.options.rate:
             command.extend(["--rate", self.options.rate])
         if self.options.hdporncomics_executable:
             command.extend(["--hdporncomics-executable", self.options.hdporncomics_executable])
         command.extend(["--hdporncomics-threads", str(self.options.hdporncomics_threads)])
         return command
+
+    def _can_manage_auth(self, job: dict[str, Any]) -> bool:
+        return bool(
+            job["backend"] == "gallery-dl"
+            and not self.options.cookies
+            and not self.options.cookies_browser
+            and not self.options.gallery_config
+        )
+
+    def _transient_attempt(self, job: dict[str, Any]) -> int:
+        """Count normal attempts without charging the one auth-refresh retry."""
+        return max(1, int(job["attempts"]) - int(job["id"] in self.auth_retry_jobs))
+
+    def _start_auth_refresh(self, domain: str, url: str) -> None:
+        self.auth_refreshing_domains.add(domain)
+        self._set_runtime_notice(f"[{domain}] browser authentication required; preparing {self.options.auth_browser}.")
+
+        def refresh() -> None:
+            try:
+                profile, probe = refresh_profile(
+                    url,
+                    store=self.auth_store,
+                    browser=self.options.auth_browser,
+                    progress=lambda message: self.auth_updates.put(("progress", domain, message)),
+                )
+                self.auth_updates.put(("result", domain, (profile, probe, None)))
+            except Exception as exc:
+                # This daemon-thread boundary must always wake held jobs; an
+                # unexpected browser/probe error must not leave the run stuck.
+                self.auth_updates.put(("result", domain, (None, None, exc)))
+
+        thread = threading.Thread(target=refresh, name=f"mangadl-auth-{domain}", daemon=True)
+        self.auth_threads[domain] = thread
+        thread.start()
+
+    def _drain_auth_updates(self) -> None:
+        while True:
+            try:
+                kind, domain, payload = self.auth_updates.get_nowait()
+            except queue.Empty:
+                return
+            if kind == "progress":
+                message = str(payload)
+                self._set_runtime_notice(message)
+                if not self.options.ui:
+                    print(message, file=sys.stderr, flush=True)
+                continue
+
+            profile, probe, error = payload
+            waiting = self.auth_waiting_jobs.pop(domain, [])
+            self.auth_refreshing_domains.discard(domain)
+            if error is not None or profile is None:
+                detail = str(error) if error is not None else f"validation status: {probe.status}"
+                self._set_runtime_notice(f"[{domain}] authentication refresh failed: {detail}")
+                self.logger.warning("managed auth refresh failed domain=%s error=%s", domain, detail)
+                if not self.options.ui:
+                    print(f"[{domain}] managed authentication refresh failed: {detail}", file=sys.stderr, flush=True)
+                for job_id, attempt_id, slot, message, elapsed in waiting:
+                    self.store.complete(job_id, attempt_id, JobState.FAILED_AUTH, "auth_challenge", detail)
+                    self._write_worker_log(
+                        slot,
+                        "FINISH_FAILED",
+                        f"auth_challenge: {message}; refresh failed: {detail}",
+                        elapsed=elapsed,
+                    )
+                continue
+
+            self.auth_refreshed_domains.add(domain)
+            self._set_runtime_notice(
+                f"[{domain}] authentication refreshed once; resuming {len(waiting)} waiting job(s)."
+            )
+            self.logger.info(
+                "managed auth refreshed domain=%s browser=%s cookies=%s waiting_jobs=%s",
+                domain,
+                profile.browser,
+                profile.cookie_path,
+                len(waiting),
+            )
+            for job_id, attempt_id, _slot, message, _elapsed in waiting:
+                self.store.retry(job_id, attempt_id, 0.5, "auth_challenge", message)
+
+    def _retry_after_auth(self, slot: int, event: dict[str, Any], job: dict[str, Any], message: str) -> bool:
+        if not self._can_manage_auth(job) or event["job_id"] in self.auth_retry_jobs:
+            return False
+        domain = domain_for(event["url"])
+        if domain not in self.auth_refreshed_domains and not self.options.auto_auth_refresh:
+            return False
+        self.auth_retry_jobs.add(event["job_id"])
+        elapsed = float(event.get("data", {}).get("elapsed", self.snapshots[slot].elapsed))
+        if domain in self.auth_refreshed_domains:
+            self.store.retry(event["job_id"], event["attempt_id"], 0.5, "auth_challenge", message)
+            detail = "shared auth profile already refreshed"
+        else:
+            self.store.retry(
+                event["job_id"],
+                event["attempt_id"],
+                AUTH_REFRESH_HOLD_SECONDS,
+                "auth_challenge",
+                message,
+            )
+            self.auth_waiting_jobs.setdefault(domain, []).append(
+                (event["job_id"], event["attempt_id"], slot, message, elapsed)
+            )
+            detail = "waiting for shared auth refresh"
+            if domain not in self.auth_refreshing_domains:
+                self._start_auth_refresh(domain, event["url"])
+        self._write_worker_log(
+            slot,
+            "FINISH_RETRY",
+            f"{plain_identity(event['url'])}  {detail}",
+            elapsed=elapsed,
+        )
+        return True
 
     def _start_worker(self, slot: int, job: dict[str, Any]) -> None:
         child_env = os.environ.copy()
@@ -355,11 +492,18 @@ class DownloadManager:
             job = next((row for row in self.store.jobs(self.options.run_id) if row["id"] == event["job_id"]), None)
             category = data.get("category", "backend")
             message = data.get("message", "backend failed")
-            if event["event"] == "job_retryable_failure" and job and job["attempts"] <= self.options.retries:
+            if category == "auth_challenge" and job and self._retry_after_auth(slot, event, job, message):
+                pass
+            elif (
+                event["event"] == "job_retryable_failure"
+                and job
+                and self._transient_attempt(job) <= self.options.retries
+            ):
+                transient_attempt = self._transient_attempt(job)
                 self.store.retry(
                     event["job_id"],
                     event["attempt_id"],
-                    self.options.retry_wait * 2 ** (job["attempts"] - 1),
+                    self.options.retry_wait * 2 ** (transient_attempt - 1),
                     category,
                     message,
                 )
@@ -399,6 +543,7 @@ class DownloadManager:
         try:
             while True:
                 self._keyboard()
+                self._drain_auth_updates()
                 try:
                     while True:
                         slot, event = self.events.get_nowait()

@@ -312,7 +312,32 @@ def _color_log_line(line: str) -> str:
 def read_log_lines(path: Path, count: int) -> list[str]:
     if not path.exists():
         return [f"Waiting for {path.name}"]
-    return path.read_text(encoding="utf-8", errors="replace").splitlines()[-count:]
+    if count <= 0:
+        return []
+
+    # Raw backend logs can grow to many MiB. This function runs on the manager
+    # thread during every dashboard refresh, so reading the entire file makes
+    # keyboard input and rendering appear frozen. Read only a bounded suffix.
+    maximum = max(64 * 1024, min(1024 * 1024, count * 8192))
+    chunks: list[bytes] = []
+    read = 0
+    with path.open("rb") as stream:
+        stream.seek(0, os.SEEK_END)
+        position = stream.tell()
+        while position > 0 and read < maximum:
+            amount = min(8192, position, maximum - read)
+            position -= amount
+            stream.seek(position)
+            chunk = stream.read(amount)
+            chunks.append(chunk)
+            read += len(chunk)
+            if sum(part.count(b"\n") for part in chunks) > count:
+                break
+    text = b"".join(reversed(chunks)).decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    if position > 0 and lines:
+        lines[0] = "…" + lines[0]
+    return lines[-count:]
 
 
 def render_dashboard(
@@ -374,7 +399,7 @@ def render_dashboard(
         )
     )
     if runtime is not None and runtime.notice:
-        lines.append(clip(f"Tuning: {runtime.notice}", width))
+        lines.append(clip(f"Status: {runtime.notice}", width))
     lines.append("-" * width)
     if width >= 160:
         lines.append(_wide_heading(width))

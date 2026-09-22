@@ -12,10 +12,21 @@ from typing import Any
 
 from . import __version__
 from .archive_ui import ArchiveBrowser, filter_records, load_archive
-from .backends import backend_classification, choose_backend
+from .backends import backend_classification, choose_backend, gallery_dl_scope
 from .cli_structure import add_run_arguments, normalize_command_shape
 from .concurrency import HARD_MAX_OUTER_WORKERS, MAX_OUTER_WORKERS_ENV
 from .destination_audit import audit_destinations, write_audit_outputs
+from .gallery_auth import (
+    BROWSERS,
+    DEFAULT_AUTH_SITE,
+    ProfileStore,
+    TargetStore,
+    cookie_summary,
+    domain_for,
+    gallery_sites,
+    refresh_profile,
+    site_for_url,
+)
 from .hdporncomics_patch import apply_patch, patch_status
 from .input import collect_inputs
 from .manager import DownloadManager, RunOptions
@@ -24,6 +35,9 @@ from .optimizer import (
     generate_optimization_states,
     run_online_optimization,
 )
+from .partial_safety import apply_cleanup, cleanup_preview, plan_cleanup
+from .partial_reconcile import reconstruct_archive_keys, resolve_owner_urls
+from .partial_ui import select_partial_owners
 from .repair import apply_repair, plan_loose_images
 from .repair_ui import RepairDashboard
 from .state import StateStore
@@ -165,6 +179,121 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     repair_mode.add_argument("-f", "--apply", action="store_true", help="Move files after complete validation.")
     repair.add_argument("-N", "--no-ui", action="store_true", help="Disable the in-place progress dashboard.")
     repair.add_argument("-j", "--json", action="store_true", help="Emit JSON repair details.")
+
+    partials = subparsers.add_parser("partials", help="Inspect or safely remove resumable partial data.")
+    partial_commands = partials.add_subparsers(dest="partials_command", required=True)
+    partial_clean = partial_commands.add_parser(
+        "clean",
+        aliases=("cleanup",),
+        help="Remove selected partial data and its recorded gallery-dl archive entries.",
+    )
+    partial_clean.add_argument("-d", "--destination", required=True, type=_path, help="Destination library root.")
+    partial_clean.add_argument(
+        "-t",
+        "--target",
+        action="append",
+        default=[],
+        help="Path beneath <destination>/_partial to remove; repeatable. Omit to open the UI.",
+    )
+    partial_clean.add_argument(
+        "-a",
+        "--archive",
+        type=_path,
+        help="Require tracked partials to use this exact gallery-dl archive.",
+    )
+    partial_clean.add_argument("-f", "--apply", action="store_true", help="Apply the cleanup (default: preview only).")
+    partial_clean.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Skip the typed DELETE confirmation for interactive apply mode.",
+    )
+    partial_clean.add_argument(
+        "-F",
+        "--files-only",
+        action="store_true",
+        help="Allow legacy cleanup without changing an archive; may leave stale archive entries.",
+    )
+    partial_clean.add_argument(
+        "-B",
+        "--no-backup",
+        action="store_true",
+        help="Do not create a timestamped archive backup before applying tracked cleanup.",
+    )
+    partial_clean.add_argument("-j", "--json", action="store_true", help="Emit JSON cleanup details.")
+    partial_clean.add_argument(
+        "-s",
+        "--state-db",
+        action="append",
+        type=_path,
+        default=[],
+        help="Additional mangadl state database used to recover legacy partial URLs; repeatable.",
+    )
+    partial_clean.add_argument(
+        "-u",
+        "--url",
+        action="append",
+        default=[],
+        help="Legacy URL override as URL or PARTIAL_KEY=URL; repeatable.",
+    )
+    partial_clean.add_argument("-g", "--gallery-config", type=_path, help="gallery-dl config for legacy key recovery.")
+    partial_clean.add_argument("-c", "--cookies", type=_path, help="Cookie file for legacy key recovery.")
+    partial_clean.add_argument("-b", "--cookies-browser", help="Browser cookie source for legacy key recovery.")
+    partial_clean.add_argument("-U", "--user-agent", help="User-Agent for legacy key recovery.")
+    partial_clean.add_argument("-A", "--auth-dir", type=_path, help="Managed-auth directory for legacy key recovery.")
+
+    auth = subparsers.add_parser("auth", help="Manage per-domain gallery-dl browser authentication.")
+    auth_commands = auth.add_subparsers(dest="auth_command", required=True)
+
+    auth_status = auth_commands.add_parser("status", help="Show a managed authentication profile.")
+    status_target = auth_status.add_mutually_exclusive_group(required=True)
+    status_target.add_argument("-u", "--url", help="Gallery URL whose domain should be inspected.")
+    status_target.add_argument("-d", "--domain", help="Domain to inspect.")
+    auth_status.add_argument("-A", "--auth-dir", type=_path, help="Managed authentication root.")
+    auth_status.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
+
+    auth_refresh = auth_commands.add_parser("refresh", help="Extract browser cookies and validate them.")
+    auth_refresh.add_argument(
+        "-u", "--url", help="Actual gallery or series URL; validates and replaces the saved site target."
+    )
+    auth_refresh.add_argument(
+        "-s", "--site", help=f"gallery-dl site/module name (default: {DEFAULT_AUTH_SITE})."
+    )
+    auth_refresh.add_argument(
+        "-S", "--select-site", action="store_true", help="Interactively select from installed gallery-dl sites."
+    )
+    auth_refresh.add_argument(
+        "-q", "--site-filter", help="Filter the interactive gallery-dl site list."
+    )
+    auth_refresh.add_argument(
+        "-b", "--browser", choices=BROWSERS, default="chrome", help="Cookie source (default: chrome)."
+    )
+    auth_refresh.add_argument("-p", "--debug-port", type=int, help="Chrome/Edge DevTools port.")
+    auth_refresh.add_argument("-t", "--timeout", type=float, default=180.0, help="Browser verification timeout.")
+    auth_refresh.add_argument("-A", "--auth-dir", type=_path, help="Managed authentication root.")
+    auth_refresh.add_argument(
+        "-c", "--cookie-file", type=_path, help="Write the generated Netscape cookie file here."
+    )
+    auth_refresh.add_argument(
+        "-U", "--user-agent", help="Override the captured User-Agent (useful with Firefox)."
+    )
+    auth_refresh.add_argument(
+        "-n", "--no-launch-browser", action="store_true", help="Require an existing browser debugger."
+    )
+    auth_refresh.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
+
+    auth_clear = auth_commands.add_parser("clear", help="Remove a managed authentication profile.")
+    clear_target = auth_clear.add_mutually_exclusive_group(required=True)
+    clear_target.add_argument("-u", "--url", help="Gallery URL whose profile should be removed.")
+    clear_target.add_argument("-d", "--domain", help="Domain profile to remove.")
+    auth_clear.add_argument("-A", "--auth-dir", type=_path, help="Managed authentication root.")
+    auth_clear.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
+
+    auth_sites = auth_commands.add_parser("sites", help="List sites from the installed gallery-dl registry.")
+    auth_sites.add_argument("-f", "--filter", default="", help="Case-insensitive site-name filter.")
+    auth_sites.add_argument("-k", "--known-only", action="store_true", help="Show only sites with saved targets.")
+    auth_sites.add_argument("-A", "--auth-dir", type=_path, help="Managed authentication root.")
+    auth_sites.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
     return parser
 
 
@@ -254,16 +383,62 @@ def _validate_run(args: argparse.Namespace) -> None:
             raise ValueError("--trial-seconds must be greater than zero for timed evaluation")
 
 
+def _resolve_run_paths(args: argparse.Namespace) -> None:
+    """Fill control paths from the selected destination without shell setup."""
+    control_root = args.destination / ".mangadl"
+    args.archive = args.archive or control_root / "archive.sqlite3"
+    args.state_db = args.state_db or control_root / "state.sqlite3"
+    args.log_dir = args.log_dir or control_root / "logs"
+
+
+def _format_run_preview(preview: dict[str, Any]) -> str:
+    routes = preview["routes"]
+    route_counts: dict[str, int] = {}
+    for backend in routes.values():
+        route_counts[backend] = route_counts.get(backend, 0) + 1
+    lines = [
+        "mangadl dry run — no downloads or control files were created",
+        f"Accepted: {preview['accepted']} unique URL(s)",
+        f"Rejected: {len(preview['rejected'])} duplicate/invalid line(s)",
+        f"Unsupported: {len(preview['unsupported'])} URL(s)",
+        f"Destination: {preview['destination']}",
+        f"Control directory: {preview['control_directory']}",
+        f"Workers: {preview['requested_workers']} (maximum {preview['max_workers']}); "
+        f"image workers: {preview['image_workers']}",
+        "Routes: " + (", ".join(f"{name}={count}" for name, count in sorted(route_counts.items())) or "none"),
+    ]
+    if preview["rejected"]:
+        lines.append("Rejected input:")
+        lines.extend(
+            f"  line {item.get('line', '?')}: {item.get('reason', 'rejected')} — {item.get('value', '')}"
+            for item in preview["rejected"]
+        )
+    if preview["unsupported"]:
+        lines.append("Unsupported input:")
+        lines.extend(f"  {item['url']} — {item['reason']}" for item in preview["unsupported"])
+    return "\n".join(lines)
+
+
 def _run(args: argparse.Namespace) -> int:
     _normalize_legacy_autotune(args)
     _validate_run(args)
+    _resolve_run_paths(args)
 
     inputs, rejected = collect_inputs(args.input_file, args.url)
     routes: dict[str, str] = {}
     unsupported: list[dict[str, Any]] = []
+    blocked_collections: list[str] = []
     for item in inputs:
         try:
-            routes[item.canonical_url] = choose_backend(item.canonical_url, args.backend)
+            backend = choose_backend(item.canonical_url, args.backend)
+            scope = gallery_dl_scope(item.canonical_url) if backend == "gallery-dl" else None
+            if scope is not None and scope.broad_collection and not args.allow_collection:
+                blocked_collections.append(item.canonical_url)
+                raise ValueError(
+                    f"broad gallery-dl collection ({scope.category}:{scope.subcategory}, "
+                    f"{scope.extractor}) requires --allow-collection"
+                )
+            routes[item.canonical_url] = backend
         except ValueError as exc:
             unsupported.append({"url": item.url, "reason": str(exc)})
     inputs = [item for item in inputs if item.canonical_url in routes]
@@ -279,12 +454,23 @@ def _run(args: argparse.Namespace) -> int:
         "image_workers": args.image_workers,
         "max_workers": args.max_workers,
         "worker_start_delay": args.worker_start_delay,
+        "destination": str(args.destination),
+        "control_directory": str(args.destination / ".mangadl"),
+        "archive": str(args.archive),
+        "state_db": str(args.state_db),
+        "log_dir": str(args.log_dir),
     }
     if args.run_mode in {"optimize", "benchmark"}:
         preview["optimization"] = _optimization_preview(args, manga18fx_urls)
     if args.dry_run:
-        print(json.dumps(preview, indent=2, sort_keys=True))
+        print(json.dumps(preview, indent=2, sort_keys=True) if args.json else _format_run_preview(preview))
         return 1 if unsupported else 0
+    if blocked_collections:
+        raise ValueError(
+            "refusing broad collection URL(s) because they may expand into thousands of images; "
+            "inspect with --dry-run, then rerun with --allow-collection if intentional: "
+            + ", ".join(blocked_collections)
+        )
     if not inputs:
         print(json.dumps(preview, indent=2, sort_keys=True), file=sys.stderr)
         return 2
@@ -382,6 +568,10 @@ def _run(args: argparse.Namespace) -> int:
             gallery_config=args.gallery_config,
             cookies=args.cookies,
             cookies_browser=args.cookies_browser,
+            gallery_user_agent=args.gallery_user_agent,
+            auth_dir=args.auth_dir,
+            auth_browser=args.auth_browser,
+            auto_auth_refresh=not args.no_auth_refresh,
             rate=args.max_rate,
             hdporncomics_executable=args.hdporncomics_executable,
             hdporncomics_threads=args.hdporncomics_threads,
@@ -485,6 +675,102 @@ def _archive(args: argparse.Namespace) -> int:
     return browser.run()
 
 
+def _partials(args: argparse.Namespace) -> int:
+    interactive = not args.target
+    selected_values = list(args.target)
+    if interactive:
+        selected = select_partial_owners(
+            args.destination,
+            state_databases=tuple(args.state_db),
+        )
+        if not selected:
+            print("No partial owners selected; nothing to clean.")
+            return 0
+        selected_values = [str(path) for path in selected]
+
+    legacy_keys: dict[Path, set[str]] = {}
+    if not args.files_only:
+        _root, probe_targets = plan_cleanup(
+            args.destination,
+            selected_values,
+            files_only=True,
+        )
+        legacy_owners = tuple(
+            dict.fromkeys(
+                target.owner.resolve()
+                for target in probe_targets
+                if not (target.owner / ".mangadl-partial.json").is_file()
+            )
+        )
+        for target in probe_targets:
+            if target.owner.resolve() in legacy_owners and target.path != target.owner:
+                raise ValueError(
+                    "legacy archive reconciliation requires selecting the whole partial owner: "
+                    f"{target.owner}"
+                )
+        if legacy_owners:
+            if args.archive is None:
+                raise ValueError(
+                    "legacy partial cleanup requires -a/--archive for exact URL-key reconciliation; "
+                    "use --files-only only when stale archive entries are acceptable"
+                )
+            urls = resolve_owner_urls(
+                args.destination,
+                legacy_owners,
+                state_databases=args.state_db,
+                overrides=args.url,
+            )
+            for owner, url in urls.items():
+                print(f"Reconstructing archive keys for {owner.name}: {url}", file=sys.stderr)
+                legacy_keys[owner] = reconstruct_archive_keys(
+                    url,
+                    gallery_config=args.gallery_config,
+                    cookies=args.cookies,
+                    cookies_browser=args.cookies_browser,
+                    user_agent=args.user_agent,
+                    auth_dir=args.auth_dir,
+                    progress=lambda message: print(message, file=sys.stderr),
+                )
+
+    partial_root, targets = plan_cleanup(
+        args.destination,
+        selected_values,
+        archive_override=args.archive,
+        files_only=args.files_only,
+        legacy_archive_keys=legacy_keys,
+    )
+    preview = cleanup_preview(partial_root, targets)
+    if interactive and args.apply and not args.yes:
+        print(
+            f"Selected {len(targets)} partial owner(s): {preview['files']} files, "
+            f"{preview['bytes']} bytes, {preview['archive_matches']} archive entries.",
+            file=sys.stderr,
+        )
+        print("Type DELETE to apply this cleanup: ", end="", file=sys.stderr, flush=True)
+        if input().strip() != "DELETE":
+            print("Cleanup cancelled; no files or archive entries were changed.")
+            return 1
+    if args.apply:
+        payload = {**preview, **apply_cleanup(targets, backup=not args.no_backup), "status": "applied"}
+    else:
+        payload = {**preview, "status": "dry-run"}
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        action = "REMOVED" if args.apply else "DRY-RUN"
+        print(
+            f"{action}: {payload['files']} file(s), {payload['bytes']} byte(s), "
+            f"{payload['archive_matches']} matching archive entry/entries"
+        )
+        for target in payload["targets"]:
+            print(f"  {target}")
+        if args.files_only:
+            print("WARNING: files-only cleanup does not remove stale gallery-dl archive entries.")
+        for backup in payload.get("archive_backups", []):
+            print(f"Archive backup: {backup}")
+    return 0
+
+
 def _patch_hdporncomics(args: argparse.Namespace) -> int:
     status = apply_patch() if args.apply else patch_status()
     print(status.message)
@@ -582,6 +868,181 @@ def _repair_loose(args: argparse.Namespace) -> int:
     return 0 if plan.valid else 1
 
 
+def _interactive_auth_site(targets: TargetStore, query: str | None) -> str:
+    if not sys.stdin.isatty():
+        raise ValueError("interactive site selection requires a terminal; use --site NAME")
+    selected_query = (query or input("Filter installed gallery-dl sites: ")).strip().lower()
+    choices = [site for site in gallery_sites(targets) if selected_query in site.name]
+    if not choices:
+        raise ValueError(f"no installed gallery-dl sites match {selected_query!r}")
+    if len(choices) > 50:
+        raise ValueError(f"{len(choices)} sites match; use --site-filter to narrow the list to 50 or fewer")
+    for index, site in enumerate(choices, 1):
+        marker = "saved" if site.target_url else "URL needed"
+        example = site.examples[0] if site.examples else "no example"
+        print(f"{index:3}. {site.name:<24} [{marker}] {example}", file=sys.stderr)
+    raw = input("Select site number: ").strip()
+    try:
+        return choices[int(raw) - 1].name
+    except (ValueError, IndexError) as exc:
+        raise ValueError(f"invalid site selection: {raw!r}") from exc
+
+
+def _prompt_auth_target(site: str, targets: TargetStore) -> str:
+    if not sys.stdin.isatty():
+        raise ValueError(
+            f"no saved target URL for gallery-dl site {site!r}; rerun with --url ACTUAL_GALLERY_URL"
+        )
+    print(
+        f"No validated target URL is saved for gallery-dl site {site!r}.\n"
+        "Open the site and paste an actual gallery/series URL that gallery-dl supports; "
+        "a homepage or search page may not work.",
+        file=sys.stderr,
+    )
+    while True:
+        url = input("Target URL: ").strip()
+        try:
+            targets.save(site, url)
+        except ValueError as exc:
+            print(f"Invalid target: {exc}", file=sys.stderr)
+            continue
+        return url
+
+
+def _resolve_auth_target(args: argparse.Namespace, targets: TargetStore) -> tuple[str, str]:
+    if args.select_site and args.site:
+        raise ValueError("--select-site cannot be combined with --site")
+    if args.select_site:
+        site = _interactive_auth_site(targets, args.site_filter)
+    elif args.site:
+        site = targets.resolve_site(args.site)
+    else:
+        site = DEFAULT_AUTH_SITE
+    if args.url:
+        actual_site = site_for_url(args.url)
+        if args.site or args.select_site:
+            if actual_site != site:
+                raise ValueError(f"URL belongs to gallery-dl site {actual_site!r}, not selected site {site!r}")
+        else:
+            site = actual_site
+        targets.save(site, args.url)
+        return site, args.url
+    url = targets.url_for(site)
+    return site, url or _prompt_auth_target(site, targets)
+
+
+def _auth(args: argparse.Namespace) -> int:
+    store = ProfileStore(args.auth_dir)
+    targets = TargetStore(store.root)
+    if args.auth_command == "sites":
+        query = args.filter.lower()
+        sites = [
+            site
+            for site in gallery_sites(targets)
+            if query in site.name and (not args.known_only or site.target_url)
+        ]
+        payload = [
+            {
+                "site": site.name,
+                "extractors": site.extractor_count,
+                "target_url": site.target_url,
+                "examples": list(site.examples),
+            }
+            for site in sites
+        ]
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            for site in sites:
+                target = site.target_url or "URL needed"
+                print(f"{site.name:<28} extractors={site.extractor_count:<3} target={target}")
+            print(f"{len(sites)} installed gallery-dl site(s)")
+        return 0
+    if args.auth_command == "refresh":
+        site, url = _resolve_auth_target(args, targets)
+        profile, probe = refresh_profile(
+            url,
+            store=store,
+            browser=args.browser,
+            debug_port=args.debug_port,
+            timeout=args.timeout,
+            no_launch=args.no_launch_browser,
+            cookie_file=args.cookie_file,
+            user_agent=args.user_agent,
+            progress=lambda message: print(message, file=sys.stderr, flush=True),
+        )
+        payload = {
+            "site": site,
+            "target_url": url,
+            "domain": domain_for(url),
+            "browser": args.browser,
+            "profile": "present" if profile else "absent",
+            "validation": probe.status,
+            "message": probe.message,
+        }
+        if profile:
+            summary = cookie_summary(profile.cookie_path)
+            payload.update(
+                {
+                    "cookie_file": str(profile.cookie_path),
+                    "cookies": summary.count,
+                    "cookie_names": list(summary.names),
+                    "user_agent": "present",
+                    "updated_at": profile.updated_at,
+                }
+            )
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        elif profile:
+            print(
+                f"[{payload['domain']}] credentials captured: {payload['cookies']} cookie(s), "
+                f"browser={args.browser}; validation succeeded\nprofile: {payload['cookie_file']}"
+            )
+        else:
+            print(f"[{payload['domain']}] authentication refresh failed: {probe.message}", file=sys.stderr)
+        return 0 if profile else 1
+
+    value = args.url or args.domain
+    domain = domain_for(value)
+    if args.auth_command == "clear":
+        removed = store.clear(domain)
+        payload = {"domain": domain, "removed": removed}
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(f"[{domain}] managed authentication {'removed' if removed else 'was not present'}")
+        return 0
+
+    profile = store.load(domain)
+    payload: dict[str, Any] = {"domain": domain, "profile": "present" if profile else "absent"}
+    if profile:
+        summary = cookie_summary(profile.cookie_path)
+        payload.update(
+            {
+                "browser": profile.browser,
+                "source": profile.source,
+                "cookie_file": str(profile.cookie_path),
+                "cookies": summary.count,
+                "cookie_names": list(summary.names),
+                "earliest_expiry": summary.earliest_expiry,
+                "expired": summary.expired,
+                "user_agent": "present",
+                "updated_at": profile.updated_at,
+            }
+        )
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    elif not profile:
+        print(f"[{domain}] managed authentication profile: absent")
+    else:
+        print(
+            f"domain: {domain}\nprofile: present\nbrowser: {profile.browser}\n"
+            f"cookies: {payload['cookies']}\nexpired: {payload['expired']}\nuser-agent: present\n"
+            f"cookie file: {profile.cookie_path}"
+        )
+    return 0 if profile else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     shape = normalize_command_shape(raw_argv)
@@ -601,6 +1062,8 @@ def main(argv: list[str] | None = None) -> int:
             "audit": _audit_destinations,
             "audit-destinations": _audit_destinations,
             "repair-loose": _repair_loose,
+            "partials": _partials,
+            "auth": _auth,
         }[args.command](args)
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
         parser.error(str(exc))

@@ -293,6 +293,80 @@
                     ]
                 }
             ]
+        },
+        "mangadl": {
+            "description": "Mangadl guarded collection routing, resumable partial ownership, cleanup, and dashboard validation.",
+            "working_directory": "modules/mangadl",
+            "context_files": [
+                "docs/plans/20260921-0943_partial-safety-and-merge-readiness/STATUS.md",
+                "docs/plans/20260921-0943_partial-safety-and-merge-readiness/checklist.md",
+                "docs/plans/20260921-0943_partial-safety-and-merge-readiness/00_implementation-plan.md"
+            ],
+            "environment": {
+                "PYTHONUTF8": "1",
+                "PYTHONUNBUFFERED": "1",
+                "PY_COLORS": "1",
+                "PYTHONPATH": "{target_root}"
+            },
+            "bootstrap": [
+                {
+                    "name": "Install shared TermDash dependency",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "pip",
+                        "install",
+                        "--disable-pip-version-check",
+                        "--no-build-isolation",
+                        "-e",
+                        "{repo_root}/modules/termdash"
+                    ]
+                },
+                {
+                    "name": "Install mangadl editable package",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "pip",
+                        "install",
+                        "--disable-pip-version-check",
+                        "--no-build-isolation",
+                        "-e",
+                        "{target_root}"
+                    ]
+                }
+            ],
+            "commands": [
+                {
+                    "name": "Compile mangadl package and tests",
+                    "executable": "{python}",
+                    "arguments": ["-m", "compileall", "-q", "mangadl", "tests"]
+                },
+                {
+                    "name": "Lint mangadl package and tests",
+                    "executable": "{python}",
+                    "arguments": ["-m", "ruff", "check", "mangadl", "tests"]
+                },
+                {
+                    "name": "Mangadl CLI help contract",
+                    "executable": "{python}",
+                    "arguments": ["-m", "mangadl", "--help"]
+                },
+                {
+                    "name": "Mangadl pytest suite",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "pytest",
+                        "tests",
+                        "-q",
+                        "--strict-config",
+                        "--strict-markers",
+                        "--basetemp",
+                        "{temp_root}"
+                    ]
+                }
+            ]
         }
     }
 }

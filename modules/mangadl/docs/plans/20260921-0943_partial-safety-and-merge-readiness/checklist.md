@@ -1,0 +1,54 @@
+# Partial Safety and Merge Readiness Checklist
+
+## S1 - Guard and Track
+
+- [x] Reject broad collection extractors by default.
+- [x] Add explicit short/long collection opt-in.
+- [x] Write versioned partial metadata before backend launch.
+- [x] Record successful archive-key/path ownership for gallery-dl files.
+- [x] Preserve tracking controls until successful merge, then remove them.
+- [x] Add focused normal, failure-preservation, archive-switch, and merge tests.
+
+## S2 - Cleanup and Responsiveness
+
+- [x] Add dry-run-first `partials clean` CLI.
+- [x] Validate target containment, activity, metadata, archive, and manifest.
+- [x] Remove exact archive keys transactionally before filesystem deletion.
+- [x] Add explicit legacy files-only escape hatch without archive mutation.
+- [x] Replace full-log reads with a bounded tail reader.
+- [x] Add cleanup and large-log regression tests.
+
+## S3 - Merge Readiness and Docs Update
+
+- [x] Document collection opt-in and safe partial cleanup in README.
+- [x] Update project and plan handoffs/status/checklists.
+- [x] Add a mangadl repository validation target.
+- [x] Synchronize all version sources and help registry metadata.
+- [x] Run focused tests, full tests, compile, Ruff, and dispatcher validation.
+- [x] Review staged plus unstaged diff for merge blockers.
+- [x] Record remaining live acceptance and approval requirements.
+
+## Manual Acceptance and Integration (Not Yet Approved)
+
+- [x] Live-validate one normal gallery-dl chapter into a disposable destination.
+- [x] Confirm direct destination-root layout and responsive TUI/log switching.
+- [x] Preview legacy cleanup for `fc7c3b753cc0` without mutation.
+- [ ] Apply legacy cleanup only on explicit user decision.
+- [x] Obtain approval to stage/commit/push the partial-safety work.
+- [x] Obtain the existing integration-branch and final-merge approvals.
+
+## S4 - Interactive Cleanup and Legacy Reconciliation
+
+- [x] Open the cleanup UI when no `-t/--target` is supplied.
+- [x] Browse nested files with expand/collapse and hierarchical sorting.
+- [x] Multi-select one or more top-level partial owner folders.
+- [x] Show URL, backend, archive, tracking, and active-worker details.
+- [x] Recover legacy URLs from destination-local state databases.
+- [x] Accept explicit URL overrides for unresolved legacy owners.
+- [x] Reconstruct exact gallery-dl keys without downloading media.
+- [x] Remove reconstructed matching keys from explicit `-a/--archive` first.
+- [x] Refuse unresolved, ambiguous, partial-subtree, and empty-key reconciliation.
+- [x] Keep explicit target and `--files-only` CLI behavior compatible.
+- [x] Refuse active/changing targets and recheck the preview fingerprint at apply.
+- [x] Add focused UI/model/reconciliation/CLI tests.
+- [x] Update README, handoffs, status, version, and validation evidence.

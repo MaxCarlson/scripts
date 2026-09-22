@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -11,13 +12,20 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from .hdporncomics_patch import patch_recovery_hint
 from .models import WorkerEvent
 from .naming import DIRECTORY_TEMPLATE, FILENAME_TEMPLATE
+from .partial_safety import (
+    PARTIAL_CONTROL_NAMES,
+    append_manifest_entry,
+    initialize_partial,
+    remove_partial_controls,
+)
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp"}
+ARCHIVE_KEY_MARKER = "__MANGADL_ARCHIVE_KEY__"
 STATS_INTERVAL = 1.0
 HEARTBEAT_INTERVAL = 0.5
 MANGA18FX_CHAPTER_RE = re.compile(
@@ -40,7 +48,7 @@ def _tree_stats(root: Path) -> tuple[int, int]:
         return images, size
     for path in root.rglob("*"):
         try:
-            if not path.is_file() or path.name.endswith(".tmp"):
+            if not path.is_file() or path.name.endswith(".tmp") or path.name in PARTIAL_CONTROL_NAMES:
                 continue
             size += path.stat().st_size
             if not path.name.endswith(".part") and path.suffix.lower() in IMAGE_SUFFIXES:
@@ -48,6 +56,11 @@ def _tree_stats(root: Path) -> tuple[int, int]:
         except OSError:
             continue
     return images, size
+
+
+def _partial_key(url: str) -> str:
+    """Return a stable per-URL partial key for safe cross-run resume."""
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:12]
 
 
 def _identity(root: Path) -> tuple[str, str]:
@@ -140,29 +153,111 @@ def _classify(returncode: int, tail: str) -> tuple[str, bool]:
         return "rate_limit", True
     if "database is locked" in lowered or "archive" in lowered and "locked" in lowered:
         return "archive", True
-    if "401" in lowered or "403" in lowered or "authentication" in lowered:
-        return "auth", False
+    auth_status = re.search(
+        r"(?:http(?:/\d(?:\.\d)?)?|status(?: code)?|response)[^\n]{0,20}\b(?:401|403)\b"
+        r"|\b(?:401|403)\b[^\n]{0,20}(?:forbidden|unauthorized)",
+        lowered,
+    )
+    if auth_status or any(
+        marker in lowered for marker in ("challengeerror", "cloudflare challenge", "authentication required")
+    ):
+        return "auth_challenge", False
     if "404" in lowered or "not found" in lowered:
         return "bad_url", False
-    if "timeout" in lowered or "connection" in lowered or "http error 5" in lowered:
+    server_status = re.search(
+        r"(?:http(?:/\d(?:\.\d)?)?|status(?: code)?|response)[^\n]{0,20}\b5\d\d\b"
+        r"|\b5\d\d\s+<[^>]*>[^\n]{0,20}\bfor\b",
+        lowered,
+    )
+    if (
+        "timeout" in lowered
+        or "connection" in lowered
+        or "http error 5" in lowered
+        or server_status
+    ):
         return "http", True
     if "permission" in lowered or "no space" in lowered or "disk full" in lowered:
         return "filesystem", False
     return ("backend", returncode != 0)
 
 
+def _gallery_auth_challenge_line(line: str) -> bool:
+    """Recognize an authoritative auth challenge early in streamed output."""
+    return _classify(1, line)[0] == "auth_challenge"
+
+
+def _gallery_category(url: str) -> str:
+    """Resolve gallery-dl's selected category without making a request."""
+    try:
+        from gallery_dl import extractor
+
+        selected = extractor.find(url)
+    except Exception:
+        return ""
+    return str(getattr(selected, "category", "")) if selected is not None else ""
+
+
+def _gallery_naming_options(url: str) -> list[str]:
+    """Return only naming overrides whose extractor metadata is compatible.
+
+    The legacy templates are part of mangadl's nhentai/Kavita layout contract.
+    Applying them globally is unsafe: generic gallery-dl extractors use their
+    own metadata keys and native formats to keep pages and chapters distinct.
+    """
+    if _gallery_category(url) != "nhentai":
+        return []
+    return [
+        "--option",
+        f'directory=["{DIRECTORY_TEMPLATE}"]',
+        "--option",
+        f"filename={FILENAME_TEMPLATE}",
+    ]
+
+
+def _effective_gallery_returncode(backend: str, returncode: int, errors: Sequence[str]) -> int:
+    """Turn a zero exit with child-extractor errors into a failed job."""
+    return 1 if backend == "gallery-dl" and returncode == 0 and errors else returncode
+
+
 def _merge_partial(partial: Path, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     for source in list(partial.iterdir()):
+        if source.name in PARTIAL_CONTROL_NAMES:
+            continue
         target = destination / source.name
         if target.exists() and source.is_dir() and target.is_dir():
             _merge_partial(source, target)
-            source.rmdir()
         elif not target.exists():
             shutil.move(str(source), str(target))
         elif source.is_file():
             source.unlink()
     if partial.exists() and not any(partial.iterdir()):
+        partial.rmdir()
+
+
+def _gallery_merge_source(partial: Path, url: str) -> Path:
+    """Select a merge root that places native series folders at destination root."""
+    if _gallery_naming_options(url):
+        return partial
+    category = _gallery_category(url)
+    if not category or not partial.is_dir():
+        return partial
+    entries = [entry for entry in partial.iterdir() if entry.name not in PARTIAL_CONTROL_NAMES]
+    category_root = partial / category
+    if entries != [category_root] or not category_root.is_dir():
+        return partial
+    # Flatten only a structural category wrapper. If an extractor writes files
+    # directly under its category, retain it rather than scattering files into
+    # the destination root without a series directory.
+    if not any(child.is_dir() for child in category_root.iterdir()):
+        return partial
+    return category_root
+
+
+def _merge_gallery_partial(partial: Path, destination: Path, url: str) -> None:
+    source = _gallery_merge_source(partial, url)
+    _merge_partial(source, destination)
+    if source != partial and partial.exists() and not any(partial.iterdir()):
         partial.rmdir()
 
 
@@ -226,19 +321,18 @@ def _command(args: argparse.Namespace, partial: Path) -> list[str]:
         "--verbose",
         "--destination",
         str(partial),
-        "--option",
-        f'directory=["{DIRECTORY_TEMPLATE}"]',
-        "--option",
-        f"filename={FILENAME_TEMPLATE}",
-        "--download-archive",
-        args.archive,
     ]
+    command.extend(_gallery_naming_options(args.url))
+    command.extend(["--download-archive", args.archive])
+    command.extend(["--Print", f"after:{ARCHIVE_KEY_MARKER}{{_archive_key}}"])
     if args.gallery_config:
         command.extend(["--config", args.gallery_config])
     if args.cookies:
         command.extend(["--cookies", args.cookies])
     if args.cookies_browser:
         command.extend(["--cookies-from-browser", args.cookies_browser])
+    if getattr(args, "gallery_user_agent", None):
+        command.extend(["--user-agent", args.gallery_user_agent])
     if args.rate:
         command.extend(["--limit-rate", args.rate])
     command.append(args.url)
@@ -246,10 +340,25 @@ def _command(args: argparse.Namespace, partial: Path) -> list[str]:
 
 
 def run(args: argparse.Namespace) -> int:
-    partial = Path(args.partial_dir) / str(args.job_id)
-    partial.mkdir(parents=True, exist_ok=True)
+    partial_root = Path(args.partial_dir)
+    partial = partial_root / _partial_key(args.url)
     Path(args.raw_log).parent.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
+    try:
+        initialize_partial(
+            partial_root,
+            partial,
+            url=args.url,
+            backend=args.backend,
+            archive=Path(args.archive),
+            run_id=args.run_id,
+            job_id=args.job_id,
+            attempt_id=args.attempt_id,
+            worker=args.worker,
+        )
+    except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+        _emit(args, "job_terminal_failure", state="failed_filesystem", category="filesystem", message=str(exc))
+        return 2
     output_root = Path(args.destination) if args.backend == "hdporncomics" else partial
     baseline_images, baseline_size = _tree_stats(output_root)
     images, size = baseline_images, baseline_size
@@ -258,6 +367,8 @@ def run(args: argparse.Namespace) -> int:
         site = "M18"
     samples: deque[tuple[float, int, int]] = deque([(started, size, images)], maxlen=30)
     tail: deque[str] = deque(maxlen=100)
+    gallery_errors: deque[str] = deque(maxlen=100)
+    gallery_auth_challenge = threading.Event()
     backend_progress: dict[str, Any] = {}
     backend_progress_lock = threading.Lock()
     _emit(args, "worker_ready", state="running", destination=str(output_root), backend=args.backend)
@@ -283,12 +394,32 @@ def run(args: argparse.Namespace) -> int:
         )
 
         def capture() -> None:
+            last_downloaded_path: Path | None = None
             assert process.stdout is not None
             for line in process.stdout:
                 raw.write(line)
                 raw.flush()
                 text = line.rstrip()
+                if args.backend == "gallery-dl" and text.startswith(ARCHIVE_KEY_MARKER):
+                    archive_key = text.removeprefix(ARCHIVE_KEY_MARKER).strip()
+                    if archive_key and last_downloaded_path is not None:
+                        append_manifest_entry(partial, archive_key, last_downloaded_path)
+                        last_downloaded_path = None
+                    continue
+                if args.backend == "gallery-dl":
+                    try:
+                        candidate = Path(text)
+                        candidate.resolve().relative_to(partial.resolve())
+                    except (OSError, ValueError):
+                        pass
+                    else:
+                        if candidate.is_file():
+                            last_downloaded_path = candidate
                 tail.append(text)
+                if args.backend == "gallery-dl" and "][error]" in text:
+                    gallery_errors.append(text)
+                if args.backend == "gallery-dl" and _gallery_auth_challenge_line(text):
+                    gallery_auth_challenge.set()
                 if args.backend != "manga18fx":
                     continue
                 parsed = _parse_manga18fx_output(text)
@@ -316,7 +447,14 @@ def run(args: argparse.Namespace) -> int:
         thread.start()
         last_emit = 0.0
         last_stats = started
+        challenge_termination_requested = False
         while process.poll() is None:
+            if gallery_auth_challenge.is_set() and not challenge_termination_requested:
+                # A Cloudflare/auth challenge cannot heal inside this process:
+                # gallery-dl loaded its cookie jar at startup. Stop its retry
+                # walk promptly so the manager can run the one shared refresh.
+                process.terminate()
+                challenge_termination_requested = True
             now = time.monotonic()
             with backend_progress_lock:
                 progress = dict(backend_progress)
@@ -365,6 +503,13 @@ def run(args: argparse.Namespace) -> int:
     with backend_progress_lock:
         final_progress = dict(backend_progress)
 
+    effective_returncode = _effective_gallery_returncode(args.backend, returncode, gallery_errors)
+    if effective_returncode != returncode:
+        # Queue-based gallery-dl extractors can exit zero after individual
+        # child extractors failed. A cover or one chapter is not a successful
+        # series completion, so preserve the partial tree and report failure.
+        returncode = effective_returncode
+
     if returncode == 0:
         manga18fx_downloaded = int(final_progress.get("downloaded", 0))
         manga18fx_skipped = int(final_progress.get("skipped", 0))
@@ -392,8 +537,14 @@ def run(args: argparse.Namespace) -> int:
                 )
                 return 1
 
-        if args.backend != "hdporncomics":
+        if args.backend == "gallery-dl":
+            _merge_gallery_partial(partial, Path(args.destination), args.url)
+        elif args.backend != "hdporncomics":
             _merge_partial(partial, Path(args.destination))
+        if partial.exists():
+            remove_partial_controls(partial)
+        if partial.exists() and not any(partial.iterdir()):
+            partial.rmdir()
 
         gallery_skipped = (
             args.backend != "manga18fx"
@@ -429,19 +580,25 @@ def run(args: argparse.Namespace) -> int:
         )
         return 0
 
+    # Keep the surrounding request lines for classification. The final
+    # ``[download][error]`` line often omits the preceding 429/5xx status.
     output = "\n".join(tail)
     category, retryable = _classify(returncode, output)
     hint = patch_recovery_hint(output) if args.backend == "hdporncomics" else None
     state = "failed_" + ("rate_limit" if category == "rate_limit" else category)
+    failure_message = hint or (
+        gallery_errors[-1] if gallery_errors else tail[-1] if tail else f"backend exited {returncode}"
+    )
     _emit(
         args,
         "job_retryable_failure" if retryable else "job_terminal_failure",
         state=state,
         category=category,
-        message=hint or tail[-1] if tail else f"backend exited {returncode}",
+        message=failure_message,
         returncode=returncode,
         images_done=images,
         bytes_done=size,
+        elapsed=time.monotonic() - started,
     )
     return returncode or 1
 
@@ -461,6 +618,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-g", "--gallery-config")
     parser.add_argument("-c", "--cookies")
     parser.add_argument("-B", "--cookies-browser")
+    parser.add_argument("-U", "--gallery-user-agent")
     parser.add_argument("-x", "--rate")
     parser.add_argument("-e", "--hdporncomics-executable")
     parser.add_argument("-H", "--hdporncomics-threads", type=int, default=8)

@@ -136,7 +136,11 @@ class StateStore:
 
     def apply_event(self, event: dict[str, Any]) -> bool:
         row = self.connection.execute("SELECT attempt_id,state FROM jobs WHERE id=?", (event["job_id"],)).fetchone()
-        if row is None or row["attempt_id"] != event["attempt_id"]:
+        if (
+            row is None
+            or row["attempt_id"] != event["attempt_id"]
+            or row["state"] not in {"leased", "running"}
+        ):
             return False
         data = event.get("data", {})
         state = data.get("state")

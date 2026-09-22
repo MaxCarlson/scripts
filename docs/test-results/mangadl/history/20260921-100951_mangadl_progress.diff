@@ -1,0 +1,33 @@
+warning: in the working copy of 'C:\Users\mcarls\src\scripts\docs\test-results\mangadl\history\20260921-100720_mangadl_context.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'C:\Users\mcarls\src\scripts\docs\test-results\mangadl\LATEST_CONTEXT.md', LF will be replaced by CRLF the next time Git touches it
+diff --git "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\history\\20260921-100720_mangadl_context.md" "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\LATEST_CONTEXT.md"
+index 9669029..c442f09 100644
+--- "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\history\\20260921-100720_mangadl_context.md"
++++ "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\LATEST_CONTEXT.md"
+@@ -1,14 +1,12 @@
+ # Validation Context: mangadl
+
+-Generated: 2026-09-21T10:07:31.1297361-07:00
++Generated: 2026-09-21T10:09:56.8590899-07:00
+ Branch: agent/mangadl-gallery-auth
+ Commit: d8f22fa3f26525b4e274891241f5efe5ceb72d33
+ Validation report: docs\test-results\mangadl\LATEST.txt
+
+ ## Validation Highlights
+
+-- RESULT: PASS - Install shared TermDash dependency
+-- RESULT: PASS - Install mangadl editable package
+ - RESULT: PASS - Compile mangadl package and tests
+ - RESULT: PASS - Lint mangadl package and tests
+ - RESULT: PASS - Mangadl CLI help contract
+@@ -25,8 +23,8 @@ MM modules/mangadl/docs/HANDOFF.md
+ M  modules/mangadl/docs/plans/20260825-0540_gallery-dl-managed-auth/00_implementation-plan.md
+ A  modules/mangadl/docs/plans/20260825-0540_gallery-dl-managed-auth/06_destination-root-series-layout__planned.md
+ A  modules/mangadl/docs/plans/20260825-0540_gallery-dl-managed-auth/07_input-wide-auth-preflight__planned.md
+-M  modules/mangadl/docs/plans/20260825-0540_gallery-dl-managed-auth/HANDOFF.md
+-M  modules/mangadl/docs/plans/20260825-0540_gallery-dl-managed-auth/STATUS.md
++MM modules/mangadl/docs/plans/20260825-0540_gallery-dl-managed-auth/HANDOFF.md
++MM modules/mangadl/docs/plans/20260825-0540_gallery-dl-managed-auth/STATUS.md
+ M  modules/mangadl/docs/plans/20260825-0540_gallery-dl-managed-auth/checklist.md
+ MM modules/mangadl/docs/plans/HANDOFF.md
+ MM modules/mangadl/mangadl/__init__.py
