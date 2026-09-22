@@ -61,11 +61,11 @@ path from `-d` without shell variables.
 
 ## Next Action
 
-Decide whether to run the potentially large complete-series gate or defer S7
-to a follow-up branch. The feature remains unmerged pending the existing
-integration boundary and explicit final merge approval.
+The user explicitly deferred S7 and its potentially large complete-series gate
+to a follow-up branch on 2026-09-21. The current feature scope is validated and
+the final merge is approved.
 
-S7 input-wide authentication preflight is planned but explicitly blocked on
-S6 live acceptance. It will deduplicate and route the complete input, group
+S7 input-wide authentication preflight remains planned for that follow-up. It
+will deduplicate and route the complete input, group
 gallery-dl URLs by auth domain, visibly create/replace one profile per domain,
 and expose force-one/force-all controls without storing secrets in the repo.

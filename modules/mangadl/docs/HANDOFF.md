@@ -77,7 +77,8 @@ Live acceptance on 2026-09-21 downloaded chapter 0 as 42 distinct images
 wrapper. A second live TTY run proved activity-log, raw-log, and worker-view
 switching remained responsive while downloading. The repository `mangadl`
 dispatcher target also passes at 182 tests. Staging, commit,
-push, and continued integration work were approved on 2026-09-21; final merge
-still requires review and explicit approval. A current four-URL/four-worker
-acceptance also completed 4/4 chapters (702 images, 22,438,146 bytes) without a
-retry. S7 remains blocked only on its potentially large complete-series gate.
+push, continued integration work, and the final merge were approved on
+2026-09-21. A current four-URL/four-worker acceptance also completed 4/4
+chapters (702 images, 22,438,146 bytes) without a retry. The user explicitly
+deferred S7 and its potentially large complete-series gate to a follow-up
+branch.

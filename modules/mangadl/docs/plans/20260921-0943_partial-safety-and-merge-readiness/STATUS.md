@@ -49,6 +49,6 @@ handoffs and validation counts still described the 1.16.0 baseline.
 The ordinary gallery-dl layout and responsive TUI/raw-log checks now pass. The
 legacy accidental partial can be reconciled against an explicit archive or
 cleaned with `--files-only`, but applying either deletion remains an explicit
-user decision. S7 input-wide auth preflight remains blocked only on its
-potentially large complete-series dependency gate. No live `B:` archive,
-state, or partial data has been mutated.
+user decision. The user explicitly deferred S7 and its potentially large
+complete-series gate to a follow-up branch and approved the final merge on
+2026-09-21. No live `B:` archive, state, or partial data has been mutated.

@@ -4,8 +4,8 @@
 
 - Branch: `agent/mangadl-gallery-auth`
 - Base: `agent/unified` at `78f07e6`
-- Current stage: S6 code and bounded layout/TUI acceptance complete; stricter
-  S7 dependency acceptance remains
+- Current stage: S6 code and bounded layout/TUI acceptance complete; S7
+  explicitly deferred to a follow-up branch
 
 ## Current Evidence
 
@@ -75,6 +75,5 @@
 
 ## Immediate Next Action
 
-Run the potentially large complete-series acceptance or explicitly defer S7,
-then review the integration branch. Do not merge before the separate final
-approval boundary.
+Merge the validated current scope. The user explicitly deferred S7 to a
+follow-up branch and approved the final merge on 2026-09-21.

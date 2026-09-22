@@ -35,7 +35,7 @@
 - [x] Preview legacy cleanup for `fc7c3b753cc0` without mutation.
 - [ ] Apply legacy cleanup only on explicit user decision.
 - [x] Obtain approval to stage/commit/push the partial-safety work.
-- [ ] Complete the existing integration-branch and final-merge approvals.
+- [x] Obtain the existing integration-branch and final-merge approvals.
 
 ## S4 - Interactive Cleanup and Legacy Reconciliation
 

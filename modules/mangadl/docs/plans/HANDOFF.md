@@ -5,7 +5,9 @@ Active: [20260921-0943 partial safety and merge readiness](20260921-0943_partial
 Current stage: S4 implementation and validation complete; integration review
 is next.
 
-Parallel predecessor: [20260825-0540 managed gallery-dl auth](20260825-0540_gallery-dl-managed-auth/00_implementation-plan.md). Its S6 live acceptance and S7 input-wide auth preflight remain open.
+Parallel predecessor: [20260825-0540 managed gallery-dl auth](20260825-0540_gallery-dl-managed-auth/00_implementation-plan.md).
+S6 bounded live acceptance passes; S7 input-wide auth preflight is explicitly
+deferred to a follow-up branch.
 
 Previous: [20260719-1830 destination audit and badges](20260719-1830_destination-audit-and-badges/00_implementation-plan.md)
 

@@ -21,10 +21,10 @@ pass. Verification is green: 182 module tests; compile and Ruff pass; the root
 `mangadl` dispatcher target passes; scripts-help registry tests pass 42/42 with
 a module-local basetemp. The user approved staging, commit, push, and continued
 integration work on 2026-09-21. Live isolated runs now verify direct
-destination-root layout and responsive activity/raw-log switching. Remaining
-blockers are integration-branch review and final merge approval. A current
+destination-root layout and responsive activity/raw-log switching. The final
+merge is approved. A current
 four-URL/four-worker run completed 4/4 chapters without a retry; S7 remains
-intentionally blocked only on its potentially large complete-series gate.
+planned but was explicitly deferred to a follow-up branch.
 
 The accidental legacy partial predates manifests, but version 1.17 can recover
 its URL and reconstruct exact archive keys through a no-download metadata pass

@@ -77,7 +77,10 @@
 - [x] Abort stale gallery-dl backend attempts promptly on authoritative
   challenge output so they reach the one shared refresh without a retry storm.
 
-## S7 — Input-Wide Authentication Preflight (Blocked on S6 Acceptance)
+## S7 — Input-Wide Authentication Preflight (Deferred to Follow-up)
+
+Deferred by explicit user decision on 2026-09-21; these items are intentionally
+outside the current branch's merge boundary.
 
 - [ ] Parse and report unique canonical URLs before worker launch.
 - [ ] Discover gallery-dl routes from the installed extractor registry.
