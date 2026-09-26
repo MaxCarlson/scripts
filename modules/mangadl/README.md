@@ -58,6 +58,35 @@ mangadl run -u $collectionUrl -d .\downloads -n
 mangadl run -u $collectionUrl -d .\downloads -G
 ```
 
+
+## Favorites/listing URL export
+
+`mangadl favorites` turns an authenticated favorites or listing page into a
+normal MangaDL URL file. It reuses the managed per-domain cookie profile and
+matching User-Agent when one is present, extracts same-site links, retains only
+non-collection URLs recognized by MangaDL/gallery-dl, deduplicates them in page
+order, and follows explicit next-page links up to a bounded maximum.
+
+The command is dry-run-first. Preview the URLs without creating a file:
+
+```powershell
+mangadl favorites -u https://nhentai.net/favorites/ -o .\nhentai-favorites.txt
+```
+
+Write the file only after reviewing the preview:
+
+```powershell
+mangadl favorites -u https://nhentai.net/favorites/ -o .\nhentai-favorites.txt -f
+```
+
+Use `-P/--max-pages` to bound pagination (default 20), `-D/--page-delay` to
+control the delay between listing pages, and `-t/--timeout` for each HTML
+request. `-C/--cookies` accepts an explicit Netscape cookie file and takes
+precedence over the managed cookie profile; `-U/--user-agent` overrides the
+stored User-Agent. The crawler does not visit the extracted gallery URLs, so it
+avoids the request burst caused by simulating every favorite gallery merely to
+discover its URL.
+
 ## Safe partial cleanup
 
 Mangadl 1.16+ records ownership metadata and the exact gallery-dl archive key
