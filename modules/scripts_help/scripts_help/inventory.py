@@ -191,9 +191,8 @@ def _first_sentence(text: str, limit: int = 118) -> str:
 
 
 def _version_for(relative: str, absolute: Path, registry_item: dict | None) -> str | None:
-    if registry_item and registry_item.get("version"):
-        return str(registry_item["version"])
-
+    # Prefer live metadata. The registry version intentionally lags when drift
+    # is detected, so showing it first would make the detail page stale.
     if absolute.is_dir():
         project = _project_metadata(absolute)
         if project.get("version"):
@@ -207,6 +206,9 @@ def _version_for(relative: str, absolute: Path, registry_item: dict | None) -> s
         match = _VERSION_RE.search(text)
         if match:
             return match.group(1)
+
+    if registry_item and registry_item.get("version"):
+        return str(registry_item["version"])
     return None
 
 
