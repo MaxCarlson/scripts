@@ -65,9 +65,24 @@ def _discover_cli_programs() -> set[str]:
     modules_dir = repo / "modules"
     if modules_dir.exists():
         for mod in modules_dir.iterdir():
-            if mod.is_dir() and not mod.name.startswith("_"):
-                if (mod / "cli.py").exists() or (mod / "__main__.py").exists():
-                    found.add(f"modules/{mod.name}")
+            if not mod.is_dir() or mod.name.startswith("_"):
+                continue
+
+            has_cli_file = (mod / "cli.py").exists() or (mod / "__main__.py").exists()
+            pyproject = mod / "pyproject.toml"
+            has_console_script = False
+            if pyproject.is_file():
+                try:
+                    pyproject_text = pyproject.read_text(
+                        encoding="utf-8",
+                        errors="replace",
+                    )
+                except OSError:
+                    pyproject_text = ""
+                has_console_script = "[project.scripts]" in pyproject_text
+
+            if has_cli_file or has_console_script:
+                found.add(f"modules/{mod.name}")
 
     return found
 
