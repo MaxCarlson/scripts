@@ -27,6 +27,9 @@ from .gallery_auth import (
     refresh_profile,
     site_for_url,
 )
+from .favorites import crawl_favorites, format_result as format_favorites_result
+from .favorites import result_payload as favorites_result_payload
+from .favorites import write_url_file
 from .hdporncomics_patch import apply_patch, patch_status
 from .input import collect_inputs
 from .manager import DownloadManager, RunOptions
@@ -294,6 +297,27 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     auth_sites.add_argument("-k", "--known-only", action="store_true", help="Show only sites with saved targets.")
     auth_sites.add_argument("-A", "--auth-dir", type=_path, help="Managed authentication root.")
     auth_sites.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
+
+    favorites = subparsers.add_parser(
+        "favorites",
+        help="Extract downloadable gallery URLs from a favorites/listing page.",
+        description=(
+            "Fetch a favorites or listing page with mangadl's managed cookies, follow explicit "
+            "next-page links, and keep only non-collection URLs recognized by mangadl/gallery-dl. "
+            "Dry-run is the default; use --apply to write the URL file."
+        ),
+    )
+    favorites.add_argument("-u", "--url", required=True, help="Favorites/listing page URL to scan.")
+    favorites.add_argument("-o", "--output", required=True, type=_path, help="Destination UTF-8 URL file.")
+    favorites.add_argument("-A", "--auth-dir", type=_path, help="Managed authentication root.")
+    favorites.add_argument("-C", "--cookies", type=_path, help="Explicit Netscape cookie file; overrides managed cookies.")
+    favorites.add_argument("-U", "--user-agent", help="Override the managed/browser User-Agent.")
+    favorites.add_argument("-P", "--max-pages", type=int, default=20, help="Maximum listing pages to fetch (default: 20).")
+    favorites.add_argument("-D", "--page-delay", type=float, default=1.0, help="Delay between listing pages in seconds.")
+    favorites.add_argument("-t", "--timeout", type=float, default=30.0, help="HTTP timeout per listing page in seconds.")
+    favorites.add_argument("-f", "--apply", action="store_true", help="Write/replace the output URL file.")
+    favorites.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
+    favorites.add_argument("-q", "--quiet", action="store_true", help="Suppress fetch progress on stderr.")
     return parser
 
 
@@ -1043,6 +1067,29 @@ def _auth(args: argparse.Namespace) -> int:
     return 0 if profile else 1
 
 
+def _favorites(args: argparse.Namespace) -> int:
+    progress = None if args.quiet else lambda message: print(message, file=sys.stderr, flush=True)
+    result = crawl_favorites(
+        args.url,
+        auth_dir=args.auth_dir,
+        cookie_file=args.cookies,
+        user_agent=args.user_agent,
+        max_pages=args.max_pages,
+        page_delay=args.page_delay,
+        timeout=args.timeout,
+        progress=progress,
+    )
+    if args.apply:
+        write_url_file(args.output, result)
+    payload = favorites_result_payload(result, args.output, args.apply)
+    print(
+        json.dumps(payload, indent=2, sort_keys=True)
+        if args.json
+        else format_favorites_result(result, args.output, args.apply)
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     shape = normalize_command_shape(raw_argv)
@@ -1064,6 +1111,7 @@ def main(argv: list[str] | None = None) -> int:
             "repair-loose": _repair_loose,
             "partials": _partials,
             "auth": _auth,
+            "favorites": _favorites,
         }[args.command](args)
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
         parser.error(str(exc))
