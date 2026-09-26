@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scheduler"
+version = "0.1.0"
+description = "A robust Python scheduling and task execution module with CLI and interactive TUI."
+requires-python = ">=3.8"
+dependencies = [
+    "cross_platform",
+    "standard_ui",
+    "termdash",
+    "python-dateutil",
+    "windows-curses; sys_platform == 'win32'",
+]
+
+[[project.authors]]
+name = "Your Name"
+email = "carlsonamax@gmail.com"
+
+[project.scripts]
+"scheduler" = "scheduler.cli:main"
+"sched" = "scheduler.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["scheduler*"]
+
+[tool.pytest.ini_options]
+addopts = "-v --basetemp=modules/scheduler/.pytest_tmp_root"
+testpaths = ["tests"]
+tmp_path_retention_policy = "none"

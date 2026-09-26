@@ -511,6 +511,13 @@ REGISTRY: dict = {
                 "help_cmd": ["python", "-m", "sshmanager", "--help"],
                 "version": "0.1.0",
             },
+            {
+                "name": "scheduler (module)",
+                "path": "modules/scheduler",
+                "desc": "Task scheduling and automation engine with CLI and interactive TUI",
+                "help_cmd": ["python", "-m", "scheduler.cli", "--help"],
+                "version": "0.1.0",
+            },
         ],
     },
     "Code Analysis": {

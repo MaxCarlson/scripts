@@ -433,6 +433,44 @@
                     ]
                 }
             ]
+        },
+        "scheduler": {
+            "description": "Scheduler module CLI, TUI, persistent storage, timing, execution, and logging validation.",
+            "working_directory": "modules/scheduler",
+            "context_files": [
+                "modules/scheduler/docs/plans/20260926-1545_scheduler-module/STATUS.md",
+                "modules/scheduler/docs/plans/20260926-1545_scheduler-module/checklist.md"
+            ],
+            "environment": {
+                "PYTHONUTF8": "1",
+                "PYTHONUNBUFFERED": "1",
+                "PY_COLORS": "1",
+                "PYTHONPATH": "{target_root}"
+            },
+            "commands": [
+                {
+                    "name": "Compile scheduler package and tests",
+                    "executable": "{python}",
+                    "arguments": ["-m", "compileall", "-q", "scheduler", "tests"]
+                },
+                {
+                    "name": "Scheduler CLI help contract",
+                    "executable": "{python}",
+                    "arguments": ["-m", "scheduler.cli", "--help"]
+                },
+                {
+                    "name": "Scheduler pytest suite",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "pytest",
+                        "tests",
+                        "-q",
+                        "--basetemp",
+                        "{temp_root}"
+                    ]
+                }
+            ]
         }
     }
 }
