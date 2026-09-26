@@ -176,6 +176,8 @@ def _terminal_size() -> tuple[int, int]:
 
 
 def _clip(text: str, width: int) -> str:
+    """Compact and clip prose used inside single-line menu rows."""
+
     clean = re.sub(r"\s+", " ", text).strip()
     if len(clean) <= width:
         return clean
@@ -184,16 +186,27 @@ def _clip(text: str, width: int) -> str:
     return clean[: width - 1] + "…"
 
 
+def _clip_display_line(text: str, width: int) -> str:
+    """Clip terminal content without destroying indentation or column spacing."""
+
+    line = text.expandtabs(4).rstrip("\r\n")
+    if len(line) <= width:
+        return line
+    if width <= 1:
+        return line[:width]
+    return line[: width - 1] + "…"
+
+
 def _write_screen(lines: list[str], footer: str) -> None:
     width, height = _terminal_size()
     body_height = max(1, height - 1)
     output = [_CLEAR]
     for line in lines[:body_height]:
-        output.append(_clip(line, width) if "\x1b[" not in line else line)
+        output.append(_clip_display_line(line, width) if "\x1b[" not in line else line)
         output.append("\n")
     for _ in range(max(0, body_height - min(len(lines), body_height))):
         output.append("\n")
-    output.append(_clip(footer, width))
+    output.append(_clip_display_line(footer, width))
     sys.stdout.write("".join(output))
     sys.stdout.flush()
 
@@ -358,6 +371,16 @@ def _select_menu(
         if key == "PAGEDOWN" and visible:
             selected = min(len(visible) - 1, selected + max(3, capacity - 1))
             continue
+        if key == "ENTER" and number_buffer:
+            exact = next(
+                (entry for entry in visible if str(entry.number) == number_buffer),
+                None,
+            )
+            number_buffer = ""
+            number_deadline = None
+            if exact is not None:
+                return exact
+            continue
         if key == "ENTER" and visible:
             return visible[selected]
 
@@ -505,6 +528,19 @@ def _show_arguments(
     command_name = " ".join(subcommands) if subcommands else "top level"
     title = f"{item.name} — arguments — {command_name}"
     argument_lines = _argument_lines(output)
+
+    if not parsed.arguments and not parsed.subcommands:
+        lines = [
+            "No structured arguments or subcommands could be parsed.",
+            "",
+            "Raw live help/output:",
+            output or "(No output.)",
+            "",
+            "Live command:",
+            "  " + " ".join(command),
+        ]
+        _view_text(reader, title, "\n".join(lines))
+        return
 
     if not parsed.subcommands:
         lines = argument_lines
