@@ -125,6 +125,8 @@ class KeyReader:
                 return "TIMEOUT"
 
         char = sys.stdin.read(1)
+        if char == "":
+            return "ESC"
         if char in ("\r", "\n"):
             return "ENTER"
         if char in ("\x7f", "\x08"):
@@ -136,7 +138,7 @@ class KeyReader:
         if not ready:
             return "ESC"
         seq = sys.stdin.read(1)
-        if seq != "[":
+        if seq not in ("[", "O"):
             return "ESC"
 
         tail = sys.stdin.read(1)
@@ -147,6 +149,8 @@ class KeyReader:
                 "H": "HOME",
                 "F": "END",
             }[tail]
+        if seq == "O":
+            return "UNKNOWN"
         if tail in "56":
             maybe = sys.stdin.read(1)
             if maybe == "~":
@@ -306,7 +310,12 @@ def _select_menu(
         else:
             search_hint = "   / Search" if allow_search else ""
             back_hint = "Esc Exit" if root else "Esc Back"
-            footer = f"↑/↓ Select   Enter Open   1-N Jump{search_hint}   {back_hint}"
+            max_number = max((entry.number for entry in entries), default=0)
+            number_hint = f"1-{max_number}" if max_number else "number"
+            footer = (
+                f"↑/↓ Select   Enter Open   {number_hint} Jump"
+                f"{search_hint}   {back_hint}"
+            )
             if query:
                 footer += "   Esc Clear filter"
             if number_buffer:
