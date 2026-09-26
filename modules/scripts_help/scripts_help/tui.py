@@ -457,7 +457,18 @@ def _entrypoint_help_command(
         return []
 
     module_name, attr_path = item.entrypoint.split(":", 1)
-    source_root = repo / item.path
+    module_root = repo / item.path
+    top_level = module_name.split(".", 1)[0]
+    candidates = (module_root, module_root / "src")
+    source_root = next(
+        (
+            candidate
+            for candidate in candidates
+            if (candidate / top_level).exists()
+            or (candidate / f"{top_level}.py").is_file()
+        ),
+        module_root / "src" if (module_root / "src").is_dir() else module_root,
+    )
     argv = [item.help_cmd[0] if item.help_cmd else item.name, *subcommands, "--help"]
     code = (
         "import functools,importlib,sys;"
@@ -494,15 +505,13 @@ def _resolve_help_command(
         else:
             resolved.append(part)
 
-    # A fresh checkout may not have the module's generated console wrapper on
-    # PATH yet. In that case, execute the declared [project.scripts] target
-    # directly from its module source tree.
-    if resolved and resolved[0] != sys.executable:
-        executable = resolved[0]
-        if not Path(executable).is_file() and shutil.which(executable) is None:
-            fallback = _entrypoint_help_command(item, repo, subcommands)
-            if fallback:
-                return fallback
+    # For packaged modules, prefer the declared source-tree entrypoint even if
+    # an installed console wrapper exists. That keeps argument help synchronized
+    # with the checkout being browsed rather than a potentially stale install.
+    if resolved and resolved[0] != sys.executable and item.entrypoint:
+        source_command = _entrypoint_help_command(item, repo, subcommands)
+        if source_command:
+            return source_command
 
     resolved.extend(subcommands)
     resolved.append("--help")
