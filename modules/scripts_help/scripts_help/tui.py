@@ -538,7 +538,8 @@ def _show_arguments(
         chosen = _select_menu(
             reader,
             title,
-            "Top-level options are parsed from the live --help output. Select a subcommand to inspect its own arguments.",
+            "Top-level options are parsed from the live --help output. "
+            "Select a subcommand to inspect its own arguments.",
             entries,
             allow_search=True,
             intro_lines=intro,
