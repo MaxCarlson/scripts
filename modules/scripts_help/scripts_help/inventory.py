@@ -81,6 +81,27 @@ def _project_metadata(directory: Path) -> dict[str, str]:
     return result
 
 
+def _project_scripts(directory: Path) -> tuple[str, ...]:
+    """Return console-script names declared by a module's pyproject."""
+
+    text = _read_text(directory / "pyproject.toml")
+    if not text:
+        return ()
+    match = re.search(r"(?ms)^\[project\.scripts\]\s*(.*?)(?=^\[|\Z)", text)
+    if not match:
+        return ()
+
+    names: list[str] = []
+    for raw in match.group(1).splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key = line.split("=", 1)[0].strip().strip('"').strip("'")
+        if key:
+            names.append(key)
+    return tuple(names)
+
+
 def _source_docstring(path: Path) -> str | None:
     text = _read_text(path)
     if not text:
@@ -242,6 +263,15 @@ def _build_item(relative: str, repo: Path, index: dict[str, dict]) -> HelpItem:
         help_cmd = tuple(str(part) for part in registered["help_cmd"])
     elif relative == "help.py":
         help_cmd = ("python", "help.py", "--help")
+    elif absolute.is_dir():
+        scripts = _project_scripts(absolute)
+        if scripts:
+            help_cmd = (scripts[0], "--help")
+    elif absolute.suffix.lower() == ".py":
+        source = _read_text(absolute)
+        cli_markers = ("argparse", "ArgumentParser(", "click.", "typer.")
+        if "__main__" in source and any(marker in source for marker in cli_markers):
+            help_cmd = ("python", relative, "--help")
 
     name = absolute.name
     if registered and registered.get("name"):
