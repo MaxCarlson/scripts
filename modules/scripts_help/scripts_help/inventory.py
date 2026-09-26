@@ -23,6 +23,7 @@ class HelpItem:
     long_description: str
     help_cmd: tuple[str, ...] | None = None
     version: str | None = None
+    entrypoint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -81,8 +82,8 @@ def _project_metadata(directory: Path) -> dict[str, str]:
     return result
 
 
-def _project_scripts(directory: Path) -> tuple[str, ...]:
-    """Return console-script names declared by a module's pyproject."""
+def _project_scripts(directory: Path) -> tuple[tuple[str, str], ...]:
+    """Return command/target console scripts declared by a module pyproject."""
 
     text = _read_text(directory / "pyproject.toml")
     if not text:
@@ -91,17 +92,22 @@ def _project_scripts(directory: Path) -> tuple[str, ...]:
     if not match:
         return ()
 
-    names: list[str] = []
+    scripts: list[tuple[str, str]] = []
+    assignment = re.compile(
+        r"""^\s*["']?([^"'=]+?)["']?\s*=\s*["']([^"']+)["']\s*(?:#.*)?$"""
+    )
     for raw in match.group(1).splitlines():
         line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
+        if not line or line.startswith("#"):
             continue
-        key = line.split("=", 1)[0].strip().strip('"').strip("'")
-        if key:
-            names.append(key)
-    return tuple(names)
-
-
+        parsed = assignment.match(line)
+        if not parsed:
+            continue
+        command = parsed.group(1).strip()
+        target = parsed.group(2).strip()
+        if command and target:
+            scripts.append((command, target))
+    return tuple(scripts)
 def _source_docstring(path: Path) -> str | None:
     text = _read_text(path)
     if not text:
