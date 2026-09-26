@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from mangadl.cli import main
-from mangadl.favorites import FavoritesResult, extract_favorite_links
+from mangadl.favorites import FavoritesResult, _parse_browser_spec, extract_favorite_links
 
 
 def test_extract_favorite_links_keeps_supported_same_site_targets_and_next(
@@ -20,7 +20,7 @@ def test_extract_favorite_links_keeps_supported_same_site_targets_and_next(
     <html><body>
       <a href="/g/123/">One</a>
       <a href="https://nhentai.net/g/456/">Two</a>
-      <a href="/favorites/?page=2" rel="next">Next</a>
+      <a href="/favorites/?page=2" class="next"><i></i></a>
       <a href="https://cdn.example/1.jpg">Image</a>
       <a href="/tag/parody/">Collection</a>
     </body></html>
@@ -61,7 +61,18 @@ def test_favorites_cli_is_dry_run_first_and_apply_writes_url_file(
     assert output.read_text(encoding="utf-8").splitlines() == list(result.urls)
 
 
-def test_favorites_parser_rejects_invalid_bounds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_gallery_dl_browser_cookie_spec_is_preserved() -> None:
+    assert _parse_browser_spec("firefox") == ("firefox", None, None, None, None)
+    assert _parse_browser_spec("firefox/nhentai.net:default-release::all") == (
+        "firefox",
+        "default-release",
+        None,
+        "all",
+        "nhentai.net",
+    )
+
+
+def test_favorites_parser_rejects_invalid_bounds(tmp_path: Path) -> None:
     output = tmp_path / "favorites.txt"
 
     with pytest.raises(SystemExit) as exc_info:
