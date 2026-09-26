@@ -171,6 +171,23 @@ def test_menu_accepts_multi_digit_number(monkeypatch) -> None:
     assert selected.number == 12
 
 
+def test_menu_enter_commits_pending_number(monkeypatch) -> None:
+    monkeypatch.setattr("scripts_help.tui._write_screen", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("scripts_help.tui._terminal_size", lambda: (100, 30))
+    reader = _FakeReader(["1", "ENTER"])
+
+    selected = _select_menu(
+        reader,
+        "Items",
+        "",
+        _menu_entries(),
+        allow_search=True,
+    )
+
+    assert selected is not None
+    assert selected.number == 1
+
+
 def test_search_escape_keeps_filter_then_second_escape_clears(monkeypatch) -> None:
     monkeypatch.setattr("scripts_help.tui._write_screen", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("scripts_help.tui._terminal_size", lambda: (100, 30))
