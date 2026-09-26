@@ -96,7 +96,11 @@ def extract_favorite_links(page_url: str, html: str) -> tuple[list[str], str | N
 
         if next_url is None and _same_site(page_url, absolute):
             label = text.strip().lower()
-            if "next" in rel or "next" in classes or label in {"next", "next >", "next ›", "›", "»", "older", "older >"}:
+            if (
+                "next" in rel
+                or "next" in classes
+                or label in {"next", "next >", "next ›", "›", "»", "older", "older >"}
+            ):
                 next_url = absolute
 
         if absolute in seen or absolute == page_url:
@@ -111,7 +115,38 @@ def extract_favorite_links(page_url: str, html: str) -> tuple[list[str], str | N
     return urls, next_url
 
 
-def _build_opener(cookie_file: Path | None):
+def _parse_browser_spec(value: str) -> tuple[str, str | None, str | None, str | None, str | None]:
+    browser, _, profile = value.partition(":")
+    browser, _, keyring = browser.partition("+")
+    browser, _, domain = browser.partition("/")
+    if profile.startswith(":"):
+        container = profile[1:]
+        profile = ""
+    else:
+        profile, _, container = profile.partition("::")
+    if not browser:
+        raise ValueError("--cookies-browser requires a browser name")
+    return browser, profile or None, keyring or None, container or None, domain or None
+
+
+def _build_opener(cookie_file: Path | None, cookies_browser: str | None):
+    if cookie_file is not None and cookies_browser is not None:
+        raise ValueError("--cookies and --cookies-browser are mutually exclusive")
+
+    if cookies_browser is not None:
+        try:
+            from gallery_dl import cookies as gallery_cookies
+        except ImportError as exc:  # pragma: no cover - package dependency
+            raise RuntimeError("gallery-dl is required for --cookies-browser") from exc
+        jar = http.cookiejar.CookieJar()
+        try:
+            browser_cookies = gallery_cookies.load_cookies(_parse_browser_spec(cookies_browser))
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"could not load browser cookies from {cookies_browser!r}: {exc}") from exc
+        for cookie in browser_cookies:
+            jar.set_cookie(cookie)
+        return build_opener(HTTPCookieProcessor(jar))
+
     if cookie_file is None:
         return build_opener()
     if not cookie_file.is_file():
@@ -129,13 +164,13 @@ def resolve_credentials(
     *,
     auth_dir: Path | None = None,
     cookie_file: Path | None = None,
+    cookies_browser: str | None = None,
     user_agent: str | None = None,
 ) -> tuple[Path | None, str]:
-    if cookie_file is not None:
-        profile = ProfileStore(auth_dir).load(domain_for(url))
+    profile = ProfileStore(auth_dir).load(domain_for(url))
+    if cookie_file is not None or cookies_browser is not None:
         return cookie_file, user_agent or (profile.user_agent if profile else DEFAULT_USER_AGENT)
 
-    profile = ProfileStore(auth_dir).load(domain_for(url))
     if profile is None:
         return None, user_agent or DEFAULT_USER_AGENT
     return profile.cookie_path, user_agent or profile.user_agent
@@ -146,6 +181,7 @@ def crawl_favorites(
     *,
     auth_dir: Path | None = None,
     cookie_file: Path | None = None,
+    cookies_browser: str | None = None,
     user_agent: str | None = None,
     max_pages: int = 20,
     page_delay: float = 1.0,
@@ -163,9 +199,10 @@ def crawl_favorites(
         url,
         auth_dir=auth_dir,
         cookie_file=cookie_file,
+        cookies_browser=cookies_browser,
         user_agent=user_agent,
     )
-    opener = _build_opener(cookie_file)
+    opener = _build_opener(cookie_file, cookies_browser)
     found: list[str] = []
     seen_urls: set[str] = set()
     rejected: list[str] = []
