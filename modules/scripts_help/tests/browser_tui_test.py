@@ -9,6 +9,7 @@ _MOD_ROOT = Path(__file__).resolve().parents[2] / "scripts_help"
 if str(_MOD_ROOT.parent) not in sys.path:
     sys.path.insert(0, str(_MOD_ROOT.parent))
 
+from scripts_help.cli import _discover_cli_programs  # noqa: E402
 from scripts_help.help_parser import format_argument, parse_help_text  # noqa: E402
 from scripts_help.inventory import HelpItem, build_categories  # noqa: E402
 from scripts_help.tui import (  # noqa: E402
@@ -265,3 +266,23 @@ def test_run_help_uses_declared_entrypoint_from_src_layout(tmp_path: Path) -> No
     assert str(tmp_path / "modules" / "demo" / "src") in command[2]
     assert "-v, --verbose" in output
     assert "Enable verbose output." in output
+
+
+
+def test_drift_discovery_finds_pyproject_console_script(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = tmp_path / "modules" / "demo"
+    module.mkdir(parents=True)
+    (module / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\n'
+        '[project.scripts]\ndemo = "demo.cli:main"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "pyscripts").mkdir()
+    monkeypatch.setattr("scripts_help.cli.find_repo_root", lambda: tmp_path)
+
+    discovered = _discover_cli_programs()
+
+    assert "modules/demo" in discovered
