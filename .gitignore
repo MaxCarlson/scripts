@@ -225,3 +225,6 @@ NUL
 archived/
 pyscripts/tmp/
 bin/
+
+# Scheduler Stuff
+modules/scheduler/scheduler_data.json
