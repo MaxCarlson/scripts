@@ -82,8 +82,10 @@ mangadl favorites -u https://nhentai.net/favorites/ -o .\nhentai-favorites.txt -
 Use `-P/--max-pages` to bound pagination (default 20), `-D/--page-delay` to
 control the delay between listing pages, and `-t/--timeout` for each HTML
 request. `-C/--cookies` accepts an explicit Netscape cookie file and takes
-precedence over the managed cookie profile; `-U/--user-agent` overrides the
-stored User-Agent. The crawler does not visit the extracted gallery URLs, so it
+precedence over the managed cookie profile. `-B/--cookies-browser` loads cookies
+directly from a browser using gallery-dl's browser syntax (for example,
+`-B firefox`), matching the existing gallery-dl workflow. `-U/--user-agent`
+overrides the stored User-Agent. The crawler does not visit the extracted gallery URLs, so it
 avoids the request burst caused by simulating every favorite gallery merely to
 discover its URL.
 
