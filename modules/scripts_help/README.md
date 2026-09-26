@@ -34,8 +34,8 @@ Navigation:
 An item's detail page combines a longer description with its path, version, and
 invocation metadata when available. It can expose:
 
-- Arguments: execute the registered help command at view time, parse its
-  top-level options, and recursively browse subcommand help.
+- Arguments: execute the current source-tree/registered help command at view
+  time, parse its top-level options, and recursively browse subcommand help.
 - README: open through glow by default, with the built-in scroll viewer as a
   fallback.
 - Commit history: use tig when installed; otherwise show a path-scoped,
@@ -61,9 +61,9 @@ The installed entry point remains:
 
 ### `browse` (default)
 
-Runs the interactive help browser. Displays startup warnings for any detected
-registry or README drift. Navigate categories and subcategories to find
-programs, view `--help` output, and open READMEs.
+Runs the interactive help browser. The home screen summarizes actionable
+registry/README drift without interrupting navigation. Browse structural
+categories to inspect programs, live arguments, READMEs, Git history, and files.
 
 If [`glow`](https://github.com/charmbracelet/glow) is on PATH, READMEs are
 rendered with markdown formatting.
