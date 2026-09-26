@@ -256,7 +256,14 @@ def _select_menu(
             lines.extend(_wrapped_lines(subtitle, width))
         if intro_lines:
             lines.append("")
-            lines.extend(intro_lines)
+            max_intro = max(3, height // 2)
+            shown_intro = list(intro_lines[:max_intro])
+            if len(intro_lines) > max_intro:
+                shown_intro[-1] = (
+                    f"  … {len(intro_lines) - max_intro + 1} more detail line(s); "
+                    "open the relevant viewer to see all."
+                )
+            lines.extend(shown_intro)
 
         if query or editing_search:
             lines.append("")
@@ -497,16 +504,26 @@ def _show_arguments(
     parsed = parse_help_text(output)
     command_name = " ".join(subcommands) if subcommands else "top level"
     title = f"{item.name} — arguments — {command_name}"
+    argument_lines = _argument_lines(output)
 
     if not parsed.subcommands:
-        lines = _argument_lines(output)
+        lines = argument_lines
         lines.extend(["", "Live command:", "  " + " ".join(command)])
         _view_text(reader, title, "\n".join(lines))
         return
 
-    intro = _argument_lines(output)
+    intro = list(argument_lines)
     intro.extend(["", "Subcommands:"])
     entries = [
+        MenuEntry(
+            number=1,
+            label="View all top-level arguments",
+            description="Open the complete live argument list in the scroll viewer.",
+            payload="__all_args__",
+            search_text="arguments options flags",
+        )
+    ]
+    entries.extend(
         MenuEntry(
             number=index,
             label=sub.name,
@@ -514,8 +531,8 @@ def _show_arguments(
             payload=sub,
             search_text=sub.name,
         )
-        for index, sub in enumerate(parsed.subcommands, 1)
-    ]
+        for index, sub in enumerate(parsed.subcommands, 2)
+    )
 
     while True:
         chosen = _select_menu(
@@ -528,6 +545,11 @@ def _show_arguments(
         )
         if chosen is None:
             return
+        if chosen.payload == "__all_args__":
+            lines = list(argument_lines)
+            lines.extend(["", "Live command:", "  " + " ".join(command)])
+            _view_text(reader, title + " — complete list", "\n".join(lines))
+            continue
         _show_arguments(reader, item, repo, subcommands + (chosen.payload.name,))
 
 
