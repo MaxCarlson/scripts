@@ -281,6 +281,16 @@ def _relative_paths(repo: Path, key: str) -> list[str]:
             and p.relative_to(repo).as_posix() not in EXCLUDED_SCRIPTS
         ]
 
+    if key == "python":
+        base = repo / "python"
+        if not base.is_dir():
+            return []
+        return [
+            p.relative_to(repo).as_posix()
+            for p in base.glob("*.py")
+            if not p.name.startswith("_")
+        ]
+
     if key == "shell":
         paths = list(repo.glob("*.sh"))
         shell_dir = repo / "shell-scripts"
