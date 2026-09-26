@@ -190,7 +190,7 @@ def _first_sentence(text: str, limit: int = 118) -> str:
     return sentence[: limit - 1].rstrip() + "…"
 
 
-def _version_for(relative: str, absolute: Path, registry_item: dict | None) -> str | None:
+def _version_for(absolute: Path, registry_item: dict | None) -> str | None:
     # Prefer live metadata. The registry version intentionally lags when drift
     # is detected, so showing it first would make the detail page stale.
     if absolute.is_dir():
@@ -256,7 +256,7 @@ def _build_item(relative: str, repo: Path, index: dict[str, dict]) -> HelpItem:
         description=description,
         long_description=long_description,
         help_cmd=help_cmd,
-        version=_version_for(relative, absolute, registered),
+        version=_version_for(absolute, registered),
     )
 
 
