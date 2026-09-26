@@ -264,15 +264,24 @@ def _build_item(relative: str, repo: Path, index: dict[str, dict]) -> HelpItem:
         or description
     )
 
+    project_scripts = _project_scripts(absolute) if absolute.is_dir() else ()
+    entrypoint = project_scripts[0][1] if project_scripts else None
+
     help_cmd: tuple[str, ...] | None = None
     if registered and registered.get("help_cmd"):
         help_cmd = tuple(str(part) for part in registered["help_cmd"])
+        if project_scripts and help_cmd:
+            command_name = help_cmd[0]
+            matching = next(
+                (target for name, target in project_scripts if name == command_name),
+                None,
+            )
+            if matching:
+                entrypoint = matching
     elif relative == "help.py":
         help_cmd = ("python", "help.py", "--help")
-    elif absolute.is_dir():
-        scripts = _project_scripts(absolute)
-        if scripts:
-            help_cmd = (scripts[0], "--help")
+    elif project_scripts:
+        help_cmd = (project_scripts[0][0], "--help")
     elif absolute.suffix.lower() == ".py":
         source = _read_text(absolute)
         cli_markers = ("argparse", "ArgumentParser(", "click.", "typer.")
@@ -293,6 +302,7 @@ def _build_item(relative: str, repo: Path, index: dict[str, dict]) -> HelpItem:
         long_description=long_description,
         help_cmd=help_cmd,
         version=_version_for(absolute, registered),
+        entrypoint=entrypoint,
     )
 
 
