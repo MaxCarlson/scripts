@@ -8,7 +8,14 @@ on:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -22,8 +29,8 @@ jobs:
       - name: Compile
         run: python -m compileall -q modules/scripts_help/scripts_help help.py pyscripts/help.py
 
-      - name: Ruff
-        run: ruff check modules/scripts_help/scripts_help modules/scripts_help/tests help.py pyscripts/help.py
+      - name: Ruff correctness checks
+        run: ruff check --select E9,F modules/scripts_help/scripts_help modules/scripts_help/tests help.py pyscripts/help.py
 
       - name: Tests
         run: python -m pytest modules/scripts_help/tests -q -o addopts=""
