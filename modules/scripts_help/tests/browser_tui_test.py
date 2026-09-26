@@ -11,7 +11,7 @@ if str(_MOD_ROOT.parent) not in sys.path:
 
 from scripts_help.help_parser import format_argument, parse_help_text  # noqa: E402
 from scripts_help.inventory import build_categories  # noqa: E402
-from scripts_help.tui import MenuEntry, filter_entries  # noqa: E402
+from scripts_help.tui import MenuEntry, _select_menu, filter_entries  # noqa: E402
 
 
 def test_parse_argparse_options_and_subcommands() -> None:
@@ -130,3 +130,52 @@ def test_inventory_discovers_shell_and_powershell_groups(tmp_path: Path) -> None
 
     assert [item.path for item in categories["shell"].items] == ["shell-scripts/clean.sh"]
     assert [item.path for item in categories["powershell"].items] == ["pwsh/clean.ps1"]
+
+
+class _FakeReader:
+    def __init__(self, keys: list[str]) -> None:
+        self.keys = iter(keys)
+
+    def read(self, timeout=None) -> str:
+        return next(self.keys)
+
+
+def _menu_entries(count: int = 12) -> list[MenuEntry]:
+    return [
+        MenuEntry(index, f"item-{index}", f"description {index}", index)
+        for index in range(1, count + 1)
+    ]
+
+
+def test_menu_accepts_multi_digit_number(monkeypatch) -> None:
+    monkeypatch.setattr("scripts_help.tui._write_screen", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("scripts_help.tui._terminal_size", lambda: (100, 30))
+    reader = _FakeReader(["1", "2"])
+
+    selected = _select_menu(
+        reader,
+        "Items",
+        "",
+        _menu_entries(),
+        allow_search=True,
+    )
+
+    assert selected is not None
+    assert selected.number == 12
+
+
+def test_search_escape_keeps_filter_then_second_escape_clears(monkeypatch) -> None:
+    monkeypatch.setattr("scripts_help.tui._write_screen", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("scripts_help.tui._terminal_size", lambda: (100, 30))
+    entries = [
+        MenuEntry(1, "alpha", "", "alpha"),
+        MenuEntry(2, "beta", "", "beta"),
+    ]
+    # /b filters to beta. First Esc exits search editing while retaining "b".
+    # Second Esc clears "b". Down then selects beta from the full list.
+    reader = _FakeReader(["/", "b", "ESC", "ESC", "DOWN", "ENTER"])
+
+    selected = _select_menu(reader, "Items", "", entries, allow_search=True)
+
+    assert selected is not None
+    assert selected.payload == "beta"
