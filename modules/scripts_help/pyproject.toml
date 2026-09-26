@@ -9,10 +9,11 @@ version = "0.5.0"
 # 0.1.0 — initial release: interactive help browser, version-staleness checks
 # 0.2.0 — added: AI drift-update offer in cli + post-install hook; glow/README viewer in program info
 # 0.3.0 — subcommands (browse/drift/sync); README version tracking; pyscripts/readme/ convention
-# 0.5.0 — ignore patch-only README drift; summarize actionable help update counts
+# 0.4.0 — ignore patch-only README drift; summarize actionable help update counts
+# 0.5.0 — structure-first TUI, live search/args, README/Git/files viewers, root launcher
 description = "Interactive help browser for the scripts repository."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = []
 
 [project.scripts]
