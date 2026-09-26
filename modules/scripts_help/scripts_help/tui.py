@@ -446,7 +446,37 @@ def _readme_path(item: HelpItem, repo: Path) -> Path | None:
     return None
 
 
-def _resolve_help_command(item: HelpItem, repo: Path, subcommands: tuple[str, ...] = ()) -> list[str]:
+def _entrypoint_help_command(
+    item: HelpItem,
+    repo: Path,
+    subcommands: tuple[str, ...],
+) -> list[str]:
+    """Run a declared console entrypoint directly from its module checkout."""
+
+    if not item.entrypoint or ":" not in item.entrypoint:
+        return []
+
+    module_name, attr_path = item.entrypoint.split(":", 1)
+    source_root = repo / item.path
+    argv = [item.help_cmd[0] if item.help_cmd else item.name, *subcommands, "--help"]
+    code = (
+        "import importlib,sys;"
+        f"sys.path.insert(0,{str(source_root)!r});"
+        f"sys.argv={argv!r};"
+        f"obj=importlib.import_module({module_name!r});"
+        f"parts={attr_path.split('.')!r};"
+        "[None for part in parts if not (obj := getattr(obj, part))];"
+        "result=obj();"
+        "raise SystemExit(result if isinstance(result,int) else 0)"
+    )
+    return [sys.executable, "-c", code]
+
+
+def _resolve_help_command(
+    item: HelpItem,
+    repo: Path,
+    subcommands: tuple[str, ...] = (),
+) -> list[str]:
     if not item.help_cmd:
         return []
 
@@ -465,10 +495,19 @@ def _resolve_help_command(item: HelpItem, repo: Path, subcommands: tuple[str, ..
         else:
             resolved.append(part)
 
+    # A fresh checkout may not have the module's generated console wrapper on
+    # PATH yet. In that case, execute the declared [project.scripts] target
+    # directly from its module source tree.
+    if resolved and resolved[0] != sys.executable:
+        executable = resolved[0]
+        if not Path(executable).is_file() and shutil.which(executable) is None:
+            fallback = _entrypoint_help_command(item, repo, subcommands)
+            if fallback:
+                return fallback
+
     resolved.extend(subcommands)
     resolved.append("--help")
     return resolved
-
 
 def _run_help(item: HelpItem, repo: Path, subcommands: tuple[str, ...] = ()) -> tuple[str, list[str]]:
     command = _resolve_help_command(item, repo, subcommands)
