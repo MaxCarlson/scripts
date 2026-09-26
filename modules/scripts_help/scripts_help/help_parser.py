@@ -114,6 +114,23 @@ def parse_help_text(text: str) -> ParsedHelp:
                 last_was_option = True
                 continue
 
+        # Some argparse layouts wrap long option declarations onto a line by
+        # themselves and put the description on the following indented line.
+        stripped = line.strip()
+        if stripped.startswith("-"):
+            short, long = _option_parts(stripped)
+            if short or long:
+                arguments.append(
+                    HelpArgument(
+                        short=short,
+                        long=long,
+                        usage=stripped,
+                        description="",
+                    )
+                )
+                last_was_option = True
+                continue
+
         command_line = re.match(r"^\s{2,}([A-Za-z0-9][A-Za-z0-9_-]*)\s{2,}(.*\S)\s*$", line)
         if command_line:
             name = command_line.group(1)
