@@ -14,6 +14,7 @@ from scripts_help.inventory import HelpItem, build_categories  # noqa: E402
 from scripts_help.tui import (  # noqa: E402
     MenuEntry,
     _resolve_help_command,
+    _run_help,
     _select_menu,
     filter_entries,
 )
@@ -230,12 +231,21 @@ def test_inventory_infers_argparse_help_for_unregistered_python_script(tmp_path:
     assert demo.help_cmd == ("python", "pyscripts/demo.py", "--help")
 
 
-def test_resolve_help_falls_back_to_declared_entrypoint(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    module = tmp_path / "modules" / "demo"
-    module.mkdir(parents=True)
+def test_run_help_uses_declared_entrypoint_from_src_layout(tmp_path: Path) -> None:
+    package = tmp_path / "modules" / "demo" / "src" / "demo"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "cli.py").write_text(
+        "import argparse\n"
+        "def main():\n"
+        "    parser = argparse.ArgumentParser(prog='demo')\n"
+        "    sub = parser.add_subparsers(dest='command')\n"
+        "    scan = sub.add_parser('scan')\n"
+        "    scan.add_argument('-v', '--verbose', action='store_true', "
+        "help='Enable verbose output.')\n"
+        "    parser.parse_args()\n",
+        encoding="utf-8",
+    )
     item = HelpItem(
         name="demo",
         path="modules/demo",
@@ -245,12 +255,13 @@ def test_resolve_help_falls_back_to_declared_entrypoint(
         version="1.0.0",
         entrypoint="demo.cli:main",
     )
-    monkeypatch.setattr("scripts_help.tui.shutil.which", lambda _name: None)
 
     command = _resolve_help_command(item, tmp_path, ("scan",))
+    output, executed = _run_help(item, tmp_path, ("scan",))
 
+    assert command == executed
     assert command[0] == sys.executable
     assert command[1] == "-c"
-    assert "demo.cli" in command[2]
-    assert "'scan'" in command[2]
-    assert "'--help'" in command[2]
+    assert str(tmp_path / "modules" / "demo" / "src") in command[2]
+    assert "-v, --verbose" in output
+    assert "Enable verbose output." in output
