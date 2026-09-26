@@ -15,8 +15,8 @@ scripts-help sync         # launch AI to fix drift
 ## Interactive browser
 
 The default browser is structure-first rather than topic-first. The home page
-lists the repository's main program groups (Modules, Python Scripts, Shell
-Scripts, PowerShell Scripts, Repository Tools, and Python Projects) and
+lists the repository's main program groups (Modules, Python Scripts, the legacy
+Python directory, Shell Scripts, PowerShell Scripts, Repository Tools, and Python Projects) and
 discovers their current contents at runtime.
 
 Navigation:
