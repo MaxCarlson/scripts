@@ -107,7 +107,11 @@ def _project_scripts(directory: Path) -> tuple[tuple[str, str], ...]:
         target = parsed.group(2).strip()
         if command and target:
             scripts.append((command, target))
-    return tuple(scripts)\n\n\ndef _source_docstring(path: Path) -> str | None:\n    text = _read_text(path)
+    return tuple(scripts)
+
+
+def _source_docstring(path: Path) -> str | None:
+    text = _read_text(path)
     if not text:
         return None
     if path.suffix.lower() == ".py":
