@@ -460,13 +460,12 @@ def _entrypoint_help_command(
     source_root = repo / item.path
     argv = [item.help_cmd[0] if item.help_cmd else item.name, *subcommands, "--help"]
     code = (
-        "import importlib,sys;"
+        "import functools,importlib,sys;"
         f"sys.path.insert(0,{str(source_root)!r});"
         f"sys.argv={argv!r};"
-        f"obj=importlib.import_module({module_name!r});"
-        f"parts={attr_path.split('.')!r};"
-        "[None for part in parts if not (obj := getattr(obj, part))];"
-        "result=obj();"
+        f"module=importlib.import_module({module_name!r});"
+        f"fn=functools.reduce(getattr,{attr_path.split('.')!r},module);"
+        "result=fn();"
         "raise SystemExit(result if isinstance(result,int) else 0)"
     )
     return [sys.executable, "-c", code]
@@ -508,6 +507,7 @@ def _resolve_help_command(
     resolved.extend(subcommands)
     resolved.append("--help")
     return resolved
+
 
 def _run_help(item: HelpItem, repo: Path, subcommands: tuple[str, ...] = ()) -> tuple[str, list[str]]:
     command = _resolve_help_command(item, repo, subcommands)
