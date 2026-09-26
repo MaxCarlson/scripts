@@ -297,8 +297,10 @@ def _select_menu(
                 marker = ">" if pos == selected else " "
                 row = f"{marker} {entry.number:>3}. {entry.label}"
                 if entry.description:
-                    room = max(0, width - len(row) - 3)
-                    row += " — " + _clip(entry.description, room)
+                    separator = " — "
+                    room = width - len(row) - len(separator)
+                    if room >= 4:
+                        row += separator + _clip(entry.description, room)
                 if pos == selected:
                     row = f"{_INVERSE}{row}{_RESET}"
                 lines.append(row)
@@ -833,6 +835,8 @@ def run_browser(drift: dict | None = None) -> None:
                     if chosen_item is None:
                         break
                     _show_item(reader, chosen_item.payload, repo)
+    except KeyboardInterrupt:
+        return
     finally:
         sys.stdout.write(_SHOW_CURSOR + "\n")
         sys.stdout.flush()
