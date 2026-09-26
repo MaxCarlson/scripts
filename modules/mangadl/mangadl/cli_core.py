@@ -16,6 +16,9 @@ from .backends import backend_classification, choose_backend, gallery_dl_scope
 from .cli_structure import add_run_arguments, normalize_command_shape
 from .concurrency import HARD_MAX_OUTER_WORKERS, MAX_OUTER_WORKERS_ENV
 from .destination_audit import audit_destinations, write_audit_outputs
+from .favorites import crawl_favorites, format_result as format_favorites_result
+from .favorites import result_payload as favorites_result_payload
+from .favorites import write_url_file
 from .gallery_auth import (
     BROWSERS,
     DEFAULT_AUTH_SITE,
@@ -27,9 +30,6 @@ from .gallery_auth import (
     refresh_profile,
     site_for_url,
 )
-from .favorites import crawl_favorites, format_result as format_favorites_result
-from .favorites import result_payload as favorites_result_payload
-from .favorites import write_url_file
 from .hdporncomics_patch import apply_patch, patch_status
 from .input import collect_inputs
 from .manager import DownloadManager, RunOptions
@@ -311,6 +311,11 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     favorites.add_argument("-o", "--output", required=True, type=_path, help="Destination UTF-8 URL file.")
     favorites.add_argument("-A", "--auth-dir", type=_path, help="Managed authentication root.")
     favorites.add_argument("-C", "--cookies", type=_path, help="Explicit Netscape cookie file; overrides managed cookies.")
+    favorites.add_argument(
+        "-B",
+        "--cookies-browser",
+        help="Load cookies directly from a browser using gallery-dl syntax, e.g. firefox.",
+    )
     favorites.add_argument("-U", "--user-agent", help="Override the managed/browser User-Agent.")
     favorites.add_argument("-P", "--max-pages", type=int, default=20, help="Maximum listing pages to fetch (default: 20).")
     favorites.add_argument("-D", "--page-delay", type=float, default=1.0, help="Delay between listing pages in seconds.")
@@ -1073,6 +1078,7 @@ def _favorites(args: argparse.Namespace) -> int:
         args.url,
         auth_dir=args.auth_dir,
         cookie_file=args.cookies,
+        cookies_browser=args.cookies_browser,
         user_agent=args.user_agent,
         max_pages=args.max_pages,
         page_delay=args.page_delay,
