@@ -22,6 +22,11 @@ CATEGORY_SPECS = (
         "Standalone Python utilities under pyscripts/.",
     ),
     (
+        "python",
+        "Legacy Python Directory",
+        "Standalone and compatibility Python utilities kept under python/.",
+    ),
+    (
         "shell",
         "Shell Scripts",
         "Bash/Zsh-compatible scripts from shell-scripts/ and the repository root.",
