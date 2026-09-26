@@ -12,6 +12,51 @@ scripts-help drift        # print drift report
 scripts-help sync         # launch AI to fix drift
 ```
 
+## Interactive browser
+
+The default browser is structure-first rather than topic-first. The home page
+lists the repository's main program groups (Modules, Python Scripts, Shell
+Scripts, PowerShell Scripts, Repository Tools, and Python Projects) and
+discovers their current contents at runtime.
+
+Navigation:
+
+- Up/Down selects an entry; Enter opens the selected entry.
+- Typing an entry number opens it. Multi-digit numbers are supported.
+- In menus below the home page, / enters live search. Each typed character
+  immediately filters non-matching rows while preserving the rows' original
+  numbers.
+- Esc while typing a search keeps the filter but returns to selection mode.
+  The next Esc clears that filter; another Esc moves up one menu level.
+- Esc on the home page asks for confirmation before exiting.
+- The final terminal line is reserved for the currently available hotkeys.
+
+An item's detail page combines a longer description with its path, version, and
+invocation metadata when available. It can expose:
+
+- Arguments: execute the registered help command at view time, parse its
+  top-level options, and recursively browse subcommand help.
+- README: open through glow by default, with the built-in scroll viewer as a
+  fallback.
+- Commit history: use tig when installed; otherwise show a path-scoped,
+  scrollable git log.
+- View files: launch file-util ls at the item's directory.
+
+The browser reuses the existing registry for public command names, short
+descriptions, help commands, and recorded versions. Longer descriptions are
+resolved in this order: an explicit override in
+scripts_help/catalog.py, the item's README, the source docstring/comment
+header, then the short registry description. This keeps hand-written metadata
+centralized without duplicating README content.
+
+From a checkout, the root launcher works without installing the package first:
+
+    python help.py
+
+The installed entry point remains:
+
+    scripts-help
+
 ## Subcommands
 
 ### `browse` (default)
