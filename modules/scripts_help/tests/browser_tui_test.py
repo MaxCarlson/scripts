@@ -90,7 +90,13 @@ def test_inventory_uses_runtime_structure_and_readme_description(tmp_path: Path)
     module = tmp_path / "modules" / "demo"
     module.mkdir(parents=True)
     (module / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "1.2.3"\ndescription = "Short project description."\n',
+        '[project]\n'
+        'name = "demo"\n'
+        'version = "1.2.3"\n'
+        'description = "Short project description."\n'
+        '\n'
+        '[project.scripts]\n'
+        'demo = "demo.cli:main"\n',
         encoding="utf-8",
     )
     (module / "README.md").write_text(
@@ -111,6 +117,7 @@ def test_inventory_uses_runtime_structure_and_readme_description(tmp_path: Path)
     assert "pyscripts" in categories
     demo = next(item for item in categories["modules"].items if item.path == "modules/demo")
     assert demo.version == "1.2.3"
+    assert demo.help_cmd == ("demo", "--help")
     assert demo.long_description.startswith("A longer README paragraph")
 
 
@@ -179,3 +186,22 @@ def test_search_escape_keeps_filter_then_second_escape_clears(monkeypatch) -> No
 
     assert selected is not None
     assert selected.payload == "beta"
+
+
+def test_inventory_infers_argparse_help_for_unregistered_python_script(tmp_path: Path) -> None:
+    pyscripts = tmp_path / "pyscripts"
+    pyscripts.mkdir()
+    (pyscripts / "demo.py").write_text(
+        '"""Demo utility."""\n'
+        "import argparse\n"
+        "def main():\n"
+        "    argparse.ArgumentParser().parse_args()\n"
+        'if __name__ == "__main__":\n'
+        "    main()\n",
+        encoding="utf-8",
+    )
+
+    categories = {category.key: category for category in build_categories(tmp_path)}
+    demo = next(item for item in categories["pyscripts"].items if item.path == "pyscripts/demo.py")
+
+    assert demo.help_cmd == ("python", "pyscripts/demo.py", "--help")
