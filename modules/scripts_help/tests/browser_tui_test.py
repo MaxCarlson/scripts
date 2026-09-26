@@ -263,7 +263,7 @@ def test_run_help_uses_declared_entrypoint_from_src_layout(tmp_path: Path) -> No
     assert command == executed
     assert command[0] == sys.executable
     assert command[1] == "-c"
-    assert str(tmp_path / "modules" / "demo" / "src") in command[2]
+    assert repr(str(tmp_path / "modules" / "demo" / "src")) in command[2]
     assert "-v, --verbose" in output
     assert "Enable verbose output." in output
 
