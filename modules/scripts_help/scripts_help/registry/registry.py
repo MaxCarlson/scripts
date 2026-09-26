@@ -179,6 +179,13 @@ REGISTRY: dict = {
                         "version": "1.4.0",
                     },
                     {
+                        "name": "url_file_tools (module)",
+                        "path": "modules/url_file_tools",
+                        "desc": "Dry-run URL file cleanup, merging, domain splitting, and downloader archive matching",
+                        "help_cmd": ["python", "-m", "url_file_tools", "--help"],
+                        "version": "1.0.0",
+                    },
+                    {
                         "name": "folder_stats.py",
                         "path": "pyscripts/folder_stats.py",
                         "desc": "Analyze disk usage by file extension with real-time progress dashboard",

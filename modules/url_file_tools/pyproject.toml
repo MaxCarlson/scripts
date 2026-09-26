@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "url-file-tools"
+version = "1.0.0"
+description = "Dry-run-first URL file normalization, deduplication, merging, and domain splitting."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["tldextract>=5,<6"]
+
+[[project.authors]]
+name = "Maxwell Carlson"
+
+[project.scripts]
+"url-files" = "url_file_tools.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.8"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["url_file_tools*"]
+
+[tool.pytest.ini_options]
+addopts = "-q -p no:cacheprovider --basetemp=.pytest_tmp_root"
+testpaths = ["tests"]
+tmp_path_retention_policy = "none"

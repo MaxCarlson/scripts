@@ -1,0 +1,21 @@
+warning: in the working copy of 'C:\Users\mcarls\src\scripts\docs\test-results\url-file-tools\history\20260926-005741_url-file-tools_context.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'C:\Users\mcarls\src\scripts\docs\test-results\url-file-tools\LATEST_CONTEXT.md', LF will be replaced by CRLF the next time Git touches it
+diff --git "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\url-file-tools\\history\\20260926-005741_url-file-tools_context.md" "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\url-file-tools\\LATEST_CONTEXT.md"
+index 5933557..2303caa 100644
+--- "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\url-file-tools\\history\\20260926-005741_url-file-tools_context.md"
++++ "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\url-file-tools\\LATEST_CONTEXT.md"
+@@ -1,12 +1,13 @@
+ # Validation Context: url-file-tools
+
+-Generated: 2026-09-26T00:57:43.1008880-07:00
++Generated: 2026-09-26T00:58:27.2585046-07:00
+ Branch: url-file-tools-20260926-0041
+ Commit: f0a4d5d331ceaad4e7276e6f5dd0eb08a49f74b9
+ Validation report: docs\test-results\url-file-tools\LATEST.txt
+
+ ## Validation Highlights
+
++- RESULT: PASS - Install URL file tools editable development dependencies
+ - RESULT: PASS - Compile URL file tools package and tests
+ - RESULT: PASS - Lint URL file tools package and tests
+ - RESULT: PASS - URL file tools CLI help contract

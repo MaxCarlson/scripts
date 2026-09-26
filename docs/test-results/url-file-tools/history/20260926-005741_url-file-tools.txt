@@ -1,0 +1,91 @@
+
+
+====================================================================================================
+VALIDATION TARGET: url-file-tools
+====================================================================================================
+Timestamp: 2026-09-26T00:57:41.2657778-07:00
+Description: URL file normalization, merge, domain split, and read-only downloader archive matching.
+Repository root: C:\Users\mcarls\src\scripts
+Working directory: C:\Users\mcarls\src\scripts\modules\url_file_tools
+Python: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe
+PowerShell: 7.6.1
+Platform: Microsoft Windows 10.0.26200
+Bootstrap enabled: False
+Production read-only checks: False
+History retention: 3 prior runs, maximum age 14 days
+Git branch: url-file-tools-20260926-0041
+Git commit: f0a4d5d331ceaad4e7276e6f5dd0eb08a49f74b9
+Git status before validation:
+ M modules/scripts_help/scripts_help/registry/registry.py
+ M validation-targets.json
+?? docs/test-results/url-file-tools/
+?? modules/url_file_tools/
+
+====================================================================================================
+Compile URL file tools package and tests
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\url_file_tools
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m compileall -q url_file_tools tests
+RESULT: PASS - Compile URL file tools package and tests
+
+====================================================================================================
+Lint URL file tools package and tests
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\url_file_tools
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m ruff check url_file_tools tests
+All checks passed!
+RESULT: PASS - Lint URL file tools package and tests
+
+====================================================================================================
+URL file tools CLI help contract
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\url_file_tools
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m url_file_tools --help
+usage: url-files [-h] [-V] {normalize,merge,archive} ...
+
+Dry-run-first URL file normalization, merging, deduplication, and domain
+splitting.
+
+positional arguments:
+  {normalize,merge,archive}
+    normalize           Remove numbered prefixes and optionally duplicate
+                        rows.
+    merge               Merge URL files into one file or one file per base
+                        domain.
+    archive             Read-only downloader archive matching.
+
+options:
+  -h, --help            show this help message and exit
+  -V, --version         show program's version number and exit
+RESULT: PASS - URL file tools CLI help contract
+
+====================================================================================================
+Installed URL file tools entry point
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\url_file_tools
+Command: url-files --version
+url-files 1.0.0
+RESULT: PASS - Installed URL file tools entry point
+
+====================================================================================================
+URL file tools pytest suite
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\url_file_tools
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest tests -q --strict-config --strict-markers --basetemp C:\Users\mcarls\src\scripts\modules\url_file_tools\.pytest_tmp_root\validation-20260926-005741
+[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m                                                              [100%][0m
+RESULT: PASS - URL file tools pytest suite
+
+====================================================================================================
+TARGET SUMMARY
+====================================================================================================
+Latest report: C:\Users\mcarls\src\scripts\docs\test-results\url-file-tools\LATEST.txt
+Context snapshot: C:\Users\mcarls\src\scripts\docs\test-results\url-file-tools\LATEST_CONTEXT.md
+Progress diff: C:\Users\mcarls\src\scripts\docs\test-results\url-file-tools\LATEST_PROGRESS.diff
+TARGET RESULT: PASS
+All requested validation sections passed.
+
+Git status after validation:
+ M modules/scripts_help/scripts_help/registry/registry.py
+ M validation-targets.json
+?? docs/test-results/url-file-tools/
+?? modules/url_file_tools/

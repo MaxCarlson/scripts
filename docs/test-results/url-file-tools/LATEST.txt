@@ -1,0 +1,148 @@
+
+
+====================================================================================================
+VALIDATION TARGET: url-file-tools
+====================================================================================================
+Timestamp: 2026-09-26T00:58:22.7231278-07:00
+Description: URL file normalization, merge, domain split, and read-only downloader archive matching.
+Repository root: C:\Users\mcarls\src\scripts
+Working directory: C:\Users\mcarls\src\scripts\modules\url_file_tools
+Python: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe
+PowerShell: 7.6.1
+Platform: Microsoft Windows 10.0.26200
+Bootstrap enabled: True
+Production read-only checks: False
+History retention: 3 prior runs, maximum age 14 days
+Git branch: url-file-tools-20260926-0041
+Git commit: f0a4d5d331ceaad4e7276e6f5dd0eb08a49f74b9
+Git status before validation:
+ M modules/scripts_help/scripts_help/registry/registry.py
+ M validation-targets.json
+?? docs/test-results/url-file-tools/
+?? modules/url_file_tools/
+
+====================================================================================================
+Install URL file tools editable development dependencies
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\url_file_tools
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pip install --disable-pip-version-check --no-build-isolation -e C:\Users\mcarls\src\scripts\modules\url_file_tools[dev]
+WARNING: Ignoring invalid distribution ~%bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~-bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~=bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ebndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~~bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+Obtaining file:///C:/Users/mcarls/src/scripts/modules/url_file_tools
+  Checking if build backend supports build_editable: started
+  Checking if build backend supports build_editable: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Preparing editable metadata (pyproject.toml): finished with status 'done'
+Requirement already satisfied: tldextract<6,>=5 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from url-file-tools==1.0.0) (5.3.2)
+Requirement already satisfied: pytest>=8 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from url-file-tools==1.0.0) (9.0.3)
+Requirement already satisfied: ruff>=0.8 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from url-file-tools==1.0.0) (0.14.8)
+Requirement already satisfied: idna in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from tldextract<6,>=5->url-file-tools==1.0.0) (3.11)
+Requirement already satisfied: requests>=2.1.0 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from tldextract<6,>=5->url-file-tools==1.0.0) (2.32.5)
+Requirement already satisfied: requests-file>=1.4 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from tldextract<6,>=5->url-file-tools==1.0.0) (3.0.1)
+Requirement already satisfied: filelock>=3.0.8 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from tldextract<6,>=5->url-file-tools==1.0.0) (3.29.0)
+Requirement already satisfied: colorama>=0.4 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from pytest>=8->url-file-tools==1.0.0) (0.4.6)
+Requirement already satisfied: iniconfig>=1.0.1 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from pytest>=8->url-file-tools==1.0.0) (2.3.0)
+Requirement already satisfied: packaging>=22 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from pytest>=8->url-file-tools==1.0.0) (25.0)
+Requirement already satisfied: pluggy<2,>=1.5 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from pytest>=8->url-file-tools==1.0.0) (1.6.0)
+Requirement already satisfied: pygments>=2.7.2 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from pytest>=8->url-file-tools==1.0.0) (2.19.2)
+Requirement already satisfied: charset_normalizer<4,>=2 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from requests>=2.1.0->tldextract<6,>=5->url-file-tools==1.0.0) (3.4.4)
+Requirement already satisfied: urllib3<3,>=1.21.1 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from requests>=2.1.0->tldextract<6,>=5->url-file-tools==1.0.0) (2.5.0)
+Requirement already satisfied: certifi>=2017.4.17 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from requests>=2.1.0->tldextract<6,>=5->url-file-tools==1.0.0) (2025.11.12)
+Building wheels for collected packages: url-file-tools
+  Building editable for url-file-tools (pyproject.toml): started
+  Building editable for url-file-tools (pyproject.toml): finished with status 'done'
+  Created wheel for url-file-tools: filename=url_file_tools-1.0.0-0.editable-py3-none-any.whl size=4495 sha256=7832b6acc45aca9434160974452f872c10f70847df6e1a02c16e9c47e10168f8
+  Stored in directory: C:\Users\mcarls\AppData\Local\Temp\pip-ephem-wheel-cache-oz1yqwfw\wheels\2c\5e\ed\19c38da7aef696556e4906b03315180fbacd67f089c0b19528
+Successfully built url-file-tools
+WARNING: Ignoring invalid distribution ~%bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~-bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~=bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ebndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~~bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+Installing collected packages: url-file-tools
+  Attempting uninstall: url-file-tools
+    Found existing installation: url-file-tools 1.0.0
+    Not uninstalling url-file-tools at c:\users\mcarls\src\scripts\modules\url_file_tools, outside environment C:\Users\mcarls\src\scripts\.venv
+    Can't uninstall 'url-file-tools'. No files were found to uninstall.
+WARNING: Ignoring invalid distribution ~%bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~-bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~=bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ebndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~~bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+Successfully installed url-file-tools-1.0.0
+RESULT: PASS - Install URL file tools editable development dependencies
+
+====================================================================================================
+Compile URL file tools package and tests
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\url_file_tools
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m compileall -q url_file_tools tests
+RESULT: PASS - Compile URL file tools package and tests
+
+====================================================================================================
+Lint URL file tools package and tests
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\url_file_tools
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m ruff check url_file_tools tests
+All checks passed!
+RESULT: PASS - Lint URL file tools package and tests
+
+====================================================================================================
+URL file tools CLI help contract
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\url_file_tools
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m url_file_tools --help
+usage: url-files [-h] [-V] {normalize,merge,archive} ...
+
+Dry-run-first URL file normalization, merging, deduplication, and domain
+splitting.
+
+positional arguments:
+  {normalize,merge,archive}
+    normalize           Remove numbered prefixes and optionally duplicate
+                        rows.
+    merge               Merge URL files into one file or one file per base
+                        domain.
+    archive             Read-only downloader archive matching.
+
+options:
+  -h, --help            show this help message and exit
+  -V, --version         show program's version number and exit
+RESULT: PASS - URL file tools CLI help contract
+
+====================================================================================================
+Installed URL file tools entry point
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\url_file_tools
+Command: url-files --version
+url-files 1.0.0
+RESULT: PASS - Installed URL file tools entry point
+
+====================================================================================================
+URL file tools pytest suite
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\url_file_tools
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest tests -q --strict-config --strict-markers --basetemp C:\Users\mcarls\src\scripts\modules\url_file_tools\.pytest_tmp_root\validation-20260926-005822
+[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m                                                              [100%][0m
+RESULT: PASS - URL file tools pytest suite
+
+====================================================================================================
+TARGET SUMMARY
+====================================================================================================
+Latest report: C:\Users\mcarls\src\scripts\docs\test-results\url-file-tools\LATEST.txt
+Context snapshot: C:\Users\mcarls\src\scripts\docs\test-results\url-file-tools\LATEST_CONTEXT.md
+Progress diff: C:\Users\mcarls\src\scripts\docs\test-results\url-file-tools\LATEST_PROGRESS.diff
+TARGET RESULT: PASS
+All requested validation sections passed.
+
+Git status after validation:
+ M modules/scripts_help/scripts_help/registry/registry.py
+ M validation-targets.json
+?? docs/test-results/url-file-tools/
+?? modules/url_file_tools/

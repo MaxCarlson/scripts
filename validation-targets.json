@@ -367,6 +367,72 @@
                     ]
                 }
             ]
+        },
+        "url-file-tools": {
+            "description": "URL file normalization, merge, domain split, and read-only downloader archive matching.",
+            "working_directory": "modules/url_file_tools",
+            "context_files": [
+                "docs/plans/20260926-0041_url-file-tools/STATUS.md",
+                "docs/plans/20260926-0041_url-file-tools/checklist.md",
+                "docs/plans/20260926-0041_url-file-tools/00_implementation-plan.md"
+            ],
+            "environment": {
+                "PYTHONUTF8": "1",
+                "PYTHONUNBUFFERED": "1",
+                "PY_COLORS": "1",
+                "PYTHONPATH": "{target_root}"
+            },
+            "bootstrap": [
+                {
+                    "name": "Install URL file tools editable development dependencies",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "pip",
+                        "install",
+                        "--disable-pip-version-check",
+                        "--no-build-isolation",
+                        "-e",
+                        "{target_root}[dev]"
+                    ]
+                }
+            ],
+            "commands": [
+                {
+                    "name": "Compile URL file tools package and tests",
+                    "executable": "{python}",
+                    "arguments": ["-m", "compileall", "-q", "url_file_tools", "tests"]
+                },
+                {
+                    "name": "Lint URL file tools package and tests",
+                    "executable": "{python}",
+                    "arguments": ["-m", "ruff", "check", "url_file_tools", "tests"]
+                },
+                {
+                    "name": "URL file tools CLI help contract",
+                    "executable": "{python}",
+                    "arguments": ["-m", "url_file_tools", "--help"]
+                },
+                {
+                    "name": "Installed URL file tools entry point",
+                    "executable": "url-files",
+                    "arguments": ["--version"]
+                },
+                {
+                    "name": "URL file tools pytest suite",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "pytest",
+                        "tests",
+                        "-q",
+                        "--strict-config",
+                        "--strict-markers",
+                        "--basetemp",
+                        "{temp_root}"
+                    ]
+                }
+            ]
         }
     }
 }
