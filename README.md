@@ -21,6 +21,25 @@ Cross-platform Python/Shell scripting toolkit supporting **Windows 11**, **Termu
 .\bootstrap.ps1 -Verbose
 ```
 
+**Install only what is missing:**
+```bash
+./bootstrap_latest.sh --dry-run  # preview
+./bootstrap_latest.sh            # install missing packages and launchers
+```
+```powershell
+.\bootstrap_latest.ps1 -DryRun  # preview
+.\bootstrap_latest.ps1          # install missing packages and launchers
+```
+
+The `bootstrap_latest` entry points use the repo `.venv`. They do not reinstall an
+existing distribution even when its source version changes, and they never replace
+an existing `bin/` launcher. They create a missing venv or initialize a missing
+`pscripts` submodule only when applying; a dry run changes nothing. They do not
+refresh PATH, profiles, aliases, skills, help metadata, or package-specific runtime
+extras. Use the regular `bootstrap` when those full setup tasks are wanted.
+`--skip-reinstall` on the regular bootstrap retains its existing behavior and is
+not equivalent to this missing-only mode.
+
 **Manual setup:**
 ```bash
 python setup.py -v       # Install all modules (verbose)
@@ -54,6 +73,9 @@ scripts/
 ├── knowledge_manager/    # Knowledge base management
 ├── bootstrap.sh          # Unix bootstrap script
 ├── bootstrap.ps1         # Windows bootstrap script
+├── bootstrap_latest.py   # Shared missing-only installer
+├── bootstrap_latest.sh   # Unix missing-only entry point
+├── bootstrap_latest.ps1  # Windows missing-only entry point
 └── setup.py              # Main setup orchestrator
 ```
 

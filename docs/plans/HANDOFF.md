@@ -3,7 +3,7 @@
 ## Active Plan
 
 ```text
-20260729-0900_validation-evidence-context-history/
+20260926-0107_missing-only-bootstrap/
 ```
 
 ## Scope Boundary
@@ -14,4 +14,4 @@ Use `modules/<module>/docs/plans/` for work owned by a single module.
 
 ## Current Priority
 
-The validation evidence/context-diff foundation is implemented and awaiting local validation. Do not expand it further during RRBackup consolidation unless a defect blocks the hybrid development loop.
+The missing-only bootstrap plan is active. The validation-evidence plan remains open and awaits local validation; this bootstrap work does not expand it.

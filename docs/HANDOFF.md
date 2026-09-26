@@ -7,10 +7,10 @@ This handoff covers repository-wide infrastructure and conventions that are not 
 ## Active Repository-Wide Plan
 
 ```text
-docs/plans/20260729-0900_validation-evidence-context-history/
+docs/plans/20260926-0107_missing-only-bootstrap/
 ```
 
-This plan tracks the shared validation evidence system built around:
+This plan tracks missing-only bootstrap entry points and their shared installer. The earlier validation-evidence plan remains separate and open; it built:
 
 ```text
 Invoke-Tests.ps1
@@ -29,7 +29,7 @@ The first implementation provides:
 - generated `LATEST_CONTEXT.md` snapshots from existing project status/checklist files,
 - generated `LATEST_PROGRESS.diff` files showing context changes since the prior run.
 
-The current implementation is intentionally lightweight. Future expansion is documented in the active repository-wide plan and should not delay module-specific work unless the validation infrastructure itself is blocking.
+The missing-only bootstrap implementation is complete and awaiting user validation. See its plan `STATUS.md` for exact checks and limitations. The validation-evidence system remains intentionally lightweight and is tracked separately in `docs/plans/20260729-0900_validation-evidence-context-history/`.
 
 ## Module-Specific Work
 
