@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Thin shim — delegates to the scripts_help module CLI.
 
-Prefer running via  scripts-help  (installed entry point) or  help  (bin shim).
-This file exists so the old pyscripts path still works during development.
+Prefer running via  python help.py  from the repository root or via the
+installed  scripts-help  entry point. This file remains as a compatibility
+shim for the old pyscripts path.
 """
 import sys
 from pathlib import Path
