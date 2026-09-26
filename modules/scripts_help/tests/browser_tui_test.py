@@ -10,7 +10,7 @@ if str(_MOD_ROOT.parent) not in sys.path:
     sys.path.insert(0, str(_MOD_ROOT.parent))
 
 from scripts_help.help_parser import format_argument, parse_help_text  # noqa: E402
-from scripts_help.inventory import build_categories  # noqa: E402
+from scripts_help.inventory import HelpItem, build_categories  # noqa: E402
 from scripts_help.tui import (  # noqa: E402
     MenuEntry,
     _resolve_help_command,
@@ -230,23 +230,12 @@ def test_inventory_infers_argparse_help_for_unregistered_python_script(tmp_path:
     assert demo.help_cmd == ("python", "pyscripts/demo.py", "--help")
 
 
-
 def test_resolve_help_falls_back_to_declared_entrypoint(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     module = tmp_path / "modules" / "demo"
     module.mkdir(parents=True)
-    item = next(
-        item
-        for category in build_categories(tmp_path)
-        if category.key == "modules"
-        for item in category.items
-        if item.path == "modules/demo"
-    ) if False else None
-
-    from scripts_help.inventory import HelpItem
-
     item = HelpItem(
         name="demo",
         path="modules/demo",
