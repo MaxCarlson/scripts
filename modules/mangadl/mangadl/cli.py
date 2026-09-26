@@ -68,7 +68,7 @@ def _add_run_cover_arguments(parser: argparse.ArgumentParser, *, advanced: bool)
         help="Kavita base URL, such as http://192.168.50.100:5000." if advanced else hidden,
     )
     run.add_argument(
-        "-S",
+        "-S" if advanced else "-KE",
         "--kavita-api-key-env",
         default="KAVITA_API_KEY",
         help="Environment variable containing the Kavita Auth Key." if advanced else hidden,

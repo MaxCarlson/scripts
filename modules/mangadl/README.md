@@ -33,6 +33,7 @@ The normal `run --help` surface contains only routine input, destination, and co
 - `-i/--input-file`: repeatable UTF-8 URL file.
 - `-u/--url`: repeatable direct URL or supported shorthand.
 - `-d/--destination`: output library root.
+- `-S/--scratch`: optional fast-drive staging root (`--scratch-dir` also works).
 - `-G/--allow-collection`: explicitly permit broad feeds, searches, tags, or
   series collections that may expand into many galleries.
 - `-a/--archive`: optional gallery-dl archive override.
@@ -45,6 +46,62 @@ Run IDs are always generated automatically. Archive, state, and logs default to
 `<destination>/.mangadl/logs`. Explicit `-a/--archive`, `-s/--state-db`, and
 `-l/--log-dir` values still override those paths, but ordinary use needs no
 PowerShell variables or manual control-directory setup.
+
+### Optional SSD scratch staging
+
+When the library is on a slow disk, explicitly place active payloads on a
+different, fast volume. For example, with the library on B: and scratch on E:
+
+```powershell
+mangadl run -i .\urls.txt -d B:\Hent\hent1imageperpage -S E:\.tmp\mangadl -n
+mangadl run -i .\one-known-small-url.txt -d B:\Hent\hent1imageperpage -S E:\.tmp\mangadl -w 1
+```
+
+Without `-S`, MangaDL retains its normal paths and behavior. The no-write
+preview reports the exact per-library partial and control roots. For supported
+backends, payloads, the active gallery-dl archive, state database, and run logs
+are staged on scratch and resumable with the same scratch path. Existing
+destination control databases are imported before the run. On success, one
+worker at a time copies completed files to temporary
+names on the destination, then makes each file visible with a same-volume
+rename. A collision with different contents or an interrupted copy fails the
+job and keeps the remaining scratch data. Scratch staging does not increase
+the default four-worker ceiling.
+
+Gallery-dl's scratch subprocess checks the corresponding library filename
+**before** each network download; the normal `gallery-dl.exe` installation is
+unchanged. Manga18FX receives the real library as its existing-image root.
+These small B: metadata reads, the initial control-database import, and final
+promotion/sync cannot be avoided without losing duplicate protection or
+archive continuity. The active bulk writes and progress scans stay on E:.
+Automatic cover matching in scratch mode inspects only folders promoted by
+the job, not the entire B: library.
+
+At run end, state and logs sync back to the configured destination paths. The
+archive syncs only when no scratch partial owners remain; otherwise new
+archive entries stay on E: so a later non-scratch run cannot treat scratch-only
+files as completed library files. Resume with the **same** scratch path.
+Existing `B:\...\_partial` owners are not moved; MangaDL refuses to enable
+scratch until they are finished or safely cleaned. Do not run two managers
+against the same URL/library at once.
+
+Scratch mode currently supports gallery-dl non-collection URLs and Manga18FX.
+It refuses HDPornComics, explicit native-nhentai, and broad gallery-dl
+collections because their destination-aware skip/layout rules are not yet
+verified for this staging path. `optimize`/`benchmark` also reject scratch.
+In `run config`, use `--scratch` or `-sd`; its existing `-S` remains the
+Kavita API-key setting.
+
+To preview or safely clean *scratch* partials, provide the same root:
+
+```powershell
+mangadl partials clean -d B:\Hent\hent1imageperpage -S E:\.tmp\mangadl -t <owner-key>
+```
+
+Cleanup is still dry-run-first and archive-aware; for tracked scratch partials
+it reconciles both the working and canonical archives when present. Do not
+manually delete the scratch tree while a run is active or if a promotion has
+failed.
 
 Blank lines and lines beginning with `#` or `;` are ignored. Duplicate and unsupported URLs are reported before workers start.
 

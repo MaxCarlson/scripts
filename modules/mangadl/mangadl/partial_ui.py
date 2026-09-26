@@ -113,8 +113,13 @@ def build_partial_inventory(
     destination: Path,
     *,
     state_databases: tuple[Path, ...] = (),
+    partial_root_override: Path | None = None,
 ) -> tuple[Path, list[PartialEntry], dict[Path, tuple[int, int]]]:
-    partial_root = destination.expanduser().resolve() / "_partial"
+    partial_root = (
+        partial_root_override.expanduser().resolve()
+        if partial_root_override is not None
+        else destination.expanduser().resolve() / "_partial"
+    )
     if not partial_root.is_dir():
         raise ValueError(f"partial root does not exist: {partial_root}")
     state_matches = state_url_candidates(destination, state_databases)
@@ -301,11 +306,12 @@ def select_partial_owners(
     destination: Path,
     *,
     state_databases: tuple[Path, ...] = (),
+    partial_root_override: Path | None = None,
 ) -> list[Path]:
     if curses is None:
         raise RuntimeError("interactive partial cleanup requires curses/windows-curses")
     partial_root, entries, sizes = build_partial_inventory(
-        destination, state_databases=state_databases
+        destination, state_databases=state_databases, partial_root_override=partial_root_override
     )
     if not entries:
         raise ValueError(f"partial root contains no owner folders: {partial_root}")

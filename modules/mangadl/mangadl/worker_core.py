@@ -23,6 +23,7 @@ from .partial_safety import (
     initialize_partial,
     remove_partial_controls,
 )
+from .scratch import promote_gallery_partial, promote_partial, staged_library_folders
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp"}
 ARCHIVE_KEY_MARKER = "__MANGADL_ARCHIVE_KEY__"
@@ -214,6 +215,10 @@ def _gallery_naming_options(url: str) -> list[str]:
     ]
 
 
+def _scratch_flatten_category(url: str) -> str:
+    return "" if _gallery_naming_options(url) else _gallery_category(url)
+
+
 def _effective_gallery_returncode(backend: str, returncode: int, errors: Sequence[str]) -> int:
     """Turn a zero exit with child-extractor errors into a failed job."""
     return 1 if backend == "gallery-dl" and returncode == 0 and errors else returncode
@@ -298,6 +303,8 @@ def _command(args: argparse.Namespace, partial: Path) -> list[str]:
             "--destination",
             str(partial),
         ]
+        if getattr(args, "scratch_mode", False):
+            command.extend(["--existing-root", str(args.destination)])
         if args.cookies:
             command.extend(["--cookies", args.cookies])
         command.append(args.url)
@@ -313,15 +320,14 @@ def _command(args: argparse.Namespace, partial: Path) -> list[str]:
             "--manhwa",
             args.url,
         ]
-    command = [
-        sys.executable,
-        "-m",
-        "gallery_dl",
-        "--no-input",
-        "--verbose",
-        "--destination",
-        str(partial),
-    ]
+    if getattr(args, "scratch_mode", False):
+        command = [
+            sys.executable, "-m", "mangadl.gallery_scratch",
+            str(partial), str(args.destination), _scratch_flatten_category(args.url), "--",
+        ]
+    else:
+        command = [sys.executable, "-m", "gallery_dl"]
+    command.extend(["--no-input", "--verbose", "--destination", str(partial)])
     command.extend(_gallery_naming_options(args.url))
     command.extend(["--download-archive", args.archive])
     command.extend(["--Print", f"after:{ARCHIVE_KEY_MARKER}{{_archive_key}}"])
@@ -340,6 +346,12 @@ def _command(args: argparse.Namespace, partial: Path) -> list[str]:
 
 
 def run(args: argparse.Namespace) -> int:
+    if getattr(args, "scratch_mode", False) and args.backend not in {"gallery-dl", "manga18fx"}:
+        _emit(
+            args, "job_terminal_failure", state="failed_backend", category="backend",
+            message=f"scratch mode cannot safely check existing destination files for {args.backend}",
+        )
+        return 2
     partial_root = Path(args.partial_dir)
     partial = partial_root / _partial_key(args.url)
     Path(args.raw_log).parent.mkdir(parents=True, exist_ok=True)
@@ -355,6 +367,7 @@ def run(args: argparse.Namespace) -> int:
             job_id=args.job_id,
             attempt_id=args.attempt_id,
             worker=args.worker,
+            archive_mirror=Path(args.canonical_archive) if getattr(args, "canonical_archive", None) else None,
         )
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
         _emit(args, "job_terminal_failure", state="failed_filesystem", category="filesystem", message=str(exc))
@@ -537,14 +550,43 @@ def run(args: argparse.Namespace) -> int:
                 )
                 return 1
 
-        if args.backend == "gallery-dl":
-            _merge_gallery_partial(partial, Path(args.destination), args.url)
-        elif args.backend != "hdporncomics":
-            _merge_partial(partial, Path(args.destination))
-        if partial.exists():
-            remove_partial_controls(partial)
-        if partial.exists() and not any(partial.iterdir()):
-            partial.rmdir()
+        try:
+            if getattr(args, "scratch_mode", False):
+                category = _scratch_flatten_category(args.url) if args.backend == "gallery-dl" else ""
+                args.promoted_folders = staged_library_folders(partial, Path(args.destination), category)
+                _emit(
+                    args,
+                    "heartbeat",
+                    state="running",
+                    images_done=images,
+                    bytes_done=size,
+                    elapsed=time.monotonic() - started,
+                    message=f"promoting staged files to {args.destination}",
+                )
+                if args.backend == "gallery-dl":
+                    promote_gallery_partial(partial, Path(args.destination), partial_root, category)
+                else:
+                    promote_partial(partial, Path(args.destination), partial_root)
+            elif args.backend == "gallery-dl":
+                _merge_gallery_partial(partial, Path(args.destination), args.url)
+            elif args.backend != "hdporncomics":
+                _merge_partial(partial, Path(args.destination))
+            if partial.exists():
+                remove_partial_controls(partial)
+            if partial.exists() and not any(partial.iterdir()):
+                partial.rmdir()
+        except (OSError, ValueError) as exc:
+            _emit(
+                args,
+                "job_terminal_failure",
+                state="failed_filesystem",
+                category="filesystem",
+                message=f"promotion failed; staged data retained at {partial}: {exc}",
+                images_done=images,
+                bytes_done=size,
+                elapsed=time.monotonic() - started,
+            )
+            return 2
 
         gallery_skipped = (
             args.backend != "manga18fx"
@@ -614,6 +656,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-d", "--destination", required=True)
     parser.add_argument("-a", "--archive", required=True)
     parser.add_argument("-P", "--partial-dir", required=True)
+    parser.add_argument("--scratch-mode", action="store_true")
+    parser.add_argument("--canonical-archive")
     parser.add_argument("-L", "--raw-log", required=True)
     parser.add_argument("-g", "--gallery-config")
     parser.add_argument("-c", "--cookies")

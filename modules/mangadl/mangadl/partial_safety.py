@@ -37,6 +37,7 @@ class CleanupTarget:
     entries: tuple[ManifestEntry, ...]
     archive: Path | None
     files_only: bool
+    archive_mirror: Path | None = None
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
@@ -56,6 +57,7 @@ def initialize_partial(
     job_id: int,
     attempt_id: str,
     worker: int,
+    archive_mirror: Path | None = None,
 ) -> None:
     """Create durable ownership metadata before a backend writes partial data."""
     partial_root.mkdir(parents=True, exist_ok=True)
@@ -91,6 +93,7 @@ def initialize_partial(
             "url": url,
             "backend": backend,
             "archive": str(archive.expanduser().resolve()),
+            "archive_mirror": str(archive_mirror.expanduser().resolve()) if archive_mirror else None,
             "run_id": run_id,
             "job_id": job_id,
             "attempt_id": attempt_id,
@@ -306,8 +309,13 @@ def plan_cleanup(
     archive_override: Path | None = None,
     files_only: bool = False,
     legacy_archive_keys: Mapping[Path, Iterable[str]] | None = None,
+    partial_root_override: Path | None = None,
 ) -> tuple[Path, tuple[CleanupTarget, ...]]:
-    partial_root = destination.expanduser().resolve() / "_partial"
+    partial_root = (
+        partial_root_override.expanduser().resolve()
+        if partial_root_override is not None
+        else destination.expanduser().resolve() / "_partial"
+    )
     if not partial_root.is_dir():
         raise ValueError(f"partial root does not exist: {partial_root}")
     planned: list[CleanupTarget] = []
@@ -324,6 +332,7 @@ def plan_cleanup(
         relative_to_owner = target.relative_to(owner) if target != owner else Path(".")
         entries: tuple[ManifestEntry, ...] = ()
         archive: Path | None = None
+        archive_mirror: Path | None = None
         meta_path = owner / PARTIAL_META_NAME
         meta = _read_meta(owner) if meta_path.exists() else None
         if not files_only:
@@ -349,13 +358,25 @@ def plan_cleanup(
                 )
             elif meta.get("backend") == "gallery-dl":
                 entries = _entries_for_target(load_manifest(owner), relative_to_owner)
+                if partial_root_override is not None:
+                    # Scratch promotion may have already installed some files
+                    # before a later copy failed. Do not remove archive keys
+                    # for those no-longer-staged files during cleanup.
+                    entries = tuple(
+                        entry for entry in entries
+                        if (owner / entry.relative_path).is_file()
+                    )
                 archive = Path(str(meta.get("archive", ""))).expanduser().resolve()
+                if meta.get("archive_mirror"):
+                    archive_mirror = Path(str(meta["archive_mirror"])).expanduser().resolve()
                 if not str(meta.get("archive", "")):
                     raise ValueError(f"partial metadata has no archive path: {owner}")
-                if archive_override is not None and archive != archive_override.expanduser().resolve():
+                if archive_override is not None and archive_override.expanduser().resolve() not in {archive, archive_mirror}:
                     raise ValueError(f"partial archive {archive} does not match requested archive {archive_override}")
                 if not archive.is_file():
                     raise ValueError(f"tracked archive does not exist: {archive}")
+                if archive_mirror is not None and not archive_mirror.is_file():
+                    archive_mirror = None
         files, size, last_activity = _tree_snapshot(target)
         if (
             meta is None
@@ -379,6 +400,7 @@ def plan_cleanup(
                 entries,
                 archive,
                 files_only,
+                archive_mirror,
             )
         )
     return partial_root, tuple(planned)
@@ -410,6 +432,8 @@ def cleanup_preview(partial_root: Path, targets: tuple[CleanupTarget, ...]) -> d
     for target in targets:
         if target.archive is not None:
             archives.setdefault(str(target.archive), set()).update(entry.archive_key for entry in target.entries)
+        if target.archive_mirror is not None:
+            archives.setdefault(str(target.archive_mirror), set()).update(entry.archive_key for entry in target.entries)
     matched = {
         archive: len(_existing_archive_keys(Path(archive), keys))
         for archive, keys in archives.items()
@@ -517,9 +541,20 @@ def apply_cleanup(targets: tuple[CleanupTarget, ...], *, backup: bool = True) ->
             )
 
     archive_keys: dict[Path, set[str]] = {}
+    scratch_mirrors: set[tuple[Path, Path, Path]] = set()
     for target in targets:
         if target.archive is not None:
             archive_keys.setdefault(target.archive, set()).update(entry.archive_key for entry in target.entries)
+        if target.archive_mirror is not None:
+            archive_keys.setdefault(target.archive_mirror, set()).update(entry.archive_key for entry in target.entries)
+            if target.archive is not None:
+                scratch_mirrors.add((target.owner.parent, target.archive, target.archive_mirror))
+
+    if scratch_mirrors:
+        from .scratch_controls import archive_cleanup_checkpoint
+
+        for partial_root, working, canonical in scratch_mirrors:
+            archive_cleanup_checkpoint(partial_root, working, canonical, verify=True)
 
     backups: list[str] = []
     removed_entries = 0
@@ -527,6 +562,8 @@ def apply_cleanup(targets: tuple[CleanupTarget, ...], *, backup: bool = True) ->
         if backup and keys:
             backups.append(str(_backup_archive(archive)))
         removed_entries += _delete_archive_keys(archive, keys)
+    for partial_root, working, canonical in scratch_mirrors:
+        archive_cleanup_checkpoint(partial_root, working, canonical, verify=False)
 
     removed_by_owner: dict[Path, set[tuple[str, str]]] = {}
     for target in targets:

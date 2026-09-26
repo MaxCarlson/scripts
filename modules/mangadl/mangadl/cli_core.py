@@ -41,6 +41,8 @@ from .optimizer import (
 from .partial_safety import apply_cleanup, cleanup_preview, plan_cleanup
 from .partial_reconcile import reconstruct_archive_keys, resolve_owner_urls
 from .partial_ui import select_partial_owners
+from .scratch import partial_root_for
+from .scratch_controls import ScratchControls
 from .repair import apply_repair, plan_loose_images
 from .repair_ui import RepairDashboard
 from .state import StateStore
@@ -191,6 +193,10 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
         help="Remove selected partial data and its recorded gallery-dl archive entries.",
     )
     partial_clean.add_argument("-d", "--destination", required=True, type=_path, help="Destination library root.")
+    partial_clean.add_argument(
+        "-S", "--scratch", "--scratch-dir", dest="scratch_dir", type=_path,
+        help="Scratch directory used for the run; inspect staged partials instead of <destination>/_partial.",
+    )
     partial_clean.add_argument(
         "-t",
         "--target",
@@ -432,10 +438,16 @@ def _format_run_preview(preview: dict[str, Any]) -> str:
         f"Unsupported: {len(preview['unsupported'])} URL(s)",
         f"Destination: {preview['destination']}",
         f"Control directory: {preview['control_directory']}",
+        f"Partial staging: {preview['partial_root']}",
         f"Workers: {preview['requested_workers']} (maximum {preview['max_workers']}); "
         f"image workers: {preview['image_workers']}",
         "Routes: " + (", ".join(f"{name}={count}" for name, count in sorted(route_counts.items())) or "none"),
     ]
+    if preview.get("destination_partial_owners"):
+        lines.append(
+            f"Existing destination partial owners: {preview['destination_partial_owners']} "
+            "(finish or inspect before enabling scratch)"
+        )
     if preview["rejected"]:
         lines.append("Rejected input:")
         lines.extend(
@@ -461,6 +473,15 @@ def _run(args: argparse.Namespace) -> int:
         try:
             backend = choose_backend(item.canonical_url, args.backend)
             scope = gallery_dl_scope(item.canonical_url) if backend == "gallery-dl" else None
+            if args.scratch_dir is not None and backend in {"hdporncomics", "native-nhentai"}:
+                raise ValueError(
+                    f"scratch mode cannot safely check existing destination files for {backend}; "
+                    "run without --scratch for this backend"
+                )
+            if args.scratch_dir is not None and scope is not None and scope.broad_collection:
+                raise ValueError(
+                    "scratch mode does not support broad gallery-dl collections with mixed output layouts"
+                )
             if scope is not None and scope.broad_collection and not args.allow_collection:
                 blocked_collections.append(item.canonical_url)
                 raise ValueError(
@@ -488,7 +509,22 @@ def _run(args: argparse.Namespace) -> int:
         "archive": str(args.archive),
         "state_db": str(args.state_db),
         "log_dir": str(args.log_dir),
+        "scratch_dir": str(args.scratch_dir) if args.scratch_dir else None,
+        "partial_root": str(partial_root_for(args.destination, args.scratch_dir)),
     }
+    controls = (
+        ScratchControls(args.destination, args.scratch_dir, args.archive, args.state_db, args.log_dir)
+        if args.scratch_dir is not None else None
+    )
+    if controls is not None:
+        preview["scratch_archive"] = str(controls.archive)
+        preview["scratch_state_db"] = str(controls.state_db)
+        preview["scratch_log_dir"] = str(controls.log_dir)
+        old_partial_root = args.destination / "_partial"
+        preview["destination_partial_owners"] = (
+            sum(1 for child in old_partial_root.iterdir() if child.is_dir())
+            if old_partial_root.is_dir() else 0
+        )
     if args.run_mode in {"optimize", "benchmark"}:
         preview["optimization"] = _optimization_preview(args, manga18fx_urls)
     if args.dry_run:
@@ -499,6 +535,11 @@ def _run(args: argparse.Namespace) -> int:
             "refusing broad collection URL(s) because they may expand into thousands of images; "
             "inspect with --dry-run, then rerun with --allow-collection if intentional: "
             + ", ".join(blocked_collections)
+        )
+    if preview.get("destination_partial_owners"):
+        raise ValueError(
+            f"{preview['destination_partial_owners']} existing partial owner(s) remain under "
+            f"{args.destination / '_partial'}; finish or inspect them before enabling --scratch"
         )
     if not inputs:
         print(json.dumps(preview, indent=2, sort_keys=True), file=sys.stderr)
@@ -561,7 +602,9 @@ def _run(args: argparse.Namespace) -> int:
 
     os.environ[MANGA18FX_IMAGE_WORKERS_ENV] = str(args.image_workers)
     os.environ[MAX_OUTER_WORKERS_ENV] = str(args.max_workers)
-    store = StateStore(args.state_db)
+    if controls is not None:
+        controls.prepare()
+    store = StateStore(controls.state_db if controls is not None else args.state_db)
     try:
         config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
         run_id = store.create_run(config)
@@ -588,9 +631,11 @@ def _run(args: argparse.Namespace) -> int:
         options = RunOptions(
             run_id=run_id,
             destination=args.destination,
-            archive=args.archive,
-            state_db=args.state_db,
-            log_dir=args.log_dir,
+            archive=controls.archive if controls is not None else args.archive,
+            state_db=controls.state_db if controls is not None else args.state_db,
+            log_dir=controls.log_dir if controls is not None else args.log_dir,
+            scratch_dir=args.scratch_dir,
+            canonical_archive=args.archive if controls is not None else None,
             workers=args.workers,
             retries=args.retries,
             retry_wait=args.retry_wait,
@@ -607,9 +652,22 @@ def _run(args: argparse.Namespace) -> int:
             worker_start_delay=args.worker_start_delay,
             ui=not args.no_ui and not args.quiet,
         )
-        return DownloadManager(options, store).run()
+        result = DownloadManager(options, store).run()
     finally:
         store.close()
+    if controls is not None:
+        partial_root = partial_root_for(args.destination, args.scratch_dir)
+        archive_safe = result == 0 and (
+            not partial_root.is_dir() or not any(child.is_dir() for child in partial_root.iterdir())
+        )
+        controls.sync(run_id, archive_safe=archive_safe)
+        if not archive_safe:
+            print(
+                f"Scratch partials remain at {partial_root}; canonical archive was not updated. "
+                "Resume with the same --scratch path or clean the partials safely.",
+                file=sys.stderr,
+            )
+    return result
 
 
 def _run_id(store: StateStore, requested: str | None) -> str:
@@ -711,6 +769,7 @@ def _partials(args: argparse.Namespace) -> int:
         selected = select_partial_owners(
             args.destination,
             state_databases=tuple(args.state_db),
+            partial_root_override=partial_root_for(args.destination, args.scratch_dir) if args.scratch_dir else None,
         )
         if not selected:
             print("No partial owners selected; nothing to clean.")
@@ -723,6 +782,7 @@ def _partials(args: argparse.Namespace) -> int:
             args.destination,
             selected_values,
             files_only=True,
+            partial_root_override=partial_root_for(args.destination, args.scratch_dir) if args.scratch_dir else None,
         )
         legacy_owners = tuple(
             dict.fromkeys(
@@ -767,6 +827,7 @@ def _partials(args: argparse.Namespace) -> int:
         archive_override=args.archive,
         files_only=args.files_only,
         legacy_archive_keys=legacy_keys,
+        partial_root_override=partial_root_for(args.destination, args.scratch_dir) if args.scratch_dir else None,
     )
     preview = cleanup_preview(partial_root, targets)
     if interactive and args.apply and not args.yes:

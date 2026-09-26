@@ -47,6 +47,36 @@ def install_download_cover(
     return with_match(result, candidate.method, candidate.score)
 
 
+def install_download_cover_candidates(
+    url: str,
+    folders: Sequence[Path],
+    *,
+    cookies: Path | None,
+    timeout: float = 45.0,
+) -> CoverResult:
+    """Match only this job's promoted folders, avoiding a library-wide scan."""
+    metadata = fetch_series_metadata(url, cookies=cookies, timeout=timeout)
+    candidate, ambiguous = match_folder(url, folders, metadata=metadata, url_index={})
+    if candidate is None:
+        detail = ", ".join(str(item.folder) for item in ambiguous[:5])
+        return CoverResult(
+            url=metadata.canonical_url,
+            status="ambiguous" if ambiguous else "folder_not_found",
+            title=metadata.title,
+            cover_url=metadata.cover_url,
+            message=detail or "no promoted folder matched the source title",
+        )
+    result = write_cover_for_folder(
+        metadata.canonical_url,
+        candidate.folder,
+        apply=True,
+        cookies=cookies,
+        timeout=timeout,
+        metadata=metadata,
+    )
+    return with_match(result, candidate.method, candidate.score)
+
+
 def _with_input(result: CoverResult, source: str, line: int) -> CoverResult:
     return CoverResult(**{**asdict(result), "source_file": source, "source_line": line})
 
