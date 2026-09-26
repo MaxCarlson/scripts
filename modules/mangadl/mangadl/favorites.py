@@ -27,9 +27,10 @@ class FavoritesResult:
 class _LinkParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        self.links: list[tuple[str, tuple[str, ...], str]] = []
+        self.links: list[tuple[str, tuple[str, ...], tuple[str, ...], str]] = []
         self._href: str | None = None
         self._rel: tuple[str, ...] = ()
+        self._classes: tuple[str, ...] = ()
         self._text: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -41,6 +42,7 @@ class _LinkParser(HTMLParser):
             return
         self._href = href
         self._rel = tuple(part.lower() for part in values.get("rel", "").split() if part)
+        self._classes = tuple(part.lower() for part in values.get("class", "").split() if part)
         self._text = []
 
     def handle_data(self, data: str) -> None:
@@ -50,9 +52,10 @@ class _LinkParser(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         if tag.lower() != "a" or self._href is None:
             return
-        self.links.append((self._href, self._rel, " ".join(self._text).strip()))
+        self.links.append((self._href, self._rel, self._classes, " ".join(self._text).strip()))
         self._href = None
         self._rel = ()
+        self._classes = ()
         self._text = []
 
 
@@ -86,14 +89,14 @@ def extract_favorite_links(page_url: str, html: str) -> tuple[list[str], str | N
     urls: list[str] = []
     seen: set[str] = set()
     next_url: str | None = None
-    for href, rel, text in parser.links:
+    for href, rel, classes, text in parser.links:
         absolute = _normalized_http_url(page_url, href)
         if absolute is None:
             continue
 
         if next_url is None and _same_site(page_url, absolute):
             label = text.strip().lower()
-            if "next" in rel or label in {"next", "next >", "next ›", "›", "»", "older", "older >"}:
+            if "next" in rel or "next" in classes or label in {"next", "next >", "next ›", "›", "»", "older", "older >"}:
                 next_url = absolute
 
         if absolute in seen or absolute == page_url:
