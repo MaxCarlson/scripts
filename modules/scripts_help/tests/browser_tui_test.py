@@ -11,7 +11,12 @@ if str(_MOD_ROOT.parent) not in sys.path:
 
 from scripts_help.help_parser import format_argument, parse_help_text  # noqa: E402
 from scripts_help.inventory import build_categories  # noqa: E402
-from scripts_help.tui import MenuEntry, _select_menu, filter_entries  # noqa: E402
+from scripts_help.tui import (  # noqa: E402
+    MenuEntry,
+    _resolve_help_command,
+    _select_menu,
+    filter_entries,
+)
 
 
 def test_parse_argparse_options_and_subcommands() -> None:
@@ -118,6 +123,7 @@ def test_inventory_uses_runtime_structure_and_readme_description(tmp_path: Path)
     demo = next(item for item in categories["modules"].items if item.path == "modules/demo")
     assert demo.version == "1.2.3"
     assert demo.help_cmd == ("demo", "--help")
+    assert demo.entrypoint == "demo.cli:main"
     assert demo.long_description.startswith("A longer README paragraph")
 
 
@@ -222,3 +228,40 @@ def test_inventory_infers_argparse_help_for_unregistered_python_script(tmp_path:
     demo = next(item for item in categories["pyscripts"].items if item.path == "pyscripts/demo.py")
 
     assert demo.help_cmd == ("python", "pyscripts/demo.py", "--help")
+
+
+
+def test_resolve_help_falls_back_to_declared_entrypoint(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = tmp_path / "modules" / "demo"
+    module.mkdir(parents=True)
+    item = next(
+        item
+        for category in build_categories(tmp_path)
+        if category.key == "modules"
+        for item in category.items
+        if item.path == "modules/demo"
+    ) if False else None
+
+    from scripts_help.inventory import HelpItem
+
+    item = HelpItem(
+        name="demo",
+        path="modules/demo",
+        description="demo",
+        long_description="demo",
+        help_cmd=("demo", "--help"),
+        version="1.0.0",
+        entrypoint="demo.cli:main",
+    )
+    monkeypatch.setattr("scripts_help.tui.shutil.which", lambda _name: None)
+
+    command = _resolve_help_command(item, tmp_path, ("scan",))
+
+    assert command[0] == sys.executable
+    assert command[1] == "-c"
+    assert "demo.cli" in command[2]
+    assert "'scan'" in command[2]
+    assert "'--help'" in command[2]
