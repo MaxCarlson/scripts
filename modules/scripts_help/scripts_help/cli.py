@@ -778,6 +778,13 @@ def _main_menu(drift: dict) -> None:
 
 def cmd_browse(args) -> None:
     drift = collect_drift()
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        from scripts_help.tui import run_browser
+
+        run_browser(drift)
+        return
+
+    # Preserve a line-oriented fallback for redirected/non-interactive sessions.
     _print_warnings(drift)
     _main_menu(drift)
 
