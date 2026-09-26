@@ -506,9 +506,9 @@ def _resolve_help_command(
             resolved.append(part)
 
     # For packaged modules, prefer the declared source-tree entrypoint even if
-    # an installed console wrapper exists. That keeps argument help synchronized
-    # with the checkout being browsed rather than a potentially stale install.
-    if resolved and resolved[0] != sys.executable and item.entrypoint:
+    # an installed console wrapper (or python -m target) exists. That keeps
+    # argument help synchronized with the checkout rather than a stale install.
+    if item.entrypoint and item.path.startswith("modules/"):
         source_command = _entrypoint_help_command(item, repo, subcommands)
         if source_command:
             return source_command
