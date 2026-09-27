@@ -16,6 +16,7 @@ from .concurrency import Manga18FXConcurrencyPlan, plan_manga18fx_concurrency
 from .gallery_auth import ProfileStore, domain_for, refresh_profile
 from .models import JobState, WorkerSnapshot
 from .state import StateStore
+from .scratch import partial_root_for
 from .ui import ConsoleDashboard, DashboardRuntime, human_bytes, plain_identity
 
 MANGA18FX_IMAGE_WORKERS_ENV = "MANGADL_MANGA18FX_IMAGE_WORKERS"
@@ -45,6 +46,8 @@ class RunOptions:
     hdporncomics_threads: int = 8
     worker_start_delay: float = 2.0
     ui: bool = True
+    scratch_dir: Path | None = None
+    canonical_archive: Path | None = None
 
 
 class DownloadManager:
@@ -231,10 +234,14 @@ class DownloadManager:
             "--archive",
             str(self.options.archive),
             "--partial-dir",
-            str(self.options.destination / "_partial"),
+            str(partial_root_for(self.options.destination, self.options.scratch_dir)),
             "--raw-log",
             str(self.run_log / "raw" / f"worker-{slot:02d}-gallery-dl.log"),
         ]
+        if self.options.scratch_dir is not None:
+            command.append("--scratch-mode")
+        if self.options.canonical_archive is not None:
+            command.extend(["--canonical-archive", str(self.options.canonical_archive)])
         managed_profile = None
         explicit_credentials = bool(
             self.options.cookies or self.options.cookies_browser or self.options.gallery_config

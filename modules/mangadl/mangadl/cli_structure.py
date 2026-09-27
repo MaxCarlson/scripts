@@ -60,6 +60,7 @@ def add_run_arguments(
         tune_workers=None,
         tune_image_workers=None,
         tune_sample_images=24,
+        scratch_dir=None,
     )
     if not advanced and mode == "normal":
         parser.epilog = (
@@ -74,6 +75,15 @@ def add_run_arguments(
     parser.add_argument("-i", "--input-file", action="append", type=path_type, default=[], help="UTF-8 URL file; repeatable.")
     parser.add_argument("-u", "--url", action="append", default=[], help="Direct series/gallery URL; repeatable.")
     parser.add_argument("-d", "--destination", type=path_type, required=True, help="Destination library root.")
+    if mode == "normal":
+        parser.add_argument(
+            "-sd" if advanced else "-S",
+            "--scratch",
+            "--scratch-dir",
+            dest="scratch_dir",
+            type=path_type,
+            help="Stage downloads on a fast drive before guarded promotion to the destination.",
+        )
     parser.add_argument(
         "-G",
         "--allow-collection",

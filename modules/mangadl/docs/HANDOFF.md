@@ -1,8 +1,34 @@
 # mangadl Immediate Project Handoff
 
-Active branch: `agent/mangadl-gallery-auth`, based on `agent/unified`.
+Active branch: `mangadl-ssd-scratch-20260926-1219`, based on `main`.
 
-Current version: `mangadl 1.17.0` in the active feature-branch working tree.
+Current version: `mangadl 1.19.0` in the active feature-branch working tree
+(main started this task at 1.18.0).
+
+Current task: opt-in `-S/--scratch` staging for payloads and active control
+files, with destination-aware duplicate checks and guarded serialized
+promotion to the B: library. The user confirmed B: is a mirrored
+SATA-HDD Storage Spaces volume and E: is a separate NVMe SSD. The four-worker
+ceiling is unchanged. Unit tests cover promotion failure and resume, but no
+production B:/E: download has been run; bounded manual validation is the next
+gate. Archive, state, and logs retain B: as canonical paths but are active on
+E: during a scratch run and sync at the end. New archive rows remain on E:
+while scratch partials exist. No commit, push, or merge approval was given
+for this task.
+
+The current B: destination has eight existing `_partial` owners (read-only
+preview on 2026-09-26). Scratch mode fails closed on that library until they
+are resolved; no migration or cleanup was performed.
+
+Active scratch records:
+
+- [Plan](plans/20260926-1224_ssd-scratch-staging/00_implementation-plan.md)
+- [Status](plans/20260926-1224_ssd-scratch-staging/STATUS.md)
+- [Checklist](plans/20260926-1224_ssd-scratch-staging/checklist.md)
+
+The remaining notes below describe prior partial-safety and managed-auth
+feature work. Their old branch/test counts are historical, not the state of
+this branch.
 
 Active planning records:
 

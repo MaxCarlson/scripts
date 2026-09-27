@@ -18,6 +18,7 @@ from .covers import (
     supports_cover_url,
     tree_stats_without_metadata,
 )
+from .covers.service import install_download_cover_candidates
 
 build_parser = _core.build_parser
 _tree_stats = tree_stats_without_metadata
@@ -80,7 +81,8 @@ def _apply_kavita_from_environment(result: CoverResult) -> CoverResult:
 
 def run(args: argparse.Namespace) -> int:
     destination = Path(args.destination).expanduser().resolve()
-    before = snapshot_top_level(destination)
+    scratch_mode = getattr(args, "scratch_mode", False)
+    before = {} if scratch_mode else snapshot_top_level(destination)
     _core._tree_stats = tree_stats_without_metadata
     _core._identity = identity_without_metadata
     returncode = _core.run(args)
@@ -92,12 +94,19 @@ def run(args: argparse.Namespace) -> int:
         return returncode
 
     try:
-        result = install_download_cover(
-            args.url,
-            destination,
-            before,
-            cookies=Path(args.cookies).expanduser().resolve() if args.cookies else None,
-        )
+        cookies = Path(args.cookies).expanduser().resolve() if args.cookies else None
+        if scratch_mode:
+            folders = getattr(args, "promoted_folders", ())
+            result = (
+                install_download_cover_candidates(args.url, folders, cookies=cookies)
+                if folders
+                else CoverResult(
+                    url=args.url, status="no_new_folder",
+                    message="scratch job did not promote a new series folder",
+                )
+            )
+        else:
+            result = install_download_cover(args.url, destination, before, cookies=cookies)
         result = _apply_kavita_from_environment(result)
         _log_cover_result(Path(args.raw_log), result)
     except Exception as exc:  # A cover failure must never invalidate a completed gallery download.

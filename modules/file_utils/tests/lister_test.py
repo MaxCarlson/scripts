@@ -344,6 +344,22 @@ def test_lister_manager_collapse_all(temp_dir_structure: Path):
     assert all(not e.expanded for e in entries)
 
 
+def test_lister_manager_toggle_expand_all(temp_dir_structure: Path):
+    entries = lister.read_entries_recursive(temp_dir_structure, max_depth=5)
+    manager = lister.ListerManager(entries, max_depth=5)
+
+    assert not manager.expanded_folders
+    # First toggle: expands all
+    manager.toggle_expand_all()
+    assert manager.expanded_folders
+    assert all(e.expanded for e in manager.all_entries if e.is_dir)
+
+    # Second toggle: collapses all
+    manager.toggle_expand_all()
+    assert not manager.expanded_folders
+    assert all(not e.expanded for e in manager.all_entries if e.is_dir)
+
+
 def test_lister_manager_get_visible_entries(temp_dir_structure: Path):
     entries = lister.read_entries_recursive(temp_dir_structure, max_depth=5)
     manager = lister.ListerManager(entries, max_depth=5)
@@ -621,3 +637,46 @@ def test_deep_nesting_size_display(temp_dir_structure: Path):
             assert len(line) <= 80
             # Should still have content (not completely truncated)
             assert len(line) > 20
+
+
+def test_calculate_folder_size_and_item_count(temp_dir_structure: Path):
+    """Test recursive folder size and item count computation."""
+    total_bytes, item_count = lister.calculate_folder_size(temp_dir_structure)
+    # temp_dir_structure contains:
+    # file1.txt, empty_dir, sub_dir, sub_dir/file2.txt, sub_dir/deep_dir, sub_dir/deep_dir/file3.txt
+    assert item_count >= 6
+    assert total_bytes >= 0
+
+
+def test_cli_delete_flag_parsing(monkeypatch: pytest.MonkeyPatch):
+    """Verify that -D and --delete flags are parsed by the CLI."""
+    from file_utils import cli
+    from file_utils import lister
+
+    captured_args = []
+
+    def mock_run_lister(args):
+        captured_args.append(args)
+        return 0
+
+    monkeypatch.setattr(lister, "run_lister", mock_run_lister)
+
+    # Test short flag -D
+    res1 = cli.main(["ls", "-D"])
+    assert res1 == 0
+    assert len(captured_args) == 1
+    assert captured_args[0].delete is True
+
+    # Test long flag --delete
+    res2 = cli.main(["ls", "--delete"])
+    assert res2 == 0
+    assert len(captured_args) == 2
+    assert captured_args[1].delete is True
+
+    # Test default without delete
+    res3 = cli.main(["ls"])
+    assert res3 == 0
+    assert len(captured_args) == 3
+    assert captured_args[2].delete is False
+
+

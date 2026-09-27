@@ -86,6 +86,53 @@ def test_selected_subfolder_removes_only_its_exact_archive_entry(tmp_path: Path)
     assert "site-two" in remaining and "site-one" not in remaining
 
 
+def test_scratch_cleanup_retains_archive_keys_for_already_promoted_files(tmp_path: Path) -> None:
+    destination, owner, archive = _tracked_partial(tmp_path)
+    (owner / "site" / "one" / "001.jpg").unlink()
+
+    partial_root, targets = plan_cleanup(
+        destination, ["abc123"], partial_root_override=destination / "_partial"
+    )
+    assert {entry.archive_key for entry in targets[0].entries} == {"site-two"}
+    assert cleanup_preview(partial_root, targets)["archive_matches"] == 1
+    apply_cleanup(targets, backup=False)
+    assert _keys(archive) == {"site-one", "unrelated"}
+
+
+def test_scratch_cleanup_reconciles_working_and_canonical_archives(tmp_path: Path) -> None:
+    destination = tmp_path / "library"
+    root = tmp_path / "ssd" / "_partial"
+    owner = root / "owner"
+    working = tmp_path / "ssd" / "archive.sqlite3"
+    canonical = destination / "archive.sqlite3"
+    working.parent.mkdir(parents=True)
+    canonical.parent.mkdir(parents=True)
+    _archive(working, ("downloaded",))
+    _archive(canonical, ("downloaded",))
+    initialize_partial(
+        root, owner, url="https://example.test/gallery/1", backend="gallery-dl",
+        archive=working, archive_mirror=canonical, run_id="run", job_id=1,
+        attempt_id="attempt", worker=1,
+    )
+    metadata = json.loads((owner / PARTIAL_META_NAME).read_text(encoding="utf-8"))
+    metadata["worker_pid"] = -1
+    (owner / PARTIAL_META_NAME).write_text(json.dumps(metadata), encoding="utf-8")
+    image = owner / "Series" / "001.jpg"
+    image.parent.mkdir()
+    image.write_bytes(b"image")
+    (owner / PARTIAL_MANIFEST_NAME).write_text(
+        json.dumps({"archive_key": "downloaded", "path": "Series/001.jpg"}) + "\n",
+        encoding="utf-8",
+    )
+    _, targets = plan_cleanup(destination, ["owner"], partial_root_override=root, archive_override=canonical)
+    result = apply_cleanup(targets, backup=False)
+
+    assert result["removed_archive_entries"] == 2
+    assert not _keys(working)
+    assert not _keys(canonical)
+    assert not owner.exists()
+
+
 def test_archive_is_updated_before_filesystem_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

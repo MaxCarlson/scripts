@@ -7,7 +7,10 @@ import sys
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
-from typing import Any, Callable, Dict, List, Sequence, Optional, Tuple
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Sequence, Optional, Tuple, Set
+
+from .utils import format_bytes_binary
 
 
 @dataclass
@@ -41,6 +44,14 @@ def ensure_curses_available() -> None:
             "This tool requires curses for the TUI. On Windows, please install the 'windows-curses' package.\n"
         )
         raise SystemExit(2)
+
+@dataclass
+class UndoAction:
+    """Represents a batch of deleted items for undo."""
+    items: List[Any]
+    payload: Any = None
+    description: str = ""
+
 
 @dataclass
 class ListState:
@@ -92,6 +103,19 @@ class ListState:
     # Multi-select
     multi_select_enabled: bool = False
     multi_selected_keys: "OrderedDict[str, None]" = field(default_factory=OrderedDict)
+    in_range_select: bool = False
+    range_select_anchor: Optional[int] = None
+    range_select_target: bool = True
+    range_select_initial_keys: Set[str] = field(default_factory=set)
+
+    # Deletion and undo state
+    confirm_delete: bool = False
+    pending_delete_items: List[Any] = field(default_factory=list)
+    confirm_delete_all: bool = False
+    delete_all_buffer: str = ""
+    undo_stack: List[UndoAction] = field(default_factory=list)
+    confirm_quit_with_deletions: bool = False
+    status_message: str = ""
 
 def calculate_size_color(size: int, min_size: int, max_size: int) -> int:
     """
@@ -152,6 +176,15 @@ class InteractiveList:
         multi_select_limit: Optional[int] = None,
         item_key_func: Optional[Callable[[Any], str]] = None,
         selection_change_handler: Optional[Callable[[List[Any]], None]] = None,
+        enable_delete: bool = False,
+        delete_handler: Optional[Callable[[List[Any]], Any]] = None,
+        undo_handler: Optional[Callable[[List[Any], Any], None]] = None,
+        purge_handler: Optional[Callable[[List[Any], Any], None]] = None,
+        render_checkbox: bool = True,
+        delete_key: str = "d",
+        delete_all_key: str = "D",
+        require_typed_delete_for_all: bool = True,
+        files_extractor: Optional[Callable[[Any], int]] = None,
     ):
         # Keep the import-availability check here so construction fails fast on
         # platforms that truly lack curses. More detailed terminal checks are
@@ -159,12 +192,21 @@ class InteractiveList:
         ensure_curses_available()
         self.formatter = formatter
         self.sort_keys_mapping = sort_keys_mapping or {}
-        self.footer_lines = footer_lines or [
-            "Up/Down/j/k: move | f: filter | Enter: details | Ctrl+Q: quit",
-            "Use sort keys to change sort field, repeat to toggle order.",
-        ]
+        if footer_lines is not None:
+            self.footer_lines = footer_lines
+        elif multi_select:
+            self.footer_lines = [
+                "Up/Down/j/k: move | Space: select | v: range | A: sel-all | f: filter | Ctrl+Q: quit",
+                "Use sort keys to change sort field, repeat to toggle order.",
+            ]
+        else:
+            self.footer_lines = [
+                "Up/Down/j/k: move | f: filter | Enter: details | Ctrl+Q: quit",
+                "Use sort keys to change sort field, repeat to toggle order.",
+            ]
         self.detail_formatter = detail_formatter or self._default_detail_formatter
         self.size_extractor = size_extractor
+        self.files_extractor = files_extractor
         self.enable_color_gradient = enable_color_gradient
         self.sort_change_handler = sort_change_handler
         self.custom_action_handler = custom_action_handler
@@ -173,6 +215,14 @@ class InteractiveList:
         self._multi_select_limit = multi_select_limit
         self._item_key_func = item_key_func
         self.selection_change_handler = selection_change_handler
+        self.enable_delete = enable_delete
+        self.delete_handler = delete_handler
+        self.undo_handler = undo_handler
+        self.purge_handler = purge_handler
+        self.render_checkbox = render_checkbox
+        self.delete_key = delete_key
+        self.delete_all_key = delete_all_key
+        self.require_typed_delete_for_all = require_typed_delete_for_all
 
         if not sorters:
             raise ValueError("At least one sorter must be provided.")
@@ -194,12 +244,12 @@ class InteractiveList:
         self._detail_meta: List[Tuple[int, bool]] = []
         self._detail_focusable: List[int] = []
         self._detail_content_height = 0
-        self._detail_lines: List[str] = []
-        self._detail_meta: List[Tuple[int, bool]] = []
-        self._detail_content_height: int = 0
         self._key_to_item: Dict[str, Any] = {}
+        self._path_to_item: Dict[str, Any] = {}
+        self._parent_to_children: Dict[str, List[Any]] = {}
         self._detail_custom_handler: Optional[Callable[[int], bool]] = None
         self._detail_custom_teardown: Optional[Callable[[], None]] = None
+        self._update_visible_items(reset_selection=True)
 
     def _invoke_handler(self, handler: Callable, key: int, current_item: Any) -> Tuple[bool, bool]:
         """
@@ -331,18 +381,215 @@ class InteractiveList:
             return str(getattr(item, "row_id"))
         return str(id(item))
 
-    def _is_selected(self, item: Any) -> bool:
+    def _get_item_children(self, item: Any) -> List[Any]:
+        item_path = getattr(item, "path", None)
+        if not item_path or not hasattr(self, "_parent_to_children"):
+            return []
+        return self._parent_to_children.get(str(item_path), [])
+
+    def _get_all_descendants(self, item: Any) -> List[Any]:
+        descendants = []
+        children = self._get_item_children(item)
+        for c in children:
+            descendants.append(c)
+            descendants.extend(self._get_all_descendants(c))
+        return descendants
+
+    def _get_ancestors(self, item: Any) -> List[Any]:
+        ancestors = []
+        curr = item
+        seen = set()
+        while curr:
+            parent_path = getattr(curr, "parent_path", None)
+            if not parent_path:
+                break
+            parent = getattr(self, "_path_to_item", {}).get(str(parent_path))
+            if parent and id(parent) not in seen:
+                seen.add(id(parent))
+                ancestors.append(parent)
+                curr = parent
+            else:
+                break
+        return ancestors
+
+    def _is_ancestor_selected(self, item: Any) -> bool:
+        """Check if any ancestor of item is present in multi_selected_keys."""
+        if not self.state.multi_selected_keys:
+            return False
+        # 1. Check loaded ancestors in hierarchy
+        for anc in self._get_ancestors(item):
+            if self._item_key(anc) in self.state.multi_selected_keys:
+                return True
+        # 2. Check by walking parent_path as Path/string
+        curr_path = getattr(item, "parent_path", None)
+        while curr_path:
+            p_str = str(curr_path).rstrip("/\\")
+            if p_str in self.state.multi_selected_keys:
+                return True
+            fwd = p_str.replace("\\", "/")
+            bck = p_str.replace("/", "\\")
+            if fwd in self.state.multi_selected_keys or bck in self.state.multi_selected_keys:
+                return True
+            p_lower = p_str.casefold()
+            fwd_lower = fwd.casefold()
+            bck_lower = bck.casefold()
+            for k in self.state.multi_selected_keys:
+                k_lower = k.casefold()
+                if k_lower in (p_lower, fwd_lower, bck_lower):
+                    return True
+            try:
+                p = Path(curr_path)
+                parent_p = p.parent
+                if parent_p == p:
+                    break
+                curr_path = parent_p
+            except Exception:
+                break
+        return False
+
+    def _has_selected_descendant_key(self, item: Any) -> bool:
+        """Check if any key in multi_selected_keys belongs to a descendant of item."""
+        if not self.state.multi_selected_keys:
+            return False
+        item_path = getattr(item, "path", None)
+        if not item_path:
+            return False
+        p_str = str(item_path).rstrip("/\\")
+        p_fwd_lower = (p_str.replace("\\", "/") + "/").casefold()
+        p_bck_lower = (p_str.replace("/", "\\") + "\\").casefold()
+        for k in self.state.multi_selected_keys:
+            k_lower = k.casefold()
+            if k_lower.startswith(p_fwd_lower) or k_lower.startswith(p_bck_lower):
+                return True
+        return False
+
+    def _item_selection_state(self, item: Any, cache: Optional[Dict[str, Any]] = None) -> Any:
+        """
+        Determine selection state of an item:
+        - True: fully selected ([x])
+        - False: unselected ([ ])
+        - 'partial': partially selected ([-] )
+        """
         if not self.state.multi_select_enabled:
             return False
         key = self._item_key(item)
-        return key in self.state.multi_selected_keys
+        if cache is not None and key in cache:
+            return cache[key]
+
+        children = self._get_item_children(item)
+        if not children:
+            if key in self.state.multi_selected_keys:
+                res = True
+            elif self._has_selected_descendant_key(item):
+                res = "partial"
+            else:
+                res = False
+            if cache is not None:
+                cache[key] = res
+            return res
+
+        # Item has children in hierarchy
+        child_states = [self._item_selection_state(c, cache) for c in children]
+        is_self_selected = key in self.state.multi_selected_keys
+
+        if is_self_selected and all(s is True for s in child_states):
+            res = True
+        elif all(s is False for s in child_states) and not is_self_selected and not self._has_selected_descendant_key(item):
+            res = False
+        else:
+            res = "partial"
+
+        if cache is not None:
+            cache[key] = res
+        return res
+
+    def _is_selected(self, item: Any) -> bool:
+        """Boolean check: considered selected if True or 'partial'."""
+        state = self._item_selection_state(item)
+        return bool(state)
+
+    def _render_checkbox_prefix(self, item: Any, selected_state: Any) -> str:
+        """Return the checkbox string prefix for an item in multi-select mode."""
+        if not (self.state.multi_select_enabled and self.render_checkbox):
+            return ""
+        if selected_state == "partial":
+            return "[-] "
+        return "[x] " if selected_state else "[ ] "
+
+    def _item_size(self, item: Any) -> int:
+        """Extract size in bytes from an item."""
+        if self.size_extractor:
+            try:
+                val = self.size_extractor(item)
+                if val is not None:
+                    return int(val)
+            except Exception:
+                pass
+        if hasattr(item, "get_display_size"):
+            try:
+                val = item.get_display_size()
+                if val is not None:
+                    return int(val)
+            except Exception:
+                pass
+        if hasattr(item, "size"):
+            try:
+                val = getattr(item, "size")
+                if val is not None:
+                    return int(val)
+            except Exception:
+                pass
+        return 0
+
+    def _item_files(self, item: Any) -> int:
+        """Extract file count from an item."""
+        if self.files_extractor:
+            try:
+                val = self.files_extractor(item)
+                if val is not None:
+                    return int(val)
+            except Exception:
+                pass
+        if hasattr(item, "files"):
+            try:
+                val = getattr(item, "files")
+                if val is not None:
+                    return int(val)
+            except Exception:
+                pass
+        if hasattr(item, "item_count") and getattr(item, "item_count") is not None:
+            try:
+                return int(getattr(item, "item_count"))
+            except Exception:
+                pass
+        if hasattr(item, "is_dir") and getattr(item, "is_dir"):
+            return 0
+        return 1
+
+    def _items_summary(self, items: Sequence[Any]) -> str:
+        """Format total file count and size into a concise human-readable string."""
+        total_files = sum(self._item_files(item) for item in items)
+        total_bytes = sum(self._item_size(item) for item in items)
+        file_str = f"{total_files:,} file{'s' if total_files != 1 else ''}"
+        size_str = format_bytes_binary(total_bytes)
+        return f"{file_str}, {size_str}"
 
     def _refresh_selection_mapping(self) -> None:
         self._key_to_item = {}
+        self._path_to_item = {}
+        self._parent_to_children = {}
         for item in self.state.items:
             self._key_to_item[self._item_key(item)] = item
+            item_path = getattr(item, "path", None)
+            if item_path:
+                self._path_to_item[str(item_path)] = item
+            parent_path = getattr(item, "parent_path", None)
+            if parent_path:
+                self._parent_to_children.setdefault(str(parent_path), []).append(item)
 
     def get_selected_items(self) -> List[Any]:
+        if not hasattr(self, "_key_to_item") or len(self._key_to_item) != len(self.state.items):
+            self._refresh_selection_mapping()
         return [self._key_to_item[key] for key in self.state.multi_selected_keys if key in self._key_to_item]
 
     def clear_selected_items(self) -> None:
@@ -361,20 +608,215 @@ class InteractiveList:
         if notify and self.selection_change_handler:
             self.selection_change_handler(self.get_selected_items())
 
+    def _set_item_and_descendants_selected(self, item: Any, selected: bool) -> None:
+        key = self._item_key(item)
+        if selected:
+            self.state.multi_selected_keys[key] = None
+        else:
+            self.state.multi_selected_keys.pop(key, None)
+
+        for desc in self._get_all_descendants(item):
+            desc_key = self._item_key(desc)
+            if selected:
+                self.state.multi_selected_keys[desc_key] = None
+            else:
+                self.state.multi_selected_keys.pop(desc_key, None)
+
+        if not selected:
+            for ancestor in self._get_ancestors(item):
+                anc_key = self._item_key(ancestor)
+                self.state.multi_selected_keys.pop(anc_key, None)
+            item_path = getattr(item, "path", None)
+            if item_path:
+                p_str = str(item_path).rstrip("/\\")
+                p_fwd_lower = (p_str.replace("\\", "/") + "/").casefold()
+                p_bck_lower = (p_str.replace("/", "\\") + "\\").casefold()
+                desc_keys = [
+                    k for k in self.state.multi_selected_keys
+                    if k.casefold().startswith(p_fwd_lower) or k.casefold().startswith(p_bck_lower)
+                ]
+                for k in desc_keys:
+                    self.state.multi_selected_keys.pop(k, None)
+
+        if self._multi_select_limit is not None and self._multi_select_limit > 0:
+            while len(self.state.multi_selected_keys) > self._multi_select_limit:
+                oldest_key = next(iter(self.state.multi_selected_keys))
+                self.state.multi_selected_keys.pop(oldest_key, None)
+
     def _toggle_selection(self, item: Any) -> None:
         if not self.state.multi_select_enabled:
             return
-        key = self._item_key(item)
-        if key in self.state.multi_selected_keys:
-            self.state.multi_selected_keys.pop(key, None)
-        else:
-            if self._multi_select_limit is not None and len(self.state.multi_selected_keys) >= self._multi_select_limit:
-                # drop the oldest selection
-                oldest_key = next(iter(self.state.multi_selected_keys))
-                self.state.multi_selected_keys.pop(oldest_key, None)
-            self.state.multi_selected_keys[key] = None
+        current_state = self._item_selection_state(item)
+        # If currently False, select; if True or partial, unselect
+        new_selected = (current_state is False)
+        self._set_item_and_descendants_selected(item, new_selected)
         if self.selection_change_handler:
             self.selection_change_handler(self.get_selected_items())
+
+    def _set_item_selected(self, item: Any, selected: bool) -> None:
+        if not self.state.multi_select_enabled:
+            return
+        self._set_item_and_descendants_selected(item, selected)
+
+    def _toggle_range_select(self) -> None:
+        if not self.state.multi_select_enabled or not self.state.visible:
+            return
+        if not self.state.in_range_select:
+            self.state.in_range_select = True
+            self.state.range_select_anchor = self.state.selected_index
+            self.state.range_select_initial_keys = set(self.state.multi_selected_keys.keys())
+            current_item = self.state.visible[self.state.selected_index]
+            current_state = self._item_selection_state(current_item)
+            # If anchor is already selected (True or partial), target is unselect (False)
+            # If anchor is unselected (False), target is select (True)
+            self.state.range_select_target = (current_state is False)
+            self._set_item_and_descendants_selected(current_item, self.state.range_select_target)
+            if self.selection_change_handler:
+                self.selection_change_handler(self.get_selected_items())
+            action_desc = "select" if self.state.range_select_target else "unselect"
+            self.state.status_message = f"Range {action_desc} active. Move cursor to expand; press v or Space to finish; Esc to cancel."
+        else:
+            self.state.in_range_select = False
+            self.state.range_select_anchor = None
+            self.state.range_select_initial_keys = set()
+            self.state.status_message = f"Range selection completed. {len(self.state.multi_selected_keys)} item(s) selected."
+
+    def _cancel_range_select(self) -> None:
+        """Cancel active range selection and restore initial selection state."""
+        if not getattr(self.state, "in_range_select", False):
+            return
+        initial_keys = getattr(self.state, "range_select_initial_keys", set())
+        self.state.multi_selected_keys = dict.fromkeys(initial_keys)
+        self.state.in_range_select = False
+        self.state.range_select_anchor = None
+        self.state.range_select_initial_keys = set()
+        self.state.status_message = "Range selection cancelled."
+        if self.selection_change_handler:
+            self.selection_change_handler(self.get_selected_items())
+
+    def select_all_visible(self) -> None:
+        if not self.state.multi_select_enabled:
+            return
+        for item in self.state.visible:
+            self._set_item_and_descendants_selected(item, True)
+        if self.selection_change_handler:
+            self.selection_change_handler(self.get_selected_items())
+
+    def toggle_select_all(self) -> None:
+        if not self.state.multi_select_enabled or not self.state.visible:
+            return
+        all_selected = all(self._item_selection_state(item) is True for item in self.state.visible)
+        if all_selected:
+            self.clear_selected_items()
+            self.state.status_message = "Unselected all items."
+        else:
+            for item in self.state.visible:
+                self._set_item_and_descendants_selected(item, True)
+            self.state.status_message = f"Selected all {len(self.state.visible)} item(s)."
+        if self.selection_change_handler:
+            self.selection_change_handler(self.get_selected_items())
+
+    def _collapse_nested_targets(self, targets: List[Any]) -> List[Any]:
+        target_paths = {str(getattr(t, "path", "")) for t in targets if getattr(t, "path", None)}
+        collapsed = []
+        for t in targets:
+            path = getattr(t, "path", None)
+            if not path:
+                collapsed.append(t)
+                continue
+            has_parent = False
+            curr = getattr(t, "parent_path", None)
+            while curr:
+                if str(curr) in target_paths:
+                    has_parent = True
+                    break
+                p_item = getattr(self, "_path_to_item", {}).get(str(curr))
+                curr = getattr(p_item, "parent_path", None) if p_item else None
+            if not has_parent:
+                collapsed.append(t)
+        return collapsed
+
+    def _trigger_delete(self) -> None:
+        if not self.state.visible:
+            return
+        selected = self.get_selected_items()
+        visible_keys = {self._item_key(item) for item in self.state.visible}
+        targets = [item for item in selected if self._item_key(item) in visible_keys]
+        if not targets and not self.state.multi_selected_keys and self.state.selected_index < len(self.state.visible):
+            targets = [self.state.visible[self.state.selected_index]]
+        if not targets:
+            if self.state.multi_selected_keys:
+                self.state.status_message = "Selected items are inside collapsed folders. Expand them to delete."
+            else:
+                self.state.status_message = "No items to delete."
+            return
+        self.state.pending_delete_items = self._collapse_nested_targets(targets)
+        self.state.confirm_delete = True
+
+    def _trigger_delete_all(self) -> None:
+        if not self.state.visible:
+            return
+        roots = [item for item in self.state.visible if getattr(item, "depth", 0) == 0]
+        if not roots:
+            roots = self._collapse_nested_targets(list(self.state.visible))
+        self.state.pending_delete_items = roots
+        if self.require_typed_delete_for_all:
+            self.state.confirm_delete_all = True
+            self.state.delete_all_buffer = ""
+        else:
+            self.state.confirm_delete = True
+
+    def _execute_delete(self, targets: List[Any]) -> None:
+        if not targets:
+            return
+        payload = None
+        if self.delete_handler:
+            payload = self.delete_handler(targets)
+        action = UndoAction(items=list(targets), payload=payload, description=f"Deleted {len(targets)} item(s)")
+        self.state.undo_stack.append(action)
+        target_keys = {self._item_key(item) for item in targets}
+        self.state.items = [item for item in self.state.items if self._item_key(item) not in target_keys]
+        for key in target_keys:
+            self.state.multi_selected_keys.pop(key, None)
+        for t in targets:
+            t_path = getattr(t, "path", None)
+            if t_path:
+                p_str = str(t_path).rstrip("/\\")
+                p_fwd_lower = (p_str.replace("\\", "/") + "/").casefold()
+                p_bck_lower = (p_str.replace("/", "\\") + "\\").casefold()
+                desc_keys = [
+                    k for k in self.state.multi_selected_keys
+                    if k.casefold().startswith(p_fwd_lower) or k.casefold().startswith(p_bck_lower)
+                ]
+                for k in desc_keys:
+                    self.state.multi_selected_keys.pop(k, None)
+        self._update_visible_items()
+        if self.selection_change_handler:
+            self.selection_change_handler(self.get_selected_items())
+        count = len(targets)
+        summary = self._items_summary(targets)
+        self.state.status_message = f"Deleted {count} item(s) ({summary}). Press 'z' to undo."
+
+    def _undo(self) -> None:
+        if not self.state.undo_stack:
+            self.state.status_message = "Nothing to undo."
+            return
+        action = self.state.undo_stack.pop()
+        if self.undo_handler:
+            self.undo_handler(action.items, action.payload)
+        existing_keys = {self._item_key(item) for item in self.state.items}
+        for item in action.items:
+            if self._item_key(item) not in existing_keys:
+                self.state.items.append(item)
+        self._update_visible_items()
+        for item in action.items:
+            self._set_item_selected(item, True)
+        if self.selection_change_handler:
+            self.selection_change_handler(self.get_selected_items())
+        count = len(action.items)
+        left = len(self.state.undo_stack)
+        summary = self._items_summary(action.items)
+        self.state.status_message = f"Restored {count} item(s) ({summary}). ({left} undo(s) left)"
 
     def _tui_main(self, stdscr) -> None:
         try:
@@ -417,15 +859,71 @@ class InteractiveList:
                 continue  # Just redraw and continue
 
             # Quit handling
-            if key in (17, ord('Q')):  # Ctrl+Q or uppercase Q => immediate
-                break
-            # If awaiting confirmation, handle y/n
+            if getattr(self.state, "confirm_quit_with_deletions", False):
+                if key in (ord('y'), ord('Y')):
+                    if self.purge_handler:
+                        try:
+                            all_items = [item for a in self.state.undo_stack for item in a.items]
+                            all_payloads = [a.payload for a in self.state.undo_stack]
+                            self.purge_handler(all_items, all_payloads)
+                        except Exception:
+                            pass
+                    break
+                if key in (ord('n'), ord('N'), 27):  # ESC cancels
+                    self.state.confirm_quit_with_deletions = False
+                elif key in (ord('z'), ord('Z')):
+                    self._undo()
+                    if not self.state.undo_stack:
+                        self.state.confirm_quit_with_deletions = False
+                continue
+
+            if getattr(self.state, "confirm_delete_all", False):
+                if key in (curses.KEY_ENTER, 10, 13):
+                    if self.state.delete_all_buffer.strip() == "DELETE":
+                        self.state.confirm_delete_all = False
+                        self._execute_delete(self.state.pending_delete_items)
+                        self.state.pending_delete_items = []
+                        self.state.delete_all_buffer = ""
+                    else:
+                        self.state.confirm_delete_all = False
+                        self.state.pending_delete_items = []
+                        self.state.delete_all_buffer = ""
+                        self.state.status_message = "Delete all cancelled (did not type DELETE)."
+                elif key in (27,):  # ESC cancels
+                    self.state.confirm_delete_all = False
+                    self.state.pending_delete_items = []
+                    self.state.delete_all_buffer = ""
+                    self.state.status_message = "Delete all cancelled."
+                elif key in (curses.KEY_BACKSPACE, 127, 8):
+                    self.state.delete_all_buffer = self.state.delete_all_buffer[:-1]
+                elif 32 <= key <= 126:
+                    self.state.delete_all_buffer += chr(key)
+                continue
+
+            if getattr(self.state, "confirm_delete", False):
+                if key in (ord('y'), ord('Y')):
+                    self.state.confirm_delete = False
+                    self._execute_delete(self.state.pending_delete_items)
+                    self.state.pending_delete_items = []
+                elif key in (ord('n'), ord('N'), 27):  # ESC cancels
+                    self.state.confirm_delete = False
+                    self.state.pending_delete_items = []
+                    self.state.status_message = "Delete cancelled."
+                continue
+
+            # If awaiting simple quit confirmation, handle y/n
             if getattr(self.state, "confirm_quit", False):
                 if key in (ord('y'), ord('Y')):
                     break
                 if key in (ord('n'), ord('N'), 27):  # ESC cancels
                     self.state.confirm_quit = False
                 continue
+
+            if key in (17, ord('Q')):  # Ctrl+Q or uppercase Q => immediate unless deletions pending
+                if self.state.undo_stack:
+                    self.state.confirm_quit_with_deletions = True
+                    continue
+                break
 
             # Detail view mode
             if self.state.detail_view:
@@ -458,6 +956,18 @@ class InteractiveList:
                 self._start_filter_edit()
             elif key == ord("x"):
                 self._start_exclusion_edit()
+            elif key in (ord('v'), ord('V')):
+                if self.state.multi_select_enabled:
+                    self._toggle_range_select()
+            elif key in (1, ord('A')):
+                if self.state.multi_select_enabled:
+                    self.toggle_select_all()
+            elif self.enable_delete and (key == curses.KEY_DC or key == ord(self.delete_key)):
+                self._trigger_delete()
+            elif self.enable_delete and key == ord(self.delete_all_key):
+                self._trigger_delete_all()
+            elif self.enable_delete and key in (ord('z'), ord('Z')):
+                self._undo()
             elif key == ord("d"):
                 # Toggle date visibility
                 self.state.show_date = not self.state.show_date
@@ -472,8 +982,11 @@ class InteractiveList:
                 self._update_visible_items()
                 self.state.scroll_offset = 0
             elif key == ord('q'):
-                # Prompt before quitting; use Ctrl+Q for immediate exit
-                self.state.confirm_quit = True
+                # Prompt before quitting; if deletions pending, warn user
+                if self.state.undo_stack:
+                    self.state.confirm_quit_with_deletions = True
+                else:
+                    self.state.confirm_quit = True
             elif key == curses.KEY_RIGHT:
                 # Scroll name to the right (increment by 5 for smoother feel)
                 self.state.scroll_offset += 5
@@ -485,7 +998,9 @@ class InteractiveList:
                     self._prepare_detail_view(self.state.visible[self.state.selected_index])
                     self.state.scroll_offset = 0
             elif key == ord(" "):
-                if self.state.multi_select_enabled and self.state.visible and self.state.selected_index < len(self.state.visible):
+                if self.state.in_range_select:
+                    self._toggle_range_select()
+                elif self.state.multi_select_enabled and self.state.visible and self.state.selected_index < len(self.state.visible):
                     current_item = self.state.visible[self.state.selected_index]
                     self._toggle_selection(current_item)
             elif key in (curses.KEY_ENTER, 10, 13):
@@ -506,6 +1021,24 @@ class InteractiveList:
                 if not handled and self.state.visible and self.state.selected_index < len(self.state.visible):
                     self._prepare_detail_view(self.state.visible[self.state.selected_index])
                     self.state.scroll_offset = 0
+            elif key == 27:  # ESC key
+                if getattr(self.state, "in_range_select", False):
+                    self._cancel_range_select()
+                else:
+                    if self.state.visible and self.state.selected_index < len(self.state.visible):
+                        current_item = self.state.visible[self.state.selected_index]
+                        if self.key_handler:
+                            handled, should_refresh = self._invoke_handler(self.key_handler, key, current_item)
+                            if handled:
+                                if should_refresh:
+                                    self._update_visible_items()
+                                continue
+                        if self.custom_action_handler:
+                            handled, should_refresh = self._invoke_handler(self.custom_action_handler, key, current_item)
+                            if handled:
+                                if should_refresh:
+                                    self._update_visible_items()
+                                continue
             else:
                 # Check if custom handlers want to handle this key
                 if self.state.visible and self.state.selected_index < len(self.state.visible):
@@ -615,6 +1148,17 @@ class InteractiveList:
         elif self.state.selected_index >= self.state.top_index + self.state.viewport_height:
             self.state.top_index = self.state.selected_index - self.state.viewport_height + 1
 
+        if self.state.in_range_select and self.state.range_select_anchor is not None:
+            low = min(self.state.range_select_anchor, self.state.selected_index)
+            high = max(self.state.range_select_anchor, self.state.selected_index)
+            target = getattr(self.state, "range_select_target", True)
+            initial_keys = getattr(self.state, "range_select_initial_keys", set())
+            self.state.multi_selected_keys = dict.fromkeys(initial_keys)
+            for i in range(low, high + 1):
+                self._set_item_selected(self.state.visible[i], target)
+            if self.selection_change_handler:
+                self.selection_change_handler(self.get_selected_items())
+
     def _update_visible_items(self, reset_selection: bool = False) -> None:
         # Apply inclusion filter
         if self.state.filter_pattern:
@@ -630,7 +1174,7 @@ class InteractiveList:
                 item for item in self.state.visible if not self._matches_pattern(item, self.state.exclusion_pattern)
             ]
 
-        has_hierarchy = bool(self.state.visible and hasattr(self.state.visible[0], 'parent_path'))
+        has_hierarchy = bool(self.state.items and hasattr(self.state.items[0], 'parent_path'))
         if not has_hierarchy and self.state.visible:
             sort_func = self.state.sorters[self.state.sort_field]
             if self.state.dirs_first and hasattr(self.state.visible[0], 'is_dir'):
@@ -645,7 +1189,7 @@ class InteractiveList:
             self.state.selected_index = 0
             self.state.top_index = 0
             self._refresh_selection_mapping()
-            if self.state.multi_select_enabled and self.state.multi_selected_keys and self.selection_change_handler:
+            if not self.state.items and self.state.multi_select_enabled and self.state.multi_selected_keys and self.selection_change_handler:
                 self.state.multi_selected_keys.clear()
                 self.selection_change_handler([])
             return
@@ -656,11 +1200,22 @@ class InteractiveList:
 
         self._refresh_selection_mapping()
         if self.state.multi_select_enabled:
-            stale = [key for key in self.state.multi_selected_keys if key not in self._key_to_item]
-            for key in stale:
-                self.state.multi_selected_keys.pop(key, None)
-            if stale and self.selection_change_handler:
-                self.selection_change_handler(self.get_selected_items())
+            if not has_hierarchy:
+                stale = [key for key in self.state.multi_selected_keys if key not in self._key_to_item]
+                for key in stale:
+                    self.state.multi_selected_keys.pop(key, None)
+                if stale and self.selection_change_handler:
+                    self.selection_change_handler(self.get_selected_items())
+            else:
+                propagated = False
+                for item in self.state.items:
+                    item_key = self._item_key(item)
+                    if item_key not in self.state.multi_selected_keys:
+                        if self._is_ancestor_selected(item):
+                            self.state.multi_selected_keys[item_key] = None
+                            propagated = True
+                if propagated and self.selection_change_handler:
+                    self.selection_change_handler(self.get_selected_items())
 
     def _get_size_color_pair(self, item: Any, min_size: int, max_size: int) -> int:
         """Get the appropriate color pair for an item based on its size."""
@@ -714,7 +1269,11 @@ class InteractiveList:
         if not self.state.dirs_first:
             toggles.append("NoDirsFirst")
         toggle_str = f" [{', '.join(toggles)}]" if toggles else ""
-        sort_line = f"{self.state.header} | Sort: {self.state.sort_field} ({sort_order}) | Items: {len(self.state.visible)}{toggle_str}"
+        range_str = " [RANGE SELECT]" if self.state.in_range_select else ""
+        undo_str = f" [Deleted: {sum(len(a.items) for a in self.state.undo_stack)}]" if self.state.undo_stack else ""
+        sel_count = len(self.state.multi_selected_keys)
+        sel_str = f" | Selected: {sel_count}" if self.state.multi_select_enabled else ""
+        sort_line = f"{self.state.header} | Sort: {self.state.sort_field} ({sort_order}) | Items: {len(self.state.visible)}{sel_str}{toggle_str}{range_str}{undo_str}"
 
         # Clear line and render with addstr
         stdscr.move(1, 0)
@@ -782,17 +1341,23 @@ class InteractiveList:
         # List items
         if self.state.visible:
             items_drawn = 0
+            screen_cache: Dict[str, Any] = {}
             for draw_idx in range(list_height):
                 entry_idx = self.state.top_index + draw_idx
                 if entry_idx >= len(self.state.visible):
                     break
 
                 item = self.state.visible[entry_idx]
-                selected_flag = self._is_selected(item)
+                selected_state = self._item_selection_state(item, cache=screen_cache)
+                selected_flag = bool(selected_state)
                 try:
                     setattr(item, "selected", selected_flag)
                 except Exception:
                     pass
+
+                chk_prefix = self._render_checkbox_prefix(item, selected_state)
+                prefix_len = len(chk_prefix)
+                avail_width = max(1, (max_x - 1) - prefix_len)
 
                 # Pass scroll_offset for all rows to support horizontal panning
                 # Use max_x - 1 to ensure line doesn't exceed terminal width
@@ -800,11 +1365,14 @@ class InteractiveList:
                 line = self.formatter(
                     item,
                     self.state.sort_field,
-                    max_x - 1,
+                    avail_width,
                     self.state.show_date,
                     self.state.show_time,
                     scroll_off,
                 )
+
+                if chk_prefix:
+                    line = chk_prefix + line
 
                 # Ensure line doesn't exceed terminal width
                 if len(line) > max_x - 1:
@@ -814,8 +1382,9 @@ class InteractiveList:
                 size_color_pair = self._get_size_color_pair(item, min_size, max_size)
                 name_color_pair = self.name_color_getter(item) if self.name_color_getter else 1
 
-                # Check if selected
-                is_selected = entry_idx == self.state.selected_index
+                # Check if cursor and selected
+                is_cursor = entry_idx == self.state.selected_index
+                is_selected = selected_flag
 
                 try:
                     # Clear the entire line first to prevent corruption from wide characters
@@ -835,6 +1404,8 @@ class InteractiveList:
                             # Render name part with name color
                             name_attr = curses.color_pair(name_color_pair)
                             if is_selected:
+                                name_attr |= curses.A_BOLD
+                            if is_cursor:
                                 name_attr |= curses.A_REVERSE
 
                             # Use addstr and get cursor position to handle wide characters
@@ -851,6 +1422,8 @@ class InteractiveList:
                             # Render size part at cursor position
                             size_attr = curses.color_pair(size_color_pair)
                             if is_selected:
+                                size_attr |= curses.A_BOLD
+                            if is_cursor:
                                 size_attr |= curses.A_REVERSE
 
                             if x < max_x - len(size_part):
@@ -862,12 +1435,16 @@ class InteractiveList:
                             # Fallback: render whole line with name color
                             attr = curses.color_pair(name_color_pair)
                             if is_selected:
+                                attr |= curses.A_BOLD
+                            if is_cursor:
                                 attr |= curses.A_REVERSE
                             stdscr.addstr(list_start + draw_idx, 0, line[:max_x - 1], attr)
                     else:
                         # Single color rendering (original behavior)
                         attr = curses.color_pair(size_color_pair)
                         if is_selected:
+                            attr |= curses.A_BOLD
+                        if is_cursor:
                             attr |= curses.A_REVERSE
                         stdscr.addstr(list_start + draw_idx, 0, line[:max_x - 1], attr)
 
@@ -885,7 +1462,11 @@ class InteractiveList:
                 except curses.error:
                     pass
         else:
-            stdscr.addnstr(list_start, 0, "-- no matches --", max_x - 1, curses.color_pair(1))
+            if self.state.undo_stack:
+                empty_msg = "(All items deleted. Press 'z' to undo, or 'q' to exit)"
+                stdscr.addnstr(list_start, 0, empty_msg, max_x - 1, curses.color_pair(3) | curses.A_BOLD)
+            else:
+                stdscr.addnstr(list_start, 0, "-- no matches --", max_x - 1, curses.color_pair(1))
 
         # Footer
         footer_y = max_y - footer_lines
@@ -907,8 +1488,59 @@ class InteractiveList:
             except curses.error:
                 pass
 
-        # Quit confirmation prompt overlay
-        if getattr(self.state, "confirm_quit", False):
+        # Status message line (if set and not confirming)
+        has_overlay = (
+            getattr(self.state, "confirm_quit", False)
+            or getattr(self.state, "confirm_delete", False)
+            or getattr(self.state, "confirm_delete_all", False)
+            or getattr(self.state, "confirm_quit_with_deletions", False)
+        )
+        if not has_overlay and self.state.status_message:
+            try:
+                status_y = max_y - footer_lines
+                stdscr.move(status_y, 0)
+                stdscr.clrtoeol()
+                stdscr.addstr(status_y, 0, self.state.status_message.ljust(max_x)[:max_x - 1], curses.color_pair(3) | curses.A_BOLD)
+            except curses.error:
+                pass
+
+        # Overlay prompts
+        if getattr(self.state, "confirm_quit_with_deletions", False):
+            all_deleted = [item for a in self.state.undo_stack for item in a.items]
+            total_deleted = len(all_deleted)
+            summary = self._items_summary(all_deleted)
+            prompt = f"{total_deleted} item(s) ({summary}) have been deleted - Exit? y/n/undo(z)"
+            try:
+                stdscr.move(max_y - 1, 0)
+                stdscr.clrtoeol()
+                stdscr.addstr(max_y - 1, 0, prompt.ljust(max_x)[:max_x - 1], curses.color_pair(3) | curses.A_REVERSE | curses.A_BOLD)
+            except curses.error:
+                pass
+        elif getattr(self.state, "confirm_delete_all", False):
+            count = len(self.state.pending_delete_items)
+            summary = self._items_summary(self.state.pending_delete_items)
+            prompt = f"DELETE ALL {count} item(s) ({summary})? Type DELETE to confirm: {self.state.delete_all_buffer}"
+            try:
+                stdscr.move(max_y - 1, 0)
+                stdscr.clrtoeol()
+                stdscr.addstr(max_y - 1, 0, prompt.ljust(max_x)[:max_x - 1], curses.color_pair(8) | curses.A_REVERSE | curses.A_BOLD)
+            except curses.error:
+                pass
+        elif getattr(self.state, "confirm_delete", False):
+            count = len(self.state.pending_delete_items)
+            summary = self._items_summary(self.state.pending_delete_items)
+            if count == 1:
+                name = getattr(self.state.pending_delete_items[0], "name", str(self.state.pending_delete_items[0]))
+                prompt = f"Delete '{name}' ({summary})? (y/N)"
+            else:
+                prompt = f"Delete {count} selected item(s) ({summary})? (y/N)"
+            try:
+                stdscr.move(max_y - 1, 0)
+                stdscr.clrtoeol()
+                stdscr.addstr(max_y - 1, 0, prompt.ljust(max_x)[:max_x - 1], curses.color_pair(3) | curses.A_REVERSE)
+            except curses.error:
+                pass
+        elif getattr(self.state, "confirm_quit", False):
             prompt = "Quit? (y/N)"
             try:
                 stdscr.move(max_y - 1, 0)

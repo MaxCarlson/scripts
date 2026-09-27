@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -113,8 +115,13 @@ def build_partial_inventory(
     destination: Path,
     *,
     state_databases: tuple[Path, ...] = (),
+    partial_root_override: Path | None = None,
 ) -> tuple[Path, list[PartialEntry], dict[Path, tuple[int, int]]]:
-    partial_root = destination.expanduser().resolve() / "_partial"
+    partial_root = (
+        partial_root_override.expanduser().resolve()
+        if partial_root_override is not None
+        else destination.expanduser().resolve() / "_partial"
+    )
     if not partial_root.is_dir():
         raise ValueError(f"partial root does not exist: {partial_root}")
     state_matches = state_url_candidates(destination, state_databases)
@@ -211,6 +218,28 @@ class PartialTree:
             self.expanded.add(entry.path)
             entry.expanded = True
 
+    def expand_all(self) -> None:
+        changed = True
+        while changed:
+            changed = False
+            candidates = [entry for entry in self.entries if entry.is_dir and entry.path not in self.expanded]
+            for entry in candidates:
+                self._load_children(entry)
+                self.expanded.add(entry.path)
+                entry.expanded = True
+                changed = True
+
+    def collapse_all(self) -> None:
+        for entry in self.entries:
+            entry.expanded = False
+        self.expanded.clear()
+
+    def toggle_expand_all(self) -> None:
+        if self.expanded:
+            self.collapse_all()
+        else:
+            self.expand_all()
+
     def visible(
         self,
         sort_field: str,
@@ -282,7 +311,7 @@ def partial_details(entry: PartialEntry) -> list[str]:
         f"Worker PID: {entry.worker_pid or 'none recorded'}",
         f"Active gallery-dl PIDs: {', '.join(str(pid) for pid in entry.active_pids) or 'none detected'}",
         "",
-        "Only top-level partial owners can be selected for cleanup.",
+        "Nested selections collapse to the highest selected ancestor before deletion.",
     ]
 
 
@@ -292,29 +321,139 @@ class _SelectionComplete(Exception):
 
 
 class PartialInteractiveList(InteractiveList):
-    def _toggle_selection(self, item: PartialEntry) -> None:
-        if item.depth == 0 and item.is_dir:
-            super()._toggle_selection(item)
+    pass
 
 
 def select_partial_owners(
     destination: Path,
     *,
     state_databases: tuple[Path, ...] = (),
-) -> list[Path]:
+    partial_root_override: Path | None = None,
+) -> list[Path] | None:
     if curses is None:
         raise RuntimeError("interactive partial cleanup requires curses/windows-curses")
     partial_root, entries, sizes = build_partial_inventory(
-        destination, state_databases=state_databases
+        destination, state_databases=state_databases, partial_root_override=partial_root_override
     )
     if not entries:
         raise ValueError(f"partial root contains no owner folders: {partial_root}")
     tree = PartialTree(entries, sizes)
     view: PartialInteractiveList
 
+    trash_root = partial_root / ".trash"
+    purged_items: set[Path] = set()
+    purged_files: int = 0
+    purged_bytes: int = 0
+
+    def on_delete(targets: list[PartialEntry]) -> list[tuple[Path, Path, Path, list[PartialEntry], int, int, Path | None]]:
+        moved = []
+        for target in targets:
+            if not target.path.exists():
+                continue
+            trash_root.mkdir(parents=True, exist_ok=True)
+            token = uuid.uuid4().hex[:8]
+            trash_dest = trash_root / f"{target.name}_{token}"
+            marker = trash_root / f"{trash_dest.name}.orig_path"
+            try:
+                shutil.move(str(target.path), str(trash_dest))
+                marker.write_text(str(target.path), encoding="utf-8")
+            except OSError:
+                continue
+
+            saved_entries = [e for e in tree.entries if e.path == target.path or target.path in e.path.parents]
+            saved_paths = {e.path for e in saved_entries}
+            tree.entries = [e for e in tree.entries if e.path not in saved_paths]
+
+            # Decrement ancestor file counts and sizes in tree.entries
+            curr = target.parent_path
+            while curr:
+                anc_entry = next((e for e in tree.entries if e.path == curr), None)
+                if anc_entry:
+                    anc_entry.files = max(0, anc_entry.files - target.files)
+                    anc_entry.size = max(0, anc_entry.size - target.size)
+                    curr = anc_entry.parent_path
+                else:
+                    break
+
+            # Decrement in tree.sizes
+            curr = target.parent_path
+            while curr:
+                f, s = tree.sizes.get(curr, (0, 0))
+                tree.sizes[curr] = (max(0, f - target.files), max(0, s - target.size))
+                if curr == target.owner:
+                    break
+                curr = curr.parent
+
+            moved.append((target.path, trash_dest, marker, saved_entries, target.files, target.size, target.parent_path))
+
+        view.state.items = tree.visible(view.state.sort_field, view.state.descending, view.state.dirs_first)
+        return moved
+
+    def on_undo(targets: list[PartialEntry], payload: list[tuple[Path, Path, Path, list[PartialEntry], int, int, Path | None]]) -> None:
+        if not payload:
+            return
+        for orig_path, trash_dest, marker, saved_entries, f_count, s_bytes, parent_path in payload:
+            if trash_dest.exists() and not orig_path.exists():
+                orig_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(trash_dest), str(orig_path))
+                if marker.exists():
+                    marker.unlink(missing_ok=True)
+                existing_paths = {e.path for e in tree.entries}
+                for entry in saved_entries:
+                    if entry.path not in existing_paths:
+                        tree.entries.append(entry)
+
+                # Restore ancestor file counts and sizes in tree.entries
+                curr = parent_path
+                while curr:
+                    anc_entry = next((e for e in tree.entries if e.path == curr), None)
+                    if anc_entry:
+                        anc_entry.files += f_count
+                        anc_entry.size += s_bytes
+                        curr = anc_entry.parent_path
+                    else:
+                        break
+
+                # Restore in tree.sizes
+                curr = parent_path
+                while curr:
+                    f, s = tree.sizes.get(curr, (0, 0))
+                    tree.sizes[curr] = (f + f_count, s + s_bytes)
+                    if curr == getattr(next((e for e in saved_entries if e.path == orig_path), None), "owner", None):
+                        break
+                    curr = curr.parent
+
+        view.state.items = tree.visible(view.state.sort_field, view.state.descending, view.state.dirs_first)
+
+    def on_purge(all_targets, all_payloads) -> None:
+        nonlocal purged_files, purged_bytes
+        for payload in all_payloads:
+            if payload:
+                for orig_path, trash_dest, marker, saved_entries, f_count, s_bytes, _ in payload:
+                    if trash_dest.exists():
+                        if trash_dest.is_dir():
+                            shutil.rmtree(str(trash_dest), ignore_errors=True)
+                        else:
+                            trash_dest.unlink(missing_ok=True)
+                    if marker.exists():
+                        marker.unlink(missing_ok=True)
+                    purged_items.add(orig_path)
+                    purged_files += f_count
+                    purged_bytes += s_bytes
+        if trash_root.exists():
+            try:
+                if not any(trash_root.iterdir()):
+                    trash_root.rmdir()
+            except OSError:
+                pass
+
     def action(key: int, item: PartialEntry, state) -> tuple[bool, bool]:
         if key in (curses.KEY_ENTER, 10, 13):
             tree.toggle(item)
+            state.items = tree.visible(state.sort_field, state.descending, state.dirs_first)
+            return True, True
+        if key in (ord("e"), ord("E")):
+            tree.toggle_expand_all()
             state.items = tree.visible(state.sort_field, state.descending, state.dirs_first)
             return True, True
         if key in SORT_KEYS:
@@ -323,11 +462,6 @@ def select_partial_owners(
             state.sort_field = field
             state.items = tree.visible(field, state.descending, state.dirs_first)
             return True, True
-        if key == ord("D"):
-            selected = [entry for entry in view.get_selected_items() if entry.depth == 0]
-            if selected:
-                raise _SelectionComplete(selected)
-            return True, False
         return False, False
 
     view = PartialInteractiveList(
@@ -341,25 +475,65 @@ def select_partial_owners(
         header=f"mangadl partial cleanup | {partial_root}",
         sort_keys_mapping=SORT_KEYS,
         footer_lines=[
-            "Space select owner | Enter expand/collapse | i details | D continue | Ctrl+Q cancel",
+            "Space select | v range | A sel-all | d delete | D del all | z undo | Enter/e exp/col | i details | q quit",
             "Sort c created / m modified / a accessed / s size / n name | f filter | arrows/jk move",
         ],
         detail_formatter=partial_details,
         size_extractor=lambda entry: entry.size,
+        files_extractor=lambda entry: entry.files,
         enable_color_gradient=True,
         custom_action_handler=action,
         dirs_first=True,
         multi_select=True,
+        render_checkbox=True,
+        enable_delete=True,
+        delete_handler=on_delete,
+        undo_handler=on_undo,
+        purge_handler=on_purge,
         item_key_func=lambda entry: str(entry.path),
     )
     try:
         view.run()
-    except _SelectionComplete as selected:
-        return [entry.path for entry in selected.entries]
     except SystemExit as exc:
         if exc.code == 2:
             raise RuntimeError(
                 "interactive partial cleanup requires a usable terminal; provide --target for CLI mode"
             ) from exc
         raise
-    return []
+    finally:
+        # Emergency restore of anything remaining in trash_root that wasn't purged
+        if trash_root.exists():
+            for marker in list(trash_root.glob("*.orig_path")):
+                try:
+                    orig_path_str = marker.read_text(encoding="utf-8").strip()
+                    if orig_path_str:
+                        orig_path = Path(orig_path_str)
+                        trash_dest = trash_root / marker.stem
+                        if trash_dest.exists() and not orig_path.exists():
+                            orig_path.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.move(str(trash_dest), str(orig_path))
+                    marker.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            for item in list(trash_root.iterdir()):
+                if item.suffix == ".orig_path":
+                    continue
+                name_parts = item.name.rsplit('_', 1)
+                orig_name = name_parts[0] if len(name_parts) == 2 else item.name
+                orig_path = partial_root / orig_name
+                if not orig_path.exists():
+                    try:
+                        shutil.move(str(item), str(orig_path))
+                    except Exception:
+                        pass
+            try:
+                if not any(trash_root.iterdir()):
+                    trash_root.rmdir()
+            except OSError:
+                pass
+
+    if purged_items:
+        print(f"REMOVED: {len(purged_items)} partial item(s) ({purged_files:,} files, {human_bytes(purged_bytes)}).")
+        return None
+    selected_targets = view._collapse_nested_targets(view.get_selected_items())
+    return [entry.path for entry in selected_targets]
