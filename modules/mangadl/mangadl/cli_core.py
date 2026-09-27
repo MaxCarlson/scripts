@@ -771,6 +771,8 @@ def _partials(args: argparse.Namespace) -> int:
             state_databases=tuple(args.state_db),
             partial_root_override=partial_root_for(args.destination, args.scratch_dir) if args.scratch_dir else None,
         )
+        if selected is None:
+            return 0
         if not selected:
             print("No partial owners selected; nothing to clean.")
             return 0

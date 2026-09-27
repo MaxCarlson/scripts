@@ -5,7 +5,6 @@ Main CLI entry point for the file-utils tool.
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 from typing import Sequence
 import logging
@@ -143,6 +142,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--calc-sizes",
         action="store_true",
         help="Calculate actual recursive sizes for directories.",
+    )
+    ls_parser.add_argument(
+        "-D",
+        "--delete",
+        action="store_true",
+        help="Enable interactive file/directory deletion with undo in the list view.",
     )
 
     # --- folder growth monitor command ---
@@ -383,7 +388,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     list_containers=True,
                 )
                 # Human-readable summary with subsections + overall total
-                lg = info["largest"]; ch = info["caches"]; ct = info["containers"]; ov = info["overall"]
+                lg = info["largest"]
+                ch = info["caches"]
+                ct = info["containers"]
+                ov = info["overall"]
                 print("== Largest Files ==")
                 for it in lg["items"][:min(10, lg["count"])]:
                     print(f"{it['size_human']:>10}  {it['path']}")

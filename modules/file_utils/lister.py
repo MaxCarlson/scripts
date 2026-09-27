@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from fnmatch import fnmatch
@@ -901,6 +902,23 @@ class ListerManager:
                 self.expanded_folders.add(entry.path)
                 entry.expanded = True
 
+    def expand_all(self) -> None:
+        """Expand all folders recursively loading contents if needed."""
+        changed = True
+        while changed:
+            changed = False
+            unexpanded = [e for e in self.all_entries if e.is_dir and e.path not in self.expanded_folders]
+            for entry in unexpanded:
+                self.toggle_folder(entry)
+                changed = True
+
+    def toggle_expand_all(self) -> None:
+        """Toggle expand all / collapse all."""
+        if self.expanded_folders:
+            self.collapse_all()
+        else:
+            self.expand_all()
+
     # Filter panel management methods
     def toggle_panel_focus(self):
         """Toggle focus between file list and filter panel."""
@@ -1346,11 +1364,9 @@ def run_lister(args: argparse.Namespace) -> int:
                 return True, False  # Handled, no refresh needed
             return False, False
 
-        # 'e' key - expand all at current depth
-        elif key == ord("e"):
-            # Find the depth of the current item
-            current_depth = item.depth
-            manager.expand_all_at_depth(current_depth)
+        # 'e' / 'E' key - toggle expand all / collapse all
+        elif key in (ord("e"), ord("E")):
+            manager.toggle_expand_all()
             # Update the items list (with hierarchical sorting)
             sort_func = SORT_FUNCS[list_view.state.sort_field]
             list_view.state.items = manager.get_visible_entries(
@@ -1635,11 +1651,66 @@ def run_lister(args: argparse.Namespace) -> int:
     # Initial header
     header = build_header(len(entries), bool(args.glob))
 
+    enable_delete = getattr(args, "delete", False)
+    trash_root = Path(args.directory).resolve() / ".trash"
+
+    def on_delete(targets: List[Entry]) -> List[Tuple[Entry, Path]]:
+        moved = []
+        trash_root.mkdir(parents=True, exist_ok=True)
+        for target in targets:
+            if target.path.exists() or target.path.is_symlink():
+                token = uuid.uuid4().hex[:8]
+                dest = trash_root / f"{target.name}_{token}"
+                try:
+                    shutil.move(str(target.path), str(dest))
+                    moved.append((target, dest))
+                except Exception:
+                    pass
+        target_paths = {t.path for t, _ in moved}
+        manager.all_entries = [e for e in manager.all_entries if e.path not in target_paths]
+        return moved
+
+    def on_undo(targets: List[Entry], payload: List[Tuple[Entry, Path]]) -> None:
+        if not payload:
+            return
+        for target, dest in payload:
+            if dest.exists() and not target.path.exists():
+                try:
+                    shutil.move(str(dest), str(target.path))
+                    if target not in manager.all_entries:
+                        manager.all_entries.append(target)
+                except Exception:
+                    pass
+
+    def on_purge(all_targets, all_payloads) -> None:
+        for payload in all_payloads:
+            if payload:
+                for _target, dest in payload:
+                    if dest.is_dir() and not dest.is_symlink():
+                        shutil.rmtree(str(dest), ignore_errors=True)
+                    elif dest.exists() or dest.is_symlink():
+                        try:
+                            dest.unlink()
+                        except OSError:
+                            pass
+        if trash_root.exists():
+            try:
+                if not any(trash_root.iterdir()):
+                    trash_root.rmdir()
+            except OSError:
+                pass
+
     # Build footer with search stats
-    footer_lines = [
-        "↑↓/jk/PgUp/Dn │ Space:select │ ↵:expand/details/back │ ESC:collapse U:collapse-all ^Q:quit",
-        "Sort c/m/a/n/s │ o:nvim tabs/open dir │ f/x:filter F:dirs │ d:date t:time │ y:copy r/A/S:calc │ ←→",
-    ]
+    if enable_delete:
+        footer_lines = [
+            "↑↓/jk │ Space:select v:range A:all │ d:delete D:del-all z:undo │ ↵:expand e:exp/col ESC:col ^Q:quit",
+            "Sort c/m/a/n/s │ o:nvim tabs/open dir │ f/x:filter F:dirs │ t:time │ y:copy r/A/S:calc │ ←→",
+        ]
+    else:
+        footer_lines = [
+            "↑↓/jk/PgUp/Dn │ Space:select v:range │ ↵:expand/details/back │ e:exp/col ESC:collapse U:collapse-all ^Q:quit",
+            "Sort c/m/a/n/s │ o:nvim tabs/open dir │ f/x:filter F:dirs │ d:date t:time │ y:copy r/A/S:calc │ ←→",
+        ]
 
     # Add search stats line if filters were used or deep search
     if search_filter.has_filters() or depth > 0:
@@ -1649,6 +1720,19 @@ def run_lister(args: argparse.Namespace) -> int:
             f"Rate: {search_stats.files_per_second():.0f} files/sec"
         )
         footer_lines.insert(0, stats_line)
+
+    def _entry_delete_files(entry: Entry) -> int:
+        if not entry.is_dir:
+            return 1
+        if entry.item_count is not None:
+            return entry.item_count
+        try:
+            total_size, item_count = calculate_folder_size(entry.path)
+            entry.calculated_size = total_size
+            entry.item_count = item_count
+            return item_count
+        except Exception:
+            return 0
 
     list_view = InteractiveList(
         items=manager.get_visible_entries(
@@ -1664,11 +1748,17 @@ def run_lister(args: argparse.Namespace) -> int:
         footer_lines=footer_lines,
         detail_formatter=detail_formatter,
         size_extractor=size_extractor,
+        files_extractor=_entry_delete_files,
         enable_color_gradient=True,
         custom_action_handler=action_handler,
         dirs_first=not getattr(args, "no_dirs_first", False),
         name_color_getter=file_color_manager.get_color_pair,
         multi_select=True,
+        render_checkbox=True,
+        enable_delete=enable_delete,
+        delete_handler=on_delete if enable_delete else None,
+        undo_handler=on_undo if enable_delete else None,
+        purge_handler=on_purge if enable_delete else None,
         item_key_func=lambda entry: str(entry.path),
     )
 
@@ -1740,3 +1830,19 @@ def run_lister(args: argparse.Namespace) -> int:
                 print(line)
             return 0
         raise
+    finally:
+        if enable_delete and trash_root.exists():
+            for item in list(trash_root.iterdir()):
+                parts = item.name.rsplit('_', 1)
+                orig_name = parts[0] if len(parts) == 2 else item.name
+                orig_path = Path(args.directory).resolve() / orig_name
+                if not orig_path.exists():
+                    try:
+                        shutil.move(str(item), str(orig_path))
+                    except Exception:
+                        pass
+            try:
+                if not any(trash_root.iterdir()):
+                    trash_root.rmdir()
+            except OSError:
+                pass
