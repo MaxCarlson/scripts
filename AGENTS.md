@@ -84,6 +84,7 @@ Use `stage` as the canonical term. Do not use older repo-specific planning taxon
 - Preserve unrelated user changes.
 - Run targeted tests for code changes.
 - Run broader tests when the change affects shared behavior.
+- Minimize validation output: prefer narrow tests and quiet pytest output; for large suites, log full output and inspect only summaries/failures unless more detail is needed.
 - Record exact commands and results in the handoff/status docs for substantial work.
 - Stage only intended files.
 - Do not commit unless the user explicitly approves.
