@@ -1,6 +1,28 @@
 # mangadl Immediate Project Handoff
 
-Active branch: `main` (the working tree also contains unrelated scheduler work).
+## Current branch planning handoff — 2026-10-09
+
+Branch: `codex/kavita-module-mangadl-collections-20261009-0349`.
+
+The proposed URL-file audit and missing/corrupt image repair plan is at
+[20261009-0409 URL-file audit and repair](plans/20261009-0409_url-file-audit-and-repair/00_implementation-plan.md).
+Stages 1–3 of URL-file audit are implemented: audit accepts `-u/--url-file`,
+preserves existing `-i/--input-file` and run direct-URL flags, emits per-URL
+provenance, checks numbered image validity and page coverage, and resolves
+nhentai expected page counts when metadata is available. Paradise's reported
+pages 159–192 now produces missing pages 1–158. The audit remains read-only.
+MangaDL 1.22.0 adds Pillow for image validation. Focused tests (7), the full
+suite (232), Ruff, and `git diff --check` passed. The current `repair` command still only
+organizes loose nhentai files; Stage 4 repair planning/execution is next.
+
+The Kavita collection assignment feature remains a separate in-progress
+branch plan. No commit, push, or merge approval is implied by this audit plan.
+
+---
+
+Historical handoff snapshot: branch `main` (the following run-specific notes
+predate the current feature branch and should not be read as its current Git
+state).
 
 Current version: `mangadl 1.20.0`.
 

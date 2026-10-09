@@ -429,6 +429,20 @@ mangadl archive config -a .\gallery-dl-archive.sqlite3 -N
 
 ## Other operations
 
+Audit a URL file against one or more destination roots (read-only):
+
+```powershell
+mangadl audit -u .\URLFILE.txt -d .\downloads -j
+mangadl audit -i .\URLFILE.txt -d .\downloads -o .\missing.txt -p .\duplicates.json
+```
+
+`-u/--url-file` is an audit-only alias; `run -u/--url` still takes a direct
+URL. Audit checks numbered images for missing pages and undecodable or zero-byte
+files. For nhentai URLs it also resolves expected page counts to detect missing
+leading and trailing pages. If source metadata is unavailable, visible local
+gaps are reported while completeness remains unknown when the total cannot be
+proven. Audit does not repair or download files.
+
 ```powershell
 mangadl inspect -u https://manga18fx.com/manga/example/
 mangadl status -s .\mangadl-state.sqlite3

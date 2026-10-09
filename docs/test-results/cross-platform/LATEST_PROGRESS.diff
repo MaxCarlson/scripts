@@ -1,0 +1,51 @@
+warning: in the working copy of 'C:\Users\mcarls\src\scripts\docs\test-results\cross-platform\history\20261009-034123_cross-platform_context.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'C:\Users\mcarls\src\scripts\docs\test-results\cross-platform\LATEST_CONTEXT.md', LF will be replaced by CRLF the next time Git touches it
+diff --git "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\cross-platform\\history\\20261009-034123_cross-platform_context.md" "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\cross-platform\\LATEST_CONTEXT.md"
+index 0d1f453..9e84b70 100644
+--- "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\cross-platform\\history\\20261009-034123_cross-platform_context.md"
++++ "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\cross-platform\\LATEST_CONTEXT.md"
+@@ -1,6 +1,6 @@
+ # Validation Context: cross-platform
+ 
+-Generated: 2026-10-09T03:41:25.9874593-07:00
++Generated: 2026-10-09T03:42:07.0979025-07:00
+ Branch: main
+ Commit: c67a45c6779d7631a27719a4f60dbc2ec3013ef5
+ Validation report: docs\test-results\cross-platform\LATEST.txt
+@@ -9,13 +9,25 @@ Validation report: docs\test-results\cross-platform\LATEST.txt
+ 
+ - RESULT: PASS - Compile cross_platform package and tests
+ - RESULT: PASS - Lint cross_platform storage implementation and tests
+-- RESULT: FAIL - Cross-platform pytest suite
+-- TARGET RESULT: FAIL
+-- Failure count: 1
++- [32m======================= [32m[1m110 passed[0m, [33m4 skipped[0m[32m in 0.27s[0m[32m ========================[0m
++- RESULT: PASS - Cross-platform pytest suite
++- TARGET RESULT: PASS
+ 
+ ## Working Tree
+ 
+ ```text
++ M docs/test-results/mangadl/LATEST.txt
++ M docs/test-results/mangadl/LATEST_CONTEXT.md
++ M docs/test-results/mangadl/LATEST_PROGRESS.diff
++ D docs/test-results/mangadl/history/20260921-100951_mangadl.txt
++ D docs/test-results/mangadl/history/20260921-100951_mangadl_context.md
++ D docs/test-results/mangadl/history/20260921-100951_mangadl_progress.diff
++ D docs/test-results/mangadl/history/20260921-104414_mangadl.txt
++ D docs/test-results/mangadl/history/20260921-104414_mangadl_context.md
++ D docs/test-results/mangadl/history/20260921-104414_mangadl_progress.diff
++ D docs/test-results/mangadl/history/20260921-160434_mangadl.txt
++ D docs/test-results/mangadl/history/20260921-160434_mangadl_context.md
++ D docs/test-results/mangadl/history/20260921-160434_mangadl_progress.diff
+  M modules/cross_platform/README.md
+  M modules/cross_platform/__init__.py
+  M modules/cross_platform/pyproject.toml
+@@ -28,6 +40,7 @@ Validation report: docs\test-results\cross-platform\LATEST.txt
+  M modules/mangadl/mangadl/cli_core.py
+  M modules/mangadl/mangadl/cli_structure.py
+  M modules/mangadl/mangadl/concurrency.py
++ M modules/mangadl/mangadl/favorites.py
+  M modules/mangadl/mangadl/manager.py
+  M modules/mangadl/mangadl/partial_safety.py
+  M modules/mangadl/mangadl/ui.py

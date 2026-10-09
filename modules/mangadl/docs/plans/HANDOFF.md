@@ -1,5 +1,7 @@
 # mangadl Plan Index
 
+Proposed current follow-up: [20261009-0409 URL-file audit and repair](20261009-0409_url-file-audit-and-repair/00_implementation-plan.md). Planning is complete; implementation is not authorized until the user explicitly approves this plan.
+
 Current cross-module feature: [Kavita collection assignment](../../../docs/plans/20261009-0349_kavita-module-mangadl-collections/00_implementation-plan.md).
 
 Active: [20261009-0325 graceful quit and worker scaling](20261009-0325_graceful-quit-and-worker-scaling/00_implementation-plan.md)

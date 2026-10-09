@@ -43,6 +43,7 @@ from .optimizer import (
     run_online_optimization,
 )
 from .partial_safety import apply_cleanup, cleanup_preview, plan_cleanup
+from .repair import resolve_nhentai_metadata
 from .partial_reconcile import reconstruct_archive_keys, resolve_owner_urls
 from .partial_ui import select_partial_owners
 from .scratch import partial_root_for
@@ -167,9 +168,12 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     audit = subparsers.add_parser(
         "audit",
         aliases=("audit-destinations",),
-        help="Find URL-list items absent from all destination roots.",
+        help="Audit URL-list items against destination roots (read-only).",
     )
-    audit.add_argument("-i", "--input-file", action="append", required=True, help="URL file or glob; repeatable.")
+    audit.add_argument(
+        "-i", "--input-file", "-u", "--url-file", dest="input_file", action="append", required=True,
+        help="URL file or glob; repeatable (-u/--url-file is an audit-only alias).",
+    )
     audit.add_argument(
         "-d",
         "--destination",
@@ -182,14 +186,12 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
         "-o",
         "--missing-output",
         type=_path,
-        required=True,
         help="Write URLs not found in any destination here.",
     )
     audit.add_argument(
         "-p",
         "--duplicates-output",
         type=_path,
-        required=True,
         help="Write duplicate folder locations as JSON here.",
     )
     audit.add_argument("-j", "--json", action="store_true", help="Emit the audit summary as JSON.")
@@ -1039,16 +1041,37 @@ def _audit_destinations(args: argparse.Namespace) -> int:
     inputs, rejected = collect_inputs(files, [])
     if progress:
         progress(f"Loaded {len(inputs)} unique URL(s); {len(rejected)} rejected/duplicate line(s)")
-    audit = audit_destinations(inputs, args.destination, progress)
+    audit = audit_destinations(inputs, args.destination, progress, metadata_resolver=resolve_nhentai_metadata)
     write_audit_outputs(audit, args.missing_output, args.duplicates_output)
+    item_results = []
+    for item in inputs:
+        folders = audit.resolved.get(item.canonical_url, [])
+        detail = audit.details[item.canonical_url]
+        item_results.append(
+            {
+                "url": item.url,
+                "canonical_url": item.canonical_url,
+                "source": item.source,
+                "line": item.line,
+                "status": detail["folder_status"],
+                "folders": [str(path) for path in folders],
+                **detail,
+                "reason": detail.get("metadata_error"),
+            }
+        )
     payload = {
         "input_urls": len(inputs),
         "rejected": rejected,
         "resolved": len(audit.resolved),
         "unresolved": len(audit.unresolved),
         "duplicates": len(audit.duplicates),
-        "missing_output": str(args.missing_output),
-        "duplicates_output": str(args.duplicates_output),
+        "complete": sum(item["completeness"] == "complete" for item in item_results),
+        "incomplete": sum(item["completeness"] == "incomplete" for item in item_results),
+        "unknown": sum(item["completeness"] == "unknown" for item in item_results),
+        "corrupt": sum(bool(item["corrupt_pages"]) for item in item_results),
+        "items": item_results,
+        "missing_output": str(args.missing_output) if args.missing_output else None,
+        "duplicates_output": str(args.duplicates_output) if args.duplicates_output else None,
     }
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -1056,9 +1079,12 @@ def _audit_destinations(args: argparse.Namespace) -> int:
         print(
             f"Audited {payload['input_urls']} URL(s): {payload['resolved']} found, "
             f"{payload['unresolved']} missing, {payload['duplicates']} duplicate folder group(s)."
+            f" Images: {payload['complete']} complete, {payload['incomplete']} incomplete, "
+            f"{payload['unknown']} unknown; {payload['corrupt']} with corrupt pages."
         )
-    if progress:
+    if progress and args.missing_output:
         progress(f"Wrote missing URLs: {args.missing_output}")
+    if progress and args.duplicates_output:
         progress(f"Wrote duplicate folders: {args.duplicates_output}")
     return 0
 

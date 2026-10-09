@@ -22,6 +22,83 @@ class DestinationAudit:
     resolved: dict[str, list[Path]]
     unresolved: list[InputUrl]
     duplicates: dict[str, list[Path]]
+    details: dict[str, dict[str, Any]]
+
+
+_PAGE_FILE = re.compile(r"^(?P<page>\d+)\.[^.]+$", re.IGNORECASE)
+
+
+def _validate_image(path: Path) -> bool:
+    """Decode image structure without loading pixel data into memory."""
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        with Image.open(path) as image:
+            image.verify()
+        return True
+    except (OSError, ValueError, UnidentifiedImageError, Image.DecompressionBombError):
+        return False
+
+
+def _inspect_pages(
+    folder: Path,
+    expected_count: int | None,
+    *,
+    image_validator: Callable[[Path], bool],
+) -> dict[str, Any]:
+    pages: dict[int, list[Path]] = defaultdict(list)
+    for path in folder.iterdir():
+        if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES and (match := _PAGE_FILE.fullmatch(path.name)):
+            pages[int(match.group("page"))].append(path)
+
+    valid_pages: set[int] = set()
+    corrupt_pages: set[int] = set()
+    for page, paths in pages.items():
+        for path in paths:
+            try:
+                valid = path.stat().st_size > 0 and image_validator(path)
+            except OSError:
+                valid = False
+            if valid:
+                valid_pages.add(page)
+            else:
+                corrupt_pages.add(page)
+
+    duplicate_pages = {page for page, paths in pages.items() if len(paths) > 1}
+    if expected_count is not None:
+        expected_pages = set(range(1, expected_count + 1))
+        missing_pages = expected_pages - valid_pages
+        extra_pages = valid_pages - expected_pages
+    elif valid_pages:
+        # A numbered sequence beginning after page 1 proves a leading gap even
+        # when source metadata could not be resolved. Its end remains unknown.
+        observed_max = max(valid_pages)
+        missing_pages = set(range(1, observed_max + 1)) - valid_pages
+        extra_pages = set()
+    else:
+        missing_pages = set()
+        extra_pages = set()
+
+    issue_pages = missing_pages | corrupt_pages | duplicate_pages
+    if issue_pages or extra_pages:
+        completeness = "incomplete"
+    elif expected_count is None:
+        completeness = "unknown"
+    else:
+        completeness = "complete"
+    integrity = "issues" if corrupt_pages or duplicate_pages else "valid" if pages else "unverified"
+    return {
+        "completeness": completeness,
+        "image_integrity": integrity,
+        "expected_images": expected_count,
+        "present_images": len(pages),
+        "valid_images": len(valid_pages),
+        "missing_pages": sorted(missing_pages),
+        "corrupt_pages": sorted(corrupt_pages),
+        "duplicate_pages": sorted(duplicate_pages),
+        "extra_pages": sorted(extra_pages),
+        "repair_eligible": False,
+    }
 
 
 def _has_images(folder: Path) -> bool:
@@ -73,7 +150,12 @@ def _manhwa_slug(url: str) -> str | None:
 
 
 def audit_destinations(
-    inputs: list[InputUrl], destinations: list[Path], progress: Callable[[str], None] | None = None
+    inputs: list[InputUrl],
+    destinations: list[Path],
+    progress: Callable[[str], None] | None = None,
+    *,
+    metadata_resolver: Callable[[str], Any] | None = None,
+    image_validator: Callable[[Path], bool] = _validate_image,
 ) -> DestinationAudit:
     """Match known URL identities to populated top-level gallery folders.
 
@@ -82,6 +164,7 @@ def audit_destinations(
     """
     metadata_urls: dict[str, list[Path]] = defaultdict(list)
     folders_by_name: dict[str, list[Path]] = defaultdict(list)
+    candidate_folders_by_name: dict[str, list[Path]] = defaultdict(list)
     for index, destination in enumerate(destinations, start=1):
         if not destination.is_dir():
             if progress:
@@ -95,10 +178,13 @@ def audit_destinations(
                 progress(
                     f"[{index}/{len(destinations)}] Checked {folder_number} top-level folders in {destination.name}"
                 )
-            if not folder.is_dir() or folder.name == "_partial" or not _has_images(folder):
+            if not folder.is_dir() or folder.name == "_partial":
                 continue
-            indexed += 1
-            folders_by_name[folder.name.casefold()].append(folder)
+            candidate_folders_by_name[folder.name.casefold()].append(folder)
+            populated = _has_images(folder)
+            if populated:
+                indexed += 1
+                folders_by_name[folder.name.casefold()].append(folder)
             for url in _folder_url_values(folder):
                 metadata_urls[url].append(folder)
         if progress:
@@ -111,7 +197,10 @@ def audit_destinations(
         if nhentai:
             identity = re.compile(rf"(?:^|-){re.escape(nhentai.group(1))}(?:\s+-|$)")
             matches.extend(
-                folder for paths in folders_by_name.values() for folder in paths if identity.search(folder.name)
+                folder
+                for paths in candidate_folders_by_name.values()
+                for folder in paths
+                if identity.search(folder.name)
             )
         slug = _manhwa_slug(item.canonical_url)
         if slug:
@@ -123,25 +212,63 @@ def audit_destinations(
 
     unresolved = [item for item in inputs if item.canonical_url not in resolved]
     duplicates = {name: sorted(paths) for name, paths in folders_by_name.items() if len(paths) > 1}
+
+    details: dict[str, dict[str, Any]] = {}
+    for index, item in enumerate(inputs, start=1):
+        matches = resolved.get(item.canonical_url, [])
+        base: dict[str, Any] = {
+            "folder_status": "missing" if not matches else "ambiguous" if len(matches) > 1 else "matched",
+            "completeness": "unknown",
+            "image_integrity": "unverified",
+            "expected_images": None,
+            "present_images": 0,
+            "valid_images": 0,
+            "missing_pages": [],
+            "corrupt_pages": [],
+            "duplicate_pages": [],
+            "extra_pages": [],
+            "repair_eligible": False,
+            "metadata_error": None,
+        }
+        if len(matches) == 1:
+            expected_count: int | None = None
+            nhentai = _NHENTAI.fullmatch(item.canonical_url)
+            if nhentai and metadata_resolver is not None:
+                try:
+                    if progress:
+                        progress(f"[{index}/{len(inputs)}] Resolving expected page count for nhentai {nhentai.group(1)}")
+                    metadata = metadata_resolver(nhentai.group(1))
+                    expected_count = int(metadata.page_count)
+                except Exception as exc:
+                    base["metadata_error"] = type(exc).__name__
+            base.update(_inspect_pages(matches[0], expected_count, image_validator=image_validator))
+        elif len(matches) > 1:
+            base["completeness"] = "unknown"
+            base["metadata_error"] = "ambiguous destination match"
+        details[item.canonical_url] = base
     if progress:
         progress(
             f"Matching complete: {len(resolved)} found, {len(unresolved)} missing, {len(duplicates)} duplicate group(s)"
         )
-    return DestinationAudit(resolved=resolved, unresolved=unresolved, duplicates=duplicates)
+    return DestinationAudit(resolved=resolved, unresolved=unresolved, duplicates=duplicates, details=details)
 
 
-def write_audit_outputs(audit: DestinationAudit, missing_output: Path, duplicates_output: Path) -> None:
-    missing_output.parent.mkdir(parents=True, exist_ok=True)
-    missing_output.write_text("".join(f"{item.url}\n" for item in audit.unresolved), encoding="utf-8")
-    duplicates_output.parent.mkdir(parents=True, exist_ok=True)
-    duplicates_output.write_text(
-        json.dumps(
-            [
-                {"folder_name": name, "locations": [str(path) for path in paths]}
-                for name, paths in audit.duplicates.items()
-            ],
-            indent=2,
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
+def write_audit_outputs(
+    audit: DestinationAudit, missing_output: Path | None = None, duplicates_output: Path | None = None
+) -> None:
+    if missing_output is not None:
+        missing_output.parent.mkdir(parents=True, exist_ok=True)
+        missing_output.write_text("".join(f"{item.url}\n" for item in audit.unresolved), encoding="utf-8")
+    if duplicates_output is not None:
+        duplicates_output.parent.mkdir(parents=True, exist_ok=True)
+        duplicates_output.write_text(
+            json.dumps(
+                [
+                    {"folder_name": name, "locations": [str(path) for path in paths]}
+                    for name, paths in audit.duplicates.items()
+                ],
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
