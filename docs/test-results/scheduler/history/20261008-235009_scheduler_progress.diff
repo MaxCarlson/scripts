@@ -1,0 +1,21 @@
+diff --git "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\scheduler\\history\\20261008-234859_scheduler_context.md" "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\scheduler\\LATEST_CONTEXT.md"
+index 73594dc..bb3e6ad 100644
+--- "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\scheduler\\history\\20261008-234859_scheduler_context.md"
++++ "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\scheduler\\LATEST_CONTEXT.md"
+@@ -1,6 +1,6 @@
+ # Validation Context: scheduler
+ 
+-Generated: 2026-10-08T23:49:06.2010874-07:00
++Generated: 2026-10-08T23:50:15.8472175-07:00
+ Branch: main
+ Commit: 798fc01a0dc6e01774b246887395352e79d7637a
+ Validation report: docs\test-results\scheduler\LATEST.txt
+@@ -9,7 +9,7 @@ Validation report: docs\test-results\scheduler\LATEST.txt
+ 
+ - RESULT: PASS - Compile scheduler package and tests
+ - RESULT: PASS - Scheduler CLI help contract
+-- [32m============================= [32m[1m84 passed[0m[32m in 3.10s[0m[32m ==============================[0m
++- [32m============================= [32m[1m85 passed[0m[32m in 3.15s[0m[32m ==============================[0m
+ - RESULT: PASS - Scheduler pytest suite
+ - RESULT: PASS - PowerShell test: tests\powershell\windows_runner_test.ps1
+ - TARGET RESULT: PASS

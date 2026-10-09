@@ -1,0 +1,146 @@
+
+
+====================================================================================================
+VALIDATION TARGET: scheduler
+====================================================================================================
+Timestamp: 2026-10-08T23:33:13.8043326-07:00
+Description: Scheduler setup gate, CLI, TUI, Windows runner, storage, timing, execution, and logging validation.
+Repository root: C:\Users\mcarls\src\scripts
+Working directory: C:\Users\mcarls\src\scripts\modules\scheduler
+Python: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe
+PowerShell: 7.6.1
+Platform: Microsoft Windows 10.0.26300
+Bootstrap enabled: False
+Production read-only checks: False
+History retention: 3 prior runs, maximum age 14 days
+Git branch: main
+Git commit: 798fc01a0dc6e01774b246887395352e79d7637a
+Git status before validation:
+ M modules/scheduler/README.md
+ M modules/scheduler/docs/HANDOFF.md
+ M modules/scheduler/docs/README.md
+ M modules/scheduler/docs/plans/HANDOFF.md
+ M modules/scheduler/pyproject.toml
+ M modules/scheduler/scheduler/__init__.py
+ M modules/scheduler/scheduler/cli.py
+ M modules/scheduler/scheduler/executor.py
+ M modules/scheduler/scheduler/tui.py
+ M modules/scheduler/tests/test_cli.py
+ M modules/scheduler/tests/test_executor.py
+ M modules/scheduler/tests/test_tui.py
+ M modules/scripts_help/scripts_help/registry/registry.py
+ M validation-targets.json
+?? docs/test-results/scheduler/
+?? modules/scheduler/docs/plans/20261008-2132_windows-runner-and-elevation/
+?? modules/scheduler/scheduler/readiness.py
+?? modules/scheduler/scheduler/windows_task.py
+?? modules/scheduler/tests/powershell/
+?? modules/scheduler/tests/test_readiness.py
+?? modules/scheduler/tests/test_windows_task.py
+
+====================================================================================================
+Compile scheduler package and tests
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\scheduler
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m compileall -q scheduler tests
+RESULT: PASS - Compile scheduler package and tests
+
+====================================================================================================
+Scheduler CLI help contract
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\scheduler
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m scheduler.cli --help
+usage: scheduler [-h] [-c CONFIG_FILE] [-v] [-q]
+                 {schedule,task,run,daemon,setup,logs,config,tui} ...
+
+A robust Python scheduling and task execution module.
+
+positional arguments:
+  {schedule,task,run,daemon,setup,logs,config,tui}
+    schedule            Manage timing schedules.
+    task                Manage automation tasks.
+    run                 Execute tasks or schedules on demand.
+    daemon              Run background scheduler service or single evaluation.
+    setup               Install or manage operating-system scheduler
+                        integration.
+    logs                Inspect system or task execution logs.
+    config              View or modify executable paths and settings.
+    tui                 Launch the interactive Terminal User Interface (TUI).
+
+options:
+  -h, --help            show this help message and exit
+  -c CONFIG_FILE, --config-file CONFIG_FILE
+                        Path to persistent JSON data file (defaults to
+                        scheduler_data.json in module directory).
+  -v, --verbose         Enable verbose output.
+  -q, --quiet           Suppress non-error output.
+RESULT: PASS - Scheduler CLI help contract
+
+====================================================================================================
+Scheduler pytest suite
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\scheduler
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest tests -q --basetemp C:\Users\mcarls\src\scripts\modules\scheduler\.pytest_tmp_root\validation-20261008-233313
+[1m============================= test session starts =============================[0m
+platform win32 -- Python 3.12.10, pytest-9.0.3, pluggy-1.6.0
+rootdir: C:\Users\mcarls\src\scripts\modules\scheduler
+configfile: pyproject.toml
+plugins: anyio-4.12.1, libtmux-0.47.0, asyncio-1.3.0, cov-7.0.0, mock-3.15.1
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 74 items
+
+tests\test_cli.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m                                         [ 18%][0m
+tests\test_config.py [32m.[0m[32m.[0m[32m                                                  [ 21%][0m
+tests\test_executor.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m                                            [ 29%][0m
+tests\test_logger.py [32m.[0m[32m.[0m[32m                                                  [ 32%][0m
+tests\test_models.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m                                                [ 37%][0m
+tests\test_notifier.py [32m.[0m[32m.[0m[32m.[0m[32m                                               [ 41%][0m
+tests\test_readiness.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m                                             [ 47%][0m
+tests\test_service.py [32m.[0m[32m.[0m[32m.[0m[32m                                                [ 51%][0m
+tests\test_storage.py [32m.[0m[32m.[0m[32m.[0m[32m                                                [ 55%][0m
+tests\test_timing.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m                                           [ 67%][0m
+tests\test_tui.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m                                        [ 87%][0m
+tests\test_windows_task.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m                                     [100%][0m
+
+[32m============================= [32m[1m74 passed[0m[32m in 2.83s[0m[32m ==============================[0m
+RESULT: PASS - Scheduler pytest suite
+
+====================================================================================================
+PowerShell test: tests\powershell\windows_runner_test.ps1
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\scheduler
+Command: pwsh -NoLogo -NoProfile -File C:\Users\mcarls\src\scripts\modules\scheduler\tests\powershell\windows_runner_test.ps1 -RepoRoot C:\Users\mcarls\src\scripts -PythonExecutable C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -IncludeProductionReadOnly:False
+Generated Windows runner registration script parses and has the expected principal and trigger.
+RESULT: PASS - PowerShell test: tests\powershell\windows_runner_test.ps1
+
+====================================================================================================
+TARGET SUMMARY
+====================================================================================================
+Latest report: C:\Users\mcarls\src\scripts\docs\test-results\scheduler\LATEST.txt
+Context snapshot: C:\Users\mcarls\src\scripts\docs\test-results\scheduler\LATEST_CONTEXT.md
+Progress diff: C:\Users\mcarls\src\scripts\docs\test-results\scheduler\LATEST_PROGRESS.diff
+TARGET RESULT: PASS
+All requested validation sections passed.
+
+Git status after validation:
+ M modules/scheduler/README.md
+ M modules/scheduler/docs/HANDOFF.md
+ M modules/scheduler/docs/README.md
+ M modules/scheduler/docs/plans/HANDOFF.md
+ M modules/scheduler/pyproject.toml
+ M modules/scheduler/scheduler/__init__.py
+ M modules/scheduler/scheduler/cli.py
+ M modules/scheduler/scheduler/executor.py
+ M modules/scheduler/scheduler/tui.py
+ M modules/scheduler/tests/test_cli.py
+ M modules/scheduler/tests/test_executor.py
+ M modules/scheduler/tests/test_tui.py
+ M modules/scripts_help/scripts_help/registry/registry.py
+ M validation-targets.json
+?? docs/test-results/scheduler/
+?? modules/scheduler/docs/plans/20261008-2132_windows-runner-and-elevation/
+?? modules/scheduler/scheduler/readiness.py
+?? modules/scheduler/scheduler/windows_task.py
+?? modules/scheduler/tests/powershell/
+?? modules/scheduler/tests/test_readiness.py
+?? modules/scheduler/tests/test_windows_task.py

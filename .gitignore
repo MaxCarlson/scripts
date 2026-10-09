@@ -228,3 +228,4 @@ bin/
 
 # Scheduler Stuff
 modules/scheduler/scheduler_data.json
+modules/scheduler/scheduler_history.sqlite3
