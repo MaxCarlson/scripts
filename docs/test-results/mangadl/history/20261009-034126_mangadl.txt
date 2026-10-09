@@ -1,0 +1,278 @@
+
+
+====================================================================================================
+VALIDATION TARGET: mangadl
+====================================================================================================
+Timestamp: 2026-10-09T03:41:26.2840836-07:00
+Description: Mangadl guarded collection routing, resumable partial ownership, cleanup, and dashboard validation.
+Repository root: C:\Users\mcarls\src\scripts
+Working directory: C:\Users\mcarls\src\scripts\modules\mangadl
+Python: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe
+PowerShell: 7.6.1
+Platform: Microsoft Windows 10.0.26300
+Bootstrap enabled: False
+Production read-only checks: False
+History retention: 3 prior runs, maximum age 14 days
+Git branch: main
+Git commit: c67a45c6779d7631a27719a4f60dbc2ec3013ef5
+Git status before validation:
+ M modules/cross_platform/README.md
+ M modules/cross_platform/__init__.py
+ M modules/cross_platform/pyproject.toml
+ M modules/mangadl/README.md
+ M modules/mangadl/__init__.py
+ M modules/mangadl/docs/HANDOFF.md
+ M modules/mangadl/docs/README.md
+ M modules/mangadl/docs/plans/HANDOFF.md
+ M modules/mangadl/mangadl/__init__.py
+ M modules/mangadl/mangadl/cli_core.py
+ M modules/mangadl/mangadl/cli_structure.py
+ M modules/mangadl/mangadl/concurrency.py
+ M modules/mangadl/mangadl/manager.py
+ M modules/mangadl/mangadl/partial_safety.py
+ M modules/mangadl/mangadl/ui.py
+ M modules/mangadl/pyproject.toml
+ M modules/mangadl/tests/cli_structure_test.py
+ M modules/mangadl/tests/cli_test.py
+ M modules/mangadl/tests/concurrency_test.py
+ M modules/mangadl/tests/manager_integration_test.py
+ M modules/mangadl/tests/ui_test.py
+ M modules/scripts_help/scripts_help/registry/registry.py
+ M validation-targets.json
+?? docs/test-results/cross-platform/
+?? docs/test-results/scheduler/
+?? modules/cross_platform/docs/
+?? modules/cross_platform/storage.py
+?? modules/cross_platform/tests/storage_test.py
+?? modules/mangadl/docs/plans/20261009-0325_graceful-quit-and-worker-scaling/
+?? modules/scheduler/scheduler_history.sqlite3
+
+====================================================================================================
+Compile mangadl package and tests
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\mangadl
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m compileall -q mangadl tests
+RESULT: PASS - Compile mangadl package and tests
+
+====================================================================================================
+Lint mangadl package and tests
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\mangadl
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m ruff check mangadl tests
+F401 [*] `json` imported but unused
+ --> mangadl\favorites.py:4:8
+  |
+3 | import http.cookiejar
+4 | import json
+  |        ^^^^
+5 | import time
+6 | from dataclasses import asdict, dataclass
+  |
+help: Remove unused import: `json`
+
+Found 1 error.
+[*] 1 fixable with the `--fix` option.
+RESULT: FAIL - Lint mangadl package and tests
+ERROR: Command returned exit code 1.
+
+====================================================================================================
+Mangadl CLI help contract
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\mangadl
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m mangadl --help
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "C:\Users\mcarls\src\scripts\modules\mangadl\mangadl\__main__.py", line 1, in <module>
+    from .cli import main
+  File "C:\Users\mcarls\src\scripts\modules\mangadl\mangadl\cli.py", line 10, in <module>
+    from . import cli_core as _core
+  File "C:\Users\mcarls\src\scripts\modules\mangadl\mangadl\cli_core.py", line 13, in <module>
+    from cross_platform import StorageMediaKind, storage_media_for_path
+ModuleNotFoundError: No module named 'cross_platform'
+RESULT: FAIL - Mangadl CLI help contract
+ERROR: Command returned exit code 1.
+
+====================================================================================================
+Mangadl pytest suite
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\mangadl
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest tests -q --strict-config --strict-markers --basetemp C:\Users\mcarls\src\scripts\modules\mangadl\.pytest_tmp_root\validation-20261009-034123
+
+=================================== ERRORS ====================================
+[31m[1m__________________ ERROR collecting tests/cli_covers_test.py __________________[0m
+[31mImportError while importing test module 'C:\Users\mcarls\src\scripts\modules\mangadl\tests\cli_covers_test.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+[1m[31m..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\importlib\__init__.py[0m:90: in import_module
+    [0m[94mreturn[39;49;00m _bootstrap._gcd_import(name[level:], package, level)[90m[39;49;00m
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31mtests\cli_covers_test.py[0m:3: in <module>
+    [0m[94mfrom[39;49;00m[90m [39;49;00m[04m[96mmangadl[39;49;00m[04m[96m.[39;49;00m[04m[96mcli[39;49;00m[90m [39;49;00m[94mimport[39;49;00m build_parser[90m[39;49;00m
+[1m[31mmangadl\cli.py[0m:10: in <module>
+    [0m[94mfrom[39;49;00m[90m [39;49;00m[04m[96m.[39;49;00m[90m [39;49;00m[94mimport[39;49;00m cli_core [94mas[39;49;00m _core[90m[39;49;00m
+[1m[31mmangadl\cli_core.py[0m:13: in <module>
+    [0m[94mfrom[39;49;00m[90m [39;49;00m[04m[96mcross_platform[39;49;00m[90m [39;49;00m[94mimport[39;49;00m StorageMediaKind, storage_media_for_path[90m[39;49;00m
+[1m[31mE   ModuleNotFoundError: No module named 'cross_platform'[0m[0m
+[31m[1m________________ ERROR collecting tests/cli_structure_test.py _________________[0m
+[31mImportError while importing test module 'C:\Users\mcarls\src\scripts\modules\mangadl\tests\cli_structure_test.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+[1m[31m..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\importlib\__init__.py[0m:90: in import_module
+    [0m[94mreturn[39;49;00m _bootstrap._gcd_import(name[level:], package, level)[90m[39;49;00m
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31mtests\cli_structure_test.py[0m:5: in <module>
+    [0m[94mfrom[39;49;00m[90m [39;49;00m[04m[96mmangadl[39;49;00m[04m[96m.[39;49;00m[04m[96mcli[39;49;00m[90m [39;49;00m[94mimport[39;49;00m build_parser[90m[39;49;00m
+[1m[31mmangadl\cli.py[0m:10: in <module>
+    [0m[94mfrom[39;49;00m[90m [39;49;00m[04m[96m.[39;49;00m[90m [39;49;00m[94mimport[39;49;00m cli_core [94mas[39;49;00m _core[90m[39;49;00m
+[1m[31mmangadl\cli_core.py[0m:13: in <module>
+    [0m[94mfrom[39;49;00m[90m [39;49;00m[04m[96mcross_platform[39;49;00m[90m [39;49;00m[94mimport[39;49;00m StorageMediaKind, storage_media_for_path[90m[39;49;00m
+[1m[31mE   ModuleNotFoundError: No module named 'cross_platform'[0m[0m
+[31m[1m_____________________ ERROR collecting tests/cli_test.py ______________________[0m
+[31mImportError while importing test module 'C:\Users\mcarls\src\scripts\modules\mangadl\tests\cli_test.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+[1m[31m..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\importlib\__init__.py[0m:90: in import_module
+    [0m[94mreturn[39;49;00m _bootstrap._gcd_import(name[level:], package, level)[90m[39;49;00m
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31mtests\cli_test.py[0m:9: in <module>
+    [0m[94mfrom[39;49;00m[90m [39;49;00m[04m[96mcross_platform[39;49;00m[90m [39;49;00m[94mimport[39;49;00m StorageMedia, StorageMediaKind[90m[39;49;00m
+[1m[31mE   ModuleNotFoundError: No module named 'cross_platform'[0m[0m
+[31m[1m______________ ERROR collecting tests/destination_audit_test.py _______________[0m
+[31mImportError while importing test module 'C:\Users\mcarls\src\scripts\modules\mangadl\tests\destination_audit_test.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+[1m[31m..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\importlib\__init__.py[0m:90: in import_module
+    [0m[94mreturn[39;49;00m _bootstrap._gcd_import(name[level:], package, level)[90m[39;49;00m
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31mtests\destination_audit_test.py[0m:4: in <module>
+    [0m[94mfrom[39;49;00m[90m [39;49;00m[04m[96mmangadl[39;49;00m[04m[96m.[39;49;00m[04m[96mcli[39;49;00m[90m [39;49;00m[94mimport[39;49;00m main[90m[39;49;00m
+[1m[31mmangadl\cli.py[0m:10: in <module>
+    [0m[94mfrom[39;49;00m[90m [39;49;00m[04m[96m.[39;49;00m[90m [39;49;00m[94mimport[39;49;00m cli_core [94mas[39;49;00m _core[90m[39;49;00m
+[1m[31mmangadl\cli_core.py[0m:13: in <module>
+    [0m[94mfrom[39;49;00m[90m [39;49;00m[04m[96mcross_platform[39;49;00m[90m [39;49;00m[94mimport[39;49;00m StorageMediaKind, storage_media_for_path[90m[39;49;00m
+[1m[31mE   ModuleNotFoundError: No module named 'cross_platform'[0m[0m
+[31m[1m__________________ ERROR collecting tests/favorites_test.py ___________________[0m
+[31mImportError while importing test module 'C:\Users\mcarls\src\scripts\modules\mangadl\tests\favorites_test.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+[1m[31m..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\importlib\__init__.py[0m:90: in import_module
+    [0m[94mreturn[39;49;00m _bootstrap._gcd_import(name[level:], package, level)[90m[39;49;00m
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31mtests\favorites_test.py[0m:8: in <module>
+    [0m[94mfrom[39;49;00m[90m [39;49;00m[04m[96mmangadl[39;49;00m[04m[96m.[39;49;00m[04m[96mcli[39;49;00m[90m [39;49;00m[94mimport[39;49;00m main[90m[39;49;00m
+[1m[31mmangadl\cli.py[0m:10: in <module>
+    [0m[94mfrom[39;49;00m[90m [39;49;00m[04m[96m.[39;49;00m[90m [39;49;00m[94mimport[39;49;00m cli_core [94mas[39;49;00m _core[90m[39;49;00m
+[1m[31mmangadl\cli_core.py[0m:13: in <module>
+    [0m[94mfrom[39;49;00m[90m [39;49;00m[04m[96mcross_platform[39;49;00m[90m [39;49;00m[94mimport[39;49;00m StorageMediaKind, storage_media_for_path[90m[39;49;00m
+[1m[31mE   ModuleNotFoundError: No module named 'cross_platform'[0m[0m
+[31m[1m________________ ERROR collecting tests/image_workers_test.py _________________[0m
+[31mImportError while importing test module 'C:\Users\mcarls\src\scripts\modules\mangadl\tests\image_workers_test.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+[1m[31m..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\importlib\__init__.py[0m:90: in import_module
+    [0m[94mreturn[39;49;00m _bootstrap._gcd_import(name[level:], package, level)[90m[39;49;00m
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31mtests\image_workers_test.py[0m:11: in <module>
+    [0m[94mfrom[39;49;00m[90m [39;49;00m[04m[96mmangadl[39;49;00m[04m[96m.[39;49;00m[04m[96mcli[39;49;00m[90m [39;49;00m[94mimport[39;49;00m MANGA18FX_IMAGE_WORKERS_ENV, build_parser, main[90m[39;49;00m
+[1m[31mmangadl\cli.py[0m:10: in <module>
+    [0m[94mfrom[39;49;00m[90m [39;49;00m[04m[96m.[39;49;00m[90m [39;49;00m[94mimport[39;49;00m cli_core [94mas[39;49;00m _core[90m[39;49;00m
+[1m[31mmangadl\cli_core.py[0m:13: in <module>
+    [0m[94mfrom[39;49;00m[90m [39;49;00m[04m[96mcross_platform[39;49;00m[90m [39;49;00m[94mimport[39;49;00m StorageMediaKind, storage_media_for_path[90m[39;49;00m
+[1m[31mE   ModuleNotFoundError: No module named 'cross_platform'[0m[0m
+[31m[1m_______________ ERROR collecting tests/scratch_controls_test.py _______________[0m
+[31mImportError while importing test module 'C:\Users\mcarls\src\scripts\modules\mangadl\tests\scratch_controls_test.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+[1m[31m..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\importlib\__init__.py[0m:90: in import_module
+    [0m[94mreturn[39;49;00m _bootstrap._gcd_import(name[level:], package, level)[90m[39;49;00m
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31mtests\scratch_controls_test.py[0m:11: in <module>
+    [0m[94mfrom[39;49;00m[90m [39;49;00m[04m[96mmangadl[39;49;00m[04m[96m.[39;49;00m[04m[96mcli[39;49;00m[90m [39;49;00m[94mimport[39;49;00m main[90m[39;49;00m
+[1m[31mmangadl\cli.py[0m:10: in <module>
+    [0m[94mfrom[39;49;00m[90m [39;49;00m[04m[96m.[39;49;00m[90m [39;49;00m[94mimport[39;49;00m cli_core [94mas[39;49;00m _core[90m[39;49;00m
+[1m[31mmangadl\cli_core.py[0m:13: in <module>
+    [0m[94mfrom[39;49;00m[90m [39;49;00m[04m[96mcross_platform[39;49;00m[90m [39;49;00m[94mimport[39;49;00m StorageMediaKind, storage_media_for_path[90m[39;49;00m
+[1m[31mE   ModuleNotFoundError: No module named 'cross_platform'[0m[0m
+[31m[1m___________________ ERROR collecting tests/scratch_test.py ____________________[0m
+[31mImportError while importing test module 'C:\Users\mcarls\src\scripts\modules\mangadl\tests\scratch_test.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+[1m[31m..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\importlib\__init__.py[0m:90: in import_module
+    [0m[94mreturn[39;49;00m _bootstrap._gcd_import(name[level:], package, level)[90m[39;49;00m
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[90m[39;49;00m
+[1m[31mtests\scratch_test.py[0m:10: in <module>
+    [0m[94mfrom[39;49;00m[90m [39;49;00m[04m[96mmangadl[39;49;00m[04m[96m.[39;49;00m[04m[96mcli[39;49;00m[90m [39;49;00m[94mimport[39;49;00m main[90m[39;49;00m
+[1m[31mmangadl\cli.py[0m:10: in <module>
+    [0m[94mfrom[39;49;00m[90m [39;49;00m[04m[96m.[39;49;00m[90m [39;49;00m[94mimport[39;49;00m cli_core [94mas[39;49;00m _core[90m[39;49;00m
+[1m[31mmangadl\cli_core.py[0m:13: in <module>
+    [0m[94mfrom[39;49;00m[90m [39;49;00m[04m[96mcross_platform[39;49;00m[90m [39;49;00m[94mimport[39;49;00m StorageMediaKind, storage_media_for_path[90m[39;49;00m
+[1m[31mE   ModuleNotFoundError: No module named 'cross_platform'[0m[0m
+[36m[1m=========================== short test summary info ===========================[0m
+[31mERROR[0m tests/cli_covers_test.py
+[31mERROR[0m tests/cli_structure_test.py
+[31mERROR[0m tests/cli_test.py
+[31mERROR[0m tests/destination_audit_test.py
+[31mERROR[0m tests/favorites_test.py
+[31mERROR[0m tests/image_workers_test.py
+[31mERROR[0m tests/scratch_controls_test.py
+[31mERROR[0m tests/scratch_test.py
+!!!!!!!!!!!!!!!!!!! Interrupted: 8 errors during collection !!!!!!!!!!!!!!!!!!!
+RESULT: FAIL - Mangadl pytest suite
+ERROR: Command returned exit code 2.
+
+====================================================================================================
+TARGET SUMMARY
+====================================================================================================
+Latest report: C:\Users\mcarls\src\scripts\docs\test-results\mangadl\LATEST.txt
+Context snapshot: C:\Users\mcarls\src\scripts\docs\test-results\mangadl\LATEST_CONTEXT.md
+Progress diff: C:\Users\mcarls\src\scripts\docs\test-results\mangadl\LATEST_PROGRESS.diff
+TARGET RESULT: FAIL
+Failure count: 3
+- Lint mangadl package and tests: Command returned exit code 1.
+- Mangadl CLI help contract: Command returned exit code 1.
+- Mangadl pytest suite: Command returned exit code 2.
+
+Git status after validation:
+ M docs/test-results/mangadl/LATEST.txt
+ D docs/test-results/mangadl/LATEST_CONTEXT.md
+ D docs/test-results/mangadl/LATEST_PROGRESS.diff
+ D docs/test-results/mangadl/history/20260921-100951_mangadl.txt
+ D docs/test-results/mangadl/history/20260921-100951_mangadl_context.md
+ D docs/test-results/mangadl/history/20260921-100951_mangadl_progress.diff
+ D docs/test-results/mangadl/history/20260921-104414_mangadl.txt
+ D docs/test-results/mangadl/history/20260921-104414_mangadl_context.md
+ D docs/test-results/mangadl/history/20260921-104414_mangadl_progress.diff
+ D docs/test-results/mangadl/history/20260921-160434_mangadl.txt
+ D docs/test-results/mangadl/history/20260921-160434_mangadl_context.md
+ D docs/test-results/mangadl/history/20260921-160434_mangadl_progress.diff
+ M modules/cross_platform/README.md
+ M modules/cross_platform/__init__.py
+ M modules/cross_platform/pyproject.toml
+ M modules/mangadl/README.md
+ M modules/mangadl/__init__.py
+ M modules/mangadl/docs/HANDOFF.md
+ M modules/mangadl/docs/README.md
+ M modules/mangadl/docs/plans/HANDOFF.md
+ M modules/mangadl/mangadl/__init__.py
+ M modules/mangadl/mangadl/cli_core.py
+ M modules/mangadl/mangadl/cli_structure.py
+ M modules/mangadl/mangadl/concurrency.py
+ M modules/mangadl/mangadl/manager.py
+ M modules/mangadl/mangadl/partial_safety.py
+ M modules/mangadl/mangadl/ui.py
+ M modules/mangadl/pyproject.toml
+ M modules/mangadl/tests/cli_structure_test.py
+ M modules/mangadl/tests/cli_test.py
+ M modules/mangadl/tests/concurrency_test.py
+ M modules/mangadl/tests/manager_integration_test.py
+ M modules/mangadl/tests/ui_test.py
+ M modules/scripts_help/scripts_help/registry/registry.py
+ M validation-targets.json
+?? docs/test-results/cross-platform/
+?? docs/test-results/scheduler/
+?? modules/cross_platform/docs/
+?? modules/cross_platform/storage.py
+?? modules/cross_platform/tests/storage_test.py
+?? modules/mangadl/docs/plans/20261009-0325_graceful-quit-and-worker-scaling/
+?? modules/scheduler/scheduler_history.sqlite3
