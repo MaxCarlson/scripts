@@ -6,6 +6,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from cross_platform import StorageMedia, StorageMediaKind
 
 from mangadl.backends import GalleryDlBackend
 from mangadl.cli import build_parser, main
@@ -41,7 +42,7 @@ def test_run_parser_defaults_to_safe_worker_ceiling_and_stagger(tmp_path) -> Non
     )
 
     assert args.workers == 2
-    assert args.max_workers == 4
+    assert args.max_workers is None
     assert args.worker_start_delay == 2.0
     assert args.image_workers == 4
     assert args.run_id is None
@@ -392,6 +393,59 @@ def test_explicit_max_workers_override_allows_experimental_bound(
     assert result == 0
     assert payload["requested_workers"] == 5
     assert payload["max_workers"] == 5
+
+
+def test_scratch_defaults_to_hard_worker_ceiling(tmp_path, capsys) -> None:
+    result = main(
+        [
+            "run",
+            "config",
+            "-u",
+            "https://manga18fx.com/manga/example/",
+            "-d",
+            str(tmp_path / "out"),
+            "--scratch",
+            str(tmp_path / "scratch"),
+            "-n",
+            "-J",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert payload["max_workers"] == 8
+    assert payload["storage_media"] == "scratch"
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [(StorageMediaKind.SOLID_STATE, 8), (StorageMediaKind.ROTATIONAL, 4), (StorageMediaKind.UNKNOWN, 4)],
+)
+def test_destination_media_selects_default_worker_ceiling(
+    tmp_path, capsys, monkeypatch: pytest.MonkeyPatch, kind, expected
+) -> None:
+    monkeypatch.setattr(
+        "mangadl.cli_core.storage_media_for_path",
+        lambda path: StorageMedia(kind, str(path), "mocked storage"),
+    )
+
+    result = main(
+        [
+            "run",
+            "config",
+            "-u",
+            "https://manga18fx.com/manga/example/",
+            "-d",
+            str(tmp_path / "out"),
+            "-n",
+            "-J",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert payload["max_workers"] == expected
+    assert payload["storage_media"] == kind.value
 
 
 def test_repair_loose_defaults_to_dry_run_and_supports_explicit_mode(tmp_path, capsys) -> None:

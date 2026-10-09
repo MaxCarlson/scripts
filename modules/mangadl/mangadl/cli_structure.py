@@ -5,8 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal, Sequence
 
-from .concurrency import DEFAULT_MAX_OUTER_WORKERS
-
 RunMode = Literal["normal", "optimize", "benchmark"]
 
 
@@ -116,8 +114,12 @@ def add_run_arguments(
         "-m",
         "--max-workers",
         type=int,
-        default=DEFAULT_MAX_OUTER_WORKERS,
-        help=_help("Outer-worker safety ceiling (default: 4; hard maximum: 8).", expert or mode != "normal"),
+        default=None,
+        help=(
+            "Outer-worker ceiling (default: 8 with scratch/SSD, otherwise 4; hard maximum: 8)."
+            if mode == "normal"
+            else _help("Outer-worker safety ceiling (default: 4; hard maximum: 8).", expert)
+        ),
     )
     parser.add_argument(
         "-U",

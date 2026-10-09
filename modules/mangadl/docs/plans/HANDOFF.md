@@ -1,6 +1,13 @@
 # mangadl Plan Index
 
-Active: [20260926-1224 SSD scratch staging](20260926-1224_ssd-scratch-staging/00_implementation-plan.md)
+Active: [20261009-0325 graceful quit and worker scaling](20261009-0325_graceful-quit-and-worker-scaling/00_implementation-plan.md)
+
+Current stage: Stage 1 implementation and repository validation complete after
+read-only validation of the first real scratch run. Graceful `q`, immediate
+`Ctrl+Q`, worker scaling, and storage-aware defaults are implemented; see the
+active plan for verification and remaining user validation.
+
+Previous: [20260926-1224 SSD scratch staging](20260926-1224_ssd-scratch-staging/00_implementation-plan.md)
 
 Current stage: S2 destination-aware scratch and control staging implemented
 after user feedback; synthetic validation and bounded user manual acceptance

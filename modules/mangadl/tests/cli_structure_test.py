@@ -40,6 +40,7 @@ def test_normal_run_help_hides_expert_options_and_advertises_modes() -> None:
     help_text = _normalized_help(_run_parser(build_parser(["run", "--help"])))
 
     assert "--workers" in help_text
+    assert "--max-workers" in help_text
     assert "--image-workers" in help_text
     assert "run optimize --help" in help_text
     assert "run benchmark --help" in help_text

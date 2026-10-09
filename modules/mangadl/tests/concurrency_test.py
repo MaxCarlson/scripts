@@ -29,6 +29,13 @@ def test_concurrency_plan_preserves_known_working_4_by_5_setting() -> None:
     assert not plan.adjusted
 
 
+def test_fast_storage_defaults_to_hard_outer_worker_limit() -> None:
+    plan = plan_manga18fx_concurrency(8, 2, logical_cpus=24, fast_storage=True)
+
+    assert plan.maximum_workers == 8
+    assert plan.effective_workers == 8
+
+
 def test_explicit_worker_override_still_obeys_cpu_budget() -> None:
     plan = plan_manga18fx_concurrency(
         6,
@@ -69,6 +76,7 @@ def _manager_for_runtime_test(*, maximum_workers: int) -> DownloadManager:
     manager.runtime_notice = ""
     manager.logger = logging.getLogger(f"mangadl.tests.runtime.{maximum_workers}")
     manager.options = SimpleNamespace(worker_start_delay=2.0)
+    manager.stop_requested = False
     return manager
 
 
@@ -98,3 +106,33 @@ def test_runtime_override_still_obeys_aggregate_budget() -> None:
     manager._adjust_runtime("workers_up")
     assert manager.target_workers == 5
     assert "blocked" in manager.runtime_notice
+
+
+def test_runtime_graceful_quit_stops_new_assignments() -> None:
+    manager = _manager_for_runtime_test(maximum_workers=8)
+
+    manager._adjust_runtime("quit_after_current")
+
+    assert manager.stop_requested
+    assert "no new downloads" in manager.runtime_notice
+
+
+def test_retired_active_worker_remains_visible_until_it_finishes() -> None:
+    manager = _manager_for_runtime_test(maximum_workers=8)
+
+    class Process:
+        returncode = None
+
+        def __init__(self) -> None:
+            self.running = True
+
+        def poll(self):
+            return None if self.running else 0
+
+    process = Process()
+    manager.processes[4] = process
+    manager.target_workers = 3
+
+    assert 4 in manager._visible_snapshots()
+    process.running = False
+    assert 4 not in manager._visible_snapshots()

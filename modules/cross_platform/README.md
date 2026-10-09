@@ -1,4 +1,4 @@
-<!-- version: 0.5.0 -->
+<!-- version: 0.6.0 -->
 # cross_platform Module
 
 The `cross_platform` module is a comprehensive collection of Python utilities designed to abstract and standardize interactions with the underlying operating system. Its primary goal is to provide a unified API for common system-level tasks, allowing higher-level scripts to function consistently across different environments like Windows, Linux, macOS, Termux, and WSL2, without needing to implement OS-specific logic for each operation.
@@ -14,6 +14,8 @@ To offer a robust and consistent set of tools for:
 *   Checking and requiring administrative privileges.
 *   Managing system processes and services.
 *   Controlling `tmux` sessions and capturing pane content.
+*   Classifying path storage as solid-state, rotational, or unknown without
+    writing to the device.
 
 ## Key Files and Classes
 
@@ -38,6 +40,11 @@ To offer a robust and consistent set of tools for:
 *   **`process_manager.py` (Class: `ProcessManager`)**: Manages system processes, offering methods to list currently running processes and to terminate specific processes by name.
 
 *   **`service_manager.py` (Class: `ServiceManager`)**: Provides cross-platform capabilities for managing system services, including querying their status, starting them, and stopping them.
+
+*   **`storage.py`**: Provides `storage_media_for_path`, a read-only classifier
+    for Windows, Linux, and macOS storage. Ambiguous, virtual, network, or
+    inaccessible storage is reported as `unknown` so callers can fail
+    conservatively.
 
 *   **`tmux_utils.py` (Class: `TmuxManager`)**: Specializes in `tmux` session management. It allows listing, attaching to, creating, switching between, renaming, and detaching `tmux` sessions. It also includes functionality to fuzzy-find sessions (requiring `fzf`) and capture pane content. Requires `tmux` to be installed.
 

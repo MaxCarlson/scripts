@@ -25,6 +25,7 @@ from .history_utils import HistoryUtils # New Import
 from .tmux_utils import TmuxManager
 from .path_utils import expand_path, to_posix_path, to_native_path
 from .powershell import PowerShellResult, run_powershell, run_powershell_text
+from .storage import StorageMedia, StorageMediaKind, storage_media_for_path
 
 # Debugging and logging utilities
 from . import debug_utils
@@ -53,4 +54,7 @@ __all__ = [
     "PowerShellResult",
     "run_powershell",
     "run_powershell_text",
+    "StorageMedia",
+    "StorageMediaKind",
+    "storage_media_for_path",
 ]

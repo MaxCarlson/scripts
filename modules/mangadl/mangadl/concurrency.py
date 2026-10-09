@@ -36,10 +36,11 @@ class Manga18FXConcurrencyPlan:
         )
 
 
-def configured_maximum_workers(value: int | None = None) -> int:
+def configured_maximum_workers(value: int | None = None, *, fast_storage: bool = False) -> int:
     """Resolve the safe outer-worker ceiling, allowing an explicit override to eight."""
     if value is None:
-        raw = os.environ.get(MAX_OUTER_WORKERS_ENV, str(DEFAULT_MAX_OUTER_WORKERS))
+        default = HARD_MAX_OUTER_WORKERS if fast_storage else DEFAULT_MAX_OUTER_WORKERS
+        raw = os.environ.get(MAX_OUTER_WORKERS_ENV, str(default))
         try:
             value = int(raw)
         except ValueError:
@@ -57,6 +58,7 @@ def plan_manga18fx_concurrency(
     *,
     logical_cpus: int | None = None,
     maximum_workers: int | None = None,
+    fast_storage: bool = False,
 ) -> Manga18FXConcurrencyPlan:
     """Bound outer workers and aggregate Manga18FX concurrency conservatively."""
     if workers < 1:
@@ -64,7 +66,7 @@ def plan_manga18fx_concurrency(
     if image_workers < 1:
         raise ValueError("image_workers must be at least 1")
 
-    maximum = configured_maximum_workers(maximum_workers)
+    maximum = configured_maximum_workers(maximum_workers, fast_storage=fast_storage)
     detected = logical_cpus if logical_cpus is not None else os.cpu_count()
     logical = max(1, int(detected or 1))
     budget = max(1, logical - 1)

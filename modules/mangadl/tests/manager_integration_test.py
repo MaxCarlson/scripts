@@ -64,6 +64,68 @@ def test_manager_runs_fake_worker_to_completion(tmp_path: Path, monkeypatch) -> 
         store.close()
 
 
+def test_graceful_quit_finishes_active_job_and_leaves_next_job_queued(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    run_id = store.create_run({}, "graceful-quit")
+    items = [
+        InputUrl(str(index), f"https://nhentai.net/g/{index}/", "test", index)
+        for index in (1, 2)
+    ]
+    store.add_jobs(run_id, items, {item.canonical_url: "gallery-dl" for item in items})
+    options = RunOptions(
+        run_id=run_id,
+        destination=tmp_path / "downloads",
+        archive=tmp_path / "archive.sqlite3",
+        state_db=tmp_path / "state.sqlite3",
+        log_dir=tmp_path / "logs",
+        workers=1,
+        retries=0,
+        retry_wait=0.01,
+        worker_start_delay=0,
+        ui=False,
+    )
+
+    def fake_command(self, slot, job):
+        base = {
+            "schema": 1,
+            "run_id": run_id,
+            "job_id": job["id"],
+            "attempt_id": job["attempt_id"],
+            "worker": slot,
+            "url": job["canonical_url"],
+            "wall_time": time.time(),
+            "monotonic": time.monotonic(),
+        }
+        ready = {**base, "event": "worker_ready", "data": {"state": "running"}}
+        complete = {
+            **base,
+            "event": "job_complete",
+            "data": {"state": "succeeded", "images_done": 1, "images_total": 1, "bytes_done": 10},
+        }
+        script = (
+            f"import time; print({json.dumps(json.dumps(ready))}, flush=True); "
+            f"time.sleep(0.1); print({json.dumps(json.dumps(complete))}, flush=True)"
+        )
+        return [sys.executable, "-c", script]
+
+    def request_quit_after_start(manager):
+        if manager.processes and not manager.stop_requested:
+            manager._adjust_runtime("quit_after_current")
+
+    monkeypatch.setattr(DownloadManager, "_worker_command", fake_command)
+    monkeypatch.setattr(DownloadManager, "_keyboard", request_quit_after_start)
+    try:
+        assert DownloadManager(options, store).run() == 0
+        jobs = store.jobs(run_id)
+        assert [job["state"] for job in jobs] == ["succeeded", "queued"]
+        summary = json.loads((tmp_path / "logs" / run_id / "summary.json").read_text(encoding="utf-8"))
+        assert summary["status"] == "interrupted"
+    finally:
+        store.close()
+
+
 def test_manager_coordinates_one_background_auth_refresh_for_same_domain_jobs(
     tmp_path: Path, monkeypatch
 ) -> None:

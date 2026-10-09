@@ -1,11 +1,19 @@
 # mangadl Immediate Project Handoff
 
-Active branch: `mangadl-ssd-scratch-20260926-1219`, based on `main`.
+Active branch: `main` (the working tree also contains unrelated scheduler work).
 
-Current version: `mangadl 1.19.0` in the active feature-branch working tree
-(main started this task at 1.18.0).
+Current version: `mangadl 1.20.0`.
 
-Current task: opt-in `-S/--scratch` staging for payloads and active control
+Current task: graceful interactive shutdown and runtime worker scaling cleanup.
+The active plan is
+[20261009-0325 graceful quit and worker scaling](plans/20261009-0325_graceful-quit-and-worker-scaling/00_implementation-plan.md).
+Read-only inspection of the first real scratch run confirmed that the three
+cleaned B: partial URLs were downloaded again rather than skipped. The run
+finished successfully with 33 successes and 5 archive skips. Graceful quit,
+runtime worker controls, and SSD-aware worker defaults are implemented and
+validated; see the active plan for current verification.
+
+Previous task: opt-in `-S/--scratch` staging for payloads and active control
 files, with destination-aware duplicate checks and guarded serialized
 promotion to the B: library. The user confirmed B: is a mirrored
 SATA-HDD Storage Spaces volume and E: is a separate NVMe SSD. The four-worker

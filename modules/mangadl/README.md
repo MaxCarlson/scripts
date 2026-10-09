@@ -6,14 +6,15 @@ The normal dashboard replaces line-per-image output. Each worker receives a fixe
 
 Runtime keys:
 
-- `+` / `-`: increase or reduce the target outer-worker count.
+- `+` / `-`: add a worker or retire the highest excess worker after its current download.
 - `]` / `[`: change image threads for newly started Manga18FX workers.
 - `j` / `k` or arrows: select a worker.
 - `l`: selected worker's inline activity log.
 - `f`: selected worker's fullscreen log.
 - `r`: switch between activity and raw backend output.
 - `p` / `P`: pause selected/all scheduling.
-- `q`: stop immediately through the same cleanup path as Ctrl+C.
+- `q`: stop assigning work, wait for active downloads to finish, then quit.
+- `Ctrl+Q` or `Ctrl+C`: stop active workers immediately and retain resumable partials.
 
 ## Install
 
@@ -38,6 +39,9 @@ The normal `run --help` surface contains only routine input, destination, and co
   series collections that may expand into many galleries.
 - `-a/--archive`: optional gallery-dl archive override.
 - `-w/--workers`: initial simultaneous series workers.
+- `-m/--max-workers`: runtime worker ceiling, up to eight. Scratch and detected
+  SSD destinations default to eight; rotational or unknown destinations default
+  to four.
 - `-I/--image-workers`: image transfers inside each newly started Manga18FX worker.
 
 Run IDs are always generated automatically. Archive, state, and logs default to

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .concurrency import Manga18FXConcurrencyPlan, plan_manga18fx_concurrency
+from .concurrency import HARD_MAX_OUTER_WORKERS, Manga18FXConcurrencyPlan, plan_manga18fx_concurrency
 from .gallery_auth import ProfileStore, domain_for, refresh_profile
 from .models import JobState, WorkerSnapshot
 from .state import StateStore
@@ -48,13 +48,20 @@ class RunOptions:
     ui: bool = True
     scratch_dir: Path | None = None
     canonical_archive: Path | None = None
+    maximum_workers: int | None = None
+    fast_storage: bool = False
 
 
 class DownloadManager:
     def __init__(self, options: RunOptions, store: StateStore) -> None:
         if options.worker_start_delay < 0:
             raise ValueError("worker_start_delay must be zero or greater")
-        plan = plan_manga18fx_concurrency(options.workers, self._requested_image_workers())
+        plan = plan_manga18fx_concurrency(
+            options.workers,
+            self._requested_image_workers(),
+            maximum_workers=options.maximum_workers,
+            fast_storage=options.fast_storage,
+        )
         options.workers = plan.effective_workers
         self.options = options
         self.store = store
@@ -140,8 +147,13 @@ class DownloadManager:
     def _adjust_runtime(self, action: str) -> None:
         if action == "workers_up":
             if self.target_workers >= self.maximum_workers:
+                override = (
+                    f" Start the next run with -m {HARD_MAX_OUTER_WORKERS} to permit more."
+                    if self.maximum_workers < HARD_MAX_OUTER_WORKERS
+                    else ""
+                )
                 self._set_runtime_notice(
-                    f"Worker target is already at the maximum of {self.maximum_workers}."
+                    f"Worker target is already at the maximum of {self.maximum_workers}.{override}"
                 )
                 return
             candidate = self.target_workers + 1
@@ -194,10 +206,22 @@ class DownloadManager:
             self._set_runtime_notice(
                 f"Image workers reduced to {self.image_workers}; applies to newly started Manga18FX jobs."
             )
+            return
+
+        if action == "quit_after_current":
+            self.stop_requested = True
+            self._set_runtime_notice("Graceful quit requested; no new downloads will start.")
 
     def _dashboard_runtime(self) -> DashboardRuntime:
         active_slots = self._active_slots()
         aggregate = sum(self.worker_costs.get(slot, 1) for slot in active_slots)
+        notice = self.runtime_notice
+        if self.stop_requested:
+            count = len(active_slots)
+            notice = (
+                f"Graceful quit: waiting for {count} active worker{'s' if count != 1 else ''}; "
+                "no new downloads will start."
+            )
         return DashboardRuntime(
             active_workers=len(active_slots),
             target_workers=self.target_workers,
@@ -205,7 +229,7 @@ class DownloadManager:
             aggregate=aggregate,
             budget=self.concurrency_budget,
             logical_cpus=self.logical_cpus,
-            notice=self.runtime_notice,
+            notice=notice,
         )
 
     def _visible_snapshots(self) -> dict[int, WorkerSnapshot]:
@@ -540,7 +564,8 @@ class DownloadManager:
                 key = msvcrt.getwch()
                 if key in {"\x00", "\xe0"}:
                     key = {"H": "UP", "P": "DOWN"}.get(msvcrt.getwch(), "")
-                action = self.dashboard.handle_key(key, max(self.snapshots, default=self.target_workers))
+                visible = self._visible_snapshots()
+                action = self.dashboard.handle_key(key, max(visible, default=1))
                 if action:
                     self._adjust_runtime(action)
 

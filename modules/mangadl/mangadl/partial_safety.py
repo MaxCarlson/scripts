@@ -151,8 +151,37 @@ def _pid_running(pid: object) -> bool:
         value = int(pid)
         if value <= 0:
             return False
-        os.kill(value, 0)
     except (OSError, TypeError, ValueError):
+        return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        process_query_limited_information = 0x1000
+        still_active = 259
+        handle = kernel32.OpenProcess(process_query_limited_information, False, value)
+        if not handle:
+            return False
+        try:
+            exit_code = wintypes.DWORD()
+            return (
+                bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))) and exit_code.value == still_active
+            )
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(value, 0)
+    except OSError:
         return False
     return True
 

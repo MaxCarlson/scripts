@@ -416,8 +416,8 @@ def render_dashboard(
         [
             "-" * width,
             clip(
-                "Up/Down j/k Select | +/- Workers | [/] Image threads | "
-                "l Log | f Fullscreen | r Raw | p/P Pause | q Quit",
+                "Up/Down j/k Select | +/- Add/retire worker | [/] Image threads | "
+                "l Log | f Fullscreen | r Raw | p/P Pause | q Drain+quit | Ctrl+Q Stop now",
                 width,
             ),
         ]
@@ -438,6 +438,7 @@ class ConsoleDashboard:
         self.paused_workers: set[int] = set()
 
     def handle_key(self, key: str, worker_count: int) -> str | None:
+        self.selected = max(1, min(max(1, worker_count), self.selected))
         if key in {"DOWN", "j"}:
             self.selected = min(worker_count, self.selected + 1)
         elif key in {"UP", "k"}:
@@ -461,7 +462,9 @@ class ConsoleDashboard:
             self.paused_workers.symmetric_difference_update({self.selected})
         elif key == "P":
             self.paused_all = not self.paused_all
-        elif key in {"q", "\x03"}:
+        elif key == "q":
+            return "quit_after_current"
+        elif key in {"\x11", "\x03"}:
             raise KeyboardInterrupt
         return None
 
@@ -476,6 +479,7 @@ class ConsoleDashboard:
         workers: dict[int, WorkerSnapshot],
         runtime: DashboardRuntime | None = None,
     ) -> None:
+        self.selected = max(1, min(max(workers, default=1), self.selected))
         if not self.enabled:
             return
         terminal = os.get_terminal_size() if sys_stdout_tty() else os.terminal_size((120, 30))
@@ -486,7 +490,7 @@ class ConsoleDashboard:
             text = "\n".join(
                 [clip(f"Worker {self.selected:02d} {'raw backend' if self.raw_view else 'activity'} log", width)]
                 + body
-                + ["", clip("f Back | r Raw/activity | q Quit", width)]
+                + ["", clip("f Back | r Raw/activity | q Drain+quit | Ctrl+Q Stop now", width)]
             )
         else:
             log_lines = None

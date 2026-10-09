@@ -294,6 +294,62 @@
                 }
             ]
         },
+        "cross-platform": {
+            "description": "Cross-platform system utilities and storage-media detection validation.",
+            "working_directory": "modules/cross_platform",
+            "context_files": [
+                "docs/plans/20261009-0325_storage-media-detection/STATUS.md",
+                "docs/plans/20261009-0325_storage-media-detection/checklist.md",
+                "docs/plans/20261009-0325_storage-media-detection/00_implementation-plan.md"
+            ],
+            "environment": {
+                "PYTHONUTF8": "1",
+                "PYTHONUNBUFFERED": "1",
+                "PY_COLORS": "1",
+                "PYTHONPATH": "{repo_root}/modules"
+            },
+            "bootstrap": [
+                {
+                    "name": "Install cross_platform editable development package",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "pip",
+                        "install",
+                        "--disable-pip-version-check",
+                        "--no-build-isolation",
+                        "-e",
+                        "{target_root}"
+                    ]
+                }
+            ],
+            "commands": [
+                {
+                    "name": "Compile cross_platform package and tests",
+                    "executable": "{python}",
+                    "arguments": ["-m", "compileall", "-q", ".", "tests"]
+                },
+                {
+                    "name": "Lint cross_platform storage implementation and tests",
+                    "executable": "{python}",
+                    "arguments": ["-m", "ruff", "check", "storage.py", "tests/storage_test.py"]
+                },
+                {
+                    "name": "Cross-platform pytest suite",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "pytest",
+                        "tests",
+                        "-q",
+                        "--strict-config",
+                        "--strict-markers",
+                        "--basetemp",
+                        "{temp_root}"
+                    ]
+                }
+            ]
+        },
         "mangadl": {
             "description": "Mangadl guarded collection routing, resumable partial ownership, cleanup, and dashboard validation.",
             "working_directory": "modules/mangadl",
@@ -306,9 +362,22 @@
                 "PYTHONUTF8": "1",
                 "PYTHONUNBUFFERED": "1",
                 "PY_COLORS": "1",
-                "PYTHONPATH": "{target_root}"
+                "PYTHONPATH": "{target_root};{repo_root}/modules"
             },
             "bootstrap": [
+                {
+                    "name": "Install shared cross_platform dependency",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "pip",
+                        "install",
+                        "--disable-pip-version-check",
+                        "--no-build-isolation",
+                        "-e",
+                        "{repo_root}/modules/cross_platform"
+                    ]
+                },
                 {
                     "name": "Install shared TermDash dependency",
                     "executable": "{python}",

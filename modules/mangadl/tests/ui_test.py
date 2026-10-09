@@ -229,8 +229,21 @@ def test_log_hotkeys_and_runtime_actions(tmp_path: Path) -> None:
     assert dashboard.handle_key("[", 2) == "images_down"
 
 
-def test_quit_hotkey_uses_immediate_interrupt_path(tmp_path: Path) -> None:
+def test_quit_hotkeys_distinguish_graceful_and_immediate_paths(tmp_path: Path) -> None:
     dashboard = ConsoleDashboard(True, "run", tmp_path)
 
+    assert dashboard.handle_key("q", 2) == "quit_after_current"
+
     with pytest.raises(KeyboardInterrupt):
-        dashboard.handle_key("q", 2)
+        dashboard.handle_key("\x11", 2)
+    with pytest.raises(KeyboardInterrupt):
+        dashboard.handle_key("\x03", 2)
+
+
+def test_dashboard_clamps_selection_after_retired_worker_disappears(tmp_path: Path) -> None:
+    dashboard = ConsoleDashboard(False, "run", tmp_path)
+    dashboard.selected = 4
+
+    dashboard.render({}, {1: WorkerSnapshot(1), 2: WorkerSnapshot(2)})
+
+    assert dashboard.selected == 2

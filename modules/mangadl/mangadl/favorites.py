@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import http.cookiejar
-import json
 import time
 from dataclasses import asdict, dataclass
 from html.parser import HTMLParser

@@ -10,11 +10,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+from cross_platform import StorageMediaKind, storage_media_for_path
+
 from . import __version__
 from .archive_ui import ArchiveBrowser, filter_records, load_archive
 from .backends import backend_classification, choose_backend, gallery_dl_scope
 from .cli_structure import add_run_arguments, normalize_command_shape
-from .concurrency import HARD_MAX_OUTER_WORKERS, MAX_OUTER_WORKERS_ENV
+from .concurrency import DEFAULT_MAX_OUTER_WORKERS, HARD_MAX_OUTER_WORKERS
 from .destination_audit import audit_destinations, write_audit_outputs
 from .favorites import crawl_favorites, format_result as format_favorites_result
 from .favorites import result_payload as favorites_result_payload
@@ -394,7 +396,7 @@ def _optimization_preview(args: argparse.Namespace, manga18fx_urls: list[str]) -
 def _validate_run(args: argparse.Namespace) -> None:
     if args.workers < 1:
         raise ValueError("--workers must be at least 1")
-    if not 1 <= args.max_workers <= HARD_MAX_OUTER_WORKERS:
+    if args.max_workers is not None and not 1 <= args.max_workers <= HARD_MAX_OUTER_WORKERS:
         raise ValueError(f"--max-workers must be between 1 and {HARD_MAX_OUTER_WORKERS}")
     if args.worker_start_delay < 0:
         raise ValueError("--worker-start-delay must be zero or greater")
@@ -424,6 +426,21 @@ def _resolve_run_paths(args: argparse.Namespace) -> None:
     args.archive = args.archive or control_root / "archive.sqlite3"
     args.state_db = args.state_db or control_root / "state.sqlite3"
     args.log_dir = args.log_dir or control_root / "logs"
+
+
+def _resolve_storage_policy(args: argparse.Namespace) -> None:
+    if args.scratch_dir is not None:
+        args.storage_media = "scratch"
+        args.storage_media_detail = "explicit scratch staging"
+        fast_storage = True
+    else:
+        media = storage_media_for_path(args.destination)
+        args.storage_media = media.kind.value
+        args.storage_media_detail = media.detail
+        fast_storage = media.kind == StorageMediaKind.SOLID_STATE
+    if args.max_workers is None:
+        args.max_workers = HARD_MAX_OUTER_WORKERS if fast_storage else DEFAULT_MAX_OUTER_WORKERS
+    args.fast_storage = fast_storage
 
 
 def _format_run_preview(preview: dict[str, Any]) -> str:
@@ -464,6 +481,7 @@ def _run(args: argparse.Namespace) -> int:
     _normalize_legacy_autotune(args)
     _validate_run(args)
     _resolve_run_paths(args)
+    _resolve_storage_policy(args)
 
     inputs, rejected = collect_inputs(args.input_file, args.url)
     routes: dict[str, str] = {}
@@ -503,6 +521,8 @@ def _run(args: argparse.Namespace) -> int:
         "requested_workers": args.workers,
         "image_workers": args.image_workers,
         "max_workers": args.max_workers,
+        "storage_media": args.storage_media,
+        "storage_media_detail": args.storage_media_detail,
         "worker_start_delay": args.worker_start_delay,
         "destination": str(args.destination),
         "control_directory": str(args.destination / ".mangadl"),
@@ -601,7 +621,6 @@ def _run(args: argparse.Namespace) -> int:
             return 0
 
     os.environ[MANGA18FX_IMAGE_WORKERS_ENV] = str(args.image_workers)
-    os.environ[MAX_OUTER_WORKERS_ENV] = str(args.max_workers)
     if controls is not None:
         controls.prepare()
     store = StateStore(controls.state_db if controls is not None else args.state_db)
@@ -636,6 +655,8 @@ def _run(args: argparse.Namespace) -> int:
             log_dir=controls.log_dir if controls is not None else args.log_dir,
             scratch_dir=args.scratch_dir,
             canonical_archive=args.archive if controls is not None else None,
+            maximum_workers=args.max_workers,
+            fast_storage=args.fast_storage,
             workers=args.workers,
             retries=args.retries,
             retry_wait=args.retry_wait,
