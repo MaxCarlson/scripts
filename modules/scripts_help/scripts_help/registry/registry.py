@@ -514,9 +514,9 @@ REGISTRY: dict = {
             {
                 "name": "scheduler (module)",
                 "path": "modules/scheduler",
-                "desc": "Task scheduling and automation engine with CLI and interactive TUI",
+                "desc": "Task scheduler with Windows elevation, sequential execution, and schedule-aware run history",
                 "help_cmd": ["python", "-m", "scheduler.cli", "--help"],
-                "version": "0.1.0",
+                "version": "0.6.0",
             },
         ],
     },

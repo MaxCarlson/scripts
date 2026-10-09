@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from script_logging import EventRecord, HistoryStore
+
 from .models import ExecutionResult
 
 
@@ -28,9 +30,10 @@ class CentralLogger:
 
     _lock = threading.Lock()
 
-    def __init__(self, log_path: Path) -> None:
+    def __init__(self, log_path: Path, history_store: Optional[HistoryStore] = None) -> None:
         self.log_path = Path(log_path).resolve()
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.history_store = history_store
 
     def log(self, log_type: str, message: str, dt: Optional[datetime] = None) -> str:
         """Write a strictly formatted entry to the central system log."""
@@ -45,6 +48,13 @@ class CentralLogger:
         with self._lock:
             with open(self.log_path, "a", encoding="utf-8") as f:
                 f.write(entry + "\n")
+        if self.history_store is not None:
+            self.history_store.append_event(
+                EventRecord(
+                    source="scheduler", event_type=clean_type, occurred_at=dt.astimezone().isoformat(),
+                    message=message, level="ERROR" if clean_type in {"ERROR", "TASK_FAILURE"} else "INFO",
+                )
+            )
         return entry
 
     # ── Semantic Helper Methods ──
@@ -129,9 +139,13 @@ class TaskLogger:
     def __init__(self, base_dir: Path, default_retention: int = 10) -> None:
         self.base_dir = Path(base_dir).resolve()
         self.default_retention = max(1, default_retention)
+        self.task_ids: Dict[str, str] = {}
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-    def get_task_log_path(self, task_name: str) -> Path:
+    def get_task_log_path(self, task_name: str, task_id: Optional[str] = None) -> Path:
+        task_id = task_id or self.task_ids.get(task_name)
+        if task_id:
+            return self.base_dir / f"task-{task_id}.log"
         slug = sanitize_filename(task_name)
         return self.base_dir / f"{slug}.log"
 
@@ -152,10 +166,15 @@ class TaskLogger:
             blocks.append(full_block)
         return blocks
 
-    def log_run(self, result: ExecutionResult, script_code: str = "", retention: Optional[int] = None) -> Path:
+    def log_run(
+        self, result: ExecutionResult, script_code: str = "", retention: Optional[int] = None,
+        task_id: Optional[str] = None,
+    ) -> Path:
         """Append run result to task log file, retaining at most N most recent runs."""
         retention_limit = retention if retention is not None else self.default_retention
-        log_file = self.get_task_log_path(result.task_name)
+        if task_id:
+            self.task_ids[result.task_name] = task_id
+        log_file = self.get_task_log_path(result.task_name, task_id)
 
         # Build run block
         header_banner = "=" * 80
@@ -228,9 +247,11 @@ class TaskLogger:
 
         return log_file
 
-    def read_task_log(self, task_name: str) -> Optional[str]:
+    def read_task_log(self, task_name: str, task_id: Optional[str] = None) -> Optional[str]:
         """Read full content of the task's log file."""
-        log_file = self.get_task_log_path(task_name)
+        log_file = self.get_task_log_path(task_name, task_id)
+        if task_id and not log_file.exists():
+            log_file = self.get_task_log_path(task_name)
         if not log_file.exists():
             return None
         with self._lock:
@@ -240,17 +261,17 @@ class TaskLogger:
             except OSError:
                 return None
 
-    def read_latest_run_content(self, task_name: str) -> Optional[str]:
+    def read_latest_run_content(self, task_name: str, task_id: Optional[str] = None) -> Optional[str]:
         """Read only the most recent run output from the task log file."""
-        raw = self.read_task_log(task_name)
+        raw = self.read_task_log(task_name, task_id)
         if not raw:
             return None
         blocks = self._split_runs(raw)
         return blocks[-1] if blocks else raw
 
-    def list_task_runs(self, task_name: str, count: int = 10) -> List[Dict[str, Any]]:
+    def list_task_runs(self, task_name: str, count: int = 10, task_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """List metadata for individual runs recorded in the task's log file."""
-        raw = self.read_task_log(task_name)
+        raw = self.read_task_log(task_name, task_id)
         if not raw:
             return []
         blocks = self._split_runs(raw)
@@ -299,11 +320,11 @@ class TaskLogger:
                     pass
         return result
 
-    def clear_task_logs(self, task_name: Optional[str] = None) -> None:
+    def clear_task_logs(self, task_name: Optional[str] = None, task_id: Optional[str] = None) -> None:
         """Clear log file for a specific task or truncate all task log files."""
         with self._lock:
             if task_name is not None:
-                log_file = self.get_task_log_path(task_name)
+                log_file = self.get_task_log_path(task_name, task_id)
                 if log_file.exists():
                     try:
                         log_file.unlink()

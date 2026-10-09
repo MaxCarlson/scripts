@@ -19,6 +19,8 @@ from .config import ConfigManager
 from .models import Schedule, ScheduleTiming, Task
 from .service import SchedulerService
 from .storage import StorageManager
+from . import windows_task
+from .readiness import format_setup_warning, get_setup_state
 from .timing import (
     calculate_next_run,
     normalize_days,
@@ -238,6 +240,26 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_parser.add_argument("-i", "--interval", type=float, default=10.0, help="Check interval in seconds.")
     daemon_parser.add_argument("-d", "--dry-run", action="store_true", help="Simulate run without invoking commands.")
     daemon_parser.add_argument("-m", "--max-ticks", type=int, default=None, help="Exit after N ticks (for testing).")
+    daemon_parser.add_argument("-W", "--admin-worker", action="store_true", help=argparse.SUPPRESS)
+
+    # ─────────────────────────────────────────────────────────
+    # Windows background runner setup
+    # ─────────────────────────────────────────────────────────
+    setup_parser = subparsers.add_parser("setup", help="Install or manage operating-system scheduler integration.")
+    setup_sub = setup_parser.add_subparsers(dest="setup_cmd", required=True)
+    runner_parser = setup_sub.add_parser(
+        "windows", aliases=["windows-runner"], help="Install or manage the Windows scheduler runner."
+    )
+    runner_sub = runner_parser.add_subparsers(dest="runner_cmd", required=False)
+    runner_install = runner_sub.add_parser("install", help="Register/update the elevated Windows logon task.")
+    runner_install.add_argument(
+        "-i", "--interval", type=int, default=windows_task.DEFAULT_CHECK_INTERVAL_SECONDS,
+        help="Daemon evaluation interval in seconds (default: 30).",
+    )
+    runner_sub.add_parser("status", help="Show the registered Windows runner status.")
+    runner_start = runner_sub.add_parser("start", help="Start the runner now; due catch-up tasks may run immediately.")
+    runner_start.add_argument("-y", "--yes", action="store_true", help="Confirm that due and catch-up tasks may execute now.")
+    runner_sub.add_parser("remove", help="Remove the registered Windows runner.")
 
     # ─────────────────────────────────────────────────────────
     # logs command
@@ -304,8 +326,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    raw_args = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
-    args = parser.parse_args(argv)
+    command = _first_command_token(raw_args)
+    is_help = any(token in ("-h", "--help") for token in raw_args)
+    is_interactive_tui = command == "tui" or (command is None and not is_help and sys.stdin.isatty() and sys.stdout.isatty())
+
+    if is_help or not is_interactive_tui:
+        setup_state = get_setup_state()
+        if not setup_state.complete:
+            print(format_setup_warning(setup_state), file=sys.stderr)
+            if not is_help and command not in (None, "setup"):
+                return 2
+
+    args = parser.parse_args(raw_args)
 
     storage = StorageManager(data_file=args.config_file)
     service = SchedulerService(storage=storage)
@@ -322,6 +356,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.subcommand == "tui":
         from .tui import run_tui
         return run_tui(service=service)
+
+    if args.subcommand == "setup" and args.setup_cmd in ("windows", "windows-runner"):
+        try:
+            if args.runner_cmd in (None, "install"):
+                interval = args.interval if args.runner_cmd == "install" else windows_task.DEFAULT_CHECK_INTERVAL_SECONDS
+                message = windows_task.install_runner(storage.data_file, interval_seconds=interval)
+            elif args.runner_cmd == "start":
+                if not args.yes:
+                    print(
+                        "[ERROR] Starting the daemon may execute due or catch-up tasks. "
+                        "Pass -y/--yes to confirm.",
+                        file=sys.stderr,
+                    )
+                    return 2
+                message = windows_task.start_runner()
+            elif args.runner_cmd == "remove":
+                message = windows_task.remove_runner()
+            else:
+                status = windows_task.get_runner_status()
+                print(_json.dumps(status, indent=2))
+                return 0
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            return 1
+        if not args.quiet:
+            print(f"[OK] {message}")
+        return 0
 
     # ─────────────────────────────────────────────────────────
     # Schedule Subcommands
@@ -771,6 +832,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Daemon / Service Command
     # ─────────────────────────────────────────────────────────
     elif args.subcommand == "daemon":
+        if args.admin_worker:
+            service.run_admin_worker(interval_sec=args.interval, max_ticks=args.max_ticks)
+            return 0
         if args.once:
             results = service.run_once(dry_run=args.dry_run)
             if not args.quiet:
@@ -795,8 +859,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         elif lg_cmd == "task":
+            task = storage.get_task(args.name)
+            task_id = task.task_id if task else None
             if args.latest:
-                content = service.task_logger.read_latest_run_content(args.name)
+                content = service.task_logger.read_latest_run_content(args.name, task_id=task_id)
                 if not content:
                     print(f"No run logs found for task '{args.name}'.")
                     return 0
@@ -804,17 +870,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 0
 
             if args.count is not None and not args.latest:
-                runs = service.task_logger.list_task_runs(args.name, count=args.count)
+                runs = service.task_logger.list_task_runs(args.name, count=args.count, task_id=task_id)
                 if not runs:
                     print(f"No execution logs found for task '{args.name}'.")
                     return 0
-                print(f"Recent runs for task '{args.name}' (from {service.task_logger.get_task_log_path(args.name)}):")
+                print(f"Recent runs for task '{args.name}' (from {service.task_logger.get_task_log_path(args.name, task_id)}):")
                 for r in runs:
                     print(f"  - Run #{r['run_index']} ({r['timestamp']}, Status: {r['status']}, {r['size_bytes']} bytes)")
                 return 0
 
             # Default: show complete single-file task log
-            full_log = service.task_logger.read_task_log(args.name)
+            full_log = service.task_logger.read_task_log(args.name, task_id=task_id)
             if not full_log or not full_log.strip():
                 print(f"No execution logs found for task '{args.name}'.")
                 return 0
@@ -829,8 +895,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     return 0
             if args.type in ("system", "all"):
                 service.central_logger.clear()
+                service.history.store.clear_events(source="scheduler")
             if args.type in ("tasks", "all"):
                 service.task_logger.clear_task_logs()
+                service.history.store.clear_runs(source="scheduler")
+                service.history.reset_coverage()
             if not args.quiet:
                 print(f"[OK] Cleared {args.type} logs.")
             return 0
@@ -901,6 +970,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
     return 0
+
+
+def _first_command_token(argv: Sequence[str]) -> str | None:
+    """Find the top-level command without invoking argparse (which exits on -h)."""
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token in ("-c", "--config-file"):
+            index += 2
+            continue
+        if token in ("-v", "--verbose", "-q", "--quiet"):
+            index += 1
+            continue
+        if token.startswith("--config-file=") or (token.startswith("-c") and len(token) > 2):
+            index += 1
+            continue
+        return None if token.startswith("-") else token
+    return None
 
 
 if __name__ == "__main__":

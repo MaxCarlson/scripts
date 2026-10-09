@@ -7,6 +7,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 
 class TimingType(str, Enum):
@@ -92,6 +93,7 @@ class Schedule:
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
     last_run_time: Optional[str] = None
     next_run_time: Optional[str] = None
+    schedule_id: str = field(default_factory=lambda: uuid4().hex)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -103,6 +105,7 @@ class Schedule:
             "updated_at": self.updated_at,
             "last_run_time": self.last_run_time,
             "next_run_time": self.next_run_time,
+            "schedule_id": self.schedule_id,
         }
 
     @classmethod
@@ -118,6 +121,7 @@ class Schedule:
             updated_at=data.get("updated_at", datetime.now().isoformat()),
             last_run_time=data.get("last_run_time"),
             next_run_time=data.get("next_run_time"),
+            schedule_id=data.get("schedule_id") or uuid4().hex,
         )
 
 
@@ -135,6 +139,9 @@ class Task:
     last_status: Optional[str] = None  # "success" or "failure"
     last_exit_code: Optional[int] = None
     last_duration_sec: Optional[float] = None
+    schedule_order: Optional[int] = None
+    task_id: str = field(default_factory=lambda: uuid4().hex)
+    attached_at: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -154,6 +161,9 @@ class Task:
             last_status=data.get("last_status"),
             last_exit_code=data.get("last_exit_code"),
             last_duration_sec=data.get("last_duration_sec"),
+            schedule_order=data.get("schedule_order"),
+            task_id=data.get("task_id") or uuid4().hex,
+            attached_at=data.get("attached_at"),
         )
 
 
@@ -173,3 +183,7 @@ class ExecutionResult:
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> ExecutionResult:
+        return cls(**data)

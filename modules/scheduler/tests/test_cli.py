@@ -2,8 +2,20 @@
 Unit tests for scheduler CLI commands and subcommands.
 """
 import json
+from unittest.mock import patch
+
 import pytest
 from scheduler.cli import main
+from scheduler.readiness import SetupState
+
+
+@pytest.fixture(autouse=True)
+def scheduler_is_setup():
+    with patch(
+        "scheduler.cli.get_setup_state",
+        return_value=SetupState(True, "Windows", "Windows scheduler setup is complete.", None),
+    ):
+        yield
 
 
 @pytest.fixture
@@ -221,3 +233,106 @@ def test_cli_daemon_once(data_file_arg, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "Single pass complete" in out
+
+
+def test_cli_dispatches_admin_worker_mode(data_file_arg):
+    with patch("scheduler.cli.SchedulerService.run_admin_worker") as run_worker:
+        rc = main(data_file_arg + ["daemon", "--admin-worker", "-m", "1"])
+
+    assert rc == 0
+    run_worker.assert_called_once_with(interval_sec=10.0, max_ticks=1)
+
+
+def test_cli_windows_runner_install_uses_cli_data_file(data_file_arg, capsys):
+    with patch("scheduler.cli.windows_task.install_runner", return_value="runner installed") as install:
+        rc = main(data_file_arg + ["setup", "windows-runner", "install", "--interval", "45"])
+
+    assert rc == 0
+    install.assert_called_once()
+    assert install.call_args.args[0].name == "scheduler_data.json"
+    assert install.call_args.kwargs["interval_seconds"] == 45
+    assert "runner installed" in capsys.readouterr().out
+
+
+def test_cli_windows_runner_status_emits_json(data_file_arg, capsys):
+    status = {"installed": True, "state": "Running"}
+    with patch("scheduler.cli.windows_task.get_runner_status", return_value=status):
+        rc = main(data_file_arg + ["setup", "windows-runner", "status"])
+
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out) == status
+
+
+def test_cli_windows_runner_start_requires_explicit_confirmation(data_file_arg, capsys):
+    with patch("scheduler.cli.windows_task.start_runner") as start:
+        rc = main(data_file_arg + ["setup", "windows-runner", "start"])
+
+    assert rc == 2
+    start.assert_not_called()
+    assert "Pass -y/--yes" in capsys.readouterr().err
+
+
+def test_cli_windows_runner_start_passes_after_confirmation(data_file_arg, capsys):
+    with patch("scheduler.cli.windows_task.start_runner", return_value="started") as start:
+        rc = main(data_file_arg + ["setup", "windows-runner", "start", "--yes"])
+
+    assert rc == 0
+    start.assert_called_once_with()
+    assert "started" in capsys.readouterr().out
+
+
+def test_cli_windows_runner_remove(data_file_arg, capsys):
+    with patch("scheduler.cli.windows_task.remove_runner", return_value="removed") as remove:
+        rc = main(data_file_arg + ["setup", "windows-runner", "remove"])
+
+    assert rc == 0
+    remove.assert_called_once_with()
+    assert "removed" in capsys.readouterr().out
+
+
+def test_cli_setup_windows_without_action_installs_runner(data_file_arg, capsys):
+    with patch("scheduler.cli.windows_task.install_runner", return_value="runner installed") as install:
+        rc = main(data_file_arg + ["setup", "windows"])
+
+    assert rc == 0
+    install.assert_called_once()
+    assert install.call_args.kwargs["interval_seconds"] == 30
+    assert "runner installed" in capsys.readouterr().out
+
+
+def test_cli_setup_still_runs_after_red_setup_warning(data_file_arg, capsys):
+    missing = SetupState(False, "Windows", "The Windows scheduler runner has not been installed.", "scheduler setup windows")
+    with patch("scheduler.cli.get_setup_state", return_value=missing), patch(
+        "scheduler.cli.windows_task.install_runner", return_value="runner installed"
+    ) as install:
+        rc = main(data_file_arg + ["setup", "windows"])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    install.assert_called_once()
+    assert "\033[91m" in captured.err
+    assert "scheduler setup windows" in captured.err
+    assert "runner installed" in captured.out
+
+
+def test_cli_blocks_normal_operation_with_red_setup_instruction(data_file_arg, capsys):
+    missing = SetupState(False, "Windows", "The Windows scheduler runner has not been installed.", "scheduler setup windows")
+    with patch("scheduler.cli.get_setup_state", return_value=missing):
+        rc = main(data_file_arg + ["schedule", "list"])
+
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "\033[91m" in captured.err
+    assert "scheduler setup windows" in captured.err
+
+
+def test_cli_warns_before_global_help_when_setup_is_missing(data_file_arg, capsys):
+    missing = SetupState(False, "Windows", "The Windows scheduler runner has not been installed.", "scheduler setup windows")
+    with patch("scheduler.cli.get_setup_state", return_value=missing), pytest.raises(SystemExit) as exit_info:
+        main(data_file_arg + ["-h"])
+
+    captured = capsys.readouterr()
+    assert exit_info.value.code == 0
+    assert "\033[91m" in captured.err
+    assert "scheduler setup windows" in captured.err
+    assert "usage: scheduler" in captured.out

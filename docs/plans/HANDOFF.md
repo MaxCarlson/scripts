@@ -15,3 +15,11 @@ Use `modules/<module>/docs/plans/` for work owned by a single module.
 ## Current Priority
 
 The missing-only bootstrap plan is active. The validation-evidence plan remains open and awaits local validation; this bootstrap work does not expand it.
+
+## Approved Cross-Module Plan
+
+```text
+20261009-0941_scheduler-log-explorer-and-shared-logging/
+```
+
+The user approved the shared logging and scheduler log browser plan. Features are implemented in the uncommitted worktree; see its status for verification and limits.

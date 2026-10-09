@@ -26,6 +26,20 @@ class TaskExecutor:
     def update_config(self, config: SchedulerConfig) -> None:
         self.config = config
 
+    @staticmethod
+    def _is_windows_platform() -> bool:
+        return os.name == "nt"
+
+    @staticmethod
+    def _is_windows_elevated() -> bool:
+        """Return whether this process already has an elevated Windows token."""
+        try:
+            import ctypes
+
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except (AttributeError, OSError):
+            return False
+
     def resolve_executable(self, env_name: str) -> Tuple[Optional[str], Optional[str]]:
         """
         Resolve executable for the given environment name.
@@ -57,7 +71,9 @@ class TaskExecutor:
                 exe = "/bin/sh" if os.name != "nt" else "cmd.exe"
             return str(Path(exe).resolve()), None
 
-    def execute(self, task: Task, timeout_sec: Optional[float] = None) -> ExecutionResult:
+    def execute(
+        self, task: Task, timeout_sec: Optional[float] = None, *, visible_window: bool = False
+    ) -> ExecutionResult:
         """
         Execute task script and return an ExecutionResult.
         """
@@ -125,37 +141,57 @@ class TaskExecutor:
 
             # ── Admin Elevation Handling ──
             if task.admin:
-                if os.name != "nt":
+                if not self._is_windows_platform():
                     # POSIX: check if already root
                     is_root = False
                     if hasattr(os, "geteuid"):
                         is_root = (os.geteuid() == 0)
                     if not is_root and shutil.which("sudo"):
                         cmd = ["sudo", "-n"] + cmd
-                else:
-                    # Windows: elevation wrapper
-                    # If already elevated, can run directly, else Start-Process with RunAs
+                elif not self._is_windows_elevated():
+                    if visible_window:
+                        raise PermissionError(
+                            "The elevated scheduler runner has no administrator token; refusing to show a UAC prompt."
+                        )
+                    # Scheduled tasks configured with RunLevel Highest already have
+                    # the required token. Avoid an interactive UAC prompt in that case.
                     ps_launcher = shutil.which("powershell.exe") or "powershell"
                     inner_args = subprocess.list2cmdline(cmd[1:])
                     elevation_script = (
-                        f"Start-Process -FilePath '{cmd[0]}' -ArgumentList '{inner_args}' "
-                        f"-Verb RunAs -Wait -PassThru | Select-Object -ExpandProperty ExitCode"
+                        f"$process = Start-Process -FilePath '{cmd[0]}' -ArgumentList '{inner_args}' "
+                        "-Verb RunAs -Wait -PassThru; "
+                        "$process.WaitForExit(); $process.Refresh(); exit $process.ExitCode"
                     )
                     cmd = [ps_launcher, "-NoProfile", "-NonInteractive", "-Command", elevation_script]
 
             # Execute subprocess
-            proc = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout_sec,
-            )
+            if visible_window:
+                if not self._is_windows_platform():
+                    raise OSError("Visible task windows are only supported on Windows.")
+                proc = subprocess.Popen(cmd, creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0x10))
+                try:
+                    exit_code = proc.wait(timeout=timeout_sec)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+                    raise
+                stdout = ""
+                stderr = ""
+            else:
+                proc = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=timeout_sec,
+                )
+                exit_code = proc.returncode
+                stdout = proc.stdout or ""
+                stderr = proc.stderr or ""
 
             duration = time.time() - start_time
-            exit_code = proc.returncode
             success = (exit_code == 0)
 
             return ExecutionResult(
@@ -163,13 +199,13 @@ class TaskExecutor:
                 schedule_name=task.schedule_name,
                 timestamp=timestamp,
                 exit_code=exit_code,
-                stdout=proc.stdout or "",
-                stderr=proc.stderr or "",
+                stdout=stdout,
+                stderr=stderr,
                 duration_sec=duration,
                 environment=task.environment,
                 admin=task.admin,
                 success=success,
-                error_message=proc.stderr if not success else None,
+                error_message=stderr if not success else None,
             )
 
         except subprocess.TimeoutExpired as te:

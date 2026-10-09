@@ -193,6 +193,7 @@ except Exception:
 MODULES_DIR = SCRIPTS_DIR / "modules"
 STANDARD_UI_SETUP_DIR = MODULES_DIR / "standard_ui"
 CROSS_PLATFORM_DIR = MODULES_DIR / "cross_platform"
+SCRIPT_LOGGING_DIR = MODULES_DIR / "script_logging"
 PYTHON_SETUP_DIR = MODULES_DIR / "python_setup"
 SCRIPTS_SETUP_PACKAGE_DIR = SCRIPTS_DIR / "scripts_setup"
 
@@ -1211,10 +1212,11 @@ def main():
 
     # Core modules — now safe because we're under ./.venv
     # Order matters: cross_platform must be installed before python_setup (dependency)
-    with setup_group("Core Modules", 4):
+    with setup_group("Core Modules", 5):
         for name, path in [
             ("standard_ui", STANDARD_UI_SETUP_DIR),
             ("cross_platform", CROSS_PLATFORM_DIR),
+            ("script_logging", SCRIPT_LOGGING_DIR),
             ("python_setup", PYTHON_SETUP_DIR),
             ("scripts_setup", SCRIPTS_SETUP_PACKAGE_DIR),
         ]:

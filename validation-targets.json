@@ -435,17 +435,20 @@
             ]
         },
         "scheduler": {
-            "description": "Scheduler module CLI, TUI, persistent storage, timing, execution, and logging validation.",
+            "description": "Scheduler setup, Windows runner, history, analytics, CLI, and TUI validation.",
             "working_directory": "modules/scheduler",
             "context_files": [
-                "modules/scheduler/docs/plans/20260926-1545_scheduler-module/STATUS.md",
-                "modules/scheduler/docs/plans/20260926-1545_scheduler-module/checklist.md"
+                "modules/scheduler/docs/plans/20261008-2132_windows-runner-and-elevation/STATUS.md",
+                "modules/scheduler/docs/plans/20261008-2132_windows-runner-and-elevation/checklist.md",
+                "modules/scheduler/docs/plans/20261008-2132_windows-runner-and-elevation/06_task_privilege_isolation__planned.md",
+                "docs/plans/20261009-0941_scheduler-log-explorer-and-shared-logging/STATUS.md",
+                "docs/plans/20261009-0941_scheduler-log-explorer-and-shared-logging/checklist.md"
             ],
             "environment": {
                 "PYTHONUTF8": "1",
                 "PYTHONUNBUFFERED": "1",
                 "PY_COLORS": "1",
-                "PYTHONPATH": "{target_root}"
+                "PYTHONPATH": "{target_root};{repo_root}/modules"
             },
             "commands": [
                 {
@@ -469,6 +472,38 @@
                         "--basetemp",
                         "{temp_root}"
                     ]
+                }
+            ],
+            "powershell_tests": [
+                {
+                    "glob": "tests/powershell/*_test.ps1",
+                    "arguments": [
+                        "-RepoRoot",
+                        "{repo_root}",
+                        "-PythonExecutable",
+                        "{python}",
+                        "-IncludeProductionReadOnly:{include_production_read_only_bool}"
+                    ]
+                }
+            ]
+        },
+        "script-logging": {
+            "description": "Reusable event formatter and SQLite run-history library.",
+            "working_directory": "modules/script_logging",
+            "context_files": [
+                "docs/plans/20261009-0941_scheduler-log-explorer-and-shared-logging/STATUS.md",
+                "docs/plans/20261009-0941_scheduler-log-explorer-and-shared-logging/checklist.md"
+            ],
+            "environment": {
+                "PYTHONUTF8": "1",
+                "PYTHONUNBUFFERED": "1",
+                "PYTHONPATH": "{target_root};{repo_root}/modules"
+            },
+            "commands": [
+                {
+                    "name": "Shared logging pytest suite",
+                    "executable": "{python}",
+                    "arguments": ["-m", "pytest", "tests", "-q", "--basetemp", "{temp_root}"]
                 }
             ]
         }

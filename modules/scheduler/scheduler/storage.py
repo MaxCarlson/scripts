@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 import os
 import threading
+from datetime import datetime
+from uuid import uuid4
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -69,6 +71,18 @@ class StorageManager:
                 data["schedules"] = {}
             if "tasks" not in data or not isinstance(data["tasks"], dict):
                 data["tasks"] = {}
+            changed = False
+            for collection, id_field in (("schedules", "schedule_id"), ("tasks", "task_id")):
+                for item in data[collection].values():
+                    if isinstance(item, dict) and not item.get(id_field):
+                        item[id_field] = uuid4().hex
+                        changed = True
+            for item in data["tasks"].values():
+                if isinstance(item, dict) and item.get("schedule_name") and not item.get("attached_at"):
+                    item["attached_at"] = datetime.now().astimezone().isoformat()
+                    changed = True
+            if changed:
+                self._write_raw(data)
             return data
 
     def _write_raw(self, data: Dict[str, Any]) -> None:
@@ -145,6 +159,8 @@ class StorageManager:
                     attached_task_names.append(t_name)
                     if orphan_tasks:
                         t_data["schedule_name"] = None
+                        t_data["schedule_order"] = None
+                        t_data["attached_at"] = None
 
             del schedules[name]
             self._write_raw(raw)
@@ -172,7 +188,29 @@ class StorageManager:
     def save_task(self, task: Task) -> None:
         with self._lock:
             raw = self._read_raw()
-            raw.setdefault("tasks", {})[task.name] = task.to_dict()
+            self._ensure_schedule_orders(raw)
+            tasks = raw.setdefault("tasks", {})
+            existing = tasks.get(task.name)
+            if not task.schedule_name:
+                task.schedule_order = None
+                task.attached_at = None
+            elif isinstance(existing, dict) and existing.get("schedule_name") == task.schedule_name:
+                task.schedule_order = existing.get("schedule_order")
+                task.attached_at = existing.get("attached_at") or task.attached_at
+            elif existing is None and task.attached_at and task.schedule_order is not None:
+                # A rename retains the same task identity and schedule attachment.
+                pass
+            else:
+                assigned = [
+                    data.get("schedule_order", -1)
+                    for data in tasks.values()
+                    if isinstance(data, dict)
+                    and data.get("schedule_name") == task.schedule_name
+                    and isinstance(data.get("schedule_order"), int)
+                ]
+                task.schedule_order = max(assigned, default=-1) + 1
+                task.attached_at = datetime.now().astimezone().isoformat()
+            tasks[task.name] = task.to_dict()
             self._write_raw(raw)
 
     def delete_task(self, name: str) -> bool:
@@ -186,4 +224,33 @@ class StorageManager:
             return False
 
     def get_attached_tasks(self, schedule_name: str) -> List[Task]:
-        return self.list_tasks(schedule_name=schedule_name)
+        with self._lock:
+            raw = self._read_raw()
+            if self._ensure_schedule_orders(raw):
+                self._write_raw(raw)
+            tasks = [
+                Task.from_dict(task_data)
+                for task_data in raw.get("tasks", {}).values()
+                if isinstance(task_data, dict) and task_data.get("schedule_name") == schedule_name
+            ]
+            return sorted(tasks, key=lambda task: task.schedule_order if task.schedule_order is not None else 0)
+
+    @staticmethod
+    def _ensure_schedule_orders(raw: Dict[str, Any]) -> bool:
+        """Migrate legacy tasks in their existing JSON insertion order."""
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for task_data in raw.get("tasks", {}).values():
+            if isinstance(task_data, dict) and task_data.get("schedule_name"):
+                grouped.setdefault(str(task_data["schedule_name"]), []).append(task_data)
+
+        changed = False
+        for attached in grouped.values():
+            missing = [task for task in attached if not isinstance(task.get("schedule_order"), int)]
+            if not missing:
+                continue
+            assigned = [task["schedule_order"] for task in attached if isinstance(task.get("schedule_order"), int)]
+            next_order = max(assigned, default=-1) + 1
+            for index, task in enumerate(missing):
+                task["schedule_order"] = index if not assigned else next_order + index
+                changed = True
+        return changed

@@ -1,6 +1,8 @@
 """
 Unit tests for scheduler persistent JSON storage.
 """
+import json
+
 import pytest
 from scheduler.models import Schedule, ScheduleTiming, Task
 from scheduler.storage import StorageManager
@@ -70,3 +72,41 @@ def test_task_crud_and_orphan_handling(storage_instance):
     del_ok = storage_instance.delete_task("Task1")
     assert del_ok is True
     assert storage_instance.get_task("Task1") is None
+
+
+def test_attached_tasks_follow_assignment_order_and_reattach_appends(storage_instance):
+    storage_instance.save_schedule(Schedule(name="FirstSchedule"))
+    storage_instance.save_schedule(Schedule(name="SecondSchedule"))
+    storage_instance.save_task(Task(name="Zulu First", schedule_name="FirstSchedule"))
+    storage_instance.save_task(Task(name="Alpha Second", schedule_name="FirstSchedule"))
+
+    assert [task.name for task in storage_instance.get_attached_tasks("FirstSchedule")] == [
+        "Zulu First",
+        "Alpha Second",
+    ]
+
+    first = storage_instance.get_task("Zulu First")
+    first.schedule_name = "SecondSchedule"
+    storage_instance.save_task(first)
+    first.schedule_name = "FirstSchedule"
+    storage_instance.save_task(first)
+
+    assert [task.name for task in storage_instance.get_attached_tasks("FirstSchedule")] == [
+        "Alpha Second",
+        "Zulu First",
+    ]
+
+
+def test_legacy_attached_tasks_migrate_in_existing_json_order(storage_instance):
+    raw = json.loads(storage_instance.data_file.read_text(encoding="utf-8"))
+    first = Task(name="Zulu First", schedule_name="LegacySchedule").to_dict()
+    second = Task(name="Alpha Second", schedule_name="LegacySchedule").to_dict()
+    first.pop("schedule_order")
+    second.pop("schedule_order")
+    raw["tasks"] = {"Zulu First": first, "Alpha Second": second}
+    storage_instance.data_file.write_text(json.dumps(raw), encoding="utf-8")
+
+    attached = storage_instance.get_attached_tasks("LegacySchedule")
+
+    assert [task.name for task in attached] == ["Zulu First", "Alpha Second"]
+    assert [task.schedule_order for task in attached] == [0, 1]

@@ -4,9 +4,10 @@ Unit tests for scheduler TUI components and workflows with mock screen.
 from unittest.mock import MagicMock, patch
 import pytest
 from scheduler.models import Schedule, Task
+from scheduler.readiness import SetupState
 from scheduler.service import SchedulerService
 from scheduler.storage import StorageManager
-from scheduler.tui import SchedulerTUI
+from scheduler.tui import DetailRow, GoHome, SchedulerTUI
 
 
 @pytest.fixture(autouse=True)
@@ -14,7 +15,11 @@ def mock_curses_calls():
     with patch("curses.curs_set"), \
          patch("curses.init_pair"), \
          patch("curses.color_pair", return_value=0), \
-         patch("curses.initscr"):
+        patch("curses.initscr"), \
+         patch(
+             "scheduler.tui.get_setup_state",
+             return_value=SetupState(True, "Windows", "Windows scheduler setup is complete.", None),
+         ):
         yield
 
 
@@ -143,15 +148,143 @@ def test_tui_workflow_view_logs(tui_instance):
     tui_instance.storage.save_task(task)
     tui_instance.service.execute_task("RunLogTask")
 
-    # In workflow_view_logs:
-    # 1. Select option 0: Central System Log
-    # 2. Select option 1: Task Log for RunLogTask
-    # 3. Select -1: Exit
-    with patch.object(tui_instance, "select_menu", side_effect=[0, 1, -1]), \
+    # System events and standalone tasks are distinct top-level groups.
+    with patch.object(tui_instance, "select_menu", side_effect=[0, 1, 0, -1, -1]), \
+         patch.object(tui_instance, "_view_task_details") as mock_task, \
          patch.object(tui_instance, "_view_scrollable_text") as mock_view:
         tui_instance.workflow_view_logs()
-        assert mock_view.call_count == 2
-        # First call was system log
+        assert mock_view.call_count == 1
         assert "Central System Event Log" in mock_view.call_args_list[0][0][0]
-        # Second call was task log
-        assert "Task Log: RunLogTask.log" in mock_view.call_args_list[1][0][0]
+        assert mock_task.call_args.args[0].name == "RunLogTask"
+
+
+def test_tui_schedule_task_run_hierarchy(tui_instance):
+    schedule = Schedule(name="Nightly")
+    task = Task(name="Backup", schedule_name="Nightly")
+    tui_instance.storage.save_schedule(schedule)
+    tui_instance.storage.save_task(task)
+    with patch.object(tui_instance, "_select_details", side_effect=[("task", task), ("run", "run-id"), None, None]) as select, \
+         patch.object(tui_instance, "_view_run") as view_run:
+        tui_instance._view_schedule_details(schedule)
+    assert "Schedule: Nightly" in select.call_args_list[0].args[0]
+    assert "Task: Backup" in select.call_args_list[1].args[0]
+    view_run.assert_called_once_with("run-id")
+
+
+def test_tui_details_navigation_and_home(tui_instance, mock_curses_screen):
+    rows = [DetailRow("Summary"), DetailRow("Run one", ("run", "one")), DetailRow("Run two", ("run", "two"))]
+    mock_curses_screen.getch.side_effect = [10]
+    assert tui_instance._select_details("Details", rows) == ("run", "one")
+    mock_curses_screen.getch.side_effect = [ord("j"), 10]
+    assert tui_instance._select_details("Details", rows) == ("run", "two")
+    mock_curses_screen.getch.side_effect = [27]
+    assert tui_instance._select_details("Details", rows) is None
+    mock_curses_screen.getch.side_effect = [ord("H")]
+    with pytest.raises(GoHome):
+        tui_instance._select_details("Details", rows)
+
+
+def test_tui_config_exposes_windows_runner_workflow(tui_instance):
+    with patch("scheduler.tui.windows_task.get_runner_status", return_value={"installed": False}), \
+         patch.object(tui_instance, "select_menu", side_effect=[6, -1, -1]):
+        tui_instance.workflow_config()
+
+
+def test_tui_windows_runner_install_uses_module_data_file(tui_instance):
+    with patch("scheduler.tui.windows_task.get_runner_status", return_value={"installed": False}), \
+         patch("scheduler.tui.windows_task.install_runner", return_value="installed") as install, \
+         patch.object(tui_instance, "select_menu", side_effect=[1, -1]), \
+         patch.object(tui_instance, "show_message") as show_message:
+        tui_instance.workflow_windows_runner()
+
+    install.assert_called_once_with(tui_instance.storage.data_file)
+    assert show_message.call_args.args[0] == "Windows Runner Installed"
+
+
+def test_tui_setup_gate_shows_warning_and_only_setup_option(tui_instance):
+    missing = SetupState(False, "Windows", "The Windows scheduler runner has not been installed.", "scheduler setup windows")
+    ready = SetupState(True, "Windows", "Windows scheduler setup is complete.", None)
+    with patch("scheduler.tui.get_setup_state", side_effect=[missing, ready]), \
+         patch.object(tui_instance, "select_menu", side_effect=[0, -1]) as select_menu, \
+         patch.object(tui_instance, "workflow_windows_runner") as setup:
+        assert tui_instance.run() == 0
+
+    setup.assert_called_once_with()
+    first_menu = select_menu.call_args_list[0]
+    assert first_menu.args[0] == "Setup Required"
+    assert first_menu.args[1] == ["1. Set up Windows scheduler runner"]
+    assert "scheduler setup windows" in " ".join(first_menu.kwargs["warning_lines"])
+
+
+def test_tui_warning_menu_renders_prominent_warning_in_red(tui_instance, mock_curses_screen):
+    mock_curses_screen.getch.return_value = 10
+    result = tui_instance.select_menu("Setup Required", ["Set up"], warning_lines=["Run scheduler setup windows"])
+
+    assert result == 0
+    rendered = [call.args[2] for call in mock_curses_screen.addstr.call_args_list if len(call.args) >= 3]
+    assert "!!! SCHEDULER SETUP REQUIRED !!!" in rendered
+    assert "Run scheduler setup windows" in rendered
+
+
+def test_tui_windows_runner_start_requires_warning_confirmation(tui_instance):
+    with patch("scheduler.tui.windows_task.get_runner_status", return_value={"installed": True}), \
+         patch("scheduler.tui.windows_task.start_runner", return_value="started") as start, \
+         patch.object(tui_instance, "select_menu", side_effect=[2, -1]), \
+         patch.object(tui_instance, "show_warning_confirm", return_value=False) as confirm:
+        tui_instance.workflow_windows_runner()
+
+    confirm.assert_called_once()
+    start.assert_not_called()
+
+
+def test_tui_windows_runner_remove_requires_confirmation(tui_instance):
+    with patch("scheduler.tui.windows_task.get_runner_status", return_value={"installed": True}), \
+         patch("scheduler.tui.windows_task.remove_runner", return_value="removed") as remove, \
+         patch.object(tui_instance, "select_menu", side_effect=[3, -1]), \
+         patch.object(tui_instance, "show_warning_confirm", return_value=True) as confirm:
+        tui_instance.workflow_windows_runner()
+
+    confirm.assert_called_once()
+    remove.assert_called_once_with()
+
+
+def test_tui_selected_task_can_queue_delayed_runner_test(tui_instance):
+    task = Task(name="Winget Update", admin=True, environment="pwsh", code="winget upgrade --all")
+    tui_instance.storage.save_task(task)
+
+    with patch.object(tui_instance, "select_menu", side_effect=[5, 0, 0, 1, 7]), \
+         patch.object(tui_instance.service, "queue_runner_test", return_value="13:00:10") as queue_test, \
+         patch.object(tui_instance.service, "execute_task") as execute_task, \
+         patch.object(tui_instance, "show_message") as show_message:
+        tui_instance.run()
+
+    queue_test.assert_called_once_with("Winget Update", delay_seconds=10)
+    execute_task.assert_not_called()
+    assert show_message.call_args.args[0] == "Runner Test Queued"
+    assert "visible console window" in " ".join(show_message.call_args.args[1])
+
+
+def test_tui_non_admin_task_has_no_elevated_runner_option(tui_instance):
+    task = Task(name="Scoop Update", admin=False, environment="pwsh", code="scoop update")
+    tui_instance.storage.save_task(task)
+
+    with patch.object(tui_instance, "select_menu", side_effect=[5, 0, 0, 0, 7]) as select_menu, \
+         patch.object(tui_instance.service, "execute_task") as execute_task:
+        tui_instance.run()
+
+    run_menu = next(call for call in select_menu.call_args_list if call.args[0] == "Run Task: Scoop Update")
+    assert run_menu.args[1] == ["Run immediately (manual)"]
+    execute_task.assert_called_once_with("Scoop Update")
+
+
+def test_tui_delayed_runner_test_reports_inactive_daemon(tui_instance):
+    task = Task(name="Winget Update", admin=True, environment="pwsh", code="winget upgrade --all")
+    tui_instance.storage.save_task(task)
+
+    with patch.object(tui_instance, "select_menu", side_effect=[5, 0, 0, 1, 7]), \
+         patch.object(tui_instance.service, "queue_runner_test", side_effect=RuntimeError("runner is not running")), \
+         patch.object(tui_instance, "show_message") as show_message:
+        tui_instance.run()
+
+    assert show_message.call_args.args[0] == "Runner Test Not Queued"
+    assert "runner is not running" in show_message.call_args.args[1][0]
