@@ -1,5 +1,7 @@
 # mangadl Plan Index
 
+Current cross-module feature: [Kavita collection assignment](../../../docs/plans/20261009-0349_kavita-module-mangadl-collections/00_implementation-plan.md).
+
 Active: [20261009-0325 graceful quit and worker scaling](20261009-0325_graceful-quit-and-worker-scaling/00_implementation-plan.md)
 
 Current stage: Stage 1 implementation and repository validation complete after

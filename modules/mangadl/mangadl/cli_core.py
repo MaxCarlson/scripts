@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from cross_platform import StorageMediaKind, storage_media_for_path
+from kavita import KavitaClient, KavitaConfig, PendingAssignmentStore, parse_path_maps
+from kavita.assignments import reconcile_assignments
 
 from . import __version__
 from .archive_ui import ArchiveBrowser, filter_records, load_archive
@@ -113,6 +115,20 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     _add_state(retry)
     retry.add_argument("-j", "--job-id", action="append", type=int, default=[], help="Job ID to retry; repeatable.")
     retry.add_argument("-f", "--all-failed", action="store_true", help="Requeue all failed jobs.")
+
+    kavita = subparsers.add_parser("kavita", help="Preview or reconcile pending Kavita collection assignments.")
+    kavita_subparsers = kavita.add_subparsers(dest="kavita_command", required=True)
+    reconcile = kavita_subparsers.add_parser("reconcile", help="Match pending URLs to scanned Kavita series.")
+    reconcile.add_argument("-d", "--destination", type=_path, required=True, help="MangaDL destination root.")
+    reconcile.add_argument("-Z", "--kavita-url", required=True, help="Kavita base URL.")
+    reconcile.add_argument(
+        "-E", "--kavita-api-key-env", default="KAVITA_API_KEY", help="Environment variable containing the Auth Key."
+    )
+    reconcile.add_argument(
+        "-P", "--kavita-path-map", action="append", default=[], metavar="LOCAL=KAVITA", help="Path mapping; repeatable."
+    )
+    reconcile.add_argument("-f", "--apply", action="store_true", help="Write collection changes; default is preview only.")
+    reconcile.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
 
     archive = subparsers.add_parser(
         "archive",
@@ -532,6 +548,9 @@ def _run(args: argparse.Namespace) -> int:
         "scratch_dir": str(args.scratch_dir) if args.scratch_dir else None,
         "partial_root": str(partial_root_for(args.destination, args.scratch_dir)),
     }
+    if getattr(args, "collections", []):
+        preview["kavita_collections"] = list(dict.fromkeys(name.strip() for name in args.collections if name.strip()))
+        preview["kavita_write_mode"] = "apply after download" if getattr(args, "apply_kavita", False) else "queue only"
     controls = (
         ScratchControls(args.destination, args.scratch_dir, args.archive, args.state_db, args.log_dir)
         if args.scratch_dir is not None else None
@@ -564,6 +583,17 @@ def _run(args: argparse.Namespace) -> int:
     if not inputs:
         print(json.dumps(preview, indent=2, sort_keys=True), file=sys.stderr)
         return 2
+
+    requested_collections = list(dict.fromkeys(name.strip() for name in getattr(args, "collections", []) if name.strip()))
+    kavita_url = str(getattr(args, "kavita_url", "") or "").strip().rstrip("/")
+    if requested_collections and not kavita_url:
+        raise ValueError("--collections requires --kavita-url")
+    if requested_collections and getattr(args, "apply_kavita", False):
+        key_env = str(getattr(args, "kavita_api_key_env", "KAVITA_API_KEY"))
+        KavitaConfig.from_env(kavita_url, api_key_env=key_env)
+    if getattr(args, "apply_kavita", False) and not requested_collections:
+        raise ValueError("--apply-kavita requires at least one --collections value")
+    path_maps = parse_path_maps(getattr(args, "kavita_path_map", []))
 
     optimization_result = None
     if args.run_mode in {"optimize", "benchmark"}:
@@ -674,6 +704,19 @@ def _run(args: argparse.Namespace) -> int:
             ui=not args.no_ui and not args.quiet,
         )
         result = DownloadManager(options, store).run()
+        if requested_collections:
+            try:
+                _record_kavita_assignments(
+                    args,
+                    run_id,
+                    requested_collections,
+                    kavita_url,
+                    path_maps,
+                    log_dir=controls.log_dir if controls is not None else args.log_dir,
+                    apply=bool(getattr(args, "apply_kavita", False)),
+                )
+            except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+                print(f"Kavita assignment was not recorded: {type(exc).__name__}: {exc}", file=sys.stderr)
     finally:
         store.close()
     if controls is not None:
@@ -689,6 +732,87 @@ def _run(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
     return result
+
+
+def _record_kavita_assignments(
+    args: argparse.Namespace,
+    run_id: str,
+    collections: list[str],
+    kavita_url: str,
+    path_maps: list[tuple[str, str]],
+    *,
+    log_dir: Path | None = None,
+    apply: bool,
+) -> None:
+    event_path = (log_dir or args.log_dir) / run_id / "events.jsonl"
+    store = PendingAssignmentStore(args.destination / ".mangadl" / "kavita-assignments.json")
+    accepted = {"succeeded", "succeeded_incomplete"}
+    queued = 0
+    missing_path = 0
+    for raw in event_path.read_text(encoding="utf-8", errors="replace").splitlines() if event_path.is_file() else []:
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        data = event.get("data", {})
+        if event.get("event") != "job_complete" or data.get("state") not in accepted:
+            continue
+        series_path = str(data.get("series_path") or "").strip()
+        if not series_path:
+            missing_path += 1
+            continue
+        store.enqueue(str(event.get("url") or ""), series_path, collections, kavita_url=kavita_url)
+        queued += 1
+    if not queued:
+        print("Kavita: no successful jobs had one unambiguous series folder; no assignments were queued.", file=sys.stderr)
+        return
+    if not apply:
+        print(
+            f"Kavita: saved {queued} URL-to-series assignment(s); preview with `mangadl kavita reconcile` "
+            "and use `--apply` to write.",
+            file=sys.stderr,
+        )
+        if missing_path:
+            print(f"Kavita: {missing_path} successful job(s) had ambiguous output folders and were left unassigned.", file=sys.stderr)
+        return
+    try:
+        client = KavitaClient(KavitaConfig.from_env(kavita_url, api_key_env=args.kavita_api_key_env))
+        outcomes = reconcile_assignments(
+            store, client, kavita_url=kavita_url, path_maps=path_maps, apply=True
+        )
+        pending = sum(row["status"] == "pending" for row in outcomes)
+        applied = sum(row["status"] == "applied" for row in outcomes)
+        print(f"Kavita: applied {applied} assignment(s); {pending} remain pending for a later library scan.", file=sys.stderr)
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"Kavita assignment deferred: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+
+def _kavita_reconcile(args: argparse.Namespace) -> int:
+    config = KavitaConfig.from_env(args.kavita_url, api_key_env=args.kavita_api_key_env)
+    store = PendingAssignmentStore(args.destination / ".mangadl" / "kavita-assignments.json")
+    outcomes = reconcile_assignments(
+        store,
+        KavitaClient(config),
+        kavita_url=args.kavita_url,
+        path_maps=parse_path_maps(args.kavita_path_map),
+        apply=args.apply,
+    )
+    payload = {"mode": "apply" if args.apply else "dry-run", "assignments": outcomes}
+    print(json.dumps(payload, indent=2, sort_keys=True) if args.json else _format_kavita_reconcile(payload))
+    return 0
+
+
+def _format_kavita_reconcile(payload: dict[str, Any]) -> str:
+    assignments = payload["assignments"]
+    if not assignments:
+        return "No pending Kavita collection assignments."
+    lines = [f"Kavita assignment {payload['mode']}: {len(assignments)} pending record(s)"]
+    for item in assignments:
+        series = item.get("series_name") or "no unique scanned series match"
+        lines.append(f"- {item['source_url']} -> {series}: {', '.join(item['collections'])} ({item['status']})")
+    if payload["mode"] == "dry-run":
+        lines.append("Use -f/--apply to write the collection changes.")
+    return "\n".join(lines)
 
 
 def _run_id(store: StateStore, requested: str | None) -> str:
@@ -1194,6 +1318,7 @@ def main(argv: list[str] | None = None) -> int:
             "inspect": _inspect,
             "status": _show_state,
             "retry": _retry,
+            "kavita": _kavita_reconcile,
             "archive": _archive,
             "patch-hdporncomics": _patch_hdporncomics,
             "audit": _audit_destinations,

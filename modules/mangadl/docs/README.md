@@ -2,6 +2,7 @@
 
 - [Project handoff](HANDOFF.md)
 - [Plan index](plans/HANDOFF.md)
+- [Kavita collection assignment plan](../../../docs/plans/20261009-0349_kavita-module-mangadl-collections/00_implementation-plan.md)
 - [Active graceful quit and worker scaling plan](plans/20261009-0325_graceful-quit-and-worker-scaling/00_implementation-plan.md)
 - [Active SSD scratch staging plan](plans/20260926-1224_ssd-scratch-staging/00_implementation-plan.md)
 - [Historical partial-safety and merge-readiness plan](plans/20260921-0943_partial-safety-and-merge-readiness/00_implementation-plan.md)

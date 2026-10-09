@@ -38,6 +38,15 @@ The remaining notes below describe prior partial-safety and managed-auth
 feature work. Their old branch/test counts are historical, not the state of
 this branch.
 
+Current cross-module work: [Kavita collection assignment plan](../../../docs/plans/20261009-0349_kavita-module-mangadl-collections/00_implementation-plan.md).
+
+The Kavita collection-assignment work is underway on
+`codex/kavita-module-mangadl-collections-20261009-0349`. It adds a reusable
+`modules/kavita` package and preserves the existing `-c/--config` behavior;
+the collection option is `-M/--collections`. Assignment mutations require
+`-E/--apply-kavita`, while pending assignments can be previewed and later
+applied with `mangadl kavita reconcile`.
+
 Active planning records:
 
 - [Partial safety and merge-readiness plan](plans/20260921-0943_partial-safety-and-merge-readiness/00_implementation-plan.md)

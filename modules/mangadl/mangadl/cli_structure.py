@@ -148,6 +148,14 @@ def add_run_arguments(
         help=_help("Internal hdporncomics threads (default: 8).", expert),
     )
     parser.add_argument("-c", "--config", type=path_type, help=_help("Reserved mangadl TOML configuration path.", expert))
+    if mode == "normal":
+        parser.add_argument(
+            "-M",
+            "--collections",
+            action="append",
+            default=[],
+            help="Associate successful downloads with this Kavita collection; repeatable.",
+        )
     parser.add_argument("-g", "--gallery-config", type=path_type, help=_help("gallery-dl configuration file.", expert))
     parser.add_argument(
         "-l",

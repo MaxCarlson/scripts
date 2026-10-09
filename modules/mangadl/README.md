@@ -20,6 +20,7 @@ Runtime keys:
 
 ```powershell
 python -m pip install -e .\modules\termdash
+python -m pip install -e .\modules\kavita
 python -m pip install -e .\modules\mangadl
 ```
 
@@ -50,6 +51,33 @@ Run IDs are always generated automatically. Archive, state, and logs default to
 `<destination>/.mangadl/logs`. Explicit `-a/--archive`, `-s/--state-db`, and
 `-l/--log-dir` values still override those paths, but ordinary use needs no
 PowerShell variables or manual control-directory setup.
+
+### Kavita collection assignment
+
+Use repeatable `-M/--collections` to associate each successfully downloaded
+URL with one or more Kavita collections. The existing `-c/--config` option
+keeps its current meaning, so `-M` is the collection short form. Supply the
+Kavita server URL and put the Auth Key in the environment variable named by
+`--kavita-api-key-env` (default `KAVITA_API_KEY`):
+
+```powershell
+mangadl run -i .\urls.txt -d .\downloads -M "New manga" --kavita-url http://192.168.50.100:5000
+```
+
+This saves URL-to-folder assignment records without writing to Kavita. To
+apply immediately after successful downloads, add `-E/--apply-kavita`. If the
+server has not scanned the folders yet, MangaDL leaves those records pending.
+After the scan completes, review the pending work and explicitly apply it:
+
+```powershell
+mangadl kavita reconcile -d .\downloads --kavita-url http://192.168.50.100:5000
+mangadl kavita reconcile -d .\downloads --kavita-url http://192.168.50.100:5000 -f
+```
+
+Reconciliation matches only a unique exact folder path. Use repeatable
+`--kavita-path-map LOCAL=KAVITA` when Kavita sees a different path, such as a
+container mount. Missing or ambiguous matches remain pending; title similarity
+is never used. URL-file syntax remains unchanged.
 
 ### Optional SSD scratch staging
 

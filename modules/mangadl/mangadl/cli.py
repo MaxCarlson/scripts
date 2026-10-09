@@ -48,6 +48,8 @@ def _add_covers_command(parser: argparse.ArgumentParser) -> None:
 def _add_run_cover_arguments(parser: argparse.ArgumentParser, *, advanced: bool) -> None:
     run = _subparser(parser, "run")
     hidden = argparse.SUPPRESS
+    normal_run = run.get_default("run_mode") == "normal"
+    show_kavita_config = advanced or normal_run
     run.add_argument(
         "-X",
         "--no-download-covers",
@@ -65,13 +67,13 @@ def _add_run_cover_arguments(parser: argparse.ArgumentParser, *, advanced: bool)
     run.add_argument(
         "-j",
         "--kavita-url",
-        help="Kavita base URL, such as http://192.168.50.100:5000." if advanced else hidden,
+        help="Kavita base URL, such as http://192.168.50.100:5000." if show_kavita_config else hidden,
     )
     run.add_argument(
         "-S" if advanced else "-KE",
         "--kavita-api-key-env",
         default="KAVITA_API_KEY",
-        help="Environment variable containing the Kavita Auth Key." if advanced else hidden,
+        help="Environment variable containing the Kavita Auth Key." if show_kavita_config else hidden,
     )
     run.add_argument(
         "-L",
@@ -79,8 +81,15 @@ def _add_run_cover_arguments(parser: argparse.ArgumentParser, *, advanced: bool)
         action="append",
         default=[],
         metavar="LOCAL=KAVITA",
-        help="Translate local paths to Kavita-visible paths; repeatable." if advanced else hidden,
+        help="Translate local paths to Kavita-visible paths; repeatable." if show_kavita_config else hidden,
     )
+    if normal_run:
+        run.add_argument(
+            "-E",
+            "--apply-kavita",
+            action="store_true",
+            help="Apply collection assignments after downloads; otherwise save them for explicit reconciliation.",
+        )
 
 
 def build_parser(argv_hint: Sequence[str] | None = None) -> argparse.ArgumentParser:

@@ -259,6 +259,17 @@ def _gallery_merge_source(partial: Path, url: str) -> Path:
     return category_root
 
 
+def _single_series_path(partial: Path, destination: Path, url: str, backend: str) -> str:
+    """Infer only a single isolated top-level folder; never guess from a title."""
+    if backend == "hdporncomics" or not partial.is_dir():
+        return ""
+    source = _gallery_merge_source(partial, url) if backend == "gallery-dl" else partial
+    candidates = [child for child in source.iterdir() if child.is_dir() and _tree_stats(child)[0] > 0]
+    if len(candidates) != 1:
+        return ""
+    return str(destination / candidates[0].name)
+
+
 def _merge_gallery_partial(partial: Path, destination: Path, url: str) -> None:
     source = _gallery_merge_source(partial, url)
     _merge_partial(source, destination)
@@ -550,10 +561,15 @@ def run(args: argparse.Namespace) -> int:
                 )
                 return 1
 
+        series_path = "" if getattr(args, "scratch_mode", False) else _single_series_path(
+            partial, Path(args.destination), args.url, args.backend
+        )
         try:
             if getattr(args, "scratch_mode", False):
                 category = _scratch_flatten_category(args.url) if args.backend == "gallery-dl" else ""
                 args.promoted_folders = staged_library_folders(partial, Path(args.destination), category)
+                if len(args.promoted_folders) == 1:
+                    series_path = str(args.promoted_folders[0])
                 _emit(
                     args,
                     "heartbeat",
@@ -619,6 +635,7 @@ def run(args: argparse.Namespace) -> int:
             bytes_total=size,
             elapsed=time.monotonic() - started,
             message=message,
+            series_path=series_path,
         )
         return 0
 
