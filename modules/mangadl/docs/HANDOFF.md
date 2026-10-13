@@ -5,7 +5,7 @@
 Branch: `codex/mangadl-generalized-audit-repair`.
 
 The active plan is [generalized audit and batch repair](plans/20261012-2300_generalized-audit-and-batch-repair/00_implementation-plan.md).
-MangaDL 1.26.2 accepts repeatable URL files/globs plus top-level `url*.txt`
+MangaDL 1.27.0 accepts repeatable URL files/globs plus top-level `url*.txt`
 directory discovery, records cross-file duplicate provenance, writes a
 versioned audit report automatically with input-based names and numbered
 collisions, prints per-URL page findings and separate duplicate/invalid counts,
@@ -34,6 +34,11 @@ agent's authorized repair restored all 260 missing pages in galleries 633374,
 76/76 valid pages, respectively. See the active plan's LIVE_REPAIR.md.
 The user now authorizes commit/push after the repair fix, then summary/color
 improvements, then shared normal downloader UI and available-worker scheduling.
+
+The live repair fix was pushed as `55d02b2`. Summary/color changes now use
+readable wrapped fields, terminal-only ANSI status colors, clean JSON/plain
+redirected output, and termdash audit metadata/image progress. Validation:
+271 MangaDL tests passed. Next is the shared normal repair worker pool/UI.
 
 ---
 

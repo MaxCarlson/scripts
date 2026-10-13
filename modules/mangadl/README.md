@@ -494,6 +494,13 @@ rejected/invalid counts. The console also lists each URL requiring attention,
 its matched folder, valid/expected image totals, and missing/corrupt/duplicate
 page ranges. A found folder can still be incomplete; image integrity describes
 the files present, while completeness checks whether expected pages are missing.
+On a terminal, audit shows a transient bottom progress row with the current
+URL position, metadata/image-check phase, and real local image-check counts.
+The metadata spinner indicates activity while waiting for the source; it does
+not imply a known metadata percentage. Audit and repair summaries use colored
+statuses, separate URL/folder/page fields, and aligned wrapping for long names.
+Redirected output stays plain, JSON remains machine-readable, `NO_COLOR`
+disables summary colors, and `audit -q` suppresses progress.
 
 Every audit writes a complete versioned JSON report automatically. For a single
 `urls32.txt` input and `-d .`, the default is

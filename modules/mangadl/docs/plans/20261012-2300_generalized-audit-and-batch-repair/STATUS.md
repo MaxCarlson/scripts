@@ -2,8 +2,9 @@
 
 Branch: `codex/mangadl-generalized-audit-repair`
 
-Status: live repair verified; summary formatting and shared downloader UI are
-the next authorized stages. The user requested commit/push after each stage.
+Status: live repair fix committed/pushed (`55d02b2`); summary/color improvements
+implemented and validated in 1.27.0. Shared downloader UI is the next stage.
+The user requested commit/push after each stage.
 
 Implemented: URL directory discovery, durable audit reports, visible batch
 repair planning, exact-token apply for proven actions, and post-repair source
@@ -20,7 +21,7 @@ automatic source-labeled report names with collision numbering are now added.
 
 Validation:
 
-- Full MangaDL suite: 268 passed.
+- Full MangaDL suite: 271 passed.
 - Focused scripts-help registry suite: 42 passed (one known pytest cache
   permission warning).
 - Ruff passed for MangaDL and the changed registry file.
@@ -46,6 +47,12 @@ enumeration while generating distinct real keys. Placeholder/repeated keys are
 now rejected. All three authorized galleries were repaired and independently
 verified complete; see LIVE_REPAIR.md for counts and run IDs.
 
-Next: commit/push the repair fix, improve and commit/push summaries, then route
-all repair jobs through a shared normal download manager with available workers.
+Summary stage: readable wrapped URL/folder/page fields, terminal-aware colored
+statuses, NO_COLOR/plain-output support, detailed failure/remaining-page output,
+and a transient audit row with URL position, metadata activity, and real image
+checks. Existing termdash indicators and progress bars are reused. JSON stdout
+remains clean. Console rendering and all 271 MangaDL tests passed.
+
+Next: commit/push summaries, then route all repair jobs through a shared normal
+download manager with available workers.
 No merge is authorized.

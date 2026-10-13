@@ -20,6 +20,7 @@ from kavita.assignments import reconcile_assignments
 
 from . import __version__
 from .archive_ui import ArchiveBrowser, filter_records, load_archive
+from .audit_console import AuditProgress, field, styled
 from .backends import backend_classification, choose_backend, gallery_dl_scope
 from .cli_structure import add_run_arguments, normalize_command_shape
 from .concurrency import configured_maximum_workers
@@ -1339,10 +1340,14 @@ def _format_audit_findings(items: list[dict[str, Any]]) -> str:
         if state == "complete":
             state = "image issues"
         url = item.get("canonical_url") or item.get("source_url") or "unknown source"
-        lines.append(f"  {state.upper()}: {url}")
+        color = "red" if state in {"missing", "incomplete", "image issues"} else "yellow"
+        if lines:
+            lines.append("")
+        lines.append(styled(f"  {state.upper()}: {url}", color))
         folders = item.get("folders") or ([item["folder"]] if item.get("folder") else [])
         for folder in folders:
-            lines.append(f"    Folder: {folder}")
+            lines.append(field("Folder", Path(folder).name))
+            lines.append(field("Root", Path(folder).parent))
         if status == "missing":
             lines.append("    No matching gallery folder was found.")
             continue
@@ -1359,7 +1364,7 @@ def _format_audit_findings(items: list[dict[str, Any]]) -> str:
             ("duplicate_pages", "Duplicate page numbers"), ("extra_pages", "Extra pages"),
         ):
             if pages := item.get(key):
-                lines.append(f"    {label}: {_format_audit_page_ranges(pages)} ({len(pages)})")
+                lines.append(field(label, f"{_format_audit_page_ranges(pages)} ({len(pages)})", color="red"))
         if files := item.get("corrupt_files"):
             lines.append(f"    Corrupt files: {', '.join(files)}")
         if item.get("missing_image_count") and not item.get("missing_pages"):
@@ -1404,7 +1409,15 @@ def _expand_audit_input_files(patterns: list[str], directories: list[Path] | Non
 
 
 def _audit_destinations(args: argparse.Namespace) -> int:
-    progress = None if args.quiet else lambda message: print(f"Audit: {message}", file=sys.stderr, flush=True)
+    display = AuditProgress(enabled=not args.quiet)
+    try:
+        return _audit_destinations_impl(args, display)
+    finally:
+        display.close()
+
+
+def _audit_destinations_impl(args: argparse.Namespace, display: AuditProgress) -> int:
+    progress = None if args.quiet else display.log
     if not args.input_file and not args.url_directory:
         if progress:
             progress(f"Scanning {len(args.destination)} destination root(s) without a URL file")
@@ -1457,7 +1470,9 @@ def _audit_destinations(args: argparse.Namespace) -> int:
         metadata_resolver=resolve_nhentai_metadata,
         page_resolver=lambda url: resolve_expected_pages(url, progress=progress),
         backfill_index=not args.no_index_backfill,
+        item_progress=display.update,
     )
+    display.close()
     write_audit_outputs(audit, args.missing_output, args.duplicates_output)
     item_results = []
     for item in inputs:
@@ -1512,7 +1527,7 @@ def _audit_destinations(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
-        print("Audit summary")
+        print(styled("\nAudit summary", "bright"))
         print(f"  URL files: {len(files)}")
         print(
             f"  Input entries: {payload['input_entries']} ({payload['input_urls']} unique, "
@@ -1524,17 +1539,20 @@ def _audit_destinations(args: argparse.Namespace) -> int:
             f"{len(payload['untracked_folders'])} untracked folder(s)"
         )
         print(
-            f"  Verification: {payload['complete']} complete, {payload['incomplete']} incomplete, "
-            f"{payload['unknown']} unknown, {payload['corrupt']} with corrupt pages"
+            "  Verification: " + styled(f"{payload['complete']} complete", "green") + ", "
+            + styled(f"{payload['incomplete']} incomplete", "red") + ", "
+            + styled(f"{payload['unknown']} unknown", "yellow") + ", "
+            + styled(f"{payload['corrupt']} with corrupt pages", "red")
         )
-        print(f"  URLs requiring attention: {payload['issue_urls']}")
+        print(styled(f"  URLs requiring attention: {payload['issue_urls']}", "red" if payload['issue_urls'] else "green"))
+        print()
         print(_format_audit_findings(item_results))
         invalid = [row for row in rejected if row["reason"] != "duplicate"]
         if invalid:
             print("Rejected/invalid input lines")
             for row in invalid:
                 print(f"  {row['source']}:{row['line']}: {row['value']} — {row['reason']}")
-        print(f"Audit report: {report_output}")
+        print(field("Audit report", report_output, indent=0, color="cyan"))
         if audit.index_backfill is not None:
             print(
                 f"Source indexes: {audit.index_backfill['created']} added, "
@@ -1957,21 +1975,26 @@ def _build_batch_repair_plan(args: argparse.Namespace) -> tuple[dict[str, Any], 
 
 def _format_batch_repair_plan(plan: dict[str, Any]) -> str:
     lines = [
-        "Repair plan",
+        styled("\nRepair plan", "bright"),
         f"  Planned actions: {plan['action_count']}",
         f"  Report-only/unsupported issues: {plan['unsupported_count']}",
     ]
     for index, action in enumerate(plan["actions"], 1):
+        lines.append("")
         if action["kind"] == "repair_pages":
-            lines.append(
-                f"  {index}. Repair {len(action['damaged_pages'])} page(s): {action['url']} -> {action['folder']}"
-            )
+            lines.append(styled(f"  {index}. Repair {len(action['damaged_pages'])} page(s)", "yellow"))
+            lines.append(field("URL", action["url"], color="cyan"))
+            lines.append(field("Folder", Path(action["folder"]).name))
+            lines.append(field("Pages", _format_audit_page_ranges(action["damaged_pages"]), color="yellow"))
         else:
-            lines.append(f"  {index}. Download missing gallery: {action['url']} -> {action['destination']}")
+            lines.append(styled(f"  {index}. Download missing gallery", "yellow"))
+            lines.append(field("URL", action["url"], color="cyan"))
+        lines.append(field("Destination", action["destination"]))
     for row in plan["unsupported"]:
-        lines.append(f"  REPORT ONLY: {row['url']} — {row['reason']}")
+        lines.append("\n" + styled(f"  REPORT ONLY: {row['url']}", "red"))
+        lines.append(field("Reason", row["reason"], color="yellow"))
     if plan["actions"]:
-        lines.append(f"  Confirmation token: {plan['confirmation_token']}")
+        lines.append("\n" + styled(f"  Confirmation token: {plan['confirmation_token']}", "green"))
         if plan["mode"] == "preview":
             lines.append("  Re-run with -f/--apply and -C/--confirm-plan TOKEN to apply this exact plan.")
     return "\n".join(lines)
@@ -2099,11 +2122,16 @@ def _batch_repair(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
-        print(f"Repair results: {succeeded} verified, {len(results) - succeeded} failed or unverified.")
+        print(styled(f"\nRepair results: {succeeded} verified, {len(results) - succeeded} failed or unverified.",
+                     "green" if succeeded == len(results) else "red"))
         for row in results:
             state = "VERIFIED" if row.get("verified") else "NOT VERIFIED"
-            detail = row.get("error") or row.get("verification") or ""
-            print(f"  {state}: {row['url']} {detail}".rstrip())
+            detail = row.get("error") or row.get("run_error") or row.get("verification") or ""
+            print(styled(f"  {state}: {row['url']}", "green" if row.get("verified") else "red"))
+            if detail:
+                print(field("Detail", detail))
+            if row.get("remaining_pages"):
+                print(field("Remaining pages", _format_audit_page_ranges(row["remaining_pages"]), color="red"))
     if plan["unsupported_count"]:
         return 1
     return 0 if succeeded == len(results) else 1
