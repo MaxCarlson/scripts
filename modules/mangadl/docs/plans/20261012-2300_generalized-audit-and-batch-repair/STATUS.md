@@ -30,5 +30,14 @@ The user requested preserving this usable 1.26.0 state and authorized a scoped
 commit. The proposed live progress bar and colored audit/repair summaries are
 deferred; no implementation of those enhancements was started.
 
-Next action: test `mangadl repair -r REPORT` against the generated audit report.
-No live library repair, archive mutation, push, or merge has been performed.
+Live apply failed before downloads: missing-only repairs did not create the
+quarantine directory before writing `repair-manifest.json`. Read-only comparison
+of the three 20261012-2328 archive backups and the current archive found identical
+70708-entry sets. The repair lock was removed; no image downloads started.
+
+Fixed in 1.26.1: always create the repair directory, keep long gallery names in
+the manifest rather than its Windows path, and write the manifest before deleting
+target archive entries. Focused repair/CLI regressions: 44 passed; Ruff passed.
+
+Next action: retry the user's reviewed repair apply with 1.26.1.
+No live repair was executed by the agent; no push or merge has been performed.

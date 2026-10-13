@@ -5,7 +5,7 @@
 Branch: `codex/mangadl-generalized-audit-repair`.
 
 The active plan is [generalized audit and batch repair](plans/20261012-2300_generalized-audit-and-batch-repair/00_implementation-plan.md).
-MangaDL 1.26.0 accepts repeatable URL files/globs plus top-level `url*.txt`
+MangaDL 1.26.1 accepts repeatable URL files/globs plus top-level `url*.txt`
 directory discovery, records cross-file duplicate provenance, writes a
 versioned audit report automatically with input-based names and numbered
 collisions, prints per-URL page findings and separate duplicate/invalid counts,
@@ -20,6 +20,12 @@ user confirmed the live audit findings and authorized committing this usable
 1.26.0 state. Live progress and colored summaries are deferred at the user's
 request. Live repair acceptance is pending; no live library repair, push, or
 merge has been performed.
+
+The first live missing-only repair failed before downloads because its manifest
+directory was not created. Archive backups and current archive were confirmed
+identical. The 1.26.1 fix creates a short repair directory unconditionally and
+writes its manifest before archive-key deletion. Focused repair/CLI regression
+validation passed (44 tests); retry of the live apply remains pending.
 
 ---
 

@@ -7,6 +7,7 @@
 - [x] Automatically name reports from URL files and preserve existing reports.
 - [x] Add report-driven batch repair preview and optional plan output.
 - [x] Add exact-plan-token apply for supported actions.
+- [x] Fix missing-only repair manifest creation and validate archive preservation on manifest failure.
 - [x] Backfill source identity after successful repair/download.
 - [x] Add focused tests, full MangaDL validation, Ruff, and diff checks.
 - [x] Update README, handoff, status, registry, and package version.

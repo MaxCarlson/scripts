@@ -182,7 +182,9 @@ def apply_page_repair(
     control_root = archive.parent
     backup = control_root / "archive-backups" / f"repair-{repair_id}.sqlite3"
     _snapshot_archive(archive, backup)
-    quarantine = quarantine_root / repair_id / plan.folder.name
+    # The manifest is needed even for missing-only repairs. Keep the original
+    # long gallery name inside the manifest rather than in its Windows path.
+    quarantine = quarantine_root / repair_id
     moved: list[tuple[Path, Path]] = []
     lock = control_root / "repair.lock"
     token = secrets.token_hex(24)
@@ -193,15 +195,13 @@ def apply_page_repair(
     finally:
         os.close(descriptor)
     try:
+        quarantine.mkdir(parents=True, exist_ok=False)
         for source in plan.corrupt_files:
-            quarantine.mkdir(parents=True, exist_ok=True)
             target = quarantine / source.name
             if target.exists():
                 raise ValueError(f"quarantine target already exists: {target}")
             shutil.move(str(source), str(target))
             moved.append((source, target))
-        if plan.archive_table and plan.archive_rows_found:
-            _update_archive_keys(archive, plan.archive_table, {key: False for key in plan.archive_rows_found})
         (quarantine / "repair-manifest.json").write_text(
             json.dumps(
                 {
@@ -219,6 +219,8 @@ def apply_page_repair(
             + "\n",
             encoding="utf-8",
         )
+        if plan.archive_table and plan.archive_rows_found:
+            _update_archive_keys(archive, plan.archive_table, {key: False for key in plan.archive_rows_found})
         run_error = None
         try:
             run_download(",".join(str(page) for page in plan.damaged_pages), token)
