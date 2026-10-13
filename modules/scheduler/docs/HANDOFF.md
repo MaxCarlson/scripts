@@ -6,15 +6,13 @@ The scheduler module (`scripts/modules/scheduler/`) provides scheduled task auto
 
 ## Active Work
 
-Windows background runner setup, unattended elevation, and the setup gate are tracked in:
+The latest startup console, run queue import, and unattended Winget changes are tracked in:
 
 ```text
-docs/plans/20261008-2132_windows-runner-and-elevation/
+docs/plans/20261012-2002_startup-runner-console-and-import-fix/
 ```
 
-The runner registers a per-user highest-privilege logon task. Registration is an explicit CLI/TUI action and does not modify the live PC during tests.
-
-Stages 1 through 3 implement the Windows runner, setup gate, and setup-output capture fix. Stage 4 adds a delayed TUI runner test with a visible console; see the active plan `STATUS.md` for validation state. Stage 4 uses a file-backed one-shot request and does not change regular task schedules.
+The underlying per-user Windows runner setup, privilege separation, setup gate, and visible delayed-run test are documented in `docs/plans/20261008-2132_windows-runner-and-elevation/`. Registration is an explicit CLI/TUI action and automated tests do not modify the live PC. Newly registered runners use `pythonw.exe` when available; rerun `scheduler setup windows` to update existing Task Scheduler actions. The queue implementation now lives in `scheduler/request_queue.py` because the module's `run_requests` data directory can shadow a same-named Python import when the repository's `modules/` directory is on `PYTHONPATH`.
 
 ## Documentation Index
 

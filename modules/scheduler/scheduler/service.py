@@ -3,7 +3,6 @@ Scheduler service orchestrating schedules, tasks, catch-up evaluations, and logg
 """
 from __future__ import annotations
 
-import json
 import time
 from datetime import datetime, timedelta
 from typing import List, Optional
@@ -15,7 +14,7 @@ from .history import SchedulerHistory
 from .logger import CentralLogger, TaskLogger
 from .models import ExecutionResult
 from .notifier import Notifier
-from .run_requests import RunRequestQueue
+from .request_queue import RunRequestQueue
 from .storage import StorageManager
 from .timing import calculate_next_run, evaluate_schedule_trigger
 from . import windows_task

@@ -9,6 +9,7 @@ A robust Python scheduling and task execution module providing:
 - Sequential execution of attached tasks in schedule assignment order.
 - First-time setup gate in the CLI and TUI; Windows operations remain unavailable until the runner is registered correctly.
 - TUI delayed runner tests that dispatch an Admin task through the active elevated daemon and open a visible console without blocking the TUI.
+- Logon daemon and worker prefer `pythonw.exe` to avoid empty background console windows; scheduled command output remains available in scheduler logs.
 - $EDITOR integration for task scripts.
 - Strict centralized system logging and pruned task output logging.
 - Durable SQLite run history, schedule/task statistics, and a schedule-aware TUI log browser powered by the reusable `script_logging` module.

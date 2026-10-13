@@ -3,9 +3,9 @@
 ## Active Plan
 
 ```text
-20261008-2132_windows-runner-and-elevation/
+20261012-2002_startup-runner-console-and-import-fix/
 ```
 
 ## Scope
 
-The active plan adds Windows Task Scheduler runners through CLI and TUI, gates scheduler use until setup is complete, adds a delayed visible-window runner test, preserves per-schedule task attachment order, and isolates execution privileges by each task's Admin flag. Linux setup remains out of scope pending user approval. The original module implementation is documented at `20260926-1545_scheduler-module/`.
+The active plan fixes startup console visibility and the run queue import collision. The preceding Windows runner implementation and setup gate are documented at `20261008-2132_windows-runner-and-elevation/`; the original module implementation is documented at `20260926-1545_scheduler-module/`.

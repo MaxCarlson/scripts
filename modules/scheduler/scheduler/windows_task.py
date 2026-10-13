@@ -26,6 +26,16 @@ def _ps_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def _runner_python_path() -> str:
+    """Use the windowless interpreter for long-running Task Scheduler processes."""
+    python_path = Path(sys.executable).resolve()
+    if os.name == "nt":
+        windowless_path = python_path.with_name("pythonw.exe")
+        if windowless_path.is_file():
+            return str(windowless_path)
+    return str(python_path)
+
+
 def _encode_powershell(script: str) -> str:
     return base64.b64encode(script.encode("utf-16le")).decode("ascii")
 
@@ -113,7 +123,7 @@ def _registration_script(
     if interval_seconds < 1:
         raise ValueError("The daemon check interval must be at least one second.")
 
-    python_path = str(Path(sys.executable).resolve())
+    python_path = _runner_python_path()
     module_dir = str(Path(__file__).resolve().parent.parent)
     arguments = subprocess.list2cmdline(
         ["-m", "scheduler.cli", "--config-file", str(data_file.resolve()), "daemon", "--interval", str(interval_seconds)]
@@ -128,7 +138,7 @@ def _registration_script(
             "$trigger = New-ScheduledTaskTrigger -AtLogOn -User $user",
             "$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)",
             f"$daemonAction = New-ScheduledTaskAction -Execute {_ps_quote(python_path)} -Argument {_ps_quote(arguments)} -WorkingDirectory {_ps_quote(module_dir)}",
-            f"$daemonPrincipal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited",
+            "$daemonPrincipal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited",
             f"Register-ScheduledTask -TaskName {_ps_quote(task_name)} -Description 'Runs the scripts scheduler daemon at user logon.' -Action $daemonAction -Trigger $trigger -Principal $daemonPrincipal -Settings $settings -Force | Out-Null",
             f"$workerAction = New-ScheduledTaskAction -Execute {_ps_quote(python_path)} -Argument {_ps_quote(worker_arguments)} -WorkingDirectory {_ps_quote(module_dir)}",
             "$workerPrincipal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest",

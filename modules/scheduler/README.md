@@ -32,6 +32,8 @@ scheduler setup windows
 
 The task begins at the next user logon. Check it with `scheduler setup windows status`; start it immediately with `scheduler setup windows start -y` after considering any due catch-up tasks. The older `scheduler setup windows-runner` spelling remains supported. Linux setup is not implemented yet.
 
+The daemon and elevated worker use `pythonw.exe` when it is available, so they do not leave empty Python console windows open after logon. Scheduled task stdout and stderr are captured in the task logs and can be browsed with `scheduler tui` → **View Logs**. Re-run `scheduler setup windows` to update runners installed by an earlier version. The configured `Winget Update` task now uses `--silent --disable-interactivity --accept-package-agreements --accept-source-agreements`; third-party installers may still show their own UI if they do not honor silent installation.
+
 ## Logs and history in the TUI
 
 Choose **View Logs** to browse system events, schedules, standalone tasks, and unmatched legacy files. A schedule page shows its current recurrence, task summaries, run counts for the last 7/30/365 days, runtime bounds, and timing compared with scheduled occurrences. Choose a task for its own statistics and run list. Enter on a run opens only that run's output. Escape returns one screen; `H` returns to the main menu. Shift+Escape also works in terminals that report it distinctly.

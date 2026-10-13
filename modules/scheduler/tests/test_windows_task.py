@@ -27,6 +27,35 @@ def test_registration_uses_limited_daemon_and_highest_admin_worker(tmp_path):
     assert r"DOMAIN\User" in script
 
 
+def test_runner_prefers_windowless_python_when_available(tmp_path, monkeypatch):
+    python_path = tmp_path / "python.exe"
+    windowless_path = tmp_path / "pythonw.exe"
+    python_path.touch()
+    windowless_path.touch()
+    monkeypatch.setattr(windows_task.sys, "executable", str(python_path))
+    monkeypatch.setattr(windows_task.os, "name", "nt")
+
+    assert windows_task._runner_python_path() == str(windowless_path.resolve())
+
+
+def test_runner_falls_back_to_console_python_when_windowless_python_is_missing(tmp_path, monkeypatch):
+    python_path = tmp_path / "python.exe"
+    python_path.touch()
+    monkeypatch.setattr(windows_task.sys, "executable", str(python_path))
+    monkeypatch.setattr(windows_task.os, "name", "nt")
+
+    assert windows_task._runner_python_path() == str(python_path.resolve())
+
+
+def test_runner_registration_uses_selected_executable_for_daemon_and_worker(tmp_path, monkeypatch):
+    selected_path = r"C:\Python\pythonw.exe"
+    monkeypatch.setattr(windows_task, "_runner_python_path", lambda: selected_path)
+
+    script = windows_task._registration_script(tmp_path / "scheduler_data.json", 30, "TestRunner", "User")
+
+    assert script.count(selected_path) == 2
+
+
 def test_registration_rejects_nonpositive_interval(tmp_path):
     with pytest.raises(ValueError, match="at least one second"):
         windows_task._registration_script(tmp_path / "scheduler_data.json", 0, "TestRunner", "User")

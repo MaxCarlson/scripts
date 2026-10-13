@@ -1,7 +1,12 @@
 """Tests for the daemon's file-backed one-shot run queue."""
 from datetime import datetime, timedelta
 
-from scheduler.run_requests import RunRequestQueue
+from scheduler.request_queue import RunRequestQueue
+from scheduler.service import RunRequestQueue as ServiceRunRequestQueue
+
+
+def test_service_uses_queue_module_outside_runtime_directory_namespace():
+    assert ServiceRunRequestQueue is RunRequestQueue
 
 
 def test_queue_claims_only_requests_that_are_due(tmp_path):

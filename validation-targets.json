@@ -510,6 +510,9 @@
                 "modules/scheduler/docs/plans/20261008-2132_windows-runner-and-elevation/STATUS.md",
                 "modules/scheduler/docs/plans/20261008-2132_windows-runner-and-elevation/checklist.md",
                 "modules/scheduler/docs/plans/20261008-2132_windows-runner-and-elevation/06_task_privilege_isolation__planned.md",
+                "modules/scheduler/docs/plans/20261012-2002_startup-runner-console-and-import-fix/STATUS.md",
+                "modules/scheduler/docs/plans/20261012-2002_startup-runner-console-and-import-fix/checklist.md",
+                "modules/scheduler/docs/plans/20261012-2002_startup-runner-console-and-import-fix/01_runner-and-import-fixes__planned.md",
                 "docs/plans/20261009-0941_scheduler-log-explorer-and-shared-logging/STATUS.md",
                 "docs/plans/20261009-0941_scheduler-log-explorer-and-shared-logging/checklist.md"
             ],
