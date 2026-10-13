@@ -236,6 +236,9 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                         "failed_count": r.failed_count,
                         "skipped_count": r.skipped_count,
                         "cache_hits": r.cache_hits,
+                        "error_summary": r.error_summary,
+                        "candidate_bytes": r.candidate_bytes,
+                        "original_bytes": r.original_bytes,
                     }
                     for r in comp_rows
                 ]

@@ -264,6 +264,8 @@ class CompressionEngine:
                     applied=False,
                     skipped=True,
                     skip_reason=f"compressed output ({compressed_bytes} B) is not smaller than original ({orig_bytes} B)",
+                    candidate_bytes=compressed_bytes,
+                    encoder=encoder,
                 )
                 self.cache.set(path, strategy, res)
                 return res
@@ -290,6 +292,7 @@ class CompressionEngine:
                     applied=True,
                     skipped=False,
                     encoder=encoder,
+                    candidate_bytes=compressed_bytes,
                 )
 
             res = ImageResult(
@@ -304,6 +307,7 @@ class CompressionEngine:
                 applied=False,
                 skipped=False,
                 encoder=encoder,
+                candidate_bytes=compressed_bytes,
             )
             self.cache.set(path, strategy, res)
             return res

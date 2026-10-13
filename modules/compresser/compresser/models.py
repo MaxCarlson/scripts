@@ -85,6 +85,7 @@ class ImageResult:
     error: str | None = None
     encoder: str | None = None
     cache_hit: bool = False
+    candidate_bytes: int | None = None
 
     @property
     def saved_bytes(self) -> int:
@@ -136,3 +137,6 @@ class ComparisonRow:
     failed_count: int = 0
     skipped_count: int = 0
     cache_hits: int = 0
+    error_summary: tuple[str, ...] = ()
+    candidate_bytes: int | None = None
+    original_bytes: int = 0

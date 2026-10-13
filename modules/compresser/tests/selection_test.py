@@ -11,6 +11,31 @@ from compresser import AnalysisCache, CompressionEngine, CompressionStrategy, sc
 from compresser.cli import main, run_comparison
 
 
+def test_lossless_growth_is_measured_but_original_retained(tmp_path, capsys):
+    import random
+    from compresser.ui import print_comparison_matrix
+
+    source = tmp_path / "001.jpg"
+    Image.frombytes("RGB", (80, 80), random.Random(42).randbytes(80 * 80 * 3)).save(source, quality=70)
+    before = source.read_bytes()
+    _, images = scan_directory(tmp_path)
+    engine = CompressionEngine()
+    engine.codecs.pop("cli-jpegtran", None)
+    rows = run_comparison(images, engine, no_ui=True)
+    png = rows[0]
+    assert png.candidate_bytes > png.original_bytes
+    assert png.saved_bytes == 0 and png.skipped_count == 1 and png.failed_count == 0
+    assert png.compressed_bytes == len(before)
+    assert rows[2].failed_count == 1 and rows[2].candidate_bytes is None
+    assert rows[2].error_summary
+    print_comparison_matrix(rows)
+    output = capsys.readouterr().out
+    assert "Savings use retained size" in output and "Kept excludes failures" in output
+    assert "encoded candidates" in output and "failed:" in output
+    assert "\x1b[" not in output
+    assert source.read_bytes() == before
+
+
 def test_png_is_actual_lossless_png(tmp_path):
     source = tmp_path / "001.bmp"
     Image.new("RGBA", (80, 80), (10, 100, 200, 120)).save(source)

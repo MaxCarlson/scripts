@@ -1,5 +1,14 @@
 # Compresser handoff
 
+Current UI checkpoint: source0.4.0, MangaDL1.32.0. Persistent comparison stages,
+aligned gallery/stage/overall bars, whole-run timer and total image-strategy trials.
+Retained-size table distinguishes larger candidates, non-error kept originals and
+encoder failures. Raw candidate totals/reasons also exposed in comparison JSON;
+cache schema3 invalidates stale trial details. Full66 tests and MangaDL integration10
+pass. Read-only two-page user JPEG trial confirmed PNG/WebP lossless outputs larger
+than originals; jpegtran absent. Remaining: real terminal/reader acceptance and
+manual repair mapping. No production compression or merge.
+
 Branch: compression-module-mangadl-20261013-0151. Plans pushed as f1baeab.
 Source checkpoint0.2.0 pushed as7181e4f; nested MangaDL/guard checkpoint2f0dd8b.
 Current source0.3.1 shares established-library ownership with MangaDL1.31.1

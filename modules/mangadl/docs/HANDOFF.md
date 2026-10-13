@@ -1,5 +1,12 @@
 # mangadl Immediate Project Handoff
 
+Current compression UI continuation: MangaDL1.32.0 / compresser0.4.0.
+Comparison shares one staged dashboard and continuous overall timer/counts;
+retained-size report distinguishes rejected larger candidates and encoder failures.
+Comparison JSON includes candidate/original bytes and grouped errors. Full
+compresser66/MangaDL compression integration10 pass. Terminal/reader and manual
+mapping acceptance remain pending; source trials only read user images.
+
 ## Current compression continuation — 2026-10-13
 
 Branch `compression-module-mangadl-20261013-0151`. Reviewed plans pushed as

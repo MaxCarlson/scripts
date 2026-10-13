@@ -37,6 +37,7 @@ class CompresserDashboard:
         enabled: bool = True,
         images: Sequence = (),
         workers: int = 4,
+        stages: Sequence[str] = (),
     ) -> None:
         self.strategy_name = strategy_name
         self.total_images = max(1, total_images)
@@ -46,6 +47,11 @@ class CompresserDashboard:
         self.interactive = self.block.interactive
         self.workers = workers
         self.start_time = time.monotonic()
+        self.stage_start = self.start_time
+        self.stages = tuple(stages) or (strategy_name,)
+        self.stage_index = 0
+        self.overall_total = self.total_images * len(self.stages)
+        self.overall_processed = 0
         self.last_render = 0.0
         self.processed = 0
         self.current_savings = 0
@@ -58,10 +64,25 @@ class CompresserDashboard:
         self.batch_bar = ProgressBar("batch", self.total_images, 0, width=28, charset="block")
         self.block.update(self._lines)
 
+    def begin_stage(self, index: int) -> None:
+        """Reset only stage-local counters; elapsed/overall progress stay continuous."""
+        self.stage_index = index
+        self.strategy_name = self.stages[index]
+        self.stage_start = time.monotonic()
+        self.processed = 0
+        self.last_res = None
+        self.current_savings = 0
+        self.total_orig_bytes = 0
+        self.gallery_done.clear()
+        self.batch_bar.set(0)
+        if self.enabled:
+            self.block.update(self._lines)
+
     def update(self, done_count: int, result: ImageResult) -> None:
         if not self.enabled:
             return
         self.processed = done_count
+        self.overall_processed = self.stage_index * self.total_images + done_count
         self.last_res = result
         self.current_savings += result.saved_bytes
         self.total_orig_bytes += result.original_bytes
@@ -69,7 +90,7 @@ class CompresserDashboard:
         self.gallery_done[result.input_path.parent] += 1
 
         now = time.monotonic()
-        self.samples.append((now, done_count))
+        self.samples.append((now, self.overall_processed))
         while len(self.samples) > 1 and self.samples[0][0] < now - 15:
             self.samples.popleft()
         if not self.interactive:
@@ -87,7 +108,9 @@ class CompresserDashboard:
         elapsed = fmt_hms(time.monotonic() - self.start_time)
         rate = self.processed / max(0.001, time.monotonic() - self.start_time)
         print(
-            f"[{self.mode}] {self.processed}/{self.total_images} ({pct:5.1f}%) | "
+            f"[{self.mode}] Stage {self.stage_index + 1}/{len(self.stages)} {self.strategy_name}: "
+            f"{self.processed}/{self.total_images} ({pct:5.1f}%) | "
+            f"Overall trials: {self.overall_processed}/{self.overall_total} | "
             f"Saved: {format_bytes_decimal(self.current_savings)} | "
             f"Rate: {rate:.1f} img/s | Elapsed: {elapsed}",
             file=sys.stderr,
@@ -97,12 +120,12 @@ class CompresserDashboard:
     def _lines(self) -> list[str]:
         now = time.monotonic()
         elapsed = now - self.start_time
-        rate_img = self.processed / max(0.001, elapsed)
-        rate_bytes = self.total_orig_bytes / max(0.001, elapsed)
+        rate_img = self.processed / max(0.001, now - self.stage_start)
+        rate_bytes = self.total_orig_bytes / max(0.001, now - self.stage_start)
 
-        remaining = max(0, self.total_images - self.processed)
+        remaining = max(0, self.overall_total - self.overall_processed)
         recent = [(stamp, done) for stamp, done in tuple(self.samples) if stamp >= now - 15]
-        recent_rate = ((self.processed - recent[0][1]) / max(0.001, now - recent[0][0])) if recent else 0
+        recent_rate = ((self.overall_processed - recent[0][1]) / max(0.001, now - recent[0][0])) if recent else 0
         eta = fmt_hms(remaining / recent_rate) if recent_rate > 0 else "unknown"
 
         mode_color = "yellow" if self.mode == "ANALYSIS" else "green"
@@ -115,11 +138,15 @@ class CompresserDashboard:
             sav_pct = f"-{res.savings_percent:.1f}%" if res.savings_percent > 0 else "0.0%"
             ssim_str = f"{res.ssim:.3f}" if res.ssim is not None else "N/A"
             file_line = (
-                f"File: {color_text(fname, 'bright')} ({orig_sz}) -> {res.output_path.name} "
+                f"Last completed: {color_text(fname, 'bright')} ({orig_sz}) -> {res.output_path.name} "
                 f"({comp_sz}, {color_text(sav_pct, 'green')}) | SSIM: {ssim_str}"
             )
+            if res.error:
+                file_line = f"Last completed: {fname} | FAILED: {res.error}"
+            elif res.skipped:
+                file_line += f" | Kept original: {res.skip_reason or 'unchanged'}"
         else:
-            file_line = "File: Initializing..."
+            file_line = "Last completed: waiting for first image trial..."
 
         savings_pct = (
             (self.current_savings / max(1, self.total_orig_bytes)) * 100.0 if self.total_orig_bytes > 0 else 0.0
@@ -129,14 +156,28 @@ class CompresserDashboard:
         gallery_count = self.gallery_done[gallery] if gallery else 0
         gallery_total = self.gallery_totals.get(gallery, 0)
         gallery_bar = ProgressBar("gallery", gallery_total or 1, gallery_count, width=28, charset="block")
-        return [
+        stage_labels = []
+        completed_stages = self.stage_index + int(self.processed == self.total_images)
+        for index, name in enumerate(self.stages):
+            state = "done" if index < completed_stages else "running" if index == self.stage_index else "pending"
+            label = f"{name} ({state})"
+            if self.interactive and "NO_COLOR" not in os.environ:
+                label = _color_text(label, {"done": "green", "running": "blue", "pending": "yellow"}[state])
+            stage_labels.append(label)
+        overall_bar = ProgressBar("overall", self.overall_total, self.overall_processed, width=28, charset="block")
+        lines = [
+            f"Stages {completed_stages}/{len(self.stages)} complete: " + " | ".join(stage_labels),
             f"{color_text('Compresser', 'bright')} | Mode: {color_text(self.mode, mode_color)} | Strategy: {self.strategy_name} | Worker limit: {self.workers}",
             file_line,
-            f"Processed: {self.processed}/{self.total_images} | Rate: {rate_img:.1f} img/s ({format_rate_bps(rate_bytes)}) | Elapsed: {fmt_hms(elapsed)} | ETA: {eta}",
-            f"Current Savings: {color_text(format_bytes_decimal(self.current_savings), 'green')} / {format_bytes_decimal(self.total_orig_bytes)} ({savings_pct:.1f}%)",
-            f"Gallery: {gallery.name if gallery else 'waiting for first completion'} {gallery_bar} {gallery_count}/{gallery_total or '?'}",
-            f"Batch: {self.batch_bar}",
+            f"Stage trials: {self.processed}/{self.total_images} | Rate: {rate_img:.1f} img/s ({format_rate_bps(rate_bytes)})",
+            f"Elapsed (entire run): {fmt_hms(elapsed)} | Overall ETA: {eta} (rolling rate; encoder speeds vary)",
+            f"Stage savings: {color_text(format_bytes_decimal(self.current_savings), 'green')} / {format_bytes_decimal(self.total_orig_bytes)} ({savings_pct:.1f}%)",
+            f"Gallery: {gallery.name if gallery else 'waiting for first completion'}",
+            f"Gallery  {gallery_bar} {gallery_count}/{gallery_total or '?'} (current stage)",
+            f"Stage    {self.batch_bar} {self.processed}/{self.total_images}",
+            f"Overall  {overall_bar} {self.overall_processed}/{self.overall_total} image-strategy trials",
         ]
+        return lines
 
     def close(self) -> None:
         self.block.close()
@@ -191,12 +232,13 @@ def print_comparison_matrix(rows: Sequence[ComparisonRow]) -> None:
         "Format",
         "Mode",
         "Quality",
-        "Total Size",
+        "Retained Size",
         "Savings %",
         "Avg SSIM",
-        "Speed",
+        "Trial Rate",
         "Relative Storage Savings",
         "Failures",
+        "Kept",
         "Cached",
     ]
 
@@ -205,7 +247,7 @@ def print_comparison_matrix(rows: Sequence[ComparisonRow]) -> None:
 
     for r in rows:
         ratio = (r.savings_percent / 100.0) if max_savings > 0 else 0.0
-        bar = render_horizontal_bar(ratio, width=16, color="green", show_pct=False)
+        bar = color_text(render_horizontal_bar(ratio, width=16, show_pct=False), "green")
         table_rows.append(
             [
                 color_text(r.strategy_name, "bright"),
@@ -213,11 +255,12 @@ def print_comparison_matrix(rows: Sequence[ComparisonRow]) -> None:
                 r.mode,
                 r.quality_display,
                 format_bytes_decimal(r.compressed_bytes),
-                color_text(f"-{r.savings_percent:.1f}%", "green") if r.savings_percent > 0 else "0.0%",
+                color_text(f"{r.savings_percent:.1f}%", "green") if r.savings_percent > 0 else "0.0%",
                 f"{r.average_ssim:.3f}" if r.average_ssim is not None else "N/A",
                 f"{r.throughput_images_per_s:.1f} img/s",
                 f"{bar} {r.savings_percent:4.1f}%",
                 str(r.failed_count),
+                str(r.skipped_count),
                 str(r.cache_hits),
             ]
         )
@@ -239,7 +282,22 @@ def print_comparison_matrix(rows: Sequence[ComparisonRow]) -> None:
                 "left",
                 "right",
                 "right",
+                "right",
             ],
             style="rule",
         )
     )
+    print("Savings use retained size: originals stay when candidates are not smaller or a trial fails.")
+    print("Kept excludes failures; SSIM describes retained results, including unchanged originals.")
+    print(
+        "Trials count images once per strategy; AUTO may test several encoders internally. Trial rate is not successful encoding speed."
+    )
+    for row in rows:
+        if row.candidate_bytes is not None and row.original_bytes:
+            change = (row.candidate_bytes / row.original_bytes - 1) * 100
+            print(
+                f"  {row.strategy_name}: encoded candidates {format_bytes_decimal(row.candidate_bytes)} "
+                f"({change:+.1f}% vs original; before retaining larger originals)."
+            )
+        for reason in row.error_summary:
+            print(f"  {row.strategy_name}: {reason}")

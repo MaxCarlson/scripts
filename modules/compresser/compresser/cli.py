@@ -23,7 +23,7 @@ from .models import (
 from .scanner import scan_directory, select_sample
 from .ui import CompresserDashboard, print_comparison_matrix, print_single_summary
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -177,47 +177,64 @@ def run_comparison(
         for fmt in formats
     ]
 
+    from collections import Counter
+
     rows: list[ComparisonRow] = []
-    for strat in candidate_strategies:
-        dash = None
-        if not no_ui:
-            dash = CompresserDashboard(
-                strat.name, len(images), mode="COMPARE", enabled=True, images=images, workers=threads
-            )
+    dash = (
+        CompresserDashboard(
+            candidate_strategies[0].name,
+            len(images),
+            mode="COMPARE",
+            images=images,
+            workers=threads,
+            stages=[strategy.name for strategy in candidate_strategies],
+        )
+        if not no_ui
+        else None
+    )
 
-        def cb(done: int, total: int, res: Any) -> None:
+    def cb(done: int, total: int, result: Any) -> None:
+        if dash:
+            dash.update(done, result)
+
+    try:
+        for index, strat in enumerate(candidate_strategies):
             if dash:
-                dash.update(done, res)
-
-        try:
+                dash.begin_stage(index)
             res = engine.compress_batch(images, strat, write_mode=False, threads=threads, progress_callback=cb)
-        finally:
-            if dash:
-                dash.close()
-
-        q_disp = (
-            f"SSIM>={strat.perceptual_target:.3f}"
-            if strat.mode == "perceptual"
-            else (f"q={strat.quality}" if strat.mode == "lossy" else "lossless")
-        )
-        rows.append(
-            ComparisonRow(
-                strategy_name=strat.name,
-                output_format=strat.format,
-                mode=strat.mode,
-                quality_display=q_disp,
-                compressed_bytes=res.compressed_bytes,
-                saved_bytes=res.saved_bytes,
-                savings_percent=res.savings_percent,
-                average_ssim=res.average_ssim,
-                throughput_images_per_s=res.throughput_images_per_s,
-                measured_images=res.processed_images,
-                failed_count=res.failed_count,
-                skipped_count=res.skipped_count,
-                cache_hits=sum(item.cache_hit for item in res.results),
+            q_disp = (
+                f"SSIM>={strat.perceptual_target:.3f}"
+                if strat.mode == "perceptual"
+                else (f"q={strat.quality}" if strat.mode == "lossy" else "lossless")
             )
-        )
-
+            errors = Counter(item.error for item in res.results if item.error)
+            rows.append(
+                ComparisonRow(
+                    strategy_name=strat.name,
+                    output_format=strat.format,
+                    mode=strat.mode,
+                    quality_display=q_disp,
+                    compressed_bytes=res.compressed_bytes,
+                    saved_bytes=res.saved_bytes,
+                    savings_percent=res.savings_percent,
+                    average_ssim=res.average_ssim,
+                    throughput_images_per_s=res.throughput_images_per_s,
+                    measured_images=res.processed_images,
+                    failed_count=res.failed_count,
+                    skipped_count=res.skipped_count,
+                    cache_hits=sum(item.cache_hit for item in res.results),
+                    error_summary=tuple(f"{count} failed: {reason}" for reason, count in errors.most_common(3)),
+                    candidate_bytes=(
+                        sum(item.candidate_bytes for item in res.results)
+                        if all(item.candidate_bytes is not None for item in res.results)
+                        else None
+                    ),
+                    original_bytes=res.original_bytes,
+                )
+            )
+    finally:
+        if dash:
+            dash.close()
     return rows
 
 
@@ -290,6 +307,9 @@ def main(argv: list[str] | None = None) -> int:
                         "failed_count": r.failed_count,
                         "skipped_count": r.skipped_count,
                         "cache_hits": r.cache_hits,
+                        "error_summary": r.error_summary,
+                        "candidate_bytes": r.candidate_bytes,
+                        "original_bytes": r.original_bytes,
                     }
                     for r in comp_rows
                 ]

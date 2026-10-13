@@ -19,7 +19,7 @@ from PIL import features
 
 from .models import CompressionStrategy, ImageMetadata, ImageResult
 
-CACHE_SCHEMA = 2
+CACHE_SCHEMA = 3
 METRIC_REVISION = "bounded-gaussian-rgb-native-patches-3"
 
 

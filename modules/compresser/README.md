@@ -1,4 +1,4 @@
-# compresser 0.3.1
+# compresser 0.4.0
 
 Reusable image analysis, encoder comparison and optional verified compression.
 Default operation is read-only, lossless analysis. Bulk production writes are
@@ -40,6 +40,16 @@ Samples are stratified by format, size and WebP dimension eligibility. Reports
 separate sample bytes/savings, population inventory and projected covered savings.
 Unrepresented/failed strata remain unestimated; projections are not confidence
 intervals. Comparison rows retain failure, skipped and cache-hit counts.
+Comparison uses one persistent dashboard across PNG, WebP, JPEG and AUTO stages.
+Stage/gallery bars reset for each strategy; the aligned overall bar and elapsed
+timer cover all image-strategy trials (60 images x4 strategies =240 trials).
+Completed stages are green, active blue, pending yellow, with textual status when
+color is disabled. AUTO may encode several candidates within one trial; ETA uses
+recent throughput and can change substantially between encoders.
+Retained size/savings include originals when candidates are larger or trials fail.
+Encoded candidate totals before retention and grouped failure reasons are printed
+below the table; totals are unavailable if any image trial failed. "Kept" counts
+non-error skips. Cached entries are invalidated for the new candidate-size schema.
 
 ## Writes and recovery
 

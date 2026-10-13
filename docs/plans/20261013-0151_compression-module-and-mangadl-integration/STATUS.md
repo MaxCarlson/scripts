@@ -50,6 +50,20 @@ excluded), per-item three-row progress for both URL and folder modes.
 
 ## Next
 
+Current UI continuation: compresser0.4.0 / MangaDL1.32.0. One LiveBlock spans
+all comparison stages; stage colors/text, aligned local/overall bars and whole-run
+timer/trial counts replace full resets. Stage savings remain intentionally local.
+Retained-size table exposes non-error kept counts, raw candidate totals before
+retention and grouped failure reasons; JSON adds candidate/original bytes and
+error_summary. Cache schema3 invalidates older trials missing candidate details.
+Full compresser66 and MangaDL compression integration10 pass; Ruff/format and
+help55 pass. Installed0.4.0/1.32.0 and read-only sampled lossy table verified;
+redirected Unicode capture required PYTHONIOENCODING=utf-8. Actual read-only
+source trials on user JPEG folder:01.jpg371797 B
+->PNG937393/WebP845742;02.jpg367020->PNG906909/WebP823514. No jpegtran available.
+These candidates are larger, so original retention and0% savings are correct.
+Terminal/reader manual acceptance still pending; no production images modified.
+
 Shared ownership checkpoint pushed as c78fbf8. Final documentation/help correction:
 MangaDL1.31.2 clarifies that -s is a total sample across selected galleries, not
 N per gallery. Compresser remains0.3.1; -s also limits write scope, so full applies
