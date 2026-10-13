@@ -652,14 +652,20 @@ def _format_run_preview(preview: dict[str, Any]) -> str:
 
 
 def _run(args: argparse.Namespace) -> int:
+    from .library_guard import library_write_guard
+
     _normalize_legacy_autotune(args)
     _resolve_run_paths(args)
+    _resolve_storage_policy(args)
+    _validate_run(args)
+    with library_write_guard(args.destination) if not args.dry_run else nullcontext():
+        return _run_owned(args)
+
+
+def _run_owned(args: argparse.Namespace) -> int:
     repair_lock = args.destination / ".mangadl" / "repair.lock"
     if repair_lock.exists() and os.environ.get("MANGADL_REPAIR_TOKEN") != repair_lock.read_text(encoding="utf-8"):
         raise ValueError(f"a guarded page repair is active for this library: {repair_lock}")
-    _resolve_storage_policy(args)
-    _validate_run(args)
-
     inputs, rejected = collect_inputs(args.input_file, args.url)
     routes: dict[str, str] = {}
     unsupported: list[dict[str, Any]] = []
@@ -1710,6 +1716,13 @@ def _repair_loose(args: argparse.Namespace) -> int:
 
 
 def _repair_pages(args: argparse.Namespace) -> int:
+    from .library_guard import library_write_guard
+
+    with library_write_guard(args.destination) if args.apply else nullcontext():
+        return _repair_pages_owned(args)
+
+
+def _repair_pages_owned(args: argparse.Namespace) -> int:
     inputs, rejected = collect_inputs([], [args.url])
     if rejected or len(inputs) != 1:
         raise ValueError("repair-pages requires exactly one valid gallery URL")
@@ -2176,6 +2189,18 @@ def _batch_repair(args: argparse.Namespace) -> int:
         return 0
     if args.confirm_plan != plan["confirmation_token"]:
         raise ValueError("--apply requires --confirm-plan with the token from the current exact repair preview")
+
+    from contextlib import ExitStack
+    from .library_guard import library_write_guard
+
+    with ExitStack() as owners:
+        destinations = sorted({Path(action["destination"]).resolve() for action in plan["actions"]})
+        for destination in destinations:
+            owners.enter_context(library_write_guard(destination))
+        return _apply_batch_repair_owned(args, plan, prepared)
+
+
+def _apply_batch_repair_owned(args, plan, prepared) -> int:
 
     results: list[dict[str, Any]] = []
     groups: dict[tuple[Path, Path], list[tuple[int, dict[str, Any]]]] = {}

@@ -171,3 +171,45 @@ def test_active_repair_blocks_compression_write(tmp_path):
     (controls / "repair.lock").write_text("active", encoding="utf-8")
     assert main(["compress", "-d", str(gallery), "-w", "-N"]) == 2
     assert (gallery / "001.jpg").exists()
+
+
+def test_nested_gallery_selection_and_analysis(tmp_path, capsys):
+    from mangadl.library_index import write_source_manifest
+
+    root = tmp_path / "library"
+    gallery = root / "series"
+    chapter = gallery / "chapter-1"
+    chapter.mkdir(parents=True)
+    image = Image.new("RGB", (40, 40))
+    page = chapter / "001.png"
+    image.save(page)
+    before = page.read_bytes()
+    for directory in (gallery / ".controls", gallery / "_partial"):
+        directory.mkdir()
+        image.save(directory / "002.png")
+    image.save(chapter / "cover.png")
+    write_source_manifest(gallery, "https://nhentai.net/g/633374/", "gallery-dl")
+
+    assert discover_gallery_targets(root) == [gallery]
+    assert discover_gallery_targets(gallery) == [gallery]
+    assert discover_gallery_targets(gallery, ["https://nhentai.net/g/633374/"]) == [gallery]
+    assert main(["compress", "-d", str(root), "-J", "-N"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["inventory_images"] == 1
+    assert result["total_images"] == 1
+    assert page.read_bytes() == before
+    assert not (chapter / ".compress.lock").exists()
+
+
+def test_nested_gallery_write_preserves_chapter_paths(tmp_path):
+    gallery = tmp_path / "library" / "series"
+    for name in ("chapter-1", "chapter-2"):
+        chapter = gallery / name
+        chapter.mkdir(parents=True)
+        Image.new("RGB", (120, 120), (80, 120, 160)).save(chapter / "001.jpg", quality=90)
+    assert main(["compress", "-d", str(gallery.parent), "-f", "webp", "-m", "lossy", "-w", "-L", "-N"]) == 0
+    for name in ("chapter-1", "chapter-2"):
+        assert not (gallery / name / "001.jpg").exists()
+        with Image.open(gallery / name / "001.webp") as image:
+            image.load()
+            assert image.size == (120, 120)

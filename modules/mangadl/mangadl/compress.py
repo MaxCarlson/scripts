@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -23,15 +24,18 @@ from compresser import (
 from compresser.cli import run_comparison
 from compresser.estimates import estimate_savings
 from compresser.ui import CompresserDashboard, print_comparison_matrix, print_single_summary
-from .library_index import scan_library, resolve_url_folders
+from .library_index import read_source_manifest, scan_library, resolve_url_folders
 from .input import canonicalize_url
+from .library_guard import library_write_guard
 
 
-def _gallery_images(directory: Path, cache: AnalysisCache | None = None):
-    summary, images = scan_directory(directory, recursive=False, cache=cache)
+def _gallery_images(directory: Path, cache: AnalysisCache | None = None, *, recursive: bool = True):
+    summary, images = scan_directory(directory, recursive=recursive, cache=cache)
     # Covers aren't numbered page payloads; their reader identity must not change.
     return summary, [
-        image for image in images if image.path.stem.casefold() not in {"cover", "folder", "front", "back", "poster"}
+        image for image in images
+        if not image.path.is_symlink() and not image.path.name.startswith(".")
+        and image.path.stem.casefold() not in {"cover", "folder", "front", "back", "poster"}
     ]
 
 
@@ -50,6 +54,8 @@ def discover_gallery_targets(
     destination: Path, url_filters: Sequence[str] = (), *, cache: AnalysisCache | None = None
 ) -> list[Path]:
     """Find gallery directories under destination root."""
+    if destination.expanduser().is_symlink():
+        raise ValueError("Compression cannot target a linked gallery")
     dest = destination.expanduser().resolve()
     if not dest.is_dir():
         raise FileNotFoundError(f"Destination does not exist: {dest}")
@@ -57,9 +63,12 @@ def discover_gallery_targets(
         raise ValueError("Compression cannot target hidden controls or partial downloads")
 
     # Check if destination itself directly contains images
-    direct_summary, direct_images = _gallery_images(dest, cache)
+    _, direct_images = _gallery_images(dest, cache, recursive=False)
+    # A source-owned gallery may contain only chapter subdirectories. Do not
+    # interpret an arbitrary library root's descendants as one gallery.
+    is_gallery = bool(direct_images) or read_source_manifest(dest) is not None
     if url_filters:
-        roots = [dest.parent] if direct_images else [dest]
+        roots = [dest.parent] if is_gallery else [dest]
         indexed = scan_library(roots)
         selected = []
         for value in url_filters:
@@ -70,20 +79,20 @@ def discover_gallery_targets(
                     raise ValueError(f"Compression URL is unresolved or ambiguous: {value}")
                 target = matches[0].path
             else:
-                targets = [dest] if direct_images else [row.path for row in indexed]
+                targets = [dest] if is_gallery else [row.path for row in indexed]
                 matches = [target for target in targets if target.name.casefold() == value.casefold()]
                 if len(matches) != 1:
                     raise ValueError(f"Compression folder name is unresolved or ambiguous: {value}")
                 target = matches[0]
-            if direct_images and target != dest:
+            if is_gallery and target != dest:
                 raise ValueError("Selected URL does not identify the explicitly targeted gallery")
             if not target.is_symlink() and target not in selected:
                 selected.append(target)
         return selected
-    if direct_images:
+    if is_gallery:
         return [dest]
 
-    # Otherwise scan first-level subdirectories (galleries)
+    # Gallery ownership stays first-level; pages may be nested beneath it.
     galleries: list[Path] = []
     for entry in sorted(dest.iterdir(), key=lambda p: str(p).casefold()):
         if entry.is_dir() and not entry.name.startswith(".") and entry.name != "_partial" and not entry.is_symlink():
@@ -96,6 +105,20 @@ def discover_gallery_targets(
 
 def run_cli(args: argparse.Namespace) -> int:
     """Execute mangadl compress subcommand."""
+    try:
+        destination = args.destination.expanduser()
+        if not destination.is_dir() or destination.is_symlink():
+            raise ValueError("Compression requires an existing, unlinked destination directory")
+        if destination.resolve().name.startswith(".") or destination.resolve().name == "_partial":
+            raise ValueError("Compression cannot target hidden controls or partial downloads")
+        with library_write_guard(args.destination) if args.write else nullcontext():
+            return _run_cli_owned(args)
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"Error in mangadl compress: {exc}", file=sys.stderr)
+        return 2
+
+
+def _run_cli_owned(args: argparse.Namespace) -> int:
     dest = args.destination.expanduser().resolve()
     url_filters = getattr(args, "url", None) or ()
 

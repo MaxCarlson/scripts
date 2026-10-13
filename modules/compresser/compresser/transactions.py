@@ -25,13 +25,15 @@ def digest(path: Path) -> str:
 
 
 @contextmanager
-def directory_lock(directory: Path, *, create: bool = True) -> Iterator[None]:
+def directory_lock(directory: Path, *, create: bool = True, filename: str = LOCK_FILENAME) -> Iterator[None]:
     """Persistent lock inode with OS ownership, released even on process death.
 
     Never unlink a lock inode: another process may already have opened it.
     Read-only previews only open an existing lock and never create a control.
     """
-    lock = directory / LOCK_FILENAME
+    if Path(filename).name != filename or filename in {"", ".", ".."}:
+        raise ValueError("Lock filename must be one local filename")
+    lock = directory / filename
     if lock.is_symlink():
         raise RuntimeError(f"Refusing linked compression lock: {lock}")
     if not create and not lock.exists():

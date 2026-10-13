@@ -1,7 +1,8 @@
 # Reviewed compression status
 
 Branch: compression-module-mangadl-20261013-0151.
-Plans committed/pushed as f1baeab; verified source checkpoint approved for publication.
+Plans committed/pushed as f1baeab; verified source checkpoint pushed as 7181e4f.
+Continuation: MangaDL1.31.0 / compresser0.3.0, nested-gallery and operation guard implemented.
 Authoritative: [reviewed plan](05_reviewed-plan.md), [findings](REVIEW.md).
 
 ## Implemented and fixture-verified
@@ -19,9 +20,13 @@ settings and projections are not percentage-loss or visual guarantees.
 S7 implemented portions: shared termdash LiveBlock, bounded Unicode tables,
 stderr/plain/NO_COLOR output, gallery/overall progress, rolling ETA, exact source
 URL/folder selection, cover/partial/control exclusions and active repair/run
-refusal. Still pending: nested gallery discovery and robust coordination against
-a download starting concurrently with compression, plus real Windows terminal
-and reader acceptance. Not production-write ready.
+refusal. Nested chapter pages now included beneath selected galleries; an explicit
+nested-only gallery requires its valid source manifest, otherwise first-level
+folders define gallery ownership. Whole-operation OS ownership coordinates MangaDL
+run/page repair/batch repair/compression, with same-thread repair-manager reentrancy.
+Cross-process refusal and process-death release are fixture-tested. Use an established
+library root consistently; standalone compresser/external writers are not covered.
+Real Windows terminal and reader acceptance remain pending. Not production-write ready.
 
 Related A1/A2 audit work implemented: bottom summaries, concrete-defect prioritization,
 ambiguous defects retained, source-confirmed vs inferred labels, read-only
@@ -42,6 +47,10 @@ excluded), per-item three-row progress for both URL and folder modes.
 
 ## Next
 
-S7/S8 remaining acceptance and coordination, then
+Continuation verification: full MangaDL296 and compresser61 pass separately;
+focused integration/CLI/ownership52 pass; Ruff passes. Combined collection failed
+because both packages have cli_test.py; separate suites are authoritative.
+
+S7/S8 remaining terminal/reader acceptance and standalone-writer boundary, then
 A3 stable manual source worksheet/A4 exact supported mapped repairs.
 User authorized continued implementation without another planning approval.

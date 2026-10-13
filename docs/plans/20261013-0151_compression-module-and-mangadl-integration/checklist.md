@@ -16,7 +16,8 @@ Use REVIEW.md and 05_reviewed-plan.md; these reopened gates are authoritative.
 - [ ] S7 termdash widths/Unicode, true renderer/gallery/overall/rolling ETA,
   stderr/plain/NO_COLOR, exact MangaDL selection and finally cleanup.
   - [x] Shared LiveBlock renderer, exact flat-gallery selection, summaries/timers.
-  - [ ] Nested galleries and robust download-start coordination; real terminal QA.
+  - [x] Nested galleries and MangaDL run/repair/compression operation ownership.
+  - [ ] Standalone/external-writer boundary and real terminal/reader QA.
 - [ ] S8 full affected suites, dispatcher, real terminal and isolated acceptance,
   truthful docs/API/version sync. No merge or production writes.
 

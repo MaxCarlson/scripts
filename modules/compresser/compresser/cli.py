@@ -23,7 +23,7 @@ from .models import (
 from .scanner import scan_directory, select_sample
 from .ui import CompresserDashboard, print_comparison_matrix, print_single_summary
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 
 def build_parser() -> argparse.ArgumentParser:

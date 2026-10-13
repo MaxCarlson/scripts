@@ -17,14 +17,21 @@
 
 ### `mangadl compress`
 
-MangaDL1.30.0 integrates compresser0.2.0. Both CLIs default to lossless;
+MangaDL1.31.0 integrates compresser0.3.0. Both CLIs default to lossless;
 lossy/perceptual writes require `-w -L`. Analysis never mutates pending recovery.
 PNG/WebP/JPEG candidates are measured; original files remain if nothing smaller
 passes verification. AVIF is explicit lossy only. Exact URL/folder selection,
 separate persistent cache, stratified estimates and shared transient UI are
 implemented. Pending transactions block writes; `compress -d GALLERY -R`
-previews recovery, then `-R -w -C TOKEN` applies that exact record. Real-terminal,
-nested-gallery and concurrent-download coordination acceptance remain pending;
+previews recovery, then `-R -w -C TOKEN` applies that exact record. Nested chapter
+pages are included beneath selected galleries. A gallery with no direct pages
+can be targeted as a single gallery when its valid source manifest identifies it;
+otherwise the target is interpreted as a library with first-level gallery folders.
+MangaDL run, page repair, batch repair and compression writes share a persistent
+OS-owned `.mangadl/operation.lock`; previews do not acquire/create it. Ownership
+is released on process death, not by deleting the lock file. Use an established
+library root consistently; standalone compresser and external writers are not
+covered by this MangaDL operation guard. Real-terminal and reader acceptance remain pending;
 do not bulk-write a production library yet.
 
 Integrates the reusable `compresser` module to analyze, benchmark, and compress gallery images within downloaded libraries.
