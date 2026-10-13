@@ -2,9 +2,9 @@
 
 Branch: `codex/mangadl-generalized-audit-repair`
 
-Status: live repair fix committed/pushed (`55d02b2`); summary/color improvements
-implemented and validated in 1.27.0. Shared downloader UI is the next stage.
-The user requested commit/push after each stage.
+Status: live repair fix committed/pushed (`55d02b2`), summary/color stage
+committed/pushed (`a49c655`), and shared normal downloader UI validated in 1.28.0.
+The user requested staged commits/pushes and sequential implementation.
 
 Implemented: URL directory discovery, durable audit reports, visible batch
 repair planning, exact-token apply for proven actions, and post-repair source
@@ -21,7 +21,7 @@ automatic source-labeled report names with collision numbering are now added.
 
 Validation:
 
-- Full MangaDL suite: 271 passed.
+- Full MangaDL suite: 276 passed.
 - Focused scripts-help registry suite: 42 passed (one known pytest cache
   permission warning).
 - Ruff passed for MangaDL and the changed registry file.
@@ -53,6 +53,19 @@ and a transient audit row with URL position, metadata activity, and real image
 checks. Existing termdash indicators and progress bars are reused. JSON stdout
 remains clean. Console rendering and all 271 MangaDL tests passed.
 
-Next: commit/push summaries, then route all repair jobs through a shared normal
-download manager with available workers.
+Shared downloader stage: one guarded manager queue per destination with exact
+per-URL page ranges, normal dashboard and worker controls, `-w/-m/-N/-L`, one
+archive backup per batch, and local post-download verification. An isolated
+live three-worker run downloaded nine real pages and verified all three fixture
+galleries. Resume tests verify pending scratch stays compatible after targeted
+archive reconciliation. SQLite SHM/empty-WAL reader changes are excluded from
+content conflict stamps, and backup connections close explicitly. Windows
+temporary replacement locks receive bounded retries.
+
+Validation: 276 MangaDL tests, Ruff, compile, CLI help/version, editable
+installation refresh, staged diff checks, production integrity checks, and
+isolated normal-UI live acceptance. See WORKER_UI_ACCEPTANCE.md.
+
+Next: user testing of 1.28.0 through the normal `mangadl` command. All requested
+implementation stages are complete; no merge is authorized.
 No merge is authorized.

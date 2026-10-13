@@ -10,8 +10,10 @@ import sys
 import time
 import hashlib
 import tempfile
+from contextlib import nullcontext, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from cross_platform import StorageMediaKind, storage_media_for_path
@@ -28,6 +30,7 @@ from .destination_audit import audit_destinations, audit_library, write_audit_ou
 from .favorites import crawl_favorites, format_result as format_favorites_result
 from .favorites import result_payload as favorites_result_payload
 from .favorites import write_url_file
+from .file_io import replace_file
 from .gallery_auth import (
     BROWSERS,
     DEFAULT_AUTH_SITE,
@@ -51,11 +54,14 @@ from .optimizer import (
 from .partial_safety import apply_cleanup, cleanup_preview, plan_cleanup
 from .repair import resolve_nhentai_metadata
 from .partial_reconcile import reconstruct_archive_keys, reconstruct_archive_page_keys, resolve_owner_urls
-from .repair_pages import apply_page_repair, make_page_repair_plan, repair_confirmation_token
+from .repair_pages import (
+    apply_page_repair, apply_page_repairs, clear_page_repair_archive,
+    make_page_repair_plan, repair_confirmation_token,
+)
 from .partial_ui import select_partial_owners
 from .page_adapters import resolve_expected_pages
 from .scratch import partial_root_for
-from .scratch_controls import ScratchControls
+from .scratch_controls import ScratchControls, archive_cleanup_checkpoint
 from .repair import apply_repair, plan_loose_images
 from .repair_ui import RepairDashboard
 from .state import StateStore
@@ -287,6 +293,11 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     batch_repair.add_argument("-f", "--apply", action="store_true", help="Apply the exact displayed repair plan.")
     batch_repair.add_argument("-C", "--confirm-plan", help="Exact plan token required with --apply.")
     batch_repair.add_argument("-j", "--json", action="store_true", help="Emit the plan/result as JSON.")
+    batch_repair.add_argument("-w", "--workers", type=int, default=2, help="Initial normal downloader workers (default: 2).")
+    batch_repair.add_argument("-m", "--max-workers", type=int, help="Normal downloader outer-worker ceiling.")
+    batch_repair.add_argument("-N", "--no-ui", action="store_true", help="Disable the normal download dashboard.")
+    batch_repair.add_argument("-L", "--worker-start-delay", type=float, default=2.0,
+                              help="Seconds between worker launches (normal default: 2).")
 
     partials = subparsers.add_parser("partials", help="Inspect or safely remove resumable partial data.")
     partial_commands = partials.add_subparsers(dest="partials_command", required=True)
@@ -510,6 +521,12 @@ def _validate_run(args: argparse.Namespace) -> None:
             raise ValueError("--file-range is reserved for the guarded repair workflow")
         if not re.fullmatch(r"\d+(?:,\d+)*", args.file_range):
             raise ValueError("invalid internal file range")
+    repair_ranges = getattr(args, "repair_file_ranges", {})
+    if repair_ranges and (
+        not os.environ.get("MANGADL_REPAIR_TOKEN")
+        or any(not re.fullmatch(r"\d+(?:,\d+)*", value) for value in repair_ranges.values())
+    ):
+        raise ValueError("per-URL file ranges require the guarded repair workflow")
 
     if args.run_mode in {"optimize", "benchmark"}:
         if args.min_workers < 1 or args.min_workers > args.max_workers:
@@ -630,6 +647,9 @@ def _run(args: argparse.Namespace) -> int:
     inputs = [item for item in inputs if item.canonical_url in routes]
     if args.file_range and (len(inputs) != 1 or set(routes.values()) != {"gallery-dl"}):
         raise ValueError("internal targeted file range requires exactly one gallery-dl URL")
+    repair_ranges = getattr(args, "repair_file_ranges", {})
+    if any(routes.get(url) != "gallery-dl" for url in repair_ranges):
+        raise ValueError("every targeted repair URL must be accepted by gallery-dl")
     manga18fx_urls = [item.canonical_url for item in inputs if routes[item.canonical_url] == "manga18fx"]
 
     preview: dict[str, Any] = {
@@ -794,6 +814,7 @@ def _run(args: argparse.Namespace) -> int:
             maximum_workers=args.max_workers,
             fast_storage=args.fast_storage,
             file_range=args.file_range,
+            repair_file_ranges=repair_ranges or None,
             workers=args.workers,
             retries=args.retries,
             retry_wait=args.retry_wait,
@@ -1272,7 +1293,7 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        replace_file(temporary, path)
     except BaseException:
         try:
             os.unlink(temporary)
@@ -1820,9 +1841,8 @@ def _fresh_page_plan(
         raise ValueError("repair requires one current unambiguous source-to-folder match")
     if detail["expected_images"] is None:
         raise ValueError("expected page count is unavailable")
-    page_set = resolve_expected_pages(url, progress=progress)
-    if page_set is None or not page_set.complete_identity_set:
-        raise ValueError("source page identities are unavailable")
+    # The fresh count plus the complete unique archive page map below prove
+    # the nhentai target set; a second page enumeration is redundant.
     page_keys = reconstruct_archive_page_keys(
         url,
         cookies=args.cookies,
@@ -1846,6 +1866,10 @@ def _fresh_page_plan(
 
 
 def _build_batch_repair_plan(args: argparse.Namespace) -> tuple[dict[str, Any], dict[int, tuple[Any, Path]]]:
+    if args.workers < 1 or args.max_workers is not None and args.max_workers < 1:
+        raise ValueError("repair workers and maximum workers must be at least 1")
+    if args.worker_start_delay < 0:
+        raise ValueError("repair worker start delay must be zero or greater")
     report, report_digest = _load_audit_report(args.report)
     destinations = [Path(value).expanduser().resolve() for value in report["destinations"]]
     if not destinations:
@@ -1969,6 +1993,8 @@ def _build_batch_repair_plan(args: argparse.Namespace) -> tuple[dict[str, Any], 
         "action_count": len(actions),
         "unsupported_count": len(unsupported),
         "confirmation_token": token,
+        "workers": args.workers,
+        "max_workers": args.max_workers,
     }
     return plan, prepared
 
@@ -1979,6 +2005,8 @@ def _format_batch_repair_plan(plan: dict[str, Any]) -> str:
         f"  Planned actions: {plan['action_count']}",
         f"  Report-only/unsupported issues: {plan['unsupported_count']}",
     ]
+    if "workers" in plan:
+        lines.append(f"  Downloader workers: {plan['workers']} (normal dashboard; one queue per destination)")
     for index, action in enumerate(plan["actions"], 1):
         lines.append("")
         if action["kind"] == "repair_pages":
@@ -2003,18 +2031,23 @@ def _format_batch_repair_plan(plan: dict[str, Any]) -> str:
 def _repair_run_arguments(action: dict[str, Any], args: argparse.Namespace, archive: Path) -> list[str]:
     run_args = [
         "run", "-u", action["url"], "-d", action["destination"], "-a", str(archive),
-        "-b", action.get("backend", "gallery-dl"), "-w", "1", "-m", "1", "-N",
+        "-b", "auto", "-w", str(args.workers),
+        "--worker-start-delay", str(args.worker_start_delay),
     ]
+    if args.max_workers is not None:
+        run_args.extend(["--max-workers", str(args.max_workers)])
+    if args.no_ui or args.json:
+        run_args.append("--no-ui")
     if args.gallery_config:
         run_args.extend(["-g", str(args.gallery_config)])
     if args.cookies:
-        run_args.extend(["-c", str(args.cookies)])
+        run_args.extend(["--cookies", str(args.cookies)])
     if args.cookies_browser:
         run_args.extend(["-B", args.cookies_browser])
     if args.user_agent:
-        run_args.extend(["-U", args.user_agent])
+        run_args.extend(["--gallery-user-agent", args.user_agent])
     if args.rate:
-        run_args.extend(["-r", args.rate])
+        run_args.extend(["--max-rate", args.rate])
     if args.scratch:
         run_args.extend(["-S", str(args.scratch)])
     return run_args
@@ -2031,6 +2064,31 @@ def _backfill_repaired_source(url: str, destination: Path) -> dict[str, int]:
     return backfill_source_indexes([url], scan_library([destination]))
 
 
+def _run_repair_queue(actions, args, archive, page_plans, token) -> int:
+    run_args = _repair_run_arguments(actions[0], args, archive)
+    for action in actions[1:]:
+        run_args.extend(["--url", action["url"]])
+    old_token = os.environ.get("MANGADL_REPAIR_TOKEN")
+    if token:
+        os.environ["MANGADL_REPAIR_TOKEN"] = token
+    try:
+        # JSON repair output remains one document; manager status/progress goes
+        # to stderr rather than adding a second JSON value to stdout.
+        with redirect_stdout(sys.stderr) if args.json else nullcontext():
+            if not page_plans:
+                return _run_nested(run_args)
+            run_namespace = build_parser(run_args).parse_args(run_args)
+            run_namespace.repair_file_ranges = {
+                plan.url: ",".join(str(page) for page in plan.damaged_pages) for plan in page_plans
+            }
+            return _run(run_namespace)
+    finally:
+        if old_token is None:
+            os.environ.pop("MANGADL_REPAIR_TOKEN", None)
+        else:
+            os.environ["MANGADL_REPAIR_TOKEN"] = old_token
+
+
 def _batch_repair(args: argparse.Namespace) -> int:
     plan, prepared = _build_batch_repair_plan(args)
     if args.plan_output:
@@ -2045,50 +2103,69 @@ def _batch_repair(args: argparse.Namespace) -> int:
         raise ValueError("--apply requires --confirm-plan with the token from the current exact repair preview")
 
     results: list[dict[str, Any]] = []
+    groups: dict[tuple[Path, Path], list[tuple[int, dict[str, Any]]]] = {}
     for index, action in enumerate(plan["actions"]):
         destination = Path(action["destination"])
+        archive = prepared[index][1] if action["kind"] == "repair_pages" else _archive_for_destination(
+            args, destination, {destination}
+        )
+        groups.setdefault((destination, archive), []).append((index, action))
+
+    for (destination, archive), group in groups.items():
+        actions = [action for _index, action in group]
+        page_plans = [prepared[index][0] for index, action in group if action["kind"] == "repair_pages"]
         try:
-            if action["kind"] == "repair_pages":
-                page_plan, archive = prepared[index]
-                _assert_no_active_mangadl_run(destination)
+            _assert_no_active_mangadl_run(destination)
+            verified_details = None
+            controls = ScratchControls(destination, args.scratch, archive,
+                                       destination / ".mangadl" / "state.sqlite3",
+                                       destination / ".mangadl" / "logs") if args.scratch else None
+            pending_scratch = controls.validate_pending() if controls else False
+            queue_returned = False
 
-                def run_download(file_range: str, token: str) -> None:
-                    old_token = os.environ.get("MANGADL_REPAIR_TOKEN")
-                    os.environ["MANGADL_REPAIR_TOKEN"] = token
-                    run_args = _repair_run_arguments(action, args, archive)
-                    run_args.extend(["-0", file_range])
-                    try:
-                        result = _run_nested(run_args)
-                    finally:
-                        if old_token is None:
-                            os.environ.pop("MANGADL_REPAIR_TOKEN", None)
-                        else:
-                            os.environ["MANGADL_REPAIR_TOKEN"] = old_token
-                    if result != 0:
-                        raise RuntimeError(f"targeted download manager returned exit status {result}")
-
-                def verify_repair() -> tuple[bool, set[int]]:
-                    inputs, _rejected = collect_inputs([], [action["url"]])
-                    verified = audit_destinations(
-                        inputs, [destination], None, metadata_resolver=resolve_nhentai_metadata
-                    ).details[action["url"]]
-                    return verified["completeness"] == "complete", set(verified["missing_pages"])
-
-                result = apply_page_repair(
-                    page_plan,
-                    archive,
-                    destination / ".mangadl" / "repair-quarantine",
-                    run_download,
-                    verify_repair,
-                )
-                index_result = _backfill_repaired_source(action["url"], destination)
-                results.append({"url": action["url"], "kind": action["kind"], **result, "index_backfill": index_result})
-            else:
-                archive = _archive_for_destination(args, destination, {destination})
-                returncode = _run_nested(_repair_run_arguments(action, args, archive))
+            def run_download(plans, token) -> None:
+                nonlocal queue_returned
+                if pending_scratch and controls:
+                    # Canonical keys were deliberately cleared under this
+                    # repair lock. Mirror those exact targets to the working
+                    # archive, and checkpoint only this owned baseline change.
+                    clear_page_repair_archive(plans, controls.archive)
+                    archive_cleanup_checkpoint(partial_root_for(destination, args.scratch),
+                                               controls.archive, archive, verify=False)
+                returncode = _run_repair_queue(actions, args, archive, plans, token)
+                queue_returned = True
                 if returncode != 0:
                     raise RuntimeError(f"download manager returned exit status {returncode}")
+
+            def verify_repair(page_plan) -> tuple[bool, set[int]]:
+                nonlocal verified_details
+                if verified_details is None:
+                    inputs, _rejected = collect_inputs([], [item.url for item in page_plans])
+                    counts = {item.url.rstrip("/").rsplit("/", 1)[-1]: item.expected_count for item in page_plans}
+                    verified_details = audit_destinations(
+                        inputs, [destination], None,
+                        metadata_resolver=lambda gallery_id: SimpleNamespace(page_count=counts[gallery_id]),
+                    ).details
+                verified = verified_details[page_plan.url]
+                return verified["completeness"] == "complete", set(verified["missing_pages"])
+
+            if page_plans:
+                page_results = apply_page_repairs(
+                    page_plans, archive, destination / ".mangadl" / "repair-quarantine", run_download, verify_repair,
+                )
+                if controls and queue_returned and controls.manifest.is_file():
+                    if json.loads(controls.manifest.read_text(encoding="utf-8")).get("pending"):
+                        archive_cleanup_checkpoint(partial_root_for(destination, args.scratch),
+                                                   controls.archive, archive, verify=False)
+            else:
+                run_download([], "")
+                page_results = []
+            pages_by_url = {row["url"]: row for row in page_results}
+            for action in actions:
                 index_result = _backfill_repaired_source(action["url"], destination)
+                if action["kind"] == "repair_pages":
+                    results.append({"kind": action["kind"], **pages_by_url[action["url"]], "index_backfill": index_result})
+                    continue
                 inputs, _rejected = collect_inputs([], [action["url"]])
                 verified = audit_destinations(
                     inputs,
@@ -2106,12 +2183,12 @@ def _batch_repair(args: argparse.Namespace) -> int:
                     "index_backfill": index_result,
                 })
         except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
-            results.append({
+            results.extend({
                 "url": action["url"],
                 "kind": action["kind"],
                 "verified": False,
                 "error": f"{type(exc).__name__}: {exc}",
-            })
+            } for action in actions)
 
     payload = {**plan, "results": results}
     succeeded = sum(bool(row.get("verified")) for row in results)

@@ -524,6 +524,7 @@ only saves an optional machine-readable copy. Applying a plan requires both
 mangadl repair -r .\audit-report.json
 mangadl repair -r .\audit-report.json -p .\repair-plan.json
 mangadl repair -r .\audit-report.json -f -C <preview-token>
+mangadl repair -r .\audit-report.json -S E:\Temp -w 3 -f -C <preview-token>
 ```
 
 Batch repair currently performs the proven operations only: exact-page repair
@@ -537,6 +538,19 @@ report-only and cause apply mode to return a nonzero status. If a folder has
 appeared since the audit marked its URL missing, repair asks for a fresh audit
 instead of scheduling another download. Unknown completion is shown as report
 only, not silently treated as complete.
+
+Applying a batch now opens the normal MangaDL download dashboard. Every action
+for the same destination shares one manager queue, scratch/control setup, and
+worker pool; page repair jobs carry separate exact page ranges. `-w/--workers`
+sets the initial workers (default 2), `-m/--max-workers` sets the normal worker
+ceiling, and the normal dashboard supports adding/retiring workers with `+/-`.
+Page bars show the number of planned target pages. `-L/--worker-start-delay`
+controls launch staggering (default 2 seconds). `-N/--no-ui` or `-j/--json`
+disables the dashboard; JSON mode keeps manager output on stderr. Multiple
+destination roots run as separate queues, one root at a time.
+The batch acquires one repair lock and archive backup per destination, prepares
+all manifests, then runs the queue. Each gallery is verified locally against
+its reviewed expected page set and only its targeted archive keys are reconciled.
 
 For supported individual nhentai galleries, `repair-pages` previews the exact
 missing/corrupt pages, archive keys, and quarantine targets. Apply requires

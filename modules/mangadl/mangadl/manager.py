@@ -51,6 +51,7 @@ class RunOptions:
     maximum_workers: int | None = None
     fast_storage: bool = False
     file_range: str | None = None
+    repair_file_ranges: dict[str, str] | None = None
 
 
 class DownloadManager:
@@ -262,8 +263,9 @@ class DownloadManager:
             command.append("--scratch-mode")
         if self.options.canonical_archive is not None:
             command.extend(["--canonical-archive", str(self.options.canonical_archive)])
-        if self.options.file_range is not None:
-            command.extend(["--file-range", self.options.file_range])
+        file_range = (self.options.repair_file_ranges or {}).get(job["canonical_url"], self.options.file_range)
+        if file_range is not None:
+            command.extend(["--file-range", file_range])
         managed_profile = None
         explicit_credentials = bool(
             self.options.cookies or self.options.cookies_browser or self.options.gallery_config
@@ -424,6 +426,8 @@ class DownloadManager:
         snapshot.url = job["canonical_url"]
         snapshot.backend = job["backend"]
         snapshot.attempt = job["attempts"]
+        if file_range := (self.options.repair_file_ranges or {}).get(job["canonical_url"]):
+            snapshot.images_total = len(file_range.split(","))
         self.logger.info(
             "dispatch worker=%02d pid=%s job=%s attempt=%s image_workers=%s next_start_in=%.2fs url=%s",
             slot,

@@ -5,34 +5,47 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from .scratch import partial_root_for
+from .file_io import replace_file
 
 
 def _database_stamp(path: Path) -> list[list[int]]:
     stamp: list[list[int]] = []
-    for candidate in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
+    for candidate in (path, Path(str(path) + "-wal")):
         try:
             info = candidate.stat()
-            stamp.append([info.st_size, info.st_mtime_ns])
+            stamp.append([info.st_size, info.st_mtime_ns] if candidate == path or info.st_size else [])
         except FileNotFoundError:
             stamp.append([])
-    return stamp
+    # SQLite readers modify SHM locks/indexes and can create empty WAL files.
+    # Neither is database content. Keep a third slot for old manifest readers.
+    return [*stamp, []]
+
+
+def _content_stamp(stamp: list[list[int]]) -> list[list[int]]:
+    return [stamp[0], stamp[1] if len(stamp) > 1 and stamp[1] and stamp[1][0] else []]
+
+
+def _same_stamps(first: dict, second: dict) -> bool:
+    return ({name: _content_stamp(value) for name, value in first.items()}
+            == {name: _content_stamp(value) for name, value in second.items()})
 
 
 def _backup_database(source: Path | None, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     if source is None or not source.is_file():
         with (
-            sqlite3.connect(":memory:") as input_db,
-            sqlite3.connect(target) as output_db,
+            closing(sqlite3.connect(":memory:")) as input_db,
+            closing(sqlite3.connect(target)) as output_db,
         ):
             input_db.backup(output_db)
         return
     with (
-        sqlite3.connect(f"file:{source}?mode=ro", uri=True) as input_db,
-        sqlite3.connect(target) as output_db,
+        closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True)) as input_db,
+        closing(sqlite3.connect(target)) as output_db,
     ):
         input_db.backup(output_db)
 
@@ -76,9 +89,10 @@ class ScratchControls:
         temporary.write_text(
             json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
-        temporary.replace(self.manifest)
+        replace_file(temporary, self.manifest)
 
-    def prepare(self) -> None:
+    def validate_pending(self) -> bool:
+        """Check an existing scratch resume baseline without changing any files."""
         if self.manifest.exists():
             payload = json.loads(self.manifest.read_text(encoding="utf-8"))
             if payload.get("identity") != self._identity():
@@ -86,7 +100,7 @@ class ScratchControls:
                     f"scratch control files belong to different archive/state/log paths: {self.manifest}"
                 )
             if payload.get("pending"):
-                if payload.get("baseline") != self._stamps():
+                if not _same_stamps(payload.get("baseline", {}), self._stamps()):
                     raise RuntimeError(
                         "canonical control databases changed while scratch had unsynced work; "
                         f"preserved scratch at {self.root}; reconcile manually before another run"
@@ -95,7 +109,12 @@ class ScratchControls:
                     raise RuntimeError(
                         f"unsynced scratch control database is missing: {self.root}"
                     )
-                return
+                return True
+        return False
+
+    def prepare(self) -> None:
+        if self.validate_pending():
+            return
         self.root.mkdir(parents=True, exist_ok=True)
         _backup_database(self.canonical_archive, self.archive)
         _backup_database(self.canonical_state_db, self.state_db)
@@ -105,7 +124,7 @@ class ScratchControls:
 
     def sync(self, run_id: str, *, archive_safe: bool = True) -> None:
         payload = json.loads(self.manifest.read_text(encoding="utf-8"))
-        if payload.get("baseline") != self._stamps():
+        if not _same_stamps(payload.get("baseline", {}), self._stamps()):
             raise RuntimeError(
                 "canonical control databases changed during the scratch run; "
                 f"preserved scratch at {self.root}; no control database was overwritten"
@@ -145,7 +164,7 @@ def archive_cleanup_checkpoint(
         )
     current = _database_stamp(canonical_archive)
     if verify:
-        if payload.get("baseline", {}).get("archive") != current:
+        if _content_stamp(payload.get("baseline", {}).get("archive", [[]])) != _content_stamp(current):
             raise RuntimeError(
                 f"canonical archive changed since scratch staging: {canonical_archive}"
             )
@@ -155,4 +174,4 @@ def archive_cleanup_checkpoint(
     temporary.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    temporary.replace(manifest)
+    replace_file(temporary, manifest)

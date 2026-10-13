@@ -24,6 +24,10 @@ safety rules.
    ambiguous items remain report-only.
 5. After a successful repair/download, re-resolve the URL and backfill its
    source manifest only when the folder match is unique and populated.
+6. After live repair correctness, publish summary/color and audit progress
+   improvements, then share the normal downloader UI and worker pool across
+   repair jobs. Each gallery retains its own exact page range; roots are
+   grouped into separate manager queues under their respective repair guards.
 
 ## Deferred capability expansion
 

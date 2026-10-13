@@ -292,6 +292,24 @@ def test_audit_auto_report_uses_input_name_and_preserves_existing_reports(tmp_pa
     assert report.read_bytes() == original
 
 
+def test_audit_report_retries_transient_windows_replacement_lock(tmp_path: Path, monkeypatch) -> None:
+    original = cli_core.os.replace
+    attempts = []
+
+    def replace(source, destination):
+        attempts.append(destination)
+        if len(attempts) == 1:
+            raise PermissionError("temporary scanner lock")
+        return original(source, destination)
+
+    monkeypatch.setattr(cli_core.os, "replace", replace)
+    monkeypatch.setattr(cli_core.time, "sleep", lambda _delay: None)
+    payload = {"schema": 1}
+    path = cli_core._write_audit_report(tmp_path / "report.json", payload)
+    assert len(attempts) == 2
+    assert json.loads(path.read_text(encoding="utf-8")) == payload
+
+
 def test_audit_explicit_report_adds_input_name_without_repeating_it(tmp_path: Path, capsys) -> None:
     destination = tmp_path / "downloads"
     destination.mkdir()
