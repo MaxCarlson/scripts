@@ -1,5 +1,21 @@
 # Status
 
+Current P2 phase/narrow-report slice: compresser0.7.0/MangaDL1.35.0. Per-image
+exclusive wall phases and active phase labels implemented, aggregate phase seconds
+in summaries/comparison/JSON. Cached hits measure current lookup work only. AUTO/
+perceptual nested phases do not double-count. Below150 columns comparison uses
+readable stacked records. Full compresser75 and MangaDL integration/ownership15
+pass; setup refreshed. Scheduler/global budget unchanged. Uninstrumented overhead
+and queue wait not fabricated; reservation-wait metrics belong with P3 scheduling.
+
+Bounded read-only source benchmark: simplyhentai_232000_001.jpg,2646x3679,
+4115764 B. WebP lossless effort6: wall45.625s, CPU45.484s, encoding45.344s,
+verification0.140s, source decode0.047s; candidate3958962 B. Effort0: wall1.797s,
+encoding1.500s, candidate4906754 B (larger, original retained). Native encoding
+dominates and consumes about one core. Conservative estimate ~446MiB means only
+one such worker fits the current512MiB allowance. No production images modified.
+Next publish P2 checkpoint, then P3 memory-aware scheduling before P4/P5 features.
+
 P1 pushed faf8822. P2 worker-visibility slice implemented and tested: requested,
 effective and active worker counts, limiter/budget/largest-image estimates, active
 image names/dimensions/estimated bytes and ticking elapsed durations. UI/summary/

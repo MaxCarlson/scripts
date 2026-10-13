@@ -1,5 +1,11 @@
 # mangadl Immediate Project Handoff
 
+Current P2 phase slice: MangaDL1.35.0/compresser0.7.0. Shared active phase labels,
+exclusive aggregate phase timings in summary/JSON, narrow stacked comparisons.
+Compression75 and integration15 tests pass; setup refreshed. Source benchmark
+confirmed native WebP effort6 encoding dominates, about one core, not disk/lock.
+Scheduler/budget unchanged; next publish checkpoint then P3 reservations/preflight.
+
 Latest P2 worker-visibility slice: MangaDL1.34.0 / compresser0.6.0. Shared UI and
 JSON expose requested/effective/active workers, limiter and active image details.
 Full compression71 and integration/ownership15 tests pass. Scheduler/memory budget

@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+import shutil
 from collections import Counter, deque
 from pathlib import Path
 from typing import Sequence
@@ -109,8 +110,8 @@ class CompresserDashboard:
 
     def update_activity(self, event: dict) -> None:
         self.activity = event
-        if self.enabled and self.interactive:
-            self.block.update(self._lines)
+        # LiveBlock's timer reads this immutable snapshot; phase transitions must
+        # not trigger hundreds of synchronous terminal renders per second.
 
     def _render_plain(self) -> None:
         pct = (self.processed / self.total_images) * 100.0
@@ -188,7 +189,8 @@ class CompresserDashboard:
         if activity:
             descriptions = [
                 f"{Path(item['path']).name} ({item['width']}x{item['height']}, "
-                f"{format_bytes_decimal(item['estimated_bytes'])} estimated, {now-item['started']:.1f}s)"
+                f"{format_bytes_decimal(item['estimated_bytes'])} estimated, {now-item['started']:.1f}s, "
+                f"{item.get('phase', 'starting')})"
                 for item in activity["active_images"][:2]
             ]
             lines[1] = (
@@ -259,6 +261,12 @@ def print_single_summary(result: BatchResult, scan: ScanSummary | None = None) -
 
     print("\n" + color_text("Compression Batch Summary", "cyan"))
     print(render_table(headers=headers, rows=rows, alignments=["left", "right"], style="rule"))
+    timings = result.worker_diagnostics.get("phase_seconds", {})
+    if timings:
+        print(
+            "Phase worker-seconds (exclusive; parallel workers add): "
+            + ", ".join(f"{name}={seconds:.2f}s" for name, seconds in sorted(timings.items()))
+        )
 
     if scan and scan.format_counts:
         if result.total_images < scan.total_images:
@@ -315,27 +323,37 @@ def print_comparison_matrix(rows: Sequence[ComparisonRow]) -> None:
         )
 
     print("\n" + color_text("Compression Strategy Comparison Matrix", "cyan"))
-    print(
-        render_table(
-            headers=headers,
-            rows=table_rows,
-            alignments=[
-                "left",
-                "center",
-                "center",
-                "center",
-                "right",
-                "right",
-                "right",
-                "right",
-                "left",
-                "right",
-                "right",
-                "right",
-            ],
-            style="rule",
+    if shutil.get_terminal_size().columns < 150:
+        # Stacked records preserve meaning instead of squeezing twelve columns
+        # into labels like 'Ret…' and unrecognizable strategy names.
+        for row in rows:
+            print(f"\n{row.strategy_name} | {row.output_format.upper()} | {row.quality_display}")
+            print(f"  Retained: {format_bytes_decimal(row.compressed_bytes)} | Savings: {row.savings_percent:.1f}%")
+            print(f"  SSIM: {row.average_ssim:.3f}" if row.average_ssim is not None else "  SSIM: N/A")
+            print(f"  Trials: {row.measured_images} | Rate: {row.throughput_images_per_s:.1f}/s")
+            print(f"  Failures: {row.failed_count} | Kept: {row.skipped_count} | Cached: {row.cache_hits}")
+    else:
+        print(
+            render_table(
+                headers=headers,
+                rows=table_rows,
+                alignments=[
+                    "left",
+                    "center",
+                    "center",
+                    "center",
+                    "right",
+                    "right",
+                    "right",
+                    "right",
+                    "left",
+                    "right",
+                    "right",
+                    "right",
+                ],
+                style="rule",
+            )
         )
-    )
     print("Savings use retained size: originals stay when candidates are not smaller or a trial fails.")
     print("Kept excludes failures; SSIM describes retained results, including unchanged originals.")
     print(
@@ -347,6 +365,12 @@ def print_comparison_matrix(rows: Sequence[ComparisonRow]) -> None:
                 f"  {row.strategy_name}: workers requested {row.worker_diagnostics['requested_workers']}, "
                 f"effective {row.worker_diagnostics['effective_workers']}; limiter: {row.worker_diagnostics['limiter']}."
             )
+            timings = row.worker_diagnostics.get("phase_seconds", {})
+            if timings:
+                print(
+                    "    Phase worker-seconds (exclusive; parallel workers add): "
+                    + ", ".join(f"{phase}={seconds:.2f}s" for phase, seconds in sorted(timings.items()))
+                )
         if row.candidate_bytes is not None and row.original_bytes:
             change = (row.candidate_bytes / row.original_bytes - 1) * 100
             print(

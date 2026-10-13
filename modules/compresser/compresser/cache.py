@@ -18,6 +18,7 @@ import PIL
 from PIL import features
 
 from .models import CompressionStrategy, ImageMetadata, ImageResult
+from .timing import timed
 
 CACHE_SCHEMA = 3
 METRIC_REVISION = "bounded-gaussian-rgb-native-patches-3"
@@ -88,6 +89,7 @@ class AnalysisCache:
             ident = f"{path.resolve()}:{self.identity}:{_strategy_key(strategy)}"
         return hashlib.sha256(ident.encode("utf-8")).hexdigest()
 
+    @timed("cache")
     def get(self, path: Path, strategy: CompressionStrategy) -> ImageResult | None:
         key = self._make_key(path, strategy)
         with self._lock:
@@ -103,6 +105,7 @@ class AnalysisCache:
                         return None
             return replace(cached, cache_hit=True) if cached else None
 
+    @timed("cache")
     def set(self, path: Path, strategy: CompressionStrategy, result: ImageResult) -> None:
         key = self._make_key(path, strategy)
         with self._lock:

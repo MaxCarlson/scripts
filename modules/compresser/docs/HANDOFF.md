@@ -1,5 +1,13 @@
 # Compresser handoff
 
+Current0.7.0 / MangaDL1.35.0: exclusive per-image phases/current active labels,
+aggregate wall-time phase seconds and readable narrow comparison records.
+Cache hits never replay old encoder timings; nested AUTO/perceptual phases exclusive.
+Full75 tests and MangaDL integration15 pass. Read-only screenshot-image profile:
+effort6 wall45.625s/CPU45.484s, encoding45.344s; effort0 wall1.797s but larger
+output retained original. No budget/scheduler change or production writes.
+Next publish P2, then memory-aware reservations/preflight/wait metrics (P3).
+
 Latest worker diagnostics slice:0.6.0 (MangaDL1.34.0), full71 tests and MangaDL
 integration/ownership15 pass. UI/summary/JSON report requested/effective/active
 workers, limiter, budget/largest estimate and active image dimensions/time.

@@ -17,7 +17,7 @@
 
 ### `mangadl compress`
 
-MangaDL1.34.0 integrates compresser0.6.0. Both CLIs default to lossless;
+MangaDL1.35.0 integrates compresser0.7.0. Both CLIs default to lossless;
 lossy/perceptual writes require `-w -L`. Analysis never mutates pending recovery.
 PNG/WebP/JPEG candidates are measured; original files remain if nothing smaller
 passes verification. AVIF is explicit lossy only. Exact URL/folder selection,
@@ -45,6 +45,9 @@ Lock contention fails immediately, names the lock and explicitly says "Not waiti
 Live diagnostics show requested/effective/active workers, limit reasons and active
 image dimensions/estimated memory/elapsed time. Scheduling is not changed yet;
 oversized images affecting its global memory cap are explicitly labeled.
+Active images show current phases; report/JSON worker diagnostics include exclusive
+phase wall times, not CPU utilization. Cache hits show current lookup work rather
+than historical encoding durations. Narrow comparison output uses readable records.
 
 Integrates the reusable `compresser` module to analyze, benchmark, and compress gallery images within downloaded libraries.
 

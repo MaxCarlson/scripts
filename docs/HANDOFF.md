@@ -4,6 +4,12 @@ Last updated: 2026-10-13 02:00 -07:00
 
 ## Current cross-repository work
 
+Current P2 checkpoint: compresser0.7.0/MangaDL1.35.0, exclusive phase timings and
+readable narrow reports, compresser75/integration15 pass. Bounded screenshot-image
+read-only benchmark:45.6s wall/45.5s CPU,45.3s encoding; effort0 takes1.8s but
+produces larger output. Native encoding + conservative one-worker cap explain
+low aggregate CPU. No budget/scheduler change. Publish checkpoint, then P3.
+
 Current checkpoint: P2 worker-visibility slice, compresser0.6.0/MangaDL1.34.0.
 Full compression71 and integration/ownership15 pass; setup refreshed. Plan remains
 docs/plans/20261013-0600_compression-performance-sampling-and-cache/; requested/

@@ -11,6 +11,7 @@ from abc import ABC, abstractmethod
 from PIL import Image
 
 from ..models import CompressionStrategy
+from ..timing import timed
 
 
 class BaseCodec(ABC):
@@ -47,6 +48,7 @@ class BaseCodec(ABC):
         ...
 
     @staticmethod
+    @timed("candidate_decode")
     def decode_bytes(data: bytes) -> Image.Image:
         """Decode raw bytes into a PIL Image."""
         buf = io.BytesIO(data)

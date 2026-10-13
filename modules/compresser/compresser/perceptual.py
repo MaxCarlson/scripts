@@ -10,6 +10,7 @@ from typing import Callable
 import numpy as np
 from PIL import Image
 from .cancellation import check_cancelled
+from .timing import timed
 
 
 def _to_gray_np(im: Image.Image) -> np.ndarray:
@@ -90,6 +91,7 @@ def _channel_ssim(
     return float(np.clip(ssim_map.mean(), 0.0, 1.0))
 
 
+@timed("similarity")
 def calculate_ssim(
     img_a: Image.Image,
     img_b: Image.Image,

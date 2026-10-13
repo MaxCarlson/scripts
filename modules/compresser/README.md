@@ -1,4 +1,4 @@
-# compresser 0.6.0
+# compresser 0.7.0
 
 Reusable image analysis, encoder comparison and optional verified compression.
 Default operation is read-only, lossless analysis. Bulk production writes are
@@ -46,7 +46,13 @@ limiter, with up to two active image names, dimensions, conservative memory esti
 and elapsed time. JSON and summaries expose worker_diagnostics too. These are actual
 worker activity counters, not OS CPU utilization. The current largest-image cap still
 includes oversized images; this is shown explicitly, pending scheduler correction.
-Codec/verification/similarity phase timers are not implemented yet.
+Active images show their current phase. Reports/JSON expose exclusive phase
+worker-seconds: source decode, encoding, candidate decode, similarity, verification,
+cache and publication when applicable. Parallel worker times add and are not CPU
+time or whole-run elapsed time. Cached trials record only current lookup work.
+Encoding includes codec preparation/bookkeeping outside separately instrumented
+decode/metric calls. Uninstrumented overhead/queue wait is not fabricated.
+Narrow terminals use stacked comparison records; wide terminals keep the matrix.
 Stage/gallery bars reset for each strategy; the aligned overall bar and elapsed
 timer cover all image-strategy trials (60 images x4 strategies =240 trials).
 Completed stages are green, active blue, pending yellow, with textual status when

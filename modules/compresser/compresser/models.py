@@ -86,6 +86,7 @@ class ImageResult:
     encoder: str | None = None
     cache_hit: bool = False
     candidate_bytes: int | None = None
+    phase_seconds: dict[str, float] = field(default_factory=dict)
 
     @property
     def saved_bytes(self) -> int:

@@ -19,6 +19,7 @@ from PIL import Image
 
 from .cache import AnalysisCache
 from .cancellation import cancellation_scope, check_cancelled
+from .timing import phase, timed, timing_scope
 from .codecs import (
     BaseCodec,
     discover_available_codecs,
@@ -106,12 +107,14 @@ class CompressionEngine:
             return self.codecs["pillow-png"]
         raise ValueError(f"No verified encoder for target format {target_format}")
 
+    @timed("verification")
     def _encode_verified(
         self, im: Image.Image, target_fmt: str, strategy: CompressionStrategy
     ) -> tuple[bytes, float | None, str]:
         check_cancelled()
         codec = self._select_codec(target_fmt, strategy)
-        encoded, ssim = codec.encode(im, target_fmt, strategy)
+        with phase("encoding"):
+            encoded, ssim = codec.encode(im, target_fmt, strategy)
         check_cancelled()
         if strategy.mode == "perceptual" and (ssim is None or ssim < strategy.perceptual_target):
             raise ValueError("No encoded candidate meets the requested perceptual threshold")
@@ -172,7 +175,13 @@ class CompressionEngine:
     ) -> ImageResult:
         """Analyze or write one image, coordinating with managed library owners."""
         with managed_write_guard([meta.path.parent]) if write_mode else nullcontext():
-            return self._compress_image_owned(meta, strategy, write_mode=write_mode)
+            return self._measure_image(meta, strategy, write_mode=write_mode)
+
+    def _measure_image(self, meta, strategy, *, write_mode=False, phase_callback=None):
+        started = time.monotonic()
+        with timing_scope(phase_callback) as trace:
+            result = self._compress_image_owned(meta, strategy, write_mode=write_mode)
+        return replace(result, phase_seconds=dict(trace["seconds"]), elapsed_s=time.monotonic() - started)
 
     def _compress_image_owned(
         self,
@@ -229,7 +238,7 @@ class CompressionEngine:
             if meta.mtime_ns and (stat.st_mtime_ns != meta.mtime_ns or stat.st_size != meta.size_bytes):
                 raise RuntimeError("Source changed since scan; rescan before compression")
             source_digest = digest(path) if write_mode else ""
-            with Image.open(path) as im:
+            with phase("source_decode"), Image.open(path) as im:
                 if im.width * im.height > 40_000_000:
                     raise ValueError("Image exceeds enforced 40-million-pixel decode limit")
                 if im.width * im.height * ESTIMATED_BYTES_PER_PIXEL > MEMORY_BUDGET_BYTES:
@@ -278,13 +287,14 @@ class CompressionEngine:
                 check_cancelled()
                 with self._publication_lock, directory_lock(path.parent):
                     check_cancelled()
-                    publish(
-                        path,
-                        output_path,
-                        encoded_bytes,
-                        source_digest,
-                        lambda p: validate_image_file(p, (meta.width, meta.height)),
-                    )
+                    with phase("publication"):
+                        publish(
+                            path,
+                            output_path,
+                            encoded_bytes,
+                            source_digest,
+                            lambda p: validate_image_file(p, (meta.width, meta.height)),
+                        )
                 return ImageResult(
                     input_path=path,
                     output_path=output_path,
@@ -457,7 +467,13 @@ class CompressionEngine:
                         }
                         report_activity()
                     try:
-                        return self._compress_image_owned(img, strategy, write_mode=write_mode)
+
+                        def phase_changed(name):
+                            with activity_lock:
+                                active[str(img.path)]["phase"] = name
+                                report_activity()
+
+                        return self._measure_image(img, strategy, write_mode=write_mode, phase_callback=phase_changed)
                     finally:
                         nonlocal finished
                         with activity_lock:
@@ -509,6 +525,10 @@ class CompressionEngine:
                 raise
 
         elapsed = time.monotonic() - start_time
+        diagnostics["phase_seconds"] = {
+            name: sum(result.phase_seconds.get(name, 0.0) for result in results)
+            for name in {name for result in results for name in result.phase_seconds}
+        }
         saved = max(0, orig_bytes_total - comp_bytes_total)
         savings_pct = (saved / orig_bytes_total * 100.0) if orig_bytes_total > 0 else 0.0
         avg_ssim = (sum(ssim_scores) / len(ssim_scores)) if ssim_scores else None
