@@ -252,7 +252,7 @@ def test_tui_selected_task_can_queue_delayed_runner_test(tui_instance):
     task = Task(name="Winget Update", admin=True, environment="pwsh", code="winget upgrade --all")
     tui_instance.storage.save_task(task)
 
-    with patch.object(tui_instance, "select_menu", side_effect=[5, 0, 0, 1, 7]), \
+    with patch.object(tui_instance, "select_menu", side_effect=[5, 0, 0, 1, 8]), \
          patch.object(tui_instance.service, "queue_runner_test", return_value="13:00:10") as queue_test, \
          patch.object(tui_instance.service, "execute_task") as execute_task, \
          patch.object(tui_instance, "show_message") as show_message:
@@ -268,7 +268,7 @@ def test_tui_non_admin_task_has_no_elevated_runner_option(tui_instance):
     task = Task(name="Scoop Update", admin=False, environment="pwsh", code="scoop update")
     tui_instance.storage.save_task(task)
 
-    with patch.object(tui_instance, "select_menu", side_effect=[5, 0, 0, 0, 7]) as select_menu, \
+    with patch.object(tui_instance, "select_menu", side_effect=[5, 0, 0, 0, 8]) as select_menu, \
          patch.object(tui_instance.service, "execute_task") as execute_task:
         tui_instance.run()
 
@@ -281,7 +281,7 @@ def test_tui_delayed_runner_test_reports_inactive_daemon(tui_instance):
     task = Task(name="Winget Update", admin=True, environment="pwsh", code="winget upgrade --all")
     tui_instance.storage.save_task(task)
 
-    with patch.object(tui_instance, "select_menu", side_effect=[5, 0, 0, 1, 7]), \
+    with patch.object(tui_instance, "select_menu", side_effect=[5, 0, 0, 1, 8]), \
          patch.object(tui_instance.service, "queue_runner_test", side_effect=RuntimeError("runner is not running")), \
          patch.object(tui_instance, "show_message") as show_message:
         tui_instance.run()

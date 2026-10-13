@@ -34,6 +34,43 @@ The task begins at the next user logon. Check it with `scheduler setup windows s
 
 The daemon and elevated worker use `pythonw.exe` when it is available, so they do not leave empty Python console windows open after logon. Scheduled task stdout and stderr are captured in the task logs and can be browsed with `scheduler tui` → **View Logs**. Re-run `scheduler setup windows` to update runners installed by an earlier version. The configured `Winget Update` task now uses `--silent --disable-interactivity --accept-package-agreements --accept-source-agreements`; third-party installers may still show their own UI if they do not honor silent installation.
 
+## Monitored processes
+
+Monitored processes are opt-in rules that periodically run a short monitor command, parse one JSON value from stdout, and compare JSON fields with start/stop conditions. A monitor must exit successfully and emit valid JSON; errors, timeouts, missing fields, and malformed output are treated as unknown and do not cause a start or stop. The daemon runs probes in background workers so a slow probe does not block schedule checks.
+
+Start from the [Pearl miner JSON example](docs/examples/pearl-miner-monitor.json) and [GPU engine probe](docs/examples/monitor-gpu-engine.ps1). Import a definition with `scheduler monitor create --input-file monitor.json`, inspect it with `scheduler monitor test --name PearlMiner`, then enable it with `scheduler monitor enable --name PearlMiner`. Review the `enabled` setting before importing. The TUI has the same import, preview, status, and process controls under **Monitored Processes**. Each rule gets a separate event log and lifecycle statistics; view them with `scheduler logs monitor --name PearlMiner` or the rule's **View log** action in the TUI. `scheduler monitor status --name PearlMiner` includes 7/30/365-day and lifetime start, stop, and failure totals. `scheduler monitor stop` only stops a process instance started and recorded by that rule. A process already running is treated as external: the rule will not duplicate or terminate it. Disabling a rule leaves a running process alone; stop an owned process before deleting its definition.
+
+Definitions have this shape (conditions in each list are combined with AND):
+
+```json
+{
+  "name": "PearlMiner",
+  "executable": "C:\\Mining\\krig-miner.exe",
+  "arguments": [],
+  "working_directory": "C:\\Mining",
+  "new_console": true,
+  "environment": "pwsh",
+  "monitor_file": "C:\\Mining\\monitor-gpu.ps1",
+  "monitor_arguments": ["-ExcludeProcessName", "krig-miner"],
+  "interval_seconds": 30,
+  "timeout_seconds": 10,
+  "restart_cooldown_seconds": 60,
+  "start_conditions": [
+    {"path": "other_gpu_max_pct", "operator": "lt", "value": 10, "aggregation": "average", "window_seconds": 180},
+    {"path": "gpu_engine_counter_count", "operator": "gt", "value": 0}
+  ],
+  "stop_conditions": [
+    {"path": "other_gpu_max_pct", "operator": "gt", "value": 7, "aggregation": "average", "window_seconds": 90},
+    {"path": "gpu_engine_counter_count", "operator": "gt", "value": 0}
+  ],
+  "enabled": true
+}
+```
+
+Operators are `eq`, `ne`, `gt`, `gte`, `lt`, and `lte`; aggregation is `latest`, `average`, `min`, or `max`. A nonzero `window_seconds` requires a full window of fresh samples before the condition can pass. `hold_seconds` can require a comparison to remain true for additional time. All conditions must pass. Separate start and stop thresholds provide hysteresis; use a longer restart condition/window to avoid flapping.
+
+The example GPU probe is [monitor-gpu-engine.ps1](docs/examples/monitor-gpu-engine.ps1). Save it somewhere stable and pass the miner process name, without `.exe`, as its argument. For example, set `monitor_file` to that path and add `"monitor_arguments": ["-ExcludeProcessName", "krig-miner"]`. It reports each engine type separately and provides the maximum per-engine load, without adding unlike engine types together. A counter sample count prevents a missing counter from being mistaken for 0% usage. Windows GPU Engine counters may require the daemon account to have **Performance Monitor Users** access; use `scheduler monitor test` while running under the daemon account to check permissions. The scheduler does not elevate each probe or change account group membership.
+
 ## Logs and history in the TUI
 
 Choose **View Logs** to browse system events, schedules, standalone tasks, and unmatched legacy files. A schedule page shows its current recurrence, task summaries, run counts for the last 7/30/365 days, runtime bounds, and timing compared with scheduled occurrences. Choose a task for its own statistics and run list. Enter on a run opens only that run's output. Escape returns one screen; `H` returns to the main menu. Shift+Escape also works in terminals that report it distinctly.
@@ -76,6 +113,7 @@ scheduler setup windows start -y
 
 # View central system logs
 scheduler logs system -n 50
+scheduler logs monitor --name PearlMiner --count 100
 ```
 
 The Windows runners start at the next sign-in for the current user. The scheduler

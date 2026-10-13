@@ -17,6 +17,7 @@ from typing import Sequence
 
 from .config import ConfigManager
 from .models import Schedule, ScheduleTiming, Task
+from .monitored import MonitoredProcess, discover_fields
 from .service import SchedulerService
 from .storage import StorageManager
 from . import windows_task
@@ -224,6 +225,33 @@ def build_parser() -> argparse.ArgumentParser:
     tk_detach.add_argument("-n", "--name", required=True, help="Task name.")
 
     # ─────────────────────────────────────────────────────────
+    # monitored process command
+    # ─────────────────────────────────────────────────────────
+    monitor_parser = subparsers.add_parser("monitor", help="Manage conditionally supervised processes.")
+    monitor_sub = monitor_parser.add_subparsers(dest="monitor_cmd", required=True)
+    mon_create = monitor_sub.add_parser("create", help="Import a monitored-process JSON definition.")
+    mon_create.add_argument("-i", "--input-file", type=Path, required=True, help="JSON definition file.")
+    mon_create.add_argument("-f", "--force", action="store_true", help="Replace an existing definition with the same name.")
+    mon_list = monitor_sub.add_parser("list", help="List monitored processes.")
+    mon_list.add_argument("-f", "--format", choices=["table", "json"], default="table")
+    for command, help_text in (
+        ("show", "Show a monitor definition."), ("status", "Show current rule and process status."),
+        ("test", "Run the monitor once and preview its JSON fields."), ("enable", "Enable periodic monitoring."),
+        ("disable", "Disable periodic monitoring."), ("start", "Manually start the configured executable."),
+        ("stop", "Stop only a process started and recorded by this rule."),
+    ):
+        command_parser = monitor_sub.add_parser(command, help=help_text)
+        command_parser.add_argument("-n", "--name", required=True, help="Monitored process name.")
+        if command in {"show", "status"}:
+            command_parser.add_argument("-f", "--format", choices=["json", "plain"], default="json")
+    mon_edit = monitor_sub.add_parser("edit", help="Replace a monitored-process definition from JSON.")
+    mon_edit.add_argument("-n", "--name", required=True, help="Existing monitored process name.")
+    mon_edit.add_argument("-i", "--input-file", type=Path, required=True, help="Replacement JSON definition file.")
+    mon_delete = monitor_sub.add_parser("delete", help="Delete a monitored-process definition.")
+    mon_delete.add_argument("-n", "--name", required=True, help="Monitored process name.")
+    mon_delete.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt.")
+
+    # ─────────────────────────────────────────────────────────
     # run command
     # ─────────────────────────────────────────────────────────
     run_parser = subparsers.add_parser("run", help="Execute tasks or schedules on demand.")
@@ -264,7 +292,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ─────────────────────────────────────────────────────────
     # logs command
     # ─────────────────────────────────────────────────────────
-    logs_parser = subparsers.add_parser("logs", help="Inspect system or task execution logs.")
+    logs_parser = subparsers.add_parser("logs", help="Inspect system, task, or monitored-process logs.")
     logs_sub = logs_parser.add_subparsers(dest="logs_cmd", required=True)
 
     # logs system
@@ -277,6 +305,11 @@ def build_parser() -> argparse.ArgumentParser:
     lg_task.add_argument("-n", "--name", required=True, help="Task name.")
     lg_task.add_argument("-c", "--count", type=int, default=None, help="Number of recent runs to list.")
     lg_task.add_argument("-l", "--latest", action="store_true", help="Show full content of the latest run log.")
+
+    # logs monitor
+    lg_monitor = logs_sub.add_parser("monitor", help="View one monitored process's event log.")
+    lg_monitor.add_argument("-n", "--name", required=True, help="Monitored process name.")
+    lg_monitor.add_argument("-c", "--count", type=int, default=100, help="Number of recent log entries to show.")
 
     # logs clear
     lg_clr = logs_sub.add_parser("clear", help="Clear logs.")
@@ -356,6 +389,80 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.subcommand == "tui":
         from .tui import run_tui
         return run_tui(service=service)
+
+    if args.subcommand == "monitor":
+        command = args.monitor_cmd
+        try:
+            if command in {"create", "edit"}:
+                if command == "edit" and storage.get_monitored_process(args.name) is None:
+                    raise ValueError(f"Monitored process '{args.name}' does not exist.")
+                existing = storage.get_monitored_process(args.name) if command == "edit" else None
+                definition = _json.loads(Path(args.input_file).read_text(encoding="utf-8"))
+                if not isinstance(definition, dict):
+                    raise ValueError("Monitor definition JSON must be an object.")
+                rule = MonitoredProcess.from_dict(definition)
+                if command == "edit":
+                    if rule.name != args.name:
+                        raise ValueError("An edit must keep the existing monitor name; use delete and create to rename.")
+                    rule.rule_id = existing.rule_id
+                elif storage.get_monitored_process(rule.name) and not args.force:
+                    raise ValueError(f"Monitored process '{rule.name}' already exists; pass --force to replace it.")
+                storage.save_monitored_process(rule)
+                service.history.record_monitor_event(
+                    rule, "MONITOR_DEFINITION_SAVED",
+                    f"Monitor definition {'updated' if existing else 'created'}.",
+                    metadata={"operation": "edit" if existing else "create"},
+                )
+                print(f"[OK] Monitored process '{rule.name}' saved.")
+                return 0
+            if command == "list":
+                rules = storage.list_monitored_processes()
+                if args.format == "json":
+                    print(_json.dumps([rule.to_dict() for rule in rules], indent=2))
+                else:
+                    print("Name\tEnabled\tInterval\tExecutable")
+                    for rule in rules:
+                        print(f"{rule.name}\t{rule.enabled}\t{rule.interval_seconds}s\t{rule.executable}")
+                return 0
+            rule = storage.get_monitored_process(args.name)
+            if rule is None:
+                raise ValueError(f"Monitored process '{args.name}' does not exist.")
+            if command == "show":
+                print(_json.dumps(rule.to_dict(), indent=2))
+            elif command == "status":
+                status = service.monitored_processes.status(rule)
+                print(_json.dumps(status, indent=2) if args.format == "json" else str(status))
+            elif command == "test":
+                output = service.test_monitored_process(args.name)
+                print(_json.dumps({"output": output, "fields": discover_fields(output)}, indent=2))
+            elif command in {"enable", "disable"}:
+                rule.enabled = command == "enable"
+                storage.save_monitored_process(rule)
+                service.history.record_monitor_event(
+                    rule, "MONITOR_ENABLED" if rule.enabled else "MONITOR_DISABLED",
+                    f"Monitoring {'enabled' if rule.enabled else 'disabled'} by user.",
+                    metadata={"origin": "manual"},
+                )
+                print(f"[OK] Monitor '{rule.name}' {'enabled' if rule.enabled else 'disabled'}.")
+            elif command == "start":
+                print(service.start_monitored_process(args.name))
+            elif command == "stop":
+                print(service.stop_monitored_process(args.name))
+            elif command == "delete":
+                if service.monitored_processes.status(rule)["process_state"] == "owned":
+                    raise ValueError("Stop the scheduler-owned process before deleting its monitor definition.")
+                if not args.yes:
+                    response = input(f"Delete monitor '{rule.name}'? [y/N]: ")
+                    if response.strip().lower() not in {"y", "yes"}:
+                        print("Aborted.")
+                        return 0
+                service.history.record_monitor_event(rule, "MONITOR_DELETED", "Monitor definition deleted by user.")
+                storage.delete_monitored_process(args.name)
+                print(f"[OK] Monitor '{args.name}' deleted. Any running process was left alone.")
+            return 0
+        except (OSError, RuntimeError, ValueError, TypeError, _json.JSONDecodeError) as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            return 1
 
     if args.subcommand == "setup" and args.setup_cmd in ("windows", "windows-runner"):
         try:
@@ -887,6 +994,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(full_log)
             return 0
 
+        elif lg_cmd == "monitor":
+            rule = storage.get_monitored_process(args.name)
+            if rule is None:
+                print(f"[ERROR] Monitored process '{args.name}' not found.", file=sys.stderr)
+                return 1
+            lines = service.history.read_monitor_log(rule, count=args.count)
+            if not lines:
+                print(f"No monitor logs found for '{args.name}'.")
+                return 0
+            print("\n".join(lines))
+            return 0
+
         elif lg_cmd == "clear":
             if not args.yes:
                 resp = input(f"Are you sure you want to clear '{args.type}' logs? [y/N]: ")
@@ -900,6 +1019,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 service.task_logger.clear_task_logs()
                 service.history.store.clear_runs(source="scheduler")
                 service.history.reset_coverage()
+            if args.type == "all":
+                service.history.clear_monitor_logs()
             if not args.quiet:
                 print(f"[OK] Cleared {args.type} logs.")
             return 0

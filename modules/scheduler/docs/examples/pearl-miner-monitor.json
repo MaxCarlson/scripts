@@ -1,0 +1,43 @@
+{
+  "name": "PearlMiner",
+  "executable": "C:\\Mining\\krig-miner.exe",
+  "arguments": [],
+  "working_directory": "C:\\Mining",
+  "new_console": true,
+  "environment": "pwsh",
+  "monitor_file": "C:\\Mining\\monitor-gpu-engine.ps1",
+  "monitor_arguments": ["-ExcludeProcessName", "krig-miner"],
+  "interval_seconds": 30,
+  "timeout_seconds": 10,
+  "restart_cooldown_seconds": 60,
+  "start_conditions": [
+    {
+      "path": "other_gpu_max_pct",
+      "operator": "lt",
+      "value": 10,
+      "aggregation": "average",
+      "window_seconds": 180
+    },
+    {
+      "path": "gpu_engine_counter_count",
+      "operator": "gt",
+      "value": 0
+    }
+  ],
+  "stop_conditions": [
+    {
+      "path": "other_gpu_max_pct",
+      "operator": "gt",
+      "value": 7,
+      "aggregation": "average",
+      "window_seconds": 90,
+      "hold_seconds": 0
+    },
+    {
+      "path": "gpu_engine_counter_count",
+      "operator": "gt",
+      "value": 0
+    }
+  ],
+  "enabled": false
+}
