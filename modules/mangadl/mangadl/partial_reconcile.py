@@ -13,6 +13,7 @@ from typing import Callable, Iterable
 from .gallery_auth import ProfileStore
 
 RECONCILE_MARKER = "__MANGADL_RECONCILE_KEY__"
+REPAIR_MARKER = "__MANGADL_REPAIR_PAGE__"
 
 
 def partial_key(url: str) -> str:
@@ -191,6 +192,81 @@ def reconstruct_archive_keys(
         if progress:
             progress(f"Reconstructed {len(keys):,} archive keys for {url}")
         return keys
+
+
+def reconstruct_archive_page_keys(
+    url: str,
+    *,
+    gallery_config: Path | None = None,
+    cookies: Path | None = None,
+    cookies_browser: str | None = None,
+    user_agent: str | None = None,
+    auth_dir: Path | None = None,
+) -> dict[int, str]:
+    """Map gallery-dl's exact archive key to its one-based page number.
+
+    `--print` disables downloading and archive writes. The temporary archive
+    exists only to make gallery-dl expose the same configured key formatter.
+    """
+    with tempfile.TemporaryDirectory(prefix="mangadl-repair-index-") as temporary:
+        root = Path(temporary)
+        command = [
+            sys.executable,
+            "-m",
+            "gallery_dl",
+            "--no-input",
+            "--destination",
+            str(root / "output"),
+            "--download-archive",
+            str(root / "empty-archive.sqlite3"),
+            "--print",
+            f"prepare-after:{REPAIR_MARKER}{{_archive_key}}\t{{num}}",
+        ]
+        if gallery_config:
+            command.extend(["--config", str(gallery_config)])
+        if cookies:
+            command.extend(["--cookies", str(cookies)])
+        if cookies_browser:
+            command.extend(["--cookies-from-browser", cookies_browser])
+        selected_user_agent = user_agent
+        if not any((gallery_config, cookies, cookies_browser)):
+            managed = ProfileStore(auth_dir).load(url)
+            if managed:
+                command.extend(["--cookies", str(managed.cookie_path)])
+                selected_user_agent = selected_user_agent or managed.user_agent
+        if selected_user_agent:
+            command.extend(["--user-agent", selected_user_agent])
+        command.append(url)
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        result: dict[int, str] = {}
+        tail: deque[str] = deque(maxlen=12)
+        assert process.stdout is not None
+        for raw_line in process.stdout:
+            line = raw_line.rstrip()
+            if line.startswith(REPAIR_MARKER):
+                value = line.removeprefix(REPAIR_MARKER)
+                key, separator, page_text = value.rpartition("\t")
+                if separator:
+                    try:
+                        page = int(page_text)
+                    except ValueError:
+                        continue
+                    if page > 0 and key:
+                        result[page] = key
+            elif line:
+                tail.append(line)
+        returncode = process.wait()
+        if returncode != 0:
+            detail = " | ".join(tail) or f"gallery-dl exited {returncode}"
+            raise RuntimeError(f"failed to map gallery-dl archive keys for {url}: {detail}")
+        return result
 
 
 def metadata_url(owner: Path) -> tuple[str | None, str | None, str | None]:

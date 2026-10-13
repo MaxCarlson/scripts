@@ -116,11 +116,12 @@ def add_run_arguments(
         type=int,
         default=None,
         help=(
-            "Outer-worker ceiling (default: 8 with scratch/SSD, otherwise 4; hard maximum: 8)."
+            "Outer-worker ceiling (up to the CPU budget with SSD destination/scratch; otherwise maximum 4)."
             if mode == "normal"
-            else _help("Outer-worker safety ceiling (default: 4; hard maximum: 8).", expert)
+            else _help("Outer-worker safety ceiling (CPU budget on SSD; otherwise maximum 4).", expert)
         ),
     )
+    parser.add_argument("-0", "--file-range", help=argparse.SUPPRESS)
     parser.add_argument(
         "-U",
         "--worker-start-delay",
@@ -148,6 +149,14 @@ def add_run_arguments(
         help=_help("Internal hdporncomics threads (default: 8).", expert),
     )
     parser.add_argument("-c", "--config", type=path_type, help=_help("Reserved mangadl TOML configuration path.", expert))
+    if mode == "normal":
+        parser.add_argument(
+            "-M",
+            "--collections",
+            action="append",
+            default=[],
+            help="Associate successful downloads with this Kavita collection; repeatable.",
+        )
     parser.add_argument("-g", "--gallery-config", type=path_type, help=_help("gallery-dl configuration file.", expert))
     parser.add_argument(
         "-l",

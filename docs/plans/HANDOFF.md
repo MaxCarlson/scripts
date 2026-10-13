@@ -3,6 +3,16 @@
 ## Active Plan
 
 ```text
+20261009-0349_kavita-module-mangadl-collections/
+```
+
+This cross-module plan adds a reusable Kavita API package and safe MangaDL
+collection assignment. See its `STATUS.md` and checklist for implementation
+and validation state.
+
+## Previous Active Plan
+
+```text
 20260926-0107_missing-only-bootstrap/
 ```
 

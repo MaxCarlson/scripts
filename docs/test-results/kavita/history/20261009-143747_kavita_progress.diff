@@ -1,0 +1,32 @@
+diff --git "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\kavita\\history\\20261009-143442_kavita_context.md" "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\kavita\\LATEST_CONTEXT.md"
+index 36caf23..b93f589 100644
+--- "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\kavita\\history\\20261009-143442_kavita_context.md"
++++ "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\kavita\\LATEST_CONTEXT.md"
+@@ -1,6 +1,6 @@
+ # Validation Context: kavita
+ 
+-Generated: 2026-10-09T14:34:44.0584358-07:00
++Generated: 2026-10-09T14:37:49.5780756-07:00
+ Branch: codex/kavita-module-mangadl-collections-20261009-0349
+ Commit: b38bd37bf4b02770635869780c8d0bcae4dd719e
+ Validation report: docs\test-results\kavita\LATEST.txt
+@@ -24,6 +24,9 @@ Validation report: docs\test-results\kavita\LATEST.txt
+  D docs/test-results/mangadl/history/20260921-100951_mangadl.txt
+  D docs/test-results/mangadl/history/20260921-100951_mangadl_context.md
+  D docs/test-results/mangadl/history/20260921-100951_mangadl_progress.diff
++ D docs/test-results/mangadl/history/20260921-104414_mangadl.txt
++ D docs/test-results/mangadl/history/20260921-104414_mangadl_context.md
++ D docs/test-results/mangadl/history/20260921-104414_mangadl_progress.diff
+  M modules/mangadl/README.md
+  M modules/mangadl/__init__.py
+  M modules/mangadl/docs/HANDOFF.md
+@@ -51,6 +54,9 @@ Validation report: docs\test-results\kavita\LATEST.txt
+ ?? docs/test-results/mangadl/history/20260921-164807_mangadl.txt
+ ?? docs/test-results/mangadl/history/20260921-164807_mangadl_context.md
+ ?? docs/test-results/mangadl/history/20260921-164807_mangadl_progress.diff
++?? docs/test-results/mangadl/history/20261009-143417_mangadl.txt
++?? docs/test-results/mangadl/history/20261009-143417_mangadl_context.md
++?? docs/test-results/mangadl/history/20261009-143417_mangadl_progress.diff
+ ?? modules/mangadl/docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/
+ ?? modules/mangadl/mangadl/library_index.py
+ ?? modules/mangadl/mangadl/page_adapters.py

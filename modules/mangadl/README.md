@@ -20,6 +20,7 @@ Runtime keys:
 
 ```powershell
 python -m pip install -e .\modules\termdash
+python -m pip install -e .\modules\kavita
 python -m pip install -e .\modules\mangadl
 ```
 
@@ -39,9 +40,9 @@ The normal `run --help` surface contains only routine input, destination, and co
   series collections that may expand into many galleries.
 - `-a/--archive`: optional gallery-dl archive override.
 - `-w/--workers`: initial simultaneous series workers.
-- `-m/--max-workers`: runtime worker ceiling, up to eight. Scratch and detected
-  SSD destinations default to eight; rotational or unknown destinations default
-  to four.
+- `-m/--max-workers`: runtime worker ceiling. If either destination or scratch
+  is detected as an SSD, the ceiling follows the aggregate logical-CPU budget;
+  otherwise it is capped at four. The aggregate CPU budget always remains active.
 - `-I/--image-workers`: image transfers inside each newly started Manga18FX worker.
 
 Run IDs are always generated automatically. Archive, state, and logs default to
@@ -50,6 +51,55 @@ Run IDs are always generated automatically. Archive, state, and logs default to
 `<destination>/.mangadl/logs`. Explicit `-a/--archive`, `-s/--state-db`, and
 `-l/--log-dir` values still override those paths, but ordinary use needs no
 PowerShell variables or manual control-directory setup.
+
+### Kavita collection assignment
+
+Use repeatable `-M/--collections` to associate each successfully downloaded
+URL with one or more Kavita collections. The existing `-c/--config` option
+keeps its current meaning, so `-M` is the collection short form. Supply the
+Kavita server URL and put the Auth Key in the environment variable named by
+`--kavita-api-key-env` (default `KAVITA_API_KEY`):
+
+```powershell
+mangadl run -i .\urls.txt -d .\downloads -M "New manga" --kavita-url http://192.168.50.100:5000
+```
+
+This saves URL-to-folder assignment records without writing to Kavita. To
+apply immediately after successful downloads, add `-E/--apply-kavita`. If the
+server has not scanned the folders yet, MangaDL leaves those records pending.
+After the scan completes, review the pending work and explicitly apply it:
+
+```powershell
+mangadl kavita reconcile -d .\downloads --kavita-url http://192.168.50.100:5000
+mangadl kavita reconcile -d .\downloads --kavita-url http://192.168.50.100:5000 -f
+```
+
+Reconciliation matches only a unique exact folder path. Use repeatable
+`--kavita-path-map LOCAL=KAVITA` when Kavita sees a different path, such as a
+container mount. Missing or ambiguous matches remain pending; title similarity
+is never used. URL-file syntax remains unchanged.
+
+For manga already downloaded and scanned by Kavita, `mangadl kavita assign-file`
+resolves a processed URL file against the selected MangaDL library and previews
+the exact series-to-collection assignment. `assign-name` selects an exact
+case-insensitive series name. `assign-pattern` searches series names using a
+bounded Python regular expression and prints the complete match list plus a
+review token; applying requires both `-f/--apply` and that exact token.
+Collections are repeatable with `-c/--collection`:
+
+```powershell
+mangadl kavita assign-file -i .\processed-urls.txt -d .\downloads -c "Summer" -c "Favorites" -Z http://kavita:5000
+mangadl kavita assign-name -n "Exact Series Title" -c "Favorites" -Z http://kavita:5000 -f
+mangadl kavita assign-pattern -p 'blahblah.*' -c "Favorites" -Z http://kavita:5000 -j
+```
+
+The pattern is a regular expression, not a shell glob: `blahblah*` repeats the
+last `h`; use `blahblah.*` for a prefix match. Name and pattern selection use
+Kavita's scanned series list. Duplicate exact names are excluded as ambiguous.
+While `assign-file` resolves a processed URL file, it also adds a missing
+per-folder source manifest for each unique, image-bearing match. This updates
+local identity metadata only; Kavita collection writes still require
+`-f/--apply`. Use `-x/--no-index-backfill` to suppress the metadata update.
 
 ### Optional SSD scratch staging
 
@@ -69,8 +119,9 @@ destination control databases are imported before the run. On success, one
 worker at a time copies completed files to temporary
 names on the destination, then makes each file visible with a same-volume
 rename. A collision with different contents or an interrupted copy fails the
-job and keeps the remaining scratch data. Scratch staging does not increase
-the default four-worker ceiling.
+job and keeps the remaining scratch data. An SSD destination or scratch volume
+removes the fixed four-worker ceiling while preserving the aggregate logical-
+CPU budget; if neither is detected as SSD, the ceiling is four.
 
 Gallery-dl's scratch subprocess checks the corresponding library filename
 **before** each network download; the normal `gallery-dl.exe` installation is
@@ -322,7 +373,11 @@ Reruns inspect the final library and skip valid existing images. Live progress c
 
 `-w/--workers` controls simultaneous series jobs. `-I/--image-workers` controls simultaneous image transfers within each newly started Manga18FX series. Existing workers keep the `-I` value with which they started.
 
-The default outer-worker safety ceiling is four because a fifth worker saturated the current destination disk during live validation. Aggregate Manga18FX image concurrency is also kept below the detected logical-processor count, with one logical processor reserved for the manager, dashboard, OS, and filesystem work.
+The default outer-worker safety ceiling is four on rotational or unknown storage.
+If either destination or scratch is detected as an SSD, there is no additional
+fixed worker cap: aggregate Manga18FX concurrency remains bounded below the
+detected logical-processor count, with one logical processor reserved for the
+manager, dashboard, OS, and filesystem work.
 
 ## Adaptive online optimization
 
@@ -400,6 +455,52 @@ mangadl archive config -a .\gallery-dl-archive.sqlite3 -N
 ```
 
 ## Other operations
+
+Audit all recognized manga folders without a URL file, or compare a URL file to
+one or more destination roots. Folder-only audits are read-only. URL-file audits
+also backfill a missing `.mangadl-source.json` for unique, image-bearing matches
+established by exact source metadata or deterministic backend identity. They
+never index ambiguous, conflicting, empty, or unresolved matches. The sidecar
+does not alter images, archives, download state, or Kavita collections. Use
+`-x/--no-index-backfill` for a strictly read-only URL-file audit.
+
+```powershell
+mangadl audit -u .\URLFILE.txt -d .\downloads -j
+mangadl audit -i .\URLFILE.txt -d .\downloads -o .\missing.txt -p .\duplicates.json
+mangadl audit -d .\downloads -j
+mangadl audit -i .\urls.txt -d .\downloads -j -x
+```
+
+`-u/--url-file` is an audit-only alias; `run -u/--url` still takes a direct
+URL. Audit checks numbered images for missing pages and undecodable or zero-byte
+files. For nhentai URLs it also resolves expected page counts to detect missing
+leading and trailing pages. If source metadata is unavailable, visible local
+gaps are reported while completeness remains unknown when the total cannot be
+proven. Folder-only audits use a MangaDL source manifest or existing gallery-dl
+metadata where available; folders without proven identity or expected page
+totals remain unknown. URL-file audits also report untracked populated folders.
+Audit does not repair or download files. For original URL lists, pass each file
+(or a file glob) with repeatable `-i` and the matching library root with
+repeatable `-d`; JSON includes created, already-indexed, ambiguous, unresolved,
+and conflicting index counts.
+
+For supported individual nhentai galleries, `repair-pages` previews the exact
+missing/corrupt pages, archive keys, and quarantine targets. Apply requires
+`-f` plus the token printed by that exact preview with `-C`; the token is bound
+to the reviewed target set. Apply backs up the archive, quarantines corrupt
+images, uses a one-worker normal MangaDL job (optionally with `-S`), then
+re-audits and reconciles only affected archive keys:
+
+```powershell
+mangadl repair-pages -u https://nhentai.net/g/633374/ -d .\downloads -j
+mangadl repair-pages -u https://nhentai.net/g/633374/ -d .\downloads -f -C <preview-token> -j
+```
+
+Repair remains report-only for unknown folder identity, incomplete page or
+archive-key mappings, custom gallery-dl configuration/archive layouts whose
+key semantics cannot be proven, active MangaDL runs, and unsupported backends.
+Metadata enumeration can request
+source pages, but it does not fetch image payloads or mutate the archive.
 
 ```powershell
 mangadl inspect -u https://manga18fx.com/manga/example/

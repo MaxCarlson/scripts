@@ -13,9 +13,9 @@ Make interactive shutdown and runtime worker scaling predictable during download
 - Retain `+`/`-` runtime worker scaling, clarify it in the dashboard, and remove
   retired worker rows and stale selection after their current job completes.
 - Keep the conservative default ceiling at four for rotational or unknown
-  destinations without scratch. Use the existing hard ceiling of eight when
-  scratch is enabled or the destination is detected as solid-state, and expose
-  `-m/--max-workers` for an explicit ceiling in normal runs.
+  destination and scratch paths. If either is detected as solid-state, derive
+  the maximum from the aggregate logical-CPU budget (no additional fixed cap),
+  and expose `-m/--max-workers` for an explicit ceiling in normal runs.
 - Add focused UI, manager, integration, and regression tests; update user docs
   and synchronized package versions.
 
@@ -27,7 +27,7 @@ Make interactive shutdown and runtime worker scaling predictable during download
 - Reducing worker count does not terminate an active worker.
 - Increasing workers remains bounded by the existing concurrency budget.
 - Storage classification comes from the reusable `cross_platform` API; unknown
-  media fails conservatively to four workers.
+  media fails conservatively to four workers unless the other path is SSD.
 - Unrelated repository work is not modified or staged.
 
 ## Acceptance criteria

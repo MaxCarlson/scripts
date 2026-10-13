@@ -10,6 +10,9 @@ Active and historical repository-wide plans live under:
 docs/plans/
 ```
 
+The active cross-module plan for the reusable Kavita package and MangaDL
+collection assignment is [20261009-0349 Kavita module and MangaDL collections](plans/20261009-0349_kavita-module-mangadl-collections/00_implementation-plan.md).
+
 Module-specific plans remain inside the owning module, for example:
 
 ```text

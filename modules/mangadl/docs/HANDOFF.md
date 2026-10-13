@@ -1,6 +1,37 @@
 # mangadl Immediate Project Handoff
 
-Active branch: `main` (the working tree also contains unrelated scheduler work).
+## Current branch planning handoff — 2026-10-09
+
+Branch: `codex/kavita-module-mangadl-collections-20261009-0349`.
+
+The active multi-feature plan is
+[library identity, audit, and Kavita operations](plans/20261009-1204_library-identity-audit-and-kavita-operations/00_implementation-plan.md).
+The URL-file audit stages 1–3 are implemented and pushed in `b58b308`; the
+Kavita library and download-time collection integration are implemented and
+pushed in `0ed97c5`. Both are intentionally on this feature branch and remain
+unmerged. The remaining plan adds shared URL-to-folder identity, folder-only
+audit, historical URL-file/name/pattern collection assignment, and safe
+missing-page repair. Paradise's recorded audit result is 192 expected pages,
+pages 1–158 missing, and page 175 corrupt; no repair or archive mutation has
+been performed.
+
+Implementation stages 1–6 of the active plan are present in the working tree:
+shared source identity/manifests, folder-only and URL-file audit, historical
+Kavita file/name/pattern assignment, and exact-page nhentai repair. URL-file
+audit and `kavita assign-file` opportunistically backfill missing source
+manifests only for unique, populated matches, with a `--no-index-backfill`
+opt-out. SSD destination OR SSD scratch uses the aggregate logical-CPU budget
+without an extra fixed cap; when neither is SSD, the cap is four. On 2026-10-09,
+the dispatcher passed MangaDL (254 tests) and Kavita (16 tests), including
+compile, Ruff, and MangaDL CLI help. Live audit/repair preview, TUI, and Kavita
+server acceptance remain unverified. The user authorized merge on 2026-10-12;
+no live repair or Kavita collection write has been performed.
+
+---
+
+Historical handoff snapshot: branch `main` (the following run-specific notes
+predate the current feature branch and should not be read as its current Git
+state).
 
 Current version: `mangadl 1.20.0`.
 
@@ -37,6 +68,15 @@ Active scratch records:
 The remaining notes below describe prior partial-safety and managed-auth
 feature work. Their old branch/test counts are historical, not the state of
 this branch.
+
+Current cross-module work: [Kavita collection assignment plan](../../../docs/plans/20261009-0349_kavita-module-mangadl-collections/00_implementation-plan.md).
+
+The Kavita collection-assignment work is underway on
+`codex/kavita-module-mangadl-collections-20261009-0349`. It adds a reusable
+`modules/kavita` package and preserves the existing `-c/--config` behavior;
+the collection option is `-M/--collections`. Assignment mutations require
+`-E/--apply-kavita`, while pending assignments can be previewed and later
+applied with `mangadl kavita reconcile`.
 
 Active planning records:
 

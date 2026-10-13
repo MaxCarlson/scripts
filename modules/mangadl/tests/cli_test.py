@@ -313,7 +313,8 @@ def test_benchmark_dry_run_reports_explicit_bounds(
     assert optimization["state_count"] > 0
 
 
-def test_benchmark_bounds_cannot_exceed_hard_worker_limit(tmp_path) -> None:
+def test_benchmark_worker_target_cannot_exceed_slow_storage_limit(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("mangadl.cli_core.storage_media_for_path", lambda path: StorageMedia(StorageMediaKind.ROTATIONAL, str(path), "mocked slow storage"))
     with pytest.raises(SystemExit) as exc_info:
         main(
             [
@@ -326,7 +327,7 @@ def test_benchmark_bounds_cannot_exceed_hard_worker_limit(tmp_path) -> None:
                 "-a",
                 str(tmp_path / "archive.db"),
                 "-m",
-                "9",
+                "5",
                 "-n",
             ]
         )
@@ -370,6 +371,8 @@ def test_explicit_max_workers_override_allows_experimental_bound(
 ) -> None:
     monkeypatch.delenv("MANGADL_MAX_OUTER_WORKERS", raising=False)
     monkeypatch.delenv("MANGADL_MANGA18FX_IMAGE_WORKERS", raising=False)
+    monkeypatch.setattr("mangadl.cli_core.storage_media_for_path", lambda path: StorageMedia(StorageMediaKind.SOLID_STATE, str(path), "mocked SSD"))
+    monkeypatch.setattr("mangadl.cli_core.os.cpu_count", lambda: 16)
     result = main(
         [
             "run",
@@ -395,7 +398,9 @@ def test_explicit_max_workers_override_allows_experimental_bound(
     assert payload["max_workers"] == 5
 
 
-def test_scratch_defaults_to_hard_worker_ceiling(tmp_path, capsys) -> None:
+def test_scratch_defaults_to_cpu_budget_when_scratch_is_ssd(tmp_path, capsys, monkeypatch) -> None:
+    monkeypatch.setattr("mangadl.cli_core.storage_media_for_path", lambda path: StorageMedia(StorageMediaKind.SOLID_STATE, str(path), "mocked SSD"))
+    monkeypatch.setattr("mangadl.cli_core.os.cpu_count", lambda: 16)
     result = main(
         [
             "run",
@@ -413,17 +418,62 @@ def test_scratch_defaults_to_hard_worker_ceiling(tmp_path, capsys) -> None:
 
     payload = json.loads(capsys.readouterr().out)
     assert result == 0
-    assert payload["max_workers"] == 8
+    assert payload["max_workers"] == 15
     assert payload["storage_media"] == "scratch"
+    assert payload["destination_storage_media"] == "solid_state"
+    assert payload["scratch_storage_media"] == "solid_state"
+
+
+def test_scratch_does_not_remove_ceiling_unless_either_path_is_ssd(tmp_path, capsys, monkeypatch) -> None:
+    monkeypatch.setattr("mangadl.cli_core.storage_media_for_path", lambda path: StorageMedia(StorageMediaKind.ROTATIONAL, str(path), "mocked HDD"))
+
+    result = main(
+        [
+            "run", "config", "-u", "https://manga18fx.com/manga/example/",
+            "-d", str(tmp_path / "out"), "--scratch", str(tmp_path / "scratch"), "-n", "-J",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert payload["max_workers"] == 4
+    assert payload["destination_storage_media"] == "rotational"
+    assert payload["scratch_storage_media"] == "rotational"
+
+
+def test_ssd_destination_removes_ceiling_even_with_rotational_scratch(tmp_path, capsys, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "mangadl.cli_core.storage_media_for_path",
+        lambda path: StorageMedia(
+            StorageMediaKind.ROTATIONAL if "scratch" in str(path) else StorageMediaKind.SOLID_STATE,
+            str(path),
+            "mocked media",
+        ),
+    )
+    monkeypatch.setattr("mangadl.cli_core.os.cpu_count", lambda: 16)
+
+    result = main(
+        [
+            "run", "config", "-u", "https://manga18fx.com/manga/example/",
+            "-d", str(tmp_path / "out"), "--scratch", str(tmp_path / "scratch"), "-n", "-J",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert payload["max_workers"] == 15
+    assert payload["destination_storage_media"] == "solid_state"
+    assert payload["scratch_storage_media"] == "rotational"
 
 
 @pytest.mark.parametrize(
     ("kind", "expected"),
-    [(StorageMediaKind.SOLID_STATE, 8), (StorageMediaKind.ROTATIONAL, 4), (StorageMediaKind.UNKNOWN, 4)],
+    [(StorageMediaKind.SOLID_STATE, 15), (StorageMediaKind.ROTATIONAL, 4), (StorageMediaKind.UNKNOWN, 4)],
 )
 def test_destination_media_selects_default_worker_ceiling(
     tmp_path, capsys, monkeypatch: pytest.MonkeyPatch, kind, expected
 ) -> None:
+    monkeypatch.setattr("mangadl.cli_core.os.cpu_count", lambda: 16)
     monkeypatch.setattr(
         "mangadl.cli_core.storage_media_for_path",
         lambda path: StorageMedia(kind, str(path), "mocked storage"),
@@ -448,12 +498,121 @@ def test_destination_media_selects_default_worker_ceiling(
     assert payload["storage_media"] == kind.value
 
 
+def test_kavita_name_assignment_previews_then_applies_exact_series(tmp_path, capsys, monkeypatch) -> None:
+    monkeypatch.setenv("KAVITA_API_KEY", "test-key")
+    fake = _FakeKavitaClient([
+        {"id": 7, "name": "The Example", "folderPath": "/library/The Example"},
+        {"id": 8, "name": "Other", "folderPath": "/library/Other"},
+    ])
+    monkeypatch.setattr("mangadl.cli_core.KavitaClient", lambda _config: fake)
+
+    assert main(["kavita", "assign-name", "-n", "the example", "-c", "Favorites", "-Z", "http://kavita", "-j"]) == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert preview["mode"] == "preview"
+    assert [row["id"] for row in preview["matches"]] == [7]
+    assert fake.add_calls == []
+
+    assert main(["kavita", "assign-name", "-n", "the example", "-c", "Favorites", "-Z", "http://kavita", "-f", "-j"]) == 0
+    applied = json.loads(capsys.readouterr().out)
+    assert applied["mode"] == "apply"
+    assert fake.add_calls == [("Favorites", [7], True)]
+
+
+def test_kavita_pattern_requires_exact_preview_token_before_apply(tmp_path, capsys, monkeypatch) -> None:
+    monkeypatch.setenv("KAVITA_API_KEY", "test-key")
+    fake = _FakeKavitaClient([
+        {"id": 7, "name": "blahblah alpha", "folderPath": "/library/a"},
+        {"id": 8, "name": "blahblah beta", "folderPath": "/library/b"},
+        {"id": 9, "name": "other", "folderPath": "/library/c"},
+    ])
+    monkeypatch.setattr("mangadl.cli_core.KavitaClient", lambda _config: fake)
+    argv = ["kavita", "assign-pattern", "-p", r"blahblah.*", "-c", "Group", "-Z", "http://kavita", "-j"]
+
+    assert main(argv) == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert [row["id"] for row in preview["matches"]] == [7, 8]
+    assert fake.add_calls == []
+
+    with pytest.raises(SystemExit) as exc_info:
+        main([*argv, "-f"])
+    assert exc_info.value.code == 2
+    assert fake.add_calls == []
+
+    assert main([*argv, "-f", "-C", preview["match_token"]]) == 0
+    assert fake.add_calls == [("Group", [7, 8], True)]
+
+
+def test_kavita_file_assignment_resolves_shared_url_folder_identity(tmp_path, capsys, monkeypatch) -> None:
+    from PIL import Image
+
+    monkeypatch.setenv("KAVITA_API_KEY", "test-key")
+    folder = tmp_path / "library" / "Series"
+    folder.mkdir(parents=True)
+    Image.new("RGB", (1, 1)).save(folder / "001.jpg")
+    (folder / "info.json").write_text(json.dumps({"url": "https://example.test/series"}), encoding="utf-8")
+    urls = tmp_path / "urls.txt"
+    urls.write_text("https://example.test/series\n", encoding="utf-8")
+    fake = _FakeKavitaClient([{"id": 11, "name": "Series", "folderPath": str(folder)}])
+    monkeypatch.setattr("mangadl.cli_core.KavitaClient", lambda _config: fake)
+
+    assert main([
+        "kavita", "assign-file", "-i", str(urls), "-d", str(folder.parent),
+        "-c", "Archive", "-Z", "http://kavita", "-j",
+    ]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["matches"][0]["source_urls"] == ["https://example.test/series"]
+    assert payload["matches"][0]["id"] == 11
+    assert payload["index_backfill"]["created"] == 1
+    assert (folder / ".mangadl-source.json").is_file()
+    assert fake.add_calls == []
+
+
+def test_kavita_pattern_rejects_unsafe_regex_constructs(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("KAVITA_API_KEY", "test-key")
+    monkeypatch.setattr("mangadl.cli_core.KavitaClient", lambda _config: _FakeKavitaClient([]))
+    with pytest.raises(SystemExit) as exc_info:
+        main(["kavita", "assign-pattern", "-p", r"(a+)+$", "-c", "Group", "-Z", "http://kavita"])
+    assert exc_info.value.code == 2
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["kavita", "assign-pattern", "-p", r"(a|aa)+$", "-c", "Group", "-Z", "http://kavita"])
+    assert exc_info.value.code == 2
+
+
+class _FakeKavitaClient:
+    def __init__(self, series):
+        self.series = series
+        self.add_calls = []
+
+    def list_series(self):
+        return self.series
+
+    def add_series_to_collection(self, name, ids, *, apply=False):
+        self.add_calls.append((name, ids, apply))
+        return {"action": "add_to_collection", "collection": name, "series_ids": ids, "applied": apply}
+
+
 def test_repair_loose_defaults_to_dry_run_and_supports_explicit_mode(tmp_path, capsys) -> None:
     assert main(["repair-loose", "-d", str(tmp_path), "-N"]) == 0
     assert "DRY-RUN: 0 files across 0 galleries" in capsys.readouterr().out
 
     args = build_parser().parse_args(["repair-loose", "-d", str(tmp_path), "-n"])
     assert args.dry_run
+
+
+def test_repair_pages_fails_closed_before_requests_for_custom_gallery_config(tmp_path, monkeypatch, capsys) -> None:
+    def unexpected_audit(*_args, **_kwargs):
+        raise AssertionError("custom config must be rejected before source requests")
+
+    monkeypatch.setattr("mangadl.cli_core.audit_destinations", unexpected_audit)
+    with pytest.raises(SystemExit) as exc_info:
+        main([
+            "repair-pages", "-u", "https://nhentai.net/g/123/", "-d", str(tmp_path),
+            "-g", str(tmp_path / "gallery-dl.conf"),
+        ])
+    assert exc_info.value.code == 2
+    assert "archive table and key overrides cannot be proven" in capsys.readouterr().err
 
 
 def test_inspect_reports_hdporncomics_manhwa_classification(capsys) -> None:

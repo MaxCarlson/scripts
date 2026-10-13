@@ -1,46 +1,174 @@
-diff --git "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\history\\20261009-034126_mangadl_context.md" "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\LATEST_CONTEXT.md"
-index e018659..99aab2c 100644
---- "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\history\\20261009-034126_mangadl_context.md"
+warning: in the working copy of 'C:\Users\mcarls\src\scripts\docs\test-results\mangadl\history\20261012-202043_mangadl_context.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'C:\Users\mcarls\src\scripts\docs\test-results\mangadl\LATEST_CONTEXT.md', LF will be replaced by CRLF the next time Git touches it
+diff --git "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\history\\20261012-202043_mangadl_context.md" "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\LATEST_CONTEXT.md"
+index 0a1404d..399d605 100644
+--- "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\history\\20261012-202043_mangadl_context.md"
 +++ "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\LATEST_CONTEXT.md"
 @@ -1,6 +1,6 @@
  # Validation Context: mangadl
  
--Generated: 2026-10-09T03:41:28.7016073-07:00
-+Generated: 2026-10-09T03:42:24.0816854-07:00
- Branch: main
- Commit: c67a45c6779d7631a27719a4f60dbc2ec3013ef5
+-Generated: 2026-10-12T20:21:03.3474418-07:00
++Generated: 2026-10-12T20:22:27.6006577-07:00
+ Branch: codex/kavita-module-mangadl-collections-20261009-0349
+ Commit: b38bd37bf4b02770635869780c8d0bcae4dd719e
  Validation report: docs\test-results\mangadl\LATEST.txt
-@@ -8,11 +8,10 @@ Validation report: docs\test-results\mangadl\LATEST.txt
- ## Validation Highlights
- 
- - RESULT: PASS - Compile mangadl package and tests
--- RESULT: FAIL - Lint mangadl package and tests
--- RESULT: FAIL - Mangadl CLI help contract
--- RESULT: FAIL - Mangadl pytest suite
--- TARGET RESULT: FAIL
--- Failure count: 3
-+- RESULT: PASS - Lint mangadl package and tests
-+- RESULT: PASS - Mangadl CLI help contract
-+- RESULT: PASS - Mangadl pytest suite
-+- TARGET RESULT: PASS
- 
+@@ -16,64 +16,89 @@ Validation report: docs\test-results\mangadl\LATEST.txt
  ## Working Tree
  
-@@ -41,6 +40,7 @@ Validation report: docs\test-results\mangadl\LATEST.txt
-  M modules/mangadl/mangadl/cli_core.py
-  M modules/mangadl/mangadl/cli_structure.py
-  M modules/mangadl/mangadl/concurrency.py
-+ M modules/mangadl/mangadl/favorites.py
-  M modules/mangadl/mangadl/manager.py
-  M modules/mangadl/mangadl/partial_safety.py
-  M modules/mangadl/mangadl/ui.py
-@@ -53,6 +53,9 @@ Validation report: docs\test-results\mangadl\LATEST.txt
-  M modules/scripts_help/scripts_help/registry/registry.py
-  M validation-targets.json
- ?? docs/test-results/cross-platform/
-+?? docs/test-results/mangadl/history/20261009-034126_mangadl.txt
-+?? docs/test-results/mangadl/history/20261009-034126_mangadl_context.md
-+?? docs/test-results/mangadl/history/20261009-034126_mangadl_progress.diff
- ?? docs/test-results/scheduler/
- ?? modules/cross_platform/docs/
- ?? modules/cross_platform/storage.py
+ ```text
+- M docs/plans/20261009-0349_kavita-module-mangadl-collections/HANDOFF.md
+- M docs/plans/20261009-0349_kavita-module-mangadl-collections/STATUS.md
+- M docs/plans/20261009-0349_kavita-module-mangadl-collections/checklist.md
+- M docs/test-results/kavita/LATEST.txt
+- M docs/test-results/kavita/LATEST_CONTEXT.md
+- M docs/test-results/kavita/LATEST_PROGRESS.diff
+- M docs/test-results/mangadl/LATEST.txt
+- D docs/test-results/mangadl/LATEST_CONTEXT.md
+- D docs/test-results/mangadl/LATEST_PROGRESS.diff
+- M modules/mangadl/README.md
+- M modules/mangadl/__init__.py
+- M modules/mangadl/docs/HANDOFF.md
+- M modules/mangadl/docs/README.md
+- M modules/mangadl/docs/plans/20261009-0325_graceful-quit-and-worker-scaling/00_implementation-plan.md
+- M modules/mangadl/docs/plans/20261009-0325_graceful-quit-and-worker-scaling/checklist.md
+- M modules/mangadl/docs/plans/HANDOFF.md
+- M modules/mangadl/mangadl/__init__.py
+- M modules/mangadl/mangadl/cli_core.py
+- M modules/mangadl/mangadl/cli_structure.py
+- M modules/mangadl/mangadl/concurrency.py
+- M modules/mangadl/mangadl/destination_audit.py
+- M modules/mangadl/mangadl/manager.py
+- M modules/mangadl/mangadl/partial_reconcile.py
+- M modules/mangadl/mangadl/worker_core.py
+- M modules/mangadl/pyproject.toml
+- M modules/mangadl/tests/cli_test.py
+- M modules/mangadl/tests/concurrency_test.py
+- M modules/mangadl/tests/destination_audit_test.py
+- M modules/mangadl/tests/kavita_assignment_test.py
+- M modules/mangadl/tests/partial_reconcile_test.py
+- M modules/scripts_help/scripts_help/registry/registry.py
+- M validation-targets.json
+-?? docs/test-results/kavita/history/
+-?? docs/test-results/mangadl/history/20260921-164807_mangadl.txt
+-?? docs/test-results/mangadl/history/20260921-164807_mangadl_context.md
+-?? docs/test-results/mangadl/history/20260921-164807_mangadl_progress.diff
+-?? docs/test-results/mangadl/history/20261009-143417_mangadl.txt
+-?? docs/test-results/mangadl/history/20261009-143417_mangadl_context.md
+-?? docs/test-results/mangadl/history/20261009-143417_mangadl_progress.diff
+-?? docs/test-results/mangadl/history/20261009-143722_mangadl.txt
+-?? docs/test-results/mangadl/history/20261009-143722_mangadl_context.md
+-?? docs/test-results/mangadl/history/20261009-143722_mangadl_progress.diff
+-?? docs/test-results/mangadl/history/20261009-143915_mangadl.txt
+-?? docs/test-results/mangadl/history/20261009-143915_mangadl_context.md
+-?? docs/test-results/mangadl/history/20261009-143915_mangadl_progress.diff
+-?? docs/test-results/mangadl/history/20261009-151205_mangadl.txt
+-?? docs/test-results/mangadl/history/20261009-151205_mangadl_context.md
+-?? docs/test-results/mangadl/history/20261009-151205_mangadl_progress.diff
+-?? docs/test-results/mangadl/history/20261012-201801_mangadl.txt
+-?? docs/test-results/mangadl/history/20261012-201801_mangadl_context.md
+-?? docs/test-results/mangadl/history/20261012-201801_mangadl_progress.diff
+-?? modules/mangadl/docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/
+-?? modules/mangadl/mangadl/library_index.py
+-?? modules/mangadl/mangadl/page_adapters.py
+-?? modules/mangadl/mangadl/repair_pages.py
+-?? modules/mangadl/tests/library_index_test.py
+-?? modules/mangadl/tests/page_adapters_test.py
+-?? modules/mangadl/tests/repair_pages_test.py
++M  docs/plans/20261009-0349_kavita-module-mangadl-collections/00_implementation-plan.md
++M  docs/plans/20261009-0349_kavita-module-mangadl-collections/HANDOFF.md
++M  docs/plans/20261009-0349_kavita-module-mangadl-collections/STATUS.md
++M  docs/plans/20261009-0349_kavita-module-mangadl-collections/checklist.md
++M  docs/test-results/kavita/LATEST.txt
++M  docs/test-results/kavita/LATEST_CONTEXT.md
++M  docs/test-results/kavita/LATEST_PROGRESS.diff
++A  docs/test-results/kavita/history/20261009-040457_kavita.txt
++A  docs/test-results/kavita/history/20261009-040457_kavita_context.md
++A  docs/test-results/kavita/history/20261009-040457_kavita_progress.diff
++A  docs/test-results/kavita/history/20261009-143442_kavita.txt
++A  docs/test-results/kavita/history/20261009-143442_kavita_context.md
++A  docs/test-results/kavita/history/20261009-143442_kavita_progress.diff
++A  docs/test-results/kavita/history/20261009-143747_kavita.txt
++A  docs/test-results/kavita/history/20261009-143747_kavita_context.md
++A  docs/test-results/kavita/history/20261009-143747_kavita_progress.diff
++A  docs/test-results/kavita/history/20261009-143940_kavita.txt
++A  docs/test-results/kavita/history/20261009-143940_kavita_context.md
++A  docs/test-results/kavita/history/20261009-143940_kavita_progress.diff
++A  docs/test-results/kavita/history/20261009-151229_kavita.txt
++A  docs/test-results/kavita/history/20261009-151229_kavita_context.md
++A  docs/test-results/kavita/history/20261009-151229_kavita_progress.diff
++A  docs/test-results/kavita/history/20261012-201822_kavita.txt
++A  docs/test-results/kavita/history/20261012-201822_kavita_context.md
++A  docs/test-results/kavita/history/20261012-201822_kavita_progress.diff
++MM docs/test-results/mangadl/LATEST.txt
++MD docs/test-results/mangadl/LATEST_CONTEXT.md
++MD docs/test-results/mangadl/LATEST_PROGRESS.diff
++A  docs/test-results/mangadl/history/20260921-164807_mangadl.txt
++A  docs/test-results/mangadl/history/20260921-164807_mangadl_context.md
++A  docs/test-results/mangadl/history/20260921-164807_mangadl_progress.diff
++A  docs/test-results/mangadl/history/20261009-143417_mangadl.txt
++A  docs/test-results/mangadl/history/20261009-143417_mangadl_context.md
++A  docs/test-results/mangadl/history/20261009-143417_mangadl_progress.diff
++A  docs/test-results/mangadl/history/20261009-143722_mangadl.txt
++A  docs/test-results/mangadl/history/20261009-143722_mangadl_context.md
++A  docs/test-results/mangadl/history/20261009-143722_mangadl_progress.diff
++A  docs/test-results/mangadl/history/20261009-143915_mangadl.txt
++A  docs/test-results/mangadl/history/20261009-143915_mangadl_context.md
++A  docs/test-results/mangadl/history/20261009-143915_mangadl_progress.diff
++A  docs/test-results/mangadl/history/20261009-151205_mangadl.txt
++A  docs/test-results/mangadl/history/20261009-151205_mangadl_context.md
++A  docs/test-results/mangadl/history/20261009-151205_mangadl_progress.diff
++A  docs/test-results/mangadl/history/20261012-201801_mangadl.txt
++A  docs/test-results/mangadl/history/20261012-201801_mangadl_context.md
++A  docs/test-results/mangadl/history/20261012-201801_mangadl_progress.diff
++M  modules/mangadl/README.md
++M  modules/mangadl/__init__.py
++M  modules/mangadl/docs/HANDOFF.md
++M  modules/mangadl/docs/README.md
++M  modules/mangadl/docs/plans/20261009-0325_graceful-quit-and-worker-scaling/00_implementation-plan.md
++M  modules/mangadl/docs/plans/20261009-0325_graceful-quit-and-worker-scaling/checklist.md
++A  modules/mangadl/docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/00_implementation-plan.md
++A  modules/mangadl/docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/01_worker-budget__planned.md
++A  modules/mangadl/docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/HANDOFF.md
++A  modules/mangadl/docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/STATUS.md
++A  modules/mangadl/docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/checklist.md
++M  modules/mangadl/docs/plans/HANDOFF.md
++M  modules/mangadl/mangadl/__init__.py
++M  modules/mangadl/mangadl/cli_core.py
++M  modules/mangadl/mangadl/cli_structure.py
++M  modules/mangadl/mangadl/concurrency.py
++M  modules/mangadl/mangadl/destination_audit.py
++A  modules/mangadl/mangadl/library_index.py
++M  modules/mangadl/mangadl/manager.py
++A  modules/mangadl/mangadl/page_adapters.py
++M  modules/mangadl/mangadl/partial_reconcile.py
++A  modules/mangadl/mangadl/repair_pages.py
++M  modules/mangadl/mangadl/worker_core.py
++M  modules/mangadl/pyproject.toml
++M  modules/mangadl/tests/cli_test.py
++M  modules/mangadl/tests/concurrency_test.py
++M  modules/mangadl/tests/destination_audit_test.py
++M  modules/mangadl/tests/kavita_assignment_test.py
++A  modules/mangadl/tests/library_index_test.py
++A  modules/mangadl/tests/page_adapters_test.py
++M  modules/mangadl/tests/partial_reconcile_test.py
++A  modules/mangadl/tests/repair_pages_test.py
++M  modules/scripts_help/scripts_help/registry/registry.py
++M  validation-targets.json
++?? docs/test-results/mangadl/history/20261012-202043_mangadl.txt
++?? docs/test-results/mangadl/history/20261012-202043_mangadl_context.md
++?? docs/test-results/mangadl/history/20261012-202043_mangadl_progress.diff
+ ```
+ 
+ ## Project Status Sources
+@@ -407,8 +432,9 @@ pages, and preserves evidence for every conclusion.
+ - Use bounded, user-selected live acceptance. Do not apply repair to the live
+   library or perform a Kavita API write until the user approves the preview.
+ - Review branch-only commits and main-only validation evidence; preserve the
+-  independent Kavita feature if the user wants it in this branch. Merge into
+-  main only after feature completion and explicit approval.
++  independent Kavita feature in this authorized integration. The user approved
++  merging into main on 2026-10-12. Live repair and Kavita collection writes
++  remain preview-first and have not been performed.
+ 
+ ## Open decisions / assumptions
+ 

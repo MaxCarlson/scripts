@@ -1,0 +1,52 @@
+warning: in the working copy of 'C:\Users\mcarls\src\scripts\docs\test-results\mangadl\history\20261009-143722_mangadl_context.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'C:\Users\mcarls\src\scripts\docs\test-results\mangadl\LATEST_CONTEXT.md', LF will be replaced by CRLF the next time Git touches it
+diff --git "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\history\\20261009-143722_mangadl_context.md" "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\LATEST_CONTEXT.md"
+index 701ce0a..a04f4ae 100644
+--- "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\history\\20261009-143722_mangadl_context.md"
++++ "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\LATEST_CONTEXT.md"
+@@ -1,6 +1,6 @@
+ # Validation Context: mangadl
+ 
+-Generated: 2026-10-09T14:37:47.0484545-07:00
++Generated: 2026-10-09T14:39:40.3506483-07:00
+ Branch: codex/kavita-module-mangadl-collections-20261009-0349
+ Commit: b38bd37bf4b02770635869780c8d0bcae4dd719e
+ Validation report: docs\test-results\mangadl\LATEST.txt
+@@ -28,6 +28,9 @@ Validation report: docs\test-results\mangadl\LATEST.txt
+  D docs/test-results/mangadl/history/20260921-104414_mangadl.txt
+  D docs/test-results/mangadl/history/20260921-104414_mangadl_context.md
+  D docs/test-results/mangadl/history/20260921-104414_mangadl_progress.diff
++ D docs/test-results/mangadl/history/20260921-160434_mangadl.txt
++ D docs/test-results/mangadl/history/20260921-160434_mangadl_context.md
++ D docs/test-results/mangadl/history/20260921-160434_mangadl_progress.diff
+  M modules/mangadl/README.md
+  M modules/mangadl/__init__.py
+  M modules/mangadl/docs/HANDOFF.md
+@@ -58,6 +61,9 @@ Validation report: docs\test-results\mangadl\LATEST.txt
+ ?? docs/test-results/mangadl/history/20261009-143417_mangadl.txt
+ ?? docs/test-results/mangadl/history/20261009-143417_mangadl_context.md
+ ?? docs/test-results/mangadl/history/20261009-143417_mangadl_progress.diff
++?? docs/test-results/mangadl/history/20261009-143722_mangadl.txt
++?? docs/test-results/mangadl/history/20261009-143722_mangadl_context.md
++?? docs/test-results/mangadl/history/20261009-143722_mangadl_progress.diff
+ ?? modules/mangadl/docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/
+ ?? modules/mangadl/mangadl/library_index.py
+ ?? modules/mangadl/mangadl/page_adapters.py
+@@ -103,7 +109,7 @@ repair nor a Kavita API write has been performed.
+ ## Verification
+ 
+ - Focused repair/CLI/worker tests: 54 passed before the final token-test addition.
+-- Final MangaDL suite: 247 passed.
++- Final MangaDL suite: 248 passed.
+ - Kavita suite: 16 passed.
+ - Repository dispatcher `pwsh -NoProfile -Command "& .\\Invoke-Tests.ps1 -Target @('mangadl','kavita') -SkipBootstrap"`: both targets passed compile, Ruff, CLI help (MangaDL), and pytest.
+ - Direct Ruff checks passed for MangaDL and Kavita. `git diff --check` found no source whitespace errors; it reports intentional blank lines/trailing whitespace only in dispatcher-generated `LATEST_CONTEXT.md` and `LATEST_PROGRESS.diff` reports.
+@@ -179,7 +185,7 @@ repair nor a Kavita API write has been performed.
+ ## Current implementation verification (2026-10-09)
+ 
+ - Focused repair/CLI/worker tests: 54 passed before the final preview-token test.
+-- MangaDL full suite: 247 passed after all implementation changes.
++- MangaDL full suite: 248 passed after all implementation changes.
+ - Kavita full suite: 16 passed.
+ - Repository dispatcher `pwsh -NoProfile -Command "& .\\Invoke-Tests.ps1 -Target @('mangadl','kavita') -SkipBootstrap"`: both targets passed compile, Ruff, CLI help (MangaDL), and pytest.
+ - Repository dispatcher refreshed the tracked `docs/test-results/{mangadl,kavita}/LATEST*` reports. The generated progress-diff artifacts contain intentional blank-line whitespace, so `git diff --check` reports whitespace only in those reports.

@@ -6,6 +6,9 @@ This handoff covers repository-wide infrastructure and conventions that are not 
 
 ## Active Repository-Wide Plan
 
+The current cross-module implementation plan is
+`docs/plans/20261009-0349_kavita-module-mangadl-collections/`.
+
 ```text
 docs/plans/20260926-0107_missing-only-bootstrap/
 ```

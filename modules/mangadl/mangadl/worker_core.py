@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .hdporncomics_patch import patch_recovery_hint
+from .library_index import write_source_manifest
 from .models import WorkerEvent
 from .naming import DIRECTORY_TEMPLATE, FILENAME_TEMPLATE
 from .partial_safety import (
@@ -259,6 +260,17 @@ def _gallery_merge_source(partial: Path, url: str) -> Path:
     return category_root
 
 
+def _single_series_path(partial: Path, destination: Path, url: str, backend: str) -> str:
+    """Infer only a single isolated top-level folder; never guess from a title."""
+    if backend == "hdporncomics" or not partial.is_dir():
+        return ""
+    source = _gallery_merge_source(partial, url) if backend == "gallery-dl" else partial
+    candidates = [child for child in source.iterdir() if child.is_dir() and _tree_stats(child)[0] > 0]
+    if len(candidates) != 1:
+        return ""
+    return str(destination / candidates[0].name)
+
+
 def _merge_gallery_partial(partial: Path, destination: Path, url: str) -> None:
     source = _gallery_merge_source(partial, url)
     _merge_partial(source, destination)
@@ -330,6 +342,8 @@ def _command(args: argparse.Namespace, partial: Path) -> list[str]:
     command.extend(["--no-input", "--verbose", "--destination", str(partial)])
     command.extend(_gallery_naming_options(args.url))
     command.extend(["--download-archive", args.archive])
+    if getattr(args, "file_range", None):
+        command.extend(["--range", args.file_range])
     command.extend(["--Print", f"after:{ARCHIVE_KEY_MARKER}{{_archive_key}}"])
     if args.gallery_config:
         command.extend(["--config", args.gallery_config])
@@ -550,10 +564,15 @@ def run(args: argparse.Namespace) -> int:
                 )
                 return 1
 
+        series_path = "" if getattr(args, "scratch_mode", False) else _single_series_path(
+            partial, Path(args.destination), args.url, args.backend
+        )
         try:
             if getattr(args, "scratch_mode", False):
                 category = _scratch_flatten_category(args.url) if args.backend == "gallery-dl" else ""
                 args.promoted_folders = staged_library_folders(partial, Path(args.destination), category)
+                if len(args.promoted_folders) == 1:
+                    series_path = str(args.promoted_folders[0])
                 _emit(
                     args,
                     "heartbeat",
@@ -588,6 +607,13 @@ def run(args: argparse.Namespace) -> int:
             )
             return 2
 
+        manifest_error = None
+        if series_path:
+            try:
+                write_source_manifest(Path(series_path), args.url, args.backend)
+            except (OSError, ValueError) as exc:
+                manifest_error = f"source manifest was not written: {type(exc).__name__}: {exc}"
+
         gallery_skipped = (
             args.backend != "manga18fx"
             and images == baseline_images
@@ -619,6 +645,8 @@ def run(args: argparse.Namespace) -> int:
             bytes_total=size,
             elapsed=time.monotonic() - started,
             message=message,
+            series_path=series_path,
+            source_manifest_error=manifest_error,
         )
         return 0
 
@@ -658,6 +686,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-P", "--partial-dir", required=True)
     parser.add_argument("--scratch-mode", action="store_true")
     parser.add_argument("--canonical-archive")
+    parser.add_argument("-0", "--file-range", help=argparse.SUPPRESS)
     parser.add_argument("-L", "--raw-log", required=True)
     parser.add_argument("-g", "--gallery-config")
     parser.add_argument("-c", "--cookies")

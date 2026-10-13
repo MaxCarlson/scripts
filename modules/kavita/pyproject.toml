@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kavita"
+version = "0.1.0"
+description = "Reusable Python client and durable collection assignment helpers for Kavita."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.8"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["kavita*"]
+
+[tool.pytest.ini_options]
+addopts = "-q -p no:cacheprovider --basetemp=.pytest_tmp_root"
+testpaths = ["tests"]
+tmp_path_retention_policy = "none"

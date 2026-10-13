@@ -1,0 +1,86 @@
+warning: in the working copy of 'C:\Users\mcarls\src\scripts\docs\test-results\mangadl\history\20261009-143915_mangadl_context.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'C:\Users\mcarls\src\scripts\docs\test-results\mangadl\LATEST_CONTEXT.md', LF will be replaced by CRLF the next time Git touches it
+diff --git "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\history\\20261009-143915_mangadl_context.md" "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\LATEST_CONTEXT.md"
+index a04f4ae..2a0f606 100644
+--- "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\history\\20261009-143915_mangadl_context.md"
++++ "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\LATEST_CONTEXT.md"
+@@ -1,6 +1,6 @@
+ # Validation Context: mangadl
+ 
+-Generated: 2026-10-09T14:39:40.3506483-07:00
++Generated: 2026-10-09T15:12:29.2484305-07:00
+ Branch: codex/kavita-module-mangadl-collections-20261009-0349
+ Commit: b38bd37bf4b02770635869780c8d0bcae4dd719e
+ Validation report: docs\test-results\mangadl\LATEST.txt
+@@ -22,15 +22,6 @@ Validation report: docs\test-results\mangadl\LATEST.txt
+  M docs/test-results/mangadl/LATEST.txt
+  D docs/test-results/mangadl/LATEST_CONTEXT.md
+  D docs/test-results/mangadl/LATEST_PROGRESS.diff
+- D docs/test-results/mangadl/history/20260921-100951_mangadl.txt
+- D docs/test-results/mangadl/history/20260921-100951_mangadl_context.md
+- D docs/test-results/mangadl/history/20260921-100951_mangadl_progress.diff
+- D docs/test-results/mangadl/history/20260921-104414_mangadl.txt
+- D docs/test-results/mangadl/history/20260921-104414_mangadl_context.md
+- D docs/test-results/mangadl/history/20260921-104414_mangadl_progress.diff
+- D docs/test-results/mangadl/history/20260921-160434_mangadl.txt
+- D docs/test-results/mangadl/history/20260921-160434_mangadl_context.md
+- D docs/test-results/mangadl/history/20260921-160434_mangadl_progress.diff
+  M modules/mangadl/README.md
+  M modules/mangadl/__init__.py
+  M modules/mangadl/docs/HANDOFF.md
+@@ -64,6 +55,9 @@ Validation report: docs\test-results\mangadl\LATEST.txt
+ ?? docs/test-results/mangadl/history/20261009-143722_mangadl.txt
+ ?? docs/test-results/mangadl/history/20261009-143722_mangadl_context.md
+ ?? docs/test-results/mangadl/history/20261009-143722_mangadl_progress.diff
++?? docs/test-results/mangadl/history/20261009-143915_mangadl.txt
++?? docs/test-results/mangadl/history/20261009-143915_mangadl_context.md
++?? docs/test-results/mangadl/history/20261009-143915_mangadl_progress.diff
+ ?? modules/mangadl/docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/
+ ?? modules/mangadl/mangadl/library_index.py
+ ?? modules/mangadl/mangadl/page_adapters.py
+@@ -99,7 +93,7 @@ Implemented in the current working tree:
+   It previews page/archive identities, requires an exact preview token plus
+   `--apply`, backs up the archive, quarantines corrupt files, runs one normal
+   MangaDL worker with exact page ranges, then re-audits and reconciles only
+-  affected archive keys. Custom archive layouts without a provable table,
++  affected archive keys. Custom gallery-dl configuration/archive layouts,
+   active runs, incomplete identity maps, and unsupported backends fail closed.
+ 
+ Paradise (`nhentai-633374`) remains unmodified. Its previous audit finding was
+@@ -280,9 +274,12 @@ pages, and preserves evidence for every conclusion.
+ 
+ ### Safe operations
+ 
+-- Audits and selection previews never mutate the library, archive, assignment
+-  store, or Kavita. Expected-page enumeration can make source metadata requests
+-  but never fetches image payloads or writes the download archive.
++- Audits and selection previews never mutate image payloads, the download
++  archive, assignment store, or Kavita. URL-file audit and historical
++  `assign-file` may atomically add only a source-identity sidecar for a proven
++  unique match; both expose a read-only opt-out. Expected-page enumeration can
++  make source metadata requests but never fetches image payloads or writes the
++  download archive.
+ - Collection writes remain explicit and idempotent.
+ - Repair previews enumerate exact source URLs, folders, pages, archive rows,
+   and recovery actions. Applying repair requires an explicit flag and a token
+@@ -322,6 +319,10 @@ pages, and preserves evidence for every conclusion.
+   auth data.
+ - Make run-time Kavita assignment creation use the same resolved folder
+   record. Preserve legacy metadata fallbacks and surface ambiguity explicitly.
++- During URL-file audit and Kavita `assign-file`, backfill missing source
++  manifests for unique, non-empty matches established by exact source metadata
++  or deterministic backend identity. Never overwrite an invalid/different
++  source identity; report existing, created, skipped, and conflicting pairs.
+ - Tests cover exact metadata, legacy fallback, duplicate URL/folder
+   assignment, interrupted promotion, manifest mismatch, stale manifests, and
+   no silent folder merging.
+@@ -335,7 +336,8 @@ pages, and preserves evidence for every conclusion.
+   manga, duplicate folders, missing folders) and audit each source's expected
+   page set when an adapter can establish it.
+ - Make audit output deterministic, progress-visible, and safe for large
+-  libraries; retain read-only defaults and current CLI aliases.
++  libraries; keep folder-only mode read-only and provide `--no-index-backfill`
++  for URL-file audits that must not create metadata sidecars.
+ - Tests cover nested/large roots, multiple destinations, folder-only mode,
+   duplicate URL lines, extra folders, inaccessible files, and no mutation.
+ 

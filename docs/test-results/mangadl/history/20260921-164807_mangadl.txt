@@ -1,0 +1,110 @@
+
+
+====================================================================================================
+VALIDATION TARGET: mangadl
+====================================================================================================
+Timestamp: 2026-09-21T16:48:07.5764472-07:00
+Description: Mangadl guarded collection routing, resumable partial ownership, cleanup, and dashboard validation.
+Repository root: C:\Users\mcarls\src\scripts
+Working directory: C:\Users\mcarls\src\scripts\modules\mangadl
+Python: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe
+PowerShell: 7.6.1
+Platform: Microsoft Windows 10.0.26200
+Bootstrap enabled: False
+Production read-only checks: False
+History retention: 3 prior runs, maximum age 14 days
+Git branch: agent/mangadl-gallery-auth
+Git commit: 8f0d2d83abfc22c36d91d25ce2f7f96ab6c22adb
+Git status before validation:
+ M modules/mangadl/docs/HANDOFF.md
+ M modules/mangadl/docs/plans/20260825-0540_gallery-dl-managed-auth/HANDOFF.md
+ M modules/mangadl/docs/plans/20260825-0540_gallery-dl-managed-auth/STATUS.md
+ M modules/mangadl/docs/plans/20260825-0540_gallery-dl-managed-auth/checklist.md
+ M modules/mangadl/docs/plans/20260921-0943_partial-safety-and-merge-readiness/HANDOFF.md
+ M modules/mangadl/docs/plans/20260921-0943_partial-safety-and-merge-readiness/STATUS.md
+ M modules/mangadl/docs/plans/20260921-0943_partial-safety-and-merge-readiness/checklist.md
+ M modules/mangadl/docs/plans/HANDOFF.md
+
+====================================================================================================
+Compile mangadl package and tests
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\mangadl
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m compileall -q mangadl tests
+RESULT: PASS - Compile mangadl package and tests
+
+====================================================================================================
+Lint mangadl package and tests
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\mangadl
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m ruff check mangadl tests
+All checks passed!
+RESULT: PASS - Lint mangadl package and tests
+
+====================================================================================================
+Mangadl CLI help contract
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\mangadl
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m mangadl --help
+usage: mangadl [-h] [-V]
+               {run,inspect,status,retry,archive,patch-hdporncomics,audit,audit-destinations,repair-loose,partials,auth}
+               ...
+
+Concurrent, resumable manga/gallery download manager.
+
+positional arguments:
+  {run,inspect,status,retry,archive,patch-hdporncomics,audit,audit-destinations,repair-loose,partials,auth}
+    run                 Download normally, optimize adaptively, or benchmark a
+                        bounded state matrix.
+    inspect             Inspect URL routing or persisted jobs.
+    status              Show the latest or selected persisted run.
+    retry               Requeue failed jobs in a persisted run.
+    archive             Browse a gallery-dl SQLite archive interactively.
+    patch-hdporncomics  Check or apply the HDPornComics Windows path patch.
+    audit (audit-destinations)
+                        Find URL-list items absent from all destination roots.
+    repair-loose        Rebuild per-gallery folders from loose nhentai images.
+    partials            Inspect or safely remove resumable partial data.
+    auth                Manage per-domain gallery-dl browser authentication.
+
+options:
+  -h, --help            show this help message and exit
+  -V, --version         show program's version number and exit
+RESULT: PASS - Mangadl CLI help contract
+
+====================================================================================================
+Mangadl pytest suite
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\mangadl
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest tests -q --strict-config --strict-markers --basetemp C:\Users\mcarls\src\scripts\modules\mangadl\.pytest_tmp_root\validation-20260921-164807
+[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m [ 39%]
+[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m [ 79%]
+[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m                                   [100%][0m
+RESULT: PASS - Mangadl pytest suite
+
+====================================================================================================
+TARGET SUMMARY
+====================================================================================================
+Latest report: C:\Users\mcarls\src\scripts\docs\test-results\mangadl\LATEST.txt
+Context snapshot: C:\Users\mcarls\src\scripts\docs\test-results\mangadl\LATEST_CONTEXT.md
+Progress diff: C:\Users\mcarls\src\scripts\docs\test-results\mangadl\LATEST_PROGRESS.diff
+TARGET RESULT: PASS
+All requested validation sections passed.
+
+Git status after validation:
+ M docs/test-results/mangadl/LATEST.txt
+ D docs/test-results/mangadl/LATEST_CONTEXT.md
+ D docs/test-results/mangadl/LATEST_PROGRESS.diff
+ D docs/test-results/mangadl/history/20260921-100720_mangadl.txt
+ D docs/test-results/mangadl/history/20260921-100720_mangadl_context.md
+ D docs/test-results/mangadl/history/20260921-100720_mangadl_progress.diff
+ M modules/mangadl/docs/HANDOFF.md
+ M modules/mangadl/docs/plans/20260825-0540_gallery-dl-managed-auth/HANDOFF.md
+ M modules/mangadl/docs/plans/20260825-0540_gallery-dl-managed-auth/STATUS.md
+ M modules/mangadl/docs/plans/20260825-0540_gallery-dl-managed-auth/checklist.md
+ M modules/mangadl/docs/plans/20260921-0943_partial-safety-and-merge-readiness/HANDOFF.md
+ M modules/mangadl/docs/plans/20260921-0943_partial-safety-and-merge-readiness/STATUS.md
+ M modules/mangadl/docs/plans/20260921-0943_partial-safety-and-merge-readiness/checklist.md
+ M modules/mangadl/docs/plans/HANDOFF.md
+?? docs/test-results/mangadl/history/20260921-160434_mangadl.txt
+?? docs/test-results/mangadl/history/20260921-160434_mangadl_context.md
+?? docs/test-results/mangadl/history/20260921-160434_mangadl_progress.diff

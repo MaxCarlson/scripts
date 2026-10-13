@@ -1,0 +1,197 @@
+
+
+====================================================================================================
+VALIDATION TARGET: mangadl
+====================================================================================================
+Timestamp: 2026-10-09T14:39:15.4689798-07:00
+Description: MangaDL identity, audit, repair, Kavita operations, guarded routing, and dashboard validation.
+Repository root: C:\Users\mcarls\src\scripts
+Working directory: C:\Users\mcarls\src\scripts\modules\mangadl
+Python: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe
+PowerShell: 7.6.1
+Platform: Microsoft Windows 10.0.26300
+Bootstrap enabled: False
+Production read-only checks: False
+History retention: 3 prior runs, maximum age 14 days
+Git branch: codex/kavita-module-mangadl-collections-20261009-0349
+Git commit: b38bd37bf4b02770635869780c8d0bcae4dd719e
+Git status before validation:
+ M docs/test-results/kavita/LATEST.txt
+ M docs/test-results/kavita/LATEST_CONTEXT.md
+ M docs/test-results/kavita/LATEST_PROGRESS.diff
+ M docs/test-results/mangadl/LATEST.txt
+ M docs/test-results/mangadl/LATEST_CONTEXT.md
+ M docs/test-results/mangadl/LATEST_PROGRESS.diff
+ D docs/test-results/mangadl/history/20260921-100951_mangadl.txt
+ D docs/test-results/mangadl/history/20260921-100951_mangadl_context.md
+ D docs/test-results/mangadl/history/20260921-100951_mangadl_progress.diff
+ D docs/test-results/mangadl/history/20260921-104414_mangadl.txt
+ D docs/test-results/mangadl/history/20260921-104414_mangadl_context.md
+ D docs/test-results/mangadl/history/20260921-104414_mangadl_progress.diff
+ M modules/mangadl/README.md
+ M modules/mangadl/__init__.py
+ M modules/mangadl/docs/HANDOFF.md
+ M modules/mangadl/docs/README.md
+ M modules/mangadl/docs/plans/20261009-0325_graceful-quit-and-worker-scaling/00_implementation-plan.md
+ M modules/mangadl/docs/plans/20261009-0325_graceful-quit-and-worker-scaling/checklist.md
+ M modules/mangadl/docs/plans/HANDOFF.md
+ M modules/mangadl/mangadl/__init__.py
+ M modules/mangadl/mangadl/cli_core.py
+ M modules/mangadl/mangadl/cli_structure.py
+ M modules/mangadl/mangadl/concurrency.py
+ M modules/mangadl/mangadl/destination_audit.py
+ M modules/mangadl/mangadl/manager.py
+ M modules/mangadl/mangadl/partial_reconcile.py
+ M modules/mangadl/mangadl/worker_core.py
+ M modules/mangadl/pyproject.toml
+ M modules/mangadl/tests/cli_test.py
+ M modules/mangadl/tests/concurrency_test.py
+ M modules/mangadl/tests/destination_audit_test.py
+ M modules/mangadl/tests/kavita_assignment_test.py
+ M modules/mangadl/tests/partial_reconcile_test.py
+ M modules/scripts_help/scripts_help/registry/registry.py
+ M validation-targets.json
+?? docs/test-results/kavita/history/
+?? docs/test-results/mangadl/history/20260921-164807_mangadl.txt
+?? docs/test-results/mangadl/history/20260921-164807_mangadl_context.md
+?? docs/test-results/mangadl/history/20260921-164807_mangadl_progress.diff
+?? docs/test-results/mangadl/history/20261009-143417_mangadl.txt
+?? docs/test-results/mangadl/history/20261009-143417_mangadl_context.md
+?? docs/test-results/mangadl/history/20261009-143417_mangadl_progress.diff
+?? modules/mangadl/docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/
+?? modules/mangadl/mangadl/library_index.py
+?? modules/mangadl/mangadl/page_adapters.py
+?? modules/mangadl/mangadl/repair_pages.py
+?? modules/mangadl/tests/library_index_test.py
+?? modules/mangadl/tests/page_adapters_test.py
+?? modules/mangadl/tests/repair_pages_test.py
+
+====================================================================================================
+Compile mangadl package and tests
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\mangadl
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m compileall -q mangadl tests
+RESULT: PASS - Compile mangadl package and tests
+
+====================================================================================================
+Lint mangadl package and tests
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\mangadl
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m ruff check mangadl tests
+All checks passed!
+RESULT: PASS - Lint mangadl package and tests
+
+====================================================================================================
+Mangadl CLI help contract
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\mangadl
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m mangadl --help
+usage: mangadl [-h] [-V]
+               {run,inspect,status,retry,kavita,archive,patch-hdporncomics,audit,audit-destinations,repair-loose,repair-pages,partials,auth,favorites}
+               ...
+
+Concurrent, resumable manga/gallery download manager.
+
+positional arguments:
+  {run,inspect,status,retry,kavita,archive,patch-hdporncomics,audit,audit-destinations,repair-loose,repair-pages,partials,auth,favorites}
+    run                 Download normally, optimize adaptively, or benchmark a
+                        bounded state matrix.
+    inspect             Inspect URL routing or persisted jobs.
+    status              Show the latest or selected persisted run.
+    retry               Requeue failed jobs in a persisted run.
+    kavita              Preview or reconcile pending Kavita collection
+                        assignments.
+    archive             Browse a gallery-dl SQLite archive interactively.
+    patch-hdporncomics  Check or apply the HDPornComics Windows path patch.
+    audit (audit-destinations)
+                        Audit URL-file identities or every manga folder in
+                        destination roots (read-only).
+    repair-loose        Rebuild per-gallery folders from loose nhentai images.
+    repair-pages        Repair exact missing/corrupt gallery-dl nhentai pages
+                        (preview first).
+    partials            Inspect or safely remove resumable partial data.
+    auth                Manage per-domain gallery-dl browser authentication.
+    favorites           Extract downloadable gallery URLs from a
+                        favorites/listing page.
+
+options:
+  -h, --help            show this help message and exit
+  -V, --version         show program's version number and exit
+RESULT: PASS - Mangadl CLI help contract
+
+====================================================================================================
+Mangadl pytest suite
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\mangadl
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest tests -q --strict-config --strict-markers --basetemp C:\Users\mcarls\src\scripts\modules\mangadl\.pytest_tmp_root\validation-20261009-143915
+[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m [ 29%]
+[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m [ 58%]
+[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m [ 87%]
+[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m                                         [100%][0m
+RESULT: PASS - Mangadl pytest suite
+
+====================================================================================================
+TARGET SUMMARY
+====================================================================================================
+Latest report: C:\Users\mcarls\src\scripts\docs\test-results\mangadl\LATEST.txt
+Context snapshot: C:\Users\mcarls\src\scripts\docs\test-results\mangadl\LATEST_CONTEXT.md
+Progress diff: C:\Users\mcarls\src\scripts\docs\test-results\mangadl\LATEST_PROGRESS.diff
+TARGET RESULT: PASS
+All requested validation sections passed.
+
+Git status after validation:
+ M docs/test-results/kavita/LATEST.txt
+ M docs/test-results/kavita/LATEST_CONTEXT.md
+ M docs/test-results/kavita/LATEST_PROGRESS.diff
+ M docs/test-results/mangadl/LATEST.txt
+ D docs/test-results/mangadl/LATEST_CONTEXT.md
+ D docs/test-results/mangadl/LATEST_PROGRESS.diff
+ D docs/test-results/mangadl/history/20260921-100951_mangadl.txt
+ D docs/test-results/mangadl/history/20260921-100951_mangadl_context.md
+ D docs/test-results/mangadl/history/20260921-100951_mangadl_progress.diff
+ D docs/test-results/mangadl/history/20260921-104414_mangadl.txt
+ D docs/test-results/mangadl/history/20260921-104414_mangadl_context.md
+ D docs/test-results/mangadl/history/20260921-104414_mangadl_progress.diff
+ D docs/test-results/mangadl/history/20260921-160434_mangadl.txt
+ D docs/test-results/mangadl/history/20260921-160434_mangadl_context.md
+ D docs/test-results/mangadl/history/20260921-160434_mangadl_progress.diff
+ M modules/mangadl/README.md
+ M modules/mangadl/__init__.py
+ M modules/mangadl/docs/HANDOFF.md
+ M modules/mangadl/docs/README.md
+ M modules/mangadl/docs/plans/20261009-0325_graceful-quit-and-worker-scaling/00_implementation-plan.md
+ M modules/mangadl/docs/plans/20261009-0325_graceful-quit-and-worker-scaling/checklist.md
+ M modules/mangadl/docs/plans/HANDOFF.md
+ M modules/mangadl/mangadl/__init__.py
+ M modules/mangadl/mangadl/cli_core.py
+ M modules/mangadl/mangadl/cli_structure.py
+ M modules/mangadl/mangadl/concurrency.py
+ M modules/mangadl/mangadl/destination_audit.py
+ M modules/mangadl/mangadl/manager.py
+ M modules/mangadl/mangadl/partial_reconcile.py
+ M modules/mangadl/mangadl/worker_core.py
+ M modules/mangadl/pyproject.toml
+ M modules/mangadl/tests/cli_test.py
+ M modules/mangadl/tests/concurrency_test.py
+ M modules/mangadl/tests/destination_audit_test.py
+ M modules/mangadl/tests/kavita_assignment_test.py
+ M modules/mangadl/tests/partial_reconcile_test.py
+ M modules/scripts_help/scripts_help/registry/registry.py
+ M validation-targets.json
+?? docs/test-results/kavita/history/
+?? docs/test-results/mangadl/history/20260921-164807_mangadl.txt
+?? docs/test-results/mangadl/history/20260921-164807_mangadl_context.md
+?? docs/test-results/mangadl/history/20260921-164807_mangadl_progress.diff
+?? docs/test-results/mangadl/history/20261009-143417_mangadl.txt
+?? docs/test-results/mangadl/history/20261009-143417_mangadl_context.md
+?? docs/test-results/mangadl/history/20261009-143417_mangadl_progress.diff
+?? docs/test-results/mangadl/history/20261009-143722_mangadl.txt
+?? docs/test-results/mangadl/history/20261009-143722_mangadl_context.md
+?? docs/test-results/mangadl/history/20261009-143722_mangadl_progress.diff
+?? modules/mangadl/docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/
+?? modules/mangadl/mangadl/library_index.py
+?? modules/mangadl/mangadl/page_adapters.py
+?? modules/mangadl/mangadl/repair_pages.py
+?? modules/mangadl/tests/library_index_test.py
+?? modules/mangadl/tests/page_adapters_test.py
+?? modules/mangadl/tests/repair_pages_test.py

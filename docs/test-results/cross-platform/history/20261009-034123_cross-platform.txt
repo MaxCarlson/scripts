@@ -1,0 +1,203 @@
+
+
+====================================================================================================
+VALIDATION TARGET: cross-platform
+====================================================================================================
+Timestamp: 2026-10-09T03:41:23.9557967-07:00
+Description: Cross-platform system utilities and storage-media detection validation.
+Repository root: C:\Users\mcarls\src\scripts
+Working directory: C:\Users\mcarls\src\scripts\modules\cross_platform
+Python: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe
+PowerShell: 7.6.1
+Platform: Microsoft Windows 10.0.26300
+Bootstrap enabled: False
+Production read-only checks: False
+History retention: 3 prior runs, maximum age 14 days
+Git branch: main
+Git commit: c67a45c6779d7631a27719a4f60dbc2ec3013ef5
+Git status before validation:
+ M modules/cross_platform/README.md
+ M modules/cross_platform/__init__.py
+ M modules/cross_platform/pyproject.toml
+ M modules/mangadl/README.md
+ M modules/mangadl/__init__.py
+ M modules/mangadl/docs/HANDOFF.md
+ M modules/mangadl/docs/README.md
+ M modules/mangadl/docs/plans/HANDOFF.md
+ M modules/mangadl/mangadl/__init__.py
+ M modules/mangadl/mangadl/cli_core.py
+ M modules/mangadl/mangadl/cli_structure.py
+ M modules/mangadl/mangadl/concurrency.py
+ M modules/mangadl/mangadl/manager.py
+ M modules/mangadl/mangadl/partial_safety.py
+ M modules/mangadl/mangadl/ui.py
+ M modules/mangadl/pyproject.toml
+ M modules/mangadl/tests/cli_structure_test.py
+ M modules/mangadl/tests/cli_test.py
+ M modules/mangadl/tests/concurrency_test.py
+ M modules/mangadl/tests/manager_integration_test.py
+ M modules/mangadl/tests/ui_test.py
+ M modules/scripts_help/scripts_help/registry/registry.py
+ M validation-targets.json
+?? docs/test-results/scheduler/
+?? modules/cross_platform/docs/
+?? modules/cross_platform/storage.py
+?? modules/cross_platform/tests/storage_test.py
+?? modules/mangadl/docs/plans/20261009-0325_graceful-quit-and-worker-scaling/
+?? modules/scheduler/scheduler_history.sqlite3
+
+====================================================================================================
+Compile cross_platform package and tests
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\cross_platform
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m compileall -q . tests
+Can't list '.\\.pytest_cache'
+Can't list '.\\.pytest_tmp'
+Can't list '.\\.pytest_tmp_root\\full-a9a8449795a94947b1c137e072b708e1'
+Can't list '.\\.pytest_tmp_root\\storage-1e60f31eecd74a8aa7132655d4121fc2'
+Can't list '.\\.pytest_tmp_root\\storage-806901a3b9364513bb110ef9774c93c4'
+Can't list '.\\.pytest_tmp_root\\storage-8cb2ccf6f0f54e4ca11ca6e3e10595cf'
+RESULT: PASS - Compile cross_platform package and tests
+
+====================================================================================================
+Lint cross_platform storage implementation and tests
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\cross_platform
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m ruff check storage.py tests/storage_test.py
+All checks passed!
+RESULT: PASS - Lint cross_platform storage implementation and tests
+
+====================================================================================================
+Cross-platform pytest suite
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\cross_platform
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest tests -q --strict-config --strict-markers --basetemp C:\Users\mcarls\src\scripts\modules\cross_platform\.pytest_tmp_root\validation-20261009-034123
+[1m============================= test session starts =============================[0m
+platform win32 -- Python 3.12.10, pytest-9.0.3, pluggy-1.6.0
+rootdir: C:\Users\mcarls\src\scripts\modules\cross_platform
+configfile: pyproject.toml
+plugins: anyio-4.12.1, libtmux-0.47.0, asyncio-1.3.0, cov-7.0.0, mock-3.15.1
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 114 items
+
+tests\clipboard_utils_test.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m                               [ 10%][0m
+tests\debug_utils_test.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m                                      [ 18%][0m
+tests\fs_utils_test.py [32m.[0m[32m.[0m[31mE[0m[31mE[0m[31mE[0m[31mE[0m[31mE[0m[31mE[0m[31m                                          [ 25%][0m
+tests\history_utils_test.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                       [ 44%][0m
+tests\install_ownership_test.py [32m.[0m[32m.[0m[31m                                       [ 46%][0m
+tests\network_utils_test.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                                        [ 50%][0m
+tests\path_utils_test.py [31mE[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                                           [ 55%][0m
+tests\powershell_test.py [32m.[0m[32m.[0m[31m                                              [ 57%][0m
+tests\privleges_manager_test.py [33ms[0m[33ms[0m[33ms[0m[33ms[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                                 [ 64%][0m
+tests\process_manager_test.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                                   [ 71%][0m
+tests\size_utils_test.py [32m.[0m[32m.[0m[32m.[0m[31m                                             [ 73%][0m
+tests\storage_test.py [32m.[0m[32m.[0m[32m.[0m[31mE[0m[31mE[0m[31mE[0m[32m.[0m[31m                                            [ 79%][0m
+tests\system_utils_test.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                                [ 92%][0m
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\pytest\__main__.py", line 9, in <module>
+    raise SystemExit(pytest.console_main())
+                     ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\_pytest\config\__init__.py", line 223, in console_main
+    code = main()
+           ^^^^^^
+  File "C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\_pytest\config\__init__.py", line 199, in main
+    ret: ExitCode | int = config.hook.pytest_cmdline_main(config=config)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\pluggy\_hooks.py", line 512, in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\pluggy\_manager.py", line 120, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\pluggy\_callers.py", line 167, in _multicall
+    raise exception
+  File "C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\pluggy\_callers.py", line 121, in _multicall
+    res = hook_impl.function(*args)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\_pytest\main.py", line 365, in pytest_cmdline_main
+    return wrap_session(config, _main)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\_pytest\main.py", line 353, in wrap_session
+    config.hook.pytest_sessionfinish(
+  File "C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\pluggy\_hooks.py", line 512, in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\pluggy\_manager.py", line 120, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\pluggy\_callers.py", line 167, in _multicall
+    raise exception
+  File "C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\pluggy\_callers.py", line 139, in _multicall
+    teardown.throw(exception)
+  File "C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\_pytest\logging.py", line 873, in pytest_sessionfinish
+    return (yield)
+            ^^^^^
+  File "C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\pluggy\_callers.py", line 139, in _multicall
+    teardown.throw(exception)
+  File "C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\_pytest\terminal.py", line 960, in pytest_sessionfinish
+    result = yield
+             ^^^^^
+  File "C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\pluggy\_callers.py", line 139, in _multicall
+    teardown.throw(exception)
+  File "C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\_pytest\warnings.py", line 118, in pytest_sessionfinish
+    return (yield)
+            ^^^^^
+  File "C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\pluggy\_callers.py", line 121, in _multicall
+    res = hook_impl.function(*args)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\_pytest\tmpdir.py", line 326, in pytest_sessionfinish
+    cleanup_dead_symlinks(basetemp)
+  File "C:\Users\mcarls\src\scripts\.venv\Lib\site-packages\_pytest\pathlib.py", line 357, in cleanup_dead_symlinks
+    for left_dir in root.iterdir():
+                    ^^^^^^^^^^^^^^
+  File "C:\Users\mcarls\AppData\Local\Programs\Python\Python312\Lib\pathlib.py", line 1056, in iterdir
+    for name in os.listdir(self):
+                ^^^^^^^^^^^^^^^^
+PermissionError: [WinError 5] Access is denied: 'C:\\Users\\mcarls\\src\\scripts\\modules\\cross_platform\\.pytest_tmp_root\\validation-20261009-034123'
+tests\tmux_utils_test.py [32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[31m                                       [100%][0m
+RESULT: FAIL - Cross-platform pytest suite
+ERROR: Command returned exit code 1.
+
+====================================================================================================
+TARGET SUMMARY
+====================================================================================================
+Latest report: C:\Users\mcarls\src\scripts\docs\test-results\cross-platform\LATEST.txt
+Context snapshot: C:\Users\mcarls\src\scripts\docs\test-results\cross-platform\LATEST_CONTEXT.md
+Progress diff: C:\Users\mcarls\src\scripts\docs\test-results\cross-platform\LATEST_PROGRESS.diff
+TARGET RESULT: FAIL
+Failure count: 1
+- Cross-platform pytest suite: Command returned exit code 1.
+
+Git status after validation:
+ M modules/cross_platform/README.md
+ M modules/cross_platform/__init__.py
+ M modules/cross_platform/pyproject.toml
+ M modules/mangadl/README.md
+ M modules/mangadl/__init__.py
+ M modules/mangadl/docs/HANDOFF.md
+ M modules/mangadl/docs/README.md
+ M modules/mangadl/docs/plans/HANDOFF.md
+ M modules/mangadl/mangadl/__init__.py
+ M modules/mangadl/mangadl/cli_core.py
+ M modules/mangadl/mangadl/cli_structure.py
+ M modules/mangadl/mangadl/concurrency.py
+ M modules/mangadl/mangadl/manager.py
+ M modules/mangadl/mangadl/partial_safety.py
+ M modules/mangadl/mangadl/ui.py
+ M modules/mangadl/pyproject.toml
+ M modules/mangadl/tests/cli_structure_test.py
+ M modules/mangadl/tests/cli_test.py
+ M modules/mangadl/tests/concurrency_test.py
+ M modules/mangadl/tests/manager_integration_test.py
+ M modules/mangadl/tests/ui_test.py
+ M modules/scripts_help/scripts_help/registry/registry.py
+ M validation-targets.json
+?? docs/test-results/cross-platform/
+?? docs/test-results/scheduler/
+?? modules/cross_platform/docs/
+?? modules/cross_platform/storage.py
+?? modules/cross_platform/tests/storage_test.py
+?? modules/mangadl/docs/plans/20261009-0325_graceful-quit-and-worker-scaling/
+?? modules/scheduler/scheduler_history.sqlite3

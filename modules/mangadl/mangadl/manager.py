@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .concurrency import HARD_MAX_OUTER_WORKERS, Manga18FXConcurrencyPlan, plan_manga18fx_concurrency
+from .concurrency import Manga18FXConcurrencyPlan, plan_manga18fx_concurrency
 from .gallery_auth import ProfileStore, domain_for, refresh_profile
 from .models import JobState, WorkerSnapshot
 from .state import StateStore
@@ -50,6 +50,7 @@ class RunOptions:
     canonical_archive: Path | None = None
     maximum_workers: int | None = None
     fast_storage: bool = False
+    file_range: str | None = None
 
 
 class DownloadManager:
@@ -147,13 +148,8 @@ class DownloadManager:
     def _adjust_runtime(self, action: str) -> None:
         if action == "workers_up":
             if self.target_workers >= self.maximum_workers:
-                override = (
-                    f" Start the next run with -m {HARD_MAX_OUTER_WORKERS} to permit more."
-                    if self.maximum_workers < HARD_MAX_OUTER_WORKERS
-                    else ""
-                )
                 self._set_runtime_notice(
-                    f"Worker target is already at the maximum of {self.maximum_workers}.{override}"
+                    f"Worker target is already at the storage/CPU policy maximum of {self.maximum_workers}."
                 )
                 return
             candidate = self.target_workers + 1
@@ -266,6 +262,8 @@ class DownloadManager:
             command.append("--scratch-mode")
         if self.options.canonical_archive is not None:
             command.extend(["--canonical-archive", str(self.options.canonical_archive)])
+        if self.options.file_range is not None:
+            command.extend(["--file-range", self.options.file_range])
         managed_profile = None
         explicit_credentials = bool(
             self.options.cookies or self.options.cookies_browser or self.options.gallery_config
