@@ -1,5 +1,9 @@
 # mangadl Plan Index
 
+Planned follow-up: [audit UX/manual repair](20261013-0300_audit-ux-and-manual-folder-repair/00_implementation-plan.md).
+Cross-module compression reviewed plan: repository
+`docs/plans/20261013-0151_compression-module-and-mangadl-integration/05_reviewed-plan.md`.
+
 Active: [20261012-2300 generalized audit and batch repair](20261012-2300_generalized-audit-and-batch-repair/00_implementation-plan.md).
 
 This focused continuation adds multi-file/directory URL ingestion, durable
