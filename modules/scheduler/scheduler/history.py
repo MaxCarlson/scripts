@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from script_logging import EventRecord, HistoryStore, RunRecord
 
@@ -16,6 +18,8 @@ from .storage import StorageManager
 
 class SchedulerHistory:
     """Adapt generic run history to scheduler entities and execution context."""
+
+    _monitor_log_lock = threading.Lock()
 
     def __init__(self, storage: StorageManager, task_logger: TaskLogger, output_retention_days: int = 365) -> None:
         self.storage = storage
@@ -81,6 +85,107 @@ class SchedulerHistory:
         self.store.append_run(run)
         return run
 
+    def monitor_log_path(self, rule: Any) -> Path:
+        """Return the stable, per-rule event log path."""
+        directory = self.task_logger.base_dir.parent / "monitored_processes"
+        return directory / f"monitor-{sanitize_filename(rule.name)}-{rule.rule_id[:8]}.log"
+
+    def record_monitor_event(
+        self, rule: Any, event_type: str, message: str, *, level: str = "INFO",
+        metadata: Optional[Dict[str, Any]] = None, occurred_at: Optional[str] = None,
+    ) -> None:
+        timestamp = self._aware(occurred_at or datetime.now().astimezone().isoformat()).isoformat()
+        event = EventRecord(
+            source="scheduler", entity_type="monitored_process", entity_id=rule.rule_id,
+            event_type=event_type, occurred_at=timestamp, message=message, level=level,
+            metadata=metadata or {},
+        )
+        self.store.append_event(event)
+        log_path = self.monitor_log_path(rule)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        details = json.dumps(event.metadata, ensure_ascii=False, sort_keys=True)
+        line = f"[{timestamp}] [{event_type}] {message}"
+        if details != "{}":
+            line += f" | {details}"
+        with self._monitor_log_lock, log_path.open("a", encoding="utf-8") as stream:
+            stream.write(line.replace("\r", " ").replace("\n", " ") + "\n")
+
+    def record_monitor_action(
+        self, rule: Any, action: str, *, origin: str, success: bool,
+        started_at: str, duration_sec: float, message: str, metadata: Optional[Dict[str, Any]] = None,
+    ) -> RunRecord:
+        start = self._aware(started_at)
+        finish = datetime.now().astimezone()
+        status = "success" if success else "failure"
+        details = {"action": action, **(metadata or {})}
+        run = RunRecord(
+            source="scheduler", entity_type="monitored_process", entity_id=rule.rule_id,
+            display_name=rule.name, started_at=start.isoformat(), finished_at=finish.isoformat(),
+            status=status, duration_sec=max(0.0, duration_sec), exit_code=0 if success else 1,
+            origin=origin, stdout=message if success else "", stderr="" if success else message,
+            metadata=details,
+        )
+        self.store.append_run(run)
+        event_type = f"MONITOR_{action.upper()}_{'SUCCEEDED' if success else 'FAILED'}"
+        self.record_monitor_event(
+            rule, event_type, message, level="INFO" if success else "ERROR",
+            metadata={"origin": origin, **details}, occurred_at=finish.isoformat(),
+        )
+        return run
+
+    def list_monitor_runs(self, rule: Any) -> List[RunRecord]:
+        return self.store.list_runs(
+            source="scheduler", entity_type="monitored_process", entity_id=rule.rule_id,
+        )
+
+    def read_monitor_log(self, rule: Any, count: int = 500) -> List[str]:
+        path = self.monitor_log_path(rule)
+        if not path.exists():
+            return []
+        with self._monitor_log_lock, path.open("r", encoding="utf-8", errors="replace") as stream:
+            lines = [line.rstrip("\r\n") for line in stream if line.strip()]
+        return lines[-max(1, count):]
+
+    def monitor_summary(self, rule: Any) -> Dict[str, Any]:
+        runs = self.list_monitor_runs(rule)
+        events = self.store.list_events(
+            source="scheduler", entity_type="monitored_process", entity_id=rule.rule_id,
+        )
+
+        def summarize(days: Optional[int]) -> Dict[str, int]:
+            cutoff = datetime.now().astimezone() - timedelta(days=days) if days is not None else None
+            selected = [
+                run for run in runs
+                if cutoff is None or self._aware(run.started_at) >= cutoff
+            ]
+            return {
+                "actions": len(selected),
+                "starts": sum(run.metadata.get("action") == "start" for run in selected),
+                "stops": sum(run.metadata.get("action") == "stop" for run in selected),
+                "failures": sum(run.status != "success" for run in selected),
+            }
+
+        last = events[0] if events else None
+        return {
+            "last_7_days": summarize(7),
+            "last_30_days": summarize(30),
+            "last_365_days": summarize(365),
+            "lifetime": summarize(None),
+            "probe_error_incidents": sum(event.event_type == "MONITOR_PROBE_FAILED" for event in events),
+            "last_event": ({
+                "event_type": last.event_type, "occurred_at": last.occurred_at,
+                "message": last.message,
+            } if last else None),
+            "log_file": str(self.monitor_log_path(rule)),
+        }
+
+    def clear_monitor_logs(self) -> None:
+        directory = self.task_logger.base_dir.parent / "monitored_processes"
+        if directory.exists():
+            with self._monitor_log_lock:
+                for path in directory.glob("monitor-*.log"):
+                    path.write_text("", encoding="utf-8")
+
     def prune_output(self) -> None:
         cutoff = datetime.now().astimezone() - timedelta(days=max(1, self.output_retention_days))
         self.store.prune_output(cutoff.isoformat(), source="scheduler")
@@ -96,6 +201,7 @@ class SchedulerHistory:
 
     def clear(self) -> None:
         self.store.clear(source="scheduler")
+        self.clear_monitor_logs()
         self.reset_coverage()
 
     def reset_coverage(self) -> None:

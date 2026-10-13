@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .config import ConfigManager, SchedulerConfig
 from .models import Schedule, Task
+from .monitored import MonitoredProcess
 
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_DATA_FILE = DEFAULT_DATA_DIR / "scheduler_data.json"
@@ -48,6 +49,7 @@ class StorageManager:
                     "config": default_config.to_dict(),
                     "schedules": {},
                     "tasks": {},
+                    "monitored_processes": {},
                 }
                 self._write_raw(initial_data)
 
@@ -71,6 +73,8 @@ class StorageManager:
                 data["schedules"] = {}
             if "tasks" not in data or not isinstance(data["tasks"], dict):
                 data["tasks"] = {}
+            if "monitored_processes" not in data or not isinstance(data["monitored_processes"], dict):
+                data["monitored_processes"] = {}
             changed = False
             for collection, id_field in (("schedules", "schedule_id"), ("tasks", "task_id")):
                 for item in data[collection].values():
@@ -222,6 +226,87 @@ class StorageManager:
                 self._write_raw(raw)
                 return True
             return False
+
+    # ── Monitored Process Management ──
+
+    def list_monitored_processes(self) -> List[MonitoredProcess]:
+        raw = self._read_raw()
+        rules = []
+        for data in raw.get("monitored_processes", {}).values():
+            if isinstance(data, dict):
+                try:
+                    rules.append(MonitoredProcess.from_dict(data))
+                except (TypeError, ValueError, KeyError):
+                    continue
+        return sorted(rules, key=lambda rule: rule.name.casefold())
+
+    def get_monitored_process(self, name: str) -> Optional[MonitoredProcess]:
+        raw = self._read_raw()
+        data = raw.get("monitored_processes", {}).get(name)
+        if isinstance(data, dict):
+            return MonitoredProcess.from_dict(data)
+        return None
+
+    def save_monitored_process(self, rule: MonitoredProcess) -> None:
+        with self._lock:
+            raw = self._read_raw()
+            existing = raw.setdefault("monitored_processes", {}).get(rule.name)
+            if isinstance(existing, dict):
+                existing_id = str(existing.get("rule_id") or rule.rule_id)
+                state = self.get_monitor_runtime_state()
+                if existing_id in state:
+                    previous_executable = str(existing.get("executable", ""))
+                    if previous_executable != rule.executable:
+                        raise ValueError("Stop the scheduler-owned process before changing its executable.")
+                rule.rule_id = existing_id
+            raw["monitored_processes"][rule.name] = rule.to_dict()
+            self._write_raw(raw)
+
+    def delete_monitored_process(self, name: str) -> bool:
+        with self._lock:
+            raw = self._read_raw()
+            rules = raw.setdefault("monitored_processes", {})
+            if name not in rules:
+                return False
+            rule_id = rules[name].get("rule_id") if isinstance(rules[name], dict) else None
+            if rule_id and str(rule_id) in self.get_monitor_runtime_state():
+                raise ValueError("Stop the scheduler-owned process before deleting its monitor definition.")
+            del rules[name]
+            self._write_raw(raw)
+            if rule_id:
+                state = self.get_monitor_runtime_state()
+                state.pop(str(rule_id), None)
+                self.save_monitor_runtime_state(state)
+            return True
+
+    @property
+    def monitor_runtime_file(self) -> Path:
+        return self.data_file.with_name(f"{self.data_file.stem}.monitored-state.json")
+
+    def get_monitor_runtime_state(self) -> Dict[str, Any]:
+        try:
+            data = json.loads(self.monitor_runtime_file.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def save_monitor_runtime_state(self, state: Dict[str, Any]) -> None:
+        with self._lock:
+            path = self.monitor_runtime_file
+            tmp_path = path.with_suffix(path.suffix + ".tmp")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with open(tmp_path, "w", encoding="utf-8") as stream:
+                    json.dump(state, stream, indent=2, ensure_ascii=False)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(tmp_path, path)
+            except Exception:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise
 
     def get_attached_tasks(self, schedule_name: str) -> List[Task]:
         with self._lock:

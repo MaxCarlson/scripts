@@ -5,6 +5,7 @@ Navigable via arrow keys, with $EDITOR integration and orphaned task warnings.
 from __future__ import annotations
 
 import curses
+import json
 import os
 from pathlib import Path
 import shutil
@@ -899,6 +900,101 @@ class SchedulerTUI:
             elif k in (27, ord("q"), ord("b")):
                 return
 
+    def workflow_monitored_processes(self) -> None:
+        """Import and manage generic monitored-process definitions."""
+        from .monitored import MonitoredProcess, discover_fields
+
+        while True:
+            rules = self.storage.list_monitored_processes()
+            options = ["Import definition from JSON file", "Back"]
+            options.extend(f"{rule.name} ({'enabled' if rule.enabled else 'disabled'})" for rule in rules)
+            choice = self.select_menu("Monitored Processes", options)
+            if choice in (-1, 1):
+                return
+            if choice == 0:
+                path = self.prompt_text("Import Monitored Process", "Path to JSON definition")
+                if not path:
+                    continue
+                try:
+                    definition = json.loads(Path(path).read_text(encoding="utf-8"))
+                    rule = MonitoredProcess.from_dict(definition)
+                    existing = self.storage.get_monitored_process(rule.name)
+                    if existing:
+                        rule.rule_id = existing.rule_id
+                    self.storage.save_monitored_process(rule)
+                    self.service.history.record_monitor_event(
+                        rule, "MONITOR_DEFINITION_SAVED",
+                        f"Monitor definition {'updated' if existing else 'created'} from the TUI.",
+                        metadata={"operation": "edit" if existing else "create"},
+                    )
+                    self.show_message("Monitor Saved", [f"'{rule.name}' is ready.", "It will be polled by the scheduler daemon when enabled."])
+                except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+                    self.show_message("Invalid Monitor Definition", [str(exc)], is_error=True)
+                continue
+
+            rule = rules[choice - 2]
+            actions = ["Status", "Test monitor", "Enable / disable", "Start process", "Stop owned process", "Replace definition", "Delete definition", "View log", "Back"]
+            action = self.select_menu(f"Monitor: {rule.name}", actions)
+            if action in (-1, 8):
+                continue
+            try:
+                if action == 0:
+                    status = self.service.monitored_processes.status(rule)
+                    statistics = status.get("statistics", {})
+                    lifetime = statistics.get("lifetime", {})
+                    lines = [
+                        f"{key}: {value}" for key, value in status.items() if key not in {"statistics", "log_file"}
+                    ]
+                    lines.extend([
+                        f"Lifetime starts: {lifetime.get('starts', 0)}",
+                        f"Lifetime stops: {lifetime.get('stops', 0)}",
+                        f"Lifetime failures: {lifetime.get('failures', 0)}",
+                        f"Probe error incidents: {statistics.get('probe_error_incidents', 0)}",
+                        f"Log file: {status.get('log_file', '(unavailable)')}",
+                    ])
+                    self.show_message("Monitored Process Status", lines)
+                elif action == 1:
+                    output = self.service.test_monitored_process(rule.name)
+                    self.show_message("Monitor Preview", [json.dumps(output, indent=2), "Fields:"] + [f"{key}: {kind}" for key, kind in discover_fields(output).items()])
+                elif action == 2:
+                    rule.enabled = not rule.enabled
+                    self.storage.save_monitored_process(rule)
+                    self.service.history.record_monitor_event(
+                        rule, "MONITOR_ENABLED" if rule.enabled else "MONITOR_DISABLED",
+                        f"Monitoring {'enabled' if rule.enabled else 'disabled'} from the TUI.",
+                        metadata={"origin": "manual"},
+                    )
+                    self.show_message("Monitor Updated", [f"'{rule.name}' {'enabled' if rule.enabled else 'disabled'}.", "Disabling monitoring does not stop a process already running."])
+                elif action == 3:
+                    self.show_message("Process Start", [self.service.start_monitored_process(rule.name)])
+                elif action == 4:
+                    self.show_message("Process Stop", [self.service.stop_monitored_process(rule.name)])
+                elif action == 5:
+                    path = self.prompt_text("Replace Monitor Definition", "Path to replacement JSON definition")
+                    if path:
+                        definition = json.loads(Path(path).read_text(encoding="utf-8"))
+                        replacement = MonitoredProcess.from_dict(definition)
+                        if replacement.name != rule.name:
+                            raise ValueError("Replacement must keep the existing monitor name.")
+                        replacement.rule_id = rule.rule_id
+                        self.storage.save_monitored_process(replacement)
+                        self.service.history.record_monitor_event(
+                            replacement, "MONITOR_DEFINITION_SAVED", "Monitor definition updated from the TUI.",
+                            metadata={"operation": "edit"},
+                        )
+                        self.show_message("Monitor Updated", [f"'{rule.name}' saved."])
+                elif action == 6:
+                    if self.service.monitored_processes.status(rule)["process_state"] == "owned":
+                        raise ValueError("Stop the scheduler-owned process before deleting its monitor definition.")
+                    self.service.history.record_monitor_event(rule, "MONITOR_DELETED", "Monitor definition deleted from the TUI.")
+                    self.storage.delete_monitored_process(rule.name)
+                    self.show_message("Monitor Deleted", ["The definition was deleted. Any running process was left alone."])
+                elif action == 7:
+                    lines = self.service.history.read_monitor_log(rule)
+                    self._view_scrollable_text(f"Monitor Log: {rule.name}", lines or ["No monitor events recorded."])
+            except (OSError, RuntimeError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+                self.show_message("Monitor Action Failed", [str(exc)], is_error=True)
+
     def workflow_config(self) -> None:
         """View and adjust configuration and executable paths."""
         while True:
@@ -1036,7 +1132,8 @@ class SchedulerTUI:
             "5. View Logs",
             "6. Run Tasks / Schedules",
             "7. Configuration & Shell Paths",
-            "8. Exit",
+            "8. Monitored Processes",
+            "9. Exit",
         ]
 
         while True:
@@ -1073,7 +1170,7 @@ class SchedulerTUI:
                 continue
 
             choice = self.select_menu("Main Menu", main_options)
-            if choice in (-1, 7):  # Exit or Esc
+            if choice in (-1, 8):  # Exit or Esc
                 break
             elif choice == 0:
                 self.workflow_create_schedule()
@@ -1138,6 +1235,8 @@ class SchedulerTUI:
                     self.show_message("Evaluation Complete", [f"Triggered {len(res)} tasks across all schedules."])
             elif choice == 6:
                 self.workflow_config()
+            elif choice == 7:
+                self.workflow_monitored_processes()
 
         return 0
 

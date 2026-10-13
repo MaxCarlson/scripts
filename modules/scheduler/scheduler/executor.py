@@ -72,7 +72,8 @@ class TaskExecutor:
             return str(Path(exe).resolve()), None
 
     def execute(
-        self, task: Task, timeout_sec: Optional[float] = None, *, visible_window: bool = False
+        self, task: Task, timeout_sec: Optional[float] = None, *, visible_window: bool = False,
+        working_directory: Optional[str] = None,
     ) -> ExecutionResult:
         """
         Execute task script and return an ExecutionResult.
@@ -168,7 +169,10 @@ class TaskExecutor:
             if visible_window:
                 if not self._is_windows_platform():
                     raise OSError("Visible task windows are only supported on Windows.")
-                proc = subprocess.Popen(cmd, creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0x10))
+                proc = subprocess.Popen(
+                    cmd, cwd=working_directory or None,
+                    creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0x10),
+                )
                 try:
                     exit_code = proc.wait(timeout=timeout_sec)
                 except subprocess.TimeoutExpired:
@@ -186,6 +190,7 @@ class TaskExecutor:
                     encoding="utf-8",
                     errors="replace",
                     timeout=timeout_sec,
+                    cwd=working_directory or None,
                 )
                 exit_code = proc.returncode
                 stdout = proc.stdout or ""

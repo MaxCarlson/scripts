@@ -6,11 +6,13 @@ The scheduler module (`scripts/modules/scheduler/`) provides scheduled task auto
 
 ## Active Work
 
-The latest startup console, run queue import, and unattended Winget changes are tracked in:
+The latest generic monitored-process rules and conditional task controls are tracked in:
 
 ```text
-docs/plans/20261012-2002_startup-runner-console-and-import-fix/
+docs/plans/20261013-conditional-monitored-tasks/
 ```
+
+The monitor engine, CLI/TUI controls, GPU counter example, per-rule event logs, and lifecycle statistics are implemented. The local Pearl miner rule is enabled. The probe was verified with 1,318 GPU Engine counter instances under the host user's non-admin interactive token; the earlier zero-counter result came from the low-integrity Codex sandbox. The registered daemon remains stopped (`Ready`), so the rule is saved but not currently polling. Earlier startup, run queue, and unattended Winget changes are tracked in `docs/plans/20261012-2002_startup-runner-console-and-import-fix/`.
 
 The underlying per-user Windows runner setup, privilege separation, setup gate, and visible delayed-run test are documented in `docs/plans/20261008-2132_windows-runner-and-elevation/`. Registration is an explicit CLI/TUI action and automated tests do not modify the live PC. Newly registered runners use `pythonw.exe` when available; rerun `scheduler setup windows` to update existing Task Scheduler actions. The queue implementation now lives in `scheduler/request_queue.py` because the module's `run_requests` data directory can shadow a same-named Python import when the repository's `modules/` directory is on `PYTHONPATH`.
 

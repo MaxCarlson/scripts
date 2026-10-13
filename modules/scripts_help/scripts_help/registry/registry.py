@@ -516,7 +516,7 @@ REGISTRY: dict = {
                 "path": "modules/scheduler",
                 "desc": "Task scheduler with Windows elevation, sequential execution, and schedule-aware run history",
                 "help_cmd": ["python", "-m", "scheduler.cli", "--help"],
-                "version": "0.6.1",
+                "version": "0.8.0",
             },
         ],
     },

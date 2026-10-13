@@ -3,7 +3,7 @@ Scheduler module: robust Python scheduling, automation, and command execution.
 """
 from __future__ import annotations
 
-__version__ = "0.6.1"
+__version__ = "0.8.0"
 
 from .models import Schedule, ScheduleTiming, Task, ExecutionResult, TimingType
 from .config import ConfigManager
@@ -13,6 +13,7 @@ from .executor import TaskExecutor
 from .logger import CentralLogger, TaskLogger
 from .notifier import Notifier
 from .service import SchedulerService
+from .monitored import MonitoredProcess, MonitorCondition
 
 __all__ = [
     "__version__",
@@ -30,4 +31,6 @@ __all__ = [
     "TaskLogger",
     "Notifier",
     "SchedulerService",
+    "MonitoredProcess",
+    "MonitorCondition",
 ]

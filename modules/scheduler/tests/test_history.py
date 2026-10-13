@@ -1,8 +1,10 @@
 """Structured scheduler history and conservative legacy import."""
 from datetime import datetime, timedelta
+import sys
 
 from scheduler.history import SchedulerHistory
 from scheduler.logger import TaskLogger
+from scheduler.monitored import MonitoredProcess, MonitorCondition
 from scheduler.models import ExecutionResult, Schedule, Task
 from scheduler.service import SchedulerService
 from scheduler.storage import StorageManager
@@ -72,3 +74,60 @@ def test_output_retention_preserves_metadata_and_clear_resets_coverage(tmp_path)
     assert history.store.list_events(source="scheduler", event_type="HISTORY_STARTED")
     refreshed = SchedulerHistory(storage, logger)
     assert refreshed.coverage_start == history.coverage_start
+
+
+def test_monitored_process_has_separate_log_and_lifecycle_statistics(tmp_path):
+    storage = StorageManager(data_file=tmp_path / "scheduler_data.json")
+    task_logger = TaskLogger(tmp_path / "logs" / "tasks")
+    history = SchedulerHistory(storage, task_logger)
+    rule = MonitoredProcess(
+        name="Pearl Miner", executable="miner.exe", monitor_code="{}",
+        start_conditions=[MonitorCondition("ready", "eq", True)],
+        stop_conditions=[MonitorCondition("busy", "eq", True)],
+    )
+
+    history.record_monitor_action(
+        rule, "start", origin="automatic", success=True,
+        started_at=datetime.now().astimezone().isoformat(), duration_sec=0.4,
+        message="started (PID 1234)", metadata={"pid": 1234},
+    )
+    history.record_monitor_action(
+        rule, "stop", origin="automatic", success=False,
+        started_at=datetime.now().astimezone().isoformat(), duration_sec=1.2,
+        message="stop failed: access denied",
+    )
+    history.record_monitor_event(rule, "MONITOR_PROBE_FAILED", "GPU counter unavailable", level="ERROR")
+
+    summary = history.monitor_summary(rule)
+    assert summary["lifetime"] == {"actions": 2, "starts": 1, "stops": 1, "failures": 1}
+    assert summary["probe_error_incidents"] == 1
+    log_path = history.monitor_log_path(rule)
+    assert log_path.exists()
+    assert "monitor-Pearl_Miner-" in log_path.name
+    assert len(history.read_monitor_log(rule)) == 3
+    assert "started (PID 1234)" in "\n".join(history.read_monitor_log(rule))
+    assert not task_logger.get_task_log_path(rule.name).exists()
+
+    history.clear()
+    assert history.monitor_summary(rule)["lifetime"]["actions"] == 0
+    assert history.read_monitor_log(rule) == []
+
+
+def test_managed_process_start_and_stop_are_recorded_by_service(tmp_path, monkeypatch):
+    storage = StorageManager(data_file=tmp_path / "scheduler_data.json")
+    service = SchedulerService(storage=storage)
+    rule = MonitoredProcess(
+        name="child", executable=sys.executable, arguments=["-c", "import time; time.sleep(60)"],
+        monitor_code="{}", start_conditions=[MonitorCondition("ready", "eq", True)],
+        stop_conditions=[MonitorCondition("busy", "eq", True)],
+    )
+    monkeypatch.setattr(service.monitored_processes, "_externally_running", lambda _rule: False)
+    try:
+        assert service.monitored_processes.start(rule).startswith("started (PID ")
+        assert service.monitored_processes.stop(rule) == "stopped"
+        summary = service.history.monitor_summary(rule)
+        assert summary["lifetime"]["starts"] == 1
+        assert summary["lifetime"]["stops"] == 1
+        assert len(service.history.read_monitor_log(rule)) == 2
+    finally:
+        service.monitored_processes.close()

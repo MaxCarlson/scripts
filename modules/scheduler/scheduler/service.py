@@ -13,6 +13,7 @@ from .executor import TaskExecutor
 from .history import SchedulerHistory
 from .logger import CentralLogger, TaskLogger
 from .models import ExecutionResult
+from .monitored import MonitoredProcessManager
 from .notifier import Notifier
 from .request_queue import RunRequestQueue
 from .storage import StorageManager
@@ -37,6 +38,9 @@ class SchedulerService:
         self.history = SchedulerHistory(self.storage, self.task_logger, self.config.output_retention_days)
         self.central_logger = CentralLogger(sys_log_path, history_store=self.history.store)
         self.executor = TaskExecutor(self.config)
+        self.monitored_processes = MonitoredProcessManager(
+            self.storage, self.executor, self.central_logger, history=self.history
+        )
         self.notifier = Notifier(self.config)
         self.run_request_queue = RunRequestQueue(base_dir)
         self._admin_worker_mode = False
@@ -50,6 +54,24 @@ class SchedulerService:
         self.task_logger.default_retention = self.config.log_retention_runs
         self.history.output_retention_days = self.config.output_retention_days
         return self.config
+
+    def test_monitored_process(self, name: str):
+        rule = self.storage.get_monitored_process(name)
+        if rule is None:
+            raise ValueError(f"Monitored process '{name}' does not exist.")
+        return self.monitored_processes.test(rule)
+
+    def start_monitored_process(self, name: str) -> str:
+        rule = self.storage.get_monitored_process(name)
+        if rule is None:
+            raise ValueError(f"Monitored process '{name}' does not exist.")
+        return self.monitored_processes.start(rule)
+
+    def stop_monitored_process(self, name: str) -> str:
+        rule = self.storage.get_monitored_process(name)
+        if rule is None:
+            raise ValueError(f"Monitored process '{name}' does not exist.")
+        return self.monitored_processes.stop(rule)
 
     # ── Task Execution ──
 
@@ -310,6 +332,8 @@ class SchedulerService:
                     self.run_once(dry_run=dry_run)
                     ticks += 1
                     last_schedule_check = time.monotonic()
+                if not dry_run and not self._admin_worker_mode:
+                    self.monitored_processes.tick()
                 if not dry_run and now - last_request_check >= 1.0:
                     self.process_runner_test_results()
                     last_request_check = time.monotonic()
@@ -323,6 +347,8 @@ class SchedulerService:
         except Exception as e:
             self.central_logger.log_error(f"Scheduler daemon halted unexpectedly: {e}")
             raise
+        finally:
+            self.monitored_processes.close()
 
     def run_admin_worker(self, interval_sec: float = 1.0, max_ticks: Optional[int] = None) -> None:
         """Run the highest-privilege worker, which executes only Admin requests."""

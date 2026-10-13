@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scheduler"
-version = "0.6.1"
+version = "0.8.0"
 description = "A robust Python scheduling and task execution module with CLI and interactive TUI."
 requires-python = ">=3.8"
 dependencies = [
@@ -13,6 +13,7 @@ dependencies = [
     "standard_ui",
     "termdash",
     "python-dateutil",
+    "psutil>=5.9",
     "windows-curses; sys_platform == 'win32'",
 ]
 
