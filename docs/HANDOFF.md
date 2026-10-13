@@ -1,55 +1,23 @@
-# Scripts Repository Documentation Handoff
+# Scripts Repository Handoff
 
-## Scope
+Last updated: 2026-10-12 21:57 -07:00
 
-This handoff covers repository-wide infrastructure and conventions that are not owned by one module.
+## Current cross-repository work
 
-## Active Repository-Wide Plan
+- Branch: `codex/agent-instructions-20261012-2039`
+- Plan: `docs/plans/20261012-2039_codex-agent-instructions/`
+- Repository instruction edits are implemented and awaiting user review. Global Codex and Claude files now resolve through the expected symlinks to `dotfiles/symlinked/llms/codex/AGENTS.md` and `dotfiles/symlinked/llms/claude/CLAUDE.md`; the source content is readable and aligned. The dotfiles Git checkout itself could not be inspected due filesystem access denial.
+- State: instruction and documentation changes are approved for commit, push, and merge by the user.
+- Verification: repo status and symlink targets checked; Codex CLI runtime check was blocked because the sandbox could not access `C:\Users\mcarls\.codex\state_5.sqlite` and its temporary arg0 directory. The aebndl test command with the repo `.venv` gets past `tqdm` but fails collection on a sibling-module `tests.conftest` import mismatch. See the plan `STATUS.md` for exact details.
+- Next action: publish this branch and merge it into `main` under the user's explicit authorization. Fresh Gemini runtime loading and the longer-term local GPU helper investigation remain separate follow-up work.
 
-The current cross-module implementation plan is
-`docs/plans/20261009-0349_kavita-module-mangadl-collections/`.
+This pointer describes the current branch. Earlier plans may still have their own validation or acceptance work; consult their `STATUS.md` and Git evidence when a task targets them. Do not infer that the newest plan supersedes another plan's incomplete acceptance checks.
 
-```text
-docs/plans/20260926-0107_missing-only-bootstrap/
-```
+## Previous cross-repository plans
 
-This plan tracks missing-only bootstrap entry points and their shared installer. The earlier validation-evidence plan remains separate and open; it built:
+- `docs/plans/20261009-0349_kavita-module-mangadl-collections/`
+- `docs/plans/20261009-0941_scheduler-log-explorer-and-shared-logging/`
+- `docs/plans/20260926-0107_missing-only-bootstrap/`
+- `docs/plans/20260729-0900_validation-evidence-context-history/`
 
-```text
-Invoke-Tests.ps1
-validation-targets.json
-docs/test-results/<target>/
-```
-
-## Current State
-
-The first implementation provides:
-
-- one repository-root validation dispatcher,
-- manifest-selected validation targets,
-- one authoritative `LATEST.txt` report per target,
-- bounded report history,
-- generated `LATEST_CONTEXT.md` snapshots from existing project status/checklist files,
-- generated `LATEST_PROGRESS.diff` files showing context changes since the prior run.
-
-The missing-only bootstrap implementation is complete and awaiting user validation. See its plan `STATUS.md` for exact checks and limitations. The validation-evidence system remains intentionally lightweight and is tracked separately in `docs/plans/20260729-0900_validation-evidence-context-history/`.
-
-## Module-Specific Work
-
-The scheduler log explorer, shared `script_logging` package, and startup console/import fixes are committed and merged into main. See `docs/plans/20261009-0941_scheduler-log-explorer-and-shared-logging/STATUS.md` for automated validation and the remaining manual TUI check.
-
-RRBackup consolidation remains tracked separately under:
-
-```text
-modules/rrbackup/docs/plans/20260729-0700_rrbackup-consolidation-viewer-alerting/
-```
-
-## Approved Cross-Module Work
-
-The scheduler log explorer and reusable logging/history library are implemented
-and merged into main. The approved plan and its remaining manual TUI check are
-tracked under:
-
-```
-docs/plans/20261009-0941_scheduler-log-explorer-and-shared-logging/
-```
+Module-owned work has its own handoff under `modules/<module>/docs/` when present.

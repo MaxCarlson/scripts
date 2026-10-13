@@ -20,7 +20,7 @@ The browser/app agent should normally:
 6. Add platform-specific validation scripts when ordinary tests cannot cover the behavior.
 7. Configure the repository-root validation dispatcher for the modules affected by the stage.
 8. Review the complete diff for defects, unsafe behavior, interface regressions, and documentation drift.
-9. Commit and push the completed stage.
+9. Commit and push the completed stage only when the user has explicitly authorized those actions.
 10. Tell the user to pull and run the same repository-root validation command.
 11. Read each target's authoritative `LATEST.txt` report and use it to implement the next pass.
 
@@ -34,7 +34,7 @@ The local side should normally:
 2. Run one repository-root validation command.
 3. Allow that command to bootstrap declared dependencies, run all selected test suites, and execute platform-specific validation scripts.
 4. Avoid redesigning or independently reimplementing the stage unless explicitly assigned.
-5. Commit and push the generated tracked validation reports.
+5. Commit and push the generated tracked validation reports only when the user has explicitly authorized those actions.
 6. Report only environment-specific observations that cannot be captured automatically.
 
 Local execution is especially useful for:
@@ -62,10 +62,10 @@ For each stage:
 1. **Plan** — define scope, invariants, risks, acceptance criteria, and tests.
 2. **Implement remotely** — modify source, tests, scripts, and documentation on the feature branch.
 3. **Review remotely** — inspect the full diff and correct obvious defects.
-4. **Publish** — commit and push the coherent stage.
+4. **Publish when authorized** — commit and push the coherent stage after explicit user authorization.
 5. **Pull locally** — update the local checkout.
 6. **Run one command** — execute the repository-root validation dispatcher.
-7. **Publish evidence** — commit and push the generated validation reports.
+7. **Publish evidence when authorized** — commit and push the generated validation reports after explicit user authorization.
 8. **Diagnose remotely** — read `docs/test-results/<target>/LATEST.txt` and implement the next patch or stage.
 9. **Repeat** until automated, environment-specific, and acceptance validation pass.
 

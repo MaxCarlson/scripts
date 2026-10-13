@@ -1,0 +1,12 @@
+# Status
+
+Last updated: 2026-10-12 21:57 -07:00
+
+- Branch: `codex/agent-instructions-20261012-2039`
+- Current work: repository instruction changes are approved for commit, push, and merge into `main`. Global Codex and Claude symlink targets have been checked.
+- Implemented: root task-based routing, explicit nested-module instruction discovery, concise repo guide, coherent root handoff pointers, explicit approval in the hybrid guide, runmux/aebndl guidance cleanup, and root Gemini import of AGENTS.md.
+- Claude parity: the global Claude symlink resolves to its dotfiles source, whose policy matches Codex with Claude-specific tool-permission wording. The scripts root `CLAUDE.md` imports only root `AGENTS.md`; the ignored `.claude/CLAUDE.md` contains a comment-only pointer and no active duplicate rules. No Claude settings were changed.
+- Verification: staged and unstaged `git diff --check` passed with submodule diff ignored. Official Gemini CLI docs confirm `@./AGENTS.md` imports are supported. The global links resolve to the expected Codex and Claude sources, and both source texts contain aligned policy. The user ran `codex exec --ephemeral --sandbox read-only --cd C:\Users\mcarls\src\scripts ...`; the response recognized global and repository instructions but did not name the global file path. My attempt to run Codex CLI inside this sandbox failed before session startup because access to `C:\Users\mcarls\.codex\state_5.sqlite` and the temporary arg0 directory was denied. The repo `.venv` has `tqdm` 4.67.1; `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest tests/test_urls.py tests/test_utils.py -q` from `modules/aebndl_module` gets past tqdm but collection fails with `ImportPathMismatchError` because `tests.conftest` resolves to `modules/knowledge_manager/tests/conftest.py` instead of the aebndl test conftest. Gemini runtime loading remains unchecked.
+- Approval: user explicitly authorized staging, commit, push, and merge into `main` on 2026-10-12.
+- Known limit: ordinary `git status` and unconstrained `git diff` fail on inaccessible `pscripts` submodule metadata; use `--ignore-submodules=all` for branch-state checks. The dotfiles Git checkout is inaccessible in this sandbox, though the symlink targets and source contents are readable. Fresh Codex and Gemini context discovery still need runtime verification outside this sandbox restriction.
+- Next action: complete the authorized publish and merge. Gemini runtime loading and the local GPU helper investigation remain outside this Codex-focused change.

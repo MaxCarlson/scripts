@@ -1,91 +1,30 @@
 # Repository Agent Instructions
 
-## Scope
+This file applies to work in `scripts/`. Codex loads it automatically. Use `REPO_LLM_INSTRUCTIONS.md` for repo-specific commands and conventions. When a task targets a nested module, inspect that module's instructions and use its docs for module-owned work.
 
-This file is the repository-level `AGENTS.md`. It is intentionally short and reusable across repositories.
+## Start with evidence
 
-It extends global instructions with repo-local routing. Put repo-specific details in `REPO_LLM_INSTRUCTIONS.md` and standards documents instead of making this file long.
+- Run `git status` before editing and before reporting completion. If the `pscripts` submodule metadata is inaccessible, use `git -c submodule.recurse=false status --ignore-submodules=all` and state that limitation.
+- Preserve unrelated changes. Check the relevant source, tests, and recent commits before treating handoff text as current fact.
+- Identify the project root: use this repository for shared work, or the nested module when it has its own package boundary or `docs/HANDOFF.md`.
+- When started from `scripts/`, Codex does not preload instruction files below the current directory. Before editing a nested module, find and read its `AGENTS.md` if present, plus any more-specific instruction files covering the target paths. Do not scan unrelated modules.
 
-## Required Reading
+## Read only what the task needs
 
-Before changing this repository:
+| Task | Additional guidance |
+| --- | --- |
+| Any repo code change | `REPO_LLM_INSTRUCTIONS.md` |
+| Python or CLI change | `docs/agent/PYTHON_REPO_STANDARDS.md` and `docs/agent/SCRIPTS_REPO_STANDARDS.md` |
+| Module-targeted work | The target module's `AGENTS.md` if present; its `docs/README.md`, handoffs, and active plan only when they exist and are relevant |
+| Shared validation or installer change | `validation-targets.json`, `Invoke-Tests.ps1`, and the relevant `docs/agent/` guide |
+| Substantial or resumed multi-stage work | `project_root/docs/HANDOFF.md`, `project_root/docs/plans/HANDOFF.md`, and the active plan's `STATUS.md` and `checklist.md`; open detailed plan/stage files as needed |
+| Hybrid browser/local work | `docs/agent/HYBRID_REMOTE_LOCAL_DEVELOPMENT_WORKFLOW.md` |
 
-1. Read this file.
-2. Read `REPO_LLM_INSTRUCTIONS.md` if present.
-3. Read `docs/agent/README.md` if present.
-4. Read `docs/agent/PYTHON_REPO_STANDARDS.md` for Python work when present.
-5. Read repo-specific standards such as `MODULE_STANDARDS.md`, `CONTRIBUTING.md`, or equivalent files when present.
-6. Identify `project_root`.
-7. If `project_root/docs/` exists, read `docs/README.md`, `docs/HANDOFF.md`, and `docs/plans/HANDOFF.md`.
-8. Run `git status` before editing.
+`MODULE_STANDARDS.md` is a compatibility index to the split standards. Read it when updating standards or following an older module reference. For module-owned planning, use the module's `docs/plans/`; use `scripts/docs/plans/` for shared or repository-wide work.
 
-## Repo-Specific Instructions
+## Work and approval
 
-Repo-specific instructions belong in:
-
-```text
-REPO_LLM_INSTRUCTIONS.md
-```
-
-That file should contain durable facts about this repository: setup commands, validation commands, package layout, project-specific constraints, important modules, and any local conventions that should not be global.
-
-Keep this `AGENTS.md` generic enough to copy into every repo.
-
-## Hybrid Remote/Local Workflow Reminder
-
-For a substantial repository task that is likely to require multi-file implementation, planning, broad test creation, or a long local-agent session, first determine whether the browser/app agent can perform most of the work through connected repository tools.
-
-When the hybrid workflow is a good fit, the local agent should give one brief advisory reminder near the start of the conversation, before beginning heavy implementation. The reminder should explain that the browser/app agent can normally handle planning, edits, tests, documentation, commits, pushes, and diagnosis, leaving the local side to pull the branch and run the repository validation command.
-
-Rules for the reminder:
-
-- Give it at most once per conversation.
-- Do not repeat it after the user has chosen a workflow.
-- Do not use it for small edits, quick commands, narrowly local debugging, or work that genuinely requires the local environment.
-- Do not block progress or require confirmation; continue locally unless the user redirects the task.
-- Keep it to one or two sentences.
-
-Suggested wording:
-
-> This looks suitable for the hybrid workflow: the browser/app agent can handle most implementation and test work, while this local session mainly pulls and validates the branch. I’ll continue locally unless you want to shift the implementation there.
-
-## Project Root Selection
-
-If this repository is the whole project, treat the repository root as `project_root`.
-
-If the task targets a nested module/application with its own package boundary, `AGENTS.md`, or `docs/HANDOFF.md`, treat that nested directory as `project_root`.
-
-Nested `AGENTS.md` files are optional. A normal single-project repo needs only this root file.
-
-## Planning System
-
-For small localized edits, do not create planning folders.
-
-For substantial work, use:
-
-```text
-project_root/docs/
-├── README.md
-├── HANDOFF.md
-└── plans/
-    ├── HANDOFF.md
-    └── YYYYMMDD-HHMM_descriptive-plan-name/
-        ├── 00_implementation-plan.md
-        ├── 01_stage-name__planned.md
-        ├── HANDOFF.md
-        ├── STATUS.md
-        └── checklist.md
-```
-
-Use `stage` as the canonical term. Do not use older repo-specific planning taxonomies for new work unless `REPO_LLM_INSTRUCTIONS.md` explicitly says they remain canonical.
-
-## Verification and Commits
-
-- Preserve unrelated user changes.
-- Run targeted tests for code changes.
-- Run broader tests when the change affects shared behavior.
-- Run the broad relevant test suite once to identify failures; while debugging, rerun only failed/affected tests, then rerun the broad suite after they pass. If a failure appears flaky, repeat the focused subset 2-3 times before returning to the broad suite.
-- Minimize validation output: prefer narrow tests and quiet pytest output; for large suites, log full output and inspect only summaries/failures unless more detail is needed.
-- Record exact commands and results in the handoff/status docs for substantial work.
-- Stage only intended files.
-- Do not commit unless the user explicitly approves.
+- Use a lightweight path for small edits. For substantial work, use a dated plan under `project_root/docs/plans/` when multiple implementation or validation stages are needed; keep its status and checklist accurate.
+- Run focused tests for changed behavior, and broader tests when shared behavior is affected. Report exact commands and failures. Minimize routine test output.
+- Stage only intended files. Do not commit, push, or merge unless the user explicitly authorizes that action, including when another guide describes a remote workflow. A continuous-execution waiver must say which actions it authorizes.
+- Stop for manual validation at a stage boundary when the active plan requires it or the user asks for it.

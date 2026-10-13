@@ -1,35 +1,14 @@
 # Repository-Wide Plans Handoff
 
-## Active Plan
+## Current branch
 
-```text
-20261009-0349_kavita-module-mangadl-collections/
-```
+`codex/agent-instructions-20261012-2039` uses `20261012-2039_codex-agent-instructions/`. Repository instruction changes are approved for commit, push, and merge by the user. The global Codex and Claude source files resolve through their expected symlinks and contain aligned policy. The user ran a fresh Codex CLI check from the repository root; its response recognized global and repository instructions, though it did not name the global file path. Gemini runtime loading remains unchecked. See the active plan's `STATUS.md` and stage notes.
 
-This cross-module plan adds a reusable Kavita API package and safe MangaDL
-collection assignment. See its `STATUS.md` and checklist for implementation
-and validation state.
+## Other plans
 
-## Previous Active Plan
+- `20261009-0349_kavita-module-mangadl-collections/`
+- `20261009-0941_scheduler-log-explorer-and-shared-logging/`
+- `20260926-0107_missing-only-bootstrap/`
+- `20260729-0900_validation-evidence-context-history/`
 
-```text
-20260926-0107_missing-only-bootstrap/
-```
-
-## Scope Boundary
-
-Use this plan tree for repository-wide infrastructure, standards, and tooling shared across modules.
-
-Use `modules/<module>/docs/plans/` for work owned by a single module.
-
-## Current Priority
-
-The missing-only bootstrap plan is active. The validation-evidence plan remains open and awaits local validation; this bootstrap work does not expand it.
-
-## Approved Cross-Module Plan
-
-```text
-20261009-0941_scheduler-log-explorer-and-shared-logging/
-```
-
-The user approved the shared logging and scheduler log browser plan. Features are implemented in the uncommitted worktree; see its status for verification and limits.
+These plans have separate histories and possible remaining acceptance work. Check each plan's current status and repository evidence before continuing it. Use a module's own `docs/plans/` for module-owned work.
