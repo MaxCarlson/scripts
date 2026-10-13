@@ -2,8 +2,8 @@
 
 Branch: `codex/mangadl-generalized-audit-repair`
 
-Status: implementation and repository validation complete; live audit output
-confirmed by the user. Live repair acceptance remains pending.
+Status: live repair verified; summary formatting and shared downloader UI are
+the next authorized stages. The user requested commit/push after each stage.
 
 Implemented: URL directory discovery, durable audit reports, visible batch
 repair planning, exact-token apply for proven actions, and post-repair source
@@ -20,7 +20,7 @@ automatic source-labeled report names with collision numbering are now added.
 
 Validation:
 
-- Full MangaDL suite: 264 passed.
+- Full MangaDL suite: 268 passed.
 - Focused scripts-help registry suite: 42 passed (one known pytest cache
   permission warning).
 - Ruff passed for MangaDL and the changed registry file.
@@ -39,5 +39,13 @@ Fixed in 1.26.1: always create the repair directory, keep long gallery names in
 the manifest rather than its Windows path, and write the manifest before deleting
 target archive entries. Focused repair/CLI regressions: 44 passed; Ruff passed.
 
-Next action: retry the user's reviewed repair apply with 1.26.1.
-No live repair was executed by the agent; no push or merge has been performed.
+Live retry in 1.26.2 fixed archive-key enumeration: gallery-dl's print-only mode
+had produced `None` for every key because it disabled skip/archive checks.
+Re-enabling checks against an empty temporary archive preserves download-disabled
+enumeration while generating distinct real keys. Placeholder/repeated keys are
+now rejected. All three authorized galleries were repaired and independently
+verified complete; see LIVE_REPAIR.md for counts and run IDs.
+
+Next: commit/push the repair fix, improve and commit/push summaries, then route
+all repair jobs through a shared normal download manager with available workers.
+No merge is authorized.

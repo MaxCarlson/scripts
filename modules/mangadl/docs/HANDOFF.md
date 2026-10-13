@@ -5,7 +5,7 @@
 Branch: `codex/mangadl-generalized-audit-repair`.
 
 The active plan is [generalized audit and batch repair](plans/20261012-2300_generalized-audit-and-batch-repair/00_implementation-plan.md).
-MangaDL 1.26.1 accepts repeatable URL files/globs plus top-level `url*.txt`
+MangaDL 1.26.2 accepts repeatable URL files/globs plus top-level `url*.txt`
 directory discovery, records cross-file duplicate provenance, writes a
 versioned audit report automatically with input-based names and numbered
 collisions, prints per-URL page findings and separate duplicate/invalid counts,
@@ -15,7 +15,7 @@ creates and displays the plan. Apply remains token-guarded and limited to
 proven individual nhentai page repair plus normal downloads for wholly missing
 non-collection galleries. Successful actions re-audit and backfill exact source
 identity. Unsupported or ambiguous items remain report-only. Repository
-validation passed (264 MangaDL tests and 42 focused scripts-help tests). The
+validation passed (268 MangaDL tests and 42 focused scripts-help tests). The
 user confirmed the live audit findings and authorized committing this usable
 1.26.0 state. Live progress and colored summaries are deferred at the user's
 request. Live repair acceptance is pending; no live library repair, push, or
@@ -26,6 +26,14 @@ directory was not created. Archive backups and current archive were confirmed
 identical. The 1.26.1 fix creates a short repair directory unconditionally and
 writes its manifest before archive-key deletion. Focused repair/CLI regression
 validation passed (44 tests); retry of the live apply remains pending.
+
+The live retry exposed placeholder `None` archive keys in print-only
+enumeration. Version 1.26.2 generates and validates distinct real keys, and the
+agent's authorized repair restored all 260 missing pages in galleries 633374,
+268015, and 592786. Independent destination checks found 192/192, 160/160, and
+76/76 valid pages, respectively. See the active plan's LIVE_REPAIR.md.
+The user now authorizes commit/push after the repair fix, then summary/color
+improvements, then shared normal downloader UI and available-worker scheduling.
 
 ---
 

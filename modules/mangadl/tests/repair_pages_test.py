@@ -172,3 +172,13 @@ def test_repair_confirmation_token_is_bound_to_exact_targets(tmp_path: Path) -> 
     )
     assert repair_confirmation_token(plan) == repair_confirmation_token(same_plan)
     assert repair_confirmation_token(plan) != repair_confirmation_token(changed_plan)
+
+
+def test_page_repair_refuses_placeholder_and_repeated_keys(tmp_path: Path) -> None:
+    folder = tmp_path / "gallery"
+    folder.mkdir()
+    for keys in ({1: "None", 2: "None"}, {1: "same-key", 2: "same-key"}):
+        plan = make_page_repair_plan(
+            "https://nhentai.net/g/1/", folder, 2, [2], [], keys, tmp_path / "archive.sqlite3",
+        )
+        assert not plan.eligible

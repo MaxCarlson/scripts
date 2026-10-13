@@ -28,3 +28,19 @@ def test_reconstruct_archive_page_keys_uses_print_only_page_mapping(monkeypatch)
     command = captured["command"]
     assert "--print" in command
     assert "--Print" not in command
+    assert command.index("--print") < command.index("skip=true")
+
+
+def test_archive_key_enumeration_rejects_print_placeholder(monkeypatch) -> None:
+    import pytest
+
+    class Process:
+        stdout = [f"{partial_reconcile.REPAIR_MARKER}None\t1\n"]
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(partial_reconcile.subprocess, "Popen", lambda *_args, **_kwargs: Process())
+    monkeypatch.setattr(partial_reconcile, "ProfileStore", lambda _path: type("Store", (), {"load": lambda self, _url: None})())
+    with pytest.raises(RuntimeError, match="exact archive key"):
+        partial_reconcile.reconstruct_archive_page_keys("https://nhentai.net/g/123/")

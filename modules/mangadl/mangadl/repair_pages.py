@@ -32,7 +32,12 @@ class PageRepairPlan:
 
     @property
     def eligible(self) -> bool:
-        return bool(self.damaged_pages) and set(self.page_keys) == set(range(1, self.expected_count + 1))
+        return (
+            bool(self.damaged_pages)
+            and set(self.page_keys) == set(range(1, self.expected_count + 1))
+            and len(set(self.page_keys.values())) == self.expected_count
+            and all(key and key not in {"None", "null"} for key in self.page_keys.values())
+        )
 
 
 def repair_confirmation_token(plan: PageRepairPlan) -> str:
