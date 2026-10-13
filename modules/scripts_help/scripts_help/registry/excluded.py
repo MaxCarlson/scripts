@@ -5,4 +5,5 @@ EXCLUDED_SCRIPTS: set[str] = {
     "pyscripts/clipboard_buffers.py",  # legacy shim re-exporting clipboard_tools.buffers
     "pyscripts/dlchem.py",             # no argparse / __main__; utility imported directly
     "pyscripts/setup.py",              # internal repo setup script, not a general-purpose tool
+    "pyscripts/help.py",               # compatibility shim; root help.py is the checkout launcher
 }

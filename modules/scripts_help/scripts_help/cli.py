@@ -65,9 +65,24 @@ def _discover_cli_programs() -> set[str]:
     modules_dir = repo / "modules"
     if modules_dir.exists():
         for mod in modules_dir.iterdir():
-            if mod.is_dir() and not mod.name.startswith("_"):
-                if (mod / "cli.py").exists() or (mod / "__main__.py").exists():
-                    found.add(f"modules/{mod.name}")
+            if not mod.is_dir() or mod.name.startswith("_"):
+                continue
+
+            has_cli_file = (mod / "cli.py").exists() or (mod / "__main__.py").exists()
+            pyproject = mod / "pyproject.toml"
+            has_console_script = False
+            if pyproject.is_file():
+                try:
+                    pyproject_text = pyproject.read_text(
+                        encoding="utf-8",
+                        errors="replace",
+                    )
+                except OSError:
+                    pyproject_text = ""
+                has_console_script = "[project.scripts]" in pyproject_text
+
+            if has_cli_file or has_console_script:
+                found.add(f"modules/{mod.name}")
 
     return found
 
@@ -778,6 +793,13 @@ def _main_menu(drift: dict) -> None:
 
 def cmd_browse(args) -> None:
     drift = collect_drift()
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        from scripts_help.tui import run_browser
+
+        run_browser(drift)
+        return
+
+    # Preserve a line-oriented fallback for redirected/non-interactive sessions.
     _print_warnings(drift)
     _main_menu(drift)
 
