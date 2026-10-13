@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import math
 import shutil
 from typing import Callable, Optional, Tuple, Union
 
@@ -158,3 +157,56 @@ class ProgressBar:
                     bar_chars[start + i] = ch
 
         return "[" + "".join(bar_chars) + "]"
+
+
+def render_horizontal_bar(
+    ratio: float,
+    *,
+    width: int = 20,
+    fill_char: str = "█",
+    empty_char: str = " ",
+    color: str | None = None,
+    brackets: bool = True,
+    show_pct: bool = False,
+) -> str:
+    """
+    Render a horizontal comparison bar for reports, tables, and comparative stats.
+
+    Parameters
+    ----------
+    ratio : float
+        Value between 0.0 and 1.0 (clamped).
+    width : int
+        Total width of the bar (including brackets if brackets=True).
+    fill_char : str
+        Character for the filled portion (default: '█').
+    empty_char : str
+        Character for the empty portion (default: ' ').
+    color : str | None
+        Optional ANSI color name for the filled portion ('green', 'cyan', 'yellow', etc.).
+    brackets : bool
+        Whether to wrap in '[' and ']' (default: True).
+    show_pct : bool
+        Whether to append ' XX.X%' after the bar.
+    """
+    from .utils import color_text
+
+    r = max(0.0, min(1.0, float(ratio)))
+    width = max(0, int(width))
+    if len(fill_char) != 1 or len(empty_char) != 1:
+        raise ValueError("Bar fill and empty characters must be single characters")
+    brackets = brackets and width >= 2
+    bracket_overhead = 2 if brackets else 0
+    inner_width = max(0, width - bracket_overhead)
+    filled_len = int(round(inner_width * r))
+    empty_len = max(0, inner_width - filled_len)
+
+    filled_str = fill_char * filled_len
+    if color:
+        filled_str = color_text(filled_str, color)
+    empty_str = empty_char * empty_len
+
+    bar = (f"[{filled_str}{empty_str}]") if brackets else f"{filled_str}{empty_str}"
+    if show_pct:
+        bar = f"{bar} {r * 100:5.1f}%"
+    return bar

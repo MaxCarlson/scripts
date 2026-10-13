@@ -456,6 +456,22 @@ mangadl archive config -a .\gallery-dl-archive.sqlite3 -N
 
 ## Other operations
 
+Image compression/analysis is available through the reusable compresser library:
+
+```powershell
+mangadl compress -d . -m lossless -s 60 -N
+mangadl compress -d . -c -m lossless -s 60 -N
+mangadl compress -d . -f webp -A pillow-webp -m perceptual -p 0.990 -s 60 -K E:\Temp\compression-cache.sqlite3 -N
+```
+
+These commands are read-only (except the explicitly separate cache). Reports
+distinguish measured sample savings from coverage-aware projections. Both tools
+default to lossless; writes require `-w`, with `-L` additionally for lossy/perceptual.
+No larger replacement or output collision is accepted by default. Pending
+compression transactions need explicit `compress -d GALLERY -R` recovery preview
+and `-R -w -C TOKEN` apply. See [compresser usage](../compresser/README.md).
+Production write acceptance and nested-gallery/download coordination are pending.
+
 Audit all recognized manga folders without a URL file, or compare a URL file to
 one or more destination roots. Folder-only audits do not change gallery contents. URL-file audits
 also backfill a missing `.mangadl-source.json` for unique, image-bearing matches
@@ -494,13 +510,22 @@ rejected/invalid counts. The console also lists each URL requiring attention,
 its matched folder, valid/expected image totals, and missing/corrupt/duplicate
 page ranges. A found folder can still be incomplete; image integrity describes
 the files present, while completeness checks whether expected pages are missing.
-On a terminal, audit shows a transient bottom progress row with the current
-URL position, metadata/image-check phase, and real local image-check counts.
+On a terminal, audit shows a transient three-row block: current URL/folder,
+its real image-check progress (or indeterminate metadata activity), and overall
+completion with elapsed/rolling15-second ETA. Both modes share this renderer.
 The metadata spinner indicates activity while waiting for the source; it does
 not imply a known metadata percentage. Audit and repair summaries use colored
 statuses, separate URL/folder/page fields, and aligned wrapping for long names.
 Redirected output stays plain, JSON remains machine-readable, `NO_COLOR`
 disables summary colors, and `audit -q` suppresses progress.
+
+Detailed output prioritizes missing/corrupt/duplicate/extra pages; defect-free
+unknown/ambiguous entries are counted in the bottom summary. Add `-a/--all-findings`
+to list them too. Identity ambiguity never hides image defects. Unknown-total
+sequence gaps are explicitly inferred, not source-confirmed, and can't detect
+trailing missing pages. Bottom summaries report associations present/creatable/
+created/conflicting, including an inventory when `-x` disables index writes.
+Source identity reads explicit metadata fields; cover/artist links aren't owners.
 
 Every audit writes a complete versioned JSON report automatically. For a single
 `urls32.txt` input and `-d .`, the default is

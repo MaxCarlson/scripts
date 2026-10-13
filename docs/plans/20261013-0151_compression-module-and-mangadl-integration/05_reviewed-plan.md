@@ -67,7 +67,7 @@ color/detail differences rather than call thumbnail luminance a visual guarantee
 
 ### S7 — shared UI/exact integration
 
-Actual TermDash rendering, not handwritten ANSI cursor control. stderr progress,
+Shared termdash rendering, not caller-owned ANSI cursor control. stderr progress,
 clean JSON stdout, NO_COLOR/plain redirected output, Unicode/narrow/resize handling,
 finally cleanup. Active/last file, genuine gallery and overall completion,
 elapsed and rolling 15-second ETA; unknown when stalled/unmeasurable. Pillow
@@ -76,6 +76,11 @@ MangaDL URL filters resolve canonical exact identities via library index; explic
 folder selection stays separate. No URL/title substring matching.
 Termdash table must enforce width and terminal-cell-safe clipping; bar edge widths
 have tests. Document actual exports/options/API signatures, not designed names.
+
+Renderer decision: TermDash reserves a full-screen scrolling region. Transient
+audit/compression status instead uses shared `termdash.LiveBlock`, a width-bounded
+relative-cursor renderer below existing output; it neither resets the screen nor
+duplicates rendering in callers. Both remain termdash-owned APIs.
 
 ### S8 — acceptance
 

@@ -41,3 +41,27 @@ def test_progress_quiet_and_redirected_output(capsys) -> None:
     output = capsys.readouterr().err
     assert "URL 19/38" in output and "7/20" in output
     assert "\x1b[" not in output
+
+
+def test_progress_has_distinct_item_and_overall_rows(capsys):
+    display = AuditProgress(enabled=True)
+    display.update({"phase": "images", "index": 2, "total": 10, "url": "https://example.test/gallery",
+                    "checked": 7, "image_total": 20})
+    lines = display._lines()
+    assert len(lines) == 3
+    assert lines[0].startswith("URL 2/10:")
+    assert "7/20" in lines[1]
+    assert "Overall:" in lines[2] and "1/10" in lines[2]
+    assert "Elapsed:" in lines[2] and "ETA:" in lines[2]
+    display.close()
+
+
+def test_ambiguous_defects_are_not_hidden():
+    from mangadl.cli_core import _format_audit_findings
+    item = {"identity_status": "ambiguous", "completeness": "incomplete", "image_integrity": "valid",
+            "folder": "unknown title", "missing_pages": [3, 4], "valid_images": 2, "present_images": 2}
+    assert "Missing pages: 3-4 (2)" in _format_audit_findings([item])
+    assert "inferred numbering gaps" in _format_audit_findings([item])
+    item["missing_pages"] = []
+    assert "AMBIGUOUS:" not in _format_audit_findings([item])
+    assert "AMBIGUOUS:" in _format_audit_findings([item], all_findings=True)

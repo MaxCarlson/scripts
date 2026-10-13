@@ -1,0 +1,227 @@
+
+
+====================================================================================================
+VALIDATION TARGET: compresser
+====================================================================================================
+Timestamp: 2026-10-13T02:46:51.2065989-07:00
+Description: Standalone image compression engine, analysis, and perceptual optimization.
+Repository root: C:\Users\mcarls\src\scripts
+Working directory: C:\Users\mcarls\src\scripts\modules\compresser
+Python: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe
+PowerShell: 7.6.1
+Platform: Microsoft Windows 10.0.26300
+Bootstrap enabled: True
+Production read-only checks: False
+History retention: 3 prior runs, maximum age 14 days
+Git branch: compression-module-mangadl-20261013-0151
+Git commit: 9a8e95b89cd38fa473e74e670a8962946cd0c8eb
+Git status before validation:
+ M docs/HANDOFF.md
+ M docs/plans/HANDOFF.md
+ M modules/mangadl/docs/README.md
+ M modules/mangadl/mangadl/__init__.py
+ M modules/mangadl/mangadl/cli_core.py
+ M modules/mangadl/pyproject.toml
+ M modules/scripts_help/scripts_help/registry/registry.py
+ M modules/termdash/__init__.py
+ M modules/termdash/progress.py
+ M modules/termdash/pyproject.toml
+ M validation-targets.json
+?? docs/plans/20261013-0151_compression-module-and-mangadl-integration/
+?? docs/test-results/compresser/
+?? modules/compresser/
+?? modules/mangadl/mangadl/compress.py
+?? modules/mangadl/tests/compress_test.py
+?? modules/termdash/table.py
+?? modules/termdash/tests/horizontal_bar_test.py
+?? modules/termdash/tests/table_test.py
+
+====================================================================================================
+Install shared TermDash dependency
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\compresser
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pip install --disable-pip-version-check --no-build-isolation -e C:\Users\mcarls\src\scripts/modules/termdash
+WARNING: Ignoring invalid distribution ~%bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~-bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~=bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ebndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~~bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+Obtaining file:///C:/Users/mcarls/src/scripts/modules/termdash
+  Checking if build backend supports build_editable: started
+  Checking if build backend supports build_editable: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Preparing editable metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: termdash
+  Building editable for termdash (pyproject.toml): started
+  Building editable for termdash (pyproject.toml): finished with status 'done'
+  Created wheel for termdash: filename=termdash-0.6.0-0.editable-py3-none-any.whl size=4856 sha256=451b39997bd614730104c6b81d536a296010fb84907b2e47550775624d140ede
+  Stored in directory: C:\Users\mcarls\AppData\Local\Temp\pip-ephem-wheel-cache-2sczwaz9\wheels\0c\63\83\1230fd71819077cdd0e2f1c4fd3d10db1a8949cfd53cef1cad
+Successfully built termdash
+WARNING: Ignoring invalid distribution ~%bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~-bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~=bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ebndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~~bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+Installing collected packages: termdash
+  Attempting uninstall: termdash
+    Found existing installation: termdash 0.6.0
+    Uninstalling termdash-0.6.0:
+      Successfully uninstalled termdash-0.6.0
+WARNING: Ignoring invalid distribution ~%bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~-bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~=bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ebndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~~bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+Successfully installed termdash-0.6.0
+RESULT: PASS - Install shared TermDash dependency
+
+====================================================================================================
+Install compresser editable package
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\compresser
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pip install --disable-pip-version-check --no-build-isolation -e C:\Users\mcarls\src\scripts\modules\compresser
+WARNING: Ignoring invalid distribution ~%bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~-bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~=bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ebndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~~bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+Obtaining file:///C:/Users/mcarls/src/scripts/modules/compresser
+  Checking if build backend supports build_editable: started
+  Checking if build backend supports build_editable: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Preparing editable metadata (pyproject.toml): finished with status 'done'
+Requirement already satisfied: pillow>=10.0 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from compresser==0.1.0) (12.2.0)
+Requirement already satisfied: numpy>=1.20 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from compresser==0.1.0) (2.4.4)
+Requirement already satisfied: termdash>=0.6.0 in C:\Users\mcarls\src\scripts\.venv\Lib\site-packages (from compresser==0.1.0) (0.6.0)
+Building wheels for collected packages: compresser
+  Building editable for compresser (pyproject.toml): started
+  Building editable for compresser (pyproject.toml): finished with status 'done'
+  Created wheel for compresser: filename=compresser-0.1.0-0.editable-py3-none-any.whl size=3976 sha256=7fe89d49976612e71be5367b7c3c71d6aa284c1022f8563b96c8c1165a3daef2
+  Stored in directory: C:\Users\mcarls\AppData\Local\Temp\pip-ephem-wheel-cache-qhzuu5vx\wheels\64\6f\b4\17f8cbd66ee327835880a1f6d45220cf236ed3dfc1bc3fcb4e
+Successfully built compresser
+WARNING: Ignoring invalid distribution ~%bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~-bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~=bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ebndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~~bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+Installing collected packages: compresser
+  Attempting uninstall: compresser
+    Found existing installation: compresser 0.1.0
+    Uninstalling compresser-0.1.0:
+      Successfully uninstalled compresser-0.1.0
+WARNING: Ignoring invalid distribution ~%bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~-bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~=bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~ebndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+WARNING: Ignoring invalid distribution ~~bndl (C:\Users\mcarls\src\scripts\.venv\Lib\site-packages)
+Successfully installed compresser-0.1.0
+RESULT: PASS - Install compresser editable package
+
+====================================================================================================
+Compile compresser package and tests
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\compresser
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m compileall -q compresser tests
+RESULT: PASS - Compile compresser package and tests
+
+====================================================================================================
+Lint compresser package and tests
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\compresser
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m ruff check compresser tests
+All checks passed!
+RESULT: PASS - Lint compresser package and tests
+
+====================================================================================================
+Compresser CLI help contract
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\compresser
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m compresser --help
+usage: compresser [-h] [-V] -i INPUT [-o OUTPUT_DIR]
+                  [-f {auto,webp,jpeg,avif,png,keep}]
+                  [-m {perceptual,lossless,lossy}] [-q QUALITY]
+                  [-p PERCEPTUAL_TARGET] [-c] [-s SAMPLE] [-w] [-F] [-L]
+                  [-t THREADS] [-N] [-J] [-v]
+
+Analyze, compare, and optimize manga/manhwa images using perceptual
+compression.
+
+options:
+  -h, --help            show this help message and exit
+  -V, --version         show program's version number and exit
+  -i INPUT, --input INPUT
+                        Input image file or directory containing manga/manhwa
+                        images.
+  -o OUTPUT_DIR, --output-dir OUTPUT_DIR
+                        Optional separate output directory (default: in-
+                        place).
+  -f {auto,webp,jpeg,avif,png,keep}, --format {auto,webp,jpeg,avif,png,keep}
+                        Target image format (default: auto).
+  -m {perceptual,lossless,lossy}, --mode {perceptual,lossless,lossy}
+                        Compression mode (default: perceptual).
+  -q QUALITY, --quality QUALITY
+                        Compression quality 1..100 (for lossy mode, default:
+                        80).
+  -p PERCEPTUAL_TARGET, --perceptual-target PERCEPTUAL_TARGET
+                        Minimum SSIM quality threshold 0.80..1.00 (default:
+                        0.990).
+  -c, --compare         Run comparison matrix across multiple strategies
+                        without modifying files.
+  -s SAMPLE, --sample SAMPLE
+                        Benchmark only a representative sample of N images.
+  -w, --write           Apply compression and write changes to disk (default:
+                        dry-run analysis).
+  -F, --allow-larger    Permit replacement if the compressed file is larger
+                        (default: False).
+  -L, --allow-lossy     Explicitly permit lossy compression in write mode.
+  -t THREADS, --threads THREADS
+                        Worker thread concurrency (default: CPU budget or 4).
+  -N, --no-ui           Disable the live terminal dashboard.
+  -J, --json            Emit machine-readable JSON results to stdout.
+  -v, --verbose         Increase diagnostic logging output.
+RESULT: PASS - Compresser CLI help contract
+
+====================================================================================================
+Compresser pytest suite
+====================================================================================================
+Working directory: C:\Users\mcarls\src\scripts\modules\compresser
+Command: C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest tests -q --strict-config --strict-markers --basetemp C:\Users\mcarls\src\scripts\modules\compresser\.pytest_tmp_root\validation-20261013-024651
+[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m                                                       [100%][0m
+[32m[32m[1m18 passed[0m[32m in 2.29s[0m[0m
+RESULT: PASS - Compresser pytest suite
+
+====================================================================================================
+TARGET SUMMARY
+====================================================================================================
+Latest report: C:\Users\mcarls\src\scripts\docs\test-results\compresser\LATEST.txt
+Context snapshot: C:\Users\mcarls\src\scripts\docs\test-results\compresser\LATEST_CONTEXT.md
+Progress diff: C:\Users\mcarls\src\scripts\docs\test-results\compresser\LATEST_PROGRESS.diff
+TARGET RESULT: PASS
+All requested validation sections passed.
+
+Git status after validation:
+ M docs/HANDOFF.md
+ M docs/plans/HANDOFF.md
+ M modules/mangadl/docs/README.md
+ M modules/mangadl/mangadl/__init__.py
+ M modules/mangadl/mangadl/cli_core.py
+ M modules/mangadl/pyproject.toml
+ M modules/scripts_help/scripts_help/registry/registry.py
+ M modules/termdash/__init__.py
+ M modules/termdash/progress.py
+ M modules/termdash/pyproject.toml
+ M validation-targets.json
+?? docs/plans/20261013-0151_compression-module-and-mangadl-integration/
+?? docs/test-results/compresser/
+?? modules/compresser/
+?? modules/mangadl/mangadl/compress.py
+?? modules/mangadl/tests/compress_test.py
+?? modules/termdash/table.py
+?? modules/termdash/tests/horizontal_bar_test.py
+?? modules/termdash/tests/table_test.py

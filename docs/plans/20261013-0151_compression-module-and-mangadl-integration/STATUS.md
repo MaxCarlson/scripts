@@ -1,40 +1,47 @@
-# Compression Module and MangaDL Integration Status
+# Reviewed compression status
 
-Branch: `compression-module-mangadl-20261013-0151`
-
-Status: REOPENED after complete source review on 2026-10-13. NOT production-write ready.
-
+Branch: compression-module-mangadl-20261013-0151.
+Plans committed/pushed as f1baeab; verified source checkpoint approved for publication.
 Authoritative: [reviewed plan](05_reviewed-plan.md), [findings](REVIEW.md).
-Existing scaffold/tests preserved; S5 safety/fidelity, S6 measured selection/cache,
-S7 shared UI/exact integration, S8 acceptance are pending. User authorizes docs
-stage/commit/push followed by direct implementation; no merge/live compression.
-Next: publish reviewed plans then S5 isolated failure-path implementation.
 
-The ledger and completion descriptions below are historical predecessor claims,
-not current acceptance. In particular discrete search, memory bounds, lossless
-JPEG path, dry-run recovery safety and rolling dual-bar UI are not implemented.
+## Implemented and fixture-verified
 
-## Overview
-1. Standalone image compression module (`modules/compresser`) with pluggable codecs and perceptual search.
-2. MangaDL integration via `mangadl compress` subcommand.
-3. Termdash enhancements (`Table`, `render_table`, `render_horizontal_bar`) implemented safely without touching existing APIs.
-4. Review refinements incorporated and verified:
-   - Lossless JPEG requires `jpegtran` (DCT Huffman optimization); Pillow re-encode is never misclassified as lossless.
-   - Genuine cross-extension atomicity using `.compress_journal.json` transaction records and startup crash recovery.
-   - Resource safety: removed global `Image.MAX_IMAGE_PIXELS = None`; using header inspection and configurable memory limit (`200_000_000` pixels).
-   - Full pixel decode verification (`im.load()`) instead of shallow `im.verify()`.
-   - Discrete candidate search for perceptual quality calibration.
-   - Explicit user permission required for lossy compression in write mode (`-L / --allow-lossy`).
-   - Termdash live progress uses un-faked status, rolling 15s smoothed ETA, and dual progress bars.
-   - MangaDL audit testing enforces defect non-regression rather than assuming 100% complete libraries.
+S5: strict analysis purity; verified codec dispatch and alpha/metadata guards;
+bounded decode/futures/metric memory; OS directory ownership; durable source/output
+fingerprinted transactions; explicit token-bound recovery CLI; actual child-process
+crash and competing-owner tests. Legacy/malformed/changed records remain refused.
 
-## Current Stage
-Complete. Ready for user review and validation.
+S6: PNG, measured auto candidates, explicit algorithm/effort, persistent separate
+inventory/trial cache and invalidation, stratified samples and coverage-aware
+projections. RGB and native-detail patches guard perceptual candidates. Quality
+settings and projections are not percentage-loss or visual guarantees.
 
-## Verification Ledger
-- Stage 1: Termdash enhancements verified (68 passed, 1 skipped).
-- Stage 2: `compresser` standalone test suite verified (18 passed).
-- Stage 3: `mangadl` compress test suite verified (6 passed) + full mangadl pytest suite (276 passed).
-- Stage 4: `./Invoke-Tests.ps1 -Target compresser` (PASS) and `./Invoke-Tests.ps1 -Target mangadl` (PASS).
-- Scripts Catalog: `scripts_help` test suite verified (55 passed).
-- No code committed yet; waiting for user review and approval.
+S7 implemented portions: shared termdash LiveBlock, bounded Unicode tables,
+stderr/plain/NO_COLOR output, gallery/overall progress, rolling ETA, exact source
+URL/folder selection, cover/partial/control exclusions and active repair/run
+refusal. Still pending: nested gallery discovery and robust coordination against
+a download starting concurrently with compression, plus real Windows terminal
+and reader acceptance. Not production-write ready.
+
+Related A1/A2 audit work implemented: bottom summaries, concrete-defect prioritization,
+ambiguous defects retained, source-confirmed vs inferred labels, read-only
+association inventory even with -x, explicit source metadata fields (covers/artists
+excluded), per-item three-row progress for both URL and folder modes.
+
+## Verification
+
+- Final full compresser61 passed, MangaDL290 passed, termdash75 passed/1 skipped,
+  scripts-help55 passed. Dispatcher compresser/MangaDL targets PASS with retained history.
+- Focused audit/index/CLI/compression78 passed after provenance fixes.
+- Ruff/compile/help/version checks pass. Installed CLI read-only2-of4-image sample
+  produced valid JSON and left all fixture hashes unchanged. Installed versions:
+  compresser0.2.0, MangaDL1.30.0, termdash0.7.0.
+- Prior validation history retained; don't prune tracked records on dispatcher reruns.
+- No images/archive/state changed in production. Only saved report and bounded
+  contentV2 metadata were read. No merge is authorized.
+
+## Next
+
+S7/S8 remaining acceptance and coordination, then
+A3 stable manual source worksheet/A4 exact supported mapped repairs.
+User authorized continued implementation without another planning approval.

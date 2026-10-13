@@ -1,5 +1,19 @@
 # mangadl Immediate Project Handoff
 
+## Current compression continuation — 2026-10-13
+
+Branch `compression-module-mangadl-20261013-0151`. Reviewed plans pushed as
+`f1baeab`; compression S5 safety/fidelity implementation in progress. MangaDL
+source/shim/registry synchronized at1.30.0; original guarded repair behavior preserved.
+Compression defaults lossless and JSON suppresses progress stdout; explicit
+lossy/perceptual writes require -L. Production compression not accepted.
+Audit A1/A2 now implement bottom summaries, visible inferred gaps even for
+ambiguous sources, explicit source fields (not cover/artist links), association
+inventories with -x, and shared3-row URL/folder progress. A3/A4 manual worksheet
+and mapped repair are still planned. Full290 MangaDL tests pass; compresser61,
+termdash75/1 skipped, scripts-help55, dispatcher, Ruff/compile/help/version and
+installed read-only CLI acceptance pass. Terminal/production-write gates remain.
+
 ## Current branch planning handoff — 2026-10-12
 
 Branch: `codex/mangadl-generalized-audit-repair`.

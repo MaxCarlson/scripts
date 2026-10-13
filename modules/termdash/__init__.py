@@ -5,7 +5,9 @@ Lightweight exports for termdash to avoid circular imports.
 
 from .components import Stat, Line  # noqa: F401
 from .dashboard import TermDash  # noqa: F401
-from .progress import ProgressBar  # noqa: F401
+from .progress import ProgressBar, render_horizontal_bar  # noqa: F401
+from .table import Table, render_table  # noqa: F401
+from .live import LiveBlock  # noqa: F401
 from .interactive_list import InteractiveList  # noqa: F401
 from .loading import LoadingIndicator  # noqa: F401
 from .simpleboard import SimpleBoard  # noqa: F401
@@ -17,6 +19,10 @@ __all__ = [
     "Line",
     "TermDash",
     "ProgressBar",
+    "render_horizontal_bar",
+    "Table",
+    "render_table",
+    "LiveBlock",
     "InteractiveList",
     "LoadingIndicator",
     "SimpleBoard",

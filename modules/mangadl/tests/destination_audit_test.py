@@ -358,3 +358,27 @@ def test_audit_console_identifies_truncated_gallery_even_with_duplicate_input(
     report = json.loads((destination / "mangadl-urls32-audit-report.json").read_text(encoding="utf-8"))
     assert report["items"][0]["missing_pages"] == list(range(1, 159))
     assert report["duplicate_url_lines"] == 1
+
+
+def test_folder_summary_is_last_and_keeps_ambiguous_missing_pages(tmp_path: Path, capsys):
+    folder = tmp_path / "ambiguous title"
+    folder.mkdir()
+    Image.new("RGB", (1, 1)).save(folder / "003.jpg")
+    (folder / "info.json").write_text(json.dumps({"url": "https://example.test/a", "gallery_url": "https://example.test/b"}), encoding="utf-8")
+    assert main(["audit", "-d", str(tmp_path), "-q", "-x"]) == 0
+    output = capsys.readouterr().out
+    assert output.index("Missing pages: 1-2 (2)") < output.index("Audit summary") < output.index("Audit report:")
+    assert "2 inferred numbering gaps" in output
+    assert "1 missing; folder audit creates none" in output
+
+
+def test_read_only_association_inventory_counts_missing(tmp_path: Path, capsys, monkeypatch):
+    folder = _gallery(tmp_path, "nhentai-633374 - Test")
+    urls = tmp_path / "urls.txt"
+    urls.write_text("633374\n", encoding="utf-8")
+    monkeypatch.setattr(cli_core, "resolve_nhentai_metadata", lambda _id: type("Metadata", (), {"page_count": 1})())
+    assert main(["audit", "-i", str(urls), "-d", str(tmp_path), "-q", "-j", "-x"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["association_inventory"]["missing"] == 1
+    assert payload["index_backfill"] is None
+    assert not (folder / ".mangadl-source.json").exists()

@@ -1,0 +1,55 @@
+warning: in the working copy of 'C:\Users\mcarls\src\scripts\docs\test-results\mangadl\history\20261013-032709_mangadl_context.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'C:\Users\mcarls\src\scripts\docs\test-results\mangadl\LATEST_CONTEXT.md', LF will be replaced by CRLF the next time Git touches it
+diff --git "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\history\\20261013-032709_mangadl_context.md" "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\LATEST_CONTEXT.md"
+index 87b0a0d..a35f531 100644
+--- "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\history\\20261013-032709_mangadl_context.md"
++++ "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\LATEST_CONTEXT.md"
+@@ -1,6 +1,6 @@
+ # Validation Context: mangadl
+ 
+-Generated: 2026-10-13T03:27:35.1115516-07:00
++Generated: 2026-10-13T03:29:09.6502565-07:00
+ Branch: compression-module-mangadl-20261013-0151
+ Commit: f1baeab6db795682d4ebf3882413b20e18ac55aa
+ Validation report: docs\test-results\mangadl\LATEST.txt
+@@ -22,30 +22,6 @@ Validation report: docs\test-results\mangadl\LATEST.txt
+  M docs/test-results/mangadl/LATEST.txt
+  D docs/test-results/mangadl/LATEST_CONTEXT.md
+  D docs/test-results/mangadl/LATEST_PROGRESS.diff
+- D docs/test-results/mangadl/history/20260921-100951_mangadl.txt
+- D docs/test-results/mangadl/history/20260921-100951_mangadl_context.md
+- D docs/test-results/mangadl/history/20260921-100951_mangadl_progress.diff
+- D docs/test-results/mangadl/history/20260921-104414_mangadl.txt
+- D docs/test-results/mangadl/history/20260921-104414_mangadl_context.md
+- D docs/test-results/mangadl/history/20260921-104414_mangadl_progress.diff
+- D docs/test-results/mangadl/history/20260921-160434_mangadl.txt
+- D docs/test-results/mangadl/history/20260921-160434_mangadl_context.md
+- D docs/test-results/mangadl/history/20260921-160434_mangadl_progress.diff
+- D docs/test-results/mangadl/history/20260921-164807_mangadl.txt
+- D docs/test-results/mangadl/history/20260921-164807_mangadl_context.md
+- D docs/test-results/mangadl/history/20260921-164807_mangadl_progress.diff
+- D docs/test-results/mangadl/history/20261009-034126_mangadl.txt
+- D docs/test-results/mangadl/history/20261009-034126_mangadl_context.md
+- D docs/test-results/mangadl/history/20261009-034126_mangadl_progress.diff
+- D docs/test-results/mangadl/history/20261009-143915_mangadl.txt
+- D docs/test-results/mangadl/history/20261009-143915_mangadl_context.md
+- D docs/test-results/mangadl/history/20261009-143915_mangadl_progress.diff
+- D docs/test-results/mangadl/history/20261009-151205_mangadl.txt
+- D docs/test-results/mangadl/history/20261009-151205_mangadl_context.md
+- D docs/test-results/mangadl/history/20261009-151205_mangadl_progress.diff
+- D docs/test-results/mangadl/history/20261012-201801_mangadl.txt
+- D docs/test-results/mangadl/history/20261012-201801_mangadl_context.md
+- D docs/test-results/mangadl/history/20261012-201801_mangadl_progress.diff
+  M modules/mangadl/__init__.py
+  M modules/mangadl/docs/HANDOFF.md
+  M modules/mangadl/docs/README.md
+@@ -60,6 +36,9 @@ Validation report: docs\test-results\mangadl\LATEST.txt
+  M modules/termdash/pyproject.toml
+  M validation-targets.json
+ ?? docs/test-results/compresser/
++?? docs/test-results/mangadl/history/20261013-032709_mangadl.txt
++?? docs/test-results/mangadl/history/20261013-032709_mangadl_context.md
++?? docs/test-results/mangadl/history/20261013-032709_mangadl_progress.diff
+ ?? modules/compresser/
+ ?? modules/mangadl/mangadl/compress.py
+ ?? modules/mangadl/tests/compress_test.py

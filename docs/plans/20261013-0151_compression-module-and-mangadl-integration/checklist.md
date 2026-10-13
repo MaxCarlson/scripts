@@ -7,14 +7,16 @@ Use REVIEW.md and 05_reviewed-plan.md; these reopened gates are authoritative.
 
 - [x] Review all plan/source/test changes and saved folder report.
 - [x] Record truthful safety/fidelity/analysis/UI requirements and audit follow-up.
-- [ ] Publish docs-only revised plans before implementation.
-- [ ] S5 read-only analysis, owned durable transactions/recovery, collision/source
+- [x] Publish docs-only revised plans before implementation (`f1baeab`).
+- [x] S5 read-only analysis, owned durable transactions/recovery, collision/source
   drift/concurrency refusal, truthful codecs, quality rejection and failure tests.
-- [ ] S5 CLI input/exit/JSON contracts and enforced decode/resource bounds.
-- [ ] S6 real PNG/codec selection, measured auto, stratified savings, persistent
+- [x] S5 CLI input/exit/JSON contracts and enforced decode/resource bounds.
+- [x] S6 real PNG/codec selection, measured auto, stratified savings, persistent
   inventory/benchmark cache and bounded perceptual memory.
 - [ ] S7 termdash widths/Unicode, true renderer/gallery/overall/rolling ETA,
   stderr/plain/NO_COLOR, exact MangaDL selection and finally cleanup.
+  - [x] Shared LiveBlock renderer, exact flat-gallery selection, summaries/timers.
+  - [ ] Nested galleries and robust download-start coordination; real terminal QA.
 - [ ] S8 full affected suites, dispatcher, real terminal and isolated acceptance,
   truthful docs/API/version sync. No merge or production writes.
 

@@ -1,0 +1,21 @@
+diff --git "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\compresser\\history\\20261013-032704_compresser_context.md" "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\compresser\\LATEST_CONTEXT.md"
+index 1a3c6fc..c324113 100644
+--- "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\compresser\\history\\20261013-032704_compresser_context.md"
++++ "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\compresser\\LATEST_CONTEXT.md"
+@@ -1,6 +1,6 @@
+ # Validation Context: compresser
+ 
+-Generated: 2026-10-13T03:27:09.6316901-07:00
++Generated: 2026-10-13T03:28:44.1516523-07:00
+ Branch: compression-module-mangadl-20261013-0151
+ Commit: f1baeab6db795682d4ebf3882413b20e18ac55aa
+ Validation report: docs\test-results\compresser\LATEST.txt
+@@ -10,7 +10,7 @@ Validation report: docs\test-results\compresser\LATEST.txt
+ - RESULT: PASS - Compile compresser package and tests
+ - RESULT: PASS - Lint compresser package and tests
+ - RESULT: PASS - Compresser CLI help contract
+-- [32m[32m[1m45 passed[0m[32m in 3.14s[0m[0m
++- [32m[32m[1m45 passed[0m[32m in 3.29s[0m[0m
+ - RESULT: PASS - Compresser pytest suite
+ - TARGET RESULT: PASS
+ 

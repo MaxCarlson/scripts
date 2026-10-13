@@ -245,6 +245,7 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
         "Default: mangadl-<URL-file>-audit-report.json in the first destination root.",
     )
     audit.add_argument("-q", "--quiet", action="store_true", help="Suppress progress messages on stderr.")
+    audit.add_argument("-a", "--all-findings", action="store_true", help="Include defect-free unknown/ambiguous entries in console details.")
     audit.add_argument(
         "-x", "--no-index-backfill", action="store_true",
         help="Do not create missing per-folder source indexes; audit reports are still written.",
@@ -443,6 +444,47 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     favorites.add_argument("-f", "--apply", action="store_true", help="Write/replace the output URL file.")
     favorites.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
     favorites.add_argument("-q", "--quiet", action="store_true", help="Suppress fetch progress on stderr.")
+
+    compress = subparsers.add_parser(
+        "compress",
+        help="Analyze, compare, and optimize manga/manhwa images using perceptual compression.",
+        description=(
+            "Recursively analyze and compress downloaded manga collections. "
+            "Dry-run analysis is the default; use -w/--write to apply modifications."
+        ),
+    )
+    compress.add_argument("-d", "--destination", type=_path, required=True, help="Destination library root or gallery folder.")
+    compress.add_argument("-u", "--url", action="append", default=[], help="Select an exact source URL or exact folder name; repeatable. No substring matching.")
+    compress.add_argument("-R", "--recover", action="store_true", help="Preview compression recovery in one exact directory; -w applies.")
+    compress.add_argument("-C", "--confirm-recovery", help="Exact recovery preview token required with -R -w.")
+    compress.add_argument("-A", "--algorithm", choices=("auto", "pillow-jpeg", "pillow-webp", "pillow-png", "pillow-avif", "cli-jpegtran"), default="auto", help="Select a verified encoder (default: auto).")
+    compress.add_argument("-e", "--effort", type=int, choices=range(7), default=6, help="PNG/WebP encoding effort 0..6 (default: 6).")
+    compress.add_argument("-K", "--cache-file", type=_path, help="Optional persistent analysis cache outside the destination tree.")
+    compress.add_argument(
+        "-f",
+        "--format",
+        choices=("auto", "webp", "jpeg", "avif", "png", "keep"),
+        default="auto",
+        help="Target image format (default: auto).",
+    )
+    compress.add_argument(
+        "-m",
+        "--mode",
+        choices=("perceptual", "lossless", "lossy"),
+        default="lossless",
+        help="Compression strategy mode (default: lossless).",
+    )
+    compress.add_argument("-q", "--quality", type=int, default=80, help="Quality setting 1..100 for lossy mode (default: 80).")
+    compress.add_argument("-p", "--perceptual-target", type=float, default=0.990, help="Minimum SSIM quality threshold (default: 0.990).")
+    compress.add_argument("-c", "--compare", action="store_true", help="Benchmark comparison matrix across multiple strategies.")
+    compress.add_argument("-s", "--sample", type=int, help="Benchmark only a representative sample of N images per gallery.")
+    compress.add_argument("-w", "--write", action="store_true", help="Apply compression and write changes to disk (default: dry-run).")
+    compress.add_argument("-L", "--allow-lossy", action="store_true", help="Explicitly permit lossy compression in write mode.")
+    compress.add_argument("-F", "--allow-larger", action="store_true", help="Permit replacement if the compressed file is larger.")
+    compress.add_argument("-t", "--threads", type=int, default=4, help="Worker thread concurrency (default: 4).")
+    compress.add_argument("-N", "--no-ui", action="store_true", help="Disable the live terminal dashboard.")
+    compress.add_argument("-J", "--json", action="store_true", help="Emit machine-readable JSON results.")
+    compress.add_argument("-v", "--verbose", action="count", default=0, help="Increase diagnostic logging output.")
     return parser
 
 
@@ -1351,10 +1393,13 @@ def _format_audit_page_ranges(pages: list[int]) -> str:
     return ", ".join(ranges)
 
 
-def _format_audit_findings(items: list[dict[str, Any]]) -> str:
+def _format_audit_findings(items: list[dict[str, Any]], *, all_findings: bool = False) -> str:
     lines: list[str] = []
     for item in items:
         status = item.get("status", item.get("identity_status", "unknown"))
+        defects = any(item.get(key) for key in ("missing_pages", "corrupt_pages", "duplicate_pages", "extra_pages", "corrupt_files", "missing_image_count"))
+        if not all_findings and status in {"unknown", "ambiguous"} and not defects:
+            continue
         if status == "matched" and item["completeness"] == "complete" and item["image_integrity"] != "issues":
             continue
         state = status if status != "matched" else item["completeness"]
@@ -1373,8 +1418,7 @@ def _format_audit_findings(items: list[dict[str, Any]]) -> str:
             lines.append("    No matching gallery folder was found.")
             continue
         if status == "ambiguous":
-            lines.append("    Multiple or conflicting folder identities; completeness cannot be verified.")
-            continue
+            lines.append("    Identity: multiple or conflicting source candidates; source completeness is unverified.")
         expected = item.get("expected_images")
         lines.append(
             f"    Images: {item.get('valid_images', 0)}/{expected if expected is not None else 'unknown'} valid, "
@@ -1385,6 +1429,8 @@ def _format_audit_findings(items: list[dict[str, Any]]) -> str:
             ("duplicate_pages", "Duplicate page numbers"), ("extra_pages", "Extra pages"),
         ):
             if pages := item.get(key):
+                if key == "missing_pages" and (expected is None or item.get("missing_page_evidence") == "inferred numbering gaps"):
+                    lines.append("    Evidence: inferred numbering gaps, not a source-confirmed page list; trailing pages unknown.")
                 lines.append(field(label, f"{_format_audit_page_ranges(pages)} ({len(pages)})", color="red"))
         if files := item.get("corrupt_files"):
             lines.append(f"    Corrupt files: {', '.join(files)}")
@@ -1392,7 +1438,23 @@ def _format_audit_findings(items: list[dict[str, Any]]) -> str:
             lines.append(f"    Missing images by count: {item['missing_image_count']}; exact page identities unavailable")
         if error := item.get("metadata_error"):
             lines.append(f"    Metadata: {error}")
-    return "URLs/folders requiring attention\n" + "\n".join(lines) if lines else "No gallery issues found."
+    return "URLs/folders requiring attention\n" + "\n".join(lines) if lines else "No concrete gallery defects found; see summary for unresolved evidence."
+
+
+def _format_audit_totals(items: list[dict[str, Any]]) -> str:
+    confirmed = sum(len(item.get("missing_pages", [])) for item in items
+                    if item.get("missing_page_evidence") == "source-confirmed")
+    inferred = sum(len(item.get("missing_pages", [])) for item in items
+                   if item.get("missing_page_evidence") != "source-confirmed")
+    ambiguous = sum(item.get("status", item.get("identity_status")) == "ambiguous" for item in items)
+    unknown_identity = sum(item.get("status", item.get("identity_status")) == "unknown" for item in items)
+    return (
+        f"  Page findings: {confirmed} source-confirmed missing, {inferred} inferred numbering gaps, "
+        f"{sum(len(item.get('corrupt_files', [])) for item in items)} corrupt files, "
+        f"{sum(len(item.get('duplicate_pages', [])) for item in items)} duplicate page numbers, "
+        f"{sum(len(item.get('extra_pages', [])) for item in items)} extra pages\n"
+        f"  Identity evidence: {ambiguous} ambiguous, {unknown_identity} unknown (overlaps completeness counts)."
+    )
 
 
 def _expand_audit_input_files(patterns: list[str], directories: list[Path] | None = None) -> list[Path]:
@@ -1447,7 +1509,9 @@ def _audit_destinations_impl(args: argparse.Namespace, display: AuditProgress) -
             progress,
             metadata_resolver=resolve_nhentai_metadata,
             page_resolver=lambda url: resolve_expected_pages(url, progress=progress),
+            item_progress=display.update,
         )
+        display.close()
         payload = {
             "schema": AUDIT_REPORT_SCHEMA,
             "kind": "mangadl-audit-report",
@@ -1463,12 +1527,16 @@ def _audit_destinations_impl(args: argparse.Namespace, display: AuditProgress) -
             "items": items,
         }
         report_output = _write_audit_report(_audit_report_path(args, []), payload)
-        print(json.dumps(payload, indent=2, sort_keys=True) if args.json else (
-            f"Audited {payload['folders']} folder(s): {payload['complete']} complete, "
-            f"{payload['incomplete']} incomplete, {payload['unknown']} unknown."
-        ))
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
         if not args.json:
-            print(_format_audit_findings(items))
+            print(_format_audit_findings(items, all_findings=args.all_findings))
+            print(styled("\nAudit summary", "bright"))
+            print(f"  Audited {payload['folders']} folder(s): " + styled(f"{payload['complete']} complete", "green") + ", "
+                  + styled(f"{payload['incomplete']} incomplete", "red") + ", " + styled(f"{payload['unknown']} unknown", "yellow") + ".")
+            print(_format_audit_totals(items))
+            present = sum(item["association_present"] for item in items)
+            print(f"  Source associations: {present} present, {len(items) - present} missing; folder audit creates none.")
             print(f"Audit report: {report_output}")
         elif progress:
             progress(f"Wrote audit report: {report_output}")
@@ -1529,6 +1597,7 @@ def _audit_destinations_impl(args: argparse.Namespace, display: AuditProgress) -
         "duplicates": len(audit.duplicates),
         "duplicate_folder_groups": len(audit.duplicates),
         "index_backfill": audit.index_backfill,
+        "association_inventory": audit.association_inventory,
         "untracked_folders": [str(path) for path in audit.untracked_folders],
         "complete": sum(item["completeness"] == "complete" for item in item_results),
         "incomplete": sum(item["completeness"] == "incomplete" for item in item_results),
@@ -1548,6 +1617,12 @@ def _audit_destinations_impl(args: argparse.Namespace, display: AuditProgress) -
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
+        print(_format_audit_findings(item_results, all_findings=args.all_findings))
+        invalid = [row for row in rejected if row["reason"] != "duplicate"]
+        if invalid:
+            print("Rejected/invalid input lines")
+            for row in invalid:
+                print(f"  {row['source']}:{row['line']}: {row['value']} — {row['reason']}")
         print(styled("\nAudit summary", "bright"))
         print(f"  URL files: {len(files)}")
         print(
@@ -1566,14 +1641,11 @@ def _audit_destinations_impl(args: argparse.Namespace, display: AuditProgress) -
             + styled(f"{payload['corrupt']} with corrupt pages", "red")
         )
         print(styled(f"  URLs requiring attention: {payload['issue_urls']}", "red" if payload['issue_urls'] else "green"))
-        print()
-        print(_format_audit_findings(item_results))
-        invalid = [row for row in rejected if row["reason"] != "duplicate"]
-        if invalid:
-            print("Rejected/invalid input lines")
-            for row in invalid:
-                print(f"  {row['source']}:{row['line']}: {row['value']} — {row['reason']}")
-        print(field("Audit report", report_output, indent=0, color="cyan"))
+        print(_format_audit_totals(item_results))
+        inventory = audit.association_inventory or {}
+        print(f"  Source associations before audit: {inventory.get('already_indexed', 0)} present, "
+              f"{inventory.get('missing', 0)} safely creatable/missing, {inventory.get('conflict', 0)} conflicts, "
+              f"{inventory.get('ambiguous', 0)} ambiguous, {inventory.get('unresolved', 0)} unresolved.")
         if audit.index_backfill is not None:
             print(
                 f"Source indexes: {audit.index_backfill['created']} added, "
@@ -1583,6 +1655,9 @@ def _audit_destinations_impl(args: argparse.Namespace, display: AuditProgress) -
                 f"{audit.index_backfill['unresolved']} unresolved, "
                 f"{audit.index_backfill['conflict']} conflicts."
             )
+        else:
+            print("  Source association writes disabled (-x); no source indexes created.")
+        print(field("Audit report", report_output, indent=0, color="cyan"))
     if progress and args.missing_output:
         progress(f"Wrote missing URLs: {args.missing_output}")
     if progress and args.duplicates_output:
@@ -2413,6 +2488,12 @@ def _favorites(args: argparse.Namespace) -> int:
     return 0
 
 
+def _compress(args: argparse.Namespace) -> int:
+    from .compress import run_cli as run_compress_cli
+
+    return run_compress_cli(args)
+
+
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     shape = normalize_command_shape(raw_argv)
@@ -2442,6 +2523,7 @@ def main(argv: list[str] | None = None) -> int:
             "partials": _partials,
             "auth": _auth,
             "favorites": _favorites,
+            "compress": _compress,
         }[args.command](args)
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
         parser.error(str(exc))

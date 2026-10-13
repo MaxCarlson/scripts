@@ -35,17 +35,6 @@ class LibraryFolder:
         return payload
 
 
-def _strings(value: Any) -> Iterable[str]:
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for child in value.values():
-            yield from _strings(child)
-    elif isinstance(value, list):
-        for child in value:
-            yield from _strings(child)
-
-
 def _metadata_urls(folder: Path) -> set[str]:
     urls: set[str] = set()
     for file in folder.rglob("*.json"):
@@ -55,7 +44,16 @@ def _metadata_urls(folder: Path) -> set[str]:
             payload = json.loads(file.read_text(encoding="utf-8", errors="replace"))
         except (OSError, json.JSONDecodeError):
             continue
-        for value in _strings(payload):
+        # Source identity is not every link in a metadata blob. Covers, artists,
+        # advertisements and related galleries must not become gallery owners.
+        documents = [payload]
+        if isinstance(payload, dict):
+            documents += [payload[key] for key in ("metadata", "gallery", "data")
+                          if isinstance(payload.get(key), dict)]
+        values = [document[key] for document in documents if isinstance(document, dict)
+                  for key in ("url", "source_url", "gallery_url", "canonical_url", "webpage_url", "_source_url")
+                  if isinstance(document.get(key), str)]
+        for value in values:
             try:
                 urls.add(canonicalize_url(value))
             except ValueError:
@@ -224,6 +222,7 @@ def backfill_source_indexes(
     folders: list[LibraryFolder],
     *,
     progress=None,
+    write: bool = True,
 ) -> dict[str, int]:
     """Persist only unique, image-bearing URL/folder matches that lack a manifest."""
     summary = {
@@ -234,6 +233,7 @@ def backfill_source_indexes(
         "ambiguous": 0,
         "empty_folder": 0,
         "conflict": 0,
+        "missing": 0,
     }
     for raw_url in urls:
         url = canonicalize_url(raw_url)
@@ -251,6 +251,12 @@ def backfill_source_indexes(
             continue
         if not _has_images(row.path):
             summary["empty_folder"] += 1
+            continue
+        if (row.path / SOURCE_MANIFEST).exists() and read_source_manifest(row.path) is None:
+            summary["conflict"] += 1
+            continue
+        summary["missing"] += 1
+        if not write:
             continue
         try:
             write_source_manifest(
