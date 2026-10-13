@@ -116,11 +116,12 @@ def add_run_arguments(
         type=int,
         default=None,
         help=(
-            "Outer-worker ceiling (default: 8 with scratch/SSD, otherwise 4; hard maximum: 8)."
+            "Outer-worker ceiling (up to the CPU budget with SSD destination/scratch; otherwise maximum 4)."
             if mode == "normal"
-            else _help("Outer-worker safety ceiling (default: 4; hard maximum: 8).", expert)
+            else _help("Outer-worker safety ceiling (CPU budget on SSD; otherwise maximum 4).", expert)
         ),
     )
+    parser.add_argument("-0", "--file-range", help=argparse.SUPPRESS)
     parser.add_argument(
         "-U",
         "--worker-start-delay",

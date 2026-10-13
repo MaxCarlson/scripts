@@ -29,10 +29,10 @@ Implement the package, tests, docs, and validation target together. The reusable
 - Successful downloads persist source URL, expected path, and requested collection names; the explicit reconcile command can apply them after scanning.
 - Existing URL-file syntax, legacy `-c/--config`, and unrelated download behavior remain intact.
 - Focused package and MangaDL suites, CLI help checks, compile, and Ruff pass; root dispatcher targets capture authoritative reports.
-- Complete diff is reviewed, committed, and pushed to the feature branch. Do not merge without user approval.
+- Complete diff is reviewed, committed, and pushed to the feature branch. User approved merging on 2026-10-12.
 
 ## Approval and branch
 
 - User explicitly authorized implementation, tests, docs, feature branch, commit, push, and review.
-- User did not authorize merge.
+- User explicitly authorized merge on 2026-10-12.
 - Branch: `codex/kavita-module-mangadl-collections-20261009-0349`.

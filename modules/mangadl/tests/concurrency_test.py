@@ -29,19 +29,20 @@ def test_concurrency_plan_preserves_known_working_4_by_5_setting() -> None:
     assert not plan.adjusted
 
 
-def test_fast_storage_defaults_to_hard_outer_worker_limit() -> None:
-    plan = plan_manga18fx_concurrency(8, 2, logical_cpus=24, fast_storage=True)
+def test_fast_storage_defaults_to_logical_cpu_budget() -> None:
+    plan = plan_manga18fx_concurrency(23, 2, logical_cpus=24, fast_storage=True)
 
-    assert plan.maximum_workers == 8
-    assert plan.effective_workers == 8
+    assert plan.maximum_workers == 23
+    assert plan.effective_workers == 23
 
 
-def test_explicit_worker_override_still_obeys_cpu_budget() -> None:
+def test_fast_storage_explicit_worker_override_still_obeys_cpu_budget() -> None:
     plan = plan_manga18fx_concurrency(
         6,
         4,
         logical_cpus=24,
         maximum_workers=8,
+        fast_storage=True,
     )
 
     assert plan.maximum_workers == 8
@@ -51,17 +52,25 @@ def test_explicit_worker_override_still_obeys_cpu_budget() -> None:
     assert plan.effective_total < plan.logical_cpus
 
 
-def test_concurrency_plan_caps_excess_outer_workers_at_hard_override() -> None:
+def test_concurrency_plan_caps_excess_outer_workers_at_cpu_budget() -> None:
     plan = plan_manga18fx_concurrency(
         30,
         8,
         logical_cpus=24,
-        maximum_workers=8,
+        fast_storage=True,
     )
 
-    assert plan.effective_workers == 8
-    assert plan.effective_image_workers == 2
-    assert plan.effective_total == 16
+    assert plan.maximum_workers == 23
+    assert plan.effective_workers == 23
+    assert plan.effective_image_workers == 1
+    assert plan.effective_total == 23
+
+
+def test_slow_storage_rejects_worker_policy_above_four() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="between 1 and 4"):
+        plan_manga18fx_concurrency(5, 1, logical_cpus=24, maximum_workers=5)
 
 
 def _manager_for_runtime_test(*, maximum_workers: int) -> DownloadManager:

@@ -5,9 +5,6 @@ from dataclasses import dataclass
 
 MAX_OUTER_WORKERS_ENV = "MANGADL_MAX_OUTER_WORKERS"
 DEFAULT_MAX_OUTER_WORKERS = 4
-HARD_MAX_OUTER_WORKERS = 8
-# Backward-compatible exported name used by the manager.
-MAX_OUTER_WORKERS = HARD_MAX_OUTER_WORKERS
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,19 +33,32 @@ class Manga18FXConcurrencyPlan:
         )
 
 
-def configured_maximum_workers(value: int | None = None, *, fast_storage: bool = False) -> int:
-    """Resolve the safe outer-worker ceiling, allowing an explicit override to eight."""
+def logical_cpu_budget(logical_cpus: int | None = None) -> int:
+    detected = logical_cpus if logical_cpus is not None else os.cpu_count()
+    return max(1, int(detected or 1) - 1)
+
+
+def maximum_workers_allowed(*, fast_storage: bool, logical_cpus: int | None = None) -> int:
+    """Return the policy cap: four on slow storage, CPU-budget-bound otherwise."""
+    return logical_cpu_budget(logical_cpus) if fast_storage else DEFAULT_MAX_OUTER_WORKERS
+
+
+def configured_maximum_workers(
+    value: int | None = None,
+    *,
+    fast_storage: bool = False,
+    logical_cpus: int | None = None,
+) -> int:
+    """Resolve the policy cap without an artificial fast-storage worker limit."""
+    maximum = maximum_workers_allowed(fast_storage=fast_storage, logical_cpus=logical_cpus)
     if value is None:
-        default = HARD_MAX_OUTER_WORKERS if fast_storage else DEFAULT_MAX_OUTER_WORKERS
-        raw = os.environ.get(MAX_OUTER_WORKERS_ENV, str(default))
+        raw = os.environ.get(MAX_OUTER_WORKERS_ENV, str(maximum))
         try:
             value = int(raw)
         except ValueError:
             value = DEFAULT_MAX_OUTER_WORKERS
-    if not 1 <= value <= HARD_MAX_OUTER_WORKERS:
-        raise ValueError(
-            f"maximum outer workers must be between 1 and {HARD_MAX_OUTER_WORKERS}"
-        )
+    if not 1 <= value <= maximum:
+        raise ValueError(f"maximum outer workers must be between 1 and {maximum} for the detected storage policy")
     return value
 
 
@@ -66,10 +76,10 @@ def plan_manga18fx_concurrency(
     if image_workers < 1:
         raise ValueError("image_workers must be at least 1")
 
-    maximum = configured_maximum_workers(maximum_workers, fast_storage=fast_storage)
     detected = logical_cpus if logical_cpus is not None else os.cpu_count()
     logical = max(1, int(detected or 1))
-    budget = max(1, logical - 1)
+    budget = logical_cpu_budget(logical)
+    maximum = configured_maximum_workers(maximum_workers, fast_storage=fast_storage, logical_cpus=logical)
 
     effective_workers = min(workers, maximum, budget)
     effective_image_workers = min(image_workers, max(1, budget // effective_workers))

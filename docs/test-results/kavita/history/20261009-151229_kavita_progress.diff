@@ -1,0 +1,38 @@
+diff --git "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\kavita\\history\\20261009-143940_kavita_context.md" "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\kavita\\LATEST_CONTEXT.md"
+index 78dcc99..eefd515 100644
+--- "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\kavita\\history\\20261009-143940_kavita_context.md"
++++ "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\kavita\\LATEST_CONTEXT.md"
+@@ -1,6 +1,6 @@
+ # Validation Context: kavita
+ 
+-Generated: 2026-10-09T14:39:42.8426064-07:00
++Generated: 2026-10-09T15:12:31.8299096-07:00
+ Branch: codex/kavita-module-mangadl-collections-20261009-0349
+ Commit: b38bd37bf4b02770635869780c8d0bcae4dd719e
+ Validation report: docs\test-results\kavita\LATEST.txt
+@@ -21,15 +21,6 @@ Validation report: docs\test-results\kavita\LATEST.txt
+  M docs/test-results/mangadl/LATEST.txt
+  M docs/test-results/mangadl/LATEST_CONTEXT.md
+  M docs/test-results/mangadl/LATEST_PROGRESS.diff
+- D docs/test-results/mangadl/history/20260921-100951_mangadl.txt
+- D docs/test-results/mangadl/history/20260921-100951_mangadl_context.md
+- D docs/test-results/mangadl/history/20260921-100951_mangadl_progress.diff
+- D docs/test-results/mangadl/history/20260921-104414_mangadl.txt
+- D docs/test-results/mangadl/history/20260921-104414_mangadl_context.md
+- D docs/test-results/mangadl/history/20260921-104414_mangadl_progress.diff
+- D docs/test-results/mangadl/history/20260921-160434_mangadl.txt
+- D docs/test-results/mangadl/history/20260921-160434_mangadl_context.md
+- D docs/test-results/mangadl/history/20260921-160434_mangadl_progress.diff
+  M modules/mangadl/README.md
+  M modules/mangadl/__init__.py
+  M modules/mangadl/docs/HANDOFF.md
+@@ -63,6 +54,9 @@ Validation report: docs\test-results\kavita\LATEST.txt
+ ?? docs/test-results/mangadl/history/20261009-143722_mangadl.txt
+ ?? docs/test-results/mangadl/history/20261009-143722_mangadl_context.md
+ ?? docs/test-results/mangadl/history/20261009-143722_mangadl_progress.diff
++?? docs/test-results/mangadl/history/20261009-143915_mangadl.txt
++?? docs/test-results/mangadl/history/20261009-143915_mangadl_context.md
++?? docs/test-results/mangadl/history/20261009-143915_mangadl_progress.diff
+ ?? modules/mangadl/docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/
+ ?? modules/mangadl/mangadl/library_index.py
+ ?? modules/mangadl/mangadl/page_adapters.py

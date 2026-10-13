@@ -1,0 +1,98 @@
+warning: in the working copy of 'C:\Users\mcarls\src\scripts\docs\test-results\mangadl\history\20261009-143417_mangadl_context.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'C:\Users\mcarls\src\scripts\docs\test-results\mangadl\LATEST_CONTEXT.md', LF will be replaced by CRLF the next time Git touches it
+diff --git "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\history\\20261009-143417_mangadl_context.md" "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\LATEST_CONTEXT.md"
+index 90f271d..701ce0a 100644
+--- "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\history\\20261009-143417_mangadl_context.md"
++++ "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\LATEST_CONTEXT.md"
+@@ -1,6 +1,6 @@
+ # Validation Context: mangadl
+ 
+-Generated: 2026-10-09T14:34:41.7100669-07:00
++Generated: 2026-10-09T14:37:47.0484545-07:00
+ Branch: codex/kavita-module-mangadl-collections-20261009-0349
+ Commit: b38bd37bf4b02770635869780c8d0bcae4dd719e
+ Validation report: docs\test-results\mangadl\LATEST.txt
+@@ -16,12 +16,18 @@ Validation report: docs\test-results\mangadl\LATEST.txt
+ ## Working Tree
+ 
+ ```text
++ M docs/test-results/kavita/LATEST.txt
++ M docs/test-results/kavita/LATEST_CONTEXT.md
++ M docs/test-results/kavita/LATEST_PROGRESS.diff
+  M docs/test-results/mangadl/LATEST.txt
+  D docs/test-results/mangadl/LATEST_CONTEXT.md
+  D docs/test-results/mangadl/LATEST_PROGRESS.diff
+  D docs/test-results/mangadl/history/20260921-100951_mangadl.txt
+  D docs/test-results/mangadl/history/20260921-100951_mangadl_context.md
+  D docs/test-results/mangadl/history/20260921-100951_mangadl_progress.diff
++ D docs/test-results/mangadl/history/20260921-104414_mangadl.txt
++ D docs/test-results/mangadl/history/20260921-104414_mangadl_context.md
++ D docs/test-results/mangadl/history/20260921-104414_mangadl_progress.diff
+  M modules/mangadl/README.md
+  M modules/mangadl/__init__.py
+  M modules/mangadl/docs/HANDOFF.md
+@@ -45,9 +51,13 @@ Validation report: docs\test-results\mangadl\LATEST.txt
+  M modules/mangadl/tests/partial_reconcile_test.py
+  M modules/scripts_help/scripts_help/registry/registry.py
+  M validation-targets.json
++?? docs/test-results/kavita/history/
+ ?? docs/test-results/mangadl/history/20260921-164807_mangadl.txt
+ ?? docs/test-results/mangadl/history/20260921-164807_mangadl_context.md
+ ?? docs/test-results/mangadl/history/20260921-164807_mangadl_progress.diff
++?? docs/test-results/mangadl/history/20261009-143417_mangadl.txt
++?? docs/test-results/mangadl/history/20261009-143417_mangadl_context.md
++?? docs/test-results/mangadl/history/20261009-143417_mangadl_progress.diff
+ ?? modules/mangadl/docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/
+ ?? modules/mangadl/mangadl/library_index.py
+ ?? modules/mangadl/mangadl/page_adapters.py
+@@ -92,18 +102,18 @@ repair nor a Kavita API write has been performed.
+ 
+ ## Verification
+ 
+-- Focused repair/CLI/worker tests passed (54) before adding the exact repair
+-  confirmation-token test; rerun both focused and full tests after final edits.
+-- Full MangaDL suite passed (246) before the final token test; final rerun
+-  pending.
+-- Ruff, compile, nested Kavita package tests, repository dispatcher, and
+-  documentation diff checks remain pending.
++- Focused repair/CLI/worker tests: 54 passed before the final token-test addition.
++- Final MangaDL suite: 247 passed.
++- Kavita suite: 16 passed.
++- Repository dispatcher `pwsh -NoProfile -Command "& .\\Invoke-Tests.ps1 -Target @('mangadl','kavita') -SkipBootstrap"`: both targets passed compile, Ruff, CLI help (MangaDL), and pytest.
++- Direct Ruff checks passed for MangaDL and Kavita. `git diff --check` found no source whitespace errors; it reports intentional blank lines/trailing whitespace only in dispatcher-generated `LATEST_CONTEXT.md` and `LATEST_PROGRESS.diff` reports.
++- The initial Kavita test invocation had 13 passes and 3 fixture setup errors because the module temp parent did not exist; after creating that directory, all 16 passed.
+ - Pytest requires approved filesystem access for temporary-directory cleanup
+   in this Windows environment; sandbox-only cleanup has returned Access Denied.
+ 
+ ## Remaining gates
+ 
+-- Complete final local validation and update generated validation reports.
++- Local implementation validation and generated reports are complete.
+ - Bounded user-approved live checks for folder audit/repair preview, TUI
+   responsiveness, and Kavita API compatibility.
+ - Review branch-only commits and main-only validation evidence. Do not merge
+@@ -160,7 +170,7 @@ repair nor a Kavita API write has been performed.
+ 
+ ## Stage 7 — validation and merge readiness
+ 
+-- [ ] Run full MangaDL/Kavita validation and update tracked reports.
++- [x] Run full MangaDL/Kavita validation and update tracked reports.
+ - [ ] Complete bounded user-approved live checks for TUI, audit, repair preview, and Kavita.
+ - [ ] Review separate feature branch commits and reconcile main validation
+   evidence.
+@@ -169,10 +179,11 @@ repair nor a Kavita API write has been performed.
+ ## Current implementation verification (2026-10-09)
+ 
+ - Focused repair/CLI/worker tests: 54 passed before the final preview-token test.
+-- Full MangaDL suite: 246 passed before the final preview-token test.
+-- Final focused and full validation will be recorded in STATUS after the new
+-  token test and docs checks run.
+-- Full Kavita package and repository dispatcher checks are still pending.
++- MangaDL full suite: 247 passed after all implementation changes.
++- Kavita full suite: 16 passed.
++- Repository dispatcher `pwsh -NoProfile -Command "& .\\Invoke-Tests.ps1 -Target @('mangadl','kavita') -SkipBootstrap"`: both targets passed compile, Ruff, CLI help (MangaDL), and pytest.
++- Repository dispatcher refreshed the tracked `docs/test-results/{mangadl,kavita}/LATEST*` reports. The generated progress-diff artifacts contain intentional blank-line whitespace, so `git diff --check` reports whitespace only in those reports.
++- Live acceptance and final main/feature branch reconciliation remain outstanding.
+ 
+ ### `docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/00_implementation-plan.md`
+ 

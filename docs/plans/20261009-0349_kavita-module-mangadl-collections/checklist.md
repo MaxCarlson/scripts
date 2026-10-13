@@ -6,4 +6,4 @@
 - [x] MangaDL `--collections` run integration; preserve current `-c/--config` and URL-file syntax.
 - [x] Focused mocked tests, docs, CLI registry and validation target updates.
 - [x] Focused tests, CLI/help checks, compile, Ruff, and repository dispatcher reports.
-- [x] Full diff reviewed; feature branch committed and pushed without merging.
+- [x] Full diff reviewed; branch commits pushed, and the user explicitly approved merging into main on 2026-10-12.

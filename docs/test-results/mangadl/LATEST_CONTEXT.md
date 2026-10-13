@@ -1,8 +1,8 @@
 # Validation Context: mangadl
 
-Generated: 2026-09-21T16:48:18.0454589-07:00
-Branch: agent/mangadl-gallery-auth
-Commit: 8f0d2d83abfc22c36d91d25ce2f7f96ab6c22adb
+Generated: 2026-10-12T20:22:27.6006577-07:00
+Branch: codex/kavita-module-mangadl-collections-20261009-0349
+Commit: b38bd37bf4b02770635869780c8d0bcae4dd719e
 Validation report: docs\test-results\mangadl\LATEST.txt
 
 ## Validation Highlights
@@ -16,26 +16,438 @@ Validation report: docs\test-results\mangadl\LATEST.txt
 ## Working Tree
 
 ```text
- M docs/test-results/mangadl/LATEST.txt
- D docs/test-results/mangadl/LATEST_CONTEXT.md
- D docs/test-results/mangadl/LATEST_PROGRESS.diff
- D docs/test-results/mangadl/history/20260921-100720_mangadl.txt
- D docs/test-results/mangadl/history/20260921-100720_mangadl_context.md
- D docs/test-results/mangadl/history/20260921-100720_mangadl_progress.diff
- M modules/mangadl/docs/HANDOFF.md
- M modules/mangadl/docs/plans/20260825-0540_gallery-dl-managed-auth/HANDOFF.md
- M modules/mangadl/docs/plans/20260825-0540_gallery-dl-managed-auth/STATUS.md
- M modules/mangadl/docs/plans/20260825-0540_gallery-dl-managed-auth/checklist.md
- M modules/mangadl/docs/plans/20260921-0943_partial-safety-and-merge-readiness/HANDOFF.md
- M modules/mangadl/docs/plans/20260921-0943_partial-safety-and-merge-readiness/STATUS.md
- M modules/mangadl/docs/plans/20260921-0943_partial-safety-and-merge-readiness/checklist.md
- M modules/mangadl/docs/plans/HANDOFF.md
-?? docs/test-results/mangadl/history/20260921-160434_mangadl.txt
-?? docs/test-results/mangadl/history/20260921-160434_mangadl_context.md
-?? docs/test-results/mangadl/history/20260921-160434_mangadl_progress.diff
+M  docs/plans/20261009-0349_kavita-module-mangadl-collections/00_implementation-plan.md
+M  docs/plans/20261009-0349_kavita-module-mangadl-collections/HANDOFF.md
+M  docs/plans/20261009-0349_kavita-module-mangadl-collections/STATUS.md
+M  docs/plans/20261009-0349_kavita-module-mangadl-collections/checklist.md
+M  docs/test-results/kavita/LATEST.txt
+M  docs/test-results/kavita/LATEST_CONTEXT.md
+M  docs/test-results/kavita/LATEST_PROGRESS.diff
+A  docs/test-results/kavita/history/20261009-040457_kavita.txt
+A  docs/test-results/kavita/history/20261009-040457_kavita_context.md
+A  docs/test-results/kavita/history/20261009-040457_kavita_progress.diff
+A  docs/test-results/kavita/history/20261009-143442_kavita.txt
+A  docs/test-results/kavita/history/20261009-143442_kavita_context.md
+A  docs/test-results/kavita/history/20261009-143442_kavita_progress.diff
+A  docs/test-results/kavita/history/20261009-143747_kavita.txt
+A  docs/test-results/kavita/history/20261009-143747_kavita_context.md
+A  docs/test-results/kavita/history/20261009-143747_kavita_progress.diff
+A  docs/test-results/kavita/history/20261009-143940_kavita.txt
+A  docs/test-results/kavita/history/20261009-143940_kavita_context.md
+A  docs/test-results/kavita/history/20261009-143940_kavita_progress.diff
+A  docs/test-results/kavita/history/20261009-151229_kavita.txt
+A  docs/test-results/kavita/history/20261009-151229_kavita_context.md
+A  docs/test-results/kavita/history/20261009-151229_kavita_progress.diff
+A  docs/test-results/kavita/history/20261012-201822_kavita.txt
+A  docs/test-results/kavita/history/20261012-201822_kavita_context.md
+A  docs/test-results/kavita/history/20261012-201822_kavita_progress.diff
+MM docs/test-results/mangadl/LATEST.txt
+MD docs/test-results/mangadl/LATEST_CONTEXT.md
+MD docs/test-results/mangadl/LATEST_PROGRESS.diff
+A  docs/test-results/mangadl/history/20260921-164807_mangadl.txt
+A  docs/test-results/mangadl/history/20260921-164807_mangadl_context.md
+A  docs/test-results/mangadl/history/20260921-164807_mangadl_progress.diff
+A  docs/test-results/mangadl/history/20261009-143417_mangadl.txt
+A  docs/test-results/mangadl/history/20261009-143417_mangadl_context.md
+A  docs/test-results/mangadl/history/20261009-143417_mangadl_progress.diff
+A  docs/test-results/mangadl/history/20261009-143722_mangadl.txt
+A  docs/test-results/mangadl/history/20261009-143722_mangadl_context.md
+A  docs/test-results/mangadl/history/20261009-143722_mangadl_progress.diff
+A  docs/test-results/mangadl/history/20261009-143915_mangadl.txt
+A  docs/test-results/mangadl/history/20261009-143915_mangadl_context.md
+A  docs/test-results/mangadl/history/20261009-143915_mangadl_progress.diff
+A  docs/test-results/mangadl/history/20261009-151205_mangadl.txt
+A  docs/test-results/mangadl/history/20261009-151205_mangadl_context.md
+A  docs/test-results/mangadl/history/20261009-151205_mangadl_progress.diff
+A  docs/test-results/mangadl/history/20261012-201801_mangadl.txt
+A  docs/test-results/mangadl/history/20261012-201801_mangadl_context.md
+A  docs/test-results/mangadl/history/20261012-201801_mangadl_progress.diff
+M  modules/mangadl/README.md
+M  modules/mangadl/__init__.py
+M  modules/mangadl/docs/HANDOFF.md
+M  modules/mangadl/docs/README.md
+M  modules/mangadl/docs/plans/20261009-0325_graceful-quit-and-worker-scaling/00_implementation-plan.md
+M  modules/mangadl/docs/plans/20261009-0325_graceful-quit-and-worker-scaling/checklist.md
+A  modules/mangadl/docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/00_implementation-plan.md
+A  modules/mangadl/docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/01_worker-budget__planned.md
+A  modules/mangadl/docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/HANDOFF.md
+A  modules/mangadl/docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/STATUS.md
+A  modules/mangadl/docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/checklist.md
+M  modules/mangadl/docs/plans/HANDOFF.md
+M  modules/mangadl/mangadl/__init__.py
+M  modules/mangadl/mangadl/cli_core.py
+M  modules/mangadl/mangadl/cli_structure.py
+M  modules/mangadl/mangadl/concurrency.py
+M  modules/mangadl/mangadl/destination_audit.py
+A  modules/mangadl/mangadl/library_index.py
+M  modules/mangadl/mangadl/manager.py
+A  modules/mangadl/mangadl/page_adapters.py
+M  modules/mangadl/mangadl/partial_reconcile.py
+A  modules/mangadl/mangadl/repair_pages.py
+M  modules/mangadl/mangadl/worker_core.py
+M  modules/mangadl/pyproject.toml
+M  modules/mangadl/tests/cli_test.py
+M  modules/mangadl/tests/concurrency_test.py
+M  modules/mangadl/tests/destination_audit_test.py
+M  modules/mangadl/tests/kavita_assignment_test.py
+A  modules/mangadl/tests/library_index_test.py
+A  modules/mangadl/tests/page_adapters_test.py
+M  modules/mangadl/tests/partial_reconcile_test.py
+A  modules/mangadl/tests/repair_pages_test.py
+M  modules/scripts_help/scripts_help/registry/registry.py
+M  validation-targets.json
+?? docs/test-results/mangadl/history/20261012-202043_mangadl.txt
+?? docs/test-results/mangadl/history/20261012-202043_mangadl_context.md
+?? docs/test-results/mangadl/history/20261012-202043_mangadl_progress.diff
 ```
 
 ## Project Status Sources
+
+### `docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/STATUS.md`
+
+# Library identity and batch operations status
+
+Plan created 2026-10-09 on
+`codex/kavita-module-mangadl-collections-20261009-0349`. The user waived
+per-stage pauses and asked for continuous implementation through completion.
+
+Implemented in the current working tree:
+
+- SSD destination or scratch removes the fixed worker cap while retaining the
+  aggregate logical-CPU budget; neither SSD means a four-worker cap.
+- Shared library identity index, atomic `.mangadl-source.json` manifests for
+  successful promotions, conservative legacy matching, and resolver reuse in
+  URL-file audit and Kavita assignment.
+- URL-file audit and historical `kavita assign-file` now backfill missing
+  source manifests for unique, non-empty matches. Exact metadata and unique
+  deterministic backend identity are accepted; ambiguous, conflicting,
+  unresolved, and empty folders are skipped. Both workflows report counts and
+  accept `--no-index-backfill` for read-only operation.
+- URL-file and folder-only audits; image decode/size checks; gallery-dl
+  expected-page enumeration where a complete stable page set can be proven.
+- Kavita collection assignment for historical URL files, exact series name,
+  and bounded regex selection. Pattern apply is tied to a token for the exact
+  previewed match set.
+- Exact-page repair for uniquely matched individual nhentai galleries only.
+  It previews page/archive identities, requires an exact preview token plus
+  `--apply`, backs up the archive, quarantines corrupt files, runs one normal
+  MangaDL worker with exact page ranges, then re-audits and reconciles only
+  affected archive keys. Custom gallery-dl configuration/archive layouts,
+  active runs, incomplete identity maps, and unsupported backends fail closed.
+
+Paradise (`nhentai-633374`) remains unmodified. Its previous audit finding was
+192 expected pages, pages 1–158 missing, and page 175 corrupt. Neither a live
+repair nor a Kavita API write has been performed.
+
+## Verification
+
+- Focused URL-index/audit/Kavita backfill suite: 54 passed.
+- Final MangaDL suite: 254 tests passed.
+- Kavita suite: 16 passed.
+- Repository dispatcher `& .\\Invoke-Tests.ps1 -Target @('mangadl','kavita') -SkipBootstrap -MaxHistoryAgeDays 3650 -MaxHistoryPerTarget 10`: both targets passed compile, Ruff, CLI help (MangaDL), and pytest (Kavita: 16 tests).
+- Direct Ruff checks passed for MangaDL and Kavita. `git diff --check` found no source whitespace errors; it reports intentional blank lines/trailing whitespace only in dispatcher-generated `LATEST_CONTEXT.md` and `LATEST_PROGRESS.diff` reports.
+- The initial Kavita test invocation had 13 passes and 3 fixture setup errors because the module temp parent did not exist; after creating that directory, all 16 passed.
+- Pytest requires approved filesystem access for temporary-directory cleanup
+  in this Windows environment; sandbox-only cleanup has returned Access Denied.
+
+## Merge and acceptance state
+
+- Local implementation validation and generated reports are complete.
+- The user explicitly approved committing, pushing, and merging this branch on
+  2026-10-12. Branch-only commits and main-only validation evidence are under
+  review before the merge.
+- Live TUI, audit/repair preview, and Kavita API compatibility remain
+  unverified. No live repair, archive mutation, or Kavita collection write has
+  been performed.
+
+### `docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/checklist.md`
+
+# Library identity and batch operations checklist
+
+## Stage 1 — storage-aware worker budget
+
+- [x] Detect destination and scratch media independently.
+- [x] Remove fixed eight-worker ceiling when either path is SSD; preserve CPU
+  budget; cap to four otherwise.
+- [x] Update CLI/UI status and docs for policy.
+- [x] Add media-combination and runtime-worker tests.
+- [x] Run focused/full MangaDL tests and Ruff. Full suite: 235 passed.
+- [x] Record exact results and stop for user review.
+
+## Stage 2 — shared URL-to-folder index and source manifest
+
+- [x] Extract audit URL/folder matching into reusable library API.
+- [x] Add atomic per-folder source manifest for new successful downloads.
+- [x] Reuse resolved folder record in Kavita assignment queueing.
+- [x] Preserve conservative legacy fallback and ambiguity handling.
+- [x] Backfill missing source manifests during URL-file audit and historical `kavita assign-file` for unique, populated matches; report counts and provide a read-only opt-out.
+
+## Stage 3 — URL-file and folder-only audit
+
+- [x] Audit every manga folder under a selected root without requiring URL file.
+- [x] Continue URL-file audit against explicit destination root.
+- [x] Backfill only proven URL/folder identities by default; expose `--no-index-backfill` for strictly read-only URL-file audit.
+- [x] Add conservative gallery-dl expected page identity enumeration and audit comparisons.
+- [x] Report missing/untracked/duplicate folders and page integrity findings; unknown totals remain explicitly unknown.
+
+## Stage 4 — historical URL-file to Kavita collections
+
+- [x] Resolve each URL through shared index and exact Kavita path matching.
+- [x] Preview one/multiple collection assignments; apply explicitly.
+- [x] Preserve unresolved/ambiguous records as pending, not guessed.
+
+## Stage 5 — Kavita exact-name and pattern selection
+
+- [x] Select already scanned series by exact name.
+- [x] Add bounded pattern matching with stable preview of every captured item.
+- [x] Require a match-set token after displaying the exact match set.
+- [x] Test duplicate/unsafe pattern handling and API write boundaries.
+
+## Stage 6 — safe missing/corrupt image repair
+
+- [x] Plan exact nhentai page repair only when identity, source, and archive keys are
+  provable.
+- [x] Add dry-run, exact-preview confirmation token, reversible quarantine, archive backup/reconciliation, and
+  normal worker/partial/scratch execution.
+- [x] Re-audit after repair and test archive reconciliation, incomplete-map refusal, and preview-token binding. Live failure/recovery acceptance remains outstanding.
+
+## Stage 7 — validation and merge readiness
+
+- [x] Run full MangaDL/Kavita validation and update tracked reports.
+- [ ] Complete bounded user-approved live checks for TUI, audit, repair preview, and Kavita.
+- [ ] Review separate feature branch commits and reconcile main validation
+  evidence.
+- [x] Obtain explicit merge approval before merging to main (user authorized on 2026-10-12).
+
+## Current implementation verification (2026-10-09)
+
+- Focused repair/CLI/worker tests: 54 passed before the final preview-token test.
+- Focused URL-index/audit/Kavita backfill suite: `python -m pytest tests/library_index_test.py tests/destination_audit_test.py tests/cli_test.py tests/kavita_assignment_test.py -q --tb=short -o addopts='' -p no:cacheprovider --basetemp <fresh system-temp>` — 54 passed.
+- MangaDL full suite: 254 collected and passed after URL-index backfill changes.
+- Kavita full suite: 16 passed.
+- Repository dispatcher `& .\\Invoke-Tests.ps1 -Target @('mangadl','kavita') -SkipBootstrap -MaxHistoryAgeDays 3650 -MaxHistoryPerTarget 10`: both targets passed compile, Ruff, CLI help (MangaDL), and pytest (Kavita: 16 tests).
+- Repository dispatcher refreshed the tracked `docs/test-results/{mangadl,kavita}/LATEST*` reports. The generated progress-diff artifacts contain intentional blank-line whitespace, so `git diff --check` reports whitespace only in those reports.
+- Live acceptance remains outstanding; branch reconciliation and merge are proceeding with user approval.
+
+### `docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/00_implementation-plan.md`
+
+# MangaDL Library Identity, Audit, Repair, and Kavita Operations
+
+## Goal
+
+Give MangaDL one trusted way to connect source URLs, downloaded manga folders,
+image/page identities, and Kavita series. Reuse that identity layer for
+read-only library audits, safe repair planning, post-download collection
+assignment, batch assignment from historical URL files, direct series
+selection by name, and preview-first pattern selection.
+
+The current branch already has a reusable Kavita API package, download-time
+collection assignment, a partial URL-file audit, and a prior audit/repair
+design. This plan closes the missing batch workflows and consolidates URL to
+folder matching instead of creating another matcher for each command.
+
+## Current baseline (2026-10-09)
+
+- Current branch: `codex/kavita-module-mangadl-collections-20261009-0349`.
+- Branch is pushed and intentionally not merged. User wants it merged after the
+  remaining feature work is implemented and validated.
+- Commits on this branch include Kavita integration (`0ed97c5`), read-only
+  image audit (`b58b308`), and local scheduler-history ignore rules
+  (`b38bd37`). `main` contains the graceful-shutdown/storage commit but does
+  not yet contain the branch's Kavita or audit features.
+- `modules/kavita` already offers authenticated series/collection APIs,
+  exact local-to-Kavita path matching, pending assignments, and safe
+  preview/apply operations. MangaDL already imports it, supports repeated
+  `run --collections`, and can reconcile assignments queued after successful
+  downloads.
+- This plan implements historical URL-file collection assignment, exact-name
+  and reviewed-pattern selection, folder-only audit, a canonical MangaDL
+  URL-to-folder resolver shared by run/audit/Kavita/repair, and safe
+  page-level redownload of missing/corrupt images. Current implementation
+  status and remaining acceptance gates are in `STATUS.md`.
+- `mangadl audit` currently audits URL-file inputs and destination roots. Its
+  only proven page-count adapter is nhentai. Paradise (`nhentai-633374`) is
+  detected as 192 expected pages with pages 1-158 absent and page 175 corrupt.
+  Audit is read-only; it does not repair.
+- `repair-loose` only organizes loose nhentai page files; it does not fetch
+  missing pages.
+- The approved worker policy is no fixed outer-worker ceiling when either the
+  destination or selected scratch volume is SSD, while continuing to honor the
+  aggregate logical-CPU budget; without SSD on either path, cap at four. This
+  is implemented in the current branch worktree.
+
+## Architecture
+
+### Canonical library identity layer
+
+Add an importable MangaDL library/index API that returns structured records
+with canonical source URL, original URL-file provenance, backend, resolved
+folder(s), evidence and confidence, expected page identities/count provenance,
+and an explicit status (`complete`, `incomplete`, `ambiguous`, `unknown`,
+`unsupported`, or `missing`).
+
+Resolution precedence:
+
+1. MangaDL's own per-folder source manifest, written atomically after a
+   successful promotion and tied to canonical URL/backend/layout.
+2. Existing backend metadata such as gallery-dl `info.json`.
+3. Backend-specific deterministic folder identity (for example nhentai ID)
+   as candidate evidence, never as permission to resolve duplicate folders.
+4. No fuzzy title assignment. Multiple URLs/folders or weak evidence remain
+   ambiguous/unknown and are excluded from destructive repair and Kavita
+   writes.
+
+Legacy folders without MangaDL manifests remain auditable using source
+metadata and adapters. The index can build from a URL file plus an explicit
+destination, or from a library root alone. Folder-only results with no proven
+source URL/page set are marked unknown rather than complete.
+
+The shared resolver owns URL-to-folder identity. Kavita keeps its server API
+and exact local-path-to-Kavita-path adaptation, consuming resolved local
+folder records rather than implementing URL matching again.
+
+### Expected-page and integrity adapters
+
+Use backend adapters to enumerate stable expected page identities and
+associated source-specific archive keys without downloading payloads. The
+nhentai metadata resolver is the first proven adapter. Add other backends only
+after proving that enumeration is complete, read-only with respect to the
+download archive, and deterministic. Local inspection validates numbered
+images (nonzero size and decode), identifies missing/duplicate/extra/corrupt
+pages, and preserves evidence for every conclusion.
+
+### Safe operations
+
+- Audits and selection previews never mutate image payloads, the download
+  archive, assignment store, or Kavita. URL-file audit and historical
+  `assign-file` may atomically add only a source-identity sidecar for a proven
+  unique match; both expose a read-only opt-out. Expected-page enumeration can
+  make source metadata requests but never fetches image payloads or writes the
+  download archive.
+- Collection writes remain explicit and idempotent.
+- Repair previews enumerate exact source URLs, folders, pages, archive rows,
+  and recovery actions. Applying repair requires an explicit flag and a token
+  bound to the displayed plan. Preserve corrupt originals in a
+  recoverable quarantine; never overwrite valid files or clear an entire
+  gallery archive entry set to repair one page.
+- Repair uses MangaDL's worker, retry/auth, `_partial`, scratch, promotion,
+  archive, and state lifecycle, then re-audits before reporting complete.
+- Pattern selection always prints the exact matched Kavita series and
+  collections before confirmation. Ambiguous name/path matches are excluded.
+  Clarify/document pattern syntax: Python regex `blahblah*` repeats the last
+  `h`; a prefix wildcard is `blahblah.*`.
+
+## Stages
+
+### Stage 1 — remove the fixed fast-storage worker ceiling
+
+- Detect media for both the destination and explicit scratch path.
+- If either is SSD, set the worker target ceiling to the aggregate
+  logical-CPU budget (`logical_cpus - 1`) rather than a fixed constant. Keep
+  the existing aggregate worker/image-thread CPU budget in force.
+- If neither path is SSD, retain a four-worker maximum. Reject unsupported
+  explicit values rather than silently exceeding the selected policy.
+- Show both media classifications and the effective policy in dry-run/UI
+  status; make `+` able to increase workers until the effective limit/budget.
+- Tests cover SSD destination, SSD scratch, rotational/unknown on both paths,
+  explicit limits, and runtime increments at/over the budget.
+
+### Stage 2 — single canonical URL-to-folder index and provenance
+
+- Extract the current matching rules from `destination_audit.py` into the
+  shared library-index API and route audit through it without changing existing
+  JSON/input compatibility.
+- Add an atomic, versioned per-folder MangaDL source manifest for new
+  successful downloads. Include canonical URL, backend, folder identity, and
+  optional expected-page evidence; avoid storing credentials or transient
+  auth data.
+- Make run-time Kavita assignment creation use the same resolved folder
+  record. Preserve legacy metadata fallbacks and surface ambiguity explicitly.
+- During URL-file audit and Kavita `assign-file`, backfill missing source
+  manifests for unique, non-empty matches established by exact source metadata
+  or deterministic backend identity. Never overwrite an invalid/different
+  source identity; report existing, created, skipped, and conflicting pairs.
+- Tests cover exact metadata, legacy fallback, duplicate URL/folder
+  assignment, interrupted promotion, manifest mismatch, stale manifests, and
+  no silent folder merging.
+
+### Stage 3 — complete-library and URL-file audit on the shared index
+
+- Support audit by destination folder alone and by URL file plus an explicit
+  expected destination. Folder-only mode derives source identity from
+  manifests/metadata and reports unknown where it cannot.
+- Compare URL list membership with the library (missing URLs, untracked extra
+  manga, duplicate folders, missing folders) and audit each source's expected
+  page set when an adapter can establish it.
+- Make audit output deterministic, progress-visible, and safe for large
+  libraries; keep folder-only mode read-only and provide `--no-index-backfill`
+  for URL-file audits that must not create metadata sidecars.
+- Tests cover nested/large roots, multiple destinations, folder-only mode,
+  duplicate URL lines, extra folders, inaccessible files, and no mutation.
+
+### Stage 4 — assign historical URL-file manga to Kavita collections
+
+- Add a `mangadl kavita` batch workflow that reads a processed URL file,
+  resolves each URL through the shared index, maps its folder to exactly one
+  Kavita series, and previews all assignments to one or more collections.
+- Reuse existing Kavita collection creation/addition and path-map logic.
+  Missing, ambiguous, incomplete, or not-yet-scanned series remain visible
+  but are not written. Reconcile pending exact-path assignments after scans.
+- Keep download-time `run --collections` as a separate supported path.
+- Tests cover URL provenance, unresolved entries, duplicate/ambiguous folder
+  matches, existing collection membership, multiple collections, path maps,
+  and preview/apply idempotency.
+
+### Stage 5 — assign Kavita series by exact name and previewed pattern
+
+- Support selecting already indexed Kavita series by exact name and a bounded,
+  documented pattern expression against series names and optionally local
+  folder names.
+- Before writes, show every matching series (ID, name, path) and requested
+  collections, with count and excluded ambiguities. Require an explicit
+  interactive confirmation or a reviewed preview/apply token for automation.
+- Reuse the same collection APIs; never add a fuzzy name fallback.
+- Tests cover no matches, duplicate names, regex syntax errors, pattern
+  examples, stable preview ordering, declined confirmation, and API writes
+  only after confirmation.
+
+### Stage 6 — reversible missing/corrupt-page repair
+
+- Build exact page repair plans only for uniquely resolved URLs with complete
+  expected identities and proven backend support.
+- Reconcile only exact archive keys for the target missing/corrupt pages with
+  archive backup/recovery evidence; preserve valid files and originals.
+- Execute through normal workers/partials/scratch and verify image decode,
+  expected page coverage, and archive/state consistency after promotion.
+- Unsupported or ambiguous cases remain report-only. Tests cover preview
+  no-mutation, missing/corrupt repair, rollback, crash/resume, archive
+  restoration, scratch, and post-repair re-audit.
+
+### Stage 7 — docs, validation, acceptance, and merge readiness
+
+- Update package READMEs, CLI registry/help, active plan handoffs, validation
+  targets, and generated reports.
+- Run focused tests at every stage and full MangaDL/Kavita/module dispatcher
+  targets before acceptance.
+- Use bounded, user-selected live acceptance. Do not apply repair to the live
+  library or perform a Kavita API write until the user approves the preview.
+- Review branch-only commits and main-only validation evidence; preserve the
+  independent Kavita feature in this authorized integration. The user approved
+  merging into main on 2026-10-12. Live repair and Kavita collection writes
+  remain preview-first and have not been performed.
+
+## Open decisions / assumptions
+
+- “By name” defaults to exact case-insensitive match; substring matching is
+  available only through explicit pattern selection.
+- Pattern syntax is Python regex unless user prefers glob syntax; preview is
+  mandatory either way.
+- SSD means `cross_platform.storage_media_for_path` reports solid-state for
+  either destination or scratch. Unknown is treated as non-SSD for the
+  four-worker policy.
+- Removing the fixed ceiling does not remove aggregate CPU-budget enforcement.
+- Stage 6 repairs only page identities with exact backend and archive mapping;
+  other cases stay manual/report-only.
 
 ### `docs/plans/20260921-0943_partial-safety-and-merge-readiness/STATUS.md`
 
@@ -50,9 +462,9 @@ browser, and archive-aware legacy reconciliation are all present in 1.17.0.
 
 ## Documentation Freshness
 
-Score before this sync: **60/100 (needs review)**. README and code described
-1.17.0 correctly, but project/plan handoffs and validation counts still
-described the 1.16.0 baseline. This documentation-sync task closes that drift.
+Score: **0/100 (healthy)** after this sync. Before correction it was **60/100
+(needs review)** because README and code described 1.17.0 while project/plan
+handoffs and validation counts still described the 1.16.0 baseline.
 
 ## Verification
 
@@ -64,7 +476,8 @@ described the 1.16.0 baseline. This documentation-sync task closes that drift.
   editable dependency/package installs, compile, Ruff, CLI help, and 169 tests
   at that checkpoint.
 - `pwsh -NoProfile -File .\Invoke-Tests.ps1 -Target mangadl -SkipBootstrap`:
-  pass after the final CLI regression test, **170 passed**.
+  pass on the final 1.17.0 tree, **182 passed**, including compile, Ruff, and
+  CLI help contract checks.
 - Scripts-help registry tests: **42 passed** with basetemp
   `modules/mangadl/.pytest_tmp_root/scripts-help-registry`. Two earlier
   invocations without a known-writable basetemp failed before tests with
@@ -81,15 +494,17 @@ described the 1.16.0 baseline. This documentation-sync task closes that drift.
 - A live TTY chapter run accepted `l`, `r`, and `l` while downloading, moving
   through activity log, raw backend log, and the worker view without freezing;
   the run completed successfully.
+- A current four-URL/four-worker acceptance completed 4/4 chapters with 702
+  images and 22,438,146 bytes, without retry or authentication failure.
 
 ## Next Action
 
 The ordinary gallery-dl layout and responsive TUI/raw-log checks now pass. The
 legacy accidental partial can be reconciled against an explicit archive or
 cleaned with `--files-only`, but applying either deletion remains an explicit
-user decision. S7 input-wide auth preflight remains blocked on its stricter S6
-dependency gate: a complete series and a current multi-worker URL-file run.
-No live `B:` archive, state, or partial data has been mutated.
+user decision. The user explicitly deferred S7 and its potentially large
+complete-series gate to a follow-up branch and approved the final merge on
+2026-09-21. No live `B:` archive, state, or partial data has been mutated.
 
 ### `docs/plans/20260921-0943_partial-safety-and-merge-readiness/checklist.md`
 
@@ -130,7 +545,7 @@ No live `B:` archive, state, or partial data has been mutated.
 - [x] Preview legacy cleanup for `fc7c3b753cc0` without mutation.
 - [ ] Apply legacy cleanup only on explicit user decision.
 - [x] Obtain approval to stage/commit/push the partial-safety work.
-- [ ] Complete the existing integration-branch and final-merge approvals.
+- [x] Obtain the existing integration-branch and final-merge approvals.
 
 ## S4 - Interactive Cleanup and Legacy Reconciliation
 
@@ -211,3 +626,4 @@ to integrate `agent/mangadl-gallery-auth`.
 Do not merge automatically. Completion prepares the branch for the documented
 integration path and reports any remaining user-controlled live acceptance,
 commit/push, integration-branch, and final merge approvals.
+

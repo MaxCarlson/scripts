@@ -53,12 +53,17 @@ def test_record_assignments_persists_canonical_url_and_expected_folder(tmp_path)
     run_id = "run-1"
     event_path = log_dir / run_id / "events.jsonl"
     event_path.parent.mkdir(parents=True)
+    series_folder = destination / "Series"
+    series_folder.mkdir(parents=True)
+    (series_folder / "info.json").write_text(
+        json.dumps({"url": "https://site.test/series/"}), encoding="utf-8"
+    )
     event_path.write_text(
         json.dumps(
             {
                 "event": "job_complete",
                 "url": "https://site.test/series/",
-                "data": {"state": "succeeded", "series_path": str(destination / "Series")},
+                "data": {"state": "succeeded", "series_path": str(series_folder)},
             }
         )
         + "\n",

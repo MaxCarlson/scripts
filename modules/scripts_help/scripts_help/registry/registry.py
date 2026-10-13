@@ -378,9 +378,9 @@ REGISTRY: dict = {
             {
                 "name": "mangadl (module)",
                 "path": "modules/mangadl",
-                "desc": "Concurrent manga/gallery downloader with resumable jobs, SSD-aware workers, safe partial cleanup, dashboards, and optional Kavita collection assignment",
+                "desc": "Concurrent manga/gallery downloader with resumable jobs, integrity audits, SSD-aware workers, safe partial cleanup, and preview-first Kavita collection tools",
                 "help_cmd": ["mangadl", "--help"],
-                "version": "1.21.0",
+                "version": "1.24.0",
             },
             {
                 "name": "edit_video_file.py",

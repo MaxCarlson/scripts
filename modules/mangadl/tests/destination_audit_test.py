@@ -7,6 +7,8 @@ from mangadl.cli import main
 from mangadl import cli_core
 from mangadl.destination_audit import audit_destinations
 from mangadl.input import collect_inputs
+from mangadl.library_index import read_source_manifest
+from mangadl.page_adapters import ExpectedPages
 
 
 def _gallery(root: Path, name: str, *, metadata_url: str | None = None) -> Path:
@@ -173,3 +175,66 @@ def test_audit_without_metadata_detects_leading_numbered_gap(tmp_path: Path) -> 
     detail = audit.details[inputs[0].canonical_url]
     assert detail["completeness"] == "incomplete"
     assert detail["missing_pages"] == list(range(1, 159))
+
+
+def test_folder_only_audit_reports_unknown_source_and_page_total(tmp_path: Path, capsys) -> None:
+    destination = tmp_path / "downloads"
+    _gallery(destination, "legacy title")
+
+    assert main(["audit", "-d", str(destination), "-j", "-q"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "folder-only"
+    assert payload["folders"] == 1
+    assert payload["unknown"] == 1
+    assert payload["items"][0]["identity_status"] == "unknown"
+    assert payload["items"][0]["completeness"] == "unknown"
+
+
+def test_audit_uses_enumerated_page_ids_to_find_missing_middle_pages(tmp_path: Path) -> None:
+    destination = tmp_path / "downloads"
+    folder = destination / "manga"
+    folder.mkdir(parents=True)
+    (folder / "info.json").write_text(json.dumps({"url": "https://example.test/manga"}), encoding="utf-8")
+    Image.new("RGB", (1, 1), "white").save(folder / "001.jpg")
+    Image.new("RGB", (1, 1), "white").save(folder / "003.jpg")
+    inputs, _ = collect_inputs([], ["https://example.test/manga"])
+
+    audit = audit_destinations(
+        inputs,
+        [destination],
+        page_resolver=lambda _url: ExpectedPages(3, (1, 2, 3), "mock extractor", True),
+    )
+
+    detail = audit.details[inputs[0].canonical_url]
+    assert detail["expected_images"] == 3
+    assert detail["missing_pages"] == [2]
+    assert detail["completeness"] == "incomplete"
+
+
+def test_url_file_audit_backfills_unique_source_index_by_default(tmp_path: Path, capsys) -> None:
+    destination = tmp_path / "downloads"
+    folder = _gallery(destination, "Legacy Series", metadata_url="https://example.test/series")
+    urls = tmp_path / "urls.txt"
+    urls.write_text("https://example.test/series\n", encoding="utf-8")
+
+    assert main(["audit", "-i", str(urls), "-d", str(destination), "-j", "-q"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["index_backfill"]["created"] == 1
+    assert read_source_manifest(folder)["canonical_url"] == "https://example.test/series"
+
+
+def test_url_file_audit_can_explicitly_skip_index_backfill(tmp_path: Path, capsys) -> None:
+    destination = tmp_path / "downloads"
+    folder = _gallery(destination, "Legacy Series", metadata_url="https://example.test/series")
+    urls = tmp_path / "urls.txt"
+    urls.write_text("https://example.test/series\n", encoding="utf-8")
+
+    assert main([
+        "audit", "-i", str(urls), "-d", str(destination), "-j", "-q", "--no-index-backfill",
+    ]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["index_backfill"] is None
+    assert read_source_manifest(folder) is None

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .hdporncomics_patch import patch_recovery_hint
+from .library_index import write_source_manifest
 from .models import WorkerEvent
 from .naming import DIRECTORY_TEMPLATE, FILENAME_TEMPLATE
 from .partial_safety import (
@@ -341,6 +342,8 @@ def _command(args: argparse.Namespace, partial: Path) -> list[str]:
     command.extend(["--no-input", "--verbose", "--destination", str(partial)])
     command.extend(_gallery_naming_options(args.url))
     command.extend(["--download-archive", args.archive])
+    if getattr(args, "file_range", None):
+        command.extend(["--range", args.file_range])
     command.extend(["--Print", f"after:{ARCHIVE_KEY_MARKER}{{_archive_key}}"])
     if args.gallery_config:
         command.extend(["--config", args.gallery_config])
@@ -604,6 +607,13 @@ def run(args: argparse.Namespace) -> int:
             )
             return 2
 
+        manifest_error = None
+        if series_path:
+            try:
+                write_source_manifest(Path(series_path), args.url, args.backend)
+            except (OSError, ValueError) as exc:
+                manifest_error = f"source manifest was not written: {type(exc).__name__}: {exc}"
+
         gallery_skipped = (
             args.backend != "manga18fx"
             and images == baseline_images
@@ -636,6 +646,7 @@ def run(args: argparse.Namespace) -> int:
             elapsed=time.monotonic() - started,
             message=message,
             series_path=series_path,
+            source_manifest_error=manifest_error,
         )
         return 0
 
@@ -675,6 +686,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-P", "--partial-dir", required=True)
     parser.add_argument("--scratch-mode", action="store_true")
     parser.add_argument("--canonical-archive")
+    parser.add_argument("-0", "--file-range", help=argparse.SUPPRESS)
     parser.add_argument("-L", "--raw-log", required=True)
     parser.add_argument("-g", "--gallery-config")
     parser.add_argument("-c", "--cookies")

@@ -4,22 +4,24 @@ import argparse
 import glob
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
+import hashlib
 from pathlib import Path
 from typing import Any
 
 from cross_platform import StorageMediaKind, storage_media_for_path
-from kavita import KavitaClient, KavitaConfig, PendingAssignmentStore, parse_path_maps
+from kavita import KavitaClient, KavitaConfig, PendingAssignmentStore, match_series_by_path, parse_path_maps
 from kavita.assignments import reconcile_assignments
 
 from . import __version__
 from .archive_ui import ArchiveBrowser, filter_records, load_archive
 from .backends import backend_classification, choose_backend, gallery_dl_scope
 from .cli_structure import add_run_arguments, normalize_command_shape
-from .concurrency import DEFAULT_MAX_OUTER_WORKERS, HARD_MAX_OUTER_WORKERS
-from .destination_audit import audit_destinations, write_audit_outputs
+from .concurrency import configured_maximum_workers
+from .destination_audit import audit_destinations, audit_library, write_audit_outputs
 from .favorites import crawl_favorites, format_result as format_favorites_result
 from .favorites import result_payload as favorites_result_payload
 from .favorites import write_url_file
@@ -36,6 +38,7 @@ from .gallery_auth import (
 )
 from .hdporncomics_patch import apply_patch, patch_status
 from .input import collect_inputs
+from .library_index import backfill_source_indexes, resolve_url_folders, scan_library
 from .manager import DownloadManager, RunOptions
 from .optimizer import (
     OptimizationDashboard,
@@ -44,8 +47,10 @@ from .optimizer import (
 )
 from .partial_safety import apply_cleanup, cleanup_preview, plan_cleanup
 from .repair import resolve_nhentai_metadata
-from .partial_reconcile import reconstruct_archive_keys, resolve_owner_urls
+from .partial_reconcile import reconstruct_archive_keys, reconstruct_archive_page_keys, resolve_owner_urls
+from .repair_pages import apply_page_repair, make_page_repair_plan, repair_confirmation_token
 from .partial_ui import select_partial_owners
+from .page_adapters import resolve_expected_pages
 from .scratch import partial_root_for
 from .scratch_controls import ScratchControls
 from .repair import apply_repair, plan_loose_images
@@ -131,6 +136,32 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     reconcile.add_argument("-f", "--apply", action="store_true", help="Write collection changes; default is preview only.")
     reconcile.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
 
+    def add_kavita_batch_arguments(command: argparse.ArgumentParser) -> None:
+        command.add_argument("-Z", "--kavita-url", required=True, help="Kavita base URL.")
+        command.add_argument("-E", "--kavita-api-key-env", default="KAVITA_API_KEY", help="Environment variable containing the Auth Key.")
+        command.add_argument("-P", "--kavita-path-map", action="append", default=[], metavar="LOCAL=KAVITA", help="Path mapping; repeatable.")
+        command.add_argument("-c", "--collection", action="append", required=True, help="Collection name; repeatable.")
+        command.add_argument("-f", "--apply", action="store_true", help="Apply the previewed assignment set.")
+        command.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
+
+    assign_file = kavita_subparsers.add_parser("assign-file", help="Assign already-downloaded URL-file manga to collections.")
+    assign_file.add_argument("-i", "--input-file", required=True, type=_path, help="Processed URL file.")
+    assign_file.add_argument("-d", "--destination", required=True, type=_path, help="MangaDL library root.")
+    assign_file.add_argument(
+        "-x", "--no-index-backfill", action="store_true",
+        help="Do not create missing per-folder source indexes while resolving this URL file.",
+    )
+    add_kavita_batch_arguments(assign_file)
+
+    assign_name = kavita_subparsers.add_parser("assign-name", help="Assign a uniquely named scanned Kavita series.")
+    assign_name.add_argument("-n", "--name", action="append", required=True, help="Exact series name; repeatable.")
+    add_kavita_batch_arguments(assign_name)
+
+    assign_pattern = kavita_subparsers.add_parser("assign-pattern", help="Preview a regex-selected set of Kavita series.")
+    assign_pattern.add_argument("-p", "--pattern", required=True, help="Bounded Python regex searched against series names.")
+    assign_pattern.add_argument("-C", "--confirm-matches", help="Match-set token printed by preview; required with --apply.")
+    add_kavita_batch_arguments(assign_pattern)
+
     archive = subparsers.add_parser(
         "archive",
         help="Browse a gallery-dl SQLite archive interactively.",
@@ -168,11 +199,11 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     audit = subparsers.add_parser(
         "audit",
         aliases=("audit-destinations",),
-        help="Audit URL-list items against destination roots (read-only).",
+        help="Audit URL-file identities or every manga folder; URL matches backfill missing source indexes.",
     )
     audit.add_argument(
-        "-i", "--input-file", "-u", "--url-file", dest="input_file", action="append", required=True,
-        help="URL file or glob; repeatable (-u/--url-file is an audit-only alias).",
+        "-i", "--input-file", "-u", "--url-file", dest="input_file", action="append",
+        help="Optional URL file or glob; repeatable (-u/--url-file is an audit-only alias). Omit for folder-only audit.",
     )
     audit.add_argument(
         "-d",
@@ -196,6 +227,10 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     )
     audit.add_argument("-j", "--json", action="store_true", help="Emit the audit summary as JSON.")
     audit.add_argument("-q", "--quiet", action="store_true", help="Suppress progress messages on stderr.")
+    audit.add_argument(
+        "-x", "--no-index-backfill", action="store_true",
+        help="Keep URL-file audits read-only; do not create missing per-folder source indexes.",
+    )
 
     repair = subparsers.add_parser("repair-loose", help="Rebuild per-gallery folders from loose nhentai images.")
     repair.add_argument("-d", "--destination", required=True, type=_path, help="Directory containing loose images.")
@@ -204,6 +239,22 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     repair_mode.add_argument("-f", "--apply", action="store_true", help="Move files after complete validation.")
     repair.add_argument("-N", "--no-ui", action="store_true", help="Disable the in-place progress dashboard.")
     repair.add_argument("-j", "--json", action="store_true", help="Emit JSON repair details.")
+
+    repair_pages = subparsers.add_parser(
+        "repair-pages", help="Repair exact missing/corrupt gallery-dl nhentai pages (preview first)."
+    )
+    repair_pages.add_argument("-u", "--url", required=True, help="One nhentai gallery URL.")
+    repair_pages.add_argument("-d", "--destination", required=True, type=_path, help="MangaDL library root.")
+    repair_pages.add_argument("-S", "--scratch", type=_path, help="Optional scratch volume for the targeted download.")
+    repair_pages.add_argument("-a", "--archive", type=_path, help="gallery-dl archive (default: destination control archive).")
+    repair_pages.add_argument("-g", "--gallery-config", type=_path, help="gallery-dl config used for the repair.")
+    repair_pages.add_argument("-c", "--cookies", type=_path, help="Cookie file for the gallery request.")
+    repair_pages.add_argument("-B", "--cookies-browser", help="Browser cookie source.")
+    repair_pages.add_argument("-U", "--user-agent", help="Optional gallery-dl user agent.")
+    repair_pages.add_argument("-x", "--rate", help="Optional gallery-dl transfer-rate limit.")
+    repair_pages.add_argument("-f", "--apply", action="store_true", help="Apply the reviewed targeted repair.")
+    repair_pages.add_argument("-C", "--confirm-plan", help="Preview token required with --apply.")
+    repair_pages.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
 
     partials = subparsers.add_parser("partials", help="Inspect or safely remove resumable partial data.")
     partial_commands = partials.add_subparsers(dest="partials_command", required=True)
@@ -414,8 +465,6 @@ def _optimization_preview(args: argparse.Namespace, manga18fx_urls: list[str]) -
 def _validate_run(args: argparse.Namespace) -> None:
     if args.workers < 1:
         raise ValueError("--workers must be at least 1")
-    if args.max_workers is not None and not 1 <= args.max_workers <= HARD_MAX_OUTER_WORKERS:
-        raise ValueError(f"--max-workers must be between 1 and {HARD_MAX_OUTER_WORKERS}")
     if args.worker_start_delay < 0:
         raise ValueError("--worker-start-delay must be zero or greater")
     if not 1 <= args.image_workers <= MAX_IMAGE_WORKERS:
@@ -424,6 +473,11 @@ def _validate_run(args: argparse.Namespace) -> None:
         raise ValueError("--hdporncomics-threads must be at least 1")
     if not args.input_file and not args.url:
         raise ValueError("provide at least one --input-file or --url")
+    if args.file_range:
+        if os.environ.get("MANGADL_REPAIR_TOKEN") is None:
+            raise ValueError("--file-range is reserved for the guarded repair workflow")
+        if not re.fullmatch(r"\d+(?:,\d+)*", args.file_range):
+            raise ValueError("invalid internal file range")
 
     if args.run_mode in {"optimize", "benchmark"}:
         if args.min_workers < 1 or args.min_workers > args.max_workers:
@@ -447,18 +501,29 @@ def _resolve_run_paths(args: argparse.Namespace) -> None:
 
 
 def _resolve_storage_policy(args: argparse.Namespace) -> None:
+    destination_media = storage_media_for_path(args.destination)
+    scratch_media = storage_media_for_path(args.scratch_dir) if args.scratch_dir is not None else None
+    fast_storage = (
+        destination_media.kind == StorageMediaKind.SOLID_STATE
+        or (scratch_media is not None and scratch_media.kind == StorageMediaKind.SOLID_STATE)
+    )
     if args.scratch_dir is not None:
         args.storage_media = "scratch"
-        args.storage_media_detail = "explicit scratch staging"
-        fast_storage = True
+        args.storage_media_detail = (
+            f"destination {destination_media.kind.value}; scratch {scratch_media.kind.value}: "
+            f"{scratch_media.detail}; {destination_media.detail}"
+        )
     else:
-        media = storage_media_for_path(args.destination)
-        args.storage_media = media.kind.value
-        args.storage_media_detail = media.detail
-        fast_storage = media.kind == StorageMediaKind.SOLID_STATE
-    if args.max_workers is None:
-        args.max_workers = HARD_MAX_OUTER_WORKERS if fast_storage else DEFAULT_MAX_OUTER_WORKERS
+        args.storage_media = destination_media.kind.value
+        args.storage_media_detail = destination_media.detail
+    args.destination_storage_media = destination_media.kind.value
+    args.scratch_storage_media = scratch_media.kind.value if scratch_media is not None else None
     args.fast_storage = fast_storage
+    args.max_workers = configured_maximum_workers(
+        args.max_workers,
+        fast_storage=fast_storage,
+        logical_cpus=os.cpu_count(),
+    )
 
 
 def _format_run_preview(preview: dict[str, Any]) -> str:
@@ -497,9 +562,12 @@ def _format_run_preview(preview: dict[str, Any]) -> str:
 
 def _run(args: argparse.Namespace) -> int:
     _normalize_legacy_autotune(args)
-    _validate_run(args)
     _resolve_run_paths(args)
+    repair_lock = args.destination / ".mangadl" / "repair.lock"
+    if repair_lock.exists() and os.environ.get("MANGADL_REPAIR_TOKEN") != repair_lock.read_text(encoding="utf-8"):
+        raise ValueError(f"a guarded page repair is active for this library: {repair_lock}")
     _resolve_storage_policy(args)
+    _validate_run(args)
 
     inputs, rejected = collect_inputs(args.input_file, args.url)
     routes: dict[str, str] = {}
@@ -528,6 +596,8 @@ def _run(args: argparse.Namespace) -> int:
         except ValueError as exc:
             unsupported.append({"url": item.url, "reason": str(exc)})
     inputs = [item for item in inputs if item.canonical_url in routes]
+    if args.file_range and (len(inputs) != 1 or set(routes.values()) != {"gallery-dl"}):
+        raise ValueError("internal targeted file range requires exactly one gallery-dl URL")
     manga18fx_urls = [item.canonical_url for item in inputs if routes[item.canonical_url] == "manga18fx"]
 
     preview: dict[str, Any] = {
@@ -541,6 +611,8 @@ def _run(args: argparse.Namespace) -> int:
         "max_workers": args.max_workers,
         "storage_media": args.storage_media,
         "storage_media_detail": args.storage_media_detail,
+        "destination_storage_media": args.destination_storage_media,
+        "scratch_storage_media": args.scratch_storage_media,
         "worker_start_delay": args.worker_start_delay,
         "destination": str(args.destination),
         "control_directory": str(args.destination / ".mangadl"),
@@ -689,6 +761,7 @@ def _run(args: argparse.Namespace) -> int:
             canonical_archive=args.archive if controls is not None else None,
             maximum_workers=args.max_workers,
             fast_storage=args.fast_storage,
+            file_range=args.file_range,
             workers=args.workers,
             retries=args.retries,
             retry_wait=args.retry_wait,
@@ -748,6 +821,7 @@ def _record_kavita_assignments(
 ) -> None:
     event_path = (log_dir or args.log_dir) / run_id / "events.jsonl"
     store = PendingAssignmentStore(args.destination / ".mangadl" / "kavita-assignments.json")
+    library = scan_library([args.destination])
     accepted = {"succeeded", "succeeded_incomplete"}
     queued = 0
     missing_path = 0
@@ -763,7 +837,16 @@ def _record_kavita_assignments(
         if not series_path:
             missing_path += 1
             continue
-        store.enqueue(str(event.get("url") or ""), series_path, collections, kavita_url=kavita_url)
+        source_url = str(event.get("url") or "")
+        resolved = resolve_url_folders(source_url, library)
+        if (
+            len(resolved) != 1
+            or resolved[0].identity_status != "matched"
+            or resolved[0].path.resolve() != Path(series_path).resolve()
+        ):
+            missing_path += 1
+            continue
+        store.enqueue(source_url, series_path, collections, kavita_url=kavita_url)
         queued += 1
     if not queued:
         print("Kavita: no successful jobs had one unambiguous series folder; no assignments were queued.", file=sys.stderr)
@@ -801,6 +884,134 @@ def _kavita_reconcile(args: argparse.Namespace) -> int:
     )
     payload = {"mode": "apply" if args.apply else "dry-run", "assignments": outcomes}
     print(json.dumps(payload, indent=2, sort_keys=True) if args.json else _format_kavita_reconcile(payload))
+    return 0
+
+
+def _safe_regex(pattern: str) -> re.Pattern[str]:
+    if len(pattern) > 256:
+        raise ValueError("pattern is too long (maximum 256 characters)")
+    if (
+        re.search(r"\\[1-9]|\(\?", pattern)
+        or re.search(r"\([^)]*[+*][^)]*\)[+*{]", pattern)
+        or re.search(r"\([^)]*\|[^)]*\)[+*{]", pattern)
+    ):
+        raise ValueError("pattern uses unsupported backreferences, lookarounds, or ambiguous repetition")
+    try:
+        return re.compile(pattern, re.IGNORECASE)
+    except re.error as exc:
+        raise ValueError(f"invalid series regex: {exc}") from exc
+
+
+def _kavita_batch(args: argparse.Namespace) -> int:
+    client = KavitaClient(KavitaConfig.from_env(args.kavita_url, api_key_env=args.kavita_api_key_env))
+    series = client.list_series()
+    path_maps = parse_path_maps(args.kavita_path_map)
+    selected: dict[int, dict[str, Any]] = {}
+    excluded: list[dict[str, Any]] = []
+    sources_by_id: dict[int, list[str]] = {}
+
+    if args.kavita_command == "assign-file":
+        inputs, rejected = collect_inputs([args.input_file], [])
+        library = scan_library([args.destination])
+        index_backfill = (
+            backfill_source_indexes(
+                (item.canonical_url for item in inputs),
+                library,
+            )
+            if not args.no_index_backfill
+            else None
+        )
+        for item in inputs:
+            folders = resolve_url_folders(item.canonical_url, library)
+            matched = [
+                match_series_by_path(folder.path, series, path_maps=path_maps)
+                if folder.identity_status != "ambiguous"
+                else None
+                for folder in folders
+            ]
+            unique = {int(row["id"]): row for row in matched if row and row.get("id") is not None}
+            if len(folders) != 1 or len(unique) != 1:
+                excluded.append({"url": item.url, "status": "ambiguous_or_unresolved", "folders": [str(row.path) for row in folders]})
+                continue
+            row = next(iter(unique.values()))
+            series_id = int(row["id"])
+            selected[series_id] = row
+            sources_by_id.setdefault(series_id, []).append(item.canonical_url)
+        excluded.extend({"url": row.get("value"), "status": "rejected", "reason": row.get("reason")} for row in rejected)
+    elif args.kavita_command == "assign-name":
+        for requested in args.name:
+            matches = [row for row in series if str(row.get("name") or row.get("title") or "").casefold() == requested.casefold()]
+            if len(matches) != 1 or not matches[0].get("id"):
+                excluded.append({"name": requested, "status": "missing_or_ambiguous", "matches": len(matches)})
+                continue
+            selected[int(matches[0]["id"])] = matches[0]
+    else:
+        matcher = _safe_regex(args.pattern)
+        by_name: dict[str, list[dict[str, Any]]] = {}
+        for row in series:
+            name = str(row.get("name") or row.get("title") or "")
+            if matcher.search(name):
+                by_name.setdefault(name.casefold(), []).append(row)
+        for name, rows in by_name.items():
+            if len(rows) != 1 or not rows[0].get("id"):
+                excluded.append({"name": name, "status": "duplicate_name_excluded", "matches": len(rows)})
+                continue
+            selected[int(rows[0]["id"])] = rows[0]
+
+    matches = []
+    for series_id, row in sorted(selected.items(), key=lambda pair: (str(pair[1].get("name") or pair[1].get("title") or "").casefold(), pair[0])):
+        matches.append({
+            "id": series_id,
+            "name": str(row.get("name") or row.get("title") or ""),
+            "path": str(row.get("folderPath") or row.get("lowestFolderPath") or ""),
+            "source_urls": sorted(set(sources_by_id.get(series_id, []))),
+        })
+    collections = list(dict.fromkeys(name.strip() for name in args.collection if name.strip()))
+    if not collections:
+        raise ValueError("at least one non-empty --collection is required")
+    token_data = json.dumps({"matches": matches, "collections": collections}, sort_keys=True)
+    token = hashlib.sha256(token_data.encode("utf-8")).hexdigest()[:16]
+    apply = bool(args.apply)
+    if args.kavita_command == "assign-pattern" and apply and args.confirm_matches != token:
+        raise ValueError(f"pattern apply requires --confirm-matches {token} from this exact preview")
+    operations = []
+    if apply:
+        ids = [row["id"] for row in matches]
+        if ids:
+            for collection in collections:
+                operations.append(client.add_series_to_collection(collection, ids, apply=True))
+    payload = {
+        "mode": "apply" if apply else "preview",
+        "selection": args.kavita_command,
+        "collections": collections,
+        "matches": matches,
+        "excluded": excluded,
+        "match_token": token,
+        "index_backfill": index_backfill if args.kavita_command == "assign-file" else None,
+        "operations": operations,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"Kavita {payload['mode']}: {len(matches)} series -> {', '.join(collections)}")
+        if index_backfill is not None:
+            print(
+                "Source indexes: "
+                f"{index_backfill['created']} added, "
+                f"{index_backfill['already_indexed']} already indexed, "
+                f"{index_backfill['ambiguous']} ambiguous, "
+                f"{index_backfill['empty_folder']} empty, "
+                f"{index_backfill['unresolved']} unresolved, "
+                f"{index_backfill['conflict']} conflicts."
+            )
+        for row in matches:
+            print(f"- {row['id']} | {row['name']} | {row['path']}")
+        for row in excluded:
+            print(f"! Excluded: {row}")
+        if args.kavita_command == "assign-pattern":
+            print(f"Reviewed match token: {token}")
+        if not apply:
+            print("Preview only; use --apply to write." + (" Pattern apply also requires --confirm-matches TOKEN." if args.kavita_command == "assign-pattern" else ""))
     return 0
 
 
@@ -1034,14 +1245,44 @@ def _expand_audit_input_files(patterns: list[str]) -> list[Path]:
 
 
 def _audit_destinations(args: argparse.Namespace) -> int:
-    files = _expand_audit_input_files(args.input_file)
     progress = None if args.quiet else lambda message: print(f"Audit: {message}", file=sys.stderr, flush=True)
+    if not args.input_file:
+        if progress:
+            progress(f"Scanning {len(args.destination)} destination root(s) without a URL file")
+        items = audit_library(
+            args.destination,
+            progress,
+            metadata_resolver=resolve_nhentai_metadata,
+            page_resolver=lambda url: resolve_expected_pages(url, progress=progress),
+        )
+        payload = {
+            "mode": "folder-only",
+            "folders": len(items),
+            "complete": sum(item["completeness"] == "complete" for item in items),
+            "incomplete": sum(item["completeness"] == "incomplete" for item in items),
+            "unknown": sum(item["completeness"] == "unknown" for item in items),
+            "ambiguous_identity": sum(item["identity_status"] == "ambiguous" for item in items),
+            "items": items,
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True) if args.json else (
+            f"Audited {payload['folders']} folder(s): {payload['complete']} complete, "
+            f"{payload['incomplete']} incomplete, {payload['unknown']} unknown."
+        ))
+        return 0
+    files = _expand_audit_input_files(args.input_file)
     if progress:
         progress(f"Loading {len(files)} URL file(s)")
     inputs, rejected = collect_inputs(files, [])
     if progress:
         progress(f"Loaded {len(inputs)} unique URL(s); {len(rejected)} rejected/duplicate line(s)")
-    audit = audit_destinations(inputs, args.destination, progress, metadata_resolver=resolve_nhentai_metadata)
+    audit = audit_destinations(
+        inputs,
+        args.destination,
+        progress,
+        metadata_resolver=resolve_nhentai_metadata,
+        page_resolver=lambda url: resolve_expected_pages(url, progress=progress),
+        backfill_index=not args.no_index_backfill,
+    )
     write_audit_outputs(audit, args.missing_output, args.duplicates_output)
     item_results = []
     for item in inputs:
@@ -1065,6 +1306,8 @@ def _audit_destinations(args: argparse.Namespace) -> int:
         "resolved": len(audit.resolved),
         "unresolved": len(audit.unresolved),
         "duplicates": len(audit.duplicates),
+        "index_backfill": audit.index_backfill,
+        "untracked_folders": [str(path) for path in audit.untracked_folders],
         "complete": sum(item["completeness"] == "complete" for item in item_results),
         "incomplete": sum(item["completeness"] == "incomplete" for item in item_results),
         "unknown": sum(item["completeness"] == "unknown" for item in item_results),
@@ -1079,9 +1322,19 @@ def _audit_destinations(args: argparse.Namespace) -> int:
         print(
             f"Audited {payload['input_urls']} URL(s): {payload['resolved']} found, "
             f"{payload['unresolved']} missing, {payload['duplicates']} duplicate folder group(s)."
+            f" {len(payload['untracked_folders'])} untracked folder(s)."
             f" Images: {payload['complete']} complete, {payload['incomplete']} incomplete, "
             f"{payload['unknown']} unknown; {payload['corrupt']} with corrupt pages."
         )
+        if audit.index_backfill is not None:
+            print(
+                f"Source indexes: {audit.index_backfill['created']} added, "
+                f"{audit.index_backfill['already_indexed']} already indexed, "
+                f"{audit.index_backfill['ambiguous']} ambiguous, "
+                f"{audit.index_backfill['empty_folder']} empty, "
+                f"{audit.index_backfill['unresolved']} unresolved, "
+                f"{audit.index_backfill['conflict']} conflicts."
+            )
     if progress and args.missing_output:
         progress(f"Wrote missing URLs: {args.missing_output}")
     if progress and args.duplicates_output:
@@ -1129,6 +1382,152 @@ def _repair_loose(args: argparse.Namespace) -> int:
         if not args.apply and plan.valid and plan.moves:
             print("Validated. Re-run with -f/--apply to move and verify the files.")
     return 0 if plan.valid else 1
+
+
+def _repair_pages(args: argparse.Namespace) -> int:
+    inputs, rejected = collect_inputs([], [args.url])
+    if rejected or len(inputs) != 1:
+        raise ValueError("repair-pages requires exactly one valid gallery URL")
+    item = inputs[0]
+    if not re.fullmatch(r"https?://(?:www\.)?nhentai\.net/g/\d+/?", item.canonical_url):
+        raise ValueError("targeted repair is currently supported only for individual nhentai galleries")
+    if args.gallery_config:
+        raise ValueError(
+            "targeted repair refuses custom gallery-dl configuration because its archive table and "
+            "key overrides cannot be proven; use explicit cookies/browser/user-agent options instead"
+        )
+    archive = args.archive or (args.destination / ".mangadl" / "archive.sqlite3")
+    def progress(message: str) -> None:
+        print(f"Repair: {message}", file=sys.stderr, flush=True)
+
+    audit = audit_destinations(
+        [item], [args.destination], progress, metadata_resolver=resolve_nhentai_metadata
+    )
+    detail = audit.details[item.canonical_url]
+    folders = audit.resolved.get(item.canonical_url, [])
+    if detail["folder_status"] != "matched" or len(folders) != 1:
+        raise ValueError("repair requires one unambiguous source-to-folder match")
+    if detail["expected_images"] is None:
+        raise ValueError("expected page count is unavailable; repair remains report-only")
+    page_set = resolve_expected_pages(item.canonical_url, progress=progress)
+    if page_set is None or not page_set.complete_identity_set:
+        raise ValueError("source page identities are unavailable; repair remains report-only")
+    page_keys = reconstruct_archive_page_keys(
+        item.canonical_url,
+        gallery_config=args.gallery_config,
+        cookies=args.cookies,
+        cookies_browser=args.cookies_browser,
+        user_agent=args.user_agent,
+        auth_dir=args.destination / ".mangadl" / "auth",
+    )
+    plan = make_page_repair_plan(
+        item.canonical_url,
+        folders[0],
+        int(detail["expected_images"]),
+        list(detail["missing_pages"]),
+        list(detail.get("corrupt_files", [])),
+        page_keys,
+        archive,
+    )
+    payload: dict[str, Any] = {
+        "mode": "apply" if args.apply else "preview",
+        "url": plan.url,
+        "folder": str(plan.folder),
+        "expected_pages": plan.expected_count,
+        "damaged_pages": list(plan.damaged_pages),
+        "archive_keys_to_reconcile": [plan.page_keys[page] for page in plan.damaged_pages if page in plan.page_keys],
+        "archive_rows_present": list(plan.archive_rows_found),
+        "corrupt_files_to_quarantine": [str(path) for path in plan.corrupt_files],
+        "eligible": plan.eligible,
+    }
+    confirmation_token = repair_confirmation_token(plan)
+    payload["confirmation_token"] = confirmation_token
+    if not plan.damaged_pages:
+        payload["verified"] = detail["completeness"] == "complete"
+        print(json.dumps(payload, indent=2, sort_keys=True) if args.json else "No missing or corrupt pages were found.")
+        return 0
+    if not plan.eligible:
+        raise ValueError("not every damaged page has an exact gallery-dl archive identity")
+    if not args.apply:
+        print(json.dumps(payload, indent=2, sort_keys=True) if args.json else (
+            f"DRY-RUN: {len(plan.damaged_pages)} damaged page(s) for {plan.url} in {plan.folder}. "
+            "Use -f/--apply to quarantine corrupt files and redownload only these pages."
+        ))
+        return 0
+    if args.confirm_plan != confirmation_token:
+        raise ValueError(
+            "--apply requires --confirm-plan with the token from the current exact preview"
+        )
+
+    state_db = args.destination / ".mangadl" / "state.sqlite3"
+    if state_db.is_file():
+        connection = sqlite3.connect(state_db.as_uri() + "?mode=ro", uri=True)
+        try:
+            has_runs = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runs'"
+            ).fetchone()
+            if has_runs is None:
+                raise ValueError(f"state database does not contain MangaDL run history: {state_db}")
+            active = connection.execute(
+                "SELECT id FROM runs WHERE status='running' AND finished IS NULL LIMIT 1"
+            ).fetchone()
+        finally:
+            connection.close()
+        if active:
+            raise ValueError(f"MangaDL run {active[0]} is active; wait for it to finish before repair")
+
+    def run_download(file_range: str, token: str) -> None:
+        old_token = os.environ.get("MANGADL_REPAIR_TOKEN")
+        os.environ["MANGADL_REPAIR_TOKEN"] = token
+        run_args = [
+            "run", "-u", item.canonical_url, "-d", str(args.destination), "-a", str(archive),
+            "-b", "gallery-dl", "-w", "1", "-m", "1", "-0", file_range, "-N",
+        ]
+        if args.gallery_config:
+            run_args.extend(["-g", str(args.gallery_config)])
+        if args.cookies:
+            run_args.extend(["-c", str(args.cookies)])
+        if args.cookies_browser:
+            run_args.extend(["-B", args.cookies_browser])
+        if args.user_agent:
+            run_args.extend(["-U", args.user_agent])
+        if args.rate:
+            run_args.extend(["-r", args.rate])
+        if args.scratch:
+            run_args.extend(["-S", str(args.scratch)])
+        try:
+            try:
+                result = main(run_args)
+            except SystemExit as exc:
+                raise RuntimeError(f"targeted download manager exited: {exc.code}") from exc
+        finally:
+            if old_token is None:
+                os.environ.pop("MANGADL_REPAIR_TOKEN", None)
+            else:
+                os.environ["MANGADL_REPAIR_TOKEN"] = old_token
+        if result != 0:
+            raise RuntimeError(f"targeted download manager returned exit status {result}")
+
+    def verify_repair() -> tuple[bool, set[int]]:
+        verified = audit_destinations(
+            [item], [args.destination], None, metadata_resolver=resolve_nhentai_metadata
+        ).details[item.canonical_url]
+        return verified["completeness"] == "complete", set(verified["missing_pages"])
+
+    result = apply_page_repair(
+        plan,
+        archive,
+        args.destination / ".mangadl" / "repair-quarantine",
+        run_download,
+        verify_repair,
+    )
+    payload.update(result)
+    print(json.dumps(payload, indent=2, sort_keys=True) if args.json else (
+        f"{'REPAIRED' if result['verified'] else 'INCOMPLETE'}: "
+        f"{len(plan.damaged_pages) - len(result['remaining_pages'])}/{len(plan.damaged_pages)} target page(s) verified; "
+        f"backup={result['archive_backup'] or 'not needed'}"
+    ))
+    return 0 if result["verified"] else 1
 
 
 def _interactive_auth_site(targets: TargetStore, query: str | None) -> str:
@@ -1344,12 +1743,17 @@ def main(argv: list[str] | None = None) -> int:
             "inspect": _inspect,
             "status": _show_state,
             "retry": _retry,
-            "kavita": _kavita_reconcile,
+            "kavita": lambda parsed: (
+                _kavita_batch(parsed)
+                if parsed.kavita_command.startswith("assign-")
+                else _kavita_reconcile(parsed)
+            ),
             "archive": _archive,
             "patch-hdporncomics": _patch_hdporncomics,
             "audit": _audit_destinations,
             "audit-destinations": _audit_destinations,
             "repair-loose": _repair_loose,
+            "repair-pages": _repair_pages,
             "partials": _partials,
             "auth": _auth,
             "favorites": _favorites,

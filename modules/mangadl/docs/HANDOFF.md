@@ -4,19 +4,28 @@
 
 Branch: `codex/kavita-module-mangadl-collections-20261009-0349`.
 
-The proposed URL-file audit and missing/corrupt image repair plan is at
-[20261009-0409 URL-file audit and repair](plans/20261009-0409_url-file-audit-and-repair/00_implementation-plan.md).
-Stages 1–3 of URL-file audit are implemented: audit accepts `-u/--url-file`,
-preserves existing `-i/--input-file` and run direct-URL flags, emits per-URL
-provenance, checks numbered image validity and page coverage, and resolves
-nhentai expected page counts when metadata is available. Paradise's reported
-pages 159–192 now produces missing pages 1–158. The audit remains read-only.
-MangaDL 1.22.0 adds Pillow for image validation. Focused tests (7), the full
-suite (232), Ruff, and `git diff --check` passed. The current `repair` command still only
-organizes loose nhentai files; Stage 4 repair planning/execution is next.
+The active multi-feature plan is
+[library identity, audit, and Kavita operations](plans/20261009-1204_library-identity-audit-and-kavita-operations/00_implementation-plan.md).
+The URL-file audit stages 1–3 are implemented and pushed in `b58b308`; the
+Kavita library and download-time collection integration are implemented and
+pushed in `0ed97c5`. Both are intentionally on this feature branch and remain
+unmerged. The remaining plan adds shared URL-to-folder identity, folder-only
+audit, historical URL-file/name/pattern collection assignment, and safe
+missing-page repair. Paradise's recorded audit result is 192 expected pages,
+pages 1–158 missing, and page 175 corrupt; no repair or archive mutation has
+been performed.
 
-The Kavita collection assignment feature remains a separate in-progress
-branch plan. No commit, push, or merge approval is implied by this audit plan.
+Implementation stages 1–6 of the active plan are present in the working tree:
+shared source identity/manifests, folder-only and URL-file audit, historical
+Kavita file/name/pattern assignment, and exact-page nhentai repair. URL-file
+audit and `kavita assign-file` opportunistically backfill missing source
+manifests only for unique, populated matches, with a `--no-index-backfill`
+opt-out. SSD destination OR SSD scratch uses the aggregate logical-CPU budget
+without an extra fixed cap; when neither is SSD, the cap is four. On 2026-10-09,
+the dispatcher passed MangaDL (254 tests) and Kavita (16 tests), including
+compile, Ruff, and MangaDL CLI help. Live audit/repair preview, TUI, and Kavita
+server acceptance remain unverified. The user authorized merge on 2026-10-12;
+no live repair or Kavita collection write has been performed.
 
 ---
 

@@ -1,0 +1,50 @@
+warning: in the working copy of 'C:\Users\mcarls\src\scripts\docs\test-results\mangadl\history\20261012-201801_mangadl_context.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'C:\Users\mcarls\src\scripts\docs\test-results\mangadl\LATEST_CONTEXT.md', LF will be replaced by CRLF the next time Git touches it
+diff --git "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\history\\20261012-201801_mangadl_context.md" "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\LATEST_CONTEXT.md"
+index f16008a..0a1404d 100644
+--- "a/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\history\\20261012-201801_mangadl_context.md"
++++ "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\mangadl\\LATEST_CONTEXT.md"
+@@ -1,6 +1,6 @@
+ # Validation Context: mangadl
+ 
+-Generated: 2026-10-12T20:18:22.0220350-07:00
++Generated: 2026-10-12T20:21:03.3474418-07:00
+ Branch: codex/kavita-module-mangadl-collections-20261009-0349
+ Commit: b38bd37bf4b02770635869780c8d0bcae4dd719e
+ Validation report: docs\test-results\mangadl\LATEST.txt
+@@ -64,6 +64,9 @@ Validation report: docs\test-results\mangadl\LATEST.txt
+ ?? docs/test-results/mangadl/history/20261009-151205_mangadl.txt
+ ?? docs/test-results/mangadl/history/20261009-151205_mangadl_context.md
+ ?? docs/test-results/mangadl/history/20261009-151205_mangadl_progress.diff
++?? docs/test-results/mangadl/history/20261012-201801_mangadl.txt
++?? docs/test-results/mangadl/history/20261012-201801_mangadl_context.md
++?? docs/test-results/mangadl/history/20261012-201801_mangadl_progress.diff
+ ?? modules/mangadl/docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/
+ ?? modules/mangadl/mangadl/library_index.py
+ ?? modules/mangadl/mangadl/page_adapters.py
+@@ -125,10 +128,12 @@ repair nor a Kavita API write has been performed.
+ ## Merge and acceptance state
+ 
+ - Local implementation validation and generated reports are complete.
+-- Bounded user-approved live checks for folder audit/repair preview, TUI
+-  responsiveness, and Kavita API compatibility.
+-- Review branch-only commits and main-only validation evidence. Do not merge
+-  without explicit merge approval.
++- The user explicitly approved committing, pushing, and merging this branch on
++  2026-10-12. Branch-only commits and main-only validation evidence are under
++  review before the merge.
++- Live TUI, audit/repair preview, and Kavita API compatibility remain
++  unverified. No live repair, archive mutation, or Kavita collection write has
++  been performed.
+ 
+ ### `docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/checklist.md`
+ 
+@@ -197,7 +202,7 @@ repair nor a Kavita API write has been performed.
+ - Kavita full suite: 16 passed.
+ - Repository dispatcher `& .\\Invoke-Tests.ps1 -Target @('mangadl','kavita') -SkipBootstrap -MaxHistoryAgeDays 3650 -MaxHistoryPerTarget 10`: both targets passed compile, Ruff, CLI help (MangaDL), and pytest (Kavita: 16 tests).
+ - Repository dispatcher refreshed the tracked `docs/test-results/{mangadl,kavita}/LATEST*` reports. The generated progress-diff artifacts contain intentional blank-line whitespace, so `git diff --check` reports whitespace only in those reports.
+-- Live acceptance and final main/feature branch reconciliation remain outstanding.
++- Live acceptance remains outstanding; branch reconciliation and merge are proceeding with user approval.
+ 
+ ### `docs/plans/20261009-1204_library-identity-audit-and-kavita-operations/00_implementation-plan.md`
+ 

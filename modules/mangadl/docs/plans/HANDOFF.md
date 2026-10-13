@@ -1,15 +1,16 @@
 # mangadl Plan Index
 
-Proposed current follow-up: [20261009-0409 URL-file audit and repair](20261009-0409_url-file-audit-and-repair/00_implementation-plan.md). Planning is complete; implementation is not authorized until the user explicitly approves this plan.
+Active: [20261009-1204 library identity, audit, repair, and Kavita operations](20261009-1204_library-identity-audit-and-kavita-operations/00_implementation-plan.md).
+
+The prior [20261009-0409 URL-file audit and repair](20261009-0409_url-file-audit-and-repair/00_implementation-plan.md) records the read-only audit implementation and detailed repair safeguards; continue its repair stage under the active umbrella plan.
 
 Current cross-module feature: [Kavita collection assignment](../../../docs/plans/20261009-0349_kavita-module-mangadl-collections/00_implementation-plan.md).
 
 Active: [20261009-0325 graceful quit and worker scaling](20261009-0325_graceful-quit-and-worker-scaling/00_implementation-plan.md)
 
-Current stage: Stage 1 implementation and repository validation complete after
-read-only validation of the first real scratch run. Graceful `q`, immediate
-`Ctrl+Q`, worker scaling, and storage-aware defaults are implemented; see the
-active plan for verification and remaining user validation.
+Current stage: implementation and repository validation are recorded in the
+plan. Graceful `q`, immediate `Ctrl+Q`, worker scaling, and storage-aware
+defaults are implemented; bounded user validation remains recorded there.
 
 Previous: [20260926-1224 SSD scratch staging](20260926-1224_ssd-scratch-staging/00_implementation-plan.md)
 
