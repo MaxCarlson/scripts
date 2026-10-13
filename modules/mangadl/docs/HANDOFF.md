@@ -4,11 +4,12 @@
 
 Branch `compression-module-mangadl-20261013-0151`. Reviewed plans pushed as
 `f1baeab`; S5/S6 and audit A1/A2 checkpoint pushed as7181e4f. Continuation source,
-shim and registry synchronized at1.31.0 (compresser0.3.0). Nested chapter pages
+shim and registry synchronized at1.31.1 (compresser0.3.1). Nested chapter pages
 and a whole-operation OS guard now coordinate run/page repair/batch repair/compression.
 Same-thread reentrancy supports normal repair workers; separate-process contention
 and process-death release are tested. Consistent established library roots required;
-standalone/external writers remain outside this boundary.
+standalone compresser engine/CLI/recovery now share ownership. External tools
+that ignore the lock must not run concurrently.
 Compression defaults lossless and JSON suppresses progress stdout; explicit
 lossy/perceptual writes require -L. Production compression not accepted.
 Audit A1/A2 now implement bottom summaries, visible inferred gaps even for
@@ -16,8 +17,8 @@ ambiguous sources, explicit source fields (not cover/artist links), association
 inventories with -x, and shared3-row URL/folder progress. A3/A4 manual worksheet
 and mapped repair are still planned. Full290 MangaDL tests pass; compresser61,
 termdash75/1 skipped, scripts-help55, dispatcher, Ruff/compile/help/version and
-installed read-only CLI acceptance pass. Continuation full MangaDL296/compresser61
-and focused52 pass. Terminal/reader and standalone-writer gates remain.
+installed read-only CLI acceptance pass. Continuation full MangaDL296/compresser63
+pass. Terminal/reader gates remain; manual mapping has not started.
 
 ## Current branch planning handoff — 2026-10-12
 

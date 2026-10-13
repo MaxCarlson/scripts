@@ -17,7 +17,8 @@ Use REVIEW.md and 05_reviewed-plan.md; these reopened gates are authoritative.
   stderr/plain/NO_COLOR, exact MangaDL selection and finally cleanup.
   - [x] Shared LiveBlock renderer, exact flat-gallery selection, summaries/timers.
   - [x] Nested galleries and MangaDL run/repair/compression operation ownership.
-  - [ ] Standalone/external-writer boundary and real terminal/reader QA.
+  - [x] Shared standalone engine/CLI/recovery ownership; external-writer limitation documented.
+  - [ ] Real terminal/reader QA.
 - [ ] S8 full affected suites, dispatcher, real terminal and isolated acceptance,
   truthful docs/API/version sync. No merge or production writes.
 

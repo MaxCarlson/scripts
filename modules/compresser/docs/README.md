@@ -31,6 +31,10 @@ enforces decode/working-set bounds, verifies samples/geometry/metadata, chooses
 measured candidates and publishes only approved writes. Transactions use source
 and output fingerprints, durable records and OS ownership. Explicit recovery is
 shared through `compresser.recovery.recovery_plan` and `run_recovery`.
+Engine batch/single-image writes and recovery apply also acquire an established
+MangaDL library's `.mangadl/operation.lock`. The batch owner holds it through all
+worker completion. MangaDL uses the same guard; unrelated external writers do not
+honor it and must not run concurrently. Analysis does not create controls or locks.
 `compresser.estimates.estimate_savings(images, results)` returns coverage-aware
 projections, with null total savings when some population strata are unestimated.
 

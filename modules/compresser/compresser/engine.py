@@ -9,6 +9,7 @@ import io
 import os
 import time
 import threading
+from contextlib import nullcontext
 from dataclasses import replace
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
@@ -27,7 +28,7 @@ from .models import (
     ImageMetadata,
     ImageResult,
 )
-from .transactions import JOURNAL_FILENAME, digest, directory_lock, publish, recover
+from .transactions import JOURNAL_FILENAME, digest, directory_lock, managed_write_guard, publish, recover
 
 # Conservative allowance for source/decoded copies, verification and metrics.
 MEMORY_BUDGET_BYTES = 512 * 1024 * 1024
@@ -160,6 +161,17 @@ class CompressionEngine:
         return best
 
     def compress_image(
+        self,
+        meta: ImageMetadata,
+        strategy: CompressionStrategy,
+        *,
+        write_mode: bool = False,
+    ) -> ImageResult:
+        """Analyze or write one image, coordinating with managed library owners."""
+        with managed_write_guard([meta.path.parent]) if write_mode else nullcontext():
+            return self._compress_image_owned(meta, strategy, write_mode=write_mode)
+
+    def _compress_image_owned(
         self,
         meta: ImageMetadata,
         strategy: CompressionStrategy,
@@ -320,6 +332,21 @@ class CompressionEngine:
         threads: int = 4,
         progress_callback: Callable[[int, int, ImageResult], None] | None = None,
     ) -> BatchResult:
+        """Hold managed-library ownership until all image workers have finished."""
+        with managed_write_guard({image.path.parent for image in images}) if write_mode else nullcontext():
+            return self._compress_batch_owned(
+                images, strategy, write_mode=write_mode, threads=threads, progress_callback=progress_callback
+            )
+
+    def _compress_batch_owned(
+        self,
+        images: Sequence[ImageMetadata],
+        strategy: CompressionStrategy,
+        *,
+        write_mode: bool = False,
+        threads: int = 4,
+        progress_callback: Callable[[int, int, ImageResult], None] | None = None,
+    ) -> BatchResult:
         """Process a collection of images using thread concurrency."""
         if threads < 1:
             raise ValueError("Thread count must be positive")
@@ -367,7 +394,7 @@ class CompressionEngine:
             def submit_next() -> None:
                 img = next(remaining_images, None)
                 if img is not None:
-                    futures.add(pool.submit(self.compress_image, img, strategy, write_mode=write_mode))
+                    futures.add(pool.submit(self._compress_image_owned, img, strategy, write_mode=write_mode))
 
             futures = set()
             for _ in range(max_workers):

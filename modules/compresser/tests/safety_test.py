@@ -18,6 +18,65 @@ from compresser.perceptual import calculate_ssim, find_optimal_quality
 from compresser.transactions import JOURNAL_FILENAME, digest, directory_lock, publish, recover
 
 
+def test_standalone_writer_refuses_managed_library_owner(tmp_path):
+    import subprocess
+    import sys
+
+    gallery = tmp_path / "gallery"
+    gallery.mkdir()
+    source = image(gallery / "001.jpg")
+    before = source.read_bytes()
+    _, images = scan_directory(gallery)
+    child = subprocess.Popen(
+        [sys.executable, "-u", "-c",
+         "import sys; from pathlib import Path; from compresser.transactions import library_write_guard; "
+         "\nwith library_write_guard(Path(sys.argv[1])):\n print('owned', flush=True); sys.stdin.read()",
+         str(tmp_path)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        assert child.stdout.readline().strip() == "owned"
+        engine = CompressionEngine()
+        strategy = CompressionStrategy("test", mode="lossless")
+        with pytest.raises(RuntimeError, match="locked"):
+            engine.compress_batch(images, strategy, write_mode=True)
+        with pytest.raises(RuntimeError, match="locked"):
+            engine.compress_image(images[0], strategy, write_mode=True)
+        assert main(["-i", str(gallery), "-w", "-N"]) == 2
+        assert engine.compress_batch(images, strategy).failed_count == 0
+        assert source.read_bytes() == before
+        assert not (gallery / ".compress.lock").exists()
+    finally:
+        child.kill()
+        child.communicate(timeout=10)
+
+
+def test_managed_guard_is_held_through_worker_callbacks(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from compresser.transactions import managed_write_guard
+
+    (tmp_path / ".mangadl").mkdir()
+    gallery = tmp_path / "chapter"
+    gallery.mkdir()
+    image(gallery / "001.jpg")
+    _, images = scan_directory(gallery)
+
+    def acquire():
+        with managed_write_guard([gallery]):
+            pass
+
+    def callback(done, total, result):
+        with ThreadPoolExecutor(1) as pool:
+            with pytest.raises(RuntimeError, match="locked"):
+                pool.submit(acquire).result()
+
+    result = CompressionEngine().compress_batch(
+        images, CompressionStrategy("test", mode="lossless"), write_mode=True, progress_callback=callback
+    )
+    assert result.failed_count == 0
+    acquire()
+
+
 def image(path: Path) -> Path:
     Image.new("RGB", (80, 80), (30, 50, 70)).save(path, quality=90)
     return path
@@ -87,6 +146,15 @@ def test_unlink_failure_preserves_evidence_and_explicit_recovery(tmp_path, monke
     assert source.exists() and output.exists() and (tmp_path / JOURNAL_FILENAME).exists()
     assert recover(tmp_path) == 1
     assert source.exists() and output.exists() and (tmp_path / JOURNAL_FILENAME).exists()
+    from concurrent.futures import ThreadPoolExecutor
+    from compresser.transactions import library_write_guard
+
+    with library_write_guard(tmp_path):
+        assert recover(tmp_path) == 1  # Preview remains read-only during another operation.
+        with ThreadPoolExecutor(1) as pool:
+            with pytest.raises(RuntimeError, match="locked"):
+                pool.submit(recover, tmp_path, apply=True).result()
+        assert source.exists() and (tmp_path / JOURNAL_FILENAME).exists()
     assert recover(tmp_path, apply=True) == 1
     assert not source.exists() and output.exists()
     assert not (tmp_path / JOURNAL_FILENAME).exists()

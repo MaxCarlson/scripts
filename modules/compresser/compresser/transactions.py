@@ -6,7 +6,8 @@ import hashlib
 import json
 import os
 import tempfile
-from contextlib import contextmanager
+import threading
+from contextlib import contextmanager, ExitStack
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -14,6 +15,45 @@ from PIL import Image
 
 JOURNAL_FILENAME = ".compress_journal.json"
 LOCK_FILENAME = ".compress.lock"
+_library_owners = threading.local()
+
+
+def managed_library_root(directory: Path) -> Path | None:
+    """Find an established MangaDL control root without creating anything."""
+    directory = directory.expanduser().resolve()
+    return next((root for root in (directory, *directory.parents) if (root / ".mangadl").is_dir()), None)
+
+
+@contextmanager
+def library_write_guard(root: Path) -> Iterator[None]:
+    """Shared operation ownership, reentrant only on the invoking thread."""
+    root = root.expanduser().resolve()
+    held = getattr(_library_owners, "roots", None)
+    if held is None:
+        held = _library_owners.roots = set()
+    if root in held:
+        yield
+        return
+    controls = root / ".mangadl"
+    if controls.is_symlink():
+        raise ValueError(f"Refusing linked library controls: {controls}")
+    controls.mkdir(parents=True, exist_ok=True)
+    with directory_lock(controls, filename="operation.lock"):
+        held.add(root)
+        try:
+            yield
+        finally:
+            held.remove(root)
+
+
+@contextmanager
+def managed_write_guard(directories) -> Iterator[None]:
+    """Coordinate standalone writes with established MangaDL library owners."""
+    roots = {root for directory in directories if (root := managed_library_root(directory)) is not None}
+    with ExitStack() as owners:
+        for root in sorted(roots):
+            owners.enter_context(library_write_guard(root))
+        yield
 
 
 def digest(path: Path) -> str:
@@ -236,7 +276,7 @@ def recover(directory: Path, *, apply: bool = False, expected_journal_hash: str 
         raise RuntimeError("Journal changed since confirmed recovery preview")
     if not apply:
         return 1
-    with directory_lock(directory):
+    with managed_write_guard([directory]), directory_lock(directory):
         # Inspect without reacquiring our own OS lock; ownership must stay held.
         # The preview's hashes are rechecked individually before mutation.
         journal = Path(candidate["journal"])

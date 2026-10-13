@@ -2,20 +2,13 @@
 
 from contextlib import contextmanager
 from pathlib import Path
-import threading
 from typing import Iterator
 
-from compresser.transactions import directory_lock
-
-_owners = threading.local()
+from compresser.transactions import library_write_guard as _shared_guard, managed_library_root
 
 
 def library_root(destination: Path) -> Path:
-    destination = destination.expanduser().resolve()
-    for root in (destination, *destination.parents):
-        if (root / ".mangadl").is_dir():
-            return root
-    return destination
+    return managed_library_root(destination) or destination.expanduser().resolve()
 
 
 @contextmanager
@@ -26,19 +19,5 @@ def library_write_guard(destination: Path) -> Iterator[None]:
     processes must still acquire the persistent inode and cannot bypass it.
     """
     root = library_root(destination)
-    held = getattr(_owners, "roots", None)
-    if held is None:
-        held = _owners.roots = set()
-    if root in held:
+    with _shared_guard(root):
         yield
-        return
-    controls = root / ".mangadl"
-    if controls.is_symlink():
-        raise ValueError(f"Refusing linked library controls: {controls}")
-    controls.mkdir(parents=True, exist_ok=True)
-    with directory_lock(controls, filename="operation.lock"):
-        held.add(root)
-        try:
-            yield
-        finally:
-            held.remove(root)

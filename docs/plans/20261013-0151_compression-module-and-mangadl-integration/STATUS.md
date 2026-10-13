@@ -2,7 +2,8 @@
 
 Branch: compression-module-mangadl-20261013-0151.
 Plans committed/pushed as f1baeab; verified source checkpoint pushed as 7181e4f.
-Continuation: MangaDL1.31.0 / compresser0.3.0, nested-gallery and operation guard implemented.
+Nested-gallery/operation-guard checkpoint pushed as2f0dd8b.
+Continuation: MangaDL1.31.1 / compresser0.3.1, shared standalone ownership implemented.
 Authoritative: [reviewed plan](05_reviewed-plan.md), [findings](REVIEW.md).
 
 ## Implemented and fixture-verified
@@ -25,7 +26,9 @@ nested-only gallery requires its valid source manifest, otherwise first-level
 folders define gallery ownership. Whole-operation OS ownership coordinates MangaDL
 run/page repair/batch repair/compression, with same-thread repair-manager reentrancy.
 Cross-process refusal and process-death release are fixture-tested. Use an established
-library root consistently; standalone compresser/external writers are not covered.
+library root consistently. Standalone batch/single-image and recovery writes now
+share the same established-library ownership; batch worker lifetime and competing
+processes are tested. External tools that ignore this lock must not run concurrently.
 Real Windows terminal and reader acceptance remain pending. Not production-write ready.
 
 Related A1/A2 audit work implemented: bottom summaries, concrete-defect prioritization,
@@ -47,10 +50,26 @@ excluded), per-item three-row progress for both URL and folder modes.
 
 ## Next
 
-Continuation verification: full MangaDL296 and compresser61 pass separately;
+Previous continuation verification: full MangaDL296 and compresser61 pass separately;
 focused integration/CLI/ownership52 pass; Ruff passes. Combined collection failed
 because both packages have cli_test.py; separate suites are authoritative.
 
-S7/S8 remaining terminal/reader acceptance and standalone-writer boundary, then
+Current checkpoint: compresser63 and MangaDL296 full suites; shared ownership
+fixtures cover standalone CLI, batch, single-image, recovery, callback lifetime,
+same-thread repair reentrancy and process-death release. Editable installs refreshed;
+installed CLIs report compresser0.3.1/MangaDL1.31.1. Help registry55, Ruff and diff
+whitespace checks pass. No production compression performed.
+
+Full fixture commands (each has its own module-local temp root):
+`python -m pytest modules/compresser/tests -q -o addopts= -p no:cacheprovider --basetemp modules/compresser/.pytest_tmp_root/shared-final`
+`python -m pytest modules/mangadl/tests -q -o addopts= -p no:cacheprovider --basetemp modules/mangadl/.pytest_tmp_root/shared-final`
+Use fresh temp root names for reruns. Normal Windows filesystem permissions were
+needed for the hard-link publication fixtures; sandbox-only writes are insufficient.
+
+Docs freshness: compresser/MangaDL20 (current behavior update), termdash0 (unchanged).
+Documentation action completed here: remove stale standalone boundary claims from
+README/handoffs while retaining real-terminal/reader acceptance warnings.
+
+S7/S8 remaining terminal/reader acceptance, then
 A3 stable manual source worksheet/A4 exact supported mapped repairs.
 User authorized continued implementation without another planning approval.
