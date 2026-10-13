@@ -97,6 +97,7 @@ def directory_lock(directory: Path, *, create: bool = True, filename: str = LOCK
 
             def release() -> None:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
         else:
 
             def acquire() -> None:
@@ -109,7 +110,9 @@ def directory_lock(directory: Path, *, create: bool = True, filename: str = LOCK
             acquire()
             locked = True
         except OSError as exc:
-            raise RuntimeError(f"Compression directory is locked by another process: {lock}") from exc
+            raise RuntimeError(
+                f"Write directory is locked by another operation: {lock}. Not waiting; retry after it finishes. Do not delete the lock file."
+            ) from exc
         yield
     finally:
         if locked:
@@ -257,11 +260,11 @@ def inspect_recovery(directory: Path) -> dict[str, Any] | None:
             "source_sha256": source_hash,
             "output_sha256": output_hash,
             "published": published,
-            "action": "finish_conversion"
-            if published and original != output and original.exists()
-            else "clear_completed_record"
-            if published
-            else "discard_unpublished_temp",
+            "action": (
+                "finish_conversion"
+                if published and original != output and original.exists()
+                else "clear_completed_record" if published else "discard_unpublished_temp"
+            ),
         }
 
 

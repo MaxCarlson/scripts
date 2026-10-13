@@ -9,6 +9,7 @@ from typing import Callable
 
 import numpy as np
 from PIL import Image
+from .cancellation import check_cancelled
 
 
 def _to_gray_np(im: Image.Image) -> np.ndarray:
@@ -200,7 +201,9 @@ def find_optimal_quality(
         raise ValueError("At least one quality candidate is required")
     best = None
     for q in sorted(set(candidates)):
+        check_cancelled()
         encoded = encode_fn(original, q)
+        check_cancelled()
         with decode_fn(encoded) as decoded:
             current_ssim = calculate_ssim(original, decoded)
         if current_ssim >= target_ssim and (best is None or len(encoded) < len(best[1])):

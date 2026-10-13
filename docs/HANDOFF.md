@@ -4,6 +4,14 @@ Last updated: 2026-10-13 02:00 -07:00
 
 ## Current cross-repository work
 
+Active follow-up: docs/plans/20261013-0600_compression-performance-sampling-and-cache/.
+Plan pushed c76df28; P1 stopping/lock feedback implemented, compresser0.5.0 and
+MangaDL1.33.0, compresser69 and MangaDL compression/ownership15 tests pass.
+Native-call cancellation is cooperative; no global budget change. Next: publish P1,
+then measured phase/actual worker diagnostics before changing scheduling/budgets.
+Percent sampling, population estimates and automatic MangaDL cache are planned,
+not implemented. Publish each usable feature before starting the next.
+
 Latest UI continuation: compresser0.4.0/MangaDL1.32.0; continuous comparison stages
 and whole-run progress, retained-vs-encoded sizes/failure reasons. Full compresser66,
 MangaDL compression integration10 pass. No production compression; manual terminal/

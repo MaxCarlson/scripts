@@ -1,5 +1,11 @@
 # Compresser handoff
 
+Active performance/cache plan: ../../../docs/plans/20261013-0600_compression-performance-sampling-and-cache/.
+P1 source0.5.0: cooperative Ctrl+C between encodes and before publication,
+STOPPING notice/active count, no new jobs, exit130, explicit nonblocking lock error.
+Native calls already underway must return; no forced kill. Full69 tests pass,
+MangaDL compression/ownership15. Next publish P1, then actual worker/phase diagnostics.
+
 Current UI checkpoint: source0.4.0, MangaDL1.32.0. Persistent comparison stages,
 aligned gallery/stage/overall bars, whole-run timer and total image-strategy trials.
 Retained-size table distinguishes larger candidates, non-error kept originals and

@@ -21,9 +21,9 @@ from .models import (
     ImageMetadata,
 )
 from .scanner import scan_directory, select_sample
-from .ui import CompresserDashboard, print_comparison_matrix, print_single_summary
+from .ui import CompresserDashboard, print_comparison_matrix, print_single_summary, report_cancellation
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -201,7 +201,14 @@ def run_comparison(
         for index, strat in enumerate(candidate_strategies):
             if dash:
                 dash.begin_stage(index)
-            res = engine.compress_batch(images, strat, write_mode=False, threads=threads, progress_callback=cb)
+            res = engine.compress_batch(
+                images,
+                strat,
+                write_mode=False,
+                threads=threads,
+                progress_callback=cb,
+                cancellation_callback=lambda active: report_cancellation(dash, active),
+            )
             q_disp = (
                 f"SSIM>={strat.perceptual_target:.3f}"
                 if strat.mode == "perceptual"
@@ -353,6 +360,7 @@ def main(argv: list[str] | None = None) -> int:
                 write_mode=args.write,
                 threads=args.threads,
                 progress_callback=cb,
+                cancellation_callback=lambda active: report_cancellation(dash, active),
             )
         finally:
             if dash:
@@ -391,6 +399,9 @@ def main(argv: list[str] | None = None) -> int:
 
         return 0 if batch_result.failed_count == 0 else 1
 
+    except KeyboardInterrupt:
+        print("Cancelled.", file=sys.stderr)
+        return 130
     except Exception as exc:
         if args.verbose:
             import traceback

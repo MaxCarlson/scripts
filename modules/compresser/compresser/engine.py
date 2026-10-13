@@ -11,13 +11,14 @@ import time
 import threading
 from contextlib import nullcontext
 from dataclasses import replace
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, CancelledError, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Callable, Sequence
 
 from PIL import Image
 
 from .cache import AnalysisCache
+from .cancellation import cancellation_scope, check_cancelled
 from .codecs import (
     BaseCodec,
     discover_available_codecs,
@@ -108,8 +109,10 @@ class CompressionEngine:
     def _encode_verified(
         self, im: Image.Image, target_fmt: str, strategy: CompressionStrategy
     ) -> tuple[bytes, float | None, str]:
+        check_cancelled()
         codec = self._select_codec(target_fmt, strategy)
         encoded, ssim = codec.encode(im, target_fmt, strategy)
+        check_cancelled()
         if strategy.mode == "perceptual" and (ssim is None or ssim < strategy.perceptual_target):
             raise ValueError("No encoded candidate meets the requested perceptual threshold")
         with Image.open(io.BytesIO(encoded)) as verified:
@@ -272,7 +275,9 @@ class CompressionEngine:
 
             # Apply Changes Safely
             if write_mode:
+                check_cancelled()
                 with self._publication_lock, directory_lock(path.parent):
+                    check_cancelled()
                     publish(
                         path,
                         output_path,
@@ -312,6 +317,8 @@ class CompressionEngine:
             self.cache.set(path, strategy, res)
             return res
 
+        except CancelledError:
+            raise
         except Exception as exc:
             return ImageResult(
                 input_path=path,
@@ -335,11 +342,17 @@ class CompressionEngine:
         write_mode: bool = False,
         threads: int = 4,
         progress_callback: Callable[[int, int, ImageResult], None] | None = None,
+        cancellation_callback: Callable[[int], None] | None = None,
     ) -> BatchResult:
         """Hold managed-library ownership until all image workers have finished."""
         with managed_write_guard({image.path.parent for image in images}) if write_mode else nullcontext():
             return self._compress_batch_owned(
-                images, strategy, write_mode=write_mode, threads=threads, progress_callback=progress_callback
+                images,
+                strategy,
+                write_mode=write_mode,
+                threads=threads,
+                progress_callback=progress_callback,
+                cancellation_callback=cancellation_callback,
             )
 
     def _compress_batch_owned(
@@ -350,6 +363,7 @@ class CompressionEngine:
         write_mode: bool = False,
         threads: int = 4,
         progress_callback: Callable[[int, int, ImageResult], None] | None = None,
+        cancellation_callback: Callable[[int], None] | None = None,
     ) -> BatchResult:
         """Process a collection of images using thread concurrency."""
         if threads < 1:
@@ -394,37 +408,55 @@ class CompressionEngine:
         max_workers = max(1, min(threads, os.cpu_count() or 4, memory_workers))
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             remaining_images = iter(images)
+            cancelled = threading.Event()
+
+            def work(img):
+                with cancellation_scope(cancelled):
+                    check_cancelled()
+                    return self._compress_image_owned(img, strategy, write_mode=write_mode)
 
             def submit_next() -> None:
                 img = next(remaining_images, None)
                 if img is not None:
-                    futures.add(pool.submit(self._compress_image_owned, img, strategy, write_mode=write_mode))
+                    futures.add(pool.submit(work, img))
 
             futures = set()
-            for _ in range(max_workers):
-                submit_next()
-            while futures:
-                completed, _ = wait(futures, return_when=FIRST_COMPLETED)
-                fut = next(iter(completed))
-                futures.remove(fut)
-                res = fut.result()
-                results.append(res)
-                orig_bytes_total += res.original_bytes
-                comp_bytes_total += res.compressed_bytes
-
-                if res.error:
-                    failed_cnt += 1
-                elif res.skipped:
-                    skipped_cnt += 1
-                elif res.applied:
-                    applied_cnt += 1
-
-                if res.ssim is not None:
-                    ssim_scores.append(res.ssim)
-
-                if progress_callback:
-                    progress_callback(len(results), total, res)
-                submit_next()
+            try:
+                for _ in range(max_workers):
+                    submit_next()
+                while futures:
+                    completed, _ = wait(futures, return_when=FIRST_COMPLETED)
+                    fut = next(iter(completed))
+                    futures.remove(fut)
+                    res = fut.result()
+                    results.append(res)
+                    orig_bytes_total += res.original_bytes
+                    comp_bytes_total += res.compressed_bytes
+                    if res.error:
+                        failed_cnt += 1
+                    elif res.skipped:
+                        skipped_cnt += 1
+                    elif res.applied:
+                        applied_cnt += 1
+                    if res.ssim is not None:
+                        ssim_scores.append(res.ssim)
+                    if progress_callback:
+                        progress_callback(len(results), total, res)
+                    submit_next()
+            except KeyboardInterrupt:
+                cancelled.set()
+                for future in futures:
+                    future.cancel()
+                if cancellation_callback:
+                    cancellation_callback(sum(future.running() for future in futures))
+                # Repeated Ctrl+C must not release library ownership while a
+                # worker is still finishing an already-entered publication.
+                while any(not future.done() for future in futures):
+                    try:
+                        wait(futures, timeout=0.25)
+                    except KeyboardInterrupt:
+                        continue
+                raise
 
         elapsed = time.monotonic() - start_time
         saved = max(0, orig_bytes_total - comp_bytes_total)

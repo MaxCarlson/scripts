@@ -23,7 +23,7 @@ from compresser import (
 )
 from compresser.cli import run_comparison
 from compresser.estimates import estimate_savings
-from compresser.ui import CompresserDashboard, print_comparison_matrix, print_single_summary
+from compresser.ui import CompresserDashboard, print_comparison_matrix, print_single_summary, report_cancellation
 from .library_index import read_source_manifest, scan_library, resolve_url_folders
 from .input import canonicalize_url
 from .library_guard import library_write_guard
@@ -33,8 +33,10 @@ def _gallery_images(directory: Path, cache: AnalysisCache | None = None, *, recu
     summary, images = scan_directory(directory, recursive=recursive, cache=cache)
     # Covers aren't numbered page payloads; their reader identity must not change.
     return summary, [
-        image for image in images
-        if not image.path.is_symlink() and not image.path.name.startswith(".")
+        image
+        for image in images
+        if not image.path.is_symlink()
+        and not image.path.name.startswith(".")
         and image.path.stem.casefold() not in {"cover", "folder", "front", "back", "poster"}
     ]
 
@@ -282,6 +284,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 write_mode=args.write,
                 threads=getattr(args, "threads", 4),
                 progress_callback=cb,
+                cancellation_callback=lambda active: report_cancellation(dash, active),
             )
         finally:
             if dash:
@@ -320,6 +323,9 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
 
         return 0 if batch_result.failed_count == 0 else 1
 
+    except KeyboardInterrupt:
+        print("Cancelled.", file=sys.stderr)
+        return 130
     except Exception as exc:
         if getattr(args, "verbose", 0):
             import traceback

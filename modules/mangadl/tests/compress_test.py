@@ -20,6 +20,20 @@ def test_compress_cli_help(capsys):
     assert "N images total" in capsys.readouterr().out
 
 
+def test_compress_interrupt_returns_130(tmp_path, monkeypatch, capsys):
+    from compresser import CompressionEngine
+
+    Image.new("RGB", (40, 40)).save(tmp_path / "001.png")
+
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(CompressionEngine, "compress_batch", interrupt)
+    assert main(["compress", "-d", str(tmp_path), "-N", "-J"]) == 130
+    output = capsys.readouterr()
+    assert output.out == "" and "Cancelled" in output.err
+
+
 def test_discover_gallery_targets(tmp_path: Path):
     dest = tmp_path / "library"
     dest.mkdir()

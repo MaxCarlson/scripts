@@ -1,4 +1,4 @@
-# compresser 0.4.0
+# compresser 0.5.0
 
 Reusable image analysis, encoder comparison and optional verified compression.
 Default operation is read-only, lossless analysis. Bulk production writes are
@@ -52,6 +52,12 @@ below the table; totals are unavailable if any image trial failed. "Kept" counts
 non-error skips. Cached entries are invalidated for the new candidate-size schema.
 
 ## Writes and recovery
+
+Ctrl+C stops new job submission and checks cancellation between encoder candidates
+and before publication. A stopping notice shows the active encoder count. A native
+encode already in progress must return; cancellation is cooperative, not an unsafe
+forced kill. Interrupted CLI runs return130, without a traceback. OS write locks
+fail immediately with their path and "Not waiting"; retry after the owner finishes.
 
 Writes need `-w/--write`; lossy/perceptual writes also need `-L/--allow-lossy`.
 Valid outputs are fully decoded and checked before publication. Existing target

@@ -1,8 +1,9 @@
 # Checkpoints
 
 - [x] Evidence-backed plan covering all requested features.
-- [ ] Plan committed and pushed.
-- [ ] P1 stopping and nonblocking lock feedback, tests, setup, commit/push.
+- [x] Plan committed and pushed (c76df28).
+- [x] P1 stopping and nonblocking lock feedback implemented/tested; setup refreshed.
+- [x] P1 commit/push checkpoint.
 - [ ] P2 phase diagnosis, effective/active worker UI, readable narrow reports, commit/push.
 - [ ] P3 memory-aware scheduling and bounded resource configuration, commit/push.
 - [ ] P4 inventory, proportional percentage sampling and coverage-aware projections, commit/push.

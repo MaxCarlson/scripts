@@ -1,5 +1,11 @@
 # mangadl Immediate Project Handoff
 
+Active performance/cache continuation: MangaDL1.33.0 / compresser0.5.0.
+Cooperative cancellation/STOPPING and exit130 implemented, lock errors explicitly
+fail fast. Plan at ../../../docs/plans/20261013-0600_compression-performance-sampling-and-cache/;
+plan pushed c76df28. Actual worker/phase diagnosis, memory-aware scheduler, percentage
+sampling/projections, automatic cache prompt and integrity acceptance remain planned.
+
 Current compression UI continuation: MangaDL1.32.0 / compresser0.4.0.
 Comparison shares one staged dashboard and continuous overall timer/counts;
 retained-size report distinguishes rejected larger candidates and encoder failures.

@@ -57,6 +57,7 @@ class CompresserDashboard:
         self.current_savings = 0
         self.total_orig_bytes = 0
         self.last_res: ImageResult | None = None
+        self.stopping = False
         self.gallery_totals = Counter(image.path.parent for image in images)
         self.gallery_done = Counter()
         self.samples = deque([(self.start_time, 0)])
@@ -128,8 +129,6 @@ class CompresserDashboard:
         recent_rate = ((self.overall_processed - recent[0][1]) / max(0.001, now - recent[0][0])) if recent else 0
         eta = fmt_hms(remaining / recent_rate) if recent_rate > 0 else "unknown"
 
-        mode_color = "yellow" if self.mode == "ANALYSIS" else "green"
-
         res = self.last_res
         if res:
             fname = res.input_path.name
@@ -167,7 +166,7 @@ class CompresserDashboard:
         overall_bar = ProgressBar("overall", self.overall_total, self.overall_processed, width=28, charset="block")
         lines = [
             f"Stages {completed_stages}/{len(self.stages)} complete: " + " | ".join(stage_labels),
-            f"{color_text('Compresser', 'bright')} | Mode: {color_text(self.mode, mode_color)} | Strategy: {self.strategy_name} | Worker limit: {self.workers}",
+            f"{color_text('Compresser', 'bright')} | Mode: {'STOPPING' if self.stopping else self.mode} | Strategy: {self.strategy_name} | Worker limit: {self.workers}",
             file_line,
             f"Stage trials: {self.processed}/{self.total_images} | Rate: {rate_img:.1f} img/s ({format_rate_bps(rate_bytes)})",
             f"Elapsed (entire run): {fmt_hms(elapsed)} | Overall ETA: {eta} (rolling rate; encoder speeds vary)",
@@ -181,6 +180,23 @@ class CompresserDashboard:
 
     def close(self) -> None:
         self.block.close()
+
+    def cancel(self, active: int) -> None:
+        self.stopping = True
+        self.block.log(
+            f"Stopping: no new jobs; waiting for {active} active encoder(s). Native calls must return before stopping."
+        )
+
+
+def report_cancellation(dashboard: CompresserDashboard | None, active: int) -> None:
+    if dashboard:
+        dashboard.cancel(active)
+    else:
+        print(
+            f"Stopping: no new jobs; waiting for {active} active encoder(s). Native calls must return before stopping.",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def print_single_summary(result: BatchResult, scan: ScanSummary | None = None) -> None:
